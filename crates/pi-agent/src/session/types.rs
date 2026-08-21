@@ -791,3 +791,17 @@ pub struct LanePointer {
 pub fn session_error(kind: SessionErrorKind, message: impl Into<String>) -> SessionError {
     SessionError::new(kind, message)
 }
+
+
+/// Storage-internal helper: rewrite an entry's sequence (used by fork).
+pub fn set_entry_seq(entry: &mut Entry, seq: u64) {
+    match entry {
+        Entry::Message { seq: s, .. }
+        | Entry::ModelChange { seq: s, .. }
+        | Entry::ThinkingLevel { seq: s, .. }
+        | Entry::ActiveTools { seq: s, .. }
+        | Entry::Compaction { seq: s, .. }
+        | Entry::BranchSummary { seq: s, .. }
+        | Entry::Custom { seq: s, .. } => *s = seq,
+    }
+}

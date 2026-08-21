@@ -44,6 +44,7 @@ async fn publish_file_atomically<F: FileSystem>(
     Ok(())
 }
 
+#[derive(Debug)]
 pub struct JsonlSessionStorage<F: FileSystem> {
     fs: F,
     metadata: SessionMetadata,
@@ -143,6 +144,54 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
 
     pub async fn get_lanes(&self) -> Vec<LanePointer> {
         self.state.get_lanes()
+    }
+
+    /// Forks this session into a new file. Mirrors upstream storage.fork:
+    /// computes fork mutations from the current state, publishes them
+    /// atomically next to the destination (temp sibling + rename), then
+    /// reloads the committed file.
+    pub async fn fork(
+        &self,
+        path: &str,
+        header: JsonlV4Header,
+        options: &super::super::state::ForkOptions,
+    ) -> Result<Self, ForkError>
+    where
+        F: Clone,
+    {
+        let mutations = self
+            .state
+            .create_fork_mutations(options)
+            .map_err(ForkError::Session)?;
+        let temp_path = format!("{path}.tmp");
+        let fs = self.fs.clone();
+        let staged: Result<(), FileError> = async {
+            let mut target = JsonlSessionStorage::create(fs.clone(), &temp_path, header)
+                .await
+                .map_err(|e| FileError::new(format!("Failed to stage fork {path}: {e}")))?;
+            for mutation in &mutations {
+                target
+                    .append_mutation(mutation)
+                    .await
+                    .map_err(|e| FileError::new(format!("Failed to stage fork {path}: {e}")))?;
+                target
+                    .state
+                    .apply_mutation(mutation)
+                    .map_err(|e| FileError::new(format!("Failed to stage fork {path}: {e}")))?;
+            }
+            file_result(
+                fs.rename_file(&temp_path, path),
+                &format!("Failed to publish staged file {path}"),
+            )
+        }
+        .await;
+        if let Err(e) = staged {
+            let _ = fs.remove(&temp_path);
+            return Err(ForkError::Storage(e));
+        }
+        JsonlSessionStorage::load(fs, path)
+            .await
+            .map_err(|e| ForkError::Load(e.to_string()))
     }
 
     pub async fn create_lane(&mut self, lane: &str, at: Option<&str>) -> Result<(), SessionError> {
@@ -272,6 +321,12 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
         Ok(())
     }
 
+    /// Apply a mutation without persisting (used by fork staging after the
+    /// line was appended).
+    pub fn apply_mutation_unchecked(&mut self, mutation: &Mutation) -> Result<(), SessionError> {
+        self.state.apply_mutation(mutation)
+    }
+
     pub fn state(&self) -> &SessionState {
         &self.state
     }
@@ -338,6 +393,17 @@ fn new_record_complete(new_record: NewRecord, seq: u64, timestamp: u64) -> LaneR
 
 fn to_fs(e: impl std::fmt::Display) -> FileError {
     FileError::new(e.to_string())
+}
+
+/// Errors raised by `fork`.
+#[derive(Debug, thiserror::Error)]
+pub enum ForkError {
+    #[error("session error: {0}")]
+    Session(SessionError),
+    #[error("storage error: {0}")]
+    Storage(#[from] FileError),
+    #[error("load error: {0}")]
+    Load(String),
 }
 
 #[derive(Debug, thiserror::Error)]

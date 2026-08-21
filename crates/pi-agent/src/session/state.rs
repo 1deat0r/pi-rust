@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, HashSet};
 
 use super::types::{
-    session_error, Entry, Fact, LanePointer, LaneRecord, LogItem, Mutation, SessionError,
-    SessionErrorKind, SessionStats,
+    session_error, set_entry_seq, Entry, Fact, LanePointer, LaneRecord, LogItem, Mutation,
+    SessionError, SessionErrorKind, SessionStats,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +47,26 @@ pub struct RecordQuery {
     pub limit: Option<usize>,
 }
 
+/// Fork scope options — port of `ForkOptions` from session/types.ts.
+#[derive(Debug, Clone)]
+pub enum ForkOptions {
+    /// Copy the entire tree (all entries, lanes, name, labels).
+    Tree,
+    /// Copy the branch ending at the given entry (defaults to the main lane
+    /// leaf), optionally positioning before it.
+    Branch {
+        entry_id: Option<String>,
+        position: Option<ForkPosition>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkPosition {
+    Before,
+    At,
+}
+
+#[derive(Debug)]
 pub struct SessionState {
     sequence: u64,
     used_ids: HashSet<String>,
@@ -295,6 +315,107 @@ impl SessionState {
         &self.stats
     }
 
+    /// Builds the mutation list for a fork (port of
+    /// `SessionState.createForkMutations`): copied entries renumbered from 1,
+    /// then lane lines, then the name fact, then label facts.
+    pub fn create_fork_mutations(&self, options: &ForkOptions) -> Result<Vec<Mutation>, SessionError> {
+        let (copied_entries, fork_lanes) = match options {
+            ForkOptions::Tree => {
+                let entries = self.find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() });
+                (entries, self.get_lanes())
+            }
+            ForkOptions::Branch { entry_id, position } => {
+                let selected = match entry_id {
+                    Some(id) => Some(id.clone()),
+                    None => self.require_lane("main")?,
+                };
+                let mut target_id: Option<String> = None;
+                if let Some(selected) = selected {
+                    let entry = self
+                        .get_entry(&selected)
+                        .cloned()
+                        .ok_or_else(|| {
+                            session_error(SessionErrorKind::InvalidTarget, "fork target not found")
+                        })?;
+                    if entry.entry_type_str() != "message" {
+                        return Err(session_error(
+                            SessionErrorKind::InvalidEntry,
+                            format!("Fork target is not a message entry: {selected}"),
+                        ));
+                    }
+                    let position = match position {
+                        Some(p) => *p,
+                        None => {
+                            if entry_id.is_some() {
+                                ForkPosition::Before
+                            } else {
+                                ForkPosition::At
+                            }
+                        }
+                    };
+                    target_id = match position {
+                        ForkPosition::At => Some(entry.id().to_string()),
+                        ForkPosition::Before => entry.parent_id().map(|s| s.to_string()),
+                    };
+                }
+                let entries = match &target_id {
+                    Some(t) => {
+                        let mut cursor = t.clone();
+                        let mut out = Vec::new();
+                        loop {
+                            let Some(entry) = self.entries.iter().find(|e| e.id() == cursor) else {
+                                break;
+                            };
+                            let clone = entry.clone();
+                            match entry.parent_id() {
+                                Some(p) if !p.is_empty() => {
+                                    cursor = p.to_string();
+                                    out.push(clone);
+                                }
+                                _ => {
+                                    out.push(clone);
+                                    break;
+                                }
+                            }
+                        }
+                        out.reverse();
+                        out
+                    }
+                    None => Vec::new(),
+                };
+                (entries, vec![crate::session::types::LanePointer { lane: "main".into(), leaf_id: target_id }])
+            }
+        };
+
+        let mut mutations: Vec<Mutation> = Vec::new();
+        let mut sequence: u64 = 1;
+        for source_entry in &copied_entries {
+            let mut entry = source_entry.clone();
+            set_entry_seq(&mut entry, sequence);
+            mutations.push(Mutation::Entry { lane: None, entry });
+            sequence += 1;
+        }
+        for pointer in &fork_lanes {
+            mutations.push(Mutation::Lane { seq: sequence, lane: pointer.lane.clone(), leaf_id: pointer.leaf_id.clone() });
+            sequence += 1;
+        }
+        if let Some(name) = &self.name {
+            mutations.push(Mutation::Fact(crate::session::types::Fact::Name { seq: sequence, name: Some(name.clone()) }));
+            sequence += 1;
+        }
+        for entry in &copied_entries {
+            if let Some(label) = self.labels.get(entry.id()) {
+                mutations.push(Mutation::Fact(crate::session::types::Fact::Label {
+                    seq: sequence,
+                    target_id: entry.id().to_string(),
+                    label: Some(label.clone()),
+                }));
+                sequence += 1;
+            }
+        }
+        Ok(mutations)
+    }
+
     /// Applies a mutation to the in-memory state (after it has been
     /// persisted). Mirrors `SessionState.applyMutation`.
     pub fn apply_mutation(&mut self, mutation: &Mutation) -> Result<(), SessionError> {
@@ -361,9 +482,9 @@ impl SessionState {
                 Ok(())
             }
             Mutation::Lane { seq, lane, leaf_id } => {
-                if !self.lanes.contains_key(lane) {
-                    return Err(session_error(SessionErrorKind::InvalidLane, format!("unknown lane {lane}")));
-                }
+                // Upstream applyMutation simply sets the pointer; creation is
+                // guarded by validateNewLane in the storage layer before the
+                // mutation is persisted.
                 if let Some(leaf) = leaf_id {
                     self.require_entry_id(leaf)?;
                 }

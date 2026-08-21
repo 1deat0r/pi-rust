@@ -59,6 +59,10 @@ pub enum SessionErrorKind {
     InvalidEntry,
     InvalidQuery,
     InvalidTarget,
+    InvalidForkTarget,
+    InvalidPayload,
+    AlreadyExists,
+    NotFound,
     Storage,
     InvalidLane,
 }

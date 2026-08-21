@@ -2,6 +2,7 @@
 //! `packages/agent/src/harness/session/jsonl/codec.ts`.
 
 pub mod errors;
+pub mod repo;
 pub mod storage;
 
 use serde_json::Value as JsonValue;
