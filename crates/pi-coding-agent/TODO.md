@@ -4,6 +4,14 @@ P4 milestone committed: working `pi` binary (args, config/env, run path).
 Settings manager (full upstream surface) landed.
 
 ## Done
+- core/tools: ls, find, grep ported (packages/coding-agent/src/core/tools/) —
+  model-facing text output 1:1, spawned via the exact upstream binaries and
+  argument sets (fd for find, rg for grep; fd is a harness-tool dependency
+  like upstream). ls sorts case-insensitively with directory suffix and
+  dotfiles; find relativizes to the search root and preserves trailing '/';
+  grep streams rg --json match events with context blocks, line truncation
+  (500 chars), and upstream notices. 24 tool tests (6 ls / 7 find / 11 grep).
+  Registered in run.rs (7 built-in tools total; gated on --no-tools).
 - run.rs settings wiring: `pi -p` now resolves provider/model
   CLI -> PI_PROVIDER/PI_MODEL env -> settings.json defaultProvider/defaultModel
   (project merged over global) -> google/default. Settings default model only

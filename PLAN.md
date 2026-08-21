@@ -272,6 +272,31 @@ Agent: pi (Claude)   HEAD: 8e52bf8 → (this session)
   Next: model registry/catalog, openai/google providers + auth, remaining
   harness tools, project-trust CLI wiring.
 
+### Session 4 — 2026-08-22 — harness tools: ls, find, grep + REMOTE PUSH RULE
+Agent: pi (Claude)   HEAD: cab9abb → (this session)
+
+- **Process**: operator directive — every local commit must be pushed to the
+  remote immediately, every single time; persisted as a global harness prompt
+  note. All commits this session pushed in the same step.
+- `ls`/`find`/`grep` ported 1:1 (packages/coding-agent/src/core/tools/) into
+  `crates/pi-coding-agent/src/core/tools/`. Model-facing text output is the
+  contract; TUI theme rendering deferred until pi-tui. `find` spawns `fd`
+  with the exact upstream args (`--glob --color=never --hidden
+  [--no-require-git] --max-results N [--full-path] -- PATTERN PATH`) and
+  `grep` spawns `rg` (`--json --line-number --color=never --hidden
+  [--ignore-case] [--fixed-strings] [--glob G] -- PATTERN PATH`) — same
+  binaries upstream uses (env has fd 10.4.2 / rg 15.2.0). Notices, relativize
+  (trailing '/' preserved), fd full-path `**/` prefixing, representative
+  upstream behaviors verified by probes (fd emits absolute paths for
+  absolute search paths; rg ignores .gitignore outside git repos).
+- TDD: 24 tests (6 ls / 7 find / 11 grep) over temp trees; oracle-derived
+  expectations; 3 expectations corrected mid-cycle to match verified
+  upstream behavior (dotfiles sort first; rg need .git to honor .gitignore;
+  truncate_head_with usize::MAX overflow avoided with finite bound).
+- Registered ls/find/grep in `run.rs` (7 built-in tools, --no-tools gate).
+- Workspace: **243 tests passing** (was 219); pi-coding-agent 109; 0 lib
+  warnings; clippy clean for tools.
+
 ### Open (carry-forward)
 - P2 phase is COMPLETE (evidence above; `cargo test --workspace` 75/75, 0
   warnings). P3 continuation is gated on the phase-completion plan update +
