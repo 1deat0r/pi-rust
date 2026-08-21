@@ -297,6 +297,36 @@ Agent: pi (Claude)   HEAD: cab9abb → (this session)
 - Workspace: **243 tests passing** (was 219); pi-coding-agent 109; 0 lib
   warnings; clippy clean for tools.
 
+### Session 5 — 2026-08-22 — edit tool fidelity: edit-diff + fuzzy matching
+Agent: pi (Claude)   HEAD: 03c11e5 → (this session)
+
+- **edit tool upgraded to 1:1 upstream behavior** (agent edit.ts + the entire
+  edit-diff.ts machinery): multiple disjoint `edits[{oldText,newText}]`
+  matched against the original (not incrementally), exact-then-fuzzy matching
+  (NFKC, smart quotes/dashes/spaces + trailing-whitespace normalization),
+  duplicate/missing/empty/no-change/overlap errors with exact upstream
+  messages, BOM + CRLF/LF preservation, and `details` carrying the display
+  diff + unified patch + firstChangedLine. prepareArguments variants
+  (edits-as-array / JSON string / single object / legacy top-level
+  oldText+newText) and schema/description match upstream. The previous
+  naive single-string replaceAll tool is gone.
+- New deps: `similar` (line diff; upstream uses npm `diff`) and
+  `unicode-normalization` (NFKC for fuzzy normalization).
+- TDD: 27 tests (20 edit_diff unit: fuzzy find/normalize/apply/errors/diff/
+  patch-apply-back; 7 tool: disjoint edits + file updated, overlap leaves
+  file unchanged, missing/duplicate, BOM+CRLF, symlink, fuzzy smart quote,
+  prepare-args variants). Two expectations corrected against verified code
+  semantics: fuzzy path rewrites touched lines from the normalized base
+  (curly quotes become straight *on touched lines only*), and npm-style line
+  counts drop the trailing empty split element (patch hunk counts match
+  createTwoFilesPatch).
+- TDD red-green discipline: seam 1 = pure edit_diff functions (byte-consistent
+  offsets), seam 2 = execute_edit over temp files. Mutation-queue env tests
+  (blocking writes, concurrency serialization) deferred — they need the env
+  abstraction seam, tracked in pi-agent TODO.
+- Workspace: **270 tests passing** (was 243); pi-agent 71; clippy clean for
+  the new code; 0 lib warnings.
+
 ### Open (carry-forward)
 - P2 phase is COMPLETE (evidence above; `cargo test --workspace` 75/75, 0
   warnings). P3 continuation is gated on the phase-completion plan update +

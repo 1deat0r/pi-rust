@@ -4,6 +4,13 @@ P3 data layer committed (fcfd19c): session JSONL v4 codec + storage + state.
 19 tests ported from upstream jsonl-codec.test.ts / jsonl-storage.test.ts.
 
 ## Done
+- edit tool upgraded to the upstream contract (package agent edit.ts +
+  edit-diff.ts): multiple disjoint edits matched against the original, exact
+  then fuzzy matching (NFKC + smart quotes/dashes/spaces + trailing-whitespace
+  normalization), overlap/duplicate/missing/empty/no-change errors, BOM and
+  CRLF/LF preservation, display diff + unified patch details with
+  firstChangedLine, legacy oldText/newText + edits-as-string prepare-args.
+  27 tests (20 edit_diff unit + 7 tool). See edit-diff.rs.
 - jsonl codec: header + mutations (entry/record/lane/fact) with upstream
   validation (syntax/schema kinds, customType requirement, intent
   requirement, operation_finished runId, torn-tail syntax tolerance).

@@ -4,6 +4,7 @@
 
 pub mod bash;
 pub mod edit;
+pub mod edit_diff;
 pub mod path_utils;
 pub mod read;
 pub mod truncate;
@@ -92,16 +93,25 @@ pub fn edit_tool(cwd: String) -> AgentTool {
     AgentTool {
         tool: json_tool(
             "edit",
-            "Edit a file by replacing an exact string. The old_string must appear exactly once (or use replaceAll=true).",
+            "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
             &serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Path to the file to edit (relative or absolute)"},
-                    "old_string": {"type": "string", "description": "Exact string to replace"},
-                    "new_string": {"type": "string", "description": "Replacement string"},
-                    "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of erroring on duplicates"}
+                    "edits": {
+                        "type": "array",
+                        "description": "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "oldText": {"type": "string", "description": "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call."},
+                                "newText": {"type": "string", "description": "Replacement text for this targeted edit."}
+                            },
+                            "required": ["oldText", "newText"]
+                        }
+                    }
                 },
-                "required": ["path", "old_string", "new_string"]
+                "required": ["path", "edits"]
             }),
         ),
         execute: Arc::new(move |args| {
@@ -111,13 +121,8 @@ pub fn edit_tool(cwd: String) -> AgentTool {
                     .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "edit: missing required argument path".to_string())?;
-                let old = args
-                    .get("old_string")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "edit: missing required argument old_string".to_string())?;
-                let new = args.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
-                let replace_all = args.get("replace_all").and_then(|v| v.as_bool());
-                edit::execute_edit("edit", path, old, new, replace_all, &cwd).await
+                let edits = edit::extract_edits(&args)?;
+                edit::execute_edit("edit", path, edits, &cwd).await
             })
         }),
     }

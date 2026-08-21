@@ -116,19 +116,35 @@ fn write_creates_parent_dirs_and_reports_bytes() {
 }
 
 #[test]
-fn edit_replaces_unique_and_rejects_duplicates() {
+fn edit_rejects_duplicates_and_applies_disjoint_edits() {
     let rt = rt();
     rt.block_on(async {
         let dir = tmpdir("edit");
         let path = dir.join("f.txt");
-        std::fs::write(&path, "one two one").unwrap();
-        // duplicate without replaceAll -> error
-        let err = pi_agent::tools::edit::execute_edit("e", &path.to_string_lossy(), "one", "x", None, &dir.to_string_lossy()).await.unwrap_err();
-        assert!(err.contains("appears 2 times"));
-        // replaceAll works
-        let ok = pi_agent::tools::edit::execute_edit("e", &path.to_string_lossy(), "one", "x", Some(true), &dir.to_string_lossy()).await.unwrap();
+        std::fs::write(&path, "one one two").unwrap();
+        // duplicate without disambiguation -> error
+        let err = pi_agent::tools::edit::execute_edit(
+            "e",
+            &path.to_string_lossy(),
+            vec![pi_agent::tools::edit_diff::Edit { old_text: "one".to_string(), new_text: "x".to_string() }],
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("Found 2 occurrences"));
+        // disjoint edits apply
+        let ok = pi_agent::tools::edit::execute_edit(
+            "e",
+            &path.to_string_lossy(),
+            vec![
+                pi_agent::tools::edit_diff::Edit { old_text: "two".to_string(), new_text: "TWO".to_string() },
+            ],
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap();
         assert!(!ok.is_error());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x two x");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one one TWO");
     });
 }
 

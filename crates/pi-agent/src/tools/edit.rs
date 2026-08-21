@@ -1,46 +1,281 @@
-//! Edit tool — port of `packages/agent/src/harness/tools/edit.ts`
-//! (old_string/new_string unique replacement).
+//! Edit tool — port of `packages/agent/src/harness/tools/edit.ts`: multiple
+//! disjoint exact-text replacements matched against the original file, with
+//! fuzzy fallback, BOM/line-ending preservation, and diff/patch details.
 
+use super::edit_diff::{
+    apply_edits_to_normalized_content, detect_line_ending, generate_diff_string,
+    generate_unified_patch, normalize_to_lf, restore_line_endings, strip_bom, Edit,
+};
 use super::path_utils::resolve_tool_path;
 use pi_ai::types::ToolResultMessage;
 
+/// Tool execute for `edit` (upstream createEditTool.execute, direct fs).
 pub async fn execute_edit(
     tool_call_id: &str,
     path: &str,
-    old_string: &str,
-    new_string: &str,
-    replace_all: Option<bool>,
+    edits: Vec<Edit>,
     cwd: &str,
 ) -> Result<ToolResultMessage, String> {
     let absolute = resolve_tool_path(cwd, path);
-    let content = std::fs::read_to_string(&absolute).map_err(|e| format!("Failed to read {path}: {e}"))?;
 
-    let count = if replace_all == Some(true) {
-        content.matches(old_string).count()
-    } else {
-        content.matches(old_string).count().min(1)
-    };
-    if count == 0 {
-        return Err(format!(
-            "The string to replace was not found in the file: {old_string:?}"
-        ));
+    let metadata = std::fs::metadata(&absolute)
+        .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
+    if !metadata.is_file() {
+        return Err(format!("Could not edit file: {path}. Path is not a file."));
     }
-    if !replace_all.unwrap_or(false) && content.matches(old_string).count() > 1 {
-        return Err(format!(
-            "String to replace appears {} times; use replaceAll=true to replace all occurrences",
-            content.matches(old_string).count()
-        ));
-    }
-    let updated = if replace_all == Some(true) {
-        content.replace(old_string, new_string)
-    } else {
-        content.replacen(old_string, new_string, 1)
-    };
-    std::fs::write(&absolute, updated).map_err(|e| format!("Failed to write {path}: {e}"))?;
+
+    let content = std::fs::read_to_string(&absolute)
+        .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
+
+    let (bom, text) = strip_bom(&content);
+    let original_ending = detect_line_ending(&text);
+    let normalized_content = normalize_to_lf(&text);
+    let result = apply_edits_to_normalized_content(&normalized_content, &edits, path)?;
+
+    let final_content = bom + &restore_line_endings(&result.new_content, original_ending);
+    std::fs::write(&absolute, final_content)
+        .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
+
+    let (diff, first_changed_line) = generate_diff_string(&result.base_content, &result.new_content, 4);
+    let patch = generate_unified_patch(path, &result.base_content, &result.new_content, 4);
+
+    let details = serde_json::json!({
+        "diff": diff,
+        "patch": patch,
+        "firstChangedLine": first_changed_line,
+    });
+
     Ok(ToolResultMessage::text(
         tool_call_id,
         "edit",
-        format!("Successfully edited {path} ({} replacement{})", count, if count == 1 { "" } else { "s" }),
+        format!("Successfully replaced {} block(s) in {path}.", edits.len()),
         false,
-    ))
+    )
+    .with_details_usage_timestamp(None, Some(details), pi_ai::types::now_ms()))
+}
+
+/// Upstream `prepareEditArguments` + `validateEditInput`: accepts `edits` as
+/// an array, a JSON string, or a single edit object, and appends legacy
+/// top-level `oldText`/`newText` fields.
+pub fn extract_edits(args: &serde_json::Value) -> Result<Vec<Edit>, String> {
+    let mut edits: Vec<Edit> = Vec::new();
+    let push_from_value = |edits: &mut Vec<Edit>, v: &serde_json::Value| {
+        if let Some(old) = v.get("oldText").and_then(|x| x.as_str()) {
+            if let Some(new) = v.get("newText").and_then(|x| x.as_str()) {
+                edits.push(Edit { old_text: old.to_string(), new_text: new.to_string() });
+            }
+        }
+    };
+    match args.get("edits") {
+        Some(serde_json::Value::String(raw)) => {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) {
+                match &parsed {
+                    serde_json::Value::Array(items) => {
+                        for item in items {
+                            push_from_value(&mut edits, item);
+                        }
+                    }
+                    other => push_from_value(&mut edits, other),
+                }
+            }
+        }
+        Some(serde_json::Value::Array(items)) => {
+            for item in items {
+                push_from_value(&mut edits, item);
+            }
+        }
+        Some(other) => push_from_value(&mut edits, other),
+        None => {}
+    }
+    if let (Some(old), Some(new)) = (
+        args.get("oldText").and_then(|v| v.as_str()),
+        args.get("newText").and_then(|v| v.as_str()),
+    ) {
+        edits.push(Edit { old_text: old.to_string(), new_text: new.to_string() });
+    }
+    if edits.is_empty() {
+        return Err("Edit tool input is invalid. edits must contain at least one replacement.".to_string());
+    }
+    Ok(edits)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn edit(old: &str, new: &str) -> Edit {
+        Edit { old_text: old.to_string(), new_text: new.to_string() }
+    }
+
+    fn tool_text(msg: &ToolResultMessage) -> String {
+        use pi_ai::types::ContentBlock;
+        match msg {
+            ToolResultMessage::ToolResult { content, .. } => content
+                .iter()
+                .filter_map(|c| match c {
+                    ContentBlock::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(""),
+        }
+    }
+
+    fn tmpdir(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("pi-edit-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        (dir.clone(), dir)
+    }
+
+    #[tokio::test]
+    async fn applies_disjoint_edits_and_updates_file() {
+        let (dir, _) = tmpdir("disjoint");
+        let file = dir.join("edit.txt");
+        std::fs::write(&file, "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        let msg = execute_edit(
+            "e",
+            "edit.txt",
+            vec![edit("alpha\n", "ALPHA\n"), edit("gamma\n", "GAMMA\n")],
+            &dir.display().to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tool_text(&msg),
+            "Successfully replaced 2 block(s) in edit.txt."
+        );
+        let details = msg.details().unwrap();
+        assert!(details.get("diff").and_then(|v| v.as_str()).unwrap().contains("ALPHA"));
+        assert!(details.get("diff").and_then(|v| v.as_str()).unwrap().contains("GAMMA"));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "ALPHA\nbeta\nGAMMA\ndelta\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_overlapping_edits_leaves_file_unchanged() {
+        let (dir, _) = tmpdir("overlap");
+        let file = dir.join("edit.txt");
+        std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+        let err = execute_edit(
+            "e",
+            &file.display().to_string(),
+            vec![edit("one\ntwo\n", "ONE\nTWO\n"), edit("two\nthree\n", "TWO\nTHREE\n")],
+            &dir.display().to_string(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("overlap"), "got: {err}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\ntwo\nthree\n");
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_and_duplicate() {
+        let (dir, _) = tmpdir("missing");
+        let file = dir.join("edit.txt");
+        std::fs::write(&file, "foo foo foo").unwrap();
+        let err = execute_edit(
+            "e",
+            &file.display().to_string(),
+            vec![edit("bar", "baz")],
+            &dir.display().to_string(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("Could not find the exact text"), "got: {err}");
+
+        let err = execute_edit(
+            "e",
+            &file.display().to_string(),
+            vec![edit("foo", "bar")],
+            &dir.display().to_string(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("Found 3 occurrences"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn preserves_bom_and_crlf() {
+        let (dir, _) = tmpdir("bom");
+        let file = dir.join("edit.txt");
+        std::fs::write(&file, "\u{FEFF}one\r\ntwo\r\n").unwrap();
+        execute_edit(
+            "e",
+            &file.display().to_string(),
+            vec![edit("two", "TWO")],
+            &dir.display().to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "\u{FEFF}one\r\nTWO\r\n");
+    }
+
+    #[tokio::test]
+    async fn edits_regular_file_through_symlink() {
+        let (dir, _) = tmpdir("symlink");
+        let target = dir.join("target.txt");
+        std::fs::write(&target, "before\n").unwrap();
+        let link = dir.join("link.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        execute_edit(
+            "e",
+            &link.display().to_string(),
+            vec![edit("before", "after")],
+            &dir.display().to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "after\n");
+    }
+
+    #[tokio::test]
+    async fn fuzzy_matches_smart_quote() {
+        let (dir, _) = tmpdir("fuzzy");
+        let file = dir.join("f.rs");
+        std::fs::write(&file, "fn main() {\n    println!(\"it\u{2019}s fine\");\n}\n").unwrap();
+        execute_edit(
+            "e",
+            &file.display().to_string(),
+            vec![edit("it's fine", "it is fine")],
+            &dir.display().to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "fn main() {\n    println!(\"it is fine\");\n}\n"
+        );
+    }
+
+    #[test]
+    fn prepare_edit_input_normalizes_variants() {
+        // edits as JSON string
+        let args = serde_json::json!({
+            "path": "x.ts",
+            "edits": "[{\"oldText\":\"a\",\"newText\":\"b\"}]"
+        });
+        assert_eq!(extract_edits(&args).unwrap().len(), 1);
+
+        // single edit object
+        let args = serde_json::json!({ "path": "x.ts", "edits": { "oldText": "a", "newText": "b" } });
+        assert_eq!(extract_edits(&args).unwrap().len(), 1);
+
+        // legacy top-level oldText/newText appended to edits array
+        let args = serde_json::json!({
+            "path": "x.ts",
+            "edits": [{ "oldText": "a", "newText": "b" }],
+            "oldText": "c",
+            "newText": "d"
+        });
+        assert_eq!(extract_edits(&args).unwrap().len(), 2);
+
+        // missing edits entirely -> error
+        let args = serde_json::json!({ "path": "x.ts" });
+        assert!(extract_edits(&args).is_err());
+    }
+
 }
