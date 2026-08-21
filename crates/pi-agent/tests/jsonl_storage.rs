@@ -49,7 +49,7 @@ fn header(id: &str, cwd: &str) -> JsonlV4Header {
     }
 }
 
-fn enter_message(text: &str, id: &str, timestamp: u64) -> EntryNoStats {
+fn enter_message(text: &str, id: &str, _timestamp: u64) -> EntryNoStats {
     EntryNoStats::Message {
         id: id.into(),
         message: user_message(text),

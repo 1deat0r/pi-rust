@@ -1,9 +1,24 @@
 [package]
 name = "pi-coding-agent"
-description = "Pi agent harness — placeholder crate (see PLAN.md)"
+description = "Interactive coding agent CLI (port of @earendil-works/pi-coding-agent)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "pi"
+path = "src/main.rs"
+
 [dependencies]
+pi-ai = { path = "../pi-ai" }
+pi-agent = { path = "../pi-agent" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }
+regex = { workspace = true }

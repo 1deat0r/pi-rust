@@ -7,8 +7,10 @@
 //!   JSONL v4 codec + storage (create/load/append/query, torn-tail repair).
 //! See PLAN.md P3 and TODO.md for remaining harness work.
 
+pub mod agent;
 pub mod fs;
 pub mod session;
 pub mod types;
 
+pub use agent::{run_agent_loop, user_text_prompt, AgentContext, AgentEvent, AgentLoopConfig, AgentTool};
 pub use types::AgentMessage;

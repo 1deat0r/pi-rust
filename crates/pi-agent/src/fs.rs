@@ -59,9 +59,10 @@ pub trait FileSystem: Send + Sync {
     fn remove(&self, path: &str) -> Result<(), FileError>;
 }
 
-/// Real filesystem implementation over tokio's blocking file API surface.
-/// The storage layer is async; fs operations here are synchronous and get
-/// spawned by the caller where latency matters.
+/// Real filesystem implementation over std::fs. The storage layer is async;
+/// fs operations here are synchronous and get spawned by the caller where
+/// latency matters.
+#[derive(Debug, Clone)]
 pub struct StdFileSystem {
     cwd: PathBuf,
 }

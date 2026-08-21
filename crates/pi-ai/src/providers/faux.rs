@@ -132,6 +132,7 @@ pub struct FauxTokenSize {
 }
 
 /// The faux provider core: scripted stream behavior over queued responses.
+#[derive(Clone)]
 pub struct FauxProviderCore {
     pub api: String,
     pub provider: String,
@@ -216,7 +217,7 @@ impl FauxProviderCore {
     }
 
     #[allow(dead_code)] // used by tests and future registry integration
-    fn get_model(&self, model_id: Option<&str>) -> Option<&Model> {
+    pub fn get_model(&self, model_id: Option<&str>) -> Option<&Model> {
         match model_id {
             None => self.models.first(),
             Some(id) => self.models.iter().find(|m| m.id == id),
