@@ -1,0 +1,23 @@
+[package]
+name = "pi-ai"
+description = "Unified multi-provider LLM API (port of @earendil-works/pi-ai)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pi-telemetry = { path = "../pi-telemetry" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+base64 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
