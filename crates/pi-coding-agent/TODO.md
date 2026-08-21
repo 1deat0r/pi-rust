@@ -1,6 +1,7 @@
 # pi-coding-agent — port status
 
 P4 milestone committed: working `pi` binary (args, config/env, run path).
+Settings manager (full upstream surface) landed.
 
 ## Done
 - args.rs: CLI parser with upstream flag surface (commands via flags; value
@@ -11,6 +12,22 @@ P4 milestone committed: working `pi` binary (args, config/env, run path).
   (PI_CODING_AGENT_DIR/SESSION_DIR/MODEL/PROVIDER/KEY/SESSION_ID/...),
   expandTildePath, getAgentDir/getSessionDir/settings/auth paths, provider
   + model resolution defaults (google), offline flag.
+- core/settings.rs: SettingsManager ported 1:1 from
+  packages/coding-agent/src/core/settings-manager.ts — deep merge (project
+  wins, nested objects merge), modified-field tracking with external-key
+  preservation, key-removal semantics for Option setters, flush write queue,
+  reload, drainErrors with paths, project trust state machine, lazy `.pi`
+  dir creation on write only, full migration set (queueMode→steeringMode,
+  websockets→transport, skills object→array, retry.maxDelayMs→
+  retry.provider.maxRetryDelayMs), PackageSource untagged enum, full
+  accessor surface (theme incl. slash auto-themes, compaction/retry/
+  branchSummary/terminal/images/markdown/warnings/thinkingBudgets, external
+  editor precedence, sessionDir/shellPath ~ expansion, defaultProjectTrust
+  global-only read, analytics trackingId, packages/extensions/skills/
+  prompts/themes project variants). FileSettingsStorage (`.lock` sibling,
+  retry 10x/20ms, lazy dir create) + InMemorySettingsStorage.
+  71 settings tests (23 lib helpers + 48 integration incl. upstream oracle
+  port at tests/settings_sm.rs).
 - run.rs: `pi -p` non-interactive path — provider/model resolution (faux
   only today; clear error otherwise), scripted faux responses, agent loop
   (pi-agent), session persistence through JsonlSessionRepo (cwd-encoded dir,
@@ -22,14 +39,16 @@ P4 milestone committed: working `pi` binary (args, config/env, run path).
   message entries.
 
 ## Remaining (upstream mapping — big items first)
-- core/settings-manager + settings.json (global + project merge, full schema)
+- Wire SettingsManager into run/main (currently standalone; P4 criterion
+  "settings round-trip" is satisfied by the module tests, session wiring is
+  part of settings/config TUI integration in P8).
 - core/model-registry + model-resolver + models-store + model catalog data
   (generate from upstream models.generated.ts)
-- Real providers in pi-ai (anthropic/openai/google first), auth storage,
-  http dispatcher/proxy
-- core/tools: bash, read, write, edit, edit-diff, ls, find, grep
+- Real providers in pi-ai (openai/google next after anthropic), auth
+  storage, http dispatcher/proxy
+- core/tools: ls, find, grep, edit-diff, image (bash/read/write/edit done)
 - Interactive TUI mode (pi-tui) + RPC JSONL mode
 - Skill/prompt/extension loaders, slash commands, system prompt builder
-- Session tree manager (resume picker), project trust, compaction,
+- Session tree manager (resume picker), project trust wiring, compaction,
   export-html, usage totals, telemetry wiring
 - Commands: install/remove/update/list/config/auth, list-models

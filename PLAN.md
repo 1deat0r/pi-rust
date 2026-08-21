@@ -213,6 +213,44 @@ state, not intent:
 | P2-D | `faux::usage_estimate_counts_prompt_once` — infinite hang | Root-caused by experiment: `split_by_token_size`'s deterministic RNG uses non-wrapping u64 arithmetic on a **global static counter** → integer overflow at seed 3 (verified: `6364136223846793005*3` overflows u64) → **panic** under debug overflow-checks. The panic happens inside the `tokio::spawn`'d producer task whose `JoinHandle` is `std::mem::forget`'d → swallowed. `collect()` waits on `rx.recv()` while the returned stream still holds a live `UnboundedSender` → never returns. Reproduced: a single 400-char text forces seed≥3 in ONE stream → probe times out IN ISOLATION (verified: `tests/hang_probe.rs` 5s internal timeout fires). The order-dependence is real but scoped to the short recorded test `usage_estimate_counts_prompt_once`: in isolation it completes fast (seed < 3, no panic); it only hangs in the full binary after other faux tests advance the shared static counter past 3. Root cause is the global static + non-wrapping arithmetic; test-order determines *which* test trips, not *whether* one does. | (a) `wrapping_mul`/`wrapping_add` in the LCG; (b) move RNG state off the global static (per-core or thread-local) so tests are order-independent; (c) **close the panic-hang hole — REQUIRED to guarantee stream termination on producer panic**: wrapping the producer body in `catch_unwind` and emitting a terminal `Error` event (or completing the oneshot result); merely dropping the producer's sender is NOT sufficient because the returned stream itself holds a live `UnboundedSender` inside `collect()`, so the channel never closes from the consumer side. Prefer instance-local (per-core) RNG state over thread-local so tests stay order-independent. | **RESOLVED** — per-core `Arc<AtomicU64>` RNG with wrapping LCG (no overflow panic); producer wrapped in `catch_unwind` that downcasts the payload and emits a terminal `Error`; two regressions: long-text bounded termination + panicking factory surfaces as Error (never hangs).** |
 | P2-E | 17 compiler warnings in pi-ai | Unused `create_error_stream` import, unnecessary `mut`, etc. | Clean before P2 sign-off (`cargo fix` + manual review). **RESOLVED** — 0 warnings across pi-ai and pi-telemetry (removed unused imports, irrefutable if-lets, no-op drop); `cargo fix` unavailable pre-git so cleanups are manual.** |
 
+### Session 2 — 2026-08-22 — settings manager (P4 criterion) + HOUSEKEEPING FIX
+Agent: pi (Claude)   HEAD: 6bf2cf8 → (this session)
+
+- **Repair**: previous session left HEAD ab4f181 unbuildable — `tools/mod.rs`
+  references `pi_ai::types::json_tool` which was never committed, and
+  Cargo.lock lacked the `base64` dep declared in pi-agent/Cargo.toml.
+  Folded both into commit 6bf2cf8; also restored
+  `scripts/oracle_partial_json.mjs` which had been truncated to 0 bytes in
+  the working tree (parity oracle per §8 must stay regenerable).
+- **Settings manager ported 1:1** — `crates/pi-coding-agent/src/core/settings.rs`
+  from upstream `settings-manager.ts` (1,347 LOC): deep merge (project wins),
+  modified-field tracking with external-key preservation, key-removal
+  semantics for `Option` setters, async flush write queue, reload,
+  drainErrors with file paths, project trust state machine, lazy `.pi` dir
+  creation on write only, migrations (queueMode→steeringMode,
+  websockets→transport, skills object→array, retry.maxDelayMs→
+  retry.provider.maxRetryDelayMs), PackageSource untagged enum, full
+  accessor surface. FileSettingsStorage (`.lock` retry 10x/20ms, released on
+  drop) + InMemorySettingsStorage.
+- **Tests (TDD, oracle-ported)**: 71 new settings tests — 23 lib unit tests
+  (deep_merge/migrate/timeout/strip_bom) + 48 integration tests ported from
+  upstream `settings-manager.test.ts` (605 LOC oracle) in
+  `tests/settings_sm.rs`, plus regressions for two review findings
+  (provider-retry read depth; key-removal persistence).
+- **Review findings fixed pre-commit** (port-review stage): (1)
+  `get_provider_retry_settings` read `retry.{timeoutMs,maxRetries}` instead
+  of `retry.provider.*`; (2) `setShellPath/None` etc. wrote `null` instead of
+  removing the key (upstream drops `undefined` in JSON.stringify) — persist
+  now removes modified-but-absent fields.
+- Workspace: **210 tests passing** (was 142), 0 lib warnings in
+  pi-coding-agent; clippy clean for the new module.
+- P4 criterion status: `pi --version`/`--help`/`run -p` faux E2E met
+  (session 1); **settings round-trip now met** by the module suite. P4
+  remaining: model registry/catalog, openai/google providers + auth,
+  remaining tools (ls/find/grep/edit-diff/image), project-trust wiring into
+  the CLI. P5 (RPC) not started.
+- Docs: TODO.md updated; PLAN.md ledger updated (this entry).
+
 ### Open (carry-forward)
 - P2 phase is COMPLETE (evidence above; `cargo test --workspace` 75/75, 0
   warnings). P3 continuation is gated on the phase-completion plan update +

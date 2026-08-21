@@ -675,6 +675,7 @@ name = "pi-coding-agent"
 version = "0.84.2"
 dependencies = [
  "dirs",
+ "indexmap",
  "pi-agent",
  "pi-ai",
  "regex",

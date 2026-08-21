@@ -7,5 +7,6 @@
 //! RPC mode, TUI mode, extensions, compaction).
 
 pub mod args;
+pub mod core;
 pub mod config;
 pub mod run;
