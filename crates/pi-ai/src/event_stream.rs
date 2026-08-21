@@ -8,12 +8,49 @@ use tokio::sync::mpsc;
 
 use crate::types::{AssistantMessage, AssistantMessageEvent, ErrorReason};
 
+/// Push surface shared by consumer-side streams and background producers.
+pub trait StreamSink {
+    fn push(&mut self, event: AssistantMessageEvent);
+    fn end(&mut self, result: Option<AssistantMessage>);
+}
+
 pub struct AssistantMessageEventStream {
     tx: Option<mpsc::UnboundedSender<AssistantMessageEvent>>,
     rx: mpsc::UnboundedReceiver<AssistantMessageEvent>,
     /// Final result delivered on completion.
     result: Option<tokio::sync::oneshot::Sender<AssistantMessage>>,
     finished: bool,
+}
+
+impl StreamSink for AssistantMessageEventStream {
+    fn push(&mut self, event: AssistantMessageEvent) {
+        if self.finished {
+            return;
+        }
+        if matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }) {
+            self.finished = true;
+            let message = match &event {
+                AssistantMessageEvent::Done { message, .. } => message.clone(),
+                AssistantMessageEvent::Error { error_message, .. } => error_message.clone(),
+                _ => unreachable!(),
+            };
+            if let Some(tx) = self.result.take() {
+                let _ = tx.send(message);
+            }
+        }
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(event);
+        }
+    }
+    fn end(&mut self, result: Option<AssistantMessage>) {
+        self.finished = true;
+        if let Some(message) = result {
+            if let Some(tx) = self.result.take() {
+                let _ = tx.send(message);
+            }
+        }
+        self.tx = None;
+    }
 }
 
 impl Default for AssistantMessageEventStream {
@@ -199,5 +236,34 @@ mod tests {
             let (events, _) = stream.collect().await;
             assert_eq!(events.len(), 1);
         });
+    }
+}
+
+
+/// Adapter that wraps a raw `UnboundedSender` clone in the `StreamSink`
+/// surface (used by providers that push from spawned tasks).
+pub struct StreamSinkAdapter {
+    tx: mpsc::UnboundedSender<AssistantMessageEvent>,
+    finished: bool,
+}
+
+impl StreamSinkAdapter {
+    pub fn new(tx: mpsc::UnboundedSender<AssistantMessageEvent>) -> Self {
+        Self { tx, finished: false }
+    }
+}
+
+impl StreamSink for StreamSinkAdapter {
+    fn push(&mut self, event: AssistantMessageEvent) {
+        if self.finished {
+            return;
+        }
+        if matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }) {
+            self.finished = true;
+        }
+        let _ = self.tx.send(event);
+    }
+    fn end(&mut self, _result: Option<AssistantMessage>) {
+        self.finished = true;
     }
 }

@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::event_stream::AssistantMessageEventStream;
+use crate::event_stream::{AssistantMessageEventStream, StreamSink};
 use futures_util::FutureExt;
 use crate::model::Model;
 use crate::types::{
@@ -352,20 +352,23 @@ impl FauxProviderCore {
     }
 }
 
-/// Push surface shared by consumer-side streams and background producers.
-trait StreamSink {
-    fn push(&mut self, event: AssistantMessageEvent);
-    fn end(&mut self, result: Option<AssistantMessage>);
-}
-
 /// Minimal push surface for the background producer task.
 struct StreamPusher {
     tx: tokio::sync::mpsc::UnboundedSender<AssistantMessageEvent>,
     finished: bool,
 }
 
-impl StreamPusher {
+impl crate::event_stream::StreamSink for StreamPusher {
     fn push(&mut self, event: AssistantMessageEvent) {
+        StreamPusher::push_inner(self, event)
+    }
+    fn end(&mut self, result: Option<AssistantMessage>) {
+        StreamPusher::end_inner(self, result)
+    }
+}
+
+impl StreamPusher {
+    fn push_inner(&mut self, event: AssistantMessageEvent) {
         if self.finished {
             return;
         }
@@ -375,26 +378,8 @@ impl StreamPusher {
         let _ = self.tx.send(event);
     }
 
-    fn end(&mut self, _result: Option<AssistantMessage>) {
+    fn end_inner(&mut self, _result: Option<AssistantMessage>) {
         self.finished = true;
-    }
-}
-
-impl StreamSink for StreamPusher {
-    fn push(&mut self, event: AssistantMessageEvent) {
-        StreamPusher::push(self, event);
-    }
-    fn end(&mut self, result: Option<AssistantMessage>) {
-        StreamPusher::end(self, result);
-    }
-}
-
-impl StreamSink for AssistantMessageEventStream {
-    fn push(&mut self, event: AssistantMessageEvent) {
-        AssistantMessageEventStream::push(self, event);
-    }
-    fn end(&mut self, result: Option<AssistantMessage>) {
-        AssistantMessageEventStream::end(self, result);
     }
 }
 

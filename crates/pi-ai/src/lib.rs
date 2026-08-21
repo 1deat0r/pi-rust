@@ -9,6 +9,7 @@
 //! - `providers/faux.rs`: scripted test provider with upstream usage-estimation
 //!   and delta-streaming semantics.
 
+pub mod api;
 pub mod event_stream;
 pub mod model;
 pub mod partial_json;

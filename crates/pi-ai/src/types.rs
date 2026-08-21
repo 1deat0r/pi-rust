@@ -505,6 +505,20 @@ impl AssistantMessage {
         let AssistantMessage::Assistant { usage: slot, .. } = self;
         *slot = Some(usage);
     }
+    pub fn response_id(&self) -> Option<&str> {
+        match self { AssistantMessage::Assistant { response_id, .. } => response_id.as_deref() }
+    }
+    pub fn set_response_id(&mut self, id: String) {
+        let AssistantMessage::Assistant { response_id, .. } = self;
+        *response_id = Some(id);
+    }
+    pub fn raw_stop_reason(&self) -> Option<&str> {
+        match self { AssistantMessage::Assistant { raw_stop_reason, .. } => raw_stop_reason.as_deref() }
+    }
+    pub fn set_raw_stop_reason(&mut self, reason: String) {
+        let AssistantMessage::Assistant { raw_stop_reason, .. } = self;
+        *raw_stop_reason = Some(reason);
+    }
     pub fn deferred(&self) -> Option<&DeferredHandle> {
         match self { AssistantMessage::Assistant { deferred, .. } => deferred.as_ref() }
     }
