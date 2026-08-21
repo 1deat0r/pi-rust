@@ -574,6 +574,21 @@ impl ToolResultMessage {
     pub fn text(tool_call_id: impl Into<String>, tool_name: impl Into<String>, output: impl Into<String>, is_error: bool) -> Self {
         Self::new(tool_call_id, tool_name, vec![ContentBlock::text(output)], is_error)
     }
+
+    /// Builder: attach tool usage, details, and an explicit timestamp.
+    pub fn with_details_usage_timestamp(
+        mut self,
+        usage: Option<Usage>,
+        details: Option<JsonValue>,
+        timestamp: u64,
+    ) -> Self {
+        let ToolResultMessage::ToolResult { details: d, usage: u, timestamp: t, .. } = &mut self;
+        *d = details;
+        *u = usage;
+        *t = timestamp;
+        self
+    }
+
     pub fn timestamp(&self) -> u64 {
         match self { ToolResultMessage::ToolResult { timestamp, .. } => *timestamp }
     }
