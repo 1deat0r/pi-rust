@@ -327,6 +327,30 @@ Agent: pi (Claude)   HEAD: 03c11e5 → (this session)
 - Workspace: **270 tests passing** (was 243); pi-agent 71; clippy clean for
   the new code; 0 lib warnings.
 
+### Session 6 — 2026-08-22 — session search (SessionSearch scanning port)
+Agent: pi (Claude)   HEAD: e1cef36 → (this session)
+
+- `ScanningSessionSearch` ported (crates/pi-agent/src/search.rs) from
+  packages/agent/src/search/ (scanning.ts + index.ts, 176+32 LOC): scan
+  sessions via the Session facade readables (getMetadata/findEntries/
+  getLabel), page entries oldest-first (100/page), project each entry as
+  JSON.stringify(entry) + label, match case-insensitive substring, emit
+  {sessionId, entryId, timestamp, snippet} hits. entryTypes filter, limit,
+  duplicate-sessionId guard, abort flag (upstream AbortSignal — sync flag
+  until async iteration infra lands).
+- Deferred design notes: the upstream lazy source-function form is deferred;
+  the JSONL-on-disk case is covered directly through JsonlSessionRepo in
+  tests.
+- TDD: 5 tests ported from search.test.ts (memory array-source two sessions
+  + missing + trim/case, labels in projection, entry-type filter + abort,
+  duplicate-session rejection, JSONL sessions on disk via the repo). All
+  passed on first implementation run.
+- Workspace: **275 tests passing** (was 270); 0 lib warnings; clippy clean.
+- P3 data layer now: codec, storage, state, repo, Session facade, search
+  all present. Remaining read-side: context.ts and memory.ts backend
+  conformance (InMemorySessionStorage/Repo) — the session-backend
+  conformance harness is a separate testing piece.
+
 ### Open (carry-forward)
 - P2 phase is COMPLETE (evidence above; `cargo test --workspace` 75/75, 0
   warnings). P3 continuation is gated on the phase-completion plan update +

@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod fs;
+pub mod search;
 pub mod session;
 pub mod tools;
 pub mod types;
