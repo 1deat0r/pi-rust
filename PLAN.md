@@ -251,6 +251,27 @@ Agent: pi (Claude)   HEAD: 6bf2cf8 → (this session)
   the CLI. P5 (RPC) not started.
 - Docs: TODO.md updated; PLAN.md ledger updated (this entry).
 
+### Session 3 — 2026-08-22 — settings wired into the run path (P4 follow-up)
+Agent: pi (Claude)   HEAD: 8e52bf8 → (this session)
+
+- `pi -p` now reads settings.json (global + project merge) for
+  provider/model defaults: CLI → `PI_PROVIDER`/`PI_MODEL` env → settings →
+  `google`/provider default, mirroring upstream `findInitialModel` for the
+  one-shot path. Regression caught by the binary-level tests: a settings
+  `defaultModel` must NOT leak into an explicitly-selected CLI provider's
+  scope (upstream pairs defaultProvider+defaultModel; scoped models win once
+  a provider source is explicit) — resolution gate `has_explicit_provider`.
+- TDD: 3 binary-level E2E tests spawn the real `pi` binary with a sandboxed
+  `$HOME` (global settings default; project-overrides-global; CLI beats
+  settings) + 3 resolver unit tests. The 2 settings-dependent tests were red
+  before the wiring.
+- Cleanup in run.rs: `StreamFn` type alias (3x type_complexity), a redundant
+  guard, unwrap_or_default; clippy clean for run.rs. 0 lib warnings.
+- Workspace: **219 tests passing**; pi-coding-agent 85.
+- P4 status: settings round-trip criterion met at module AND binary level.
+  Next: model registry/catalog, openai/google providers + auth, remaining
+  harness tools, project-trust CLI wiring.
+
 ### Open (carry-forward)
 - P2 phase is COMPLETE (evidence above; `cargo test --workspace` 75/75, 0
   warnings). P3 continuation is gated on the phase-completion plan update +

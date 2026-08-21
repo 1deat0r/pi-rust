@@ -4,6 +4,12 @@ P4 milestone committed: working `pi` binary (args, config/env, run path).
 Settings manager (full upstream surface) landed.
 
 ## Done
+- run.rs settings wiring: `pi -p` now resolves provider/model
+  CLI -> PI_PROVIDER/PI_MODEL env -> settings.json defaultProvider/defaultModel
+  (project merged over global) -> google/default. Settings default model only
+  applies when no explicit provider source exists (upstream pairs the settings
+  default pair; a CLI/env provider resolves models from its own scope).
+  3 binary-level E2E tests (spawn the real `pi`) + 3 resolver unit tests.
 - args.rs: CLI parser with upstream flag surface (commands via flags; value
   flags support `--flag value` and `--flag=value` incl. short aliases;
   positional messages, `@file` args, `--` terminator, unknown-flag capture,

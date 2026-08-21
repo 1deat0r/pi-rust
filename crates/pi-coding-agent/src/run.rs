@@ -1,6 +1,12 @@
 //! Non-interactive run path — the `pi -p` / `pi <message>` flow. Wires the
 //! provider (faux for tests; other providers as they are ported), the agent
 //! loop, and session persistence.
+//!
+//! Provider/model resolution order (1:1 with upstream `findInitialModel` for
+//! the one-shot path, plus the port's documented env surface):
+//!   CLI `--provider`/`--model` → `PI_PROVIDER`/`PI_MODEL` env →
+//!   settings.json `defaultProvider`/`defaultModel` (project merged over
+//!   global) → hard default `google` / provider default.
 
 use std::sync::Arc;
 
@@ -10,21 +16,86 @@ use pi_agent::session::{CreateOptions, JsonlSessionRepo};
 
 use crate::args::Args;
 use crate::config;
+use crate::core::settings::SettingsManager;
+
+/// Provider stream function: `(model, context) -> event stream`.
+pub type StreamFn =
+    Arc<dyn Fn(&pi_ai::model::Model, &pi_ai::types::Context) -> pi_ai::AssistantMessageEventStream + Send + Sync>;
 
 pub struct RunOutcome {
     pub final_text: String,
     pub session_path: Option<String>,
 }
 
+/// Provider resolution for the run path: CLI → env → settings → `google`.
+pub fn resolve_run_provider(cli_provider: Option<&str>, settings: &SettingsManager) -> String {
+    cli_provider
+        .map(|s| s.to_string())
+        .or_else(|| config::env(config::ENV_PROVIDER))
+        .or_else(|| settings.get_default_provider().map(|s| s.to_string()))
+        .unwrap_or_else(|| "google".to_string())
+}
+
+/// Model-hint resolution for the run path: CLI → env → settings → None.
+///
+/// `apply_settings_default` gates the settings stage: upstream pairs
+/// settings `defaultProvider`+`defaultModel` as a unit and resolves models
+/// from the provider's own scope once an explicit provider source (CLI/env)
+/// is present, so the settings default model must not leak into that scope.
+pub fn resolve_run_model(
+    cli_model: Option<&str>,
+    settings: &SettingsManager,
+    apply_settings_default: bool,
+) -> Option<String> {
+    cli_model
+        .map(|s| s.to_string())
+        .or_else(|| config::env(config::ENV_MODEL))
+        .or_else(|| {
+            if apply_settings_default {
+                settings.get_default_model().map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+}
+
+/// True when an explicit provider source (CLI flag or PI_PROVIDER env) is in
+/// play; settings defaults then apply only to the model stage at most.
+pub fn has_explicit_provider(cli_provider: Option<&str>) -> bool {
+    cli_provider.is_some() || config::env(config::ENV_PROVIDER).is_some()
+}
+
 pub async fn run(args: &Args) -> Result<RunOutcome, String> {
-    let provider = config::resolve_provider(args.provider.as_deref());
-    let model_hint = config::resolve_model(args.model.as_deref());
+    let cwd = config::cwd();
+    let agent_dir = config::get_agent_dir();
+    let mut settings = SettingsManager::create(
+        &cwd,
+        &agent_dir.display().to_string(),
+        crate::core::settings::SettingsManagerCreateOptions::default(),
+    );
+    // Surface settings load errors as diagnostics (never silently ignore a
+    // malformed settings.json that the user expects to take effect).
+    let settings_errors = settings.drain_errors();
+    if let Some(first) = settings_errors.first() {
+        tracing::warn!(
+            scope = ?first.scope,
+            path = ?first.path,
+            error = %first.error,
+            "settings load error; continuing with defaults"
+        );
+    }
+
+    let provider = resolve_run_provider(args.provider.as_deref(), &settings);
+    let model_hint = resolve_run_model(
+        args.model.as_deref(),
+        &settings,
+        !has_explicit_provider(args.provider.as_deref()),
+    );
 
     // Build the model + stream function for the selected provider. `faux` is
     // the scripted test provider; `anthropic` is the first real provider
     // port. Others fail clearly until ported.
-    let (model, stream_fn): (pi_ai::model::Model, Arc<dyn Fn(&pi_ai::model::Model, &pi_ai::types::Context) -> pi_ai::AssistantMessageEventStream + Send + Sync>) =
-        match provider.as_str() {
+    let (model, stream_fn): (pi_ai::model::Model, StreamFn) = match provider.as_str() {
             "faux" => {
                 let core = pi_ai::providers::FauxProviderCore::new(&pi_ai::providers::RegisterFauxProviderOptions::default());
                 let model = match model_hint.as_deref() {
@@ -48,7 +119,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
                     ),
                 )]);
                 let core = core.clone();
-                let stream_fn: Arc<dyn Fn(&pi_ai::model::Model, &pi_ai::types::Context) -> pi_ai::AssistantMessageEventStream + Send + Sync> =
+                let stream_fn: StreamFn =
                     Arc::new(move |model, ctx| core.stream(model, ctx, None));
                 (model, stream_fn)
             }
@@ -74,13 +145,12 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
                         .cloned()
                         .ok_or_else(|| "no anthropic model".to_string())?,
                 };
-                let stream_fn: Arc<dyn Fn(&pi_ai::model::Model, &pi_ai::types::Context) -> pi_ai::AssistantMessageEventStream + Send + Sync> =
-                    Arc::new(move |model, ctx| {
-                        prov.stream_with_options(model, ctx, Some(&api_key), &pi_ai::api::AnthropicOptions::default())
-                    });
+                let stream_fn: StreamFn = Arc::new(move |model, ctx| {
+                    prov.stream_with_options(model, ctx, Some(&api_key), &pi_ai::api::AnthropicOptions::default())
+                });
                 (model, stream_fn)
             }
-            other if other == "google" => {
+            "google" => {
                 return Err(
                     "the google provider is not yet ported; use --provider faux or --provider anthropic".to_string(),
                 )
@@ -88,8 +158,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             other => return Err(format!("provider {other:?} is not yet ported")),
         };
 
-    let cwd = config::cwd();
-    let system_prompt = args.system_prompt.clone().unwrap_or_else(|| "".to_string());
+    let system_prompt = args.system_prompt.clone().unwrap_or_default();
 
     // Register built-in tools (bash/read/write/edit) unless --no-tools.
     let mut tools: Vec<pi_agent::tools::AgentTool> = Vec::new();
@@ -187,4 +256,62 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     }
 
     Ok(RunOutcome { final_text, session_path })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::settings::SettingsMap;
+    use serde_json::json;
+
+    fn manager() -> SettingsManager {
+        SettingsManager::in_memory(serde_json::from_value(json!({
+            "defaultProvider": "faux",
+            "defaultModel": "faux-1"
+        })).unwrap())
+    }
+
+    fn clear_env_provider_model() {
+        unsafe {
+            std::env::remove_var(config::ENV_PROVIDER);
+            std::env::remove_var(config::ENV_MODEL);
+        }
+    }
+
+    #[test]
+    fn resolve_provider_cli_beats_settings() {
+        clear_env_provider_model();
+        let settings = SettingsManager::in_memory(serde_json::from_value(json!({
+            "defaultProvider": "faux"
+        })).unwrap());
+        let provider = resolve_run_provider(Some("anthropic"), &settings);
+        assert_eq!(provider, "anthropic");
+        let provider = resolve_run_provider(None, &settings);
+        assert_eq!(provider, "faux");
+        let provider = resolve_run_provider(None, &SettingsManager::in_memory(SettingsMap::new()));
+        assert_eq!(provider, "google");
+    }
+
+    #[test]
+    fn resolve_model_settings_applies_when_no_explicit_provider() {
+        clear_env_provider_model();
+        let settings = manager();
+        let model = resolve_run_model(None, &settings, true);
+        assert_eq!(model.as_deref(), Some("faux-1"));
+        let model = resolve_run_model(Some("faux-2"), &settings, true);
+        assert_eq!(model.as_deref(), Some("faux-2"));
+    }
+
+    #[test]
+    fn resolve_model_settings_gated_off_with_explicit_provider() {
+        clear_env_provider_model();
+        let settings = manager();
+        // Upstream pairs defaultProvider+defaultModel; an explicit provider
+        // source means the settings default model must not leak in.
+        let model = resolve_run_model(None, &settings, false);
+        assert_eq!(model, None);
+        let model = resolve_run_model(Some("faux-2"), &settings, false);
+        assert_eq!(model.as_deref(), Some("faux-2"));
+    }
 }
