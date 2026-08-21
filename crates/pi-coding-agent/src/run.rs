@@ -18,45 +18,75 @@ pub struct RunOutcome {
 
 pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     let provider = config::resolve_provider(args.provider.as_deref());
-    // Model resolution: explicit provider/model from CLI/env; only `faux`
-    // has a Rust provider today. Mirror upstream defaults (provider google)
-    // but fail clearly for unported providers.
-    if provider != "faux" && provider != "google" {
-        return Err(format!("provider {provider:?} is not yet ported (only faux is available)"));
-    }
-    if provider == "google" {
-        return Err(
-            "the google provider is not yet ported; use --provider faux or PI_PROVIDER=faux for this build".to_string(),
-        );
-    }
     let model_hint = config::resolve_model(args.model.as_deref());
-    let core = pi_ai::providers::FauxProviderCore::new(&pi_ai::providers::RegisterFauxProviderOptions::default());
-    let model = match model_hint.as_deref() {
-        Some(hint) => {
-            // Accept provider/model patterns; fall back to the default model.
-            let id = hint.rsplit('/').next().unwrap_or(hint);
-            core.get_model(Some(id))
-                .cloned()
-                .ok_or_else(|| format!("unknown faux model {id:?}"))?
-        }
-        None => core.models.first().cloned().ok_or_else(|| "no faux model".to_string())?,
-    };
 
-    // Queue a scripted response echoing the last prompt (the faux provider
-    // needs queued responses; the P4 smoke path returns a fixed answer).
-    let reply = args
-        .messages
-        .last()
-        .cloned()
-        .unwrap_or_else(|| "Hello from pi-rust".to_string());
-    core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
-        pi_ai::providers::faux_assistant_message(
-            vec![pi_ai::types::ContentBlock::text(format!(
-                "faux response to: {reply}"
-            ))],
-            pi_ai::providers::FauxAssistantOptions::default(),
-        ),
-    )]);
+    // Build the model + stream function for the selected provider. `faux` is
+    // the scripted test provider; `anthropic` is the first real provider
+    // port. Others fail clearly until ported.
+    let (model, stream_fn): (pi_ai::model::Model, Arc<dyn Fn(&pi_ai::model::Model, &pi_ai::types::Context) -> pi_ai::AssistantMessageEventStream + Send + Sync>) =
+        match provider.as_str() {
+            "faux" => {
+                let core = pi_ai::providers::FauxProviderCore::new(&pi_ai::providers::RegisterFauxProviderOptions::default());
+                let model = match model_hint.as_deref() {
+                    Some(hint) => {
+                        let id = hint.rsplit('/').next().unwrap_or(hint);
+                        core.get_model(Some(id))
+                            .cloned()
+                            .ok_or_else(|| format!("unknown faux model {id:?}"))?
+                    }
+                    None => core.models.first().cloned().ok_or_else(|| "no faux model".to_string())?,
+                };
+                let reply = args
+                    .messages
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| "Hello from pi-rust".to_string());
+                core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
+                    pi_ai::providers::faux_assistant_message(
+                        vec![pi_ai::types::ContentBlock::text(format!("faux response to: {reply}"))],
+                        pi_ai::providers::FauxAssistantOptions::default(),
+                    ),
+                )]);
+                let core = core.clone();
+                let stream_fn: Arc<dyn Fn(&pi_ai::model::Model, &pi_ai::types::Context) -> pi_ai::AssistantMessageEventStream + Send + Sync> =
+                    Arc::new(move |model, ctx| core.stream(model, ctx, None));
+                (model, stream_fn)
+            }
+            "anthropic" => {
+                let api_key = args
+                    .api_key
+                    .clone()
+                    .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+                    .or_else(|| std::env::var(config::ENV_KEY).ok())
+                    .ok_or_else(|| {
+                        "anthropic: no API key found (set ANTHROPIC_API_KEY or pass --api-key)".to_string()
+                    })?;
+                let prov = pi_ai::providers::AnthropicProvider::new();
+                let model = match model_hint.as_deref() {
+                    Some(hint) => {
+                        let id = hint.rsplit('/').next().unwrap_or(hint);
+                        prov.get_model(id)
+                            .cloned()
+                            .ok_or_else(|| format!("unknown anthropic model {id:?}"))?
+                    }
+                    None => prov
+                        .get_model("claude-sonnet-4-6")
+                        .cloned()
+                        .ok_or_else(|| "no anthropic model".to_string())?,
+                };
+                let stream_fn: Arc<dyn Fn(&pi_ai::model::Model, &pi_ai::types::Context) -> pi_ai::AssistantMessageEventStream + Send + Sync> =
+                    Arc::new(move |model, ctx| {
+                        prov.stream_with_options(model, ctx, Some(&api_key), &pi_ai::api::AnthropicOptions::default())
+                    });
+                (model, stream_fn)
+            }
+            other if other == "google" => {
+                return Err(
+                    "the google provider is not yet ported; use --provider faux or --provider anthropic".to_string(),
+                )
+            }
+            other => return Err(format!("provider {other:?} is not yet ported")),
+        };
 
     let cwd = config::cwd();
     let system_prompt = args.system_prompt.clone().unwrap_or_else(|| "".to_string());
@@ -72,11 +102,6 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         .map(|m| pi_agent::agent::user_text_prompt(m.clone(), pi_ai::types::now_ms()))
         .collect();
 
-    let stream_fn: Arc<dyn Fn(&pi_ai::model::Model, &pi_ai::types::Context) -> pi_ai::AssistantMessageEventStream + Send + Sync> =
-        Arc::new({
-            let core = core.clone();
-            move |model, ctx| core.stream(model, ctx, None)
-        });
     let cfg = AgentLoopConfig {
         model,
         stream_fn,
