@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use crate::types::{AssistantMessage, AssistantMessageEvent, ErrorReason};
 
 pub struct AssistantMessageEventStream {
-    tx: mpsc::UnboundedSender<AssistantMessageEvent>,
+    tx: Option<mpsc::UnboundedSender<AssistantMessageEvent>>,
     rx: mpsc::UnboundedReceiver<AssistantMessageEvent>,
     /// Final result delivered on completion.
     result: Option<tokio::sync::oneshot::Sender<AssistantMessage>>,
@@ -26,11 +26,12 @@ impl AssistantMessageEventStream {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (result_tx, _) = tokio::sync::oneshot::channel();
-        Self { tx, rx, result: Some(result_tx), finished: false }
+        Self { tx: Some(tx), rx, result: Some(result_tx), finished: false }
     }
 
     /// Clone access to the underlying event channel, for background producers.
-    pub fn sender(&self) -> mpsc::UnboundedSender<AssistantMessageEvent> {
+    /// Returns None after the stream has ended (channel closed).
+    pub fn sender(&self) -> Option<mpsc::UnboundedSender<AssistantMessageEvent>> {
         self.tx.clone()
     }
 
@@ -50,12 +51,15 @@ impl AssistantMessageEventStream {
                 let _ = tx.send(message);
             }
         }
-        let _ = self.tx.send(event);
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(event);
+        }
     }
 
     /// Complete the stream with an optional result without a terminal event.
-    /// The channel closes when the stream is dropped; consumers iterate until
-    /// a terminal event or exhaustion.
+    /// Closing the channel terminates consumers (`collect`/`for_each`) on
+    /// exhaustion, matching upstream `EventStream.end()` which wakes waiting
+    /// consumers with `done: true`.
     pub fn end(&mut self, result: Option<AssistantMessage>) {
         self.finished = true;
         if let Some(message) = result {
@@ -63,6 +67,10 @@ impl AssistantMessageEventStream {
                 let _ = tx.send(message);
             }
         }
+        // Dropping our own sender closes the channel for consumers that hold
+        // only the receiver; background producers still hold clones until they
+        // terminate, after which the channel closes too.
+        self.tx = None;
     }
 
     /// Consume all events until completion, returning the final message.
@@ -155,6 +163,28 @@ mod tests {
             assert!(matches!(events[1], AssistantMessageEvent::Done { .. }));
             assert_eq!(final_msg.stop_reason(), Some(crate::types::StopReason::Stop));
         });
+    }
+
+    #[test]
+    fn end_without_terminal_event_terminates_consumers() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let mut stream = AssistantMessageEventStream::new();
+            stream.push(AssistantMessageEvent::Start { partial: AssistantMessage::new() });
+            stream.end(None);
+            let (events, msg) = stream.collect().await;
+            assert_eq!(events.len(), 1);
+            assert!(matches!(events[0], AssistantMessageEvent::Start { .. }));
+            assert_eq!(msg.stop_reason(), None);
+        });
+    }
+
+    #[test]
+    fn sender_is_none_after_end() {
+        let mut stream = AssistantMessageEventStream::new();
+        assert!(stream.sender().is_some());
+        stream.end(None);
+        assert!(stream.sender().is_none());
     }
 
     #[test]

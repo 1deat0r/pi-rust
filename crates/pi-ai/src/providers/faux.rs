@@ -249,7 +249,9 @@ impl FauxProviderCore {
         let pending = self.pending_responses.clone();
 
         let outer = AssistantMessageEventStream::new();
-        let event_tx = outer.sender();
+        let event_tx = outer
+            .sender()
+            .expect("fresh stream must have a live channel");
         self.state.lock().unwrap().call_count += 1;
         let context = context.clone();
         let options = options.cloned();
@@ -262,6 +264,20 @@ impl FauxProviderCore {
         let panic_tx = event_tx.clone();
         let body = async move {
             let mut outer = StreamPusher { tx: event_tx, finished: false };
+            // Upstream awaits streamOptions?.onResponse?.({status:200,headers:{}}, model)
+            // before servicing the queued step.
+            if let Some(on_response) = options
+                .as_ref()
+                .and_then(|o| o.base.on_response.clone())
+            {
+                on_response(
+                    &crate::types::ProviderResponse {
+                        status: 200,
+                        headers: BTreeMap::new(),
+                    },
+                    &request_model,
+                );
+            }
             let step = pending.lock().unwrap().pop_front();
             match step {
                 None => {
@@ -732,6 +748,37 @@ mod tests {
             // total always decomposes (upstream contract).
             assert_eq!(u1.total_tokens, u1.input + u1.output + u1.cache_read + u1.cache_write);
             assert_eq!(u2.total_tokens, u2.input + u2.output + u2.cache_read + u2.cache_write);
+        });
+    }
+
+    #[test]
+    fn invokes_on_response_with_synthetic_200() {
+        let rt = rt();
+        rt.block_on(async {
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
+                vec![ContentBlock::text("ok")],
+                FauxAssistantOptions::default(),
+            ))]);
+            let model = core.get_model(None).unwrap().clone();
+            let invoked = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let seen_status = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let invoked_cb = invoked.clone();
+            let seen_cb = seen_status.clone();
+            let opts = crate::types::SimpleStreamOptions {
+                base: crate::types::StreamOptions {
+                    on_response: Some(std::sync::Arc::new(move |resp, _model| {
+                        invoked_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        seen_cb.store(resp.status as u64, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let (_, m) = core.stream(&model, &Context::default(), Some(&opts)).collect().await;
+            assert_eq!(m.stop_reason(), Some(StopReason::Stop));
+            assert_eq!(invoked.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(seen_status.load(std::sync::atomic::Ordering::SeqCst), 200);
         });
     }
 

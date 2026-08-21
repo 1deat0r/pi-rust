@@ -181,7 +181,7 @@ pub struct ProviderRequestOptions {
 }
 
 /// Stream request options.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct StreamOptions {
     pub base: ProviderRequestOptions,
     pub temperature: Option<f64>,
@@ -192,10 +192,17 @@ pub struct StreamOptions {
     pub session_id: Option<String>,
     pub websocket_connect_timeout_ms: Option<u64>,
     pub metadata: Option<JsonValue>,
+    /// Optional callback invoked with the provider response before the body
+    /// is consumed. Providers that do not produce HTTP responses call it with
+    /// a synthetic `{status: 200, headers: {}}` (matching upstream faux).
+    /// Optional callback invoked with the provider response before the body
+    /// is consumed. Providers that do not produce HTTP responses call it with
+    /// a synthetic `{status: 200, headers: {}}` (matching upstream faux).
+    pub on_response: Option<crate::model::OnResponseFn>,
 }
 
 /// Simple (provider-neutral) stream options used by agent runtime.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct SimpleStreamOptions {
     pub base: StreamOptions,
     pub tool_choice: Option<ToolChoice>,
