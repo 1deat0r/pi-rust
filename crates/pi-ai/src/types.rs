@@ -787,3 +787,14 @@ impl ToolResultMessage {
         match self { ToolResultMessage::ToolResult { details, .. } => details.as_ref() }
     }
 }
+
+
+/// Convenience constructor for a tool with a JSON-schema parameter object.
+pub fn json_tool(name: &str, description: &str, parameters: &serde_json::Value) -> Tool {
+    Tool {
+        name: name.to_string(),
+        description: description.to_string(),
+        parameters: parameters.clone(),
+        constrained_sampling: None,
+    }
+}
