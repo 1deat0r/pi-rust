@@ -11,19 +11,19 @@ use pi_ai::types::{
 };
 use pi_ai::AssistantMessageEventStream;
 
+use crate::tools::AgentTool;
 use crate::types::AgentMessage;
-
-/// A callable tool: name/description/schema plus execution.
-#[derive(Clone)]
-pub struct AgentTool {
-    pub tool: pi_ai::types::Tool,
-    pub execute: Arc<dyn Fn(&serde_json::Value) -> Result<ToolResultMessage, String> + Send + Sync>,
-}
 
 pub struct AgentContext {
     pub system_prompt: Option<String>,
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<AgentTool>,
+}
+
+impl AgentContext {
+    pub fn new(system_prompt: Option<String>, tools: Vec<AgentTool>) -> Self {
+        Self { system_prompt, messages: Vec::new(), tools }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,9 +101,10 @@ pub async fn run_agent_loop(
                             )
                         } else {
                             match context.tools.iter().find(|t| t.tool.name == *name) {
-                                Some(tool) => (tool.execute)(arguments).unwrap_or_else(|e| {
-                                    ToolResultMessage::text(id.clone(), name.clone(), e, true)
-                                }),
+                                Some(tool) => match (tool.execute)(arguments.clone()).await {
+                                    Ok(result) => result,
+                                    Err(e) => ToolResultMessage::text(id.clone(), name.clone(), e, true),
+                                },
                                 None => ToolResultMessage::text(
                                     id.clone(),
                                     name.clone(),

@@ -91,10 +91,18 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     let cwd = config::cwd();
     let system_prompt = args.system_prompt.clone().unwrap_or_else(|| "".to_string());
 
+    // Register built-in tools (bash/read/write/edit) unless --no-tools.
+    let mut tools: Vec<pi_agent::tools::AgentTool> = Vec::new();
+    if !args.no_tools {
+        tools.push(pi_agent::tools::bash_tool(cwd.clone()));
+        tools.push(pi_agent::tools::read_tool(cwd.clone()));
+        tools.push(pi_agent::tools::write_tool(cwd.clone()));
+        tools.push(pi_agent::tools::edit_tool(cwd.clone()));
+    }
     let mut context = AgentContext {
         system_prompt: Some(system_prompt),
         messages: Vec::new(),
-        tools: Vec::new(),
+        tools,
     };
     let prompts: Vec<pi_agent::types::AgentMessage> = args
         .messages

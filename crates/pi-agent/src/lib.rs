@@ -10,7 +10,8 @@
 pub mod agent;
 pub mod fs;
 pub mod session;
+pub mod tools;
 pub mod types;
 
-pub use agent::{run_agent_loop, user_text_prompt, AgentContext, AgentEvent, AgentLoopConfig, AgentTool};
+pub use agent::{run_agent_loop, user_text_prompt, AgentContext, AgentEvent, AgentLoopConfig};
 pub use types::AgentMessage;
