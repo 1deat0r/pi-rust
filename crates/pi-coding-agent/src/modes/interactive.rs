@@ -166,6 +166,62 @@ async fn persist_messages(
     }
 }
 
+/// Compact text for a message entry (upstream truncates in tree labels).
+fn short_text(message: &pi_agent::types::AgentMessage) -> String {
+    match message {
+        pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(a)) => {
+            let mut text = String::new();
+            for block in a.content() {
+                if let pi_ai::types::ContentBlock::Text { text: t, .. } = block {
+                    text.push_str(t);
+                }
+            }
+            let trimmed = text.trim();
+            trimmed.chars().take(40).collect()
+        }
+        pi_agent::types::AgentMessage::Core(pi_ai::types::Message::User(u)) => match u.content() {
+            pi_ai::types::UserContentBody::String(s) => s.chars().take(40).collect(),
+            pi_ai::types::UserContentBody::Blocks(blocks) => {
+                let mut text = String::new();
+                for block in blocks {
+                    if let pi_ai::types::ContentBlock::Text { text: t, .. } = block {
+                        text.push_str(t);
+                    }
+                }
+                text.chars().take(40).collect()
+            }
+        },
+        pi_agent::types::AgentMessage::Core(pi_ai::types::Message::ToolResult(tr)) => {
+            let mut text = String::new();
+            for block in tr.content() {
+                if let pi_ai::types::ContentBlock::Text { text: t, .. } = block {
+                    text.push_str(t);
+                }
+            }
+            format!("tool({}) {}", tr.tool_name(), text.chars().take(24).collect::<String>())
+        }
+        _ => String::new(),
+    }
+}
+
+/// Truncate a string for compact tree labels.
+fn short_truncate(text: &str) -> String {
+    text.chars().take(40).collect()
+}
+
+/// Label for non-message entry types in the tree view.
+fn entry_type_label(entry: &pi_agent::session::types::Entry) -> &'static str {
+    match entry {
+        pi_agent::session::types::Entry::Message { .. } => "message",
+        pi_agent::session::types::Entry::ModelChange { .. } => "model_change",
+        pi_agent::session::types::Entry::ThinkingLevel { .. } => "thinking_level",
+        pi_agent::session::types::Entry::ActiveTools { .. } => "active_tools",
+        pi_agent::session::types::Entry::Compaction { .. } => "compaction",
+        pi_agent::session::types::Entry::BranchSummary { .. } => "branch_summary",
+        pi_agent::session::types::Entry::Custom { .. } => "custom",
+    }
+}
+
 /// Wrap a modal in a renderable SharedComponent for the frame.
 fn modal_shared(modal: &mut Modal) -> SharedComponent {
     match modal {
@@ -842,6 +898,108 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                 status_banner = format!("copied (preview): {preview}…");
                                             } else {
                                                 status_banner = format!("copied: {preview}");
+                                            }
+                                        }
+                                    }
+                                }
+                                "login" => {
+                                    let auth = crate::core::auth_storage::AuthStorage::create(config::get_auth_path());
+                                    let opts = crate::core::auth_storage::AuthOperationOptions::default();
+                                    match auth.list(&opts).await {
+                                        Ok(infos) => {
+                                            if infos.is_empty() {
+                                                status_banner = "no stored credentials; use `pi auth` to configure a provider".to_string();
+                                            } else {
+                                                let list: Vec<String> = infos
+                                                    .iter()
+                                                    .map(|i| format!("{} ({})", i.provider_id, i.credential_type))
+                                                    .collect();
+                                                status_banner = format!("logged in: {}", list.join(", "));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            status_banner = format!("auth list failed: {e}");
+                                        }
+                                    }
+                                }
+                                "logout" => {
+                                    match _arg.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                                        Some(provider) => {
+                                            let auth = crate::core::auth_storage::AuthStorage::create(config::get_auth_path());
+                                            let opts = crate::core::auth_storage::AuthOperationOptions::default();
+                                            match auth.delete(provider, &opts).await {
+                                                Ok(()) => status_banner = format!("logged out {provider}"),
+                                                Err(e) => status_banner = format!("logout failed: {e}"),
+                                            }
+                                        }
+                                        None => {
+                                            status_banner = "usage: /logout <provider>".to_string();
+                                        }
+                                    }
+                                }
+                                "tree" => {
+                                    let entries = runtime
+                                        .session
+                                        .find_entries(&pi_agent::session::state::EntryQuery {
+                                            order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
+                                            id: None,
+                                            entry_type: None,
+                                            custom_type: None,
+                                            cursor: None,
+                                            limit: None,
+                                        })
+                                        .await;
+                                    match entries {
+                                        Err(_) => {
+                                            status_banner = "tree: failed to read session entries".to_string();
+                                        }
+                                        Ok(entries) => {
+                                            // Parent-linked textual tree (same linkage as the RPC
+                                            // get_tree surface, rendered compactly).
+                                            let mut lines: Vec<String> = Vec::new();
+                                            let mut depth: std::collections::HashMap<String, usize> =
+                                                std::collections::HashMap::new();
+                                            let mut by_id: std::collections::HashMap<String, String> =
+                                                std::collections::HashMap::new();
+                                            for entry in &entries {
+                                                let id = entry.id().to_string();
+                                                let parent = entry.parent_id().map(|s| s.to_string());
+                                                let label = match entry {
+                                                    pi_agent::session::types::Entry::Message { message, .. } => {
+                                                        format!("{}: {}", message.role(), short_text(message))
+                                                    }
+                                                    pi_agent::session::types::Entry::Compaction { summary, .. } => {
+                                                        format!("compaction: {}", short_truncate(summary))
+                                                    }
+                                                    pi_agent::session::types::Entry::BranchSummary { summary, .. } => {
+                                                        format!("branch-summary: {}", short_truncate(summary))
+                                                    }
+                                                    pi_agent::session::types::Entry::ModelChange { model_id, .. } => {
+                                                        format!("model_change: {model_id}")
+                                                    }
+                                                    other => entry_type_label(other).to_string(),
+                                                };
+                                                let d = parent
+                                                    .as_deref()
+                                                    .and_then(|p| depth.get(p))
+                                                    .copied()
+                                                    .unwrap_or(0);
+                                                depth.insert(id.clone(), d);
+                                                by_id.insert(
+                                                    id.clone(),
+                                                    format!("{}{} {}", "  ".repeat(d), id.get(..8).unwrap_or(&id), label),
+                                                );
+                                            }
+                                            for entry in &entries {
+                                                let id = entry.id().to_string();
+                                                lines.push(by_id.get(&id).cloned().unwrap_or_default());
+                                            }
+                                            if lines.is_empty() {
+                                                status_banner = "tree: empty session".to_string();
+                                            } else {
+                                                let total = lines.join("\n");
+                                                let preview: String = total.chars().take(700).collect();
+                                                status_banner = format!("session tree:\n{preview}");
                                             }
                                         }
                                     }
