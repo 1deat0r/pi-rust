@@ -60,7 +60,10 @@ pub fn match_key(key: &TuiKey, pattern: &str) -> bool {
             other => base = other,
         }
     }
-    key.ctrl == ctrl && key.alt == alt && key.shift == shift && key.base == base
+    let base_match = key.base == base
+        || (key.base == "esc" && base == "escape")
+        || (key.base == "escape" && base == "esc");
+    key.ctrl == ctrl && key.alt == alt && key.shift == shift && base_match
 }
 
 /// Parse a raw key string (from the terminal backend) into a key.

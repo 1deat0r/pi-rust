@@ -1,10 +1,9 @@
 //! Interactive TUI mode — port of `packages/coding-agent/src/modes/interactive/
-//! interactive-mode.ts` (the core loop over the ported pi-tui subset).
+//! interactive-mode.ts` using the ported pi-tui component surface.
 //!
-//! Renders the message transcript + an input bar, edits the prompt inline,
-//! ships it through the agent loop, and streams the assistant response into
-//! the transcript. Session persistence uses the same JSONL repo as the run
-//! path.
+//! Drives the Editor (multi-line, history, undo, autocomplete), the Markdown
+//! transcript, slash-command dispatch with model/thinking/theme/settings
+//! selectors, a footer, and the agent turn loop.
 
 use std::sync::{Arc, Mutex};
 
@@ -20,11 +19,18 @@ use pi_ai::types::AssistantMessageEvent;
 use crate::args::Args;
 use crate::config;
 use crate::core::settings::SettingsManager;
+use crate::interactive as it;
+use crate::interactive::footer::{self, FooterData};
+use crate::interactive::selectors::ListSelector;
+use crate::interactive::settings_panel::SettingsPanel;
+use crate::interactive::slash::SlashKind;
+use crate::interactive::{Modal, SubmitAction};
 
-use pi_tui::components::{BoxComponent, Input, ScrollView, Text};
-use pi_tui::keys::match_key;
+use pi_tui::components::{Editor, Markdown, Text};
+use pi_tui::keys::parse_key;
+
 use pi_tui::terminal::TerminalBackend;
-use pi_tui::{Component, Scene, Tree};
+use pi_tui::tui::{Component, SharedComponent, Tree};
 
 /// Interactive session runtime (reuses the run/RPC wiring).
 struct InteractiveRuntime {
@@ -89,29 +95,17 @@ async fn stream_turn(
     new_messages
 }
 
-fn render_message(message: &pi_agent::types::AgentMessage) -> String {
-    match message {
-        pi_agent::types::AgentMessage::Core(pi_ai::types::Message::User(u)) => {
-            let text = pi_agent::agent::user_content_text(u);
-            format!("You: {text}")
-        }
-        pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(a)) => {
-            let parts: Vec<String> = a
-                .content()
-                .iter()
-                .filter_map(|b| match b {
-                    pi_ai::types::ContentBlock::Text { text, .. } => Some(text.clone()),
-                    _ => None,
-                })
-                .collect();
-            format!("π: {}", parts.join(""))
-        }
-        _ => String::new(),
+/// Wrap a modal in a renderable SharedComponent for the frame.
+fn modal_shared(modal: &mut Modal) -> SharedComponent {
+    match modal {
+        Modal::Model(sel) | Modal::Thinking(sel) | Modal::Theme(sel) => sel.clone() as SharedComponent,
+        Modal::Settings(panel) => panel.clone() as SharedComponent,
     }
 }
 
 /// The interactive main loop. Returns Ok(()) on clean exit.
 pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Result<(), String> {
+    let mut settings = settings;
     let cwd = config::cwd();
     let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
     let provider = crate::run::resolve_run_provider(args.provider.as_deref(), &settings);
@@ -137,7 +131,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     let session_id = pi_agent::session::new_id();
     let session = repo
         .create(CreateOptions {
-            id: Some(session_id),
+            id: Some(session_id.clone()),
             cwd: cwd.clone(),
             parent_session_id: None,
             metadata: None,
@@ -147,10 +141,10 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         .map_err(|e| format!("create session: {e}"))?;
 
     let mut runtime = InteractiveRuntime {
-        cwd,
+        cwd: cwd.clone(),
         models,
-        provider,
-        model,
+        provider: provider.clone(),
+        model: model.clone(),
         messages: Vec::new(),
         session,
         system_prompt: args.system_prompt.clone(),
@@ -161,124 +155,278 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     let mut terminal = TerminalBackend::new();
     terminal.enter_raw().map_err(|e| format!("enter raw: {e}"))?;
 
-    let message_text: Arc<Mutex<Text>> = Arc::new(Mutex::new(Text::new(String::new(), 1, 1, None)));
-    let _scroll_view: pi_tui::SharedComponent = Arc::new(Mutex::new(ScrollView::new(
-        message_text.clone() as pi_tui::SharedComponent,
+    it::tui_theme::load_theme(settings.get_theme_setting().unwrap_or(crate::theme::DEFAULT_THEME));
+    let mut hide_thinking = settings.get_hide_thinking_block();
+    let mut thinking_level: String = settings
+        .get_default_thinking_level()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "off".to_string());
+
+    let mut editor = it::create_editor(cwd.clone());
+    editor.set_terminal_rows(terminal.height());
+    let editor: Arc<Mutex<Editor>> = Arc::new(Mutex::new(editor));
+
+    let transcript_md: Arc<Mutex<Markdown>> = Arc::new(Mutex::new(Markdown::new(
+        String::new(),
+        1,
+        0,
+        it::tui_theme::markdown_theme(),
+        None,
+        None,
     )));
-    let input: Arc<Mutex<Input>> = Arc::new(Mutex::new(Input::new("> ")));
 
     let mut tree = Tree::new(Arc::new(Mutex::new(terminal)));
 
-    let render_scene = |message_text: &Arc<Mutex<Text>>,
-                        input: &Arc<Mutex<Input>>,
-                        pending: &str| -> Arc<Mutex<Scene>> {
-        let mut children: Vec<pi_tui::SharedComponent> = Vec::new();
-        children.push(message_text.clone() as pi_tui::SharedComponent);
-        children.push(Arc::new(Mutex::new(pi_tui::components::Spacer::new(1))));
-        if !pending.is_empty() {
-            children.push(Arc::new(Mutex::new(pi_tui::components::Loader::new(pending))));
-        }
-        children.push(Arc::new(Mutex::new(BoxComponent::new(
-            input.clone() as pi_tui::SharedComponent,
-            None,
-        ))));
-        Arc::new(Mutex::new(Scene::new(children, None)))
-    };
+    let footer_text: Arc<Mutex<Text>> = Arc::new(Mutex::new(Text::new(String::new(), 0, 0, None)));
 
+    let mut modal: Option<Modal> = None;
+    let mut status_banner = String::new();
+    let stream_buffer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let mut streaming = false;
     let mut pending_text = String::new();
-    let mut scene = render_scene(&message_text, &input, "");
-    tree.focus(input.clone());
+
+    tree.focus(editor.clone());
 
     let result = tokio::time::timeout(std::time::Duration::from_secs(24 * 60 * 60), async {
-        // Runner: handles prompt submission with a stream task.
-        let mut streaming = false;
         loop {
-            // Render.
+            // 1) Compose transcript (messages + streams + status banner).
             {
-                let text_guard = message_text.lock().unwrap();
-                let mut rendered = String::new();
-                let mut count = 0usize;
-                for m in runtime.messages.iter() {
-                    let line = render_message(m);
-                    if !line.is_empty() {
-                        rendered.push_str(&line);
-                        rendered.push('\n');
-                        count += 1;
-                        if count >= 400 {
-                            rendered.push_str("… (truncated)");
-                            break;
+                let mut md = transcript_md.lock().unwrap();
+                let stream = stream_buffer.lock().unwrap().clone();
+                let composed = it::compose_transcript(&runtime.messages, hide_thinking, &stream);
+                let mut text = composed;
+                if !status_banner.is_empty() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&status_banner);
+                }
+                md.set_text(text);
+            }
+
+            // 2) Footer.
+            {
+                let fd = FooterData {
+                    cwd: cwd.clone(),
+                    branch: footer::git_branch(&cwd),
+                    session_name: None,
+                    model_label: Some(format!("{}/{}", runtime.provider, runtime.model.name)),
+                    thinking: Some(thinking_level.clone()),
+                    provider_count: runtime.models.get_providers().len(),
+                };
+                let lines = footer::render_footer(&fd, 80);
+                footer_text.lock().unwrap().set_text(lines.join("\n"));
+            }
+
+            // 3) Scene.
+            let modal_comp: Option<SharedComponent> = match modal.as_mut() {
+                Some(m) => Some(modal_shared(m)),
+                None => None,
+            };
+            let scene = it::build_scene(&transcript_md, &editor, &footer_text, modal_comp, &pending_text);
+            tree.render(Some(&scene));
+
+            // 4) Input.
+            let term = tree.terminal_handle();
+            let ev = term.lock().unwrap().next_event().map_err(|e| e.to_string())?;
+            let key_str = match ev {
+                pi_tui::terminal::TerminalEvent::Key(k) => k,
+                pi_tui::terminal::TerminalEvent::Resize(_w, h) => {
+                    editor.lock().unwrap().set_terminal_rows(h as usize);
+                    continue;
+                }
+            };
+            if key_str.is_empty() {
+                continue;
+            }
+            let key = parse_key(&key_str);
+
+            if key.ctrl && key.base == "c" {
+                if streaming {
+                    status_banner = "Press Ctrl+C again to quit".to_string();
+                    continue;
+                }
+                return Ok(());
+            }
+
+            // Modal input handling.
+            if let Some(active_modal) = &mut modal {
+                let mut close_modal = false;
+                match active_modal {
+                    Modal::Model(sel) => {
+                        let mut guard = sel.lock().unwrap();
+                        match guard.handle(&key) {
+                            it::selectors::SelectorAction::Select(Some(idx)) if idx < guard.count() => {
+                                if let Some(item) = guard.selected_item() {
+                                    if let Some((p, id)) = it::apply_model_selection(&mut settings, &item.value) {
+                                        runtime.provider = p.clone();
+                                        if let Some(m) = runtime.models.get_model(&p, &id) {
+                                            runtime.model = m;
+                                        }
+                                        status_banner = format!("Model: {}", item.label);
+                                    }
+                                }
+                                close_modal = true;
+                            }
+                            it::selectors::SelectorAction::Cancel | it::selectors::SelectorAction::Select(_) => {
+                                close_modal = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Modal::Thinking(sel) => {
+                        let mut guard = sel.lock().unwrap();
+                        match guard.handle(&key) {
+                            it::selectors::SelectorAction::Select(Some(idx)) if idx < guard.count() => {
+                                if let Some(item) = guard.selected_item() {
+                                    settings.set_default_thinking_level(&item.value);
+                                    thinking_level = item.value.clone();
+                                    hide_thinking = item.value == "off";
+                                    status_banner = format!("Thinking: {}", item.value);
+                                }
+                                close_modal = true;
+                            }
+                            it::selectors::SelectorAction::Cancel | it::selectors::SelectorAction::Select(_) => {
+                                close_modal = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Modal::Theme(sel) => {
+                        let mut guard = sel.lock().unwrap();
+                        match guard.handle(&key) {
+                            it::selectors::SelectorAction::Select(Some(idx)) if idx < guard.count() => {
+                                if let Some(item) = guard.selected_item() {
+                                    it::tui_theme::load_theme(&item.value);
+                                    status_banner = format!("Theme: {}", item.value);
+                                }
+                                close_modal = true;
+                            }
+                            it::selectors::SelectorAction::Cancel | it::selectors::SelectorAction::Select(_) => {
+                                close_modal = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Modal::Settings(panel) => {
+                        let was_enter = key.base == "enter" && !key.ctrl && !key.alt;
+                        {
+                            let mut guard = panel.lock().unwrap();
+                            let _ = was_enter;
+                            guard.handle_input(&key);
+                        }
+                        let changes = { panel.lock().unwrap().drain_changes() };
+                        for (id, value) in changes {
+                            match id.as_str() {
+                                "theme" => {
+                                    settings.set_theme(value.clone());
+                                    it::tui_theme::load_theme(&value);
+                                }
+                                "thinking" => {
+                                    settings.set_default_thinking_level(&value);
+                                    thinking_level = value.clone();
+                                }
+                                "images" => {
+                                    settings.set_show_images(value == "on");
+                                }
+                                _ => {}
+                            }
+                            status_banner = format!("/settings {id} → {value}");
+                        }
+                        if key.base == "esc" || key.base == "escape" {
+                            close_modal = true;
                         }
                     }
                 }
-                drop(text_guard);
-                message_text.lock().unwrap().set_text(rendered.clone());
+                if close_modal {
+                    modal = None;
+                    tree.focus(editor.clone());
+                }
+                continue;
             }
-            let snapshot = render_scene(&message_text, &input, &pending_text);
-            scene = snapshot.clone();
-            tree.render(Some(&scene));
 
-            // Read input (refresh at least every 100ms to repaint the loader).
-            let mut got_input = false;
-            for _ in 0..2 {
-                let term = tree.terminal_handle();
-                let ev = term.lock().unwrap().next_event().map_err(|e| e.to_string())?;
-                let key_str = match ev {
-                    pi_tui::terminal::TerminalEvent::Key(k) => k,
-                    pi_tui::terminal::TerminalEvent::Resize(_, _) => String::new(),
-                };
-                if key_str.is_empty() {
+            // Editor input (skip Enter/Ctrl+C which the parent handles).
+            {
+                let mut e = editor.lock().unwrap();
+                if key.ctrl && key.base == "c" {
                     continue;
                 }
-                got_input = true;
-                let key = pi_tui::keys::parse_key(&key_str);
-                if match_key(&key, "ctrl+c") {
-                    return Ok(());
-                }
-                if match_key(&key, "esc") {
-                    // Esc is reserved for potential overlay/alt transitions.
+                e.handle_input(&key_str);
+            }
+
+            // Submit?
+            let submitted = editor.lock().unwrap().drain_submitted();
+            if let Some(submitted) = submitted {
+                if submitted.trim().is_empty() || streaming {
                     continue;
                 }
-                if match_key(&key, "enter") {
-                    let submitted = {
-                        let mut input_guard = input.lock().unwrap();
-                        let value = input_guard.value.clone();
-                        input_guard.set_value("");
-                        value
-                    };
-                    if !submitted.trim().is_empty() && !streaming {
+                let action = it::parse_submit(&submitted);
+                match action {
+                    SubmitAction::Prompt(prompt) => {
+                        editor.lock().unwrap().add_to_history(&prompt);
                         streaming = true;
-                        let _ = streaming;
                         pending_text = " …".to_string();
-                        let msg = submitted.trim().to_string();
+                        *stream_buffer.lock().unwrap() = String::new();
                         let on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync> = {
-                            let message_text = message_text.clone();
+                            let stream_buffer = stream_buffer.clone();
                             Arc::new(move |event: &AssistantMessageEvent| {
                                 if let AssistantMessageEvent::TextDelta { delta, .. } = event {
-                                    let mut guard = message_text.lock().unwrap();
-                                    // Live-append deltas to the rendered transcript
-                                    // (final messages render authoritative text).
-                                    let mut prev = guard.text().to_string();
-                                    prev.push_str(delta);
-                                    guard.set_text(prev);
+                                    stream_buffer.lock().unwrap().push_str(delta);
                                 }
                             })
                         };
-                        let new_messages = stream_turn(&mut runtime, msg, on_event).await;
+                        let _ = stream_turn(&mut runtime, prompt, on_event).await;
                         streaming = false;
                         pending_text = String::new();
-                        let _ = new_messages;
+                        *stream_buffer.lock().unwrap() = String::new();
                     }
-                    continue;
+                    SubmitAction::Command(command, _arg) => {
+                        match command.kind {
+                            SlashKind::Model => {
+                                let items = it::selectors::model_selector_items(&runtime.models, None);
+                                modal = Some(Modal::Model(Arc::new(Mutex::new(ListSelector::new_slash_layout(items, 10)))));
+                            }
+                            SlashKind::Thinking => {
+                                let items = it::selectors::thinking_selector_items();
+                                modal = Some(Modal::Thinking(Arc::new(Mutex::new(ListSelector::new(items, 6)))));
+                            }
+                            SlashKind::Theme => {
+                                let items = it::selectors::theme_selector_items();
+                                modal = Some(Modal::Theme(Arc::new(Mutex::new(ListSelector::new(items, 10)))));
+                            }
+                            SlashKind::Settings => {
+                                let entries = it::selectors::settings_selector_items(&settings);
+                                modal = Some(Modal::Settings(Arc::new(Mutex::new(SettingsPanel::new(entries)))));
+                            }
+                            SlashKind::Session => {
+                                status_banner = format!(
+                                    "session {} — {} messages in transcript",
+                                    session_id.get(..8).unwrap_or(&session_id),
+                                    runtime.messages.len()
+                                );
+                            }
+                            SlashKind::Clear => {
+                                runtime.messages.clear();
+                                transcript_md.lock().unwrap().set_text("");
+                            }
+                            SlashKind::Hotkeys => {
+                                status_banner = "hotkeys: enter submit · shift+enter newline · ctrl+c quit · ↑/↓ history · ctrl+w word-delete".to_string();
+                            }
+                            SlashKind::Help => {
+                                status_banner = "commands: /settings /model /thinking /theme /session /compact /clear /hotkeys /help /quit".to_string();
+                            }
+                            SlashKind::Quit => {
+                                return Ok(());
+                            }
+                            SlashKind::Compact => {
+                                status_banner = "manual compaction lands with the harness loop wiring; use the RPC /compact in the meantime".to_string();
+                            }
+                            SlashKind::Unsupported => {
+                                status_banner = format!("`/{}` is not wired in the interactive port yet", command.name);
+                            }
+                        }
+                    }
                 }
-                {
-                    let mut input_guard = input.lock().unwrap();
-                    input_guard.handle_input(&key);
-                }
-                break;
-            }
-            if !got_input {
-                // Repaint for the animated loader.
-                let _ = &mut tree;
             }
         }
     })
@@ -286,10 +434,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
 
     // Persist the last turn if any messages were produced.
     if !runtime.messages.is_empty() {
-        let mut to_append: Vec<pi_agent::types::AgentMessage> = Vec::new();
-        for m in runtime.messages.iter().cloned() {
-            to_append.push(m);
-        }
+        let to_append: Vec<pi_agent::types::AgentMessage> = runtime.messages.to_vec();
         for message in to_append {
             let _ = runtime
                 .session
