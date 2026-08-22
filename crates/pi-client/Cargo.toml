@@ -1,9 +1,12 @@
 [package]
 name = "pi-client"
-description = "Pi agent harness — placeholder crate (see PLAN.md)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-rust-version.workspace = true
 
 [dependencies]
+pi-protocol = { path = "../pi-protocol" }
+tokio = { workspace = true, features = ["full"] }
+uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,9 +1,18 @@
 [package]
 name = "pi-server"
-description = "Pi agent harness — placeholder crate (see PLAN.md)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-rust-version.workspace = true
 
 [dependencies]
+pi-protocol = { path = "../pi-protocol" }
+pi-ai = { path = "../pi-ai" }
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+uuid = { workspace = true }
+sha2 = "0.10"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+pi-client = { path = "../pi-client" }
