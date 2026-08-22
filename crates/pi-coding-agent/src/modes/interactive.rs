@@ -222,7 +222,68 @@ fn entry_type_label(entry: &pi_agent::session::types::Entry) -> &'static str {
     }
 }
 
-/// Wrap a modal in a renderable SharedComponent for the frame.
+/// Run the upstream `/share` flow: gh auth check -> export session HTML ->
+/// `gh gist create --public=false` -> viewer URL. Returns the final status
+/// message or an error. All gh calls are spawn_blocking + timeout so a
+/// hanging gh never blocks the UI loop.
+/// Run a `gh` subcommand with a timeout (spawn_blocking so a hanging gh
+/// never blocks the UI loop). The timeout/JoinHandle/io results are unwrapped
+/// into a single `Result<Output, String>`.
+async fn run_gh(args: Vec<String>) -> Result<std::process::Output, String> {
+    let layered = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new("gh");
+            cmd.args(&args);
+            cmd.output()
+        }),
+    )
+    .await
+    .map_err(|_| "gh command timed out".to_string())?;
+    match layered {
+        Ok(res) => res.map_err(|e| format!("gh spawn failed: {e}")),
+        Err(e) => Err(format!("gh spawn failed: {e}")),
+    }
+}
+
+/// Run the upstream `/share` flow: gh auth check -> export session HTML ->
+/// `gh gist create --public=false` -> viewer URL. Returns the final status
+/// message or an error.
+async fn run_share(runtime: &InteractiveRuntime, dry_run: bool) -> Result<String, String> {
+    if dry_run {
+        return Ok("PI_SHARE_DRY_RUN=1: /share skipped".to_string());
+    }
+    let gh_auth = run_gh(vec!["auth".to_string(), "status".to_string()]).await?;
+    if !gh_auth.status.success() {
+        return Err("GitHub CLI is not logged in. Run 'gh auth login' first.".to_string());
+    }
+    let meta = runtime.session.get_metadata().await;
+    let tmp_file = std::env::temp_dir().join(format!("pi-share-{}.html", std::process::id()));
+    let tmp_path = tmp_file.to_string_lossy().into_owned();
+    crate::core::export_html::export_session_file(&meta.path, Some(&tmp_path), None)
+        .map_err(|e| format!("failed to export session: {e}"))?;
+    let gh_gist = run_gh(vec![
+        "gist".to_string(),
+        "create".to_string(),
+        "--public=false".to_string(),
+        tmp_path.clone(),
+    ])
+    .await?;
+    let _ = std::fs::remove_file(&tmp_path);
+    if !gh_gist.status.success() {
+        return Err(format!(
+            "failed to create gist: {}",
+            String::from_utf8_lossy(&gh_gist.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&gh_gist.stdout);
+    let gist_url = stdout.lines().next().unwrap_or("").trim().to_string();
+    let gist_id = gist_url.rsplit('/').next().unwrap_or("").to_string();
+    let viewer = std::env::var("PI_SHARE_VIEWER_URL").unwrap_or_else(|_| "https://pi.dev/session/".to_string());
+    Ok(format!("Share URL: {viewer}#{gist_id}\nGist: {gist_url}"))
+}
+
+/// Wrap a modal in a renderable SharedComponent for the frame./// Wrap a modal in a renderable SharedComponent for the frame.
 fn modal_shared(modal: &mut Modal) -> SharedComponent {
     match modal {
         Modal::Model(sel) | Modal::Thinking(sel) | Modal::Theme(sel) => sel.clone() as SharedComponent,
@@ -1002,6 +1063,21 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                 status_banner = format!("session tree:\n{preview}");
                                             }
                                         }
+                                    }
+                                }
+                                "share" => {
+                                    // Persist unpersisted messages so the exported HTML
+                                    // matches the current transcript.
+                                    if runtime.messages.len() > runtime.persisted_until {
+                                        let to_append: Vec<pi_agent::types::AgentMessage> =
+                                            runtime.messages[runtime.persisted_until..].to_vec();
+                                        persist_messages(&mut runtime.session, &to_append).await;
+                                        runtime.persisted_until = runtime.messages.len();
+                                    }
+                                    let dry_run = std::env::var("PI_SHARE_DRY_RUN").as_deref() == Ok("1");
+                                    match run_share(&runtime, dry_run).await {
+                                        Ok(message) => status_banner = message,
+                                        Err(e) => status_banner = e,
                                     }
                                 }
                                 _ => {

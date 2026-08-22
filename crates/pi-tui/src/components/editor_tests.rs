@@ -415,4 +415,38 @@ mod editor_tests {
         assert!(!e.is_showing_autocomplete());
         assert_eq!(e.get_text(), "/settings ");
     }
+    #[test]
+    fn slash_autocomplete_enter_submits_slash_command() {
+        use crate::autocomplete::{CombinedAutocompleteProvider, SlashCommand};
+        let mut e = editor(24);
+        let provider = CombinedAutocompleteProvider::new(
+            vec![SlashCommand::new("share", Some("Share session as a secret GitHub gist".to_string()), Some(String::new()))],
+            "/tmp".to_string(),
+            None,
+        );
+        e.set_autocomplete_provider(Box::new(provider));
+        for ch in ["/", "s", "h", "a", "r", "e"] {
+            e.handle_input(ch);
+            e.update_autocomplete();
+        }
+        assert!(e.is_showing_autocomplete(), "autocomplete should be open");
+        assert!(e.current_autocomplete_selection().is_some(), "slash item should be selectable");
+        e.handle_input("enter");
+        // Mirror the loop: a few ticks before drain (like the frame loop).
+        e.update_autocomplete();
+        e.update_autocomplete();
+        let submitted = e.drain_submitted();
+        assert!(submitted.is_some(), "slash command should be submitted: {:?}", submitted);
+        let submitted = submitted.unwrap();
+        assert!(submitted.starts_with("/share"), "submitted: {submitted:?}");
+    }
+
+    #[test]
+    fn slash_autocomplete_enter_without_item_still_submits() {
+        let mut e = editor(24);
+        e.set_text("/nonsense");
+        e.handle_input("enter");
+        let submitted = e.drain_submitted();
+        assert_eq!(submitted.as_deref(), Some("/nonsense"));
+    }
 }

@@ -883,6 +883,13 @@ impl Editor {
                     self.last_action = None;
                     let slash = self.autocomplete_prefix.starts_with('/');
                     self.apply_autocomplete_item(&selected);
+                    // Close the popup so the next Enter (or the fall-through
+                    // below for slash commands) actually submits the line
+                    // instead of re-applying the same completion.
+                    if let Some(provider) = self.autocomplete_provider.take() {
+                        self.cancel_autocomplete();
+                        self.autocomplete_provider = Some(provider);
+                    }
                     if !slash {
                         return;
                     }
