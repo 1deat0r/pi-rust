@@ -86,13 +86,19 @@ and the upstream session-backend conformance suite (30 cases × 2 backends).
   formatSkillInvocation, sourced variant. 8 tests.
 - harness/tools.rs: withFileMutationQueue (per-canonical-key serialization
   with global registration chain) + ExecutionToolContext. 3 tests.
-- pi-agent workspace tests: 179 passing, 0 warnings.
+- harness/result.rs: TaggedError factory (stable `_tag` + toJSON projection)
+  and matchError dispatcher, mirroring harness/result.ts. 2 tests.
+- stream_fn.rs: default stream-function registry (setDefaultStreamFn /
+  getDefaultStreamFn) with the upstream panic message. 2 tests.
+- pi-agent workspace tests: 183 passing, 0 warnings.
 
 ## Not yet ported (upstream mapping)
 - Agent loop + harness (agent.ts / agent-loop.ts, harness/* beyond the
-  session/compaction layers): events, reducer, prompt templates, system
-  prompt, skills, image tool, file-mutation-queue, tool-context, telemetry
-  wiring, stream-fn, proxy.
+  session/compaction layers): full agent-loop surface (steering/follow-up,
+  tool execution events, before/afterToolCall, parallel tool mode),
+  harness/agent-harness.ts, harness/telemetry.ts, proxy.ts
+  (streamProxy), harness env/exec surface (ExecutionEnv/Shell, typed
+  FileError/ExecutionError/CompactionError, Result helpers).
 - Coding-agent extended messages wiring (packages/coding-agent/src/core/
   messages.ts) — AgentMessage custom variants are in pi-agent; the coding
   agent's use of BashExecutionMessage/CustomMessage is P4/P8.
