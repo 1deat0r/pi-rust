@@ -1,9 +1,17 @@
 [package]
 name = "pi-session-backends"
-description = "Pi agent harness — placeholder crate (see PLAN.md)"
+description = "SQLite session backend — port of @earendil-works/pi-session-backend-sqlite-node"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+pi-agent = { path = "../pi-agent" }
+pi-ai = { path = "../pi-ai" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+rusqlite = { version = "0.37", features = ["bundled"] }
