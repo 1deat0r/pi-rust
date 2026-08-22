@@ -28,6 +28,7 @@
 //!   surface; payload mutation hooks are unavailable.
 
 use std::collections::BTreeMap;
+use std::error::Error;
 
 use serde_json::{json, Value};
 
@@ -341,6 +342,17 @@ fn validate_retry_delay_ms(delay_ms: u64, base: &StreamOptions) -> Result<u64, S
     Ok(delay_ms)
 }
 
+/// Format a reqwest transport error with its full source chain.
+fn format_transport_error(error: &reqwest::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(s) = source {
+        text.push_str(&format!(": {s}"));
+        source = s.source();
+    }
+    text
+}
+
 async fn sleep_ms(ms: u64) {
     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
 }
@@ -537,10 +549,22 @@ async fn read_codex_sse_events(response: reqwest::Response) -> Result<Vec<SseEve
             }
             let parsed: Value = serde_json::from_str(&event.data)
                 .map_err(|e| format!("Invalid Codex SSE JSON: {e}"))?;
+            // Terminal/error events end the read exactly where upstream's
+            // generator stops being consumed (mapCodexEvents returns after
+            // response.completed and throws for error/response.failed).
             let is_terminal = parsed
                 .get("type")
                 .and_then(|v| v.as_str())
-                .is_some_and(|t| t == "response.completed" || t == "response.incomplete" || t == "response.done");
+                .is_some_and(|t| {
+                    matches!(
+                        t,
+                        "response.completed"
+                            | "response.incomplete"
+                            | "response.done"
+                            | "response.failed"
+                            | "error"
+                    )
+                });
             events.push(event);
             if is_terminal {
                 return Ok(events);
@@ -687,7 +711,7 @@ async fn run_stream(
                 break;
             }
             Err(err) => {
-                let text = err.to_string();
+                let text = format_transport_error(&err);
                 last_error = Some(text.clone());
                 if attempt < max_retries && !text.contains("usage limit") {
                     let delay = BASE_DELAY_MS * 2u64.pow(attempt);
