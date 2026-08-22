@@ -193,3 +193,82 @@ pub fn estimate_context_tokens(context: &Context) -> ContextUsageEstimate {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AssistantMessage, ContentBlock, Message, UserContent};
+
+    #[test]
+    fn estimates_text_tokens_as_chars_over_four() {
+        assert_eq!(estimate_text_tokens("hello"), 2); // 5 chars -> ceil(5/4)
+        assert_eq!(estimate_text_tokens(""), 0);
+        assert_eq!(estimate_text_tokens("abcdefgh"), 2);
+    }
+
+    #[test]
+    fn estimates_message_tokens() {
+        let user = Message::User(UserContent::string("Hello world this is a test", 1)); // 25 chars -> 7
+        assert_eq!(estimate_message_tokens(&user), 7);
+        let mut assistant = AssistantMessage::new();
+        assistant.set_api_provider_model("anthropic-messages", "anthropic", "claude-sonnet-4-6");
+        *assistant.content_mut() = vec![
+            ContentBlock::text("four"),          // 4 chars -> 1
+            ContentBlock::thinking("think more"), // 10 chars -> 3
+        ];
+        let assistant_msg = Message::Assistant(assistant);
+        assert_eq!(estimate_message_tokens(&assistant_msg), 4);
+    }
+
+    #[test]
+    fn estimates_images_at_4800_chars() {
+        let user = Message::User(UserContent::blocks(vec![ContentBlock::image("aGVsbG8=", "image/png")], 1));
+        assert_eq!(estimate_message_tokens(&user), 1200); // 4800 / 4
+    }
+
+    #[test]
+    fn context_estimate_includes_system_and_tools() {
+        let context = Context {
+            system_prompt: Some("you are helpful".to_string()), // 16 chars -> 4
+            messages: vec![Message::User(UserContent::string("hi", 1))], // 2 chars -> 1
+            tools: vec![crate::types::json_tool(
+                "lookup",
+                "look up",
+                &serde_json::json!({ "type": "object" }),
+            )],
+        };
+        let est = estimate_context_tokens(&context);
+        assert!(est.tokens > 5, "got {}", est.tokens);
+        assert_eq!(est.last_usage_index, None);
+    }
+
+    #[test]
+    fn context_estimate_uses_last_assistant_usage_when_present() {
+        let mut assistant = AssistantMessage::new();
+        assistant.set_api_provider_model("anthropic-messages", "anthropic", "claude-sonnet-4-6");
+        assistant.set_stop_reason(crate::types::StopReason::Stop);
+        assistant.set_usage(Usage {
+            input: 100,
+            output: 50,
+            cache_read: 0,
+            cache_write: 0,
+            cache_write_1h: None,
+            reasoning: None,
+            total_tokens: 150,
+            cost: Default::default(),
+        });
+        let context = Context {
+            system_prompt: None,
+            messages: vec![
+                Message::Assistant(assistant),
+                Message::User(UserContent::string("follow up here", 2)), // 14 chars -> 4
+            ],
+            tools: vec![],
+        };
+        let est = estimate_context_tokens(&context);
+        assert_eq!(est.usage_tokens, 150);
+        assert_eq!(est.trailing_tokens, 4);
+        assert_eq!(est.tokens, 154);
+        assert_eq!(est.last_usage_index, Some(0));
+    }
+}

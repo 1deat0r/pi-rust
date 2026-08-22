@@ -53,6 +53,7 @@ pub fn build_copilot_dynamic_headers(messages: &[Message], has_images: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Model;
     use crate::types::{AssistantMessage, ToolResultMessage};
 
     fn user_msg(s: &str) -> Message {
@@ -124,5 +125,78 @@ mod tests {
         let headers = build_copilot_dynamic_headers(&[assistant_msg()], false);
         assert_eq!(headers.len(), 2);
         assert!(!headers.iter().any(|(k, _)| k == "Copilot-Vision-Request"));
+    }
+
+    #[tokio::test]
+    async fn anthropic_adaptor_applies_copilot_headers_on_the_wire() {
+        // End-to-end through the anthropic-messages adaptor: for a
+        // github-copilot model the request must carry X-Initiator +
+        // Openai-Intent (and Copilot-Vision-Request when images are present).
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+        let captured2 = captured.clone();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut tmp).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let text = String::from_utf8_lossy(&buf).to_string();
+            *captured2.lock().unwrap() = Some(text);
+            // A minimal SSE response with a terminal message_delta (enough for
+            // the adaptor to finish).
+            let body = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n";
+            let _ = socket.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            ).await;
+        });
+
+        let mut model = Model::new("claude-sonnet-4.6", "Claude Sonnet 4.6", "anthropic-messages", "github-copilot");
+        model.base_url = format!("http://{addr}");
+        let context = crate::types::Context {
+            system_prompt: None,
+            messages: vec![
+                crate::types::Message::User(crate::types::UserContent::blocks(
+                    vec![
+                        ContentBlock::text("what is this"),
+                        ContentBlock::image("aGVsbG8=", "image/png"),
+                    ],
+                    1,
+                )),
+                crate::types::Message::Assistant(AssistantMessage::new()),
+            ],
+            tools: vec![],
+        };
+        let client = reqwest::Client::new();
+        let s = super::super::anthropic_messages::stream(
+            &model,
+            &context,
+            client,
+            &model.base_url,
+            Some("tok"),
+            &super::super::anthropic_messages::AnthropicOptions::default(),
+        );
+        let (_, _msg) = s.collect().await;
+        let req = captured.lock().unwrap().clone().unwrap_or_default();
+        let lower = req.to_lowercase();
+        assert!(lower.contains("x-initiator: agent"), "got: {req}");
+        assert!(lower.contains("openai-intent: conversation-edits"), "got: {req}");
+        assert!(lower.contains("copilot-vision-request: true"), "got: {req}");
     }
 }
