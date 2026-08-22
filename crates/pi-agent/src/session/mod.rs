@@ -1,7 +1,9 @@
 //! Session model and storage — port of
 //! `packages/agent/src/harness/session/`.
 
+pub mod context;
 pub mod jsonl;
+pub mod memory;
 pub mod session;
 pub mod state;
 pub mod types;

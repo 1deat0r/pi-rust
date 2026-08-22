@@ -3,10 +3,10 @@
 //! listing, id validation, sequence restore, forks, validation on open).
 
 use pi_agent::fs::{FileSystem, MemoryFs};
-use pi_agent::session::jsonl::repo::{jsonl_session_directory_name, session_file_name};
+use pi_agent::session::jsonl::repo::jsonl_session_directory_name;
 use pi_agent::session::state::{EntryOrder, EntryQuery, ForkOptions};
-use pi_agent::session::types::{Entry, EntryNoStats, SessionErrorKind};
-use pi_agent::session::{CreateOptions, JsonlSessionRepo, Session};
+use pi_agent::session::types::{EntryNoStats, SessionErrorKind};
+use pi_agent::session::{CreateOptions, JsonlSessionRepo};
 use pi_ai::types::{ContentBlock, Message, UserContent};
 
 fn user_message(text: &str) -> pi_agent::types::AgentMessage {
@@ -199,7 +199,10 @@ fn writes_one_line_per_mutation_and_restores_shared_sequence() {
 
         let meta = session.get_metadata().await;
         let reopened = r.open(&meta).await.unwrap();
-        let entries = reopened.find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() }).await;
+        let entries = reopened
+            .find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() })
+            .await
+            .unwrap();
         assert_eq!(entries.iter().map(|e| e.id().to_string()).collect::<Vec<_>>(), vec!["m1", "m2", "m3"]);
         assert_eq!(entries.iter().map(|e| e.seq()).collect::<Vec<_>>(), vec![1, 2, 3]);
 
@@ -231,7 +234,10 @@ fn reopens_tree_fork_with_lanes_and_facts() {
         }).await.unwrap();
         let fork_meta = fork.get_metadata().await;
         assert_eq!(fork_meta.parent_session_id.as_deref(), Some("source"));
-        let entries = fork.find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() }).await;
+        let entries = fork
+            .find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() })
+            .await
+            .unwrap();
         assert_eq!(entries.len(), 2);
         // Fork renumbers seq from 1.
         assert_eq!(entries[0].seq(), 1);
@@ -246,7 +252,7 @@ fn reopens_tree_fork_with_lanes_and_facts() {
         let reopened = r.open(&fork_meta).await.unwrap();
         assert_eq!(reopened.get_name().await.as_deref(), Some("A named session"));
         assert_eq!(reopened.get_label("m1").await.as_deref(), Some("checkpoint"));
-        assert_eq!(reopened.find_entries(&EntryQuery::default()).await.len(), 2);
+        assert_eq!(reopened.find_entries(&EntryQuery::default()).await.unwrap().len(), 2);
     });
 }
 

@@ -125,7 +125,10 @@ impl<F: FileSystem> ScanningSessionSearch<F> {
                     cursor: Some(EntryCursor { after_seq }),
                     ..Default::default()
                 };
-                let entries = session.find_entries(&query).await;
+                let entries = session
+                    .find_entries(&query)
+                    .await
+                    .map_err(|e| format!("find entries: {e}"))?;
                 if entries.is_empty() {
                     break;
                 }
@@ -153,7 +156,7 @@ impl<F: FileSystem> ScanningSessionSearch<F> {
                         }
                     }
                 }
-                after_seq = entries.last().map(|e| e.seq()).unwrap_or(after_seq);
+                after_seq = entries.iter().last().map(|e| e.seq()).unwrap_or(after_seq);
                 if entries.len() < DEFAULT_PAGE_SIZE {
                     break;
                 }

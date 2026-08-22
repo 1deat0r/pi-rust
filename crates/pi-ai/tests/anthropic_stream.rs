@@ -5,13 +5,11 @@
 use pi_ai::api::anthropic_messages::{
     build_params, convert_messages, map_stop_reason, process_anthropic_events,
 };
-use pi_ai::providers::anthropic_models;
 use pi_ai::sse::SseParser;
 use pi_ai::types::{
     AssistantMessageEvent, ContentBlock, Context, DoneReason, Message, StopReason, ToolChoice,
-    UserContent, UserContentBody,
+    UserContent,
 };
-use std::sync::Arc;
 
 fn model() -> pi_ai::Model {
     pi_ai::providers::anthropic_models()

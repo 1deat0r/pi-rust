@@ -22,3 +22,4 @@ unicode-normalization = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+async-trait = "0.1"

@@ -1,7 +1,7 @@
 //! JSONL v4 per-session storage — port of
 //! `packages/agent/src/harness/session/jsonl/storage.ts`.
 
-use super::super::state::{EntryOrder, EntryQuery, RecordQuery, SessionState};
+use super::super::state::{BranchBounds, EntryQuery, LogOptions, RecordQuery, SessionState};
 use super::super::types::{
     Entry, EntryNoStats, Fact, JsonlV4Header, LanePointer, LaneRecord, LogItem, Mutation, NewRecord,
     SessionError, SessionErrorKind, SessionMetadata, SessionStats,
@@ -250,7 +250,7 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
     pub async fn append_record(&mut self, new_record: NewRecord) -> Result<LaneRecord, SessionError> {
         self.state.require_lane(new_record.lane())?;
         self.state.validate_unused_id(new_record.id())?;
-        let current_open_operation_ids = self.state.find_open_operations(new_record.lane());
+        let current_open_operation_ids = self.state.open_operation_ids(new_record.lane());
         if new_record.record_type() == "operation_started" && !current_open_operation_ids.is_empty() {
             return Err(SessionError::new(
                 SessionErrorKind::Storage,
@@ -272,20 +272,33 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
         self.state.get_entry(id).cloned()
     }
 
-    pub async fn find_entries(&self, query: &EntryQuery) -> Vec<Entry> {
+    pub async fn find_entries(&self, query: &EntryQuery) -> Result<Vec<Entry>, SessionError> {
         self.state.find_entries(query)
     }
 
-    pub async fn find_entries_on_branch(&self, start: &str, stop_at_type: Option<&str>) -> Vec<Entry> {
-        self.state.find_entries_on_branch(start, stop_at_type)
+    pub async fn find_entries_on_branch(
+        &self,
+        query: &EntryQuery,
+        start: &str,
+        bounds: &BranchBounds,
+    ) -> Result<Vec<Entry>, SessionError> {
+        self.state.find_entries_on_branch(query, start, bounds)
     }
 
-    pub async fn find_records(&self, query: &RecordQuery) -> Vec<LaneRecord> {
+    pub async fn find_records(&self, query: &RecordQuery) -> Result<Vec<LaneRecord>, SessionError> {
         self.state.find_records(query)
     }
 
-    pub async fn get_log(&self, order: EntryOrder) -> Vec<LogItem> {
-        self.state.get_log(order)
+    pub async fn find_open_operations(
+        &self,
+        lane: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<LaneRecord>, SessionError> {
+        self.state.find_open_operations(lane, limit)
+    }
+
+    pub async fn get_log(&self, options: &LogOptions) -> Result<Vec<LogItem>, SessionError> {
+        self.state.get_log(options)
     }
 
     pub async fn get_stats(&self) -> SessionStats {

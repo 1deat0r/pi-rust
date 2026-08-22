@@ -198,6 +198,18 @@ impl Entry {
             _ => None,
         }
     }
+    pub fn as_message_terminate(&self) -> Option<bool> {
+        match self {
+            Entry::Message { terminate, .. } => Some(terminate.unwrap_or(false)),
+            _ => None,
+        }
+    }
+    pub fn custom_type_of(&self) -> Option<&str> {
+        match self {
+            Entry::Custom { custom_type, .. } => Some(custom_type),
+            _ => None,
+        }
+    }
 }
 
 /// Provisioned entries lack `seq`/`parentId`/`timestamp` (assigned at append).
@@ -476,6 +488,19 @@ impl LaneRecord {
             | LaneRecord::QueueCancelled { seq, .. }
             | LaneRecord::WriteDeferred { seq, .. }
             | LaneRecord::Usage { seq, .. } => *seq,
+        }
+    }
+    pub fn timestamp(&self) -> u64 {
+        match self {
+            LaneRecord::OperationStarted { timestamp, .. }
+            | LaneRecord::AbortRequested { timestamp, .. }
+            | LaneRecord::OperationFinished { timestamp, .. }
+            | LaneRecord::StepAttempt { timestamp, .. }
+            | LaneRecord::ToolStarted { timestamp, .. }
+            | LaneRecord::QueueEnqueued { timestamp, .. }
+            | LaneRecord::QueueCancelled { timestamp, .. }
+            | LaneRecord::WriteDeferred { timestamp, .. }
+            | LaneRecord::Usage { timestamp, .. } => *timestamp,
         }
     }
     pub fn lane(&self) -> &str {
@@ -776,10 +801,42 @@ pub struct SessionStats {
     pub cost_total: f64,
 }
 
+/// `LogItem` from session/types.ts — the full mutation log union.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogItem {
     Entry(Entry),
     Record(LaneRecord),
+    Lane { seq: u64, lane: String, leaf_id: Option<String> },
+    Fact(FactLogItem),
+}
+
+/// `LogItem` fact shape (kind "fact", fact "name"|"label").
+#[derive(Debug, Clone, PartialEq)]
+pub struct FactLogItem {
+    pub seq: u64,
+    pub fact: String,
+    pub name: Option<String>,
+    pub target_id: Option<String>,
+    pub label: Option<String>,
+}
+
+impl LogItem {
+    pub fn seq(&self) -> u64 {
+        match self {
+            LogItem::Entry(e) => e.seq(),
+            LogItem::Record(r) => r.seq(),
+            LogItem::Lane { seq, .. } => *seq,
+            LogItem::Fact(f) => f.seq,
+        }
+    }
+    pub fn kind(&self) -> &'static str {
+        match self {
+            LogItem::Entry(_) => "entry",
+            LogItem::Record(_) => "record",
+            LogItem::Lane { .. } => "lane",
+            LogItem::Fact(_) => "fact",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

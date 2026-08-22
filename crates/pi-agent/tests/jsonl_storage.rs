@@ -8,7 +8,7 @@ use pi_agent::session::state::{EntryCursor, EntryOrder, EntryQuery, RecordQuery}
 use pi_agent::session::types::{
     Entry, EntryNoStats, JsonlV4Header, LaneRecord, NewRecord, OperationIntent,
 };
-use pi_ai::types::{ContentBlock, Message, Usage, UserContent, UserContentBody};
+use pi_ai::types::{ContentBlock, Message, Usage, UserContent};
 
 fn user_message(text: &str) -> pi_agent::types::AgentMessage {
     pi_agent::types::AgentMessage::Core(Message::User(UserContent::blocks(
@@ -196,12 +196,17 @@ fn round_trips_every_entry_type_and_bounded_branch_queries() {
         // Reopen from the persisted file.
         let restored = JsonlSessionStorage::load(fs.clone(), "/sessions/entries.jsonl").await.unwrap();
         assert_eq!(
-            restored.find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() }).await,
+            restored.find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() }).await.unwrap(),
             committed
         );
         let on_branch = restored
-            .find_entries_on_branch("custom", Some("compaction"))
-            .await;
+            .find_entries_on_branch(
+                &EntryQuery::default(),
+                "custom",
+                &pi_agent::session::state::BranchBounds { stop_at_type: Some("compaction".into()), ..Default::default() },
+            )
+            .await
+            .unwrap();
         assert_eq!(
             on_branch.iter().map(|e| e.id().to_string()).collect::<Vec<_>>(),
             vec!["custom", "branch-summary", "compaction"]
@@ -216,7 +221,8 @@ fn round_trips_every_entry_type_and_bounded_branch_queries() {
                 limit: Some(2),
                 ..Default::default()
             })
-            .await;
+            .await
+            .unwrap();
         assert_eq!(
             paged.iter().map(|e| e.id().to_string()).collect::<Vec<_>>(),
             vec!["compaction", "branch-summary"]
@@ -225,7 +231,8 @@ fn round_trips_every_entry_type_and_bounded_branch_queries() {
         // customType filter
         let custom = restored
             .find_entries(&EntryQuery { custom_type: Some("note".into()), ..Default::default() })
-            .await;
+            .await
+            .unwrap();
         assert_eq!(custom.iter().map(|e| e.id().to_string()).collect::<Vec<_>>(), vec!["custom"]);
 
         // Stats: 3 message entries.
@@ -379,13 +386,15 @@ fn round_trips_records_facts_and_recovery() {
         assert_eq!(
             restored
                 .find_records(&RecordQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() })
-                .await,
+                .await
+                .unwrap(),
             records
         );
         assert_eq!(
             restored
                 .find_records(&RecordQuery { record_type: Some("operation_started".into()), operation_kind: Some("run".into()), limit: Some(1), ..Default::default() })
                 .await
+                .unwrap()
                 .iter()
                 .map(|r| r.id().to_string())
                 .collect::<Vec<_>>(),
@@ -395,6 +404,7 @@ fn round_trips_records_facts_and_recovery() {
             restored
                 .find_records(&RecordQuery { run_id: Some("compaction".into()), order: Some(EntryOrder::OldestFirst), ..Default::default() })
                 .await
+                .unwrap()
                 .iter()
                 .map(|r| r.id().to_string())
                 .collect::<Vec<_>>(),
@@ -440,6 +450,7 @@ fn load_repairs_torn_tail() {
             restored
                 .find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() })
                 .await
+                .unwrap()
                 .len(),
             1
         );

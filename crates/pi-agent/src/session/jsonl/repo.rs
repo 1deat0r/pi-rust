@@ -159,7 +159,12 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
             let storage = source_storage
                 .fork(&path, header, &fork_options)
                 .await
-                .map_err(|e| SessionError::new(SessionErrorKind::Storage, e.to_string()))?;
+                .map_err(|e| match e {
+                    // Preserve domain errors (invalid_fork_target etc.) instead
+                    // of folding them into a generic storage error.
+                    super::super::jsonl::storage::ForkError::Session(e) => e,
+                    other => SessionError::new(SessionErrorKind::Storage, other.to_string()),
+                })?;
             Ok(Session::new(storage))
         })
         .await

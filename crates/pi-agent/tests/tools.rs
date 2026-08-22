@@ -1,7 +1,6 @@
 //! Tool behavior tests: bash capture, read truncation messages, write/edit,
 //! path normalization, and an agent-loop tool-call round trip.
 
-use pi_agent::session::state::EntryOrder;
 use pi_agent::tools::AgentTool;
 use pi_ai::types::ContentBlock;
 

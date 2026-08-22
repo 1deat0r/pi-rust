@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod fs;
+pub mod messages;
 pub mod search;
 pub mod session;
 pub mod tools;

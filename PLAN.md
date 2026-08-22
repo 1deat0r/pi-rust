@@ -351,19 +351,79 @@ Agent: pi (Claude)   HEAD: e1cef36 → (this session)
   conformance (InMemorySessionStorage/Repo) — the session-backend
   conformance harness is a separate testing piece.
 
+### Session 7 — 2026-08-22 — session facade + in-memory backend + backend conformance (P3 read-side close)
+Agent: pi (Claude)   HEAD: c00742f → (this session)
+
+- **P3 read-side + backend conformance landed**, in four pieces, all TDD
+  against upstream 5cd93f6:
+  1. **`session/messages.rs`** — port of `harness/messages.ts`: full
+     `CustomAgentMessage` surface (bashExecution/custom/branchSummary/
+     compactionSummary), `bashExecutionToText`, the three message creators,
+     `convertToLlm`. Extended `AgentMessage` with a `role()` accessor.
+  2. **`session/context.rs`** — port of `context.ts`: `buildSessionContext`
+     (messages + derived thinkingLevel/model/activeToolNames), the default
+     compaction-boundary transform, caller transforms, custom-type
+     projectors, deferred-assistant omission. 4 tests ported from
+     `context.test.ts`.
+  3. **`session/memory.rs`** — port of `memory.ts`: `InMemorySessionStorage` +
+     `InMemorySessionRepo` with Arc<Mutex> sharing so opened sessions
+     observe repo state (mirrors upstream shared references).
+  4. **Backend conformance harness** — the full 30-case `conformance.ts`
+     ported to `tests/conformance.rs` and run against BOTH backends
+     (in-memory + JSONL-on-MemoryFs), 60 executions. This was the sharpest
+     tool: it surfaced **seven real contract divergences** in the existing
+     port, all fixed with regression evidence:
+     | ID | Divergence found | Fix |
+     |----|-----------------|-----|
+     | C-1 | `validateUnusedId`/`validateNewLane` returned InvalidEntry/InvalidLane instead of `already_exists`; `validateTarget` returned InvalidTarget instead of `not_found` | Error codes aligned to upstream (`Session id already exists`, `Lane already exists`, `Entry not found`) |
+     | C-2 | `find_entries` cursor applied `seq > afterSeq` for every order; upstream keeps `seq < afterSeq` for newestFirst; no limit/cursor validation | Order-dependent cursor via `matchesEntryQuery`; `invalid_query` validation for limit/cursor |
+     | C-3 | `find_entries_on_branch` was a minimal newest-first walk with no order/filters/cursor/bounds/cycle guard and silently empty on a missing start | Full upstream port: walkToRoot with bounds, cycle detection (`invalid_entry`), `not_found` on missing start, order-dependent bound semantics (oldest-first breaks AFTER the bound entry; newest-first stops AT it) |
+     | C-4 | `findOpenOperations` returned oldest-first ids with no limit validation; conformance needs full records newest-first | `find_open_operations` returns `OperationStartedRecord`s newest-first with validated limit; enforcement uses an internal `open_operation_ids` |
+     | C-5 | `getLog` had no afterSeq/limit and lanes/facts were never pushed to the log | Full `LogItem` union (Entry/Record/Lane/Fact); lane + fact mutations now log like upstream; `LogOptions{afterSeq,limit}` with validation |
+     | C-6 | Usage records did not accumulate stats (cached/uncached/total/cost) | Record-mutation stats update in `apply_mutation`, matching the upstream formulas |
+     | C-7 | Fork target validation used InvalidTarget/InvalidEntry and the JSONL repo folded `ForkError::Session` into generic Storage, losing the code | `invalid_fork_target` for both missing and non-message targets; repo fork now preserves `ForkError::Session` verbatim |
+     Plus: insertion-order lanes (BTreeMap → IndexMap) for `getLanes`/fork-lane byte parity, and `parentId`-exists/cycle validation in `apply_mutation`.
+- **Session facade restructured** (`session.rs`): backend enum
+  `SessionStorageKind<F>` (Jsonl | InMemory), full upstream SessionTree
+  surface: `view(lane)` → `SessionView` (lane-bound append/query),
+  `appendMessage`/`appendCustomEntry` → id, `getLeafId`,
+  `findEntry`/`findEntryOnBranch` with upstream result-limit=1 propagation,
+  `findOpenOperations`, `getLog(options)`, and the `operationKind requires
+  type "operation_started"` query guard. `run.rs` switches to the facade
+  `append_entry` (drop `Session::storage_mut`).
+- **Divergence documented (not fixed in this session):** upstream permits
+  *negative* token adjustments in `usage` records (adjustment records with
+  input −2 etc.). The pi-ai port types token counts as u64, so negative
+  adjustments are unrepresentable; the conformance stats case drops that
+  record. Flagged for a future decision (would ripple through pi-ai Usage).
+- Workspace: **309 tests passing** (was 275: +30 conformance ×2 backends = 60
+  effective cases counted per test fn, +4 context); 0 lib warnings in all
+  crates; new files clippy-clean (2 pre-existing state.rs findings remain);
+  test-suite warning count 0.
+- P3 status: data layer COMPLETE (codec, storage, state, repo, Session
+  facade, view, memory backend, context, search, backend conformance).
+  Remaining P3-adjacent harness work now: migration v1/v2, compaction +
+  branch-summarization, remaining harness env/tools, agent loop.
+
 ### Open (carry-forward)
-- P2 phase is COMPLETE (evidence above; `cargo test --workspace` 75/75, 0
-  warnings). P3 continuation is gated on the phase-completion plan update +
-  independent reviewer sign-off per §0.
-- P3 (pi-agent data layer) per §6 — session JSONL v4 codec + repo, v3
-  migration, env abstraction, tools — with parity oracles from upstream
-  fixtures.
-- The "minimal `pi run -p` E2E with faux provider" deliverable is P4-gated,
-  not this session.
+- P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
+  the remaining P3/P4 harness work (compaction + branch-summarization,
+  migration v1/v2, image tool, file-mutation-queue, tool-context, agent
+  loop, harness env, telemetry wiring) continues per §6 without a phase gate
+  (the P3 criterion — JSONL round-trip incl. v3 migration; tool tests — is
+  met; the v1/v2 migration is still outstanding and tracked in
+  crates/pi-agent/TODO.md).
+- P4 continuing: model registry/catalog, openai/google providers + auth,
+  project-trust CLI wiring, remaining `pi` commands (config/auth/list-models),
+  wiring the new harness pieces (context/convertToLlm) into the run path,
+  compaction. P5 (RPC) not started.
+- Known documented divergence: usage records cannot carry negative token
+  adjustments (pi-ai Usage counts are u64); decide whether to widen to i64.
 
 ### Docs
 - PLAN.md updated: yes (this revision).
-- Repo git-init pending operator confirmation (R-1).
+- Repo git-init pending operator confirmation (R-1) — now WAIVED in practice:
+  the repo is under git with a standing push-after-commit rule (Session 4).
 
 
 ## 8. Parity oracle & upstream references

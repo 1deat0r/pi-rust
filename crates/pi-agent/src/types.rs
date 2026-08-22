@@ -17,24 +17,102 @@ pub enum AgentMessage {
     Custom(CustomAgentMessage),
 }
 
-/// Custom agent messages (`hookMessage`, `custom` from harness/messages.ts).
+/// Custom agent messages — port of the full `CustomAgentMessages` surface
+/// from `packages/agent/src/harness/messages.ts` (bashExecution, custom,
+/// branchSummary, compactionSummary). Serialized with `role` as the
+/// discriminator exactly like upstream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum CustomAgentMessage {
+    #[serde(rename = "bashExecution")]
+    BashExecution {
+        command: String,
+        output: String,
+        #[serde(rename = "exitCode")]
+        exit_code: Option<i64>,
+        cancelled: bool,
+        truncated: bool,
+        #[serde(rename = "fullOutputPath", skip_serializing_if = "Option::is_none")]
+        full_output_path: Option<String>,
+        timestamp: u64,
+        #[serde(rename = "excludeFromContext", skip_serializing_if = "Option::is_none")]
+        exclude_from_context: Option<bool>,
+    },
     #[serde(rename = "custom")]
     Custom {
-        #[serde(rename = "type", default = "default_custom_type")]
+        #[serde(rename = "customType")]
         custom_type: String,
+        content: CustomContent,
+        display: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
-        payload: Option<serde_json::Value>,
-        #[serde(rename = "hookType", skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "hookType")]
         hook_type: Option<String>,
+        timestamp: u64,
+    },
+    #[serde(rename = "branchSummary")]
+    BranchSummary {
+        summary: String,
+        #[serde(rename = "fromId")]
+        from_id: String,
+        timestamp: u64,
+    },
+    #[serde(rename = "compactionSummary")]
+    CompactionSummary {
+        summary: String,
+        #[serde(rename = "tokensBefore")]
+        tokens_before: u64,
         timestamp: u64,
     },
 }
 
-fn default_custom_type() -> String {
-    "custom".to_string()
+/// `string | (TextContent | ImageContent)[]` for custom message content.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CustomContent {
+    String(String),
+    Blocks(Vec<pi_ai::types::ContentBlock>),
+}
+
+impl CustomAgentMessage {
+    pub fn custom_type(&self) -> &str {
+        match self {
+            CustomAgentMessage::BashExecution { .. } => "bashExecution",
+            CustomAgentMessage::Custom { custom_type, .. } => custom_type,
+            CustomAgentMessage::BranchSummary { .. } => "branchSummary",
+            CustomAgentMessage::CompactionSummary { .. } => "compactionSummary",
+        }
+    }
+    pub fn timestamp(&self) -> u64 {
+        match self {
+            CustomAgentMessage::BashExecution { timestamp, .. }
+            | CustomAgentMessage::Custom { timestamp, .. }
+            | CustomAgentMessage::BranchSummary { timestamp, .. }
+            | CustomAgentMessage::CompactionSummary { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+
+impl AgentMessage {
+    pub fn role(&self) -> &'static str {
+        match self {
+            AgentMessage::Core(m) => m.role(),
+            AgentMessage::Custom(c) => c.role(),
+        }
+    }
+}
+
+impl CustomAgentMessage {
+    pub fn role(&self) -> &'static str {
+        match self {
+            CustomAgentMessage::BashExecution { .. } => "bashExecution",
+            CustomAgentMessage::Custom { .. } => "custom",
+            CustomAgentMessage::BranchSummary { .. } => "branchSummary",
+            CustomAgentMessage::CompactionSummary { .. } => "compactionSummary",
+        }
+    }
 }
 
 /// Mirrors the upstream `Result<ok, error>` pair used by the session codec.

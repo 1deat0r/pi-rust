@@ -240,7 +240,6 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             .map_err(|e| format!("create session: {e}"))?;
         for message in &new_messages {
             session
-                .storage_mut()
                 .append_entry(
                     EntryNoStats::Message {
                         id: format!("m-{}", pi_agent::session::new_id()),
