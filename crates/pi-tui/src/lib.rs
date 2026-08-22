@@ -23,7 +23,11 @@ pub mod utils;
 pub mod word_navigation;
 
 pub mod components {
+    pub mod alt_screen;
     pub mod box_;
+    pub mod cancellable_loader;
+    pub mod image;
+    pub mod settings_list;
     pub mod editor;
     pub mod input;
     pub mod loader;
@@ -34,7 +38,11 @@ pub mod components {
     pub mod stack;
     pub mod text;
     pub mod truncated_text;
+    pub use alt_screen::{AltScreenFlashContainer, AltScreenSearchComponent};
     pub use box_::Box as BoxComponent;
+    pub use cancellable_loader::CancellableLoader;
+    pub use image::Image;
+    pub use settings_list::{SettingsList, SettingItem};
     pub use editor::Editor;
     pub use input::Input;
     pub use loader::Loader;

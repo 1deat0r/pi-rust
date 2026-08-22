@@ -128,6 +128,102 @@ pub fn get_png_dimensions(base64_data: &str) -> Option<(u32, u32)> {
     Some((width, height))
 }
 
+/// Parse JPEG dimensions from base64 (upstream `getJpegDimensions`).
+pub fn get_jpeg_dimensions(base64_data: &str) -> Option<(u32, u32)> {
+    let bytes = decode_base64(base64_data)?;
+    if bytes.len() < 2 || bytes[0] != 0xff || bytes[1] != 0xd8 {
+        return None;
+    }
+    let mut offset = 2usize;
+    while offset + 9 < bytes.len() {
+        if bytes[offset] != 0xff {
+            offset += 1;
+            continue;
+        }
+        let marker = bytes[offset + 1];
+        if (0xc0..=0xc2).contains(&marker) {
+            let height = u16::from_be_bytes([bytes[offset + 5], bytes[offset + 6]]) as u32;
+            let width = u16::from_be_bytes([bytes[offset + 7], bytes[offset + 8]]) as u32;
+            return Some((width, height));
+        }
+        if offset + 3 >= bytes.len() {
+            return None;
+        }
+        let length = u16::from_be_bytes([bytes[offset + 2], bytes[offset + 3]]) as usize;
+        if length < 2 {
+            return None;
+        }
+        offset += 2 + length;
+    }
+    None
+}
+
+/// Parse GIF dimensions from base64 (upstream `getGifDimensions`).
+pub fn get_gif_dimensions(base64_data: &str) -> Option<(u32, u32)> {
+    let bytes = decode_base64(base64_data)?;
+    if bytes.len() < 10 {
+        return None;
+    }
+    let sig = std::str::from_utf8(&bytes[..6]).ok()?;
+    if sig != "GIF87a" && sig != "GIF89a" {
+        return None;
+    }
+    let width = u16::from_le_bytes([bytes[6], bytes[7]]) as u32;
+    let height = u16::from_le_bytes([bytes[8], bytes[9]]) as u32;
+    Some((width, height))
+}
+
+/// Parse WebP dimensions from base64 (upstream `getWebpDimensions`).
+pub fn get_webp_dimensions(base64_data: &str) -> Option<(u32, u32)> {
+    let bytes = decode_base64(base64_data)?;
+    if bytes.len() < 30 {
+        return None;
+    }
+    if &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return None;
+    }
+    let chunk = &bytes[12..16];
+    match chunk {
+        b"VP8 " => {
+            if bytes.len() < 30 {
+                return None;
+            }
+            let width = (u16::from_le_bytes([bytes[26], bytes[27]]) & 0x3fff) as u32;
+            let height = (u16::from_le_bytes([bytes[28], bytes[29]]) & 0x3fff) as u32;
+            Some((width, height))
+        }
+        b"VP8L" => {
+            if bytes.len() < 25 {
+                return None;
+            }
+            let bits = u32::from_le_bytes([bytes[21], bytes[22], bytes[23], bytes[24]]);
+            let width = (bits & 0x3fff) + 1;
+            let height = ((bits >> 14) & 0x3fff) + 1;
+            Some((width, height))
+        }
+        b"VP8X" => {
+            if bytes.len() < 30 {
+                return None;
+            }
+            let width = ((bytes[24] as u32) | ((bytes[25] as u32) << 8) | ((bytes[26] as u32) << 16)) + 1;
+            let height = ((bytes[27] as u32) | ((bytes[28] as u32) << 8) | ((bytes[29] as u32) << 16)) + 1;
+            Some((width, height))
+        }
+        _ => None,
+    }
+}
+
+/// Get dimensions from base64 for a mime type.
+pub fn get_image_dimensions(base64_data: &str, mime_type: &str) -> Option<(u32, u32)> {
+    match mime_type {
+        "image/png" => get_png_dimensions(base64_data),
+        "image/jpeg" => get_jpeg_dimensions(base64_data),
+        "image/gif" => get_gif_dimensions(base64_data),
+        "image/webp" => get_webp_dimensions(base64_data),
+        _ => None,
+    }
+}
+
 /// Text fallback when the terminal cannot render inline images.
 pub fn image_fallback(mime_type: &str, dimensions: Option<(u32, u32)>, filename: Option<&str>) -> String {
     let mut parts: Vec<String> = Vec::new();
