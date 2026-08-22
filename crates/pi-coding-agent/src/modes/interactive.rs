@@ -619,6 +619,101 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         }
                                     }
                                 }
+                                "import" => {
+                                    let mut import_path: Option<String> = None;
+                                    match _arg.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                                        None => {
+                                            status_banner = "usage: /import <session.jsonl>".to_string();
+                                        }
+                                        Some(path) => {
+                                            if !std::path::Path::new(path).exists() {
+                                                status_banner = format!("file not found: {path}");
+                                            } else if let Ok(content) = std::fs::read_to_string(path) {
+                                                let header_id = content.lines().next().and_then(|line| {
+                                                    serde_json::from_str::<serde_json::Value>(line)
+                                                        .ok()
+                                                        .and_then(|v| {
+                                                            v.get("id").and_then(|i| i.as_str()).map(|s| s.to_string())
+                                                        })
+                                                });
+                                                match header_id {
+                                                    None => {
+                                                        status_banner = format!("invalid session file: {path}");
+                                                    }
+                                                    Some(header_id) => {
+                                                        import_path = Some(path.to_string());
+                                                        let metadata = pi_agent::session::types::SessionMetadata {
+                                                            id: header_id,
+                                                            created_at: 0,
+                                                            cwd: runtime.cwd.clone(),
+                                                            path: path.to_string(),
+                                                            modified_at: 0,
+                                                            source_format: 4,
+                                                            parent_session_id: None,
+                                                            legacy_parent_session_path: None,
+                                                            metadata: None,
+                                                        };
+                                                        match runtime.repo.open(&metadata).await {
+                                                            Ok(session) => {
+                                                                runtime.session = session;
+                                                                runtime.session_id =
+                                                                    runtime.session.get_metadata().await.id;
+                                                                runtime.session_name = None;
+                                                                runtime.messages = rehydrate_transcript(
+                                                                    &runtime,
+                                                                    &transcript_md,
+                                                                    hide_thinking,
+                                                                )
+                                                                .await;
+                                                                runtime.persisted_until = runtime.messages.len();
+                                                                status_banner = format!(
+                                                                    "imported {} ({} prior messages)",
+                                                                    path,
+                                                                    runtime.messages.len()
+                                                                );
+                                                            }
+                                                            Err(e) => {
+                                                                status_banner = format!("import failed: {e}");
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                status_banner = format!("cannot read {path}");
+                                            }
+                                        }
+                                    }
+                                    let _ = &import_path;
+                                }
+                                "reload" => {
+                                    let theme_before = settings
+                                        .get_theme_setting()
+                                        .unwrap_or(crate::theme::DEFAULT_THEME)
+                                        .to_string();
+                                    settings.reload().await;
+                                    let mut notes: Vec<String> = Vec::new();
+                                    for se in settings.drain_errors() {
+                                        let where_ = se.path.clone().unwrap_or_else(|| format!("{:?}", se.scope));
+                                        notes.push(format!("{where_}: {}", se.error));
+                                    }
+                                    it::tui_theme::load_theme(
+                                        settings
+                                            .get_theme_setting()
+                                            .unwrap_or(crate::theme::DEFAULT_THEME),
+                                    );
+                                    let theme_after = settings
+                                        .get_theme_setting()
+                                        .unwrap_or(crate::theme::DEFAULT_THEME)
+                                        .to_string();
+                                    if theme_after != theme_before {
+                                        notes.push(format!("theme changed to {theme_after}"));
+                                    }
+                                    if notes.is_empty() {
+                                        status_banner = "reloaded settings".to_string();
+                                    } else {
+                                        status_banner = format!("reloaded settings ({})", notes.join("; "));
+                                    }
+                                }
                                 "fork" | "clone" => {
                                     // Persist the current in-memory transcript first so the
                                     // fork/clone carries it (the interactive loop only persists
