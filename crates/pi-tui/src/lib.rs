@@ -23,6 +23,7 @@ pub mod word_navigation;
 
 pub mod components {
     pub mod box_;
+    pub mod editor;
     pub mod input;
     pub mod loader;
     pub mod scroll_view;
@@ -32,6 +33,7 @@ pub mod components {
     pub mod text;
     pub mod truncated_text;
     pub use box_::Box as BoxComponent;
+    pub use editor::Editor;
     pub use input::Input;
     pub use loader::Loader;
     pub use scroll_view::ScrollView;

@@ -230,7 +230,7 @@ pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str) -> String
     }
     let ellipsis_width = visible_width(ellipsis);
     if ellipsis_width >= max_width {
-        let clipped = slice_with_width(&ellipsis, max_width);
+        let clipped = slice_with_width(ellipsis, max_width);
         return clipped;
     }
     let target = max_width - ellipsis_width;
