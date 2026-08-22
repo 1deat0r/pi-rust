@@ -5,6 +5,7 @@
 //! model follows the upstream key-string surface ("enter", "ctrl+c", ...);
 //! the terminal backend is crossterm.
 
+pub mod autocomplete;
 pub mod fuzzy;
 pub mod keybindings;
 pub mod keys;
@@ -40,6 +41,7 @@ pub mod components {
     pub use truncated_text::TruncatedText;
 }
 
+pub use autocomplete::{AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, CombinedAutocompleteProvider, CompletionResult, SlashCommand};
 pub use keybindings::{KeybindingDefinition, KeybindingsConfig, KeybindingsManager, TUI_KEYBINDINGS};
 pub use keys::{match_key, parse_key, TuiKey};
 pub use layout::{HStackLayout, LayoutConstraint, StackLayout, VStackLayout};
