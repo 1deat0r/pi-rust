@@ -43,3 +43,10 @@ HEAD: e6ce100 (session-10 end) -> (see ledger below)
 
 ## Workspace results (main at time of writing)
 640 tests passing, 0 warnings (post-adaptors-a merge).
+
+## E lane — port/agent-harness (branch port/agent-harness, merged into main by the parent)
+- proxy.rs — streamProxy port (7 tests)
+- harness/telemetry.rs — AI + harness telemetry schemas + span helpers (11 tests)
+- harness/env.rs — typed errors, FileSystem/Shell/ExecutionEnv, StdExecutionEnv (25 tests)
+- rich_agent.rs — full agent-loop surface + Agent class (5 tests)
+- Highlights: 48 new tests on the lane; workspace pi-agent lib suite at 146 tests.
