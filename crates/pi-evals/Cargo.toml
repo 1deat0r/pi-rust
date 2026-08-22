@@ -1,9 +1,18 @@
 [package]
 name = "pi-evals"
-description = "Pi agent harness — placeholder crate (see PLAN.md)"
+description = "Eval harness for Pi — port of @earendil-works/pi-evals"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "pi-evals"
+path = "src/main.rs"
+
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+sha2 = "0.10"
+uuid = { workspace = true }
