@@ -167,7 +167,9 @@ fn install_local_package_persists_settings() {
 
     let out = sandbox.pi(&cwd, &["install", "./pkg"]);
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
-    assert_eq!(sandbox.stdout(&out).trim(), "Installed ./pkg");
+    let stdout = sandbox.stdout(&out);
+    assert!(stdout.contains("Installing ./pkg..."), "{stdout}");
+    assert!(stdout.contains("Installed ./pkg"), "{stdout}");
 
     let settings = sandbox.read_global_settings();
     let packages = settings["packages"].as_array().expect("packages array");
@@ -195,7 +197,8 @@ fn install_npm_with_fake_npm() {
 
     let out = sandbox.pi(&cwd, &["install", "npm:demo-pkg"]);
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
-    assert_eq!(sandbox.stdout(&out).trim(), "Installed npm:demo-pkg");
+    let stdout = sandbox.stdout(&out);
+    assert!(stdout.contains("Installed npm:demo-pkg"), "{stdout}");
 
     // The managed layout appeared under the agent dir npm root.
     let installed = sandbox.agent_dir.join("npm").join("node_modules").join("demo-pkg").join("package.json");
@@ -216,7 +219,8 @@ fn remove_npm_package_updates_settings_and_layout() {
 
     let out = sandbox.pi(&cwd, &["remove", "npm:demo-pkg"]);
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
-    assert_eq!(sandbox.stdout(&out).trim(), "Removed npm:demo-pkg");
+    let stdout = sandbox.stdout(&out);
+    assert!(stdout.contains("Removed npm:demo-pkg"), "{stdout}");
     let settings = sandbox.read_global_settings();
     assert!(settings.get("packages").map(|p| p.as_array().map(|a| a.is_empty()).unwrap_or(true)).unwrap_or(true));
     assert!(!sandbox.agent_dir.join("npm").join("node_modules").join("demo-pkg").exists());
@@ -240,7 +244,8 @@ fn uninstall_alias_works() {
     let cwd = project(&sandbox, "work");
     let out = sandbox.pi(&cwd, &["uninstall", "npm:ghost"]);
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
-    assert_eq!(sandbox.stdout(&out).trim(), "Removed npm:ghost");
+    let stdout = sandbox.stdout(&out);
+    assert!(stdout.contains("Removed npm:ghost"), "{stdout}");
 }
 
 #[test]

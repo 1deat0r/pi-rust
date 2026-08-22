@@ -443,20 +443,22 @@ impl PackageManager {
     fn resolve_path(&self, input: &str) -> PathBuf {
         let input = expand_home(input);
         let path = PathBuf::from(&input);
-        if path.is_absolute() {
+        let joined = if path.is_absolute() {
             path
         } else {
             Path::new(&self.cwd).join(path)
-        }
+        };
+        normalize_lexical_path(&joined)
     }
 
     fn resolve_path_from_base(&self, input: &str, base_dir: &Path) -> PathBuf {
         let path = PathBuf::from(expand_home(input));
-        if path.is_absolute() {
+        let joined = if path.is_absolute() {
             path
         } else {
             base_dir.join(path)
-        }
+        };
+        normalize_lexical_path(&joined)
     }
 
     /// Get the source match key for settings comparison (upstream
@@ -1273,6 +1275,26 @@ fn short_hash(input: &str) -> String {
     use std::hash::{Hash, Hasher};
     input.hash(&mut hasher);
     format!("{:08x}", hasher.finish())
+}
+
+/// Lexically normalize a path (resolve `.`/`..` components without touching
+/// the filesystem) — upstream `resolvePath` produces canonical absolute paths.
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                result.pop();
+            }
+            other => result.push(other.as_os_str()),
+        }
+    }
+    if result.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        result
+    }
 }
 
 fn expand_home(input: &str) -> String {
