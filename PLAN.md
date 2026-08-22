@@ -559,6 +559,17 @@ Agent: pi (Claude) + 6 RLM subagents (A1/A2/B/C/D/E) in isolated worktrees; each
   — both pass. Workspace: 1240 tests (was 1236), 0 warnings. Commits d221714,
   dc32ad9 (resume-picker WIP from TUI-surface left uncommitted on main).
 
+### Session 12 addendum — 2026-08-22 (late) — interactive slash-command completion
+Agent: pi (Claude), post-merge integration on main (commit 1df851c). HEAD verified from a clean clone: **1240 tests, 0 warnings**.
+
+Interactive `/` commands now wired end-to-end (tmux-verified where noted): settings, model, thinking,
+theme, session, compact, clear, hotkeys, help, quit, export (writes HTML), new, resume (picker +
+transcript rehydrate), name, fork (repo.fork), clone, import <jsonl>, reload, trust, copy (clipboard or
+banner), login (credential list), logout <provider>, tree (entry-tree banner). A `persisted_until`
+watermark in the interactive loop guarantees messages are neither lost nor duplicated across
+session-switch operations. Only `/share` remains a banner — it requires the GitHub gist OAuth flow,
+which is part of the provider OAuth gap below.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

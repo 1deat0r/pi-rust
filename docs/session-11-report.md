@@ -66,3 +66,9 @@ Model: parent (pi/Claude) + 6 RLM subagents (A1/A2/B/C/D/E) in dedicated git wor
 - pi-coding-agent: config TUI selector full port; /export /import /share /trust /login /new /resume wiring
   into interactive; update --models pi.dev fetch; extension TS in-process execution.
 - TUI: full alt-screen screen-swap; ICU word segmentation; tmux client_termfeatures probe.
+
+## Session-12 addendum (same day) — interactive command completion
+All interactive `/` commands wired except `/share` (GitHub gist OAuth gap): export, new, resume,
+name, fork, clone, import, reload, trust, copy, login, logout, tree. `persisted_until` watermark
+prevents message loss/duplication across session switches. Shipped state re-verified from a clean
+clone at 1df851c: 1240 tests, 0 warnings.
