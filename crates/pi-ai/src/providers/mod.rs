@@ -10,6 +10,7 @@ pub mod faux;
 
 pub use all::{
     anthropic_streams_for,
+    builtin_images_provider,
     google_streams,
     google_provider_real,
     openai_responses_streams,

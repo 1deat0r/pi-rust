@@ -5,9 +5,8 @@
 //! `google_generative_ai` (+ `google_shared`), `transform_messages`,
 //! `mistral_conversations` (native Mistral Chat Completions), and
 //! `openai_codex_responses` (ChatGPT Codex over SSE; the WebSocket transport
-//! is a documented divergence). Remaining adaptors (bedrock, cloudflare,
-//! vertex, pi-messages, openrouter-images, github-copilot headers) are
-//! tracked in `crates/pi-ai/TODO.md`.
+//! is a documented divergence), `github_copilot_headers`, `cloudflare`,
+//! `pi_messages`, `openrouter_images`, `google_vertex`, `bedrock_converse`.
 
 pub mod anthropic_messages;
 pub mod openai_completions;
@@ -21,3 +20,9 @@ pub mod openai_responses_shared;
 pub mod openai_responses;
 pub mod azure_openai_responses;
 pub mod openai_codex_responses;
+pub mod github_copilot_headers;
+pub mod cloudflare;
+pub mod pi_messages;
+pub mod openrouter_images;
+pub mod google_vertex;
+pub mod bedrock_converse;

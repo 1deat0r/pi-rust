@@ -300,6 +300,16 @@ pub fn stream(
                 request = request.header(name.as_str(), value.as_str());
             }
         }
+        // GitHub Copilot proxy dynamic headers (upstream github-copilot-headers.ts).
+        if model.provider == "github-copilot" {
+            let has_images = super::github_copilot_headers::has_copilot_vision_input(&context.messages);
+            for (name, value) in super::github_copilot_headers::build_copilot_dynamic_headers(
+                &context.messages,
+                has_images,
+            ) {
+                request = request.header(name.as_str(), value.as_str());
+            }
+        }
         if let Some(headers) = &options.base.base.headers {
             for (name, value) in headers {
                 if let Some(value) = value {
