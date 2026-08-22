@@ -543,6 +543,22 @@ Agent: pi (Claude) + 6 RLM subagents (A1/A2/B/C/D/E) in isolated worktrees; each
   images retries, ConfigSelector TUI full port, several interactive slash commands pending core plumbing,
   models.json runtime merge seam, AWS profile-file chain, vertex ADC scope.
 
+### Session 12 — 2026-08-22 — SessionHandle API + per-session snapshot events (P6)
+- ClientConnection/PiClient made Clone (Arc-internal halves); close() now &self.
+- New pi-client/src/session_handle.rs: SessionHandle (id, client, attached,
+  forwarder, snapshot/event listener slots), SessionLeaseMode (Shared/Exclusive),
+  AcquireSessionOptions, subscribe/on_event, prompt/steer/abort/set_model/
+  set_thinking/detach/dispose; PiClient::start_session/acquire_session/attach_session.
+- Server: ServerSnapshotPublisher::broadcast_session_event (per-session
+  ServerEvent::SessionSnapshot fanout after create/attach/prompt/steer/abort/
+  set_model/set_thinking via session_snapshot_of) — matches upstream
+  Snapshots.publishSessionSnapshot semantics.
+- Client notes attach snapshot synchronously so handle.snapshot() is immediately
+  correct before the event fanout round-trips.
+- E2E: pi-server/tests/session_handle_e2e.rs (lifecycle + subscribe/on_event)
+  — both pass. Workspace: 1240 tests (was 1236), 0 warnings. Commits d221714,
+  dc32ad9 (resume-picker WIP from TUI-surface left uncommitted on main).
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration
