@@ -111,6 +111,38 @@ fn meta_short_cwd(cwd: &str) -> String {
     cwd.to_string()
 }
 
+/// Rehydrate in-memory messages + transcript from a session's message
+/// entries (oldest first), mirroring the RPC get_entries load path.
+async fn rehydrate_transcript(
+    runtime: &InteractiveRuntime,
+    transcript_md: &Arc<Mutex<Markdown>>,
+    hide_thinking: bool,
+) -> Vec<pi_agent::types::AgentMessage> {
+    let entries = runtime
+        .session
+        .find_entries(&pi_agent::session::state::EntryQuery {
+            order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
+            id: None,
+            entry_type: None,
+            custom_type: None,
+            cursor: None,
+            limit: None,
+        })
+        .await
+        .unwrap_or_default();
+    let mut messages = Vec::new();
+    for entry in &entries {
+        if let pi_agent::session::types::Entry::Message { message, .. } = entry {
+            messages.push(message.clone());
+        }
+    }
+    transcript_md
+        .lock()
+        .unwrap()
+        .set_text(it::compose_transcript(&messages, hide_thinking, ""));
+    messages
+}
+
 /// Wrap a modal in a renderable SharedComponent for the frame.
 fn modal_shared(modal: &mut Modal) -> SharedComponent {
     match modal {
@@ -339,30 +371,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                 runtime.session = session;
                                                 runtime.session_id = meta.id.clone();
                                                 runtime.session_name = None;
-                                                // Rehydrate the transcript from the session's message entries
-                                                // (oldest first), matching the RPC get_entries load path.
-                                                let entries = runtime
-                                                    .session
-                                                    .find_entries(&pi_agent::session::state::EntryQuery {
-                                                        order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
-                                                        id: None,
-                                                        entry_type: None,
-                                                        custom_type: None,
-                                                        cursor: None,
-                                                        limit: None,
-                                                    })
-                                                    .await
-                                                    .unwrap_or_default();
-                                                runtime.messages.clear();
-                                                for entry in &entries {
-                                                    if let pi_agent::session::types::Entry::Message { message, .. } = entry {
-                                                        runtime.messages.push(message.clone());
-                                                    }
-                                                }
-                                                transcript_md
-                                                    .lock()
-                                                    .unwrap()
-                                                    .set_text(it::compose_transcript(&runtime.messages, hide_thinking, ""));
+                                                runtime.messages = rehydrate_transcript(&runtime, &transcript_md, hide_thinking).await;
                                                 status_banner = format!(
                                                     "resumed session {} ({} prior messages)",
                                                     meta.id.get(..8).unwrap_or(&meta.id),
@@ -581,6 +590,82 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         }
                                         _ => {
                                             status_banner = "usage: /name <session-name>".to_string();
+                                        }
+                                    }
+                                }
+                                "fork" | "clone" => {
+                                    let meta = runtime.session.get_metadata().await;
+                                    let new_id = pi_agent::session::new_id();
+                                    let cwd = runtime.cwd.clone();
+                                    let result = if command.name == "fork" {
+                                        runtime
+                                            .repo
+                                            .fork(
+                                                &meta,
+                                                CreateOptions {
+                                                    id: Some(new_id.clone()),
+                                                    cwd,
+                                                    parent_session_id: None,
+                                                    metadata: None,
+                                                    fork_options: ForkOptions::Tree,
+                                                },
+                                            )
+                                            .await
+                                    } else {
+                                        let mut fresh = runtime
+                                            .repo
+                                            .create(CreateOptions {
+                                                id: Some(new_id.clone()),
+                                                cwd,
+                                                parent_session_id: None,
+                                                metadata: None,
+                                                fork_options: ForkOptions::Tree,
+                                            })
+                                            .await
+                                            .map_err(|e| format!("clone create failed: {e}"))?;
+                                        let entries = runtime
+                                            .session
+                                            .find_entries(&pi_agent::session::state::EntryQuery {
+                                                order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
+                                                id: None,
+                                                entry_type: None,
+                                                custom_type: None,
+                                                cursor: None,
+                                                limit: None,
+                                            })
+                                            .await
+                                            .unwrap_or_default();
+                                        for entry in &entries {
+                                            if let pi_agent::session::types::Entry::Message { message, .. } = entry {
+                                                let _ = fresh
+                                                    .append_entry(
+                                                        EntryNoStats::Message {
+                                                            id: format!("m-{}", pi_agent::session::new_id()),
+                                                            message: message.clone(),
+                                                            terminate: None,
+                                                        },
+                                                        "main",
+                                                    )
+                                                    .await;
+                                            }
+                                        }
+                                        Ok(fresh)
+                                    };
+                                    match result {
+                                        Ok(session) => {
+                                            runtime.session = session;
+                                            runtime.session_id = new_id;
+                                            runtime.session_name = None;
+                                            runtime.messages = rehydrate_transcript(&runtime, &transcript_md, hide_thinking).await;
+                                            status_banner = format!(
+                                                "{} session {} ({} prior messages)",
+                                                command.name,
+                                                runtime.session_id.get(..8).unwrap_or(&runtime.session_id),
+                                                runtime.messages.len()
+                                            );
+                                        }
+                                        Err(e) => {
+                                            status_banner = format!("{} failed: {e}", command.name);
                                         }
                                     }
                                 }
