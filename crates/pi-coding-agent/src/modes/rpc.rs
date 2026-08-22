@@ -1230,8 +1230,23 @@ mod tests {
     use super::*;
 
     async fn runtime_for_test() -> RpcRuntime {
-        let args = crate::args::parse_args(&["--provider".to_string(), "faux".to_string(), "--no-tools".to_string()])
-            .expect_run();
+        // Fully hermetic: pin an explicit faux model and a fresh session id/dir
+        // so host-shell env (PI_MODEL / PI_SESSION_ID / PI_PROVIDER) cannot
+        // leak into the runtime construction.
+        let root = std::env::temp_dir().join(format!("pi-rpc-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let args = crate::args::parse_args(&[
+            "--provider".to_string(),
+            "faux".to_string(),
+            "--model".to_string(),
+            "faux-1".to_string(),
+            "--session-id".to_string(),
+            pi_agent::session::new_id(),
+            "--session-dir".to_string(),
+            root.join("sessions").to_string_lossy().into_owned(),
+            "--no-tools".to_string(),
+        ])
+        .expect_run();
         let settings = SettingsManager::in_memory(Default::default());
         RpcRuntime::new(&args, settings).await.unwrap()
     }

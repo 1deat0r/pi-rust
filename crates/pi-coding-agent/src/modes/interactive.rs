@@ -253,7 +253,12 @@ async fn run_share(runtime: &InteractiveRuntime, dry_run: bool) -> Result<String
     if dry_run {
         return Ok("PI_SHARE_DRY_RUN=1: /share skipped".to_string());
     }
-    let gh_auth = run_gh(vec!["auth".to_string(), "status".to_string()]).await?;
+    let gh_auth = match run_gh(vec!["auth".to_string(), "status".to_string()]).await {
+        Ok(out) => out,
+        Err(_) => {
+            return Err("GitHub CLI (gh) is not installed. Install it from https://cli.github.com/".to_string())
+        }
+    };
     if !gh_auth.status.success() {
         return Err("GitHub CLI is not logged in. Run 'gh auth login' first.".to_string());
     }
@@ -283,7 +288,7 @@ async fn run_share(runtime: &InteractiveRuntime, dry_run: bool) -> Result<String
     Ok(format!("Share URL: {viewer}#{gist_id}\nGist: {gist_url}"))
 }
 
-/// Wrap a modal in a renderable SharedComponent for the frame./// Wrap a modal in a renderable SharedComponent for the frame.
+/// Wrap a modal in a renderable SharedComponent for the frame.
 fn modal_shared(modal: &mut Modal) -> SharedComponent {
     match modal {
         Modal::Model(sel) | Modal::Thinking(sel) | Modal::Theme(sel) => sel.clone() as SharedComponent,
@@ -1110,5 +1115,173 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         Ok(Ok(_)) => Ok(()),
         Ok(Err(e)) => Err(e),
         Err(_) => Err("interactive mode timed out".to_string()),
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pi_agent::fs::StdFileSystem;
+    use pi_agent::session::jsonl::repo::CreateOptions;
+    use pi_agent::session::JsonlSessionRepo;
+    use pi_agent::session::state::ForkOptions;
+
+    /// Serializes tests that mutate the process-global PATH /
+    /// PI_SHARE_VIEWER_URL so parallel executions cannot race on the env.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::OnceLock;
+        static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap()
+    }
+
+    /// Restores PATH / PI_SHARE_VIEWER_URL on drop. `replace_path` swaps PATH
+    /// entirely (hermetic: no real `gh` visible); otherwise `bin_dir` is
+    /// prepended so the fake `gh` shadows the real one.
+    struct EnvGuard {
+        old_path: String,
+        old_viewer: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn install(bin_dir: &std::path::Path, viewer: &str) -> Self {
+            let old_path = std::env::var("PATH").unwrap_or_default();
+            let old_viewer = std::env::var("PI_SHARE_VIEWER_URL").ok();
+            std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), old_path));
+            std::env::set_var("PI_SHARE_VIEWER_URL", viewer);
+            EnvGuard { old_path, old_viewer }
+        }
+
+        fn install_hermetic(bin_dir: &std::path::Path, viewer: &str) -> Self {
+            let old_path = std::env::var("PATH").unwrap_or_default();
+            let old_viewer = std::env::var("PI_SHARE_VIEWER_URL").ok();
+            std::env::set_var("PATH", bin_dir.as_os_str());
+            std::env::set_var("PI_SHARE_VIEWER_URL", viewer);
+            EnvGuard { old_path, old_viewer }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            std::env::set_var("PATH", &self.old_path);
+            match &self.old_viewer {
+                Some(v) => std::env::set_var("PI_SHARE_VIEWER_URL", v),
+                None => std::env::remove_var("PI_SHARE_VIEWER_URL"),
+            }
+        }
+    }
+
+    /// Build an InteractiveRuntime backed by a real session file in `root`.
+    async fn test_runtime(root: &std::path::Path) -> InteractiveRuntime {
+        let cwd = root.to_string_lossy().into_owned();
+        let session_root = root.join("sessions");
+        std::fs::create_dir_all(&session_root).unwrap();
+        let mut repo = JsonlSessionRepo::new(StdFileSystem::new(&cwd), session_root.to_string_lossy().into_owned());
+        let session_id = pi_agent::session::new_id();
+        let session = repo
+            .create(CreateOptions {
+                id: Some(session_id.clone()),
+                cwd: cwd.clone(),
+                parent_session_id: None,
+                metadata: None,
+                fork_options: ForkOptions::Tree,
+            })
+            .await
+            .unwrap();
+        let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+        let model = crate::run::build_faux_model(None).unwrap();
+        InteractiveRuntime {
+            cwd,
+            models,
+            provider: "faux".to_string(),
+            model,
+            messages: Vec::new(),
+            session,
+            repo,
+            session_id,
+            session_name: None,
+            system_prompt: None,
+            tools_enabled: true,
+            persisted_until: 0,
+        }
+    }
+
+    /// Write a fake `gh` script into `bin_dir`. `auth_status` is the exit code
+    /// for `gh auth status`; `gist_url` is the stdout for `gh gist create`
+    /// (None => exit 1).
+    fn install_fake_gh(bin_dir: &std::path::Path, auth_status: i32, gist_url: Option<&str>) {
+        std::fs::create_dir_all(bin_dir).unwrap();
+        let script = match gist_url {
+            Some(url) => format!(
+                "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then exit {auth_status}; fi\nif [ \"$1\" = \"gist\" ] && [ \"$2\" = \"create\" ]; then echo '{url}'; exit 0; fi\nexit 1\n"
+            ),
+            None => format!(
+                "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then exit {auth_status}; fi\nexit 1\n"
+            ),
+        };
+        std::fs::write(bin_dir.join("gh"), script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin_dir.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn share_creates_secret_gist_and_prints_viewer_url() {
+        let root = std::env::temp_dir().join(format!("pi-share-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let _env = env_lock();
+        let runtime = test_runtime(&root).await;
+        install_fake_gh(&root.join("bin"), 0, Some("https://gist.github.com/fakeuser/abc123"));
+        let _guard = EnvGuard::install(&root.join("bin"), "https://pi.dev/session/");
+        let msg = run_share(&runtime, false).await.expect("share should succeed");
+        assert_eq!(
+            msg,
+            "Share URL: https://pi.dev/session/#abc123\nGist: https://gist.github.com/fakeuser/abc123"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn share_requires_gh_auth() {
+        let root = std::env::temp_dir().join(format!("pi-share-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let _env = env_lock();
+        let runtime = test_runtime(&root).await;
+        install_fake_gh(&root.join("bin"), 1, None);
+        let _guard = EnvGuard::install(&root.join("bin"), "https://pi.dev/session/");
+        let err = run_share(&runtime, false).await.unwrap_err();
+        assert_eq!(err, "GitHub CLI is not logged in. Run 'gh auth login' first.");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn share_reports_missing_gh() {
+        let root = std::env::temp_dir().join(format!("pi-share-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let _env = env_lock();
+        let runtime = test_runtime(&root).await;
+        // PATH pointing at an empty dir only: no gh binary anywhere.
+        let empty = root.join("empty-bin");
+        std::fs::create_dir_all(&empty).unwrap();
+        let _guard = EnvGuard::install_hermetic(&empty, "https://pi.dev/session/");
+        let err = run_share(&runtime, false).await.unwrap_err();
+        assert_eq!(
+            err,
+            "GitHub CLI (gh) is not installed. Install it from https://cli.github.com/"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn share_dry_run_skips_gh() {
+        let root = std::env::temp_dir().join(format!("pi-share-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let _env = env_lock();
+        let runtime = test_runtime(&root).await;
+        let msg = run_share(&runtime, true).await.unwrap();
+        assert_eq!(msg, "PI_SHARE_DRY_RUN=1: /share skipped");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

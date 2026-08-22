@@ -74,6 +74,25 @@ async fn main() {
                 print!("{out}");
                 return;
             }
+            // --export <file> [output]: export a session JSONL file to HTML
+            // and exit (upstream exportFromFile + "Exported to:" print).
+            if let Some(input_path) = args.export.clone() {
+                let output_path = args.messages.first().map(String::as_str);
+                match pi_coding_agent::core::export_html::export_session_file(
+                    &input_path,
+                    output_path,
+                    None,
+                ) {
+                    Ok(path) => {
+                        println!("Exported to: {path}");
+                        return;
+                    }
+                    Err(err) => {
+                        eprintln!("Error: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            }
             match pi_coding_agent::run::run(&args).await {
                 Ok(outcome) => {
                     println!("{}", outcome.final_text);

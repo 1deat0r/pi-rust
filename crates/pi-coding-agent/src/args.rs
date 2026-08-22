@@ -29,6 +29,7 @@ pub struct Args {
     pub version: bool,
     pub list_models: Option<String>,
     pub mode: Option<String>,
+    pub export: Option<String>,
     pub unknown_flags: Vec<String>,
 }
 
@@ -76,10 +77,10 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
         };
 
         // Value-taking flags
-        let value_flags: [&str; 17] = [
+        let value_flags: [&str; 18] = [
             "--provider", "--model", "--api-key", "--system-prompt", "--append-system-prompt",
             "--session", "--session-id", "--session-dir", "--name", "-n", "--thinking", "--tools",
-            "-t", "--exclude-tools", "-xt", "--tui-mode", "--mode",
+            "-t", "--exclude-tools", "-xt", "--tui-mode", "--mode", "--export",
         ];
         if value_flags.contains(&flag.as_str()) {
             let value = match inline_value {
@@ -112,6 +113,7 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
                         args.unknown_flags.push(format!("--mode {value}"));
                     }
                 }
+                "--export" => args.export = Some(value),
                 _ => {}
             }
             i += 1;
@@ -185,6 +187,7 @@ pub fn print_help() {
     println!("  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max");
     println!("  --no-tools, -nt                Disable all tools by default (built-in and extension)");
     println!("  --offline                      Disable startup network operations (same as PI_OFFLINE=1)");
+    println!("  --export <file>                Export session file to HTML and exit");
     println!("  --list-models [search]         List available models (with optional fuzzy search)");
     println!("  --verbose                      Force verbose startup (overrides quietStartup setting)");
     println!("  --help, -h                     Show this help");

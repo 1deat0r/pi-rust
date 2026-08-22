@@ -73,26 +73,26 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
 
 ## T0 — Land the in-flight working tree (fix first — it's red)
 
-- [ ] 1. Fix `crates/pi-coding-agent/tests/cli_export.rs:13-15` — repair the
+- [x] 1. Fix `crates/pi-coding-agent/tests/cli_export.rs:13-15` — repair the
       `split("data-session="")` string to `"data-session=\""`, making the
       `'"'` char literal parse. (unit)
-- [ ] 2. Verify `args.rs` `--export` help text compiles/prints one flag per
+- [x] 2. Verify `args.rs` `--export` help text compiles/prints one flag per
       line (the diff shows a wrapped literal — make rustfmt clean). (unit)
-- [ ] 3. Audit `main.rs` `--export` wiring vs upstream `exportFromFile`
+- [x] 3. Audit `main.rs` `--export` wiring vs upstream `exportFromFile`
       (output path fallback, exit codes, "Exported to:" print). (mock)
-- [ ] 4. Finish `/share` — remove `SHARE INVOKED (probe)` banner and `dry_run`
+- [x] 4. Finish `/share` — remove `SHARE INVOKED (probe)` banner and `dry_run`
       default; implement upstream share.ts (gh auth status → export HTML →
       `gh gist create --public=false` → viewer `PI_SHARE_VIEWER_URL#<id>`).
-- [ ] 5. Wire `PI_SHARE_DRY_RUN=1` as test switch only; mock-gh integration
+- [x] 5. Wire `PI_SHARE_DRY_RUN=1` as test switch only; mock-gh integration
       test. (mock)
-- [ ] 6. Verify persist-before-share ordering (transcript matches exported
+- [x] 6. Verify persist-before-share ordering (transcript matches exported
       HTML; no lost/duplicated messages). (mock)
-- [ ] 7. Land editor autocomplete fix (close popup after apply so Enter
+- [x] 7. Land editor autocomplete fix (close popup after apply so Enter
       submits) with the two new `editor_tests` cases; full pi-tui suite green.
-- [ ] 8. Remove duplicated `/// Wrap a modal...` doc comment in interactive.rs.
-- [ ] 9. `cargo test --workspace` + clippy on touched crates; restore all-green
+- [x] 8. Remove duplicated `/// Wrap a modal...` doc comment in interactive.rs.
+- [x] 9. `cargo test --workspace` + clippy on touched crates; restore all-green
       0-warning baseline. (unit)
-- [ ] 10. Commit + push: `feat(interactive): /share gist flow + --export CLI
+- [x] 10. Commit + push: `feat(interactive): /share gist flow + --export CLI
       wiring`.
 
 ## T1 — Close the 9 documented divergences (audit → port → gate)
