@@ -139,32 +139,88 @@ pub async fn generate_images(
     let params = build_params(&model, &context);
     let url = format!("{}/chat/completions", model.base_url.trim_end_matches('/'));
 
-    let mut request = client
-        .post(&url)
-        .header("content-type", "application/json")
-        .bearer_auth(&api_key)
-        .json(&params);
-    if let Some(headers) = &model.headers {
-        for (k, v) in headers {
-            request = request.header(k.as_str(), v.as_str());
+    // Rebuild the request per attempt (RequestBuilder is not Clone, and
+    // upstream's retryProviderRequest issues a fresh SDK request each retry).
+    let make_request = || {
+        let mut request = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .bearer_auth(&api_key)
+            .json(&params);
+        if let Some(headers) = &model.headers {
+            for (k, v) in headers {
+                request = request.header(k.as_str(), v.as_str());
+            }
         }
-    }
-    if let Some(headers) = &options.headers {
-        for (name, value) in headers {
-            if let Some(value) = value {
-                request = request.header(name.as_str(), value.as_str());
+        if let Some(headers) = &options.headers {
+            for (name, value) in headers {
+                if let Some(value) = value {
+                    request = request.header(name.as_str(), value.as_str());
+                }
+            }
+        }
+        if let Some(timeout) = options.timeout_ms {
+            request = request.timeout(std::time::Duration::from_millis(timeout));
+        }
+        request
+    };
+
+    let max_retries = options.max_retries.unwrap_or(0);
+    let mut retries_remaining = max_retries;
+    let mut response = None;
+    let mut response_err = None;
+    for attempt in 0.. {
+        // Each retry rebuilds the request (fresh per upstream
+        // retryProviderRequest, which notes X-Stainless-Retry-Count stays 0).
+        let attempt_result = make_request().send().await;
+        match attempt_result {
+            Ok(resp) => {
+                let status = resp.status();
+                let should_retry = retryable_provider_status(
+                    status.as_u16(),
+                    resp.headers().get("x-should-retry").and_then(|v| v.to_str().ok()),
+                );
+                if !should_retry || retries_remaining == 0 {
+                    response = Some(resp);
+                    break;
+                }
+                // Retryable status with remaining budget: compute the delay.
+                let headers_map = resp
+                    .headers()
+                    .iter()
+                    .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                match retry_delay_ms(&headers_map, retries_remaining, options.max_retry_delay_ms, status.as_u16()) {
+                    Ok(Some(delay)) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    }
+                    Ok(None) => {}
+                    Err(msg) => {
+                        response_err = Some(msg);
+                        break;
+                    }
+                }
+                retries_remaining -= 1;
+                let _ = attempt;
+            }
+            Err(err) => {
+                // Transport errors retry only while budget remains (upstream
+                // treats undefined status as retryable).
+                if retries_remaining == 0 {
+                    response_err = Some(format!("Request failed: {err}"));
+                    break;
+                }
+                let delay = exponential_retry_delay(max_retries - retries_remaining);
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                retries_remaining -= 1;
             }
         }
     }
-    if let Some(timeout) = options.timeout_ms {
-        request = request.timeout(std::time::Duration::from_millis(timeout));
-    }
-
-    let response = match request.send().await {
-        Ok(response) => response,
-        Err(err) => {
+    let response = match response {
+        Some(resp) => resp,
+        None => {
             output.stop_reason = if options.aborted { ImagesStopReason::Aborted } else { ImagesStopReason::Error };
-            output.error_message = Some(format!("Request failed: {err}"));
+            output.error_message = Some(response_err.unwrap_or_else(|| "Request failed".to_string()));
             return output;
         }
     };
@@ -176,7 +232,7 @@ pub async fn generate_images(
         .collect::<std::collections::BTreeMap<_, _>>();
     if let Some(on_response) = &options.on_response {
         on_response(
-            &crate::types::ProviderResponse { status: status.as_u16(), headers: headers_map },
+            &crate::types::ProviderResponse { status: status.as_u16(), headers: headers_map.clone() },
             &model.as_chat_model(),
         );
     }
@@ -243,6 +299,71 @@ pub fn apply_response(output: &mut AssistantImages, model: &ImagesModel, respons
             }
         }
     }
+}
+
+/// Retryable provider status (upstream `isRetryableProviderError`):
+/// `x-should-retry` header wins; otherwise 408/409/429/>=500.
+fn retryable_provider_status(status: u16, x_should_retry: Option<&str>) -> bool {
+    match x_should_retry {
+        Some("true") => return true,
+        Some("false") => return false,
+        _ => {}
+    }
+    status == 408 || status == 409 || status == 429 || status >= 500
+}
+
+/// Retry delay from headers or exponential backoff (upstream
+/// `getRetryDelayMs` + `validateServerRetryDelayMs`). `None` means
+/// immediately retry (no server delay guidance).
+fn retry_delay_ms(
+    headers: &std::collections::BTreeMap<String, String>,
+    retry_index: u32,
+    max_retry_delay_ms: Option<u64>,
+    status: u16,
+) -> Result<Option<u64>, String> {
+    if let Some(retry_after_ms) = headers.get("retry-after-ms") {
+        if let Ok(value) = retry_after_ms.parse::<f64>() {
+            return validate_retry_delay(value as u64, max_retry_delay_ms, status);
+        }
+    }
+    if let Some(retry_after) = headers.get("retry-after") {
+        if let Ok(seconds) = retry_after.parse::<f64>() {
+            let delay = (seconds * 1000.0) as u64;
+            return validate_retry_delay(delay, max_retry_delay_ms, status);
+        }
+    }
+    Ok(Some(exponential_retry_delay(retry_index)))
+}
+
+fn validate_retry_delay(
+    delay_ms: u64,
+    max_retry_delay_ms: Option<u64>,
+    status: u16,
+) -> Result<Option<u64>, String> {
+    let max = max_retry_delay_ms.unwrap_or(60_000);
+    if max > 0 && delay_ms > max {
+        return Err(format!(
+            "Server requested {}s retry delay (max: {}s) (HTTP {status})",
+            delay_ms.div_ceil(1000),
+            max.div_ceil(1000)
+        ));
+    }
+    Ok(Some(delay_ms))
+}
+
+/// Exponential backoff with jitter: min(0.5 * 2^i, 8) seconds * (1 - 0.25r).
+fn exponential_retry_delay(retry_index: u32) -> u64 {
+    let base = (0.5 * 2f64.powi(retry_index as i32)).min(8.0) * 1000.0;
+    (base * (1.0 - rand01() * 0.25)) as u64
+}
+
+fn rand01() -> f64 {
+    // Deterministic-ish PRNG to keep tests stable without a rand dep.
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    (n % 1_000_000) as f64 / 1_000_000.0
 }
 
 fn parse_data_uri(uri: &str) -> Option<(String, String)> {
@@ -351,5 +472,91 @@ mod tests {
         let out = generate_images(&m, &ImagesContext { input: vec![] }, &ImagesOptions::default(), client).await;
         assert_eq!(out.stop_reason, ImagesStopReason::Error);
         assert!(out.error_message.as_deref().unwrap_or("").contains("No API key for provider: openrouter"));
+    }
+}
+
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn retryable_status_classification() {
+        assert!(!retryable_provider_status(200, None));
+        assert!(retryable_provider_status(408, None));
+        assert!(retryable_provider_status(409, None));
+        assert!(retryable_provider_status(429, None));
+        assert!(retryable_provider_status(500, None));
+        assert!(!retryable_provider_status(400, None));
+        assert!(retryable_provider_status(400, Some("true")));
+        assert!(!retryable_provider_status(500, Some("false")));
+    }
+
+    #[test]
+    fn server_retry_delay_headers_and_cap() {
+        let mut headers = BTreeMap::new();
+        headers.insert("retry-after-ms".to_string(), "250".to_string());
+        assert_eq!(retry_delay_ms(&headers, 0, None, 429).unwrap(), Some(250));
+        headers.clear();
+        headers.insert("retry-after".to_string(), "1".to_string());
+        assert_eq!(retry_delay_ms(&headers, 0, None, 429).unwrap(), Some(1000));
+        headers.clear();
+        headers.insert("retry-after-ms".to_string(), "120000".to_string());
+        let err = retry_delay_ms(&headers, 0, Some(60_000), 429).unwrap_err();
+        assert!(err.contains("max"), "{err}");
+        // No header -> exponential backoff: 0.5*2^i seconds with jitter
+        // (index 0: 375..500ms; index 3: 0.5*2^3=4s -> 3000..4000ms).
+        headers.clear();
+        let delay = retry_delay_ms(&headers, 0, None, 429).unwrap().unwrap();
+        assert!((375..=1000).contains(&delay), "{delay}");
+        let delay3 = retry_delay_ms(&headers, 3, None, 429).unwrap().unwrap();
+        assert!((3000..=4000).contains(&delay3), "{delay3}");
+    }
+
+    #[tokio::test]
+    async fn retries_429_then_succeeds() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let serve = tokio::spawn(async move {
+            let mut count = 0;
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { break };
+                let mut buf = vec![0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                count += 1;
+                if count == 1 {
+                    let resp = "HTTP/1.1 429 Too Many Requests\r\nretry-after-ms: 10\r\ncontent-length: 5\r\n\r\nerror";
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                } else {
+                    let body = "{\"id\":\"img\",\"choices\":[{\"message\":{\"content\":\"gen\",\"images\":[{\"image_url\":\"data:image/png;base64,aGVsbG8=\"}]}}]}";
+                    let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}", body.len());
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    break;
+                }
+            }
+            count
+        });
+        let model = crate::images::catalog_images("openrouter")
+            .into_iter()
+            .next()
+            .expect("openrouter image model");
+        let mut m = model.clone();
+        m.base_url = format!("http://{addr}");
+        let options = ImagesOptions {
+            api_key: Some("test-key".to_string()),
+            max_retries: Some(2),
+            max_retry_delay_ms: Some(60_000),
+            ..Default::default()
+        };
+        let context = ImagesContext {
+            input: vec![ContentBlock::text("draw a frog")],
+        };
+        let output = generate_images(&m, &context, &options, reqwest::Client::new()).await;
+        assert!(output.error_message.is_none(), "{:?}", output.error_message);
+        assert!(output.output.iter().any(|b| matches!(b, ContentBlock::Image { .. })), "expected an image block");
+        assert!(serve.await.unwrap() >= 2, "expected at least one retry");
     }
 }
