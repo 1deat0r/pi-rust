@@ -4,6 +4,15 @@ P4 milestone committed: working `pi` binary (args, config/env, run path).
 Settings manager (full upstream surface) landed.
 
 ## Done
+- core/session_migration.rs: legacy .session migration surface ported from
+  packages/coding-agent/src/core/session-manager.ts (migrateSessionEntries /
+  parseSessionEntries / assertValidSessionId / CURRENT_SESSION_VERSION):
+  v1→v2 (id/parentId tree + compaction firstKeptEntryIndex→firstKeptEntryId)
+  and v2→v3 (hookMessage role→custom), idempotent (+ 4 extra probe tests:
+  hookMessage rename, compaction index conversion, malformed-line skip,
+  id-pattern validation). NOTE: the pi-agent TODO's old pointer to
+  "jsonl/repo.ts" was wrong; the JSONL codec is v4-only and the v3→v4 import
+  path lives in the coding-agent session runtime (P4/P8).
 - core/tools: ls, find, grep ported (packages/coding-agent/src/core/tools/) —
   model-facing text output 1:1, spawned via the exact upstream binaries and
   argument sets (fd for find, rg for grep; fd is a harness-tool dependency
