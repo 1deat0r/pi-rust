@@ -217,6 +217,88 @@ pub fn slice_with_width(text: &str, width: usize) -> String {
     out
 }
 
+
+/// Truncate text to a visible width with an optional ellipsis (upstream
+/// `truncateToWidth`, ASCII/plain-text subset with ANSI-aware widths).
+pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let text_width = visible_width(text);
+    if text_width <= max_width {
+        return text.to_string();
+    }
+    let ellipsis_width = visible_width(ellipsis);
+    if ellipsis_width >= max_width {
+        let clipped = slice_with_width(&ellipsis, max_width);
+        return clipped;
+    }
+    let target = max_width - ellipsis_width;
+    let sliced = slice_with_width(text, target);
+    format!("{sliced}{ellipsis}")
+}
+
+/// Upstream `sliceByColumn` — slice by visible columns (ANSI-aware).
+pub fn slice_by_column(line: &str, start_col: usize, length: usize) -> String {
+    let prefix = slice_with_width(line, start_col);
+    let _ = prefix;
+    // Skip start_col visible columns then take `length`.
+    let mut out = String::new();
+    let mut seen = 0usize;
+    let mut chars = line.chars().peekable();
+    let mut skipped = 0usize;
+    let mut started = false;
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            let mut seq = String::new();
+            seq.push(c);
+            if chars.peek() == Some(&'[') {
+                seq.push(chars.next().unwrap());
+                for c2 in chars.by_ref() {
+                    seq.push(c2);
+                    if ('@'..='~').contains(&c2) {
+                        break;
+                    }
+                }
+            } else if chars.peek() == Some(&']') {
+                seq.push(chars.next().unwrap());
+                for c2 in chars.by_ref() {
+                    seq.push(c2);
+                    if c2 == '\x07' {
+                        break;
+                    }
+                    if c2 == '\x1b' {
+                        if let Some(c3) = chars.next() {
+                            seq.push(c3);
+                        }
+                        break;
+                    }
+                }
+            } else if let Some(c2) = chars.next() {
+                seq.push(c2);
+            }
+            if started {
+                out.push_str(&seq);
+            }
+            continue;
+        }
+        if !started {
+            if skipped >= start_col {
+                started = true;
+            } else {
+                skipped += 1;
+                continue;
+            }
+        }
+        if seen >= length {
+            break;
+        }
+        out.push(c);
+        seen += 1;
+    }
+    out
+}
+
 /// Apply a background color function to a line, padding to full width.
 pub fn apply_background_to_line(line: &str, width: usize, bg: &dyn Fn(&str) -> String) -> String {
     let visible = visible_width(line);
@@ -261,6 +343,13 @@ mod tests {
     #[test]
     fn slice_keeps_ansi() {
         assert_eq!(slice_with_width("\x1b[31mred\x1b[0m", 3), "\x1b[31mred\x1b[0m");
+    }
+
+    #[test]
+    fn truncate_to_width_basic() {
+        assert_eq!(truncate_to_width("hello world", 5, "..."), "he...");
+        assert_eq!(truncate_to_width("hello", 8, "..."), "hello");
+        assert_eq!(truncate_to_width("hello world", 8, "..."), "hello...");
     }
 }
 
