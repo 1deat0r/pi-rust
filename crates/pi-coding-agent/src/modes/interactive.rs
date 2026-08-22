@@ -42,6 +42,7 @@ struct InteractiveRuntime {
     session: JsonlSession<pi_agent::fs::StdFileSystem>,
     repo: JsonlSessionRepo<pi_agent::fs::StdFileSystem>,
     session_id: String,
+    session_name: Option<String>,
     system_prompt: Option<String>,
     tools_enabled: bool,
 }
@@ -115,6 +116,7 @@ fn modal_shared(modal: &mut Modal) -> SharedComponent {
     match modal {
         Modal::Model(sel) | Modal::Thinking(sel) | Modal::Theme(sel) => sel.clone() as SharedComponent,
         Modal::Settings(panel) => panel.clone() as SharedComponent,
+        Modal::Resume(sel, _) => sel.clone() as SharedComponent,
     }
 }
 
@@ -164,6 +166,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         session,
         repo,
         session_id: session_id.clone(),
+        session_name: None,
         system_prompt: args.system_prompt.clone(),
         tools_enabled: !args.no_tools,
     };
@@ -226,7 +229,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 let fd = FooterData {
                     cwd: cwd.clone(),
                     branch: footer::git_branch(&cwd),
-                    session_name: None,
+                    session_name: runtime.session_name.clone(),
                     model_label: Some(format!("{}/{}", runtime.provider, runtime.model.name)),
                     thinking: Some(thinking_level.clone()),
                     provider_count: runtime.models.get_providers().len(),
@@ -316,6 +319,61 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 if let Some(item) = guard.selected_item() {
                                     it::tui_theme::load_theme(&item.value);
                                     status_banner = format!("Theme: {}", item.value);
+                                }
+                                close_modal = true;
+                            }
+                            it::selectors::SelectorAction::Cancel | it::selectors::SelectorAction::Select(_) => {
+                                close_modal = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Modal::Resume(sel, sessions) => {
+                        let mut guard = sel.lock().unwrap();
+                        match guard.handle(&key) {
+                            it::selectors::SelectorAction::Select(Some(idx)) if idx < guard.count() => {
+                                if let Some(item) = guard.selected_item() {
+                                    if let Some(meta) = sessions.iter().find(|s| s.id == item.value) {
+                                        match runtime.repo.open(&meta.metadata).await {
+                                            Ok(session) => {
+                                                runtime.session = session;
+                                                runtime.session_id = meta.id.clone();
+                                                runtime.session_name = None;
+                                                // Rehydrate the transcript from the session's message entries
+                                                // (oldest first), matching the RPC get_entries load path.
+                                                let entries = runtime
+                                                    .session
+                                                    .find_entries(&pi_agent::session::state::EntryQuery {
+                                                        order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
+                                                        id: None,
+                                                        entry_type: None,
+                                                        custom_type: None,
+                                                        cursor: None,
+                                                        limit: None,
+                                                    })
+                                                    .await
+                                                    .unwrap_or_default();
+                                                runtime.messages.clear();
+                                                for entry in &entries {
+                                                    if let pi_agent::session::types::Entry::Message { message, .. } = entry {
+                                                        runtime.messages.push(message.clone());
+                                                    }
+                                                }
+                                                transcript_md
+                                                    .lock()
+                                                    .unwrap()
+                                                    .set_text(it::compose_transcript(&runtime.messages, hide_thinking, ""));
+                                                status_banner = format!(
+                                                    "resumed session {} ({} prior messages)",
+                                                    meta.id.get(..8).unwrap_or(&meta.id),
+                                                    runtime.messages.len()
+                                                );
+                                            }
+                                            Err(e) => {
+                                                status_banner = format!("resume failed: {e}");
+                                            }
+                                        }
+                                    }
                                 }
                                 close_modal = true;
                             }
@@ -480,6 +538,43 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         }
                                         Err(e) => {
                                             status_banner = format!("new session failed: {e}");
+                                        }
+                                    }
+                                }
+                                "resume" => {
+                                    match runtime.repo.list(Some(&runtime.cwd)).await {
+                                        Ok(sessions) if !sessions.is_empty() => {
+                                            let picker = it::session_picker_items(sessions);
+                                            let items = it::picker_select_items(&picker);
+                                            modal = Some(Modal::Resume(
+                                                Arc::new(Mutex::new(ListSelector::new(items, 10))),
+                                                picker,
+                                            ));
+                                        }
+                                        Ok(_) => {
+                                            status_banner =
+                                                "no sessions found to resume in this directory".to_string();
+                                        }
+                                        Err(e) => {
+                                            status_banner = format!("list sessions failed: {e}");
+                                        }
+                                    }
+                                }
+                                "name" => {
+                                    match _arg.as_deref() {
+                                        Some(name) if !name.trim().is_empty() => {
+                                            match runtime.session.set_name(Some(name.trim())).await {
+                                                Ok(()) => {
+                                                    runtime.session_name = Some(name.trim().to_string());
+                                                    status_banner = format!("session name: {}", name.trim());
+                                                }
+                                                Err(e) => {
+                                                    status_banner = format!("set name failed: {e}");
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            status_banner = "usage: /name <session-name>".to_string();
                                         }
                                     }
                                 }

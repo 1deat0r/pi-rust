@@ -7,6 +7,8 @@
 //! loop. The terminal event loop lives in `crate::modes::interactive`.
 
 pub mod footer;
+pub mod session_meta;
+pub use session_meta::{SessionMetaForPicker, session_picker_items, picker_select_items};
 pub mod messages;
 pub mod selectors;
 pub mod settings_panel;
@@ -33,6 +35,8 @@ pub enum Modal {
     Thinking(Arc<Mutex<selectors::ListSelector>>),
     Theme(Arc<Mutex<selectors::ListSelector>>),
     Settings(Arc<Mutex<SettingsPanel>>),
+    /// Session picker: selector + the metadata list it was built from.
+    Resume(Arc<Mutex<selectors::ListSelector>>, Vec<session_meta::SessionMetaForPicker>),
 }
 
 /// Runtime state for the interactive loop.
