@@ -16,6 +16,7 @@ pub mod partial_json;
 pub mod providers;
 pub mod sse;
 pub mod types;
+pub mod utils;
 
 pub use event_stream::{create_error_stream, AssistantMessageEventStream};
 pub use model::{calculate_cost, clamp_thinking_level, get_supported_thinking_levels, models_are_equal, Model, ModelCost, ModelCostTier, ModelInput};

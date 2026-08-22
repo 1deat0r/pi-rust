@@ -670,6 +670,7 @@ dependencies = [
  "futures-util",
  "indexmap",
  "pi-telemetry",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
