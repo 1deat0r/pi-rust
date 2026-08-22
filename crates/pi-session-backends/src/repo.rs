@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 use pi_agent::session::state::{EntryOrder, EntryQuery, ForkOptions, LogOptions, RecordQuery};
 use pi_agent::session::types::{
@@ -107,7 +107,7 @@ pub(crate) struct RepoState {
     database_path: String,
     db: AsyncMutex<Option<Connection>>,
     open_error: Mutex<Option<SessionError>>,
-    active_storages: Mutex<Vec<Weak<SqliteSessionStorage>>>,
+    active_storages: Mutex<Vec<Arc<SqliteSessionStorage>>>,
     lease_options: SqliteWriterLeaseOptions,
 }
 
@@ -183,22 +183,21 @@ impl RepoState {
     }
 
     pub(crate) fn register_storage(&self, storage: &Arc<SqliteSessionStorage>) {
-        self.active_storages.lock().unwrap().push(Arc::downgrade(storage));
+        self.active_storages.lock().unwrap().push(Arc::clone(storage));
     }
 
     pub(crate) fn unregister_storage(&self, storage: &Arc<SqliteSessionStorage>) {
-        self.active_storages.lock().unwrap().retain(|candidate| {
-            candidate.upgrade().map(|upgraded| !Arc::ptr_eq(&upgraded, storage)).unwrap_or(false)
-        });
+        self.active_storages
+            .lock()
+            .unwrap()
+            .retain(|candidate| !Arc::ptr_eq(candidate, storage));
     }
 
     pub(crate) fn find_active_storage(&self, session_id: &str) -> Option<Arc<SqliteSessionStorage>> {
         let storages = self.active_storages.lock().unwrap();
-        for candidate in storages.iter() {
-            if let Some(storage) = candidate.upgrade() {
-                if storage.is_for_session(session_id) {
-                    return Some(storage);
-                }
+        for storage in storages.iter() {
+            if storage.is_for_session(session_id) {
+                return Some(Arc::clone(storage));
             }
         }
         None
@@ -210,8 +209,8 @@ impl RepoState {
             .lock()
             .unwrap()
             .iter()
-            .filter_map(|candidate| candidate.upgrade())
             .filter(|storage| storage.is_for_session(session_id))
+            .cloned()
             .collect();
         for storage in storages {
             storage.release().await;
@@ -253,26 +252,60 @@ fn decode_entry(row: &EntryRow) -> Result<Entry, SessionError> {
 }
 
 fn decode_record(row: &RecordRow) -> Result<LaneRecord, SessionError> {
-    let mut payload: serde_json::Value = serde_json::from_str(&row.payload).map_err(|_| {
+    let new_record: NewRecord = serde_json::from_str(&row.payload).map_err(|_| {
         SessionError::new(
             SessionErrorKind::Storage,
             format!("Invalid SQLite session record at sequence {}: failed to decode payload", row.seq),
         )
     })?;
-    let object = payload.as_object_mut().ok_or_else(|| {
-        SessionError::new(
-            SessionErrorKind::Storage,
-            format!("Invalid SQLite session record at sequence {}: failed to decode payload", row.seq),
-        )
-    })?;
-    object.insert("seq".to_string(), serde_json::json!(row.seq));
-    object.insert("timestamp".to_string(), serde_json::json!(row.timestamp));
-    serde_json::from_value(payload).map_err(|_| {
-        SessionError::new(
-            SessionErrorKind::Storage,
-            format!("Invalid SQLite session record at sequence {}: failed to decode payload", row.seq),
-        )
-    })
+    Ok(new_record_complete(new_record, row.seq as u64, row.timestamp as u64))
+}
+
+/// Completes a provisioning-time record with storage-assigned seq/timestamp,
+/// normalizing optional fields exactly like upstream's committed shape (port
+/// of pi-agent's `new_record_complete`).
+fn new_record_complete(new_record: NewRecord, seq: u64, timestamp: u64) -> LaneRecord {
+    use pi_agent::session::types::NewRecord::*;
+    match new_record {
+        OperationStarted { id, lane, source_leaf_id, intent } => LaneRecord::OperationStarted {
+            id, seq, lane, timestamp, source_leaf_id, intent,
+        },
+        AbortRequested { id, lane, run_id } => LaneRecord::AbortRequested { id, seq, lane, timestamp, run_id },
+        OperationFinished { id, lane, run_id, outcome, error } => {
+            LaneRecord::OperationFinished { id, seq, lane, timestamp, run_id, outcome, error }
+        }
+        StepAttempt { id, lane, run_id, step, attempt, result_entry_id, compaction_reason } => {
+            LaneRecord::StepAttempt {
+                id, seq, lane, timestamp, run_id, step, attempt, result_entry_id, compaction_reason,
+            }
+        }
+        ToolStarted {
+            id, lane, run_id, assistant_entry_id, tool_index, tool_call_id, tool_name, effective_args,
+            result_entry_id, replay,
+        } => LaneRecord::ToolStarted {
+            id, seq, lane, timestamp, run_id, assistant_entry_id, tool_index, tool_call_id, tool_name,
+            effective_args, result_entry_id, replay,
+        },
+        QueueEnqueued { id, lane, queue, run_id, target } => {
+            LaneRecord::QueueEnqueued { id, seq, lane, timestamp, queue, run_id, target }
+        }
+        QueueCancelled { id, lane, entry_id } => LaneRecord::QueueCancelled { id, seq, lane, timestamp, entry_id },
+        WriteDeferred { id, lane, run_id, target } => {
+            LaneRecord::WriteDeferred { id, seq, lane, timestamp, run_id, target }
+        }
+        Usage { id, lane, cause, run_id, entry_id, attempt, stop_reason, tool_call_id, details, usage } => {
+            LaneRecord::Usage {
+                id, seq, lane, timestamp, cause,
+                run_id: run_id.unwrap_or_default(),
+                entry_id: entry_id.unwrap_or_default(),
+                attempt: attempt.unwrap_or(0),
+                stop_reason,
+                tool_call_id,
+                details,
+                usage,
+            }
+        }
+    }
 }
 
 fn record_run_id(record: &NewRecord) -> Option<String> {
@@ -475,12 +508,8 @@ impl SqliteSessionStorage {
         let repo = self.repo.clone();
         let session_id = self.session_id();
         let lease = self.lease.lock().unwrap().clone();
-        let this = Arc::clone(self);
         let _ = repo
             .with_db(move |db| {
-                if this.closing.load(Ordering::SeqCst) {
-                    return Ok(());
-                }
                 release_writer_lease(db, &session_id, &lease)
                     .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
                 Ok(())
@@ -739,14 +768,9 @@ impl SqliteSessionStorage {
             }
             advance_sequence(db, &session_id, seq)
                 .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-            let mut committed: serde_json::Value = serde_json::from_str(&record_str)
+            let record: NewRecord = serde_json::from_str(&record_str)
                 .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to decode committed record: {error}")))?;
-            let object = committed.as_object_mut().expect("serialized record object");
-            object.insert("seq".to_string(), serde_json::json!(seq));
-            object.insert("timestamp".to_string(), serde_json::json!(timestamp));
-            serde_json::from_value(committed).map_err(|error| {
-                session_error(SessionErrorKind::Storage, format!("Failed to decode committed record: {error}"))
-            })
+            Ok(new_record_complete(record, seq as u64, timestamp as u64))
         })
         .await
     }
@@ -1565,7 +1589,7 @@ impl SqliteSessionRepository {
             .lock()
             .unwrap()
             .iter()
-            .filter_map(|candidate| candidate.upgrade())
+            .cloned()
             .collect();
         for storage in storages {
             storage.release().await;

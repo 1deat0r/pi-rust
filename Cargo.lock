@@ -874,6 +874,7 @@ dependencies = [
 name = "pi-session-backends"
 version = "0.84.2"
 dependencies = [
+ "async-trait",
  "pi-agent",
  "pi-ai",
  "rusqlite",
