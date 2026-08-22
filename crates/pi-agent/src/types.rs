@@ -123,6 +123,43 @@ impl CustomAgentMessage {
     }
 }
 
+/// Skill metadata — port of `packages/agent/src/harness/types.ts` `Skill`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skill {
+    /// Stable skill name used for lookup and model-visible listings.
+    pub name: String,
+    /// Short model-visible description of when to use the skill.
+    pub description: String,
+    /// Full skill instructions.
+    pub content: String,
+    /// Absolute path to the skill file (model-visible location).
+    pub file_path: String,
+    /// Exclude from model-visible skill lists while still allowing explicit
+    /// application invocation.
+    pub disable_model_invocation: bool,
+}
+
+/// Prompt template — port of `packages/agent/src/harness/types.ts`
+/// `PromptTemplate`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptTemplate {
+    /// Stable template name used for lookup or application command routing.
+    pub name: String,
+    /// Optional description for command lists or autocomplete.
+    pub description: Option<String>,
+    /// Template content. Argument placeholders are formatted by
+    /// `formatPromptTemplateInvocation`.
+    pub content: String,
+}
+
+/// Resources made available to explicit invocation methods and system-prompt
+/// callbacks (upstream `AgentHarnessResources`).
+#[derive(Debug, Clone, Default)]
+pub struct AgentHarnessResources {
+    pub prompt_templates: Vec<PromptTemplate>,
+    pub skills: Vec<Skill>,
+}
+
 /// Mirrors the upstream `Result<ok, error>` pair used by the session codec.
 pub type Result<T, E> = std::result::Result<T, E>;
 
