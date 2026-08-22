@@ -16,6 +16,7 @@ pub mod native_modifiers;
 pub mod stdin_buffer;
 pub mod terminal;
 pub mod terminal_colors;
+pub mod terminal_image;
 pub mod tui;
 pub mod undo_stack;
 pub mod utils;
@@ -26,6 +27,7 @@ pub mod components {
     pub mod editor;
     pub mod input;
     pub mod loader;
+    pub mod markdown;
     pub mod scroll_view;
     pub mod select_list;
     pub mod spacer;
@@ -36,6 +38,7 @@ pub mod components {
     pub use editor::Editor;
     pub use input::Input;
     pub use loader::Loader;
+    pub use markdown::Markdown;
     pub use scroll_view::ScrollView;
     pub use select_list::SelectList;
     pub use spacer::Spacer;
