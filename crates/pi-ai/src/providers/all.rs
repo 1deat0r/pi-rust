@@ -213,7 +213,51 @@ macro_rules! env_provider {
 }
 
 env_provider!(ant_ling_provider, "ant-ling", "Ant Ling", "https://api.ant-ling.com/v1", ["ANT_LING_API_KEY"]);
-env_provider!(azure_openai_responses_provider, "azure-openai-responses", "Azure OpenAI", "", ["AZURE_OPENAI_API_KEY"]);
+pub fn azure_openai_responses_provider() -> Provider {
+    let models = catalog_models("azure-openai-responses");
+    let base_url = models.first().map(|m| m.base_url.clone()).unwrap_or_default();
+    let client = reqwest::Client::new();
+    let stream = {
+        let client = client.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::StreamOptions>| {
+                let api_key = options.and_then(|o| o.base.api_key.as_deref());
+                let go = crate::api::azure_openai_responses::AzureOpenAIResponsesOptions {
+                    base: options.cloned().unwrap_or_default(),
+                    ..Default::default()
+                };
+                crate::api::azure_openai_responses::stream(model, ctx, client.clone(), api_key, &go)
+            },
+        )
+    };
+    let simple = {
+        let client = client.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::SimpleStreamOptions>| {
+                let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
+                let opts = options.cloned().unwrap_or_default();
+                crate::api::azure_openai_responses::stream_simple(model, ctx, client.clone(), api_key, &opts)
+            },
+        )
+    };
+    create_provider(CreateProviderOptions {
+        id: "azure-openai-responses".to_string(),
+        name: Some("Azure OpenAI".to_string()),
+        base_url: Some(base_url),
+        headers: None,
+        auth: ProviderAuth {
+            api_key: Some(env_api_key_auth("Azure OpenAI API key", vec!["AZURE_OPENAI_API_KEY".to_string()])),
+            oauth: None,
+        },
+        models,
+        api: crate::models::ProviderApiSpec::Single(crate::models::ProviderStreams { stream, stream_simple: simple }),
+        filter_models: None,
+    })
+}
 env_provider!(baseten_provider, "baseten", "Baseten", "https://inference.baseten.co/v1", ["BASETEN_API_KEY"]);
 env_provider!(cerebras_provider, "cerebras", "Cerebras", "https://api.cerebras.ai/v1", ["CEREBRAS_API_KEY"]);
 env_provider!(deepseek_provider, "deepseek", "DeepSeek", "https://api.deepseek.com", ["DEEPSEEK_API_KEY"]);
@@ -230,9 +274,46 @@ env_provider!(mistral_provider, "mistral", "Mistral", "https://api.mistral.ai", 
 env_provider!(moonshotai_provider, "moonshotai", "Moonshot AI", "https://api.moonshot.ai/v1", ["MOONSHOT_API_KEY"]);
 env_provider!(moonshotai_cn_provider, "moonshotai-cn", "Moonshot AI (CN)", "https://api.moonshot.cn/v1", ["MOONSHOT_API_KEY"]);
 env_provider!(nvidia_provider, "nvidia", "NVIDIA", "https://integrate.api.nvidia.com/v1", ["NVIDIA_API_KEY"]);
-env_provider!(openai_provider, "openai", "OpenAI", "https://api.openai.com/v1", ["OPENAI_API_KEY"]);
-env_provider!(opencode_provider, "opencode", "opencode", "https://opencode.ai/zen", ["OPENCODE_API_KEY"]);
-env_provider!(opencode_go_provider, "opencode-go", "opencode (Go)", "https://opencode.ai/zen/go", ["OPENCODE_API_KEY"]);
+pub fn openai_provider() -> Provider {
+    let base = "https://api.openai.com/v1";
+    provider_with_env_auth(
+        "openai",
+        "OpenAI",
+        Some(base),
+        &["OPENAI_API_KEY"],
+        crate::models::ProviderApiSpec::Single(openai_responses_streams(base.to_string())),
+    )
+}
+pub fn opencode_provider() -> Provider {
+    let models = catalog_models("opencode");
+    let base_url = models.first().map(|m| m.base_url.clone()).unwrap_or_default();
+    let mut streams = std::collections::BTreeMap::new();
+    streams.insert("anthropic-messages".to_string(), anthropic_streams_for(&base_url));
+    streams.insert("google-generative-ai".to_string(), google_streams(base_url.clone(), crate::api::google_generative_ai::DEFAULT_BASE_URL));
+    streams.insert("openai-completions".to_string(), openai_completions_streams(base_url.clone()));
+    streams.insert("openai-responses".to_string(), openai_responses_streams(base_url));
+    provider_with_env_auth(
+        "opencode",
+        "opencode",
+        Some("https://opencode.ai/zen"),
+        &["OPENCODE_API_KEY"],
+        crate::models::ProviderApiSpec::ByApi(streams),
+    )
+}
+pub fn opencode_go_provider() -> Provider {
+    let models = catalog_models("opencode-go");
+    let base_url = models.first().map(|m| m.base_url.clone()).unwrap_or_default();
+    let mut streams = std::collections::BTreeMap::new();
+    streams.insert("openai-completions".to_string(), openai_completions_streams(base_url.clone()));
+    streams.insert("openai-responses".to_string(), openai_responses_streams(base_url));
+    provider_with_env_auth(
+        "opencode-go",
+        "opencode (Go)",
+        Some("https://opencode.ai/zen/go"),
+        &["OPENCODE_API_KEY"],
+        crate::models::ProviderApiSpec::ByApi(streams),
+    )
+}
 env_provider!(openrouter_provider, "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", ["OPENROUTER_API_KEY"]);
 env_provider!(qwen_token_plan_provider, "qwen-token-plan", "Qwen Token Plan", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", ["QWEN_TOKEN_PLAN_API_KEY"]);
 env_provider!(qwen_token_plan_cn_provider, "qwen-token-plan-cn", "Qwen Token Plan (CN)", "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", ["QWEN_TOKEN_PLAN_CN_API_KEY"]);
@@ -428,6 +509,59 @@ mod tests {
     }
 
     #[test]
+    fn openai_provider_routes_through_responses_adaptor() {
+        // Upstream openaiProvider uses openAIResponsesApi as its single api.
+        // The no-key path must surface the responses adaptor's error, not the
+        // completions adaptor's or "no API implementation".
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            std::env::remove_var("OPENAI_API_KEY");
+            let provider = openai_provider();
+            let model = provider.models.first().cloned().unwrap();
+            assert_eq!(model.provider, "openai");
+            let ctx = crate::types::Context::default();
+            let stream = provider.stream(&model, &ctx, None);
+            let msg = stream.for_each(|_| {}).await;
+            let err = msg.error_message().unwrap_or("").to_string();
+            assert!(err.contains("No API key for provider: openai"), "got: {err}");
+            assert!(!err.contains("no API implementation"), "got: {err}");
+        });
+    }
+
+    #[test]
+    fn azure_provider_routes_through_azure_adaptor() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            std::env::remove_var("AZURE_OPENAI_API_KEY");
+            let provider = azure_openai_responses_provider();
+            let model = provider.models.first().cloned().unwrap();
+            let ctx = crate::types::Context::default();
+            let stream = provider.stream(&model, &ctx, None);
+            let msg = stream.for_each(|_| {}).await;
+            let err = msg.error_message().unwrap_or("").to_string();
+            assert!(err.contains("No API key for provider: azure-openai-responses"), "got: {err}");
+        });
+    }
+
+    #[test]
+    fn opencode_mixed_api_dispatches_by_model_api() {
+        let provider = opencode_provider();
+        let models = provider.get_models();
+        // The opencode catalog carries multiple apis; the provider must
+        // dispatch each model to its own stream.
+        let mut apis = std::collections::BTreeSet::new();
+        for m in &models {
+            apis.insert(m.api.clone());
+        }
+        assert!(apis.len() >= 2, "expected mixed apis, got {apis:?}");
+        for m in models.iter().take(5) {
+            let streams = provider.streams.clone();
+            let has_entry = streams.get(&m.api).is_some();
+            assert!(has_entry, "model {} api {} missing provider stream", m.id, m.api);
+        }
+    }
+
+    #[test]
     fn builtin_models_facade_lists_all_models() {
         let models = builtin_models(crate::models::CreateModelsOptions::default());
         let all = models.get_models(None);
@@ -513,4 +647,85 @@ pub fn google_provider_real() -> Provider {
             crate::api::google_generative_ai::DEFAULT_BASE_URL,
         )),
     )
+}
+
+/// ProviderStreams for the openai-responses API family.
+pub fn openai_responses_streams(base_url: String) -> crate::models::ProviderStreams {
+    let client = reqwest::Client::new();
+    let stream = {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::StreamOptions>| {
+                let api_key = options.and_then(|o| o.base.api_key.as_deref());
+                let opts = crate::api::openai_responses::OpenAIResponsesOptions {
+                    base: options.cloned().unwrap_or_default(),
+                    ..Default::default()
+                };
+                crate::api::openai_responses::stream(model, ctx, client.clone(), &base_url, api_key, &opts)
+            },
+        )
+    };
+    let simple = {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::SimpleStreamOptions>| {
+                let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
+                let opts = options.cloned().unwrap_or_default();
+                crate::api::openai_responses::stream_simple(model, ctx, client.clone(), &base_url, api_key, &opts)
+            },
+        )
+    };
+    crate::models::ProviderStreams { stream, stream_simple: simple }
+}
+
+/// Anthropic Messages streams bound to an explicit base URL (for mixed-api
+/// providers like opencode that route models by api).
+pub fn anthropic_streams_for(base_url: &str) -> crate::models::ProviderStreams {
+    let client = reqwest::Client::new();
+    let base_url = base_url.to_string();
+    let stream = {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::StreamOptions>| {
+                let api_key = options.and_then(|o| o.base.api_key.as_deref());
+                crate::api::anthropic_messages::stream(
+                    model,
+                    ctx,
+                    client.clone(),
+                    &base_url,
+                    api_key,
+                    &crate::api::anthropic_messages::AnthropicOptions::default(),
+                )
+            },
+        )
+    };
+    let stream_simple = {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::SimpleStreamOptions>| {
+                let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
+                crate::api::anthropic_messages::stream(
+                    model,
+                    ctx,
+                    client.clone(),
+                    &base_url,
+                    api_key,
+                    &crate::api::anthropic_messages::AnthropicOptions::default(),
+                )
+            },
+        )
+    };
+    crate::models::ProviderStreams { stream, stream_simple }
 }

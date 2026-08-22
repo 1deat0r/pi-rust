@@ -120,6 +120,22 @@ impl std::str::FromStr for ModelThinkingLevel {
     }
 }
 
+impl ModelThinkingLevel {
+    /// Parse a raw effort string ("off"/"minimal"/.../"max") into the level.
+    pub fn from_effort_str(s: &str) -> ModelThinkingLevel {
+        match s {
+            "off" => ModelThinkingLevel::Off,
+            "minimal" => ModelThinkingLevel::Minimal,
+            "low" => ModelThinkingLevel::Low,
+            "medium" => ModelThinkingLevel::Medium,
+            "high" => ModelThinkingLevel::High,
+            "xhigh" => ModelThinkingLevel::Xhigh,
+            "max" => ModelThinkingLevel::Max,
+            _ => ModelThinkingLevel::Medium,
+        }
+    }
+}
+
 impl From<ThinkingLevel> for ModelThinkingLevel {
     fn from(v: ThinkingLevel) -> Self {
         match v {
@@ -497,6 +513,12 @@ impl AssistantMessage {
     }
     pub fn content_mut(&mut self) -> &mut Vec<ContentBlock> {
         match self { AssistantMessage::Assistant { content, .. } => content }
+    }
+    pub fn content_len(&self) -> usize {
+        match self { AssistantMessage::Assistant { content, .. } => content.len() }
+    }
+    pub fn usage_mut(&mut self) -> Option<&mut Usage> {
+        match self { AssistantMessage::Assistant { usage, .. } => usage.as_mut() }
     }
     pub fn timestamp(&self) -> u64 {
         match self { AssistantMessage::Assistant { timestamp, .. } => *timestamp }

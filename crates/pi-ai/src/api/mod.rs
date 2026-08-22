@@ -12,3 +12,6 @@ pub use anthropic_messages::{stream, AnthropicOptions, AnthropicThinkingDisplay}
 pub mod transform_messages;
 pub mod google_shared;
 pub mod google_generative_ai;
+pub mod openai_responses_shared;
+pub mod openai_responses;
+pub mod azure_openai_responses;

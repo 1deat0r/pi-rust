@@ -9,6 +9,10 @@ pub mod anthropic;
 pub mod faux;
 
 pub use all::{
+    anthropic_streams_for,
+    google_streams,
+    google_provider_real,
+    openai_responses_streams,
     amazon_bedrock_provider, anthropic_provider, ant_ling_provider, azure_openai_responses_provider,
     baseten_provider, builtin_models, builtin_providers, catalog_models, cerebras_provider,
     cloudflare_ai_gateway_provider, cloudflare_workers_ai_provider, deepseek_provider,
