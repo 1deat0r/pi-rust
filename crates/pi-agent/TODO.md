@@ -92,13 +92,37 @@ and the upstream session-backend conformance suite (30 cases × 2 backends).
   getDefaultStreamFn) with the upstream panic message. 2 tests.
 - pi-agent workspace tests: 183 passing, 0 warnings.
 
+## Done (Session 11+ — port/agent-harness lane)
+- proxy.rs (packages/agent/src/proxy.ts): streamProxy over the proxy-server
+  SSE endpoint; ProxyAssistantMessageEvent wire types, partial message
+  reconstruction incl. streaming tool-JSON accumulation per content index,
+  error/abort finalization. 7 tests.
+- harness/telemetry.rs (harness/telemetry.ts): AI_TELEMETRY_SCHEMA +
+  HARNESS_TELEMETRY_SCHEMA as JSON data (spread-inlined, HOOK_NAMES /
+  EVENT_TYPES references resolved), agent_telemetry_schemas(),
+  start_ai_span/start_harness_span. 11 tests.
+- harness/env.rs (harness/types.ts + harness/env/nodejs.ts): Outcome/Result
+  helpers, FileError/ExecutionError/CompactionError/BranchSummaryError with
+  upstream codes, FileSystem/Shell/ExecutionEnv traits, StdExecutionEnv
+  (resolve ~/file://, timeout validation + kill, inherit-env replacement,
+  chunk callbacks). 25 tests.
+- rich_agent.rs (agent.ts + agent-loop.ts additive): RichAgentEvent full
+  event stream, QueueMode/PendingMessageQueue/ToolExecutionMode,
+  run_rich_agent_loop (steering/follow-up, truncated-batch failing, seq/
+  parallel tool batches, before/afterToolCall, shouldStopAfterTurn,
+  transformContext), Agent class (subscribe/prompt/continue/steer/followUp/
+  abort). 5 tests. Divergence notes: tool_execution_update + terminate hints
+  await the AgentTool contract upgrade.
+- harness/shell_output.rs + harness/agent_harness.rs landed via the shared
+  worktree (see the harness lane's own commits).
+
 ## Not yet ported (upstream mapping)
-- Agent loop + harness (agent.ts / agent-loop.ts, harness/* beyond the
-  session/compaction layers): full agent-loop surface (steering/follow-up,
-  tool execution events, before/afterToolCall, parallel tool mode),
-  harness/agent-harness.ts, harness/telemetry.ts, proxy.ts
-  (streamProxy), harness env/exec surface (ExecutionEnv/Shell, typed
-  FileError/ExecutionError/CompactionError, Result helpers).
+- AgentTool contract upgrade to the upstream shape (label, prepareArguments,
+  execute(toolCallId, params, signal, onUpdate) -> AgentToolResult) so the
+  rich loop can emit tool_execution_update and terminate hints; requires
+  touching every tool constructor + run.rs call sites.
+- pi-ai validateToolArguments port (tool-args JSON-schema validation) and
+  wire it into prepare_tool_call.
 - Coding-agent extended messages wiring (packages/coding-agent/src/core/
   messages.ts) — AgentMessage custom variants are in pi-agent; the coding
   agent's use of BashExecutionMessage/CustomMessage is P4/P8.

@@ -785,9 +785,12 @@ version = "0.84.2"
 dependencies = [
  "async-trait",
  "base64",
+ "futures-util",
  "indexmap",
  "pi-ai",
+ "pi-telemetry",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
