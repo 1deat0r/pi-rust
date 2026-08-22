@@ -14,6 +14,10 @@ use pi_ai::AssistantMessageEventStream;
 use crate::tools::AgentTool;
 use crate::types::AgentMessage;
 
+/// Provider stream function: `(model, context) -> event stream`.
+pub type StreamFn =
+    Arc<dyn Fn(&pi_ai::model::Model, &Context) -> AssistantMessageEventStream + Send + Sync>;
+
 pub struct AgentContext {
     pub system_prompt: Option<String>,
     pub messages: Vec<AgentMessage>,
@@ -38,7 +42,7 @@ pub enum AgentEvent {
 
 pub struct AgentLoopConfig {
     pub model: pi_ai::model::Model,
-    pub stream_fn: Arc<dyn Fn(&pi_ai::model::Model, &Context) -> AssistantMessageEventStream + Send + Sync>,
+    pub stream_fn: StreamFn,
     pub signal: Option<Arc<AtomicBool>>,
     /// Stop after each turn (like `--print`); defaults to auto (stop when no
     /// tool calls and no follow-ups).
@@ -138,17 +142,13 @@ async fn stream_assistant_response(
     context: &AgentContext,
     config: &AgentLoopConfig,
 ) -> AssistantMessage {
+    // Message conversion goes through the harness converter (messages.rs
+    // `convertToLlm`): custom agent messages are rendered into user messages
+    // (bash executions, custom content, compaction/branch summaries) instead
+    // of being dropped at the provider boundary.
     let llm_context = Context {
         system_prompt: context.system_prompt.clone(),
-        messages: current_messages
-            .iter()
-            .filter_map(|m| match m {
-                AgentMessage::Core(message) => Some(message.clone()),
-                // Custom messages are dropped in the base conversion; harness
-                // hooks convert them at the coding-agent level.
-                AgentMessage::Custom(_) => None,
-            })
-            .collect(),
+        messages: crate::messages::convert_to_llm(current_messages),
         tools: context.tools.iter().map(|t| t.tool.clone()).collect(),
     };
     let stream = (config.stream_fn)(&config.model, &llm_context);
@@ -179,4 +179,63 @@ pub fn user_content_text(user: &pi_ai::types::UserContent) -> String {
 /// Check whether the current signal has been aborted.
 pub fn is_aborted(signal: Option<&Arc<AtomicBool>>) -> bool {
     signal.map(|s| s.load(Ordering::SeqCst)).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::CustomAgentMessage;
+
+    fn bash_message() -> AgentMessage {
+        AgentMessage::Custom(CustomAgentMessage::BashExecution {
+            command: "ls".into(),
+            output: "a\nb".into(),
+            exit_code: Some(0),
+            cancelled: false,
+            truncated: false,
+            full_output_path: None,
+            timestamp: 3,
+            exclude_from_context: None,
+        })
+    }
+
+    fn compaction_summary_message() -> AgentMessage {
+        AgentMessage::Custom(CustomAgentMessage::CompactionSummary {
+            summary: "history summarized".into(),
+            tokens_before: 42,
+            timestamp: 4,
+        })
+    }
+
+    #[test]
+    fn convert_to_llm_renders_custom_messages_for_the_provider() {
+        let messages = vec![
+            user_text_prompt("hello", 1),
+            bash_message(),
+            compaction_summary_message(),
+        ];
+        let llm = crate::messages::convert_to_llm(&messages);
+        let texts: Vec<String> = llm
+            .iter()
+            .filter_map(|m| match m {
+                Message::User(u) => Some(user_content_text(u)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 3);
+        assert!(texts[0].contains("hello"));
+        assert!(texts[1].contains("Ran `ls`"));
+        assert!(texts[2].contains("compacted into the following summary"));
+        assert!(texts[2].contains("history summarized"));
+    }
+
+    #[test]
+    fn bash_execution_excluded_from_context_is_suppressed() {
+        let mut message = bash_message();
+        if let AgentMessage::Custom(CustomAgentMessage::BashExecution { exclude_from_context, .. }) = &mut message {
+            *exclude_from_context = Some(true);
+        }
+        let llm = crate::messages::convert_to_llm(&[message]);
+        assert_eq!(llm.len(), 0);
+    }
 }
