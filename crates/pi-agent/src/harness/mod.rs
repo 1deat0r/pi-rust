@@ -5,10 +5,11 @@
 //! summarization calls, and the harness error types.
 //!
 //! Remaining harness surfaces (tracked in `crates/pi-agent/TODO.md`):
-//! events, reducer, prompt templates, system prompt, skills, env, agent
-//! loop integration, telemetry wiring.
+//! `events` landed this session; reducer, prompt templates, system prompt,
+//! skills, env, agent-loop integration, and telemetry wiring remain.
 
 pub mod compaction;
+pub mod events;
 mod models;
 
 pub use models::{BoxFuture, CompleteSimpleFn, SimpleModels};
