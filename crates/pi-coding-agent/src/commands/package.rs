@@ -426,9 +426,10 @@ pub fn handle_package_command(args: &[String]) -> bool {
     });
 
     package_manager.set_progress_callback(Some(Box::new(|event| {
+        // Upstream streams the dimmed progress line to stdout.
         if event.event_type == "start" {
             if let Some(message) = &event.message {
-                eprintln!("{}", message);
+                println!("{message}");
             }
         }
     })));
