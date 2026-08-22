@@ -90,6 +90,21 @@ Settings manager (full upstream surface) landed.
   models facade when --provider faux, closing the documented divergence where
   RPC compact failed without a facade-registered provider. 1 regression test.
 
+## Done (Session 11 — coding-agent parity)
+- core/extensions/{types,loader,runner,wrapper,mod}.rs — discovery/resolution, external node/bun
+  runner, runtime state + runner aggregation, wrapper addedToolNames diff.
+- core/package_manager.rs + commands/package.rs — npm/local/git install/remove/update/list, settings
+  persistence, upstream output/exit codes.
+- core/event_bus.rs, usage_totals.rs, provider_attribution.rs, slash_commands.rs (BUILTIN registry).
+- core/model_config.rs, model_registry.rs, model_resolver.rs, models_store.rs, remote_catalog_provider.rs,
+  provider_composer.rs (applyModelsJson/applyExtension/applyModelOverride/compat).
+- commands/auth.rs (check/print-api-key/print-bearer-token), commands/config.rs (non-TUI fallback),
+  main.rs dispatch. 384 tests incl. 28 binary-level CLI tests.
+- interactive/: tui_theme, slash dispatch, message renderers, selectors (model/thinking/theme/settings),
+  footer — Editor-driven loop with autocomplete + streaming markdown (tmux-verified). 6 tests.
+- Remaining: ConfigSelector full TUI port, several slash commands pending core plumbing
+  (export/import/share/trust/login/new/resume), update --models pi.dev fetch, TS in-process extension
+  execution.
 ## Remaining (upstream mapping — big items first)
 - Wire SettingsManager into run/main (currently standalone; P4 criterion
   "settings round-trip" is satisfied by the module tests, session wiring is

@@ -66,6 +66,19 @@ and the upstream session-backend conformance suite (30 cases × 2 backends).
 - pi-ai utils/retry.rs: retryAssistantCall + isRetryableAssistantError
   (16 tests ported from retry.test.ts).
 
+- harness/telemetry.rs: telemetry span taxonomy (11 harness spans, AI_TELEMETRY/
+  HARNESS_TELEMETRY schemas) over pi-telemetry contexts, HOOK_NAMES/EVENT_TYPES. 11 tests.
+- harness/env.rs: FileSystem/Shell/ExecutionEnv async traits + StdExecutionEnv (resolve ~/file://,
+  timeout validation, kill-on-timeout, stream callbacks). 25 tests.
+- proxy.rs: streamProxy — ProxyAssistantMessageEvent wire protocol + client-side reconstruction. 7 tests.
+- harness/shell_output.rs: sanitizeBinaryOutput/trimToLastUtf8Bytes/executeShellWithCapture with tail
+  truncation + full-output spill. 5 tests.
+- agent.rs (+rich loop): Agent class + rich_agent loop (agent.ts/agent-loop.ts additive port) with
+  harness events wiring.
+- harness/agent_harness.rs: AgentHarness scaffold — 14 tagged-error constructors, Run/Compaction/
+  Navigation/Resume outcome unions, ActionInfo, LaneSnapshot/SessionSnapshot, UnavailableRegistry,
+  AgentLane async-trait, create() (rejects record-bearing sessions). 4 tests.
+- pi-agent workspace: 244 tests passing.
 ## Done (Session 11 — harness surfaces)
 - harness/events.rs: HarnessEventBus (run_start/run_end), per-type on()
   subscriptions, watch handles with buffer-until-start semantics. 4 tests.
