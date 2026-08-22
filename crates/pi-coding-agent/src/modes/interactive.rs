@@ -45,6 +45,10 @@ struct InteractiveRuntime {
     session_name: Option<String>,
     system_prompt: Option<String>,
     tools_enabled: bool,
+    /// Number of in-memory messages already persisted into the current
+    /// session. Session-switch operations (resume/fork/clone) advance it so
+    /// the exit persist only appends messages added after the switch.
+    persisted_until: usize,
 }
 
 /// Stream a prompt through the agent loop, observing raw events.
@@ -143,6 +147,25 @@ async fn rehydrate_transcript(
     messages
 }
 
+/// Append in-memory messages to a session's main lane (idempotent per call).
+async fn persist_messages(
+    session: &mut JsonlSession<pi_agent::fs::StdFileSystem>,
+    messages: &[pi_agent::types::AgentMessage],
+) {
+    for message in messages {
+        let _ = session
+            .append_entry(
+                EntryNoStats::Message {
+                    id: format!("m-{}", pi_agent::session::new_id()),
+                    message: message.clone(),
+                    terminate: None,
+                },
+                "main",
+            )
+            .await;
+    }
+}
+
 /// Wrap a modal in a renderable SharedComponent for the frame.
 fn modal_shared(modal: &mut Modal) -> SharedComponent {
     match modal {
@@ -201,6 +224,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         session_name: None,
         system_prompt: args.system_prompt.clone(),
         tools_enabled: !args.no_tools,
+        persisted_until: 0,
     };
 
     // Terminal + components.
@@ -372,6 +396,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                 runtime.session_id = meta.id.clone();
                                                 runtime.session_name = None;
                                                 runtime.messages = rehydrate_transcript(&runtime, &transcript_md, hide_thinking).await;
+                                                runtime.persisted_until = runtime.messages.len();
                                                 status_banner = format!(
                                                     "resumed session {} ({} prior messages)",
                                                     meta.id.get(..8).unwrap_or(&meta.id),
@@ -538,6 +563,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                             runtime.session = new_session;
                                             runtime.session_id = new_id;
                                             runtime.messages.clear();
+                                            runtime.persisted_until = 0;
                                             transcript_md.lock().unwrap().set_text("");
                                             status_banner = format!(
                                                 "started new session {} in {}",
@@ -594,6 +620,13 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     }
                                 }
                                 "fork" | "clone" => {
+                                    // Persist the current in-memory transcript first so the
+                                    // fork/clone carries it (the interactive loop only persists
+                                    // on exit; we switch sessions before that happens).
+                                    if !runtime.messages.is_empty() {
+                                        let to_append: Vec<pi_agent::types::AgentMessage> = runtime.messages.to_vec();
+                                        persist_messages(&mut runtime.session, &to_append).await;
+                                    }
                                     let meta = runtime.session.get_metadata().await;
                                     let new_id = pi_agent::session::new_id();
                                     let cwd = runtime.cwd.clone();
@@ -623,32 +656,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                             })
                                             .await
                                             .map_err(|e| format!("clone create failed: {e}"))?;
-                                        let entries = runtime
-                                            .session
-                                            .find_entries(&pi_agent::session::state::EntryQuery {
-                                                order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
-                                                id: None,
-                                                entry_type: None,
-                                                custom_type: None,
-                                                cursor: None,
-                                                limit: None,
-                                            })
-                                            .await
-                                            .unwrap_or_default();
-                                        for entry in &entries {
-                                            if let pi_agent::session::types::Entry::Message { message, .. } = entry {
-                                                let _ = fresh
-                                                    .append_entry(
-                                                        EntryNoStats::Message {
-                                                            id: format!("m-{}", pi_agent::session::new_id()),
-                                                            message: message.clone(),
-                                                            terminate: None,
-                                                        },
-                                                        "main",
-                                                    )
-                                                    .await;
-                                            }
-                                        }
+                                        let to_append: Vec<pi_agent::types::AgentMessage> = runtime.messages.to_vec();
+                                        persist_messages(&mut fresh, &to_append).await;
                                         Ok(fresh)
                                     };
                                     match result {
@@ -656,7 +665,18 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                             runtime.session = session;
                                             runtime.session_id = new_id;
                                             runtime.session_name = None;
-                                            runtime.messages = rehydrate_transcript(&runtime, &transcript_md, hide_thinking).await;
+                                            // Messages are persisted in the target already; keep the
+                                            // in-memory transcript for display and only persist
+                                            // messages added after the switch.
+                                            runtime.persisted_until = runtime.messages.len();
+                                            transcript_md
+                                                .lock()
+                                                .unwrap()
+                                                .set_text(it::compose_transcript(
+                                                    &runtime.messages,
+                                                    hide_thinking,
+                                                    "",
+                                                ));
                                             status_banner = format!(
                                                 "{} session {} ({} prior messages)",
                                                 command.name,
@@ -684,22 +704,13 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     })
     .await;
 
-    // Persist the last turn if any messages were produced.
-    if !runtime.messages.is_empty() {
-        let to_append: Vec<pi_agent::types::AgentMessage> = runtime.messages.to_vec();
-        for message in to_append {
-            let _ = runtime
-                .session
-                .append_entry(
-                    EntryNoStats::Message {
-                        id: format!("m-{}", pi_agent::session::new_id()),
-                        message,
-                        terminate: None,
-                    },
-                    "main",
-                )
-                .await;
-        }
+    // Persist messages that were added after the last session-switch
+    // operation (resume/fork/clone advance the watermark; the rest already
+    // live in the session).
+    if runtime.messages.len() > runtime.persisted_until {
+        let to_append: Vec<pi_agent::types::AgentMessage> =
+            runtime.messages[runtime.persisted_until..].to_vec();
+        persist_messages(&mut runtime.session, &to_append).await;
     }
 
     // Leave the alternate screen.
