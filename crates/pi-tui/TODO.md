@@ -7,6 +7,20 @@ differential line renderer, flex constraint solver, and the core components
 Input). 20 tests. Interactive mode (pi-coding-agent modes/interactive.rs)
 uses this subset and is tmux-verified.
 
+## Done (Session 11 — full TUI surface + interactive mode)
+- Pure logic: fuzzy, kill-ring, undo-stack, word-navigation, terminal-colors, native-modifiers,
+  LaTeX (91 upstream parity cases), autocomplete (fuzzy + fd path + slash).
+- Components: full SelectList, multi-line Editor (history, kill/yank, undo coalescing, paste markers,
+  autocomplete), Markdown block renderer, Image + terminal-image capability probing, SettingsList,
+  CancellableLoader, alt-screen flash/search overlays.
+- keybindings registry + KeybindingsManager, stdin-buffer (bracketed paste + kitty CSI-u dedup),
+  Esc/escape normalization.
+- coding-agent interactive mode: Editor-driven loop with autocomplete, slash-commands registry +
+  dispatch, selectors (model/thinking/theme/settings), footer, streaming markdown, tmux-verified.
+- pi-tui 176 lib tests; pi-coding-agent 142 (6 interactive).
+- Remaining: full alt-screen screen-swap, ICU word segmentation, tmux client_termfeatures probe,
+  ConfigSelector full TUI component, token-total footer reads.
+
 ## Not yet ported (upstream mapping)
 - Editor component (multi-line editing with selection/IME), Markdown
   renderer, Image (sixel/iTerm/kitty), SettingsList, CancellableLoader,

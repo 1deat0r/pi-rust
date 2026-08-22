@@ -51,6 +51,18 @@ Core types/stream infra + faux + anthropic landed. 128 workspace tests, 0 warnin
 - Workspace: 411 tests passing (was 384); pi-ai 80; 0 lib warnings in touched
   crates; new modules clippy-clean.
 
+## Done (Session 11 — full adaptor completion)
+- api/: mistral-conversations (native), openai-codex-responses (SSE), bedrock-converse (SigV4 +
+  aws-eventstream), google-vertex (API-key + ADC JWT), cloudflare (workers-ai/ai-gateway auth),
+  github-copilot-headers (dynamic request headers), pi-messages (broker), openrouter-images (+ images
+  facade with 45-model vendored catalog). All 39 catalog providers now dispatch real streams.
+- providers/all.rs wiring: amazon-bedrock, google-vertex, cloudflare-ai-gateway/workers-ai,
+  github-copilot, mistral, openai-codex all route to their adaptors; no_stream() helper removed.
+- Tests: pi-ai 265 (was 142 at Session 10 baseline release).
+- Remaining (documented divergences, TODO-marked): codex WebSocket transport, OAuth device-code flows,
+  DeferredHandles fetch machinery, provider-models.json runtime merge (seam in coding-agent), images
+  retry loop, WS transports, constrained-sampling grammar tools.
+
 ## Done (Session 10 — adaptor completion)
 - api/: google-generative-ai (REST SSE + thought signatures + family
   thinking configs + budgets), openai-responses (+shared: full event loop,

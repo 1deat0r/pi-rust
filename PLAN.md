@@ -513,6 +513,36 @@ Agent: pi (Claude)   HEAD: 291d8ec → (this session)
 - Docs: PLAN.md updated (this entry); pi-ai + pi-coding-agent TODO.md
   updated. Repo pushed after every commit per Session-4 rule.
 
+### Session 11 — 2026-08-22 — parallel completion: all provider adaptors, TUI surface, coding-agent parity, P9, agent-harness
+Agent: pi (Claude) + 6 RLM subagents (A1/A2/B/C/D/E) in isolated worktrees; each branch merged to main after completion. HEAD: e6ce100 → 8c6fa30.
+
+- **pi-ai adaptor completion (A1+A2)**: mistral-conversations (native), openai-codex-responses (SSE),
+  bedrock-converse (SigV4 + aws-eventstream), google-vertex (api-key/ADC JWT), cloudflare (workers-ai/
+  ai-gateway auth + placeholder base URLs), github-copilot dynamic headers, pi-messages broker,
+  openrouter-images + images facade (45-model vendored catalog). All 39 catalog providers now have real
+  stream dispatch (previously: anthropic/google/openai/azure/codex real, the rest no-API-implementation).
+  ~113 new pi-ai tests (265 total).
+- **pi-tui full surface (B)**: fuzzy, kill-ring, undo-stack, word-navigation, terminal-colors,
+  native-modifiers, keybindings, stdin-buffer, CombinedAutocompleteProvider, LaTeX (91 parity), SelectList,
+  Editor (28 tests), Markdown renderer (22 tests), Image/terminal-image, SettingsList, CancellableLoader,
+  alt-screen flash/search. Interactive mode wired: slash registry+dispatch, selectors, footer, streaming
+  markdown, tmux-verified E2E. pi-tui 176 lib tests.
+- **pi-coding-agent parity (C)**: extensions (loader/runner/wrapper), package manager, CLI commands
+  (install/remove/uninstall/update/list/config/auth), event bus, usage totals, provider attribution,
+  slash-commands registry, model config/registry/resolver/stores, provider composer. 384 tests incl. 28
+  binary-level CLI tests.
+- **P9 (D)**: SqliteSessionRepository + storage (30/30 conformance), migrations/sql/facts/writer-leases/
+  repository/search suites (85 tests), pi-evals harness + CLI runner (20), scripts/parity-suite.mjs (6/6).
+- **pi-agent harness (E + parent)**: events, frontmatter/prompt-templates/system-prompt, skills, reducer
+  (12 corruption reasons), image mime utils, file-mutation-queue, result/stream-fn, telemetry schemas,
+  ExecutionEnv/StdExecutionEnv, proxy streamProxy, shell-output capture, rich agent loop + Agent class,
+  agent-harness scaffold. pi-agent 244 tests.
+- **RPC compact divergence closed**: faux registered in the runtime models facade.
+- Workspace: **1236 tests passing** (was 529); 0 warnings; clippy-clean for all new files.
+- Divergences carried as TODO comments: codex WS transport, OAuth device-code flows, DeferredHandles,
+  images retries, ConfigSelector TUI full port, several interactive slash commands pending core plumbing,
+  models.json runtime merge seam, AWS profile-file chain, vertex ADC scope.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration
@@ -627,11 +657,33 @@ Agent: pi (Claude)   HEAD: 291d8ec → (this session, 37ca48c)
 - Docs: PLAN.md updated (this entry); pi-ai/pi-agent/pi-coding-agent/pi-tui
   TODO.md updated. Repo pushed after every commit.
 
-### Open (carry-forward)
-- P5/P6/P7-core COMPLETE (the sessions above). Remaining: the P7 full TUI
-  surface + interactive feature set, P8 coding-agent parity (incl. RPC/
-  interactive compaction wiring), P9 (sqlite session-backends, evals,
-  packaging/parity suite). Known documented divergences: RPC compact and
-  export_html return the upstream error surface until their services are
-  wired; usage-record negative token adjustments still unrepresentable
-  (pi-ai u64 counts) — decide whether to widen to i64.
+### Session 11 — 2026-08-22 — parallel completion: all provider adaptors, TUI surface, coding-agent parity, P9, agent-harness
+Agent: pi (Claude) + 6 RLM subagents (A1/A2/B/C/D/E) in isolated worktrees; each branch merged to main after completion. HEAD: e6ce100 → 8c6fa30.
+
+- **pi-ai adaptor completion (A1+A2)**: mistral-conversations (native), openai-codex-responses (SSE),
+  bedrock-converse (SigV4 + aws-eventstream), google-vertex (api-key/ADC JWT), cloudflare (workers-ai/
+  ai-gateway auth + placeholder base URLs), github-copilot dynamic headers, pi-messages broker,
+  openrouter-images + images facade (45-model vendored catalog). All 39 catalog providers now have real
+  stream dispatch (previously: anthropic/google/openai/azure/codex real, the rest no-API-implementation).
+  ~113 new pi-ai tests (265 total).
+- **pi-tui full surface (B)**: fuzzy, kill-ring, undo-stack, word-navigation, terminal-colors,
+  native-modifiers, keybindings, stdin-buffer, CombinedAutocompleteProvider, LaTeX (91 parity), SelectList,
+  Editor (28 tests), Markdown renderer (22 tests), Image/terminal-image, SettingsList, CancellableLoader,
+  alt-screen flash/search. Interactive mode wired: slash registry+dispatch, selectors, footer, streaming
+  markdown, tmux-verified E2E. pi-tui 176 lib tests.
+- **pi-coding-agent parity (C)**: extensions (loader/runner/wrapper), package manager, CLI commands
+  (install/remove/uninstall/update/list/config/auth), event bus, usage totals, provider attribution,
+  slash-commands registry, model config/registry/resolver/stores, provider composer. 384 tests incl. 28
+  binary-level CLI tests.
+- **P9 (D)**: SqliteSessionRepository + storage (30/30 conformance), migrations/sql/facts/writer-leases/
+  repository/search suites (85 tests), pi-evals harness + CLI runner (20), scripts/parity-suite.mjs (6/6).
+- **pi-agent harness (E + parent)**: events, frontmatter/prompt-templates/system-prompt, skills, reducer
+  (12 corruption reasons), image mime utils, file-mutation-queue, result/stream-fn, telemetry schemas,
+  ExecutionEnv/StdExecutionEnv, proxy streamProxy, shell-output capture, rich agent loop + Agent class,
+  agent-harness scaffold. pi-agent 244 tests.
+- **RPC compact divergence closed**: faux registered in the runtime models facade.
+- Workspace: **1236 tests passing** (was 529); 0 warnings; clippy-clean for all new files.
+- Divergences carried as TODO comments: codex WS transport, OAuth device-code flows, DeferredHandles,
+  images retries, ConfigSelector TUI full port, several interactive slash commands pending core plumbing,
+  models.json runtime merge seam, AWS profile-file chain, vertex ADC scope.
+
