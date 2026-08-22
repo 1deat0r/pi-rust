@@ -11,6 +11,7 @@ pub mod keys;
 pub mod kill_ring;
 pub mod layout;
 pub mod native_modifiers;
+pub mod stdin_buffer;
 pub mod terminal;
 pub mod terminal_colors;
 pub mod tui;
@@ -42,6 +43,7 @@ pub mod components {
 pub use keybindings::{KeybindingDefinition, KeybindingsConfig, KeybindingsManager, TUI_KEYBINDINGS};
 pub use keys::{match_key, parse_key, TuiKey};
 pub use layout::{HStackLayout, LayoutConstraint, StackLayout, VStackLayout};
+pub use stdin_buffer::{SequenceStatus, StdinBuffer};
 pub use terminal::{TerminalBackend, TerminalEvent};
 pub use tui::{Component, Scene, SharedComponent, Tree};
 pub use utils::{slice_with_width, visible_width, wrap_text_with_ansi};
