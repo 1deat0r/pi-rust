@@ -319,7 +319,15 @@ env_provider!(qwen_token_plan_provider, "qwen-token-plan", "Qwen Token Plan", "h
 env_provider!(qwen_token_plan_cn_provider, "qwen-token-plan-cn", "Qwen Token Plan (CN)", "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", ["QWEN_TOKEN_PLAN_CN_API_KEY"]);
 env_provider!(qwen_token_plan_individual_provider, "qwen-token-plan-individual", "Qwen Token Plan (Individual)", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", ["QWEN_TOKEN_PLAN_API_KEY"]);
 env_provider!(together_provider, "together", "Together", "https://api.together.ai/v1", ["TOGETHER_API_KEY"]);
-env_provider!(vercel_ai_gateway_provider, "vercel-ai-gateway", "Vercel AI Gateway", "https://ai-gateway.vercel.sh", ["AI_GATEWAY_API_KEY"]);
+pub fn vercel_ai_gateway_provider() -> Provider {
+    provider_with_env_auth(
+        "vercel-ai-gateway",
+        "Vercel AI Gateway",
+        Some("https://ai-gateway.vercel.sh"),
+        &["AI_GATEWAY_API_KEY"],
+        crate::models::ProviderApiSpec::Single(anthropic_streams_for("https://ai-gateway.vercel.sh")),
+    )
+}
 env_provider!(xai_provider, "xai", "xAI", "https://api.x.ai/v1", ["XAI_API_KEY"]);
 env_provider!(xiaomi_provider, "xiaomi", "Xiaomi", "https://api.xiaomimimo.com/v1", ["XIAOMI_API_KEY"]);
 env_provider!(xiaomi_token_plan_ams_provider, "xiaomi-token-plan-ams", "Xiaomi Token Plan (AMS)", "https://token-plan-ams.xiaomimimo.com/v1", ["XIAOMI_TOKEN_PLAN_AMS_API_KEY"]);

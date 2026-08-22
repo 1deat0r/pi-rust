@@ -5,3 +5,4 @@ pub mod resolve_config_value;
 pub mod session_migration;
 pub mod settings;
 pub mod tools;
+pub mod model_runtime;

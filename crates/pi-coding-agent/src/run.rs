@@ -92,71 +92,63 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         !has_explicit_provider(args.provider.as_deref()),
     );
 
-    // Build the model + stream function for the selected provider. `faux` is
-    // the scripted test provider; `anthropic` is the first real provider
-    // port. Others fail clearly until ported.
-    let (model, stream_fn): (pi_ai::model::Model, StreamFn) = match provider.as_str() {
-            "faux" => {
-                let core = pi_ai::providers::FauxProviderCore::new(&pi_ai::providers::RegisterFauxProviderOptions::default());
-                let model = match model_hint.as_deref() {
-                    Some(hint) => {
-                        let id = hint.rsplit('/').next().unwrap_or(hint);
-                        core.get_model(Some(id))
-                            .cloned()
-                            .ok_or_else(|| format!("unknown faux model {id:?}"))?
-                    }
-                    None => core.models.first().cloned().ok_or_else(|| "no faux model".to_string())?,
-                };
-                let reply = args
-                    .messages
-                    .last()
+    // Build the model + stream function for the selected provider. Real
+    // providers route through the pi-ai Models facade (catalog-backed model
+    // resolution + auth application + api dispatch). `faux` keeps its
+    // scripted path for tests.
+    let (model, stream_fn): (pi_ai::model::Model, StreamFn) = if provider == "faux" {
+        let core = pi_ai::providers::FauxProviderCore::new(&pi_ai::providers::RegisterFauxProviderOptions::default());
+        let model = match model_hint.as_deref() {
+            Some(hint) => {
+                let id = hint.rsplit('/').next().unwrap_or(hint);
+                core.get_model(Some(id))
                     .cloned()
-                    .unwrap_or_else(|| "Hello from pi-rust".to_string());
-                core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
-                    pi_ai::providers::faux_assistant_message(
-                        vec![pi_ai::types::ContentBlock::text(format!("faux response to: {reply}"))],
-                        pi_ai::providers::FauxAssistantOptions::default(),
-                    ),
-                )]);
-                let core = core.clone();
-                let stream_fn: StreamFn =
-                    Arc::new(move |model, ctx| core.stream(model, ctx, None));
-                (model, stream_fn)
+                    .ok_or_else(|| format!("unknown faux model {id:?}"))?
             }
-            "anthropic" => {
-                let api_key = args
-                    .api_key
-                    .clone()
-                    .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
-                    .or_else(|| std::env::var(config::ENV_KEY).ok())
-                    .ok_or_else(|| {
-                        "anthropic: no API key found (set ANTHROPIC_API_KEY or pass --api-key)".to_string()
-                    })?;
-                let prov = pi_ai::providers::AnthropicProvider::new();
-                let model = match model_hint.as_deref() {
-                    Some(hint) => {
-                        let id = hint.rsplit('/').next().unwrap_or(hint);
-                        prov.get_model(id)
-                            .cloned()
-                            .ok_or_else(|| format!("unknown anthropic model {id:?}"))?
-                    }
-                    None => prov
-                        .get_model("claude-sonnet-4-6")
-                        .cloned()
-                        .ok_or_else(|| "no anthropic model".to_string())?,
-                };
-                let stream_fn: StreamFn = Arc::new(move |model, ctx| {
-                    prov.stream_with_options(model, ctx, Some(&api_key), &pi_ai::api::AnthropicOptions::default())
-                });
-                (model, stream_fn)
-            }
-            "google" => {
-                return Err(
-                    "the google provider is not yet ported; use --provider faux or --provider anthropic".to_string(),
-                )
-            }
-            other => return Err(format!("provider {other:?} is not yet ported")),
+            None => core.models.first().cloned().ok_or_else(|| "no faux model".to_string())?,
         };
+        let reply = args
+            .messages
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "Hello from pi-rust".to_string());
+        core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
+            pi_ai::providers::faux_assistant_message(
+                vec![pi_ai::types::ContentBlock::text(format!("faux response to: {reply}"))],
+                pi_ai::providers::FauxAssistantOptions::default(),
+            ),
+        )]);
+        let core = core.clone();
+        let stream_fn: StreamFn = Arc::new(move |model, ctx| core.stream(model, ctx, None));
+        (model, stream_fn)
+    } else {
+        let models = {
+            let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+            models
+        };
+        if models.get_provider(&provider).is_none() {
+            return Err(format!("provider {provider:?} is not registered in the model registry"));
+        }
+        let model = crate::core::model_runtime::resolve_run_model_for_provider(&models, &provider, model_hint.as_deref())?;
+        // Stream options carry the explicit --api-key / PI_KEY (the facade
+        // applies env-key auth when absent).
+        let api_key = args
+            .api_key
+            .clone()
+            .or_else(|| std::env::var(config::ENV_KEY).ok());
+        let stream_options = pi_ai::types::StreamOptions {
+            base: pi_ai::types::ProviderRequestOptions {
+                api_key,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let models = models.clone();
+        let stream_fn: StreamFn = Arc::new(move |_model, ctx| {
+            models.stream(_model, ctx, Some(&stream_options))
+        });
+        (model, stream_fn)
+    };
 
     let system_prompt = args.system_prompt.clone().unwrap_or_default();
 
@@ -193,7 +185,8 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     let mut events: Vec<pi_agent::agent::AgentEvent> = Vec::new();
     let new_messages = run_agent_loop(prompts, &mut context, &cfg, &mut |event| events.push(event)).await;
 
-    // Extract final assistant text.
+    // Extract final assistant text; surface a provider error message as a
+    // top-level error (upstream prints the error and exits nonzero).
     let final_text = new_messages
         .iter()
         .rev()
@@ -212,6 +205,17 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             _ => None,
         })
         .unwrap_or_default();
+    // A terminal assistant error with no visible text must surface on stderr.
+    if final_text.is_empty() {
+        if let Some(err) = new_messages.iter().rev().find_map(|m| match m {
+            pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(a)) => {
+                a.error_message().map(|s| s.to_string())
+            }
+            _ => None,
+        }) {
+            return Err(format!("model error: {err}"));
+        }
+    }
 
     // Persist the session unless --no-session.
     let mut session_path = None;
