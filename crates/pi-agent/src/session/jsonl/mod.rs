@@ -414,6 +414,7 @@ fn build_record_from_map(
         },
         "queue_cancelled" => LaneRecord::QueueCancelled {
             id, seq, lane, timestamp,
+            run_id: map.get("runId").and_then(|v| v.as_str()).map(|s| s.to_string()),
             entry_id: require_string(map, "entryId")?,
         },
         "write_deferred" => LaneRecord::WriteDeferred {

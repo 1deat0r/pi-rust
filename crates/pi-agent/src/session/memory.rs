@@ -180,8 +180,8 @@ fn complete_record(new_record: NewRecord, seq: u64, timestamp: u64) -> LaneRecor
         NewRecord::QueueEnqueued { id, lane, queue, run_id, target } => LaneRecord::QueueEnqueued {
             id, seq, lane, timestamp, queue, run_id, target,
         },
-        NewRecord::QueueCancelled { id, lane, entry_id } => {
-            LaneRecord::QueueCancelled { id, seq, lane, timestamp, entry_id }
+        NewRecord::QueueCancelled { id, lane, run_id, entry_id } => {
+            LaneRecord::QueueCancelled { id, seq, lane, timestamp, run_id, entry_id }
         }
         NewRecord::WriteDeferred { id, lane, run_id, target } => LaneRecord::WriteDeferred {
             id, seq, lane, timestamp, run_id, target,

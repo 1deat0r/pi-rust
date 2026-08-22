@@ -383,6 +383,9 @@ pub enum LaneRecord {
         seq: u64,
         lane: String,
         timestamp: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "runId")]
+        run_id: Option<String>,
         #[serde(rename = "entryId")]
         entry_id: String,
     },
@@ -607,6 +610,9 @@ pub enum NewRecord {
     QueueCancelled {
         id: String,
         lane: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "runId")]
+        run_id: Option<String>,
         #[serde(rename = "entryId")]
         entry_id: String,
     },

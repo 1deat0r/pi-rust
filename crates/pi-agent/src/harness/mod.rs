@@ -11,11 +11,13 @@
 pub mod compaction;
 pub mod events;
 pub mod prompt_templates;
+pub mod reducer;
 pub mod system_prompt;
 mod models;
 
 pub use models::{BoxFuture, CompleteSimpleFn, SimpleModels};
 pub use prompt_templates::{PromptTemplateDiagnostic, load_prompt_templates};
+pub use reducer::{LaneReductionInput, LaneReductionResult, LaneState, reduce_lane_state, validate_record_log};
 
 /// Stable error codes returned by compaction helpers
 /// (upstream `CompactionErrorCode`).
