@@ -405,20 +405,76 @@ Agent: pi (Claude)   HEAD: c00742f → (this session)
   Remaining P3-adjacent harness work now: migration v1/v2, compaction +
   branch-summarization, remaining harness env/tools, agent loop.
 
+### Session 8 — 2026-08-22 — compaction + branch-summarization, migration, run-path wiring, P4 auth start
+Agent: pi (Claude)   HEAD: 34b539d → (this session; 5 commits: 802c099→a3611d0)
+
+- **pi-ai utils/retry.rs** — `retryAssistantCall` + `isRetryableAssistantError`
+  port (bounded exponential backoff, abort normalization, quota/billing
+  non-retryable gate, exact upstream pattern sets). 16 tests from retry.test.ts.
+- **harness/compaction/** — full port of `packages/agent/src/harness/compaction/`
+  (utils.ts + compaction.ts + branch-summarization.ts) onto the session layer.
+  includes: file-op extraction/formatting + serializeConversation (2k tool-
+  result truncation), token estimation per role, cut-point/turn-start
+  selection with split-turn semantics, prepareCompaction (previous-summary
+  carry, virtual retained-tail entries, split-turn slicing, prior-compaction
+  file-op details), generateSummary[WithUsage] (maxTokens clamp, reasoning
+  gate, previous-summary + custom-instruction prompts), completeSimpleWith
+  Retries (cacheRetention none + fresh sessionId), compact with turn-prefix
+  usage combination, collectEntriesForBranchSummary (newest-first default
+  branch walk proven against facade semantics), prepareBranchEntries,
+  generateBranchSummary. LLM paths run through a minimal `SimpleModels` seam
+  (harness/models.rs) standing in for pi-ai's Models facade (P4
+  model-runtime will replace). 53 lib + 20 integration tests ported from
+  upstream compaction.test.ts / branch-summarization.test.ts.
+- **Migration v1/v2/v3** — ported from packages/coding-agent/src/core/
+  session-manager.ts into crates/pi-coding-agent/src/core/session_migration.rs
+  (NOT jsonl/repo.ts — corrected the pi-agent TODO's upstream mapping; the
+  JSONL codec is v4-only). migrateSessionEntries (v1→id/parentId tree +
+  compaction firstKeptEntryIndex→Id; v2→hookMessage→custom; idempotent),
+  parseSessionEntries (malformed-line skip), assertValidSessionId. 6 tests
+  from migration.test.ts + probes.
+- **convertToLlm wired into the run path** — `stream_assistant_response` now
+  converts AgentMessages through harness/messages.rs convertToLlm; custom
+  messages (bash execution, custom, compaction/branch summaries) reach the
+  provider as rendered user messages instead of being dropped;
+  excludeFromContext suppression works. 2 lib tests.
+- **P4 auth slice** — ported resolve-config-value.ts (!command cached exec,
+  $/$$/$! template interpolation, env var classification) and auth-storage.ts
+  (file .lock backend with sync 10x/20ms + async exponential backoff in 30s
+  stale window; InMemory backend; AuthStorage with revision-batched reads,
+  read-modify-write modify resolving configured keys, delete, list;
+  ReadOnlyAuthStorage with upstream validation; readStoredCredential;
+  getFileRevision parity). 6 + 8 tests. Divergences documented: configured-
+  shell command path (default /bin/sh -c used), reload coalescing simplified.
+- Reviewer conditions carried: upstream mapping corrections (migration
+  location; findEntriesOnBranch default order) written into the code/docs.
+- Workspace: **384 tests passing** (was 309); 0 lib warnings in touched
+  crates; clippy clean for new modules (1 pre-existing faux.rs type_complexity
+  remains).
+- P4 status: auth storage/pre-requisites done. Remaining: model registry/
+  catalog (models-store, model-resolver, registry over the Models facade),
+  openai/google providers + adaptors, project-trust CLI wiring, remaining
+  `pi` commands (config/auth/list-models), wiring compaction +
+  buildSessionContext into the coding-agent run path. P5 (RPC) not started.
+- Docs: PLAN.md updated (this entry); pi-ai/pi-agent/pi-coding-agent TODO.md
+  updated. Repo pushed after every commit per Session-4 rule.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
-  the remaining P3/P4 harness work (compaction + branch-summarization,
-  migration v1/v2, image tool, file-mutation-queue, tool-context, agent
-  loop, harness env, telemetry wiring) continues per §6 without a phase gate
-  (the P3 criterion — JSONL round-trip incl. v3 migration; tool tests — is
-  met; the v1/v2 migration is still outstanding and tracked in
-  crates/pi-agent/TODO.md).
-- P4 continuing: model registry/catalog, openai/google providers + auth,
+  harness compaction + branch-summarization + legacy v1/v2/v3 migration
+  LANDED (Session 8); the remaining P3/P4 harness work (image tool,
+  file-mutation-queue, tool-context, agent loop, harness env, telemetry
+  wiring) continues per §6 without a phase gate (the P3 criterion is met).
+- P4 continuing: model registry/catalog (models-store, model-resolver, model
+  registry over the Models facade), openai/google providers + api adaptors,
+  wiring buildSessionContext + compaction into the coding-agent run path,
   project-trust CLI wiring, remaining `pi` commands (config/auth/list-models),
-  wiring the new harness pieces (context/convertToLlm) into the run path,
-  compaction. P5 (RPC) not started.
+  v3→v4 legacy session import path. Auth storage + config-value resolution
+  + resolve-config-value landed (Session 8). P5 (RPC) not started.
 - Known documented divergence: usage records cannot carry negative token
   adjustments (pi-ai Usage counts are u64); decide whether to widen to i64.
+- Governance §0(3): before the next MAJOR phase, a fresh independent
+  reviewer session must sign off on this increment (Sessions 1–8).
 
 ### Docs
 - PLAN.md updated: yes (this revision).
