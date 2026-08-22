@@ -40,6 +40,8 @@ struct InteractiveRuntime {
     model: Model,
     messages: Vec<pi_agent::types::AgentMessage>,
     session: JsonlSession<pi_agent::fs::StdFileSystem>,
+    repo: JsonlSessionRepo<pi_agent::fs::StdFileSystem>,
+    session_id: String,
     system_prompt: Option<String>,
     tools_enabled: bool,
 }
@@ -95,6 +97,19 @@ async fn stream_turn(
     new_messages
 }
 
+/// Short cwd for banners (home-relative like the footer).
+fn meta_short_cwd(cwd: &str) -> String {
+    if let Some(home) = std::env::var("HOME").ok() {
+        if let Some(rest) = cwd.strip_prefix(&home) {
+            if rest.is_empty() {
+                return "~".to_string();
+            }
+            return format!("~{rest}");
+        }
+    }
+    cwd.to_string()
+}
+
 /// Wrap a modal in a renderable SharedComponent for the frame.
 fn modal_shared(modal: &mut Modal) -> SharedComponent {
     match modal {
@@ -147,6 +162,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         model: model.clone(),
         messages: Vec::new(),
         session,
+        repo,
+        session_id: session_id.clone(),
         system_prompt: args.system_prompt.clone(),
         tools_enabled: !args.no_tools,
     };
@@ -401,7 +418,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             SlashKind::Session => {
                                 status_banner = format!(
                                     "session {} — {} messages in transcript",
-                                    session_id.get(..8).unwrap_or(&session_id),
+                                    runtime.session_id.get(..8).unwrap_or(&runtime.session_id),
                                     runtime.messages.len()
                                 );
                             }
@@ -421,9 +438,58 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             SlashKind::Compact => {
                                 status_banner = "manual compaction lands with the harness loop wiring; use the RPC /compact in the meantime".to_string();
                             }
-                            SlashKind::Unsupported => {
-                                status_banner = format!("`/{}` is not wired in the interactive port yet", command.name);
-                            }
+                            SlashKind::Unsupported => match command.name {
+                                "export" => {
+                                    let meta = runtime.session.get_metadata().await;
+                                    match crate::core::export_html::export_session_file(
+                                        &meta.path,
+                                        _arg.as_deref(),
+                                        None,
+                                    ) {
+                                        Ok(path) => {
+                                            status_banner = format!("exported session to {path}");
+                                        }
+                                        Err(e) => {
+                                            status_banner = format!("export failed: {e}");
+                                        }
+                                    }
+                                }
+                                "new" => {
+                                    let new_id = pi_agent::session::new_id();
+                                    match runtime
+                                        .repo
+                                        .create(CreateOptions {
+                                            id: Some(new_id.clone()),
+                                            cwd: runtime.cwd.clone(),
+                                            parent_session_id: None,
+                                            metadata: None,
+                                            fork_options: ForkOptions::Tree,
+                                        })
+                                        .await
+                                    {
+                                        Ok(new_session) => {
+                                            runtime.session = new_session;
+                                            runtime.session_id = new_id;
+                                            runtime.messages.clear();
+                                            transcript_md.lock().unwrap().set_text("");
+                                            status_banner = format!(
+                                                "started new session {} in {}",
+                                                runtime.session_id.get(..8).unwrap_or(&runtime.session_id),
+                                                meta_short_cwd(&runtime.cwd)
+                                            );
+                                        }
+                                        Err(e) => {
+                                            status_banner = format!("new session failed: {e}");
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    status_banner = format!(
+                                        "`/{}` is not wired in the interactive port yet",
+                                        command.name
+                                    );
+                                }
+                            },
                         }
                     }
                 }
