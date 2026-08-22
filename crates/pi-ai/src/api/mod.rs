@@ -17,3 +17,4 @@ pub mod openai_responses;
 pub mod azure_openai_responses;
 pub mod github_copilot_headers;
 pub mod cloudflare;
+pub mod pi_messages;
