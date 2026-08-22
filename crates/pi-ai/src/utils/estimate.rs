@@ -160,13 +160,12 @@ pub fn estimate_context_tokens(context: &Context) -> ContextUsageEstimate {
         let mut added_names = std::collections::BTreeSet::new();
         for message in &context.messages[last_usage_index + 1..] {
             if let Message::ToolResult(crate::types::ToolResultMessage::ToolResult {
-                added_tool_names, ..
+                added_tool_names: Some(names),
+                ..
             }) = message
             {
-                if let Some(names) = added_tool_names {
-                    for name in names {
-                        added_names.insert(name.clone());
-                    }
+                for name in names {
+                    added_names.insert(name.clone());
                 }
             }
         }

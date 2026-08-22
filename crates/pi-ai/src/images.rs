@@ -141,6 +141,50 @@ pub fn catalog_images(provider_id: &str) -> Vec<ImagesModel> {
         .collect()
 }
 
+/// Register the built-in image API implementations (upstream
+/// `registerBuiltInImagesApiProviders`). Called by `builtin_models` wiring.
+pub fn register_builtin_images_api_providers() {
+    use crate::api::openrouter_images;
+
+    let f: ImagesFunction = std::sync::Arc::new(move |model: &ImagesModel,
+                                                 context: &ImagesContext,
+                                                 options: &ImagesOptions| {
+        // The openrouter_images adaptor is async; run it on a fresh current-
+        // thread runtime so the sync images facade can reuse `generate_images`.
+        let client = reqwest::Client::new();
+        let mut opts = options.clone();
+        let aborted = opts.aborted;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("images runtime");
+        rt.block_on(async move {
+            // The abort signal is a request-granular flag in this bridge.
+            opts.aborted = aborted;
+            openrouter_images::generate_images(model, context, &opts, client).await
+        })
+    });
+    register_images_api_provider("openrouter-images", f);
+}
+
+/// An image-generation provider view (upstream `openrouterImagesProvider`):
+/// the OpenRouter image catalog plus the registered API implementation.
+#[derive(Clone)]
+pub struct ImagesProvider {
+    pub id: String,
+    pub name: String,
+    pub models: Vec<ImagesModel>,
+}
+
+/// Build the built-in OpenRouter image provider.
+pub fn openrouter_images_provider() -> ImagesProvider {
+    ImagesProvider {
+        id: "openrouter".to_string(),
+        name: "OpenRouter".to_string(),
+        models: catalog_images("openrouter"),
+    }
+}
+
 /// Generate images through the owning API implementation (upstream
 /// `generateImages`). Never returns a Result: failures are encoded on the
 /// returned `AssistantImages` (`stopReason: "error"`).
