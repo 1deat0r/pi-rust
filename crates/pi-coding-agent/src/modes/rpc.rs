@@ -35,6 +35,42 @@ use crate::core::settings::SettingsManager;
 use super::jsonl::{serialize_json_line, JsonlLineReader};
 use super::rpc_types::{failure, success, RpcCommand, RpcSessionState};
 
+/// Always-resolvable API-key auth for the scripted faux provider. The real
+/// faux core ignores the key; this exists so facade-backed paths
+/// (e.g. RPC compact summary generation) pass `apply_auth` like any provider.
+struct FauxApiKeyAuth;
+
+impl pi_ai::auth::ApiKeyAuth for FauxApiKeyAuth {
+    fn name(&self) -> &str {
+        "Faux API key"
+    }
+    fn check(
+        &self,
+        _ctx: &pi_ai::auth::AuthContext,
+        _credential: Option<&pi_ai::auth::ApiKeyCredential>,
+    ) -> Option<pi_ai::auth::AuthCheck> {
+        Some(pi_ai::auth::AuthCheck {
+            source: Some("faux".to_string()),
+            auth_type: "api_key",
+        })
+    }
+    fn resolve(
+        &self,
+        _ctx: &pi_ai::auth::AuthContext,
+        _credential: Option<&pi_ai::auth::ApiKeyCredential>,
+    ) -> Option<pi_ai::auth::AuthResult> {
+        Some(pi_ai::auth::AuthResult {
+            auth: pi_ai::auth::ModelAuth {
+                api_key: Some("faux-key".to_string()),
+                headers: None,
+                base_url: None,
+            },
+            env: None,
+            source: Some("faux".to_string()),
+        })
+    }
+}
+
 /// Max output chars before a bash result is truncated (upstream threshold).
 const BASH_TRUNCATE_LIMIT: usize = 30_000;
 
@@ -80,7 +116,47 @@ impl RpcRuntime {
             &settings,
             !crate::run::has_explicit_provider(args.provider.as_deref()),
         );
-        if models.get_provider(&provider).is_none() && provider != "faux" {
+        if provider == "faux" {
+            // faux is intentionally not in the builtin registry; register a
+            // scripted provider so facade-backed paths (RPC compact summary
+            // generation) resolve it like any real provider.
+            use pi_ai::models::{create_provider, CreateProviderOptions, ProviderApiSpec, ProviderStreams};
+            use pi_ai::providers::{
+                faux_assistant_message, FauxAssistantOptions, FauxProviderCore, FauxResponseStep,
+                RegisterFauxProviderOptions,
+            };
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
+                vec![pi_ai::types::ContentBlock::text("Compaction summary: history retained")],
+                FauxAssistantOptions::default(),
+            ))]);
+            let stream_core = core.clone();
+            let stream = Arc::new(move |model: &pi_ai::model::Model,
+                                        ctx: &pi_ai::types::Context,
+                                        _options: Option<&pi_ai::types::StreamOptions>| {
+                stream_core.stream(model, ctx, None)
+            });
+            let simple_core = core.clone();
+            let stream_simple = Arc::new(move |model: &pi_ai::model::Model,
+                                               ctx: &pi_ai::types::Context,
+                                               options: Option<&pi_ai::types::SimpleStreamOptions>| {
+                simple_core.stream(model, ctx, options)
+            });
+            models.set_provider(create_provider(CreateProviderOptions {
+                id: "faux".to_string(),
+                name: Some("Faux".to_string()),
+                base_url: None,
+                headers: None,
+                auth: pi_ai::auth::ProviderAuth {
+                    api_key: Some(std::sync::Arc::new(FauxApiKeyAuth)),
+                    oauth: None,
+                },
+                models: core.models.clone(),
+                api: ProviderApiSpec::Single(ProviderStreams { stream, stream_simple }),
+                filter_models: None,
+            }));
+        }
+        if models.get_provider(&provider).is_none() {
             return Err(format!("provider {provider:?} is not registered in the model registry"));
         }
         let model = if provider == "faux" {
@@ -1349,6 +1425,31 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(store[0].trim()).unwrap();
         assert_eq!(v["success"], false);
         assert!(v["error"].as_str().unwrap().contains("Unknown command: nope"));
+    }
+
+    #[tokio::test]
+    async fn faux_provider_is_registered_in_facade_for_compact() {
+        // Regression for the known divergence: RPC compact needs a
+        // facade-registered provider; faux is intentionally absent from the
+        // builtin registry, so the runtime must register it.
+        let runtime = runtime_for_test().await;
+        let provider = runtime.models.get_provider("faux").expect("faux registered");
+        assert!(provider.single_streams.is_some(), "faux has a stream implementation");
+        assert_eq!(runtime.models.get_models(None).len(), runtime.models.get_models(None).len());
+        // complete_simple must resolve through the facade rather than erroring
+        // with "no API implementation".
+        let model = runtime.model.clone();
+        let ctx = pi_ai::types::Context {
+            system_prompt: Some("summarize".to_string()),
+            messages: vec![pi_ai::types::Message::User(pi_ai::types::UserContent::blocks(
+                vec![pi_ai::types::ContentBlock::text("hello")],
+                1,
+            ))],
+            tools: vec![],
+        };
+        let options = pi_ai::types::SimpleStreamOptions::default();
+        let msg = runtime.models.complete_simple(&model, &ctx, Some(&options)).await;
+        assert!(msg.error_message().is_none(), "faux complete_simple should not error: {:?}", msg.error_message());
     }
 
     #[tokio::test]
