@@ -19,3 +19,4 @@ pub mod github_copilot_headers;
 pub mod cloudflare;
 pub mod pi_messages;
 pub mod openrouter_images;
+pub mod google_vertex;
