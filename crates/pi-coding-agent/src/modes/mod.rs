@@ -3,6 +3,7 @@
 //! `rpc` (JSONL over stdio) is implemented here; `interactive` (the TUI mode)
 //! lands with pi-tui.
 
+pub mod interactive;
 pub mod jsonl;
 pub mod rpc;
 pub mod rpc_types;

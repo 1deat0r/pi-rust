@@ -17,6 +17,27 @@ async fn main() {
             if !args.unknown_flags.is_empty() {
                 eprintln!("unknown flags: {}", args.unknown_flags.join(", "));
             }
+            // Interactive TUI mode: no --print/--mode and a TTY stdin+mount.
+            if args.mode.is_none()
+                && !args.print
+                && args.messages.is_empty()
+                && std::io::IsTerminal::is_terminal(&std::io::stdin())
+                && std::io::IsTerminal::is_terminal(&std::io::stdout())
+            {
+                let cwd = pi_coding_agent::config::cwd();
+                let agent_dir = pi_coding_agent::config::get_agent_dir();
+                let settings = pi_coding_agent::core::settings::SettingsManager::create(
+                    &cwd,
+                    &agent_dir.display().to_string(),
+                    pi_coding_agent::core::settings::SettingsManagerCreateOptions::default(),
+                );
+                let result = pi_coding_agent::modes::interactive::run_interactive_mode(&args, settings).await;
+                if let Err(err) = result {
+                    eprintln!("interactive error: {err}");
+                    std::process::exit(1);
+                }
+                return;
+            }
             // --mode rpc: headless JSONL protocol over stdio.
             if args.mode.as_deref() == Some("rpc") {
                 let cwd = pi_coding_agent::config::cwd();
