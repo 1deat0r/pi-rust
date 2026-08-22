@@ -130,7 +130,7 @@ fn anthropic_streams() -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple }
+    crate::models::ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }
 }
 
 /// ProviderStreams for the openai-completions API family. Each provider
@@ -188,7 +188,7 @@ pub fn openai_completions_streams(base_url: String) -> crate::models::ProviderSt
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple }
+    crate::models::ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }
 }
 
 macro_rules! env_provider {
@@ -247,7 +247,7 @@ pub fn azure_openai_responses_provider() -> Provider {
             oauth: None,
         },
         models,
-        api: crate::models::ProviderApiSpec::Single(crate::models::ProviderStreams { stream, stream_simple: simple }),
+        api: crate::models::ProviderApiSpec::Single(crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }),
         filter_models: None,
     })
 }
@@ -1034,7 +1034,7 @@ pub fn google_streams(base_url: String, _default_base: &str) -> crate::models::P
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple }
+    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
 }
 
 pub fn google_provider_real() -> Provider {
@@ -1082,7 +1082,7 @@ pub fn openai_responses_streams(base_url: String) -> crate::models::ProviderStre
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple }
+    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
 }
 
 /// Anthropic Messages streams bound to an explicit base URL (for mixed-api
@@ -1128,7 +1128,7 @@ pub fn anthropic_streams_for(base_url: &str) -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple }
+    crate::models::ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }
 }
 
 // ---------------------------------------------------------------------------
@@ -1188,7 +1188,7 @@ fn openai_completions_streams_from_model() -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple }
+    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
 }
 
 /// OpenAI-responses streams deriving the base URL from the model.
@@ -1221,7 +1221,7 @@ fn openai_responses_streams_from_model() -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple }
+    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
 }
 
 /// Anthropic-messages streams deriving the base URL from the model.
@@ -1263,7 +1263,7 @@ fn anthropic_streams_from_model() -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple }
+    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
 }
 
 /// Bedrock Converse streams (SigV4/bearer auth resolves inside the adaptor).
@@ -1301,7 +1301,7 @@ fn bedrock_streams() -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple }
+    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
 }
 
 /// Google Vertex streams (API-key / ADC auth resolves inside the adaptor).
@@ -1339,7 +1339,7 @@ fn google_vertex_streams() -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple }
+    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
 }
 
 /// ProviderStreams for the mistral-conversations API family. The base URL is
@@ -1374,7 +1374,7 @@ pub fn mistral_conversations_streams() -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple }
+    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
 }
 
 /// ProviderStreams for the openai-codex-responses API family. The Codex URL is
@@ -1411,5 +1411,5 @@ pub fn openai_codex_streams() -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple }
+    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
 }

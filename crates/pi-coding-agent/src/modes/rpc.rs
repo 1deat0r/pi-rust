@@ -152,7 +152,7 @@ impl RpcRuntime {
                     oauth: None,
                 },
                 models: core.models.clone(),
-                api: ProviderApiSpec::Single(ProviderStreams { stream, stream_simple }),
+                api: ProviderApiSpec::Single(ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }),
                 filter_models: None,
             }));
         }

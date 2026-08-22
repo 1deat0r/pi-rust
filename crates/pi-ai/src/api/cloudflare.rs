@@ -218,7 +218,7 @@ pub fn cloudflare_streams(inner: ProviderStreams) -> ProviderStreams {
             },
         )
     };
-    ProviderStreams { stream, stream_simple }
+    ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }
 }
 
 #[cfg(test)]
@@ -278,7 +278,7 @@ mod tests {
                 AssistantMessageEventStream::new()
             },
         );
-        let inner = ProviderStreams { stream: stream_fn, stream_simple: simple_fn };
+        let inner = ProviderStreams { stream: stream_fn, stream_simple: simple_fn, fetch_deferred: None, cancel_deferred: None };
         let wrapped = cloudflare_streams(inner);
         let model = cloudflare_model();
         let ctx = crate::types::Context::default();
