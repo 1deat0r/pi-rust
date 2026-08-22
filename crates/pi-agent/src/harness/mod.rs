@@ -9,6 +9,8 @@
 //! skills, env, agent-loop integration, and telemetry wiring remain.
 
 pub mod compaction;
+pub mod frontmatter;
+pub mod skills;
 pub mod events;
 pub mod prompt_templates;
 pub mod reducer;
@@ -17,6 +19,7 @@ mod models;
 
 pub use models::{BoxFuture, CompleteSimpleFn, SimpleModels};
 pub use prompt_templates::{PromptTemplateDiagnostic, load_prompt_templates};
+pub use skills::{SkillDiagnostic, load_skills};
 pub use reducer::{LaneReductionInput, LaneReductionResult, LaneState, reduce_lane_state, validate_record_log};
 
 /// Stable error codes returned by compaction helpers
