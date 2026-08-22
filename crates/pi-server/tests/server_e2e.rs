@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use pi_protocol::{Command, CommandResult};
 use pi_server::service::InMemoryService;
 use pi_server::server::PiServer;
-use pi_server::{PiServerListener, UnixListener};
+use pi_server::UnixListener;
 
 fn test_models() -> Vec<pi_protocol::ModelMetadata> {
     vec![pi_protocol::ModelMetadata {

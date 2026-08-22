@@ -651,8 +651,21 @@ impl RpcRuntime {
             }
 
             "export_html" => {
-                fail(store, &id, &cmd, "export_html is not supported in this build (export-html port pending)".to_string());
-                Ok(())
+                let Some(session_path) = self.session_path.clone() else {
+                    fail(store, &id, &cmd, "Cannot export in-memory session to HTML".to_string());
+                    return Ok(());
+                };
+                let output_path = command.str_field("outputPath").map(|s| s.to_string());
+                match crate::core::export_html::export_session_file(&session_path, output_path.as_deref(), None) {
+                    Ok(path) => {
+                        respond(store, success(id.as_deref(), &cmd, Some(serde_json::json!({ "path": path }))));
+                        Ok(())
+                    }
+                    Err(e) => {
+                        fail(store, &id, &cmd, e.to_string());
+                        Ok(())
+                    }
+                }
             }
 
             "switch_session" => {
@@ -1337,4 +1350,52 @@ mod tests {
         assert_eq!(v["success"], false);
         assert!(v["error"].as_str().unwrap().contains("Unknown command: nope"));
     }
+
+    #[tokio::test]
+    async fn export_html_writes_file() {
+        let mut runtime = runtime_for_test().await;
+        let session_path = runtime.session_path.clone().expect("session path exists");
+        let out_path = std::env::temp_dir()
+            .join(format!("pi-rpc-export-{}-{}.html", std::process::id(), line!()));
+        let out = out_path.to_string_lossy().into_owned();
+        let mut store = Vec::new();
+        runtime
+            .handle_command(
+                RpcCommand::parse(serde_json::json!({"type": "export_html", "outputPath": out})).unwrap(),
+                &mut store,
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(store[0].trim()).unwrap();
+        assert_eq!(v["type"], "response");
+        assert_eq!(v["command"], "export_html");
+        assert_eq!(v["success"], true, "export_html failed: {:?}", v);
+        assert_eq!(v["data"]["path"], out);
+        assert!(std::path::Path::new(&out).exists(), "export file was not written");
+        let html = std::fs::read_to_string(&out).unwrap();
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("Session Export"));
+        assert!(html.contains("message"));
+        std::fs::remove_file(&out).ok();
+        let _ = session_path;
+    }
+
+    #[tokio::test]
+    async fn export_html_without_session_errors() {
+        let mut runtime = runtime_for_test().await;
+        runtime.session_path = None;
+        let mut store = Vec::new();
+        runtime
+            .handle_command(
+                RpcCommand::parse(serde_json::json!({"type": "export_html"})).unwrap(),
+                &mut store,
+            )
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(store[0].trim()).unwrap();
+        assert_eq!(v["success"], false);
+        assert_eq!(v["error"], "Cannot export in-memory session to HTML");
+    }
+
 }

@@ -6,3 +6,4 @@ pub mod session_migration;
 pub mod settings;
 pub mod tools;
 pub mod model_runtime;
+pub mod export_html;

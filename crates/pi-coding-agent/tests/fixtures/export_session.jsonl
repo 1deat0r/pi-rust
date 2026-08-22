@@ -1,0 +1,4 @@
+{"type":"session","version":4,"id":"sess_001","timestamp":"2026-08-22T00:00:00.000Z","cwd":"/tmp"}
+{"type":"message","id":"msg_1","parentId":null,"timestamp":"2026-08-22T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+{"type":"message","id":"msg_2","parentId":"msg_1","timestamp":"2026-08-22T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hi there"}]}}
+{"type":"message","id":"msg_3","parentId":"msg_2","timestamp":"2026-08-22T00:00:03.000Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"bash","content":[{"type":"text","text":"\u001b[32mok\u001b[0m"}],"isError":false}}

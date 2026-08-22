@@ -470,6 +470,7 @@ mod tests {
     static KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 
+    #[test]
     fn anthropic_provider_streams_error_without_key() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
