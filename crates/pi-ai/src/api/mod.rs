@@ -1,9 +1,13 @@
 //! API adaptors — port of `packages/ai/src/api/`.
 //!
-//! Implemented: `anthropic_messages` (Anthropic Messages API over SSE).
-//! Remaining adaptors (openai-completions/responses, google, bedrock,
-//! mistral, azure, codex, cloudflare, vertex, pi-messages) are tracked in
-//! `crates/pi-ai/TODO.md`.
+//! Implemented: `anthropic_messages`, `openai_completions`,
+//! `openai_responses` (+ `openai_responses_shared`), `azure_openai_responses`,
+//! `google_generative_ai` (+ `google_shared`), `transform_messages`,
+//! `mistral_conversations` (native Mistral Chat Completions), and
+//! `openai_codex_responses` (ChatGPT Codex over SSE; the WebSocket transport
+//! is a documented divergence). Remaining adaptors (bedrock, cloudflare,
+//! vertex, pi-messages, openrouter-images, github-copilot headers) are
+//! tracked in `crates/pi-ai/TODO.md`.
 
 pub mod anthropic_messages;
 pub mod openai_completions;
