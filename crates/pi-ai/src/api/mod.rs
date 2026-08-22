@@ -7,6 +7,7 @@
 
 pub mod anthropic_messages;
 pub mod openai_completions;
+pub mod mistral_conversations;
 
 pub use anthropic_messages::{stream, AnthropicOptions, AnthropicThinkingDisplay};
 pub mod transform_messages;
