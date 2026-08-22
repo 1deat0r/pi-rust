@@ -544,6 +544,12 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 "resume" => {
                                     match runtime.repo.list(Some(&runtime.cwd)).await {
                                         Ok(sessions) if !sessions.is_empty() => {
+                                            // Exclude the current session so the picker offers
+                                            // other sessions (newest-first default).
+                                            let sessions: Vec<_> = sessions
+                                                .into_iter()
+                                                .filter(|s| s.id != runtime.session_id)
+                                                .collect();
                                             let picker = it::session_picker_items(sessions);
                                             let items = it::picker_select_items(&picker);
                                             modal = Some(Modal::Resume(
