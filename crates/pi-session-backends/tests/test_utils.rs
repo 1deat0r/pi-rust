@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Shared test fixtures — port of upstream `test/test-utils.ts`.
 
 use pi_agent::session::types::Entry;

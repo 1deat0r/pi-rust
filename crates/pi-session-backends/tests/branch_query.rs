@@ -2,7 +2,7 @@
 
 use pi_agent::session::state::{BranchBounds, EntryOrder, EntryQuery};
 use pi_session_backends::repo::SqliteSessionRepository;
-use pi_session_backends::types::{SqliteSessionCreateOptions, SqliteSessionMetadata, SqliteWriterLeaseOptions};
+use pi_session_backends::types::{SqliteSessionCreateOptions, SqliteWriterLeaseOptions};
 
 mod test_utils;
 use test_utils::{assistant_message, create_temp_dir, user_message};

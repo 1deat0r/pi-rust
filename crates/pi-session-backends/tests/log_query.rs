@@ -36,7 +36,7 @@ async fn does_not_decode_rows_beyond_the_requested_log_limit() {
         other => panic!("expected root entry, got {other:?}"),
     }
 
-    let log = session.get_log(&LogOptions { after_seq: Some(1), limit: Some(1), ..Default::default() }).await.unwrap();
+    let log = session.get_log(&LogOptions { after_seq: Some(1), limit: Some(1) }).await.unwrap();
     assert_eq!(log.len(), 1);
     match &log[0] {
         pi_agent::session::types::LogItem::Fact(f) if f.fact == "name" && f.name.as_deref() == Some("name") => {}

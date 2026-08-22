@@ -83,7 +83,6 @@ async fn lists_complete_metadata_without_acquiring_active_sessions_writer_leases
             cwd: root.to_string_lossy().into_owned(),
             parent_session_id: Some("session-1".into()),
             metadata: Some(serde_json::json!({ "profile": "writer", "name": "application-owned name" })),
-            ..Default::default()
         })
         .await
         .unwrap();
@@ -144,7 +143,7 @@ async fn rejects_a_second_writer_until_the_first_session_releases_its_claim() {
     let first_repo = SqliteSessionRepository::new(database_path.clone(), None);
     let second_repo = SqliteSessionRepository::new(database_path.clone(), None);
 
-    let mut first = first_repo
+    let first = first_repo
         .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
         .await
         .unwrap();
@@ -246,11 +245,10 @@ async fn renews_an_idle_writer_lease_with_a_heartbeat() {
 
     let read_expiry = |db_path: &str, session_id: &str| -> Option<i64> {
         let db = rusqlite::Connection::open(db_path).unwrap();
-        let value = SqlQuery::new("SELECT expires_at_ms FROM writer_leases WHERE session_id = ?")
+        SqlQuery::new("SELECT expires_at_ms FROM writer_leases WHERE session_id = ?")
             .bind(session_id)
             .get_row(&db, |row| row.get::<_, i64>(0))
-            .unwrap();
-        value
+            .unwrap()
     };
 
     let initial = read_expiry(&database_path, &metadata.id).unwrap();

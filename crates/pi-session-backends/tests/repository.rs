@@ -1,17 +1,16 @@
 //! SQLite session repository — port of `test/repository.test.ts`.
 
-use pi_agent::session::state::{EntryOrder, EntryQuery};
 use pi_agent::session::types::{NewRecord, SessionErrorKind};
 use pi_ai::types::{Cost, Usage};
 use pi_session_backends::repo::{ForkCreateOptions, SqliteSessionRepository};
 use pi_session_backends::types::{
-    SqliteSessionCreateOptions, SqliteSessionListOptions, SqliteSessionMetadata, SqliteWriterLeaseOptions,
+    SqliteSessionCreateOptions, SqliteSessionListOptions, SqliteWriterLeaseOptions,
 };
 
 mod test_utils;
 use test_utils::{
     append_sqlite_compaction, assistant_message, create_temp_dir, get_sqlite_entries, move_sqlite_main_lane,
-    user_message, zero_usage,
+    user_message,
 };
 
 fn repo_for(root: &std::path::Path) -> SqliteSessionRepository {

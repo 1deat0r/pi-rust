@@ -8,7 +8,7 @@ use pi_session_backends::types::{SqliteSessionCreateOptions, SqliteWriterLeaseOp
 
 mod test_utils;
 use test_utils::{
-    append_sqlite_compaction, assistant_message, create_temp_dir, get_sqlite_branch, get_sqlite_entries,
+    append_sqlite_compaction, assistant_message, create_temp_dir, get_sqlite_branch,
     move_sqlite_main_lane, user_message,
 };
 
