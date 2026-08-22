@@ -444,7 +444,13 @@ mod tests {
             .unwrap();
         let lines: Vec<String> = out.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect();
         assert_eq!(lines.len(), 2, "got: {out:?}");
-        assert_eq!(lines[0], "src/main.rs:1: TODO: add feature");
+        // rg traversal order across matching files is not contractual; with
+        // limit=1 the single hit may be either main.rs or lib.rs.
+        assert!(
+            lines[0] == "src/main.rs:1: TODO: add feature" || lines[0] == "src/lib.rs:1: const TODO: u32 = 1;",
+            "unexpected first match: {:?}; got: {out:?}",
+            lines[0]
+        );
         assert!(out.contains("1 matches limit reached. Use limit=2 for more, or refine pattern"), "got: {out}");
     }
 

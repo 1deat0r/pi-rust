@@ -175,9 +175,6 @@ mod tests {
         }
     }
 
-    fn entry(value: Value) -> Value {
-        value
-    }
 
     #[test]
     fn assistant_usage_attributes_to_provider_model() {

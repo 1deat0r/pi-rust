@@ -512,7 +512,7 @@ mod tests {
         let runner = runner_with(vec![e1]);
         let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let got = received.clone();
-        runner.on_error(StdArc::new(move |error: ExtensionError| got.lock().unwrap().push(error.error)));
+        let _unsub = runner.on_error(StdArc::new(move |error: ExtensionError| got.lock().unwrap().push(error.error)));
         // Direct emitError notifies listeners.
         runner.emit_error(ExtensionError { extension_path: "e".into(), event: "x".into(), error: "test".into() });
         assert_eq!(received.lock().unwrap().len(), 1);

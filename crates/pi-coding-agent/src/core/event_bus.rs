@@ -96,7 +96,7 @@ mod tests {
         let bus = EventBus::new();
         let received = Arc::new(Mutex::new(Vec::new()));
         let got = received.clone();
-        bus.on("x", Box::new(move |data| {
+        let _unsub = bus.on("x", Box::new(move |data| {
             let value = data.downcast_ref::<u32>().copied().unwrap_or(0);
             got.lock().unwrap().push(value);
         }));
@@ -122,7 +122,7 @@ mod tests {
         let bus = EventBus::new();
         let count = Arc::new(Mutex::new(0));
         let c1 = count.clone();
-        bus.on("m", Box::new(move |_| *c1.lock().unwrap() += 1));
+        let _unsub = bus.on("m", Box::new(move |_| *c1.lock().unwrap() += 1));
         let c2 = count.clone();
         let unsub = bus.on("m", Box::new(move |_| *c2.lock().unwrap() += 1));
         assert_eq!(bus.handler_count("m"), 2);
@@ -137,9 +137,9 @@ mod tests {
         let bus = EventBus::new();
         let count = Arc::new(Mutex::new(0));
         let c = count.clone();
-        bus.on("a", Box::new(move |_| *c.lock().unwrap() += 1));
+        let _unsub1 = bus.on("a", Box::new(move |_| *c.lock().unwrap() += 1));
         let c2 = count.clone();
-        bus.on("b", Box::new(move |_| *c2.lock().unwrap() += 1));
+        let _unsub2 = bus.on("b", Box::new(move |_| *c2.lock().unwrap() += 1));
         bus.clear();
         bus.emit("a", ());
         bus.emit("b", ());
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn emit_does_not_propagate_handler_errors() {
         let bus = EventBus::new();
-        bus.on("p", Box::new(|_| panic!("handler blew up")));
+        let _unsub = bus.on("p", Box::new(|_| panic!("handler blew up")));
         // Must not panic.
         bus.emit("p", ());
     }

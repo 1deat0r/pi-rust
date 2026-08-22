@@ -289,7 +289,8 @@ fn new_record_complete(new_record: NewRecord, seq: u64, timestamp: u64) -> LaneR
         QueueEnqueued { id, lane, queue, run_id, target } => {
             LaneRecord::QueueEnqueued { id, seq, lane, timestamp, queue, run_id, target }
         }
-        QueueCancelled { id, lane, entry_id } => LaneRecord::QueueCancelled { id, seq, lane, timestamp, entry_id },
+        QueueCancelled { id, lane, run_id, entry_id } =>
+            LaneRecord::QueueCancelled { id, seq, lane, timestamp, run_id, entry_id },
         WriteDeferred { id, lane, run_id, target } => {
             LaneRecord::WriteDeferred { id, seq, lane, timestamp, run_id, target }
         }

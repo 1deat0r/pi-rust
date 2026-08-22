@@ -758,7 +758,7 @@ mod persists_queue_cancellation_without_consuming_its_target {
             .await
             .unwrap();
         let cancelled = session
-            .append_record(NewRecord::QueueCancelled { id: "cancel".into(), lane: "main".into(), entry_id: "queued-message".into() })
+            .append_record(NewRecord::QueueCancelled { id: "cancel".into(), lane: "main".into(), run_id: None, entry_id: "queued-message".into() })
             .await
             .unwrap();
         let LaneRecord::QueueCancelled { entry_id, .. } = &cancelled else { panic!("expected queue_cancelled") };
