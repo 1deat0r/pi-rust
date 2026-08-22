@@ -73,6 +73,17 @@ Settings manager (full upstream surface) landed.
   model-config/models-store (file-backed) integration is the next step that
   replaces the run.rs per-provider match.
 
+## Done (Session 10 — RPC + interactive + model runtime)
+- core/model_runtime.rs: defaultModelPerProvider + hint parsing + catalog
+  resolution over the facade; run.rs routes real providers through the
+  facade (auth + dispatch), terminal errors surface as nonzero exits.
+- modes/rpc.rs + jsonl.rs + rpc_types.rs: full RPC mode (prompt/steer/
+  follow_up with message_update streaming + agent_settled, state/model/
+  thinking/queue-mode, bash, session, messages commands) — live-verified.
+- modes/interactive.rs: interactive TUI loop over pi-tui (transcript +
+  input bar + inline editing + stream turn + session persistence) —
+  tmux-verified.
+
 ## Remaining (upstream mapping — big items first)
 - Wire SettingsManager into run/main (currently standalone; P4 criterion
   "settings round-trip" is satisfied by the module tests, session wiring is

@@ -570,3 +570,68 @@ Agent: pi (Claude)   HEAD: 291d8ec → (this session)
 - R-4 **Fidelity drift risk.** The "same CLI surface / same data formats"
   contract is enforced only by the parity oracles + golden transcripts listed
   in §6; every phase must update its oracle set before claiming its criterion.
+
+### Session 10 — 2026-08-22 — google responses/azure adaptors, model runtime, RPC, server+client, TUI core
+Agent: pi (Claude)   HEAD: 291d8ec → (this session, 37ca48c)
+
+- **pi-ai provider adaptor completion (P4/P2 follow-up)**: google-generative-ai
+  (REST :streamGenerateContent?alt=sse, flattened GenerateContentRequest, SSE
+  chunk assembly with text/thinking/tool-call deltas + thought signatures,
+  usage/cost, thinking-level config by model family + budget tables,
+  streamSimple reasoning resolution). openai-responses (+shared) with the
+  full SSE event loop: slots map, partial-streaming JSON, reasoning
+  signature persistence + terminal backfill, service-tier pricing, all
+  terminal events. azure-openai-responses (deployment + resource config,
+  azure host normalization). transform-messages (cross-model thinking/
+  redaction/signature/ID rules). Provider registry live-dispatch fixes:
+  google → google adaptor; openai + opencode + opencode-go → responses /
+  ByApi; vercel-ai-gateway → anthropic (live Vercel 401 proved the wire).
+- **Model runtime (P4)**: coding-agent core/model_runtime.rs — upstream
+  defaultModelPerProvider table (39 providers), provider/model:thinking
+  hint parsing, exact→substring→default→first resolution over the facade.
+  run.rs routes real providers through the pi-ai Models facade (catalog +
+  applyAuth + lazy stream), terminal assistant errors surface as nonzero
+  exits. Live E2E: vercel-ai-gateway request + auth-error parsing; faux
+  regressions green.
+- **RPC mode (P5 — MILESTONE)**: modes/jsonl.rs (strict LF framing),
+  rpc_types.rs (command parse + success/failure builders + camelCase
+  RpcSessionState), modes/rpc.rs — full RpcRuntime: prompt/steer/follow_up
+  (agent loop + message_update streaming via collect_with_observer +
+  agent_settled + JSONL persistence), state/model/thinking/queue-mode and
+  bash/session/messages commands; --mode rpc dispatch. Live binary
+  round-trips (get_state, prompt events, get_messages, abort).
+- **Server + client (P6 — MILESTONE)**: pi-server (UnixSocketListener with
+  stale-socket liveness probe + private bind symlink, PiServer handshake/
+  dispatch/error mapping, Command execution over PiServerService, snapshot
+  publisher with revision + broadcast), pi-client (UnixStream transport,
+  hello handshake, request correlation, ServerEvent fanout, snapshot state),
+  InMemoryService test service. E2E over a real socket incl. bad-version
+  hello_error; codec framing probe.
+- **TUI core + interactive mode (P7 core)**: pi-tui crate (crossterm
+  terminal backend, differential line renderer + Scene, Component trait,
+  flex layout, keys model, Text/Spacer/VStack/HStack/Box/Loader/SelectList/
+  ScrollView/TruncatedText/Input with unicode editing). coding-agent
+  interactive mode: real-TTY loop (You:/π: transcript, Boxed input bar,
+  inline editing, Enter streams the turn live, Ctrl-C exit, JSONL session
+  persistence). tmux smoke test verified end-to-end.
+- Remaining P7 (not ported): full TUI surface (Editor, Markdown renderer,
+  Image, SettingsList, alt-screen overlays, terminal-image, fuzzy), the
+  interactive components library, and the interactive mode's full features
+  (slash commands, model/thinking selectors, footer). Remaining P8: extensions,
+  package manager, export-html, themes, provider attribution/composer,
+  usage totals/event bus, config/auth CLI commands, compaction wiring into
+  the run/RPC paths, telegram/JSON event modes. P9: session-backends sqlite,
+  evals, packaging/parity suite.
+- Workspace: **529 tests passing** (was 411); 0 lib warnings; clippy clean
+  for new modules.
+- Docs: PLAN.md updated (this entry); pi-ai/pi-agent/pi-coding-agent/pi-tui
+  TODO.md updated. Repo pushed after every commit.
+
+### Open (carry-forward)
+- P5/P6/P7-core COMPLETE (the sessions above). Remaining: the P7 full TUI
+  surface + interactive feature set, P8 coding-agent parity (incl. RPC/
+  interactive compaction wiring), P9 (sqlite session-backends, evals,
+  packaging/parity suite). Known documented divergences: RPC compact and
+  export_html return the upstream error surface until their services are
+  wired; usage-record negative token adjustments still unrepresentable
+  (pi-ai u64 counts) — decide whether to widen to i64.

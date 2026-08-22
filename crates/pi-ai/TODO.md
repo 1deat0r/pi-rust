@@ -51,12 +51,21 @@ Core types/stream infra + faux + anthropic landed. 128 workspace tests, 0 warnin
 - Workspace: 411 tests passing (was 384); pi-ai 80; 0 lib warnings in touched
   crates; new modules clippy-clean.
 
-## Remaining (upstream mapping)
-- api/: openai-completions, openai-responses, azure, codex, google, bedrock,
-  mistral, cloudflare, vertex, pi-messages (+ lazy variants). These are the
-  dispatch targets the provider registry already references; porting
-  openai-completions + openai-responses together unlocks the majority of the
-  39 registered providers.
+## Done (Session 10 — adaptor completion)
+- api/: google-generative-ai (REST SSE + thought signatures + family
+  thinking configs + budgets), openai-responses (+shared: full event loop,
+  partial-JSON tool args, reasoning signature replay + backfill, service
+  tier pricing, developer-role system prompts, fc_ id normalization),
+  azure-openai-responses (deployment/resource config, azure host
+  normalization), transform-messages (cross-model safety rules). Provider
+  registry now dispatches google→google, openai→responses, opencode(s)→ByApi,
+  vercel-ai-gateway→anthropic.
+- Remaining api/: openai-codex-responses (1650 LOC), mistral-conversations
+  (936; mistral currently routed through openai-completions — documented
+  divergence), bedrock-converse, cloudflare (+cloudflare-stream/
+  cloudflare-auth), github-copilot headers, google-vertex, pi-messages,
+  openrouter-images, constrained-sampling grammar tools, deferred tools.
+
 - providers/: all 39 factories registered with catalogs + auth (Session 9);
   non-anthropic providers stream the upstream no-API-implementation error
   until their api adaptor is ported. Special auth remains: cloudflare-auth
