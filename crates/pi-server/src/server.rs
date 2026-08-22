@@ -184,8 +184,14 @@ async fn run_request(arc: Arc<Mutex<dyn ByteConnectionHandler>>, id: String, req
     let _ = conn.send(&frame).await;
     if !closing.lock().unwrap().clone() && handshake_complete {
         let snapshots_for_spawn = snapshots.clone();
+        // Broadcast the full server snapshot AND a per-session snapshot event
+        // for the mutated session (upstream publishes both after commands).
+        let session_event = result.as_ref().ok().and_then(session_snapshot_of);
         tokio::spawn(async move {
             snapshots_for_spawn.broadcast().await;
+            if let Some(session) = session_event {
+                snapshots_for_spawn.broadcast_session_event(session).await;
+            }
         });
     }
 }
@@ -300,6 +306,20 @@ impl ByteConnectionHandler for ConnectionHandler {
         }
     }
     fn on_error(&mut self, _error: String) {}
+}
+
+/// Session snapshot produced by a mutating command, if any.
+pub fn session_snapshot_of(result: &CommandResult) -> Option<pi_protocol::SessionSnapshot> {
+    match result {
+        CommandResult::Create { session }
+        | CommandResult::Attach { session }
+        | CommandResult::Prompt { session }
+        | CommandResult::Steer { session }
+        | CommandResult::Abort { session }
+        | CommandResult::SetModel { session }
+        | CommandResult::SetThinking { session } => Some(session.clone()),
+        CommandResult::Detach { .. } | CommandResult::List { .. } => None,
+    }
 }
 
 /// Execute a protocol Command against the service; returns the protocol

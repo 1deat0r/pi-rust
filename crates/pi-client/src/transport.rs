@@ -2,15 +2,18 @@
 //! CBOR message encoding, mirroring the server's `frame` + `MessageCodec`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use tokio::io::AsyncWriteExt;
 
 use crate::PiClientError;
 
 /// Owns the socket write half; the read half is passed to the reader task.
+/// Clone is cheap: the writer and closed flag are Arc-shared.
+#[derive(Clone)]
 pub struct ClientConnection {
-    writer: tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>,
-    closed: AtomicBool,
+    writer: Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    closed: Arc<AtomicBool>,
 }
 
 impl ClientConnection {
@@ -18,8 +21,8 @@ impl ClientConnection {
         let (reader, writer) = stream.into_split();
         (
             Self {
-                writer: tokio::sync::Mutex::new(writer),
-                closed: AtomicBool::new(false),
+                writer: Arc::new(tokio::sync::Mutex::new(writer)),
+                closed: Arc::new(AtomicBool::new(false)),
             },
             reader,
         )
@@ -40,7 +43,7 @@ impl ClientConnection {
         writer.flush().await.map_err(|e| PiClientError { message: format!("flush: {e}") })
     }
 
-    pub async fn close(&mut self) -> Result<(), PiClientError> {
+    pub async fn close(&self) -> Result<(), PiClientError> {
         use tokio::io::AsyncWriteExt;
         let mut writer = self.writer.lock().await;
         let _ = writer.shutdown().await;

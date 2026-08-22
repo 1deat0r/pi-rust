@@ -4,6 +4,7 @@
 //! handshake, sends `Command`s with request/response correlation, and emits
 //! `ServerEvent`s (server/session snapshots, progress) to subscribers.
 
+pub mod session_handle;
 pub mod transport;
 
 use std::collections::HashMap;
@@ -32,15 +33,18 @@ struct Pending {
     resolve: tokio::sync::oneshot::Sender<Result<CommandResult, PiClientError>>,
 }
 
-type EventListener = Arc<dyn Fn(&ServerEvent) + Send + Sync>;
+pub type EventListener = Arc<dyn Fn(&ServerEvent) + Send + Sync>;
 
 /// PiClient: connects, handshakes, and issues protocol commands.
+/// Clone is cheap: all mutable state is Arc-shared.
+#[derive(Clone)]
 pub struct PiClient {
     connection: transport::ClientConnection,
     pending: Arc<Mutex<HashMap<String, Option<Pending>>>>,
     listeners: Arc<Mutex<Vec<EventListener>>>,
     snapshot: Arc<Mutex<Option<ServerSnapshot>>>,
-    next_request_id: AtomicU64,
+    session_snapshots: Arc<Mutex<HashMap<String, pi_protocol::SessionSnapshot>>>,
+    next_request_id: Arc<AtomicU64>,
 }
 
 impl PiClient {
@@ -51,13 +55,15 @@ impl PiClient {
         let pending: Arc<Mutex<HashMap<String, Option<Pending>>>> = Arc::new(Mutex::new(HashMap::new()));
         let listeners: Arc<Mutex<Vec<EventListener>>> = Arc::new(Mutex::new(Vec::new()));
         let snapshot: Arc<Mutex<Option<ServerSnapshot>>> = Arc::new(Mutex::new(None));
+        let session_snapshots: Arc<Mutex<HashMap<String, pi_protocol::SessionSnapshot>>> = Arc::new(Mutex::new(HashMap::new()));
         let (connection, reader) = transport::ClientConnection::new(stream);
         let mut client = Self {
             connection,
             pending,
             listeners,
             snapshot,
-            next_request_id: AtomicU64::new(1),
+            session_snapshots,
+            next_request_id: Arc::new(AtomicU64::new(1)),
         };
         client.handshake(reader).await?;
         Ok(client)
@@ -73,6 +79,7 @@ impl PiClient {
         let pending = self.pending.clone();
         let listeners = self.listeners.clone();
         let snapshot = self.snapshot.clone();
+        let session_snapshots = self.session_snapshots.clone();
         let mut decoder = pi_protocol::ServerMessageDecoder::new(&Default::default()).expect("decoder");
         tokio::spawn(async move {
             let mut buf = vec![0u8; 64 * 1024];
@@ -88,7 +95,7 @@ impl PiClient {
                     Err(_) => continue,
                 };
                 for message in messages {
-                    handle_message(message, &pending, &listeners, &snapshot);
+                    handle_message(message, &pending, &listeners, &snapshot, &session_snapshots);
                 }
             }
         });
@@ -125,7 +132,19 @@ impl PiClient {
         self.snapshot.lock().unwrap().clone()
     }
 
-    pub async fn close(&mut self) -> Result<(), PiClientError> {
+    /// Most recent `SessionSnapshot` observed for the given session id.
+    /// Immediately record a session snapshot (used by the session-handle
+    /// attach path so `handle.snapshot()` is correct before the event fanout
+    /// arrives from the server reader task).
+    pub(crate) fn note_session_snapshot(&self, snapshot: pi_protocol::SessionSnapshot) {
+        self.session_snapshots.lock().unwrap().insert(snapshot.id.clone(), snapshot);
+    }
+
+    pub fn session_snapshot(&self, session_id: &str) -> Option<pi_protocol::SessionSnapshot> {
+        self.session_snapshots.lock().unwrap().get(session_id).cloned()
+    }
+
+    pub async fn close(&self) -> Result<(), PiClientError> {
         self.connection.close().await
     }
 }
@@ -135,6 +154,7 @@ fn handle_message(
     pending: &Arc<Mutex<HashMap<String, Option<Pending>>>>,
     listeners: &Arc<Mutex<Vec<EventListener>>>,
     snapshot: &Arc<Mutex<Option<ServerSnapshot>>>,
+    session_snapshots: &Arc<Mutex<HashMap<String, pi_protocol::SessionSnapshot>>>,
 ) {
     match message {
         ServerMessage::Hello { snapshot: snap, .. } => {
@@ -171,6 +191,9 @@ fn handle_message(
             if let ServerEvent::ServerSnapshot { snapshot: snap } = &event {
                 *snapshot.lock().unwrap() = Some(snap.clone());
             }
+            if let ServerEvent::SessionSnapshot { snapshot: sess } = &event {
+                session_snapshots.lock().unwrap().insert(sess.id.clone(), sess.clone());
+            }
             let listeners = listeners.lock().unwrap().clone();
             for listener in listeners {
                 listener(&event);
@@ -202,6 +225,7 @@ mod tests {
             &pending,
             &listeners,
             &snapshot,
+            &Arc::new(Mutex::new(HashMap::new())),
         );
         assert!(snapshot.lock().unwrap().is_some());
     }

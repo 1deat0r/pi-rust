@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_protocol::{ServerEvent, ServerMessage, ServerSnapshot, SessionMetadata};
+use pi_protocol::{ServerEvent, ServerMessage, ServerSnapshot, SessionMetadata, SessionSnapshot};
 
 use crate::connection::ByteConnection;
 
@@ -61,6 +61,27 @@ impl ServerSnapshotPublisher {
             revision: self.current_revision(),
             sessions: self.sessions.lock().unwrap().clone(),
             models: self.models.lock().unwrap().clone(),
+        }
+    }
+
+    /// Broadcast a per-session snapshot event to all connected clients
+    /// (upstream Snapshots.publishSessionSnapshot).
+    pub async fn broadcast_session_event(&self, session: SessionSnapshot) {
+        let conns = {
+            let conns = self.connections.lock().unwrap().clone();
+            if conns.is_empty() {
+                return;
+            }
+            let message = ServerMessage::Event {
+                event: ServerEvent::SessionSnapshot { snapshot: session },
+            };
+            let Ok(frame) = pi_protocol::encode_server_message(&message, &Default::default()) else {
+                return;
+            };
+            (frame, conns)
+        };
+        for conn in conns.1 {
+            let _ = conn.send(&conns.0).await;
         }
     }
 
