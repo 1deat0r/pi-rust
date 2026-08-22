@@ -700,6 +700,37 @@ impl SettingsManager {
         self.save_project();
     }
 
+    /// Synchronously run the pending write queue. Used by one-shot CLI
+    /// commands that must persist before process exit (the async `flush` is
+    /// used by long-running modes).
+    pub fn flush_sync(&mut self) {
+        let tasks: Vec<(SettingsScope, WriteTask)> = {
+            let mut q = self.queue.lock().unwrap();
+            q.drain(..).collect()
+        };
+        for (scope, task) in tasks {
+            if scope == SettingsScope::Project {
+                if let Err(e) = self.assert_project_trusted_for_write() {
+                    self.record_error(scope, e);
+                    continue;
+                }
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
+            if let Err(e) = result {
+                let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = e.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown write failure".to_string()
+                };
+                self.record_error(scope, msg);
+                continue;
+            }
+            self.clear_modified_scope(scope);
+        }
+    }
+
     /// Run the pending write queue; setter-side project trust is asserted here
     /// again, mirroring upstream `enqueueWrite`.
     pub async fn flush(&mut self) {

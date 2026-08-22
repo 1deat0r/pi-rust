@@ -532,11 +532,13 @@ impl PackageManager {
                 }
             };
             self.set_scope_packages(scope, next);
+            self.settings_manager.flush_sync();
             return true;
         }
         let mut next = current.clone();
         next.push(PackageSource::Str(normalized_source));
         self.set_scope_packages(scope, next);
+        self.settings_manager.flush_sync();
         true
     }
 
@@ -552,15 +554,23 @@ impl PackageManager {
         let changed = next.len() != current.len();
         if changed {
             self.set_scope_packages(scope, next);
+            self.settings_manager.flush_sync();
         }
         changed
     }
 
     fn get_scope_packages(&self, scope: SourceScope) -> Vec<PackageSource> {
+        // Upstream listConfiguredPackages reads the raw global and project
+        // maps separately (not the merged view), so the user scope must not
+        // pick up project entries.
         if scope == "project" {
             self.settings_manager.get_project_packages()
         } else {
-            self.settings_manager.get_packages()
+            self.settings_manager
+                .get_global_settings()
+                .get("packages")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default()
         }
     }
 
@@ -819,7 +829,7 @@ impl PackageManager {
 
     pub fn list_configured_packages(&self) -> Vec<ConfiguredPackage> {
         let mut configured = Vec::new();
-        for pkg in self.settings_manager.get_packages() {
+        for pkg in self.get_scope_packages("user") {
             let (source, filtered) = package_source_parts(&pkg);
             configured.push(ConfiguredPackage {
                 source: source.clone(),
@@ -828,7 +838,7 @@ impl PackageManager {
                 installed_path: self.get_installed_path(&source, "user"),
             });
         }
-        for pkg in self.settings_manager.get_project_packages() {
+        for pkg in self.get_scope_packages("project") {
             let (source, filtered) = package_source_parts(&pkg);
             configured.push(ConfiguredPackage {
                 source: source.clone(),
@@ -892,7 +902,7 @@ impl PackageManager {
         let identity = source.map(|s| self.get_package_identity(s, None));
         let mut matched = false;
         let mut update_sources: Vec<(String, SourceScope)> = Vec::new();
-        for pkg in self.settings_manager.get_packages() {
+        for pkg in self.get_scope_packages("user") {
             let (source_str, _) = package_source_parts(&pkg);
             if let Some(identity) = &identity {
                 if &self.get_package_identity(&source_str, Some("user")) != identity {
@@ -902,7 +912,7 @@ impl PackageManager {
             matched = true;
             update_sources.push((source_str, "user"));
         }
-        for pkg in self.settings_manager.get_project_packages() {
+        for pkg in self.get_scope_packages("project") {
             let (source_str, _) = package_source_parts(&pkg);
             if let Some(identity) = &identity {
                 if &self.get_package_identity(&source_str, Some("project")) != identity {
