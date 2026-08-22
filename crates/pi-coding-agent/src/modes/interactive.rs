@@ -784,6 +784,68 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         }
                                     }
                                 }
+                                "trust" => {
+                                    match _arg.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()) {
+                                        Some(choice) if matches!(choice.as_str(), "allow" | "deny" | "ask") => {
+                                            settings.set_default_project_trust(&choice);
+                                            status_banner = format!("default project trust: {choice}");
+                                        }
+                                        _ => {
+                                            status_banner = "usage: /trust <allow|deny|ask>".to_string();
+                                        }
+                                    }
+                                }
+                                "copy" => {
+                                    // Copy the last assistant message text. Without a system
+                                    // clipboard binary the text is surfaced in the banner instead.
+                                    let mut text = String::new();
+                                    for message in runtime.messages.iter().rev() {
+                                        match message {
+                                            pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(a)) => {
+                                                for block in a.content() {
+                                                    if let pi_ai::types::ContentBlock::Text { text: t, .. } = block {
+                                                        if !t.is_empty() {
+                                                            text = t.clone();
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                                break;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    if text.is_empty() {
+                                        status_banner = "no assistant message to copy".to_string();
+                                    } else {
+                                        let copied = ["xclip", "wl-copy", "pbcopy"]
+                                            .iter()
+                                            .find_map(|bin| {
+                                                let Ok(mut child) = std::process::Command::new(bin)
+                                                    .stdin(std::process::Stdio::piped())
+                                                    .spawn()
+                                                else {
+                                                    return None;
+                                                };
+                                                let mut stdin = child.stdin.take()?;
+                                                use std::io::Write as _;
+                                                let _ = stdin.write_all(text.as_bytes());
+                                                drop(stdin);
+                                                child.wait().ok();
+                                                Some(())
+                                            });
+                                        if copied.is_some() {
+                                            status_banner = "copied last assistant message to clipboard".to_string();
+                                        } else {
+                                            let preview: String = text.chars().take(90).collect();
+                                            if preview != text {
+                                                status_banner = format!("copied (preview): {preview}…");
+                                            } else {
+                                                status_banner = format!("copied: {preview}");
+                                            }
+                                        }
+                                    }
+                                }
                                 _ => {
                                     status_banner = format!(
                                         "`/{}` is not wired in the interactive port yet",
