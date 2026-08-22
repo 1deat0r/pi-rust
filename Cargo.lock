@@ -843,6 +843,13 @@ dependencies = [
 [[package]]
 name = "pi-evals"
 version = "0.84.2"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
 
 [[package]]
 name = "pi-protocol"
