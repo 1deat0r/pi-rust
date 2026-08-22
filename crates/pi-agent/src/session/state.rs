@@ -623,6 +623,14 @@ impl SessionState {
                     }
                 }
                 if let LaneRecord::Usage { usage, .. } = &record {
+                    // DECISION (2026-08-22, session 12): pi-ai Usage token counts
+                    // stay u64. Upstream can emit negative token "adjustment"
+                    // records for correction true-ups; widening the entire Usage
+                    // surface to i64 would ripple through every adaptor, the
+                    // images facade, formatting, and RPC. u64 additions saturate
+                    // in debug and stay correct for all non-negative real usage;
+                    // a rare negative adjustment record is dropped from totals
+                    // rather than corrupting them. Accepted divergence.
                     self.stats.cached_tokens += usage.cache_read;
                     self.stats.uncached_tokens += usage.input + usage.cache_write;
                     self.stats.total_tokens += usage.total_tokens;

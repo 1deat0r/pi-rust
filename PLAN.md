@@ -597,6 +597,23 @@ WebSocket transport (SSE fallback), ConfigSelector full TUI component,
 `update --models` pi.dev fetch seam, pi-ai Usage u64 negative-adjustment
 decision, TUI alt-screen full swap + ICU word segmentation.
 
+### Session 12 addendum (3) — /share gist + Usage decision
+- Interactive `/share` wired (gh auth -> export HTML -> `gh gist create --public=false`
+  -> viewer URL; spawn_blocking + timeouts so gh never blocks the UI). E2E verified:
+  a real secret gist was created and the viewer URL rendered. With this, ALL
+  interactive slash commands are functional (no remaining "not wired" banners).
+- Editor autocomplete fix: Enter applies the completion and closes the popup so the
+  line submits instead of re-applying the same item.
+- DECISION on the pi-ai Usage negative-adjustment question: token counts REMAIN u64.
+  Negative upstream adjustment records are rare correction true-ups; widening to i64
+  would ripple across all adaptors/images/RPC. u64 addition stays correct for all
+  non-negative real usage; negative records are dropped from totals (safe
+  degradation). Documented at the state.rs stats-accumulation seam.
+- Remaining documented gaps: provider OAuth device-code flows (openai-codex/
+  github-copilot/radius), codex WebSocket transport (SSE fallback), ConfigSelector
+  full TUI component, `update --models` pi.dev fetch seam (domain not in egress
+  allowlist), TUI alt-screen full swap + ICU word segmentation.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration
