@@ -5,11 +5,17 @@
 //! model follows the upstream key-string surface ("enter", "ctrl+c", ...);
 //! the terminal backend is crossterm.
 
+pub mod fuzzy;
 pub mod keys;
+pub mod kill_ring;
 pub mod layout;
+pub mod native_modifiers;
 pub mod terminal;
+pub mod terminal_colors;
 pub mod tui;
+pub mod undo_stack;
 pub mod utils;
+pub mod word_navigation;
 
 pub mod components {
     pub mod box_;
