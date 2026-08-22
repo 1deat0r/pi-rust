@@ -138,6 +138,72 @@ pub fn get_configured_bedrock_credentials(
     Some((access_key_id, secret_access_key, session_token))
 }
 
+/// Load `aws_access_key_id`/`aws_secret_access_key`/`aws_session_token` from
+/// the shared AWS credentials file (`AWS_SHARED_CREDENTIALS_FILE` or
+/// `~/.aws/credentials`) for one profile ("default" when none is named).
+/// Returns (access_key, secret_key, session_token).
+pub fn aws_profile_credentials(
+    profile: Option<&str>,
+    env: Option<&crate::types::ProviderEnv>,
+) -> Option<(String, String, Option<String>)> {
+    let path = get_provider_env_value("AWS_SHARED_CREDENTIALS_FILE", env)
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            let home = std::env::var("HOME").ok()?;
+            Some(std::path::PathBuf::from(home).join(".aws").join("credentials"))
+        })?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let profile = profile.filter(|p| !p.is_empty()).unwrap_or("default");
+    let mut current: Option<String> = None;
+    let mut aws_access_key_id: Option<String> = None;
+    let mut aws_secret_access_key: Option<String> = None;
+    let mut aws_session_token: Option<String> = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let name = line[1..line.len() - 1].trim().to_string();
+            // Resolve named "profile X" in the credentials file by its X.
+            let name = name.strip_prefix("profile ").unwrap_or(&name).to_string();
+            if current.as_deref() == Some(profile) {
+                // Leaving the target section: return what we found.
+                if aws_access_key_id.is_some() && aws_secret_access_key.is_some() {
+                    return Some((
+                        aws_access_key_id?,
+                        aws_secret_access_key?,
+                        aws_session_token,
+                    ));
+                }
+            }
+            current = Some(name);
+            aws_access_key_id = None;
+            aws_secret_access_key = None;
+            aws_session_token = None;
+            continue;
+        }
+        if current.as_deref() != Some(profile) {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let k = k.trim();
+            let v = v.trim();
+            match k {
+                "aws_access_key_id" => aws_access_key_id = Some(v.to_string()),
+                "aws_secret_access_key" => aws_secret_access_key = Some(v.to_string()),
+                "aws_session_token" => aws_session_token = Some(v.to_string()),
+                _ => {}
+            }
+        }
+    }
+    if aws_access_key_id.is_some() && aws_secret_access_key.is_some() {
+        Some((aws_access_key_id?, aws_secret_access_key?, aws_session_token))
+    } else {
+        None
+    }
+}
+
 /// ARN-embedded region extraction for inference profile ids (upstream
 /// `arnRegionMatch`).
 pub fn arn_region(model_id: &str) -> Option<String> {
@@ -242,8 +308,16 @@ pub fn resolve_config(
     }
 
     let (access_key, secret_key, session_token): (Option<String>, Option<String>, Option<String>) =
-        if bearer_token.is_none() && profile.is_none() {
-            get_configured_bedrock_credentials(env).map(|(a, s, t)| (Some(a), Some(s), t)).unwrap_or((None, None, None))
+        if bearer_token.is_none() {
+            // Env keys take precedence; otherwise fall back to the shared AWS
+            // credentials file for the configured (or default) profile.
+            get_configured_bedrock_credentials(env)
+                .map(|(a, s, t)| (Some(a), Some(s), t))
+                .unwrap_or_else(|| {
+                    aws_profile_credentials(profile.as_deref(), env)
+                        .map(|(a, s, t)| (Some(a), Some(s), t))
+                        .unwrap_or((None, None, None))
+                })
         } else {
             (None, None, None)
         };
@@ -2450,5 +2524,77 @@ mod tests {
         assert_eq!(thinking.0, "[Reasoning redacted]");
         assert_eq!(thinking.1.as_deref(), Some(redacted_b64));
         assert_eq!(thinking.2, Some(true));
+    }
+}
+
+
+#[cfg(test)]
+mod profile_credentials_tests {
+    use super::*;
+
+    fn write_credentials(content: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("pi-bedrock-creds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("credentials");
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn reads_default_profile_without_profile_arg() {
+        let file = write_credentials(
+            "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n",
+        );
+        unsafe { std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file) };
+        let creds = aws_profile_credentials(None, None).expect("default creds");
+        assert_eq!(creds.0, "AKIADEFAULT");
+        assert_eq!(creds.1, "defaultsecret");
+        assert!(creds.2.is_none());
+        std::env::remove_var("AWS_SHARED_CREDENTIALS_FILE");
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn reads_named_profile_and_session_token() {
+        let file = write_credentials(
+            "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n\n[staging]\naws_access_key_id = AKIASTAGING\naws_secret_access_key = stagingsecret\naws_session_token = tok123\n",
+        );
+        unsafe { std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file) };
+        let creds = aws_profile_credentials(Some("staging"), None).expect("staging creds");
+        assert_eq!(creds.0, "AKIASTAGING");
+        assert_eq!(creds.1, "stagingsecret");
+        assert_eq!(creds.2.as_deref(), Some("tok123"));
+        std::env::remove_var("AWS_SHARED_CREDENTIALS_FILE");
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn returns_none_for_unknown_profile() {
+        let file = write_credentials("[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n");
+        unsafe { std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file) };
+        assert!(aws_profile_credentials(Some("missing"), None).is_none());
+        std::env::remove_var("AWS_SHARED_CREDENTIALS_FILE");
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn env_keys_win_over_profile_file() {
+        let file = write_credentials("[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n");
+        unsafe {
+            std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file);
+            std::env::set_var("AWS_ACCESS_KEY_ID", "AKIAENV");
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "envsecret");
+        }
+        let env = None;
+        let from_env = get_configured_bedrock_credentials(env).expect("env creds");
+        assert_eq!(from_env.0, "AKIAENV");
+        let from_file = aws_profile_credentials(None, env).expect("file creds");
+        assert_eq!(from_file.0, "AKIADEFAULT");
+        // resolve_config keeps env precedence: emulate the branch order.
+        std::env::remove_var("AWS_SHARED_CREDENTIALS_FILE");
+        std::env::remove_var("AWS_ACCESS_KEY_ID");
+        std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 }
