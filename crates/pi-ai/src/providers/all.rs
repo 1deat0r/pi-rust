@@ -270,7 +270,15 @@ env_provider!(huggingface_provider, "huggingface", "Hugging Face", "https://rout
 env_provider!(kimi_coding_provider, "kimi-coding", "Kimi (Coding)", "https://api.kimi.com/coding", ["KIMI_API_KEY"]);
 env_provider!(minimax_provider, "minimax", "MiniMax", "https://api.minimax.io/anthropic", ["MINIMAX_API_KEY"]);
 env_provider!(minimax_cn_provider, "minimax-cn", "MiniMax (CN)", "https://api.minimaxi.com/anthropic", ["MINIMAX_CN_API_KEY"]);
-env_provider!(mistral_provider, "mistral", "Mistral", "https://api.mistral.ai", ["MISTRAL_API_KEY"]);
+pub fn mistral_provider() -> Provider {
+    provider_with_env_auth(
+        "mistral",
+        "Mistral",
+        Some("https://api.mistral.ai"),
+        &["MISTRAL_API_KEY"],
+        crate::models::ProviderApiSpec::Single(mistral_conversations_streams()),
+    )
+}
 env_provider!(moonshotai_provider, "moonshotai", "Moonshot AI", "https://api.moonshot.ai/v1", ["MOONSHOT_API_KEY"]);
 env_provider!(moonshotai_cn_provider, "moonshotai-cn", "Moonshot AI (CN)", "https://api.moonshot.cn/v1", ["MOONSHOT_API_KEY"]);
 env_provider!(nvidia_provider, "nvidia", "NVIDIA", "https://integrate.api.nvidia.com/v1", ["NVIDIA_API_KEY"]);
@@ -403,7 +411,7 @@ pub fn openai_codex_provider() -> Provider {
         "OpenAI Codex",
         Some("https://chatgpt.com/backend-api"),
         &[],
-        no_stream(),
+        crate::models::ProviderApiSpec::Single(openai_codex_streams()),
     )
 }
 
@@ -554,6 +562,47 @@ mod tests {
             let msg = stream.for_each(|_| {}).await;
             let err = msg.error_message().unwrap_or("").to_string();
             assert!(err.contains("No API key for provider: azure-openai-responses"), "got: {err}");
+        });
+    }
+
+    #[test]
+    fn mistral_provider_routes_through_mistral_adaptor() {
+        // Upstream mistralProvider uses mistralConversationsApi as its single
+        // api. The no-key path must surface the mistral-conversations adaptor's
+        // error, not the openai-completions fallback or "no API implementation".
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let _guard = KEY_LOCK.lock().unwrap();
+            std::env::remove_var("MISTRAL_API_KEY");
+            let provider = mistral_provider();
+            let model = provider.models.first().cloned().unwrap();
+            assert_eq!(model.api, "mistral-conversations", "mistral catalog models must declare the mistral api");
+            let ctx = crate::types::Context::default();
+            let stream = provider.stream(&model, &ctx, None);
+            let msg = stream.for_each(|_| {}).await;
+            let err = msg.error_message().unwrap_or("").to_string();
+            assert!(err.contains("No API key for provider: mistral"), "got: {err}");
+            assert!(!err.contains("no API implementation"), "got: {err}");
+        });
+    }
+
+    #[test]
+    fn openai_codex_provider_routes_through_codex_adaptor() {
+        // openai-codex must dispatch through the codex-responses adaptor. The
+        // provider has no ambient api key (OAuth is not ported), so the
+        // no-key path surfaces the adaptor's error rather than "no API
+        // implementation".
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let provider = openai_codex_provider();
+            let model = provider.models.first().cloned().unwrap();
+            assert_eq!(model.api, "openai-codex-responses", "codex catalog models must declare the codex api");
+            let ctx = crate::types::Context::default();
+            let stream = provider.stream(&model, &ctx, None);
+            let msg = stream.for_each(|_| {}).await;
+            let err = msg.error_message().unwrap_or("").to_string();
+            assert!(err.contains("No API key for provider: openai-codex"), "got: {err}");
+            assert!(!err.contains("no API implementation"), "got: {err}");
         });
     }
 
@@ -742,4 +791,76 @@ pub fn anthropic_streams_for(base_url: &str) -> crate::models::ProviderStreams {
         )
     };
     crate::models::ProviderStreams { stream, stream_simple }
+}
+
+/// ProviderStreams for the mistral-conversations API family. The base URL is
+/// read from the model (the catalog carries `https://api.mistral.ai`), so the
+/// stream closures only need the reqwest client.
+pub fn mistral_conversations_streams() -> crate::models::ProviderStreams {
+    let client = reqwest::Client::new();
+    let stream = {
+        let client = client.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::StreamOptions>| {
+                let api_key = options.and_then(|o| o.base.api_key.as_deref());
+                let go = crate::api::mistral_conversations::MistralOptions {
+                    base: options.cloned().unwrap_or_default(),
+                    ..Default::default()
+                };
+                crate::api::mistral_conversations::stream(model, ctx, client.clone(), api_key, &go)
+            },
+        )
+    };
+    let simple = {
+        let client = client.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::SimpleStreamOptions>| {
+                let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
+                let opts = options.cloned().unwrap_or_default();
+                crate::api::mistral_conversations::stream_simple(model, ctx, client.clone(), api_key, &opts)
+            },
+        )
+    };
+    crate::models::ProviderStreams { stream, stream_simple: simple }
+}
+
+/// ProviderStreams for the openai-codex-responses API family. The Codex URL is
+/// derived from the model base URL (`resolve_codex_url`), so the stream
+/// closures only need the reqwest client. Auth comes from the ChatGPT access
+/// token supplied in options (OAuth is not yet ported; the provider carries no
+/// ambient api key).
+pub fn openai_codex_streams() -> crate::models::ProviderStreams {
+    let client = reqwest::Client::new();
+    let stream = {
+        let client = client.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::StreamOptions>| {
+                let api_key = options.and_then(|o| o.base.api_key.as_deref());
+                let go = crate::api::openai_codex_responses::OpenAICodexResponsesOptions {
+                    base: options.cloned().unwrap_or_default(),
+                    ..Default::default()
+                };
+                crate::api::openai_codex_responses::stream(model, ctx, client.clone(), api_key, &go)
+            },
+        )
+    };
+    let simple = {
+        let client = client.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::SimpleStreamOptions>| {
+                let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
+                let opts = options.cloned().unwrap_or_default();
+                crate::api::openai_codex_responses::stream_simple(model, ctx, client.clone(), api_key, &opts)
+            },
+        )
+    };
+    crate::models::ProviderStreams { stream, stream_simple: simple }
 }
