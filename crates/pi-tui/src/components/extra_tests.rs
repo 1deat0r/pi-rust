@@ -8,6 +8,14 @@ mod components_extra_tests {
     use crate::tui::Component;
     use crate::keys::TuiKey;
 
+    /// Serializes tests that mutate the global terminal-image capabilities so
+    /// parallel executions cannot race on the shared state.
+    fn cap_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::OnceLock;
+        static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap()
+    }
+
     #[test]
     fn alt_screen_search_finds_matches_and_merges_segments() {
         let lines = vec![
@@ -36,6 +44,7 @@ mod components_extra_tests {
 
     #[test]
     fn image_fallback_without_capabilities() {
+        let _guard = cap_lock();
         set_capabilities(TerminalCapabilities { images: None, true_color: false, hyperlinks: false });
         let theme = ImageTheme { fallback_color: Box::new(|s| s.to_string()) };
         let image = Image::new(
