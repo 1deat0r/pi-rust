@@ -88,8 +88,10 @@ pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T
 /// shape (upstream `(current) => Promise<LockResult<T>>`).
 pub type LockFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = LockResult<T>> + Send + 'a>>;
 
-/// `withLockAsync` callback: `(current) => Promise<LockResult<T>>`.
-pub type LockCallback<'a, T> = Box<dyn FnMut(Option<&str>) -> BoxFuture<'a, Result<LockResult<T>, String>> + Send>;
+/// `withLockAsync` callback: `(current) => Promise<LockResult<T>>`. The
+/// callback parses the borrowed `current` into owned data before boxing, so
+/// its returned future is `'static`.
+pub type LockCallback<T> = Box<dyn FnOnce(Option<&str>) -> BoxFuture<'static, Result<LockResult<T>, String>> + Send>;
 
 /// Storage backend (upstream `AuthStorageBackend`): unlocked mutation of the
 /// current value behind a lock. The two concrete backends (file, in-memory)
@@ -110,7 +112,7 @@ impl AuthStorageBackend {
 
     pub fn with_lock_async<T>(
         &self,
-        f: LockCallback<'_, T>,
+        f: LockCallback<T>,
         options: &AuthOperationOptions,
     ) -> BoxFuture<'_, Result<T, String>>
     where
@@ -272,7 +274,7 @@ impl FileAuthStorageBackend {
 
     fn with_lock_async_impl<T>(
         &self,
-        mut f: LockCallback<'_, T>,
+        mut f: LockCallback<T>,
         options: &AuthOperationOptions,
     ) -> BoxFuture<'_, Result<T, String>>
     where
@@ -307,7 +309,9 @@ impl FileAuthStorageBackend {
 #[derive(Default)]
 pub struct InMemoryAuthStorageBackend {
     value: Arc<Mutex<Option<String>>>,
-    async_chain: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Serializes concurrent with_lock_async operations (upstream
+    /// `asyncChain`) without requiring `'static` callbacks.
+    async_lock: tokio::sync::Mutex<()>,
 }
 
 impl InMemoryAuthStorageBackend {
@@ -328,31 +332,23 @@ impl InMemoryAuthStorageBackend {
 
     fn with_lock_async_impl<T>(
         &self,
-        mut f: LockCallback<'_, T>,
+        mut f: LockCallback<T>,
         options: &AuthOperationOptions,
     ) -> BoxFuture<'_, Result<T, String>>
     where
         T: Send + 'static,
     {
-        // Serialize operations through a chain so concurrent mutations run in
-        // order (upstream queues on `this.asyncChain`).
+        // Serialize concurrent mutations in order (upstream queues on
+        // `this.asyncChain`); awaiting the tokio mutex gives the same
+        // ordering without a spawned task.
         let value = self.value.clone();
-        let value_for_task = value.clone();
-        let previous = self.async_chain.lock().unwrap().take();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let handle = tokio::spawn(async move {
-            if let Some(previous) = previous {
-                let _ = previous.await;
-            }
-            let current = value_for_task.lock().unwrap().clone();
-            let locked = f(current.as_deref()).await;
-            let _ = tx.send(locked);
-        });
-        *self.async_chain.lock().unwrap() = Some(handle);
-        let options = options.clone();
+        let options_clone = options.clone();
         Box::pin(async move {
-            throw_if_aborted(options.signal.as_ref())?;
-            let locked = rx.await.map_err(|_| "Auth storage async chain failed".to_string())??;
+            let _guard = self.async_lock.lock().await;
+            throw_if_aborted(options_clone.signal.as_ref())?;
+            let current = value.lock().unwrap().clone();
+            let locked = f(current.as_deref()).await?;
+            throw_if_aborted(options_clone.signal.as_ref())?;
             if let Some(next) = locked.next {
                 *value.lock().unwrap() = Some(next);
             }
@@ -663,12 +659,13 @@ impl AuthStorage {
             .with_lock_async(
                 Box::new(move |content| {
                     let provider = provider.clone();
+                    let mut current_data = Self::parse_storage_data(content);
+                    current_data.remove(&provider);
+                    let next = serde_json::to_string_pretty(&current_data).unwrap();
                     Box::pin(async move {
-                        let mut current_data = Self::parse_storage_data(content);
-                        current_data.remove(&provider);
                         Ok(LockResult {
                             result: (),
-                            next: Some(serde_json::to_string_pretty(&current_data).unwrap()),
+                            next: Some(next),
                         })
                     })
                 }),
