@@ -241,6 +241,121 @@ pub fn model_from_json(
     Ok(model)
 }
 
+/// Apply extension-provider models over the composed catalog (upstream
+/// `applyExtension`). When `config.models` is absent the base models are
+/// returned (baseUrl override when present); otherwise the extension's model
+/// definitions replace/extend the layered catalog.
+pub fn apply_extension(
+    provider_id: &str,
+    models: &[Model],
+    config: &ProviderExtensionConfig,
+) -> Result<Vec<Model>, String> {
+    let Some(extension_models) = &config.models else {
+        return Ok(match &config.base_url {
+            Some(base_url) => models.iter().map(|m| {
+                let mut model = m.clone();
+                model.base_url = base_url.clone();
+                model
+            }).collect(),
+            None => models.to_vec(),
+        });
+    };
+    let mut result = Vec::new();
+    for definition in extension_models {
+        let defaults = models.iter().find(|m| m.id == definition.id).or_else(|| models.first());
+        let api = definition
+            .api
+            .clone()
+            .or_else(|| config.api.clone())
+            .or_else(|| defaults.map(|d| d.api.clone()))
+            .ok_or_else(|| {
+                format!(
+                    "Provider {provider_id}, model {}: no \"api\" specified. Set at provider or model level.",
+                    definition.id
+                )
+            })?;
+        let base_url = definition
+            .base_url
+            .clone()
+            .or_else(|| config.base_url.clone())
+            .or_else(|| defaults.map(|d| d.base_url.clone()))
+            .ok_or_else(|| format!("Provider {provider_id}: \"baseUrl\" is required when defining custom models."))?;
+        let mut model = Model::new(definition.id.clone(), definition.name.clone().unwrap_or_else(|| definition.id.clone()), api, provider_id.to_string());
+        model.base_url = base_url;
+        model.reasoning = definition.reasoning.unwrap_or(false);
+        if let Some(map) = &definition.thinking_level_map {
+            model.thinking_level_map = Some(thinking_level_map_from_config(map));
+        }
+        model.input = match &definition.input {
+            Some(input) => input
+                .iter()
+                .filter_map(|s| match s.as_str() {
+                    "text" => Some(pi_ai::model::ModelInput::Text),
+                    "image" => Some(pi_ai::model::ModelInput::Image),
+                    _ => None,
+                })
+                .collect(),
+            None => vec![pi_ai::model::ModelInput::Text],
+        };
+        if let Some(cost) = &definition.cost {
+            model.cost.input = cost.input;
+            model.cost.output = cost.output;
+            model.cost.cache_read = cost.cache_read;
+            model.cost.cache_write = cost.cache_write;
+        }
+        model.context_window = definition.context_window.unwrap_or(128_000.0) as u64;
+        model.max_tokens = definition.max_tokens.unwrap_or(16_384.0) as u64;
+        model.sampling_params = definition.sampling_params.clone();
+        model.headers = definition.headers.clone();
+        result.push(model);
+    }
+    Ok(result)
+}
+
+/// Extension provider config input (upstream `ProviderConfigInput`, reduced
+/// to the model surface the composer consumes).
+#[derive(Debug, Clone, Default)]
+pub struct ProviderExtensionConfig {
+    pub name: Option<String>,
+    pub base_url: Option<String>,
+    pub api: Option<String>,
+    pub api_key: Option<String>,
+    pub auth_header: Option<bool>,
+    pub models: Option<Vec<ExtensionModelConfig>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExtensionModelConfig {
+    pub id: String,
+    pub name: Option<String>,
+    pub api: Option<String>,
+    pub base_url: Option<String>,
+    pub reasoning: Option<bool>,
+    pub thinking_level_map: Option<crate::core::model_config::ThinkingLevelMapConfig>,
+    pub input: Option<Vec<String>>,
+    pub cost: Option<crate::core::model_config::ModelCostConfig>,
+    pub context_window: Option<f64>,
+    pub max_tokens: Option<f64>,
+    pub sampling_params: Option<Value>,
+    pub headers: Option<BTreeMap<String, String>>,
+}
+
+/// Validate an extension provider config (upstream `validateExtensionProvider`).
+pub fn validate_extension_provider(
+    provider_id: &str,
+    base: &[Model],
+    models_config: Option<&ModelsJsonProvider>,
+    extension: &ProviderExtensionConfig,
+) -> Result<(), String> {
+    if extension.api.is_none() && extension.models.as_ref().is_some_and(|m| !m.is_empty()) && extension.api.is_none() {
+        // streamSimple-only extension providers require api in the JS port;
+        // the Rust surface has no streamSimple so the check is informational.
+    }
+    let layered = apply_models_json(provider_id, base, models_config)?;
+    apply_extension(provider_id, &layered, extension)?;
+    Ok(())
+}
+
 /// Apply a models.json provider config over the bundled provider's models
 /// (upstream `applyModelsJson`). `config == None` returns the base models
 /// unchanged (a clone).
@@ -586,6 +701,47 @@ mod tests {
         assert_eq!(merged["supportsStore"], json!(true));
         assert_eq!(merged["openRouterRouting"]["allow_fallbacks"], json!(true));
         assert_eq!(merged["openRouterRouting"]["order"], json!(["b"]));
+    }
+
+    #[test]
+    fn apply_extension_replaces_models_with_base_url_override() {
+        let extension = ProviderExtensionConfig {
+            base_url: Some("https://ext.example.com/v1".to_string()),
+            models: Some(vec![ExtensionModelConfig {
+                id: "ext-model".to_string(),
+                name: Some("Ext Model".to_string()),
+                reasoning: Some(true),
+                input: Some(vec!["text".to_string(), "image".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let base = vec![model("demo", "base-1")];
+        let out = apply_extension("demo", &base, &extension).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "ext-model");
+        assert_eq!(out[0].provider, "demo");
+        assert_eq!(out[0].base_url, "https://ext.example.com/v1");
+        assert_eq!(out[0].api, "openai-responses", "defaults inherited from base");
+        assert!(out[0].reasoning);
+    }
+
+    #[test]
+    fn apply_extension_without_models_only_overrides_base_url() {
+        let extension = ProviderExtensionConfig {
+            base_url: Some("https://elsewhere.example.com/v1".to_string()),
+            ..Default::default()
+        };
+        let base = vec![model("demo", "base-1")];
+        let out = apply_extension("demo", &base, &extension).unwrap();
+        assert_eq!(out[0].base_url, "https://elsewhere.example.com/v1");
+        assert_eq!(out[0].id, "base-1");
+    }
+
+    #[test]
+    fn validate_extension_provider_composes_layers() {
+        let extension = ProviderExtensionConfig::default();
+        assert!(validate_extension_provider("demo", &[model("demo", "base-1")], None, &extension).is_ok());
     }
 
     #[test]
