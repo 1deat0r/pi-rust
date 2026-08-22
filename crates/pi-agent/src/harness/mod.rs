@@ -14,6 +14,7 @@ pub mod skills;
 pub mod events;
 pub mod prompt_templates;
 pub mod reducer;
+pub mod result;
 pub mod system_prompt;
 pub mod tools;
 mod models;
