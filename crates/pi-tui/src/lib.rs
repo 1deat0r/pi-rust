@@ -43,7 +43,7 @@ pub mod components {
     pub use cancellable_loader::CancellableLoader;
     pub use image::Image;
     pub use settings_list::{SettingsList, SettingItem};
-    pub use editor::Editor;
+    pub use editor::{Editor, EditorOptions, EditorTheme};
     pub use input::Input;
     pub use loader::Loader;
     pub use markdown::Markdown;

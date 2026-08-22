@@ -42,9 +42,9 @@ pub struct Image {
     dimensions: (u32, u32),
     theme: ImageTheme,
     options: ImageOptions,
-    image_id: std::cell::RefCell<Option<u32>>,
-    cached_lines: std::cell::RefCell<Option<Vec<String>>>,
-    cached_width: std::cell::Cell<Option<usize>>,
+    image_id: std::sync::Mutex<Option<u32>>,
+    cached_lines: std::sync::Mutex<Option<Vec<String>>>,
+    cached_width: std::sync::Mutex<Option<usize>>,
 }
 
 impl std::fmt::Debug for Image {
@@ -81,15 +81,15 @@ impl Image {
             dimensions,
             theme,
             options,
-            image_id: std::cell::RefCell::new(configured_id),
-            cached_lines: std::cell::RefCell::new(None),
-            cached_width: std::cell::Cell::new(None),
+            image_id: std::sync::Mutex::new(configured_id),
+            cached_lines: std::sync::Mutex::new(None),
+            cached_width: std::sync::Mutex::new(None),
         }
     }
 
     /// The Kitty image ID used by this image (if any).
     pub fn get_image_id(&self) -> Option<u32> {
-        *self.image_id.borrow()
+        *self.image_id.lock().unwrap()
     }
 
     fn render_image(&self, width: usize) -> Vec<String> {
@@ -102,7 +102,7 @@ impl Image {
         let mut lines: Vec<String> = Vec::new();
 
         if let Some(protocol) = caps.images {
-            let mut effective_id = *self.image_id.borrow();
+            let mut effective_id = *self.image_id.lock().unwrap();
             let (image_w, image_h) = self.dimensions;
             // Scale to fit cell bounds preserving aspect ratio.
             let width_scale = (max_width as f64 * cell.0 as f64) / image_w as f64;
@@ -114,7 +114,7 @@ impl Image {
             if protocol == ImageProtocol::Kitty {
                 if effective_id.is_none() {
                     effective_id = Some(allocate_image_id());
-                    *self.image_id.borrow_mut() = effective_id;
+                    *self.image_id.lock().unwrap() = effective_id;
                 }
                 let sequence = encode_kitty(&self.base64_data, columns, rows, effective_id, false);
                 lines.push(sequence);
@@ -150,21 +150,22 @@ fn allocate_image_id() -> u32 {
 impl Component for Image {
     fn render(&self, width: usize) -> Vec<String> {
         {
-            let cached = self.cached_lines.borrow().clone();
-            if let (Some(lines), Some(w)) = (cached, self.cached_width.get()) {
+            let cached = self.cached_lines.lock().unwrap().clone();
+            let w = *self.cached_width.lock().unwrap();
+            if let (Some(lines), Some(w)) = (cached, w) {
                 if w == width {
                     return lines;
                 }
             }
         }
         let lines = self.render_image(width);
-        *self.cached_lines.borrow_mut() = Some(lines.clone());
-        self.cached_width.set(Some(width));
+        *self.cached_lines.lock().unwrap() = Some(lines.clone());
+        *self.cached_width.lock().unwrap() = Some(width);
         lines
     }
 
     fn invalidate(&mut self) {
-        *self.cached_lines.borrow_mut() = None;
-        self.cached_width.set(None);
+        *self.cached_lines.lock().unwrap() = None;
+        *self.cached_width.lock().unwrap() = None;
     }
 }

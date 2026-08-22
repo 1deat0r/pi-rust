@@ -841,6 +841,7 @@ name = "pi-tui"
 version = "0.84.2"
 dependencies = [
  "crossterm",
+ "regex",
  "serde_json",
  "tokio",
 ]

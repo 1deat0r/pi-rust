@@ -346,7 +346,7 @@ pub struct Editor {
     pub focused: bool,
     padding_x: usize,
     last_width: usize,
-    scroll_offset: std::cell::Cell<usize>,
+    scroll_offset: std::sync::atomic::AtomicUsize,
     pub border_color: Arc<dyn Fn(&str) -> String + Send + Sync>,
     terminal_rows: usize,
 
@@ -404,7 +404,7 @@ impl Editor {
             focused: false,
             padding_x,
             last_width: 80,
-            scroll_offset: std::cell::Cell::new(0),
+            scroll_offset: std::sync::atomic::AtomicUsize::new(0),
             border_color,
             terminal_rows,
             autocomplete_provider: None,
@@ -510,7 +510,7 @@ impl Editor {
                 self.state = draft;
                 self.preferred_visual_col = None;
                 self.snapped_from_cursor_col = None;
-                self.scroll_offset.set(0);
+                self.scroll_offset.store(0, std::sync::atomic::Ordering::Relaxed);
             } else {
                 self.set_text_internal("", "end");
             }
@@ -540,7 +540,7 @@ impl Editor {
             self.state.lines[self.state.cursor_line].len()
         };
         self.set_cursor_col(col);
-        self.scroll_offset.set(0);
+        self.scroll_offset.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
     // ------------------------------------------------------------------ text access
@@ -648,23 +648,23 @@ impl Editor {
         let max_visible_lines = std::cmp::max(5, terminal_rows * 3 / 10);
 
         let cursor_line_index = layout_lines.iter().position(|l| l.has_cursor).unwrap_or(0);
-        let scroll = self.scroll_offset.get();
+        let scroll = self.scroll_offset.load(std::sync::atomic::Ordering::Relaxed);
         if cursor_line_index < scroll {
-            self.scroll_offset.set(cursor_line_index);
+            self.scroll_offset.store(cursor_line_index, std::sync::atomic::Ordering::Relaxed);
         } else if cursor_line_index >= scroll + max_visible_lines {
-            self.scroll_offset.set(cursor_line_index - max_visible_lines + 1);
+            self.scroll_offset.store(cursor_line_index - max_visible_lines + 1, std::sync::atomic::Ordering::Relaxed);
         }
         let max_scroll_offset = layout_lines.len().saturating_sub(max_visible_lines);
-        self.scroll_offset.set(self.scroll_offset.get().min(max_scroll_offset));
+        self.scroll_offset.store(self.scroll_offset.load(std::sync::atomic::Ordering::Relaxed).min(max_scroll_offset), std::sync::atomic::Ordering::Relaxed);
 
-        let scroll = self.scroll_offset.get();
+        let scroll = self.scroll_offset.load(std::sync::atomic::Ordering::Relaxed);
         let visible_lines = &layout_lines[scroll..scroll + max_visible_lines.min(layout_lines.len().saturating_sub(scroll))];
 
         let mut result: Vec<String> = Vec::new();
         let left_padding = " ".repeat(padding_x);
         let right_padding = left_padding.clone();
 
-        let scroll = self.scroll_offset.get();
+        let scroll = self.scroll_offset.load(std::sync::atomic::Ordering::Relaxed);
         if scroll > 0 {
             result.push((self.border_color)(&create_scroll_border("↑", scroll, width)));
         } else {
@@ -706,7 +706,7 @@ impl Editor {
             result.push(format!("{left_padding}{display_text}{padding}{line_right_padding}"));
         }
 
-        let scroll = self.scroll_offset.get();
+        let scroll = self.scroll_offset.load(std::sync::atomic::Ordering::Relaxed);
         let lines_below = layout_lines.len().saturating_sub((scroll + visible_lines.len()).min(layout_lines.len()));
         if lines_below > 0 {
             result.push((self.border_color)(&create_scroll_border("↓", lines_below, width)));
@@ -1080,13 +1080,15 @@ impl Editor {
                 {
                     self.try_trigger_autocomplete(false);
                 }
-            } else if char.chars().next().map(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')).unwrap_or(false)
+            } else if char
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+                .unwrap_or(false)
+                && (self.is_in_slash_command_context(&text_before_cursor)
+                    || self.autocomplete_trigger_pattern(&text_before_cursor))
             {
-                if self.is_in_slash_command_context(&text_before_cursor)
-                    || self.autocomplete_trigger_pattern(&text_before_cursor)
-                {
-                    self.try_trigger_autocomplete(false);
-                }
+                self.try_trigger_autocomplete(false);
             }
         } else {
             self.update_autocomplete();
@@ -1182,7 +1184,7 @@ impl Editor {
         self.pastes.clear();
         self.paste_counter = 0;
         self.exit_history_browsing();
-        self.scroll_offset.set(0);
+        self.scroll_offset.store(0, std::sync::atomic::Ordering::Relaxed);
         self.undo_stack.clear();
         self.last_action = None;
         self.submit_pending = Some(result);

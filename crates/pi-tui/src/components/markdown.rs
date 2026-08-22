@@ -921,9 +921,9 @@ pub struct Markdown {
     options: MarkdownOptions,
 
     // Cache (interior-mutable for render under &self).
-    cached_text: std::cell::Cell<Option<String>>,
-    cached_width: std::cell::RefCell<Option<usize>>,
-    cached_lines: std::cell::RefCell<Option<Vec<String>>>,
+    cached_text: std::sync::Mutex<Option<String>>,
+    cached_width: std::sync::Mutex<Option<usize>>,
+    cached_lines: std::sync::Mutex<Option<Vec<String>>>,
 }
 
 impl std::fmt::Debug for Markdown {
@@ -948,9 +948,9 @@ impl Markdown {
             default_text_style,
             theme,
             options: options.unwrap_or_default(),
-            cached_text: std::cell::Cell::new(None),
-            cached_width: std::cell::RefCell::new(None),
-            cached_lines: std::cell::RefCell::new(None),
+            cached_text: std::sync::Mutex::new(None),
+            cached_width: std::sync::Mutex::new(None),
+            cached_lines: std::sync::Mutex::new(None),
         }
     }
 
@@ -1594,10 +1594,9 @@ fn block_type_name(block: &Block) -> &'static str {
 impl Component for Markdown {
     fn render(&self, width: usize) -> Vec<String> {
         {
-            let cached_text = self.cached_text.replace(None);
-            let cached_width = *self.cached_width.borrow();
-            let cached_lines = self.cached_lines.borrow().clone();
-            self.cached_text.set(cached_text.clone());
+            let cached_text = self.cached_text.lock().unwrap().clone();
+            let cached_width = *self.cached_width.lock().unwrap();
+            let cached_lines = self.cached_lines.lock().unwrap().clone();
             if let (Some(t), Some(w), Some(lines)) = (cached_text, cached_width, cached_lines) {
                 if t == self.text && w == width {
                     return lines;
@@ -1605,16 +1604,16 @@ impl Component for Markdown {
             }
         }
         let result = self.render_document(width);
-        self.cached_text.set(Some(self.text.clone()));
-        *self.cached_width.borrow_mut() = Some(width);
-        *self.cached_lines.borrow_mut() = Some(result.clone());
+        *self.cached_text.lock().unwrap() = Some(self.text.clone());
+        *self.cached_width.lock().unwrap() = Some(width);
+        *self.cached_lines.lock().unwrap() = Some(result.clone());
         result
     }
 
     fn invalidate(&mut self) {
-        self.cached_text.set(None);
-        *self.cached_width.borrow_mut() = None;
-        *self.cached_lines.borrow_mut() = None;
+        *self.cached_text.lock().unwrap() = None;
+        *self.cached_width.lock().unwrap() = None;
+        *self.cached_lines.lock().unwrap() = None;
     }
 }
 
