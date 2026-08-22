@@ -26,7 +26,7 @@ use crate::storage::entries::{
 use crate::storage::facts::{append_fact, delete_fact_rows, read_fact_rows, read_latest_fact, read_latest_label_facts};
 use crate::storage::lanes::{
     create_initial_lane, create_lane, delete_lane_rows, finish_lane_operation, move_lane, read_lane, read_lane_head,
-    read_lane_move_rows, read_lanes, set_lane_leaf, start_lane_operation,
+    read_lane_move_rows, read_lanes, set_lane_leaf, start_lane_operation, LaneMoveRow,
 };
 use crate::storage::records::{
     append_record_row, delete_record_rows, id_exists_in_records, read_open_operation_rows, read_record_rows,
@@ -970,50 +970,64 @@ impl SqliteSessionStorage {
             let fact_rows = read_fact_rows(db, &session_id, Some(after_seq), limit)
                 .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
 
-            let mut log_rows: Vec<(i64, LogItem)> = Vec::new();
+            // Selection happens BEFORE decoding (mirror of upstream): the
+            // rows are merged by sequence, trimmed, and only then decoded.
+            #[derive(Clone)]
+            enum LogSource {
+                Entry(EntryRow),
+                Record(RecordRow),
+                Lane(LaneMoveRow),
+                Fact(crate::storage::facts::FactRow),
+            }
+            let mut log_rows: Vec<(i64, LogSource)> = Vec::new();
             for row in entry_rows {
-                let entry = decode_entry(&row)?;
-                log_rows.push((row.seq, LogItem::Entry(entry)));
+                log_rows.push((row.seq, LogSource::Entry(row)));
             }
             for row in record_rows {
-                let record = decode_record(&row)?;
-                log_rows.push((row.seq, LogItem::Record(record)));
+                log_rows.push((row.seq, LogSource::Record(row)));
             }
             for row in lane_rows {
-                log_rows.push((row.seq, LogItem::Lane { seq: row.seq as u64, lane: row.lane, leaf_id: row.leaf_id }));
+                log_rows.push((row.seq, LogSource::Lane(row)));
             }
             for row in fact_rows {
-                if row.kind == "name" {
-                    let name = row.value.as_deref().and_then(|v| serde_json::from_str::<String>(v).ok());
-                    log_rows.push((
-                        row.seq,
-                        LogItem::Fact(pi_agent::session::types::FactLogItem {
-                            seq: row.seq as u64,
-                            fact: "name".to_string(),
-                            name,
-                            target_id: None,
-                            label: None,
-                        }),
-                    ));
-                } else {
-                    let label = row.value.as_deref().and_then(|v| serde_json::from_str::<String>(v).ok());
-                    log_rows.push((
-                        row.seq,
-                        LogItem::Fact(pi_agent::session::types::FactLogItem {
-                            seq: row.seq as u64,
-                            fact: "label".to_string(),
-                            name: None,
-                            target_id: row.key.clone(),
-                            label,
-                        }),
-                    ));
-                }
+                log_rows.push((row.seq, LogSource::Fact(row)));
             }
             log_rows.sort_by_key(|(seq, _)| *seq);
             if let Some(limit) = options.limit {
                 log_rows.truncate(limit);
             }
-            Ok(log_rows.into_iter().map(|(_, item)| item).collect())
+            let mut items = Vec::with_capacity(log_rows.len());
+            for (_, source) in log_rows {
+                match source {
+                    LogSource::Entry(row) => items.push(LogItem::Entry(decode_entry(&row)?)),
+                    LogSource::Record(row) => items.push(LogItem::Record(decode_record(&row)?)),
+                    LogSource::Lane(row) => {
+                        items.push(LogItem::Lane { seq: row.seq as u64, lane: row.lane, leaf_id: row.leaf_id })
+                    }
+                    LogSource::Fact(row) => {
+                        if row.kind == "name" {
+                            let name = row.value.as_deref().and_then(|v| serde_json::from_str::<String>(v).ok());
+                            items.push(LogItem::Fact(pi_agent::session::types::FactLogItem {
+                                seq: row.seq as u64,
+                                fact: "name".to_string(),
+                                name,
+                                target_id: None,
+                                label: None,
+                            }));
+                        } else {
+                            let label = row.value.as_deref().and_then(|v| serde_json::from_str::<String>(v).ok());
+                            items.push(LogItem::Fact(pi_agent::session::types::FactLogItem {
+                                seq: row.seq as u64,
+                                fact: "label".to_string(),
+                                name: None,
+                                target_id: row.key.clone(),
+                                label,
+                            }));
+                        }
+                    }
+                }
+            }
+            Ok(items)
         })
         .await
     }
@@ -1614,6 +1628,18 @@ pub struct ForkCreateOptions {
     pub parent_session_id: Option<String>,
     pub metadata: Option<serde_json::Value>,
     pub fork_options: ForkOptions,
+}
+
+impl Default for ForkCreateOptions {
+    fn default() -> Self {
+        Self {
+            id: None,
+            cwd: "/workspace".to_string(),
+            parent_session_id: None,
+            metadata: None,
+            fork_options: ForkOptions::Branch { entry_id: None, position: None },
+        }
+    }
 }
 
 fn serialize_metadata_option(metadata: &Option<serde_json::Value>) -> Result<Option<String>, SessionError> {
