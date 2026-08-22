@@ -292,6 +292,24 @@ impl ContentBlock {
     pub fn tool_call(id: impl Into<String>, name: impl Into<String>, arguments: JsonValue) -> Self {
         ContentBlock::ToolCall { id: id.into(), name: name.into(), arguments, thought_signature: None, namespace: None }
     }
+    pub fn as_thinking(&self) -> Option<&ContentBlock> {
+        match self {
+            ContentBlock::Thinking { .. } => Some(self),
+            _ => None,
+        }
+    }
+    pub fn set_tool_call_id(&mut self, id: String) {
+        match self {
+            ContentBlock::ToolCall { id: slot, .. } => *slot = id,
+            _ => {}
+        }
+    }
+    pub fn clear_thought_signature(&mut self) {
+        match self {
+            ContentBlock::ToolCall { thought_signature, .. } => *thought_signature = None,
+            _ => {}
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +501,9 @@ impl AssistantMessage {
     pub fn timestamp(&self) -> u64 {
         match self { AssistantMessage::Assistant { timestamp, .. } => *timestamp }
     }
+    pub fn set_content(&mut self, content: Vec<ContentBlock>) {
+        match self { AssistantMessage::Assistant { content: c, .. } => *c = content }
+    }
     pub fn with_timestamp(mut self, ts: u64) -> Self {
         let AssistantMessage::Assistant { timestamp, .. } = &mut self;
         *timestamp = ts;
@@ -511,6 +532,10 @@ impl AssistantMessage {
     pub fn set_response_id(&mut self, id: String) {
         let AssistantMessage::Assistant { response_id, .. } = self;
         *response_id = Some(id);
+    }
+    pub fn set_response_model(&mut self, model: String) {
+        let AssistantMessage::Assistant { response_model, .. } = self;
+        *response_model = Some(model);
     }
     pub fn raw_stop_reason(&self) -> Option<&str> {
         match self { AssistantMessage::Assistant { raw_stop_reason, .. } => raw_stop_reason.as_deref() }
@@ -785,6 +810,12 @@ impl ToolResultMessage {
     }
     pub fn details(&self) -> Option<&JsonValue> {
         match self { ToolResultMessage::ToolResult { details, .. } => details.as_ref() }
+    }
+    pub fn set_content(&mut self, content: Vec<ContentBlock>) {
+        match self { ToolResultMessage::ToolResult { content: c, .. } => *c = content }
+    }
+    pub fn set_tool_call_id(&mut self, id: String) {
+        match self { ToolResultMessage::ToolResult { tool_call_id, .. } => *tool_call_id = id }
     }
 }
 

@@ -6,5 +6,9 @@
 //! `crates/pi-ai/TODO.md`.
 
 pub mod anthropic_messages;
+pub mod openai_completions;
 
 pub use anthropic_messages::{stream, AnthropicOptions, AnthropicThinkingDisplay};
+pub mod transform_messages;
+pub mod google_shared;
+pub mod google_generative_ai;

@@ -140,10 +140,74 @@ fn anthropic_streams() -> crate::models::ProviderStreams {
     crate::models::ProviderStreams { stream, stream_simple }
 }
 
+/// ProviderStreams for the openai-completions API family. Each provider
+/// instance owns its reqwest client + base URL; the api key comes from the
+/// auth-applied options.
+pub fn openai_completions_streams(base_url: String) -> crate::models::ProviderStreams {
+    let client = reqwest::Client::new();
+    let stream_base = base_url.clone();
+    let stream = {
+        let client = client.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::StreamOptions>| {
+                let api_key = options.and_then(|o| o.base.api_key.as_deref());
+                let chat_options = crate::api::openai_completions::OpenAIChatOptions {
+                    base: options.cloned().unwrap_or_default(),
+                    reasoning_effort: None,
+                    tool_choice: None,
+                    thinking_budgets: None,
+                };
+                crate::api::openai_completions::stream(
+                    model,
+                    ctx,
+                    client.clone(),
+                    &stream_base,
+                    api_key,
+                    &chat_options,
+                )
+            },
+        )
+    };
+    let simple_base = base_url;
+    let stream_simple = {
+        let client = client.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::SimpleStreamOptions>| {
+                let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
+                let Some(options) = options else {
+                    return crate::event_stream::create_error_stream(
+                        &model.api, &model.provider, &model.id,
+                        "streamSimple requires options".to_string(),
+                    );
+                };
+                crate::api::openai_completions::stream_simple(
+                    model,
+                    ctx,
+                    client.clone(),
+                    &simple_base,
+                    api_key,
+                    options,
+                )
+            },
+        )
+    };
+    crate::models::ProviderStreams { stream, stream_simple }
+}
+
 macro_rules! env_provider {
     ($fn_name:ident, $id:expr, $name:expr, $base:expr, $env_vars:expr) => {
         pub fn $fn_name() -> Provider {
-            provider_with_env_auth($id, $name, Some($base), &$env_vars, no_stream())
+            provider_with_env_auth(
+                $id,
+                $name,
+                Some($base),
+                &$env_vars,
+                crate::models::ProviderApiSpec::Single(openai_completions_streams($base.to_string())),
+            )
         }
     };
 }
@@ -154,7 +218,9 @@ env_provider!(baseten_provider, "baseten", "Baseten", "https://inference.baseten
 env_provider!(cerebras_provider, "cerebras", "Cerebras", "https://api.cerebras.ai/v1", ["CEREBRAS_API_KEY"]);
 env_provider!(deepseek_provider, "deepseek", "DeepSeek", "https://api.deepseek.com", ["DEEPSEEK_API_KEY"]);
 env_provider!(fireworks_provider, "fireworks", "Fireworks", "https://api.fireworks.ai/inference", ["FIREWORKS_API_KEY"]);
-env_provider!(google_provider, "google", "Google", "https://generativelanguage.googleapis.com/v1beta", ["GEMINI_API_KEY"]);
+pub fn google_provider() -> Provider {
+    google_provider_real()
+}
 env_provider!(groq_provider, "groq", "Groq", "https://api.groq.com/openai/v1", ["GROQ_API_KEY"]);
 env_provider!(huggingface_provider, "huggingface", "Hugging Face", "https://router.huggingface.co/v1", ["HF_TOKEN"]);
 env_provider!(kimi_coding_provider, "kimi-coding", "Kimi (Coding)", "https://api.kimi.com/coding", ["KIMI_API_KEY"]);
@@ -342,6 +408,26 @@ mod tests {
     }
 
     #[test]
+    fn google_provider_uses_real_adaptor() {
+        // The google provider must route through the Google Generative AI
+        // adaptor (missing key -> "No API key" error), not the openai-
+        // completions fallback or "no API implementation".
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            std::env::remove_var("GEMINI_API_KEY");
+            let provider = google_provider();
+            let model = provider.models.first().cloned().unwrap();
+            assert_eq!(model.api, "google-generative-ai", "google catalog models must declare the google api");
+            let ctx = crate::types::Context::default();
+            let stream = provider.stream(&model, &ctx, None);
+            let msg = stream.for_each(|_| {}).await;
+            let err = msg.error_message().unwrap_or("").to_string();
+            assert!(err.contains("No API key"), "got: {err}");
+            assert!(!err.contains("no API implementation"), "got: {err}");
+        });
+    }
+
+    #[test]
     fn builtin_models_facade_lists_all_models() {
         let models = builtin_models(crate::models::CreateModelsOptions::default());
         let all = models.get_models(None);
@@ -364,4 +450,67 @@ mod tests {
         // check_auth on a provider without env returns None
         assert!(models.check_auth("google").is_none());
     }
+}
+
+/// ProviderStreams for the google-generative-ai API family. The default
+/// base URL includes `/v1beta` (the vendored catalog model base URLs carry
+/// the full version path, matching upstream's apiVersion suppression).
+pub fn google_streams(base_url: String, _default_base: &str) -> crate::models::ProviderStreams {
+    let client = reqwest::Client::new();
+    let stream = {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::StreamOptions>| {
+                let api_key = options.and_then(|o| o.base.api_key.as_deref());
+                let go = crate::api::google_generative_ai::GoogleOptions::from_stream_options(
+                    options.cloned().unwrap_or_default(),
+                );
+                crate::api::google_generative_ai::stream(
+                    model,
+                    ctx,
+                    client.clone(),
+                    &base_url,
+                    api_key,
+                    &go,
+                )
+            },
+        )
+    };
+    let simple = {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::SimpleStreamOptions>| {
+                let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
+                let opts = options.cloned().unwrap_or_default();
+                crate::api::google_generative_ai::stream_simple(
+                    model,
+                    ctx,
+                    client.clone(),
+                    &base_url,
+                    api_key,
+                    &opts,
+                )
+            },
+        )
+    };
+    crate::models::ProviderStreams { stream, stream_simple: simple }
+}
+
+pub fn google_provider_real() -> Provider {
+    provider_with_env_auth(
+        "google",
+        "Google",
+        Some(crate::api::google_generative_ai::DEFAULT_BASE_URL),
+        &["GEMINI_API_KEY"],
+        crate::models::ProviderApiSpec::Single(google_streams(
+            crate::api::google_generative_ai::DEFAULT_BASE_URL.to_string(),
+            crate::api::google_generative_ai::DEFAULT_BASE_URL,
+        )),
+    )
 }
