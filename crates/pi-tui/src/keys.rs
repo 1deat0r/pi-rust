@@ -17,6 +17,9 @@ impl TuiKey {
     pub fn ctrl(base: impl Into<String>) -> Self {
         Self { base: base.into(), ctrl: true, shift: false, alt: false }
     }
+    pub fn shift(base: impl Into<String>) -> Self {
+        Self { base: base.into(), ctrl: false, shift: true, alt: false }
+    }
     /// Canonical form like `"ctrl+c"`, `"enter"`, `"shift+tab"`.
     pub fn canonical(&self) -> String {
         let mut parts: Vec<&str> = Vec::new();
