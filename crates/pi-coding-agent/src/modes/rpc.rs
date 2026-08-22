@@ -23,6 +23,9 @@ use pi_agent::session::types::{EntryNoStats, SessionMetadata};
 use pi_agent::session::JsonlSessionRepo;
 use pi_ai::model::Model;
 use pi_ai::models::Models;
+use pi_agent::harness::{BoxFuture, CompleteSimpleFn, SimpleModels};
+use pi_ai::types::SimpleStreamOptions;
+use pi_ai::types::AssistantMessage;
 use pi_ai::types::{AssistantMessageEvent, Message, UserContent};
 
 use crate::args::Args;
@@ -515,10 +518,85 @@ impl RpcRuntime {
             }
 
             "compact" => {
-                // Compaction wiring over the harness is a P8 follow-up; the
-                // upstream command is only meaningful with auto-compaction
-                // services bound.
-                fail(store, &id, &cmd, "compact is not supported in this build (compaction runtime wiring pending)".to_string());
+                // Run the ported harness compaction over the current session
+                // entries, summarizing through the facade's complete_simple.
+                // Errors are reported as failure responses (never terminate
+                // the RPC loop).
+                let entries = match self.get_entries().await {
+                    Ok(e) => e,
+                    Err(e) => {
+                        fail(store, &id, &cmd, e.clone());
+                        return Ok(());
+                    }
+                };
+                let prepared = match pi_agent::harness::compaction::prepare_compaction(
+                    &entries,
+                    &pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let msg = format!("prepare compaction: {e}");
+                        fail(store, &id, &cmd, msg);
+                        return Ok(());
+                    }
+                };
+                let result = match prepared {
+                    None => {
+                        // Nothing to compact.
+                        respond(store, success(id.as_deref(), &cmd, Some(serde_json::json!({
+                            "summary": "",
+                            "tokensBefore": 0,
+                        }))));
+                        return Ok(());
+                    }
+                    Some(preparation) => {
+                        let models = self.models.clone();
+                        let complete_simple_fn: CompleteSimpleFn =
+                            Arc::new(move |model: &Model,
+                                     ctx: &pi_ai::types::Context,
+                                     opts: &SimpleStreamOptions| {
+                                let models = models.clone();
+                                let opts = opts.clone();
+                                let model = model.clone();
+                                let ctx = ctx.clone();
+                                Box::pin(async move {
+                                    models.complete_simple(&model, &ctx, Some(&opts)).await
+                                }) as BoxFuture<'static, AssistantMessage>
+                            });
+                        let options = SimpleModels { complete_simple_fn };
+                        let model = self.model.clone();
+                        let retry = pi_ai::utils::retry::RetryPolicy {
+            enabled: false,
+            max_retries: 0,
+            base_delay_ms: 0,
+        };
+                        let result = match pi_agent::harness::compaction::compact(
+                            &preparation,
+                            &options,
+                            &model,
+                            command.str_field("customInstructions").as_deref(),
+                            None,
+                            None,
+                            Some(&retry),
+                            None,
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                let msg = format!("compact: {e}");
+                                fail(store, &id, &cmd, msg);
+                                return Ok(());
+                            }
+                        };
+                        serde_json::json!({
+                            "message": null,
+                            "summary": result.summary,
+                            "tokensBefore": result.tokens_before,
+                        })
+                    }
+                };
+                respond(store, success(id.as_deref(), &cmd, Some(result)));
                 Ok(())
             }
 
@@ -1232,6 +1310,19 @@ mod tests {
         let entries = v["data"]["entries"].as_array().unwrap();
         assert!(entries.len() >= 2);
         assert_eq!(entries[0]["type"], "message");
+    }
+
+    #[tokio::test]
+    async fn compact_empty_session_returns_zero_result() {
+        let mut runtime = runtime_for_test().await;
+        let mut store = Vec::new();
+        runtime
+            .handle_command(RpcCommand::parse(serde_json::json!({"type": "compact"})).unwrap(), &mut store)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(store[0].trim()).unwrap();
+        assert_eq!(v["success"], true);
+        assert_eq!(v["data"]["tokensBefore"], 0);
     }
 
     #[tokio::test]

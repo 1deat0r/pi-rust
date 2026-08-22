@@ -11,7 +11,7 @@
 pub mod compaction;
 mod models;
 
-pub use models::SimpleModels;
+pub use models::{BoxFuture, CompleteSimpleFn, SimpleModels};
 
 /// Stable error codes returned by compaction helpers
 /// (upstream `CompactionErrorCode`).
