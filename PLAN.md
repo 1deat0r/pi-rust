@@ -614,6 +614,25 @@ decision, TUI alt-screen full swap + ICU word segmentation.
   full TUI component, `update --models` pi.dev fetch seam (domain not in egress
   allowlist), TUI alt-screen full swap + ICU word segmentation.
 
+### Session 13 (planning) — 2026-08-23 — NEXT-100 tracker authored
+Agent: pi (Claude)   HEAD: 83e55cb (planning only, no code)
+
+- Authored `NEXT-100.md`: the full 100-micro-task tracker for the remaining
+  1:1 conversion (T0 land in-flight /share+--export diff — working tree is RED:
+  `cli_export.rs:15` unterminated char literal; T1 close 9 documented
+  divergences incl. OAuth device-code + WS transports; T2 AgentTool contract +
+  validateToolArguments; T3 coding-agent run-path parity; T4 server/client
+  concurrency; T5 TUI completion; T6 remaining core module audit; T7 data
+  model/session tree/RPC parity; T8 evals/parity suite; T9 final verification).
+- Audit-found gaps not previously tracked: missing CLI flags (--fork, -a/-na,
+  -nbt, -e/-ne, --skill/-ns/-np, --theme group, -nc), no auto-compaction in
+  run.rs, no --mode json (json-event.ts), image tool not registered (7 vs 8),
+  unported core modules (bash-executor, exec, project-trust/trust-manager,
+  system-prompt/skills/prompt-templates loaders, http-dispatcher, session-cwd,
+  cache-stats, timings, auth-guidance, diagnostics, messages-extended).
+- Next session: T0 task 1 (fix cli_export.rs) then land the /share + --export
+  diff, then T0.4 finish the real /share flow.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

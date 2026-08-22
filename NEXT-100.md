@@ -1,0 +1,252 @@
+# NEXT-100 — micro-task tracker for the full 1:1 pi → pi-rust conversion
+
+Session date: 2026-08-23 (operator: "going to bed — document or something")
+Author: pi (Claude), planning pass grounded in a live repo audit.
+Base revision: HEAD 83e55cb (1240 tests at last clean revision).
+
+## Current state (verified 2026-08-23, before these tasks)
+
+- HEAD `83e55cb` on main; last clean revision was 1240 tests / 0 warnings.
+- **Working tree is RED and uncommitted**: in-flight `/share` + `--export` +
+  editor-autocomplete diff (5 modified files + `tests/cli_export.rs` untracked).
+  `cli_export.rs:15` has an unterminated char literal (the `"data-session="`
+  string on line 13 is broken) — the test target does not compile. The lib/
+  bin target builds.
+- Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
+  device-code flows, codex WebSocket transport (SSE fallback today),
+  `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
+  full TUI component, `update --models` pi.dev fetch seam, models.json runtime
+  merge seam, pi-ai Usage u64 negative-adjustment decision, TUI alt-screen full
+  swap + ICU word segmentation, server/client concurrency surfaces (leases,
+  reconnect, queuing).
+- **Additional gaps found in this audit** (not in any TODO file):
+  - Missing CLI flags vs 0.84.2 surface: `--fork`, `--approve/-a`,
+    `--no-approve/-na`, `--no-builtin-tools/-nbt`, `--extension/-e`,
+    `--no-extensions/-ne`, `--skill`, `--no-skills/-ns`, `--prompt-template`,
+    `--no-prompt-templates/-np`, `--theme`, `--use-theme`, `--no-themes`,
+    `--no-context-files/-nc` (+ print-mode `--steer/--follow-up/--compact`).
+  - No auto-compaction wiring in `run.rs` (RPC `compact` command exists).
+  - No JSON-event mode (`--mode json`; upstream `modes/json-event.ts`).
+  - `image` tool not registered: run.rs exposes 7 tools, upstream has 8
+    (bash/read/write/edit/edit-diff/ls/find/grep/image).
+  - coding-agent core modules not ported as modules (functionality may exist
+    elsewhere — audit first): `bash-executor`, `exec`, `system-prompt` wiring,
+    `skills` loader, `prompt-templates` + `resource-loader`, `http-dispatcher`,
+    `session-cwd`, `cache-stats`, `timings`, `auth-guidance`,
+    `settings-diagnostics`, `diagnostics`, `project-trust`/
+    `trust-manager`, `messages` (extended), `footer-data-provider`.
+  - pi-agent: AgentTool contract not upgraded to upstream shape
+    (label / prepareArguments / execute(toolCallId, params, signal, onUpdate)
+    -> AgentToolResult); `validateToolArguments` not ported/wired.
+  - pi-client: no reconnect state machine, lease/reconcile parity partial
+    (session_handle.rs landed), dispose/promise-timeout/transport-factory gaps.
+  - pi-server: no LiveSessionManager exclusivity, session lock/terminal-close
+    semantics, command queuing, subscription segment control,
+    testing/service.ts parity harness.
+
+## Standing process rules (binding)
+
+- Commit + push after every commit (session-4 directive; applies to every git
+  repo worked on from this agent).
+- Evidence tiers on every criterion: `unit` | `mock` | `live` — a claim needs
+  the tier + exact command that produced it.
+- Line-by-line expert assessment per phase; stale plan = process failure
+  (PLAN.md §0).
+- Independent reviewer sign-off gate before the next MAJOR phase (PLAN.md §0.3).
+- Parity oracles: golden tests generated from upstream 5cd93f6, never memory.
+- Keep 0 lib warnings + clippy-clean for new files per established bar.
+
+## Tracks
+
+- T0  Land the in-flight working tree (it is red — fix first)
+- T1  Close the 9 documented divergences (audit → port → gate)
+- T2  Tool contract + validation
+- T3  coding-agent run-path parity (unported core surfaces)
+- T4  Server/client completion (P6 concurrency)
+- T5  TUI completion
+- T6  Remaining coding-agent core modules (audit → port what's absent)
+- T7  Data model, session tree, export, RPC edge parity
+- T8  Evals, packaging, parity suite
+- T9  Final 100% verification pass
+
+---
+
+## T0 — Land the in-flight working tree (fix first — it's red)
+
+- [ ] 1. Fix `crates/pi-coding-agent/tests/cli_export.rs:13-15` — repair the
+      `split("data-session="")` string to `"data-session=\""`, making the
+      `'"'` char literal parse. (unit)
+- [ ] 2. Verify `args.rs` `--export` help text compiles/prints one flag per
+      line (the diff shows a wrapped literal — make rustfmt clean). (unit)
+- [ ] 3. Audit `main.rs` `--export` wiring vs upstream `exportFromFile`
+      (output path fallback, exit codes, "Exported to:" print). (mock)
+- [ ] 4. Finish `/share` — remove `SHARE INVOKED (probe)` banner and `dry_run`
+      default; implement upstream share.ts (gh auth status → export HTML →
+      `gh gist create --public=false` → viewer `PI_SHARE_VIEWER_URL#<id>`).
+- [ ] 5. Wire `PI_SHARE_DRY_RUN=1` as test switch only; mock-gh integration
+      test. (mock)
+- [ ] 6. Verify persist-before-share ordering (transcript matches exported
+      HTML; no lost/duplicated messages). (mock)
+- [ ] 7. Land editor autocomplete fix (close popup after apply so Enter
+      submits) with the two new `editor_tests` cases; full pi-tui suite green.
+- [ ] 8. Remove duplicated `/// Wrap a modal...` doc comment in interactive.rs.
+- [ ] 9. `cargo test --workspace` + clippy on touched crates; restore all-green
+      0-warning baseline. (unit)
+- [ ] 10. Commit + push: `feat(interactive): /share gist flow + --export CLI
+      wiring`.
+
+## T1 — Close the 9 documented divergences (audit → port → gate)
+
+- [ ] 11. Divergence-close audit: for each remaining gap, pin upstream file +
+      current Rust behavior + test plan. (unit)
+- [ ] 12. Port upstream `ai/src/oauth.ts` + `auth/oauth/device-code.ts` state
+      machine (device auth endpoint, poll interval, expiry, cancellation).
+- [ ] 13. GitHub device-code flow.
+- [ ] 14. Google OAuth2 device + refresh flow.
+- [ ] 15. Anthropic OAuth flow.
+- [ ] 16. Wire OAuth into `auth_storage.rs`, `commands/auth.rs`, `/login`.
+- [ ] 17. OAuth tests (mock device endpoints, expiry, cancel). (mock)
+- [ ] 18. Codex WS audit: upstream websocket transport paths vs current
+      SSE-only `openai_codex_responses.rs`.
+- [ ] 19. Port WebSocket client transport (`pi-ai/src/transports/ws.rs`).
+- [ ] 20. Route codex to WS when settings `transport: websocket`; SSE fallback.
+- [ ] 21. WS tests (fixture-driven + local ws echo server). (unit/mock)
+- [ ] 22. Reviewer gate: multi-session diff review of T0+T1 before continuing.
+
+## T2 — Tool contract + validation
+
+- [ ] 23. Audit upstream AgentTool shape vs current `pi-agent/src/tools/`
+      trait; per-tool deltas. (unit)
+- [ ] 24. Upgrade tool trait to upstream shape.
+- [ ] 25. `prepareArguments` for bash/read/write/edit/edit-diff/ls/find/grep/
+      image.
+- [ ] 26. `execute` upstream signature + `onUpdate` → rich loop emits
+      `tool_execution_update`.
+- [ ] 27. Terminate-hint plumbing in `rich_agent.rs`.
+- [ ] 28. Migrate every tool constructor + run.rs call sites.
+- [ ] 29. Port `validateToolArguments` (tool-args JSON-schema validation).
+- [ ] 30. Wire validation into `prepare_tool_call` with upstream errors.
+- [ ] 31. Tool-args validation tests (schema errors, unknown keys,
+      partial-JSON args).
+- [ ] 32. Image tool parity audit + register model-facing `image` in run.rs
+      (7 → 8 built-in tools), match `/images` toggle.
+
+## T3 — coding-agent run-path parity
+
+- [ ] 33. Wire auto-compaction into run path (settings threshold → compact →
+      continue; upstream `core/compaction/` loop).
+- [ ] 34. Binary-level auto-compaction test (JSONL gains compaction entry). (mock)
+- [ ] 35. Port `core/messages.ts` extended-message wiring
+      (BashExecutionMessage/CustomMessage reach provider in run.rs).
+- [ ] 36. v3→v4 legacy session import in coding-agent session runtime
+      (upstream `session-manager.ts`); `/import` conversion parity.
+- [ ] 37. v3→v4 migration tests using fixture v3 JSONL files.
+- [ ] 38. models.json runtime merge: file-backed `models_store.rs` load merged
+      over bundled catalog; `applyModelsJson` wiring in run path.
+- [ ] 39. models.json merge tests (override, compat, bad-json error).
+- [ ] 40. Port `core/project-trust.ts` + `trust-manager.ts` into CLI path
+      (`-a/-na`, defaultProjectTrust, `.pi/trust`).
+- [ ] 41. Project-trust binary tests (untrusted dir tool gating). (mock)
+- [ ] 42. Print-mode parity audit (`modes/print-mode.ts`): `--steer`,
+      `--follow-up`, `--compact`, quietStartup, initialMessage.
+- [ ] 43. Port missing print-mode flags + output-formatting parity.
+- [ ] 44. Port JSON-event mode `modes/json-event.ts` → `modes/json_event.rs`
+      (`--mode json`), event-envelope parity.
+- [ ] 45. JSON-event tests (fixture transcripts).
+- [ ] 46. Remaining CLI flags: `-nbt`, `-e/--extension`, `-ne/--no-extensions`,
+      `--skill`, `-ns`, `--prompt-template`, `-np`, `--theme`, `--use-theme`,
+      `--no-themes`, `-nc`, `-a/--approve`, `-na`, `--fork`.
+- [ ] 47. Flag-matrix golden test: fire every flag; diff `--help` vs upstream.
+- [ ] 48. Telemetry wiring: `PI_TELEMETRY` env → subscriber + span emission in
+      run path; in-memory capture test.
+
+## T4 — Server/client completion (P6 concurrency)
+
+- [ ] 49. `LiveSessionManager`: acquire/release exclusivity + attach/detach
+      validation on server.
+- [ ] 50. Session lock + terminal-close semantics + command queuing.
+- [ ] 51. Subscription segment control for prompt/steer concurrency.
+- [ ] 52. Port `testing/service.ts` parity harness + conformance suite.
+- [ ] 53. Server conformance tests (30+ cases). (unit)
+- [ ] 54. Client reconnect state machine + connection-state listeners.
+- [ ] 55. Client lease/exclusive-attach parity (reconcile, detach-on-close).
+- [ ] 56. Client dispose semantics + promise timeouts.
+- [ ] 57. Transport factory abstraction beyond unix (async-trait).
+- [ ] 58. Client↔server E2E under reconnect + lease churn. (unit/mock)
+
+## T5 — TUI completion
+
+- [ ] 59. ConfigSelector full TUI component (config command interactive).
+- [ ] 60. ConfigSelector snapshot tests.
+- [ ] 61. Full alt-screen screen-swap parity (save/restore around overlays).
+- [ ] 62. Alt-screen swap tmux probe.
+- [ ] 63. ICU word segmentation (replace regex word-nav with unicode parity).
+- [ ] 64. Word-segmentation tests (upstream cases).
+- [ ] 65. tmux `client_termfeatures` probe (feature detection parity).
+- [ ] 66. Terminal feature probe tests.
+- [ ] 67. Token-total footer reads (usage totals → footer parity).
+- [ ] 68. Footer tests.
+- [ ] 69. Editor IME/selection edge parity (kitty flags, bracketed paste).
+- [ ] 70. Interactive-mode E2E tmux script: full slash-command matrix.
+
+## T6 — Remaining coding-agent core modules (audit → port what's absent)
+
+- [ ] 71. Audit `core/bash-executor.ts` + `exec.ts` vs agent bash tool; port
+      shell-capture/output-truncation parity where missing.
+- [ ] 72. Port `core/system-prompt.ts` wiring into run context.
+- [ ] 73. Port `core/skills.ts` loader into run path (`--skill`, `-ns`, `.pi/skills`).
+- [ ] 74. Port `core/prompt-templates.ts` + `resource-loader.ts` into run path.
+- [ ] 75. Port `core/http-dispatcher.ts` / proxy behavior if not covered.
+- [ ] 76. Port `core/session-cwd.ts` semantics (interactive + RPC).
+- [ ] 77. Port `core/cache-stats.ts` + `timings.ts` into usage totals/footer.
+- [ ] 78. Port `core/auth-guidance.ts` messages parity.
+- [ ] 79. Port `core/settings-diagnostics.ts` + `diagnostics.ts`.
+- [ ] 80. Extended-messages + provider-composer edge audits with tests.
+
+## T7 — Data model, session tree, export, RPC edge parity
+
+- [ ] 81. Negative-usage decision: widen pi-ai Usage token counts to i64;
+      ripple through agent/reducer + session-backends stats.
+- [ ] 82. Re-enable negative-adjustment conformance case (C-neg) + regressions.
+- [ ] 83. Session tree/navigation parity: `get_tree` RPC + entry-tree banner.
+- [ ] 84. Session tree tests.
+- [ ] 85. export_html full parity audit (dark/light, mermaid, search, tmp cleanup).
+- [ ] 86. export_html fixture expansion (tools/compaction/summary rows).
+- [ ] 87. RPC get_entries/get_tree/get_messages/get_last_assistant_text audit.
+- [ ] 88. RPC runtime audit: set_auto_compaction/retry/steering/follow-up honored.
+- [ ] 89. `pi update` parity: version check + `--models` pi.dev fetch seam;
+      `PI_SKIP_VERSION_CHECK`.
+- [ ] 90. Update/tests (offline, skip-check, fetch failure paths). (mock)
+
+## T8 — Evals, packaging, parity suite
+
+- [ ] 91. pi-evals: capture usage tokens from subprocess runs (parse session
+      JSONL usage) so eval metrics match upstream.
+- [ ] 92. pi-evals: extension-scenario diagnostics under faux (unscorable →
+      scorable).
+- [ ] 93. `scripts/parity-suite.mjs`: CLI matrix checks (exit codes/format vs
+      upstream).
+- [ ] 94. Parity suite: golden RPC transcripts. (fixtures)
+- [ ] 95. Parity suite: session-file byte fixtures (v1/v2/v3/v4 goldens).
+- [ ] 96. Parity suite: settings/auth/models.json on-disk round-trip goldens.
+- [ ] 97. Release-build verification: `cargo build --release` + full binary
+      suite in release. (live)
+- [ ] 98. PLAN.md session-13 ledger update + reviewer-gate prep (§0.3).
+
+## T9 — Final 100% verification pass
+
+- [ ] 99. Full-surface audit: §2.2 env vars, §2.3 on-disk formats, §4.4 RPC
+      taxonomy — each demos against the real binary. (live)
+- [ ] 100. Final clean-room check: fresh clone → workspace tests green,
+      0 warnings, clippy -D warnings clean, flag/env/tool/provider matrix
+      recorded in PLAN.md with tiers, milestone tagged.
+
+---
+
+## Conventions
+
+- Track each task as Done only with evidence: tier + exact command/fixture.
+- After each committed task/group: push immediately (standing rule).
+- Tasks roughly: ~40 pure ports of pinned upstream files, ~30 audit-then-close,
+  ~20 tests/verification, ~10 process/gates.
+- When a task's "upstream file" is named, pin it to commit 5cd93f688aaab89dbb6dfa4aca535f21796ae185 (v0.84.2).
