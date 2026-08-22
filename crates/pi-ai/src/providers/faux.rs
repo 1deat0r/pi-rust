@@ -350,9 +350,116 @@ impl FauxProviderCore {
         std::mem::forget(handle);
         outer
     }
+
+    /// Fetch a previously-deferred response (upstream faux `fetchDeferred`).
+    /// Resolves the stored entry: while `pending_fetches > 0` the deferred
+    /// message is re-emitted; otherwise the step is resolved and streamed.
+    pub async fn fetch_deferred(
+        &self,
+        request_model: &Model,
+        handle: &DeferredHandle,
+        _options: Option<&SimpleStreamOptions>,
+    ) -> AssistantMessageEventStream {
+        let state = self.state.clone();
+        let deferred_responses = self.deferred_responses.clone();
+        let min_token_size = self.min_token_size;
+        let max_token_size = self.max_token_size;
+        let tokens_per_second = self.tokens_per_second;
+        let prompt_cache = self.prompt_cache.clone();
+        let rng = self.rng.clone();
+        let request_model = request_model.clone();
+        let handle = handle.clone();
+        let api = self.api.clone();
+        let provider = self.provider.clone();
+
+        let outer = AssistantMessageEventStream::new();
+        let tx = match outer.sender() {
+            Some(t) => t,
+            None => return outer,
+        };
+        tokio::spawn(Box::pin(async move {
+            let mut pusher = crate::event_stream::StreamSinkAdapter::new(tx.clone());
+            state.lock().unwrap().deferred_fetch_count += 1;
+            let resolution =
+                resolve_deferred_entry(&deferred_responses, &handle, &request_model, &state, &prompt_cache);
+            match resolution {
+                Ok(message) => {
+                    stream_with_deltas(
+                        &mut pusher,
+                        message,
+                        min_token_size,
+                        max_token_size,
+                        tokens_per_second,
+                        &rng,
+                        None,
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    let err_message = create_error_message(&e, &api, &provider, &request_model.id);
+                    pusher.push(crate::types::AssistantMessageEvent::Error {
+                        reason: crate::types::ErrorReason::Error,
+                        error_message: err_message.clone(),
+                    });
+                    pusher.end(Some(err_message));
+                }
+            }
+        }));
+        outer
+    }
+
+    /// Cancel a deferred response (upstream faux `cancelDeferred`).
+    pub async fn cancel_deferred(&self, handle: &DeferredHandle) -> Result<(), String> {
+        let handle = handle.clone();
+        self.state.lock().unwrap().cancelled_deferred.push(handle.clone());
+        if let Some(entry) = self.deferred_responses.lock().unwrap().get_mut(&handle.id) {
+            entry.cancelled = true;
+        }
+        Ok(())
+    }
 }
 
-/// Minimal push surface for the background producer task.
+/// Resolve one deferred entry to its current message (synchronous; called
+/// with the entry lock held by the caller. The factory step runs under the
+/// lock — user-supplied, sync, and short-lived).
+fn resolve_deferred_entry(
+    deferred_responses: &Arc<Mutex<BTreeMap<String, DeferredEntry>>>,
+    handle: &DeferredHandle,
+    request_model: &Model,
+    state: &Arc<Mutex<FauxProviderState>>,
+    prompt_cache: &Arc<Mutex<BTreeMap<String, String>>>,
+) -> Result<AssistantMessage, String> {
+    let mut lock = deferred_responses.lock().unwrap();
+    let entry = lock
+        .get_mut(&handle.id)
+        .ok_or_else(|| format!("Unknown faux deferred response: {}", handle.id))?;
+    if entry.handle.provider != handle.provider
+        || entry.handle.model_id != handle.model_id
+        || entry.handle.api != handle.api
+    {
+        return Err(format!("Unknown faux deferred response: {}", handle.id));
+    }
+    if entry.cancelled {
+        return Err(format!("Faux deferred response was cancelled: {}", handle.id));
+    }
+    if entry.pending_fetches > 0 {
+        entry.pending_fetches -= 1;
+        return Ok(create_deferred_message(request_model, &entry.handle));
+    }
+    if let Some(final_) = &entry.final_ {
+        return Ok(final_.clone());
+    }
+    let state_snapshot = state.lock().unwrap().clone();
+    let resolved = match &entry.step {
+        FauxResponseStep::Message(m) => m.clone(),
+        FauxResponseStep::Factory(f) => f(&entry.context, None, &state_snapshot, &entry.model),
+    };
+    let message = with_usage_estimate(resolved, &entry.context, Some(&entry.options), prompt_cache);
+    entry.final_ = Some(message.clone());
+    Ok(message)
+}
+
+/// Minimal push surface for the background producer task./// Minimal push surface for the background producer task.
 struct StreamPusher {
     tx: tokio::sync::mpsc::UnboundedSender<AssistantMessageEvent>,
     finished: bool,
@@ -649,6 +756,84 @@ async fn delay_by_tokens(_chunk: &str, _tokens_per_second: Option<f64>) {
     // resolve immediately. (Timed delays are only useful in tests that
     // explicitly set tokensPerSecond, which we do not yet expose.)
     tokio::task::yield_now().await;
+}
+
+#[cfg(test)]
+mod deferred_fetch_tests {
+    use super::*;
+    use crate::types::{ContentBlock, DeferredOption, StopReason};
+
+    fn deferred_core(pending_fetches: u32) -> FauxProviderCore {
+        let core = FauxProviderCore::new(&RegisterFauxProviderOptions {
+            deferred: Some(FauxDeferredOptions {
+                pending_fetches: Some(pending_fetches),
+                poll_after_ms: Some(5),
+            }),
+            ..Default::default()
+        });
+        core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
+            vec![ContentBlock::text("deferred done")],
+            FauxAssistantOptions::default(),
+        ))]);
+        core
+    }
+
+    #[tokio::test]
+    async fn deferred_stream_returns_handle_then_fetch_resolves() {
+        let core = deferred_core(1);
+        let model = core.models.first().cloned().unwrap();
+        let options = SimpleStreamOptions {
+            deferred: Some(DeferredOption::Bool(true)),
+            ..Default::default()
+        };
+        let stream = core.stream(&model, &crate::types::Context::default(), Some(&options));
+        let msg = stream.for_each(|_| {}).await;
+        assert_eq!(msg.stop_reason(), Some(StopReason::Deferred));
+        let handle = msg.deferred().expect("deferred handle").clone();
+
+        // Poll 1: pendingFetches=1 left after submission, so re-deferred.
+        let poll1 = core.fetch_deferred(&model, &handle, None).await;
+        let msg1 = poll1.for_each(|_| {}).await;
+        assert_eq!(msg1.stop_reason(), Some(StopReason::Deferred));
+
+        // Poll 2: final resolution.
+        let poll2 = core.fetch_deferred(&model, &handle, None).await;
+        let msg2 = poll2.for_each(|_| {}).await;
+        assert_eq!(msg2.stop_reason(), Some(StopReason::Stop));
+        assert!(
+            msg2.content().iter().any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "deferred done")),
+            "final message should carry the resolved content"
+        );
+        assert_eq!(core.state.lock().unwrap().deferred_fetch_count, 2);
+        assert!(core.state.lock().unwrap().cancelled_deferred.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_and_cancelled_deferred_fetch_errors() {
+        let core = deferred_core(0);
+        let model = core.models.first().cloned().unwrap();
+        let options = SimpleStreamOptions {
+            deferred: Some(DeferredOption::Bool(true)),
+            ..Default::default()
+        };
+        let stream = core.stream(&model, &crate::types::Context::default(), Some(&options));
+        let msg = stream.for_each(|_| {}).await;
+        let handle = msg.deferred().expect("deferred handle").clone();
+
+        // Unknown handle -> error stream.
+        let mut unknown = handle.clone();
+        unknown.id = "nope".to_string();
+        let err_stream = core.fetch_deferred(&model, &unknown, None).await;
+        let err_msg = err_stream.for_each(|_| {}).await;
+        assert!(err_msg.error_message().unwrap_or("").contains("Unknown faux deferred response"), "{:?}", err_msg.error_message());
+
+        // Cancel then fetch -> cancelled error.
+        core.cancel_deferred(&handle).await.unwrap();
+        assert_eq!(core.state.lock().unwrap().cancelled_deferred.len(), 1);
+        let cancelled_stream = core.fetch_deferred(&model, &handle, None).await;
+        let cancelled_msg = cancelled_stream.for_each(|_| {}).await;
+        assert!(cancelled_msg.error_message().unwrap_or("").contains("cancelled"), "{:?}", cancelled_msg.error_message());
+    }
 }
 
 fn create_deferred_message(model: &Model, handle: &DeferredHandle) -> AssistantMessage {

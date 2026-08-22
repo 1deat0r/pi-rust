@@ -2532,8 +2532,12 @@ mod tests {
 mod profile_credentials_tests {
     use super::*;
 
-    fn write_credentials(content: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("pi-bedrock-creds-{}", std::process::id()));
+    fn write_credentials(tag: &str, content: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pi-bedrock-creds-{}-{}",
+            std::process::id(),
+            tag
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("credentials");
@@ -2543,7 +2547,7 @@ mod profile_credentials_tests {
 
     #[test]
     fn reads_default_profile_without_profile_arg() {
-        let file = write_credentials(
+        let file = write_credentials("default",
             "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n",
         );
         unsafe { std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file) };
@@ -2557,7 +2561,7 @@ mod profile_credentials_tests {
 
     #[test]
     fn reads_named_profile_and_session_token() {
-        let file = write_credentials(
+        let file = write_credentials("staging",
             "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n\n[staging]\naws_access_key_id = AKIASTAGING\naws_secret_access_key = stagingsecret\naws_session_token = tok123\n",
         );
         unsafe { std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file) };
@@ -2571,7 +2575,7 @@ mod profile_credentials_tests {
 
     #[test]
     fn returns_none_for_unknown_profile() {
-        let file = write_credentials("[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n");
+        let file = write_credentials("unknown", "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n");
         unsafe { std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file) };
         assert!(aws_profile_credentials(Some("missing"), None).is_none());
         std::env::remove_var("AWS_SHARED_CREDENTIALS_FILE");
@@ -2580,7 +2584,7 @@ mod profile_credentials_tests {
 
     #[test]
     fn env_keys_win_over_profile_file() {
-        let file = write_credentials("[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n");
+        let file = write_credentials("unknown", "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n");
         unsafe {
             std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file);
             std::env::set_var("AWS_ACCESS_KEY_ID", "AKIAENV");

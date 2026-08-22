@@ -15,8 +15,8 @@ use crate::auth::{
 use crate::event_stream::{AssistantMessageEventStream, StreamSink};
 use crate::model::Model;
 use crate::types::{
-    AssistantMessage, Context, ProviderHeaders, ProviderRequestOptions, SimpleStreamOptions,
-    StreamOptions,
+    AssistantMessage, Context, DeferredHandle, ProviderHeaders, ProviderRequestOptions,
+    SimpleStreamOptions, StreamOptions,
 };
 
 /// Error codes for the Models facade (upstream `ModelsError`).
@@ -104,11 +104,31 @@ impl ModelsStore for InMemoryModelsStore {
     }
 }
 
-/// API implementation: stream + streamSimple (deferred ported later).
+/// Deferred-response fetch function: `(model, handle, options) -> stream`
+/// (upstream `fetchDeferred`). `None` means the provider does not support
+/// deferred responses.
+pub type DeferredStreamFn = Arc<
+    dyn Fn(&Model, &DeferredHandle, &DeferredFetchOptions) -> AssistantMessageEventStream + Send + Sync,
+>;
+
+/// Cancellation for a deferred handle: `(model, handle, options)`.
+pub type DeferredCancelFn =
+    Arc<dyn Fn(&Model, &DeferredHandle, &DeferredFetchOptions) -> Result<(), String> + Send + Sync>;
+
+/// Options for deferred fetch/cancel (upstream `DeferredFetchOptions`).
+#[derive(Clone, Default)]
+pub struct DeferredFetchOptions {
+    pub base: crate::types::ProviderRequestOptions,
+    pub cancel_after_ms: Option<u64>,
+}
+
 #[derive(Clone)]
 pub struct ProviderStreams {
     pub stream: StreamFn,
     pub stream_simple: SimpleStreamFn,
+    /// Optional deferred-response resolution for providers that support it.
+    pub fetch_deferred: Option<DeferredStreamFn>,
+    pub cancel_deferred: Option<DeferredCancelFn>,
 }
 
 /// A provider is the concrete runtime unit. It owns id/name/base metadata,
@@ -604,6 +624,58 @@ impl Models {
     ) -> AssistantMessage {
         self.stream_simple(model, context, options).for_each(|_| {}).await
     }
+
+    /// Fetch a previously-deferred response (upstream `Models.fetchDeferred`).
+    pub async fn fetch_deferred(
+        &self,
+        model: &Model,
+        handle: &DeferredHandle,
+        options: Option<&DeferredFetchOptions>,
+    ) -> Result<AssistantMessage, ModelsError> {
+        let provider = self
+            .get_provider(&model.provider)
+            .ok_or_else(|| ModelsError::new(ModelsErrorCode::UnknownProvider, format!("Unknown provider: {}", model.provider)))?;
+        let streams = provider
+            .api_for(model)
+            .ok_or_else(|| ModelsError::new(ModelsErrorCode::Provider, format!("Provider {} does not support deferred responses", model.provider)))?;
+        let fetcher = streams.fetch_deferred.clone().ok_or_else(|| {
+            ModelsError::new(ModelsErrorCode::Provider, format!("Provider {} does not support deferred responses", model.provider))
+        })?;
+        let base_options = options.map(|o| o.base.clone()).unwrap_or_default();
+        let (request_model, request_options) = self.apply_auth(model, &base_options)?;
+        let fetch_options = DeferredFetchOptions {
+            base: request_options,
+            cancel_after_ms: options.and_then(|o| o.cancel_after_ms),
+        };
+        let stream = fetcher(&request_model, handle, &fetch_options);
+        Ok(stream.for_each(|_| {}).await)
+    }
+
+    /// Cancel a deferred response (upstream `Models.cancelDeferred`).
+    pub async fn cancel_deferred(
+        &self,
+        model: &Model,
+        handle: &DeferredHandle,
+        options: Option<&DeferredFetchOptions>,
+    ) -> Result<(), ModelsError> {
+        let provider = self
+            .get_provider(&model.provider)
+            .ok_or_else(|| ModelsError::new(ModelsErrorCode::UnknownProvider, format!("Unknown provider: {}", model.provider)))?;
+        let streams = provider
+            .api_for(model)
+            .ok_or_else(|| ModelsError::new(ModelsErrorCode::Provider, format!("Provider {} does not support deferred responses", model.provider)))?;
+        let canceller = streams.cancel_deferred.clone().ok_or_else(|| {
+            ModelsError::new(ModelsErrorCode::Provider, format!("Provider {} does not support deferred responses", model.provider))
+        })?;
+        let base_options = options.map(|o| o.base.clone()).unwrap_or_default();
+        let (request_model, request_options) = self.apply_auth(model, &base_options)?;
+        let cancel_options = DeferredFetchOptions {
+            base: request_options,
+            cancel_after_ms: options.and_then(|o| o.cancel_after_ms),
+        };
+        canceller(&request_model, handle, &cancel_options)
+            .map_err(|e| ModelsError::new(ModelsErrorCode::Provider, e))
+    }
 }
 
 
@@ -679,7 +751,7 @@ mod tests {
                 oauth: None,
             },
             models: vec![Model::new("m1", "M1", "test-api", "test")],
-            api: ProviderApiSpec::Single(ProviderStreams { stream, stream_simple }),
+            api: ProviderApiSpec::Single(ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }),
             filter_models: None,
         })
     }
