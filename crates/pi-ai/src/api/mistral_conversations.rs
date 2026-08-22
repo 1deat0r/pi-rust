@@ -20,6 +20,7 @@
 //!   the built payload is identical for all standard requests).
 
 use std::collections::BTreeMap;
+use std::error::Error;
 
 use serde_json::{json, Value};
 
@@ -1010,6 +1011,18 @@ fn truncate_error_text(text: &str, max_chars: usize) -> String {
 
 /// Port of `formatMistralError` for the transport surfaces that carry
 /// status/body (the network-request wrappers already build the string).
+/// Format a reqwest transport error with its full source chain (so "operation
+/// timed out" surfaces rather than the elided top-level message).
+fn format_transport_error(error: &reqwest::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(s) = source {
+        text.push_str(&format!(": {s}"));
+        source = s.source();
+    }
+    text
+}
+
 fn format_mistral_error(error: &str, status_code: Option<u16>, body: Option<&str>) -> String {
     if let Some(status_code) = status_code {
         if let Some(body_text) = body.map(|s| s.trim()).filter(|s| !s.is_empty()) {
@@ -1194,7 +1207,7 @@ async fn run_stream(
         Ok(response) => response,
         Err(err) => {
             // Fetch-level failure (DNS, timeout, connection reset, ...).
-            return Err(format_mistral_error(err.to_string().as_str(), None, None));
+            return Err(format_mistral_error(&format_transport_error(&err), None, None));
         }
     };
     let status = response.status();
