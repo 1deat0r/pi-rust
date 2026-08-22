@@ -10,6 +10,7 @@ pub mod fuzzy;
 pub mod keybindings;
 pub mod keys;
 pub mod kill_ring;
+pub mod latex;
 pub mod layout;
 pub mod native_modifiers;
 pub mod stdin_buffer;
@@ -44,6 +45,7 @@ pub mod components {
 pub use autocomplete::{AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, CombinedAutocompleteProvider, CompletionResult, SlashCommand};
 pub use keybindings::{KeybindingDefinition, KeybindingsConfig, KeybindingsManager, TUI_KEYBINDINGS};
 pub use keys::{match_key, parse_key, TuiKey};
+pub use latex::render_latex;
 pub use layout::{HStackLayout, LayoutConstraint, StackLayout, VStackLayout};
 pub use stdin_buffer::{SequenceStatus, StdinBuffer};
 pub use terminal::{TerminalBackend, TerminalEvent};
