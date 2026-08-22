@@ -12,6 +12,7 @@
 pub mod api;
 pub mod auth;
 pub mod event_stream;
+pub mod images;
 pub mod model;
 pub mod model_catalog;
 pub mod models;

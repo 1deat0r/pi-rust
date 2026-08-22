@@ -1412,7 +1412,7 @@ pub fn stream_simple(
     stream(model, context, client, base_url, api_key, &chat_options)
 }
 
-fn extract_openai_error(body: &str) -> String {
+pub(crate) fn extract_openai_error(body: &str) -> String {
     if let Ok(value) = serde_json::from_str::<Value>(body) {
         if let Some(msg) = value
             .get("error")
