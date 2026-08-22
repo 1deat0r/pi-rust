@@ -2,12 +2,14 @@
 
 pub mod auth_storage;
 pub mod event_bus;
+pub mod extensions;
 pub mod export_html;
 pub mod model_config;
 pub mod model_runtime;
 pub mod model_registry;
 pub mod model_resolver;
 pub mod models_store;
+pub mod pi_manifest;
 pub mod provider_attribution;
 pub mod provider_composer;
 pub mod remote_catalog_provider;
