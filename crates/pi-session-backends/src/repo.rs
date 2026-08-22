@@ -1229,6 +1229,12 @@ pub struct SqliteSessionRepository {
 impl SqliteSessionRepository {
     pub fn new(database_path: impl Into<String>, lease_options: Option<SqliteWriterLeaseOptions>) -> Self {
         let lease_options = lease_options.unwrap_or_default();
+        if lease_options.ttl_ms == 0 {
+            panic!("writerLease.ttlMs must be positive");
+        }
+        if lease_options.heartbeat_interval_ms == 0 || lease_options.heartbeat_interval_ms >= lease_options.ttl_ms {
+            panic!("writerLease.heartbeatIntervalMs must be positive and less than ttlMs");
+        }
         Self {
             state: RepoState::new(database_path.into(), lease_options),
             lease_options,

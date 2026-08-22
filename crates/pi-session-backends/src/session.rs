@@ -49,6 +49,12 @@ impl SqliteSession {
         Ok(metadata.to_core())
     }
 
+    /// Returns the full SQLite metadata (including the `name` projection and
+    /// the application-owned `metadata` object).
+    pub async fn get_sqlite_metadata(&self) -> Result<crate::types::SqliteSessionMetadata, SessionError> {
+        self.storage.get_metadata().await
+    }
+
     pub async fn get_lanes(&self) -> Result<Vec<LanePointer>, SessionError> {
         self.storage.get_lanes().await
     }
