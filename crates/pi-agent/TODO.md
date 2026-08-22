@@ -66,6 +66,28 @@ and the upstream session-backend conformance suite (30 cases × 2 backends).
 - pi-ai utils/retry.rs: retryAssistantCall + isRetryableAssistantError
   (16 tests ported from retry.test.ts).
 
+## Done (Session 11 — harness surfaces)
+- harness/events.rs: HarnessEventBus (run_start/run_end), per-type on()
+  subscriptions, watch handles with buffer-until-start semantics. 4 tests.
+- harness/frontmatter.rs + prompt_templates.rs + system_prompt.rs: shared YAML
+  frontmatter parser; loadPromptTemplates (dir/file/sourced), parseCommandArgs
+  naive quote toggling, substituteArgs ($1/$@/$ARGUMENTS/${@:N}/${@:N:L}),
+  formatPromptTemplateInvocation; formatSkillsForSystemPrompt with XML
+  escaping + disableModelInvocation filtering. 10 tests.
+- harness/tools/image.rs: detectSupportedImageMimeType + manual base64
+  encoder with upstream padding (PNG animation scan, BMP checks). 4 tests.
+- harness/reducer.rs: validateRecordLog + reduceLaneState port (all 12
+  corruption reasons, full lane state reconstruction, effective configuration,
+  terminal failure detection). Adds runId to queue_cancelled records
+  (upstream QueueCancelledRecord carries optional runId) across codec/storage/
+  memory. 7 tests.
+- harness/skills.rs: recursive SKILL.md + root-inline discovery, per-dir
+  ignore files with gitignore-style matcher, name/description validation,
+  formatSkillInvocation, sourced variant. 8 tests.
+- harness/tools.rs: withFileMutationQueue (per-canonical-key serialization
+  with global registration chain) + ExecutionToolContext. 3 tests.
+- pi-agent workspace tests: 179 passing, 0 warnings.
+
 ## Not yet ported (upstream mapping)
 - Agent loop + harness (agent.ts / agent-loop.ts, harness/* beyond the
   session/compaction layers): events, reducer, prompt templates, system

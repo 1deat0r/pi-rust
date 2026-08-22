@@ -84,6 +84,12 @@ Settings manager (full upstream surface) landed.
   input bar + inline editing + stream turn + session persistence) —
   tmux-verified.
 
+## Done (Session 11 — RPC compact regression)
+- modes/rpc.rs: register a scripted faux provider (single stream/simple pair
+  over FauxProviderCore + always-resolving FauxApiKeyAuth) in the runtime
+  models facade when --provider faux, closing the documented divergence where
+  RPC compact failed without a facade-registered provider. 1 regression test.
+
 ## Remaining (upstream mapping — big items first)
 - Wire SettingsManager into run/main (currently standalone; P4 criterion
   "settings round-trip" is satisfied by the module tests, session wiring is
