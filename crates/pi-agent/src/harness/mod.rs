@@ -9,6 +9,7 @@
 //! skills, env, agent-loop integration, and telemetry wiring remain.
 
 pub mod compaction;
+pub mod env;
 pub mod frontmatter;
 pub mod skills;
 pub mod events;
@@ -16,6 +17,7 @@ pub mod prompt_templates;
 pub mod reducer;
 pub mod result;
 pub mod system_prompt;
+pub mod telemetry;
 pub mod tools;
 mod models;
 

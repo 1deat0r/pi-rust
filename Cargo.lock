@@ -732,6 +732,7 @@ dependencies = [
  "futures-util",
  "indexmap",
  "pi-ai",
+ "pi-telemetry",
  "regex",
  "reqwest",
  "serde",
