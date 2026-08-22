@@ -281,6 +281,7 @@ mod tests {
         SelectItem::new(value.to_string(), value.to_string(), description.map(|s| s.to_string()))
     }
 
+    #[allow(dead_code)] // helper kept for snapshot tests
     fn rendered_first(list: &SelectList, width: usize) -> String {
         let lines = list.render(width);
         assert!(!lines.is_empty());

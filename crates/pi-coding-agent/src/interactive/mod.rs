@@ -178,8 +178,6 @@ mod interactive_tests {
     use crate::interactive::slash::{find_command, parse_invocation, BUILTIN_SLASH_COMMANDS};
     use crate::interactive::footer::format_cwd_for_footer;
     use crate::interactive::messages::{format_tokens, build_transcript};
-    use pi_ai::types::ContentBlock;
-    use pi_ai::types::AssistantMessage;
 
     #[test]
     fn parse_submit_detects_commands() {

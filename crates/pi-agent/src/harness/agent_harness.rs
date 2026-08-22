@@ -1099,8 +1099,6 @@ impl<F: FileSystem> AgentLane for AgentHarness<F> {
 mod tests {
     use super::*;
     use crate::fs::MemoryFs;
-    use std::future::Future;
-    use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
     use crate::session::memory::{InMemorySessionStorage, in_memory_metadata};
     use crate::session::types::{NewRecord, OperationIntent};
@@ -1282,7 +1280,7 @@ mod tests {
     #[test]
     fn rejects_every_unfinished_public_operation_explicitly() {
         rt().block_on(async {
-            let mut harness = create_harness().await;
+            let harness = create_harness().await;
             let callback_called = Arc::new(AtomicBool::new(false));
             let message = user_message("hello");
             let usage = usage();

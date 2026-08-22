@@ -878,6 +878,7 @@ mod tests {
         p.get_suggestions(&lines, line, col, force, &AtomicBool::new(false))
     }
 
+    #[allow(dead_code)] // helper kept for future abort tests
     fn aborted_flag() -> AtomicBool {
         AtomicBool::new(false)
     }
