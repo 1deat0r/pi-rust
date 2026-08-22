@@ -23,6 +23,7 @@ pub type ToolExecuteFn = Arc<
 >;
 
 /// A callable registered tool: unified schema + async execute.
+#[derive(Clone)]
 pub struct AgentTool {
     pub tool: Tool,
     pub execute: ToolExecuteFn,
