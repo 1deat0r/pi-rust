@@ -17,6 +17,14 @@ async fn main() {
             if !args.unknown_flags.is_empty() {
                 eprintln!("unknown flags: {}", args.unknown_flags.join(", "));
             }
+            // --list-models: build the built-in provider registry and print
+            // the auth-gated model table (upstream list-models behavior).
+            if args.list_models_requested() {
+                let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+                let out = pi_coding_agent::list_models::list_models(&models, args.list_models.as_deref());
+                print!("{out}");
+                return;
+            }
             match pi_coding_agent::run::run(&args).await {
                 Ok(outcome) => {
                     println!("{}", outcome.final_text);

@@ -12,6 +12,7 @@ use crate::types::{ProviderResponse};
 pub type OnResponseFn = std::sync::Arc<dyn Fn(&ProviderResponse, &Model) + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Model {
     pub id: String,
     pub name: String,
@@ -29,6 +30,8 @@ pub struct Model {
     pub sampling_params: Option<JsonValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compat: Option<JsonValue>,
     /// Whether provider auth is configured (populated by the models store).
     #[serde(default)]
     pub authenticated: bool,
@@ -57,6 +60,7 @@ impl Model {
             max_tokens: 16_384,
             sampling_params: None,
             headers: None,
+            compat: None,
             authenticated: false,
         }
     }
@@ -131,7 +135,9 @@ pub fn calculate_cost(model: &Model, usage: &crate::types::Usage) -> Cost {
 pub struct ModelCost {
     pub input: f64,
     pub output: f64,
+    #[serde(rename = "cacheRead")]
     pub cache_read: f64,
+    #[serde(rename = "cacheWrite")]
     pub cache_write: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tiers: Option<Vec<ModelCostTier>>,
@@ -147,7 +153,9 @@ impl Default for ModelCost {
 pub struct ModelCostTier {
     pub input: f64,
     pub output: f64,
+    #[serde(rename = "cacheRead")]
     pub cache_read: f64,
+    #[serde(rename = "cacheWrite")]
     pub cache_write: f64,
     #[serde(rename = "inputTokensAbove")]
     pub input_tokens_above: u64,

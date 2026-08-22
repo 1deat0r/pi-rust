@@ -27,7 +27,15 @@ pub struct Args {
     pub verbose: bool,
     pub help: bool,
     pub version: bool,
+    pub list_models: Option<String>,
     pub unknown_flags: Vec<String>,
+}
+
+impl Args {
+    /// True when list-models was requested (with optional search pattern).
+    pub fn list_models_requested(&self) -> bool {
+        self.list_models.is_some()
+    }
 }
 
 pub enum ParseOutcome {
@@ -102,6 +110,23 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
             continue;
         }
 
+        // --list-models [search] — optional search pattern not starting with - or @
+        if flag == "--list-models" {
+            match inline_value {
+                Some(v) => args.list_models = Some(v),
+                None => {
+                    if i + 1 < argv.len() && !argv[i + 1].starts_with('-') && !argv[i + 1].starts_with('@') {
+                        args.list_models = Some(argv[i + 1].clone());
+                        i += 1;
+                    } else {
+                        args.list_models = Some(String::new());
+                    }
+                }
+            }
+            i += 1;
+            continue;
+        }
+
         // Boolean/short flags
         match flag.as_str() {
             "--print" | "-p" => args.print = true,
@@ -152,6 +177,7 @@ pub fn print_help() {
     println!("  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max");
     println!("  --no-tools, -nt                Disable all tools by default (built-in and extension)");
     println!("  --offline                      Disable startup network operations (same as PI_OFFLINE=1)");
+    println!("  --list-models [search]         List available models (with optional fuzzy search)");
     println!("  --verbose                      Force verbose startup (overrides quietStartup setting)");
     println!("  --help, -h                     Show this help");
     println!("  --version, -v                  Show version number");

@@ -10,8 +10,11 @@
 //!   and delta-streaming semantics.
 
 pub mod api;
+pub mod auth;
 pub mod event_stream;
 pub mod model;
+pub mod model_catalog;
+pub mod models;
 pub mod partial_json;
 pub mod providers;
 pub mod sse;

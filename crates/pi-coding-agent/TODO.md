@@ -61,6 +61,18 @@ Settings manager (full upstream surface) landed.
   `--<cwd-with-dashes>--/<iso-ts>_<id>.jsonl` with a v4 header and chained
   message entries.
 
+
+## Done (Session 9 — model registry + --list-models)
+- `--list-models [search]` flag + `cli/list-models.ts` port
+  (src/list_models.rs): auth-gated model table over the pi-ai Models facade
+  (builtin registry), upstream column format, formatTokenCount. 3 tests;
+  `pi --list-models` verified with env keys.
+- Model registry surface now available through pi-ai: full 39-provider
+  catalog (vendored), createProvider/createModels, checkAuth/getAvailable/
+  getAuth/applyAuth, stream dispatch. Coding-agent model-runtime/
+  model-config/models-store (file-backed) integration is the next step that
+  replaces the run.rs per-provider match.
+
 ## Remaining (upstream mapping — big items first)
 - Wire SettingsManager into run/main (currently standalone; P4 criterion
   "settings round-trip" is satisfied by the module tests, session wiring is

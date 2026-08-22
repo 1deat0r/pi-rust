@@ -459,6 +459,60 @@ Agent: pi (Claude)   HEAD: 34b539d → (this session; 5 commits: 802c099→a3611
 - Docs: PLAN.md updated (this entry); pi-ai/pi-agent/pi-coding-agent TODO.md
   updated. Repo pushed after every commit per Session-4 rule.
 
+### Session 9 — 2026-08-22 — model catalog + Models facade + provider registry (P4 core)
+Agent: pi (Claude)   HEAD: 291d8ec → (this session)
+
+- **Model catalog vendored + ported (pi-ai)** — the entire generated catalog
+  (39 providers, 1267 models) is now bundled. Upstream gitignores
+  `providers/data/*.json` (generated from models.dev), so the vendored source
+  is the published `@earendil-works/pi-ai@0.84.2` npm tarball, copied into
+  `crates/pi-ai/data/` with `.manifest.json` (generatedAt 2026-08-14).
+  `model_catalog.rs` ports model-catalog.ts flatten + models.generated.ts
+  (`MODELS` table) + providers/all.ts catalog read side:
+  `get_builtin_model/get_builtin_models/get_builtin_providers/
+  get_builtin_model_data_generated_at`. `Model` struct gained camelCase serde
+  + the `compat` field (anthropic/OpenAI compat overrides, present in the
+  catalog). 8 tests.
+- **auth.rs (pi-ai)** — port of auth/types.ts + auth/helpers.ts: Credential
+  union, AuthContext (env/fileExists), ModelAuth/AuthResult/AuthCheck,
+  ApiKeyAuth/OAuthAuth/ProviderAuth traits, CredentialStore trait +
+  InMemoryCredentialStore, envApiKeyAuth helper.
+- **models.rs (pi-ai)** — the Models facade (models.ts + models-store.ts):
+  `Provider` struct with single/by-api stream dispatch (a model whose api has
+  no implementation streams the exact upstream "no API implementation"
+  error), `create_provider`, `merge_headers` (case-insensitive override),
+  `ModelsStore` + `InMemoryModelsStore`, `create_models` with
+  setProvider/delete/clear/getProviders/getProvider/getModels/getModel,
+  checkAuth/getAvailable/getAuth/applyAuth (auth application with apiKey/
+  headers/env/baseUrl override + model-static header merge), and
+  stream/complete/streamSimple/completeSimple with lazy auth (auth failures
+  terminate the stream with an error event, matching upstream lazyStream).
+  9 tests incl. streaming dispatch and auth gating.
+- **providers/all.rs (pi-ai)** — all 39 builtin provider factories registered
+  with vendored catalogs, upstream baseUrls, and env-key auth. `anthropic` is
+  wired to the real anthropic_messages adaptor; the rest stream the upstream
+  no-API-implementation error until their api adaptor is ported
+  (openai-completions + openai-responses next unlock most providers).
+  `builtin_models()` builds the full registry collection. 7 tests.
+- **`pi --list-models [search]` (coding-agent)** — args flag + list_models.rs
+  port of cli/list-models.ts: auth-gated availability via the facade,
+  upstream table columns (provider/model/context/max-out/thinking/images),
+  formatTokenCount. Verified live: `pi --list-models` with GEMINI_API_KEY +
+  OPENAI_API_KEY + AI_GATEWAY_API_KEY renders the google/openai/vercel
+  tables in upstream format. 3 tests.
+- Workspace: **411 tests passing** (was 384); pi-ai 80; coding-agent 88;
+  0 lib warnings in touched crates; new modules clippy-clean (pi-ai lib has
+  0 warnings from new files; the 15 existing clippy findings are all
+  pre-session).
+- P4 status: model registry/catalog **LANDED at the pi-ai layer**
+  (catalog + facade + provider registry + --list-models). Remaining P4:
+  openai/google providers + api adaptors, model-config/models-store
+  (file-backed models.json merge), model-runtime wiring into the run path,
+  project-trust CLI wiring, remaining `pi` commands (config/auth).
+  P5 (RPC) not started.
+- Docs: PLAN.md updated (this entry); pi-ai + pi-coding-agent TODO.md
+  updated. Repo pushed after every commit per Session-4 rule.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration
