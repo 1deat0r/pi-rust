@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod fs;
+pub mod harness;
 pub mod messages;
 pub mod search;
 pub mod session;

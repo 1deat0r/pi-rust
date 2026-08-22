@@ -102,6 +102,14 @@ impl AgentMessage {
             AgentMessage::Custom(c) => c.role(),
         }
     }
+
+    /// Message timestamp (upstream `AgentMessage.timestamp`).
+    pub fn timestamp(&self) -> u64 {
+        match self {
+            AgentMessage::Core(m) => m.timestamp(),
+            AgentMessage::Custom(c) => c.timestamp(),
+        }
+    }
 }
 
 impl CustomAgentMessage {

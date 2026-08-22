@@ -50,15 +50,34 @@ and the upstream session-backend conformance suite (30 cases × 2 backends).
 - fs: FileSystem trait + StdFileSystem + MemoryFs.
 - search.rs: ScanningSessionSearch (session search port).
 
+## Done (Session 8 — harness compaction)
+- harness/compaction/: utils.ts (file-ops extraction/formatting +
+  serializeConversation), compaction.ts (settings, context-token accounting,
+  estimateTokens, cut-point/turn-start selection, prepareCompaction incl.
+  previous-summary + virtual retained-tail + split-turn, generateSummary
+  [+WithUsage], completeSimpleWithRetries, compact with turn-prefix handling
+  and usage combination), branch-summarization.ts (collectEntriesForBranch
+  Summary, prepareBranchEntries, generateBranchSummary). LLM calls run through
+  a minimal `SimpleModels` seam (harness/models.rs) that stands in for the
+  pi-ai `Models` facade until P4 lands the real one; summarization requests
+  isolate routing exactly like upstream (cacheRetention none + fresh
+  sessionId). 53 lib tests + 20 integration tests ported from upstream
+  compaction.test.ts / branch-summarization.test.ts.
+- pi-ai utils/retry.rs: retryAssistantCall + isRetryableAssistantError
+  (16 tests ported from retry.test.ts).
+
 ## Not yet ported (upstream mapping)
-- Agent loop + harness (agent.ts / agent-loop.ts, harness/* beyond the session
-  layer): events, reducer, prompt templates, system prompt, skills,
-  compaction, branch-summarization, image tool, file-mutation-queue,
-  tool-context, telemetry wiring, stream-fn, proxy.
+- Agent loop + harness (agent.ts / agent-loop.ts, harness/* beyond the
+  session/compaction layers): events, reducer, prompt templates, system
+  prompt, skills, image tool, file-mutation-queue, tool-context, telemetry
+  wiring, stream-fn, proxy.
 - Coding-agent extended messages wiring (packages/coding-agent/src/core/
   messages.ts) — AgentMessage custom variants are in pi-agent; the coding
   agent's use of BashExecutionMessage/CustomMessage is P4/P8.
-- Migration v1 (linear) and v2 (parentId) to v3/v4 (codec handles v3 linear;
-  the v1/v2/v3 migration lives in jsonl/repo.ts).
-- Session tree/navigation (session/tree-*), compaction + branch summary —
-  P3/P8.
+- Legacy session migration v1/v2/v3: the upstream functions live in
+  packages/coding-agent/src/core/session-manager.ts
+  (migrateSessionEntries / parseSessionEntries), NOT jsonl/repo.ts (the
+  JSONL codec only reads version-4 files). Port tracked in
+  crates/pi-coding-agent/TODO.md.
+- Session tree/navigation (session/tree-*), branch summary wiring into the
+  coding-agent run path — P3/P8.
