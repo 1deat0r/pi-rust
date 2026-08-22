@@ -6,6 +6,19 @@ use pi_coding_agent::args::{parse_args, print_help, print_version, ParseOutcome}
 #[tokio::main]
 async fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+
+    // Subcommand dispatch mirrors main.ts: auth commands, package commands,
+    // and the config command run before generic arg parsing.
+    if pi_coding_agent::commands::auth::handle_auth_command(&argv) {
+        return;
+    }
+    if pi_coding_agent::commands::package::handle_package_command(&argv) {
+        return;
+    }
+    if pi_coding_agent::commands::config::handle_config_command(&argv) {
+        return;
+    }
+
     match parse_args(&argv) {
         ParseOutcome::Help => {
             print_help();
