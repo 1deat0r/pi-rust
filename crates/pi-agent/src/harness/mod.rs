@@ -15,6 +15,7 @@ pub mod events;
 pub mod prompt_templates;
 pub mod reducer;
 pub mod system_prompt;
+pub mod tools;
 mod models;
 
 pub use models::{BoxFuture, CompleteSimpleFn, SimpleModels};
