@@ -1243,6 +1243,14 @@ impl SettingsManager {
         self.set_global("packages", value);
     }
 
+    /// Project-scope `packages` (upstream `getProjectSettings().packages`).
+    pub fn get_project_packages(&self) -> Vec<PackageSource> {
+        self.get_project_settings()
+            .get("packages")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default()
+    }
+
     pub fn set_project_packages(&mut self, packages: Vec<PackageSource>) {
         let value = serde_json::to_value(packages).expect("packages serialize");
         self.update_project_settings("packages", |settings| {
