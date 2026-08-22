@@ -15,3 +15,4 @@ pub mod google_generative_ai;
 pub mod openai_responses_shared;
 pub mod openai_responses;
 pub mod azure_openai_responses;
+pub mod github_copilot_headers;

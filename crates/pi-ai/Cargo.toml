@@ -23,3 +23,5 @@ regex = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+sha2 = "0.10"
+ring = "0.17"
