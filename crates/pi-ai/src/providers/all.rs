@@ -466,7 +466,10 @@ mod tests {
         assert!(google.auth.api_key.is_some());
     }
 
-    #[test]
+    #[cfg(test)]
+    static KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+
     fn anthropic_provider_streams_error_without_key() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
@@ -503,6 +506,7 @@ mod tests {
         // completions fallback or "no API implementation".
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
+            let _guard = KEY_LOCK.lock().unwrap();
             std::env::remove_var("GEMINI_API_KEY");
             let provider = google_provider();
             let model = provider.models.first().cloned().unwrap();
@@ -523,6 +527,7 @@ mod tests {
         // completions adaptor's or "no API implementation".
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
+            let _guard = KEY_LOCK.lock().unwrap();
             std::env::remove_var("OPENAI_API_KEY");
             let provider = openai_provider();
             let model = provider.models.first().cloned().unwrap();

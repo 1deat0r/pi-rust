@@ -452,8 +452,12 @@ mod tests {
         }
     }
 
+    // Env-mutating tests must not race in the parallel test harness.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn deployment_name_from_map_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP", "gpt-5=my-deploy-1, gpt-5-mini = my-mini"); }
         let m = model("gpt-5");
         let name = resolve_deployment_name(&m, &AzureOpenAIResponsesOptions::default());
@@ -463,6 +467,8 @@ mod tests {
 
     #[test]
     fn deployment_name_defaults_to_model_id() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP"); }
         let m = model("gpt-5");
         let name = resolve_deployment_name(&m, &AzureOpenAIResponsesOptions::default());
         assert_eq!(name, "gpt-5");

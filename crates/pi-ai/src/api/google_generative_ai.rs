@@ -955,11 +955,15 @@ mod tests {
         assert!(err.contains("Provider stopped with: SAFETY"), "{err}");
     }
 
+    // Env-key tests in this module share one lock with the provider tests.
+    static KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn stream_simple_no_reasoning_disables_thinking() {
         // No network: this just verifies stream_simple constructs a valid
         // error stream when the key is absent (key check precedes network).
         let m = model("gemini-2.5-pro");
+        let _guard = KEY_LOCK.lock().unwrap();
         std::env::remove_var("GEMINI_API_KEY");
         let opts = SimpleStreamOptions { base: StreamOptions::default(), tool_choice: None, reasoning: None, deferred: None, thinking_budgets: None };
         let stream = stream_simple(&m, &Context::default(), reqwest::Client::new(), DEFAULT_BASE_URL, None, &opts);
