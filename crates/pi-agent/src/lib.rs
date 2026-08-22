@@ -13,6 +13,7 @@ pub mod harness;
 pub mod messages;
 pub mod search;
 pub mod stream_fn;
+pub mod proxy;
 pub mod session;
 pub mod tools;
 pub mod types;
