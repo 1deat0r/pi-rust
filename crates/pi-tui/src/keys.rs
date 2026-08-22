@@ -17,6 +17,9 @@ impl TuiKey {
     pub fn ctrl(base: impl Into<String>) -> Self {
         Self { base: base.into(), ctrl: true, shift: false, alt: false }
     }
+    pub fn shift(base: impl Into<String>) -> Self {
+        Self { base: base.into(), ctrl: false, shift: true, alt: false }
+    }
     /// Canonical form like `"ctrl+c"`, `"enter"`, `"shift+tab"`.
     pub fn canonical(&self) -> String {
         let mut parts: Vec<&str> = Vec::new();
@@ -57,7 +60,10 @@ pub fn match_key(key: &TuiKey, pattern: &str) -> bool {
             other => base = other,
         }
     }
-    key.ctrl == ctrl && key.alt == alt && key.shift == shift && key.base == base
+    let base_match = key.base == base
+        || (key.base == "esc" && base == "escape")
+        || (key.base == "escape" && base == "esc");
+    key.ctrl == ctrl && key.alt == alt && key.shift == shift && base_match
 }
 
 /// Parse a raw key string (from the terminal backend) into a key.

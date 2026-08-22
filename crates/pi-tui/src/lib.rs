@@ -5,25 +5,48 @@
 //! model follows the upstream key-string surface ("enter", "ctrl+c", ...);
 //! the terminal backend is crossterm.
 
+pub mod autocomplete;
+pub mod fuzzy;
+pub mod keybindings;
 pub mod keys;
+pub mod kill_ring;
+pub mod latex;
 pub mod layout;
+pub mod native_modifiers;
+pub mod stdin_buffer;
 pub mod terminal;
+pub mod terminal_colors;
+pub mod terminal_image;
 pub mod tui;
+pub mod undo_stack;
 pub mod utils;
+pub mod word_navigation;
 
 pub mod components {
+    pub mod alt_screen;
     pub mod box_;
+    pub mod cancellable_loader;
+    pub mod image;
+    pub mod settings_list;
+    pub mod editor;
     pub mod input;
     pub mod loader;
+    pub mod markdown;
     pub mod scroll_view;
     pub mod select_list;
     pub mod spacer;
     pub mod stack;
     pub mod text;
     pub mod truncated_text;
+    pub use alt_screen::{AltScreenFlashContainer, AltScreenSearchComponent};
     pub use box_::Box as BoxComponent;
+    pub use cancellable_loader::CancellableLoader;
+    pub use image::Image;
+    pub use settings_list::{SettingsList, SettingItem};
+    pub use editor::{Editor, EditorOptions, EditorTheme};
     pub use input::Input;
     pub use loader::Loader;
+    pub use markdown::Markdown;
     pub use scroll_view::ScrollView;
     pub use select_list::SelectList;
     pub use spacer::Spacer;
@@ -32,8 +55,12 @@ pub mod components {
     pub use truncated_text::TruncatedText;
 }
 
+pub use autocomplete::{AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, CombinedAutocompleteProvider, CompletionResult, SlashCommand};
+pub use keybindings::{KeybindingDefinition, KeybindingsConfig, KeybindingsManager, TUI_KEYBINDINGS};
 pub use keys::{match_key, parse_key, TuiKey};
+pub use latex::render_latex;
 pub use layout::{HStackLayout, LayoutConstraint, StackLayout, VStackLayout};
+pub use stdin_buffer::{SequenceStatus, StdinBuffer};
 pub use terminal::{TerminalBackend, TerminalEvent};
 pub use tui::{Component, Scene, SharedComponent, Tree};
 pub use utils::{slice_with_width, visible_width, wrap_text_with_ansi};
