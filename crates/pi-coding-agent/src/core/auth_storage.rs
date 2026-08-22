@@ -274,7 +274,7 @@ impl FileAuthStorageBackend {
 
     fn with_lock_async_impl<T>(
         &self,
-        mut f: LockCallback<T>,
+        f: LockCallback<T>,
         options: &AuthOperationOptions,
     ) -> BoxFuture<'_, Result<T, String>>
     where
@@ -332,7 +332,7 @@ impl InMemoryAuthStorageBackend {
 
     fn with_lock_async_impl<T>(
         &self,
-        mut f: LockCallback<T>,
+        f: LockCallback<T>,
         options: &AuthOperationOptions,
     ) -> BoxFuture<'_, Result<T, String>>
     where
