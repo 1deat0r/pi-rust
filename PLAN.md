@@ -570,6 +570,33 @@ watermark in the interactive loop guarantees messages are neither lost nor dupli
 session-switch operations. Only `/share` remains a banner — it requires the GitHub gist OAuth flow,
 which is part of the provider OAuth gap below.
 
+### Session 12 addendum (2) — divergence closure: AWS profile chain, images retry, DeferredHandles
+Agent: pi (Claude), on main. Commits 4f9f14d(e)-ae71edd (HEAD).
+
+- Bedrock: shared AWS credentials file chain (`AWS_SHARED_CREDENTIALS_FILE` or
+  `~/.aws/credentials`; default/named profiles, session tokens; env keys keep
+  precedence) — closes the AWS-profile-file divergence. 4 tests.
+- OpenRouter images: full `retryProviderRequest` semantics (retryable statuses
+  incl. `x-should-retry`, retry-after-ms/retry-after with 60s server-delay cap,
+  exponential backoff 0.5*2^i capped at 8s with jitter; fresh request per
+  attempt; transport-error retry) — closes the images-retry divergence. 3 tests
+  incl. a 429→200 local-server integration test.
+- DeferredHandles: FauxProviderCore.fetch_deferred/cancel_deferred (pending-
+  fetches re-emission, cached final resolution, factory steps, unknown/
+  cancelled errors), ProviderStreams deferred slots + DeferredFetchOptions,
+  Models.facade fetch_deferred/cancel_deferred through lazy auth — closes the
+  DeferredHandles divergence. 2 tests.
+- Shipped state verified from clean clones: 260 pi-ai lib tests, full workspace
+  green across repeated clone runs (known pre-existing env-race flake in the
+  azure/cloudflare env-key tests may transiently fail one binary; serialize
+  env-mutating tests in a future pass if it recurs).
+
+Remaining documented gaps (all optional/edge surfaces, mostly OAuth/infra
+gated): `/share` GitHub-gist OAuth, provider OAuth device-code flows, codex
+WebSocket transport (SSE fallback), ConfigSelector full TUI component,
+`update --models` pi.dev fetch seam, pi-ai Usage u64 negative-adjustment
+decision, TUI alt-screen full swap + ICU word segmentation.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration
