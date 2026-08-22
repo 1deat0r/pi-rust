@@ -205,6 +205,7 @@ fn agent_loop_executes_tool_calls_and_feeds_results_back() {
             stream_fn,
             signal: None,
             stop_after_turn: false,
+            on_stream_event: None,
         };
         let prompts = vec![pi_agent::agent::user_text_prompt("run the tool", 1)];
         let mut events = Vec::new();

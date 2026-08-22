@@ -47,6 +47,9 @@ pub struct AgentLoopConfig {
     /// Stop after each turn (like `--print`); defaults to auto (stop when no
     /// tool calls and no follow-ups).
     pub stop_after_turn: bool,
+    /// Optional raw stream-event observer (used by RPC mode to stream
+    /// message_update events like the upstream AgentSession).
+    pub on_stream_event: Option<Arc<dyn Fn(&pi_ai::AssistantMessageEvent) + Send + Sync>>,
 }
 
 /// Runs the agent loop over the given prompts, mutating `context.messages`.
@@ -152,7 +155,11 @@ async fn stream_assistant_response(
         tools: context.tools.iter().map(|t| t.tool.clone()).collect(),
     };
     let stream = (config.stream_fn)(&config.model, &llm_context);
-    stream.collect().await.1
+    if let Some(observer) = &config.on_stream_event {
+        stream.collect_with_observer(observer).await
+    } else {
+        stream.collect().await.1
+    }
 }
 
 /// Helpers to build user prompts from strings.

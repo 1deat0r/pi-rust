@@ -72,6 +72,29 @@ impl AssistantMessageEventStream {
         self.tx.clone()
     }
 
+    /// Drain events while forwarding each to `observer`, then return the
+    /// final message (used by RPC-mode streaming: the agent loop observes
+    /// every `AssistantMessageEvent` while still awaiting the result).
+    pub async fn collect_with_observer(
+        mut self,
+        observer: &std::sync::Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync>,
+    ) -> AssistantMessage {
+        let mut final_message: Option<AssistantMessage> = None;
+        while let Some(event) = self.rx.recv().await {
+            match &event {
+                AssistantMessageEvent::Done { message, .. } | AssistantMessageEvent::Error { error_message: message, .. } => {
+                    final_message = Some(message.clone());
+                }
+                _ => {}
+            }
+            observer(&event);
+            if matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }) {
+                break;
+            }
+        }
+        final_message.unwrap_or_else(AssistantMessage::new)
+    }
+
     /// Push an event. Drops after completion (mirrors upstream `if (this.done) return`).
     pub fn push(&mut self, event: AssistantMessageEvent) {
         if self.finished {

@@ -28,6 +28,7 @@ pub struct Args {
     pub help: bool,
     pub version: bool,
     pub list_models: Option<String>,
+    pub mode: Option<String>,
     pub unknown_flags: Vec<String>,
 }
 
@@ -75,10 +76,10 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
         };
 
         // Value-taking flags
-        let value_flags: [&str; 16] = [
+        let value_flags: [&str; 17] = [
             "--provider", "--model", "--api-key", "--system-prompt", "--append-system-prompt",
             "--session", "--session-id", "--session-dir", "--name", "-n", "--thinking", "--tools",
-            "-t", "--exclude-tools", "-xt", "--tui-mode",
+            "-t", "--exclude-tools", "-xt", "--tui-mode", "--mode",
         ];
         if value_flags.contains(&flag.as_str()) {
             let value = match inline_value {
@@ -104,6 +105,13 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
                 "--thinking" => args.thinking = Some(value),
                 "--tools" | "-t" => args.tools = Some(value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
                 "--exclude-tools" | "-xt" => args.exclude_tools = Some(value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
+                "--mode" => {
+                    if matches!(value.as_str(), "text" | "json" | "rpc") {
+                        args.mode = Some(value);
+                    } else {
+                        args.unknown_flags.push(format!("--mode {value}"));
+                    }
+                }
                 _ => {}
             }
             i += 1;
@@ -250,5 +258,38 @@ mod tests {
     fn records_unknown_flags() {
         let args = parse(&["--not-a-real-flag"]);
         assert_eq!(args.unknown_flags, vec!["--not-a-real-flag"]);
+    }
+}
+
+impl ParseOutcome {
+    /// Test helper: unpack a Run outcome, panicking otherwise.
+    pub fn expect_run(self) -> Args {
+        match self {
+            ParseOutcome::Run(args) => args,
+            ParseOutcome::Help => panic!("expected Run outcome, got Help"),
+            ParseOutcome::Version => panic!("expected Run outcome, got Version"),
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod mode_parsing {
+    use super::*;
+    #[test]
+    fn parses_mode_rpc() {
+        let args = parse_args(&["--mode".to_string(), "rpc".to_string()]).expect_run();
+        assert_eq!(args.mode.as_deref(), Some("rpc"));
+    }
+    #[test]
+    fn rejects_invalid_mode() {
+        let args = parse_args(&["--mode".to_string(), "wat".to_string()]).expect_run();
+        assert!(args.mode.is_none());
+        assert!(args.unknown_flags.iter().any(|f| f.contains("wat")));
+    }
+    #[test]
+    fn mode_equals_form() {
+        let args = parse_args(&["--mode=rpc".to_string()]).expect_run();
+        assert_eq!(args.mode.as_deref(), Some("rpc"));
     }
 }

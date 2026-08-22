@@ -180,6 +180,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         stream_fn,
         signal: None,
         stop_after_turn: true,
+        on_stream_event: None,
     };
 
     let mut events: Vec<pi_agent::agent::AgentEvent> = Vec::new();
@@ -320,5 +321,20 @@ mod tests {
         assert_eq!(model, None);
         let model = resolve_run_model(Some("faux-2"), &settings, false);
         assert_eq!(model.as_deref(), Some("faux-2"));
+    }
+}
+
+/// Build the faux model for the scripted test provider (shared by the run
+/// and RPC paths).
+pub fn build_faux_model(model_hint: Option<&str>) -> Result<pi_ai::model::Model, String> {
+    let core = pi_ai::providers::FauxProviderCore::new(&pi_ai::providers::RegisterFauxProviderOptions::default());
+    match model_hint {
+        Some(hint) => {
+            let id = hint.rsplit('/').next().unwrap_or(hint);
+            core.get_model(Some(id))
+                .cloned()
+                .ok_or_else(|| format!("unknown faux model {id:?}"))
+        }
+        None => core.models.first().cloned().ok_or_else(|| "no faux model".to_string()),
     }
 }

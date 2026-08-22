@@ -11,3 +11,4 @@ pub mod core;
 pub mod config;
 pub mod list_models;
 pub mod run;
+pub mod modes;

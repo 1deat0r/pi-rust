@@ -30,6 +30,7 @@ use pi_ai::types::{ContentBlock, Cost, Message, SimpleStreamOptions, StopReason,
 // Fixtures
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn zero_usage() -> Usage {
     Usage {
         input: 0, output: 0, cache_read: 0, cache_write: 0, cache_write_1h: None, reasoning: None,
