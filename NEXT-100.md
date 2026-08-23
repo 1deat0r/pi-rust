@@ -202,9 +202,9 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
 
 ## T4 — Server/client completion (P6 concurrency)
 
-- [ ] 49. `LiveSessionManager`: acquire/release exclusivity + attach/detach
+- [x] 49. `LiveSessionManager`: acquire/release exclusivity + attach/detach
       validation on server.
-- [ ] 50. Session lock + terminal-close semantics + command queuing.
+- [x] 50. Session lock + terminal-close semantics + command queuing.
 - [ ] 51. Subscription segment control for prompt/steer concurrency.
 - [ ] 52. Port `testing/service.ts` parity harness + conformance suite.
 - [ ] 53. Server conformance tests (30+ cases). (unit)

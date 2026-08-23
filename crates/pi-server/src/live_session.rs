@@ -10,27 +10,41 @@
 //! only-when-idle, snapshots carrying `locked: true` and per-connection
 //! `attached`, and server-metadata refresh that merges live snapshots.
 //!
+//! Runtime-event subscription (upstream `handleRuntimeEvent`) is wired through
+//! [`LiveSessionManager::new`], which subscribes each live runtime and fans out
+//! `Snapshot` (server-metadata refresh), `Progress` (per-attached-connection
+//! sink) and `Error` (terminal-close: mark terminal, unsubscribe, dispose, and
+//! drop the session from the live set). Disposal on a runtime error is deferred
+//! when the session is mid-operation to avoid re-entering a held runtime guard;
+//! otherwise it runs on a background thread so the dispose never blocks a live
+//! call stack.
+//!
 //! The async promise arbitration is intentionally collapsed: commands here run
 //! synchronously under the service lock, so a concurrent open of the same id
-//! is serialized rather than coalesced. This matches the sync service boundary
-//! and is what T4 #49 (sync adaptation) demands; the abort/progress runtime-event
-//! subscription fan-out is a separate server concern (#50/#51).
+//! is serialized rather than coalesced. Transport-level connection closure on
+//! terminal sessions and subscription segment control (per-request progress
+//! scoping) remain outside this manager and are #51 concerns.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use pi_protocol::{
     Command, CommandResult, ProtocolErrorCode, SessionMetadata, SessionPhase, SessionSnapshot,
+    TranscriptProgress,
 };
 
 use crate::errors::PiServerError;
-use crate::service::{PiServerService, PiSessionRuntime};
+use crate::service::{EventListener, PiServerService, PiSessionRuntime, Unsubscribe};
 use crate::snapshots::ServerSnapshotPublisher;
+
+/// A per-connection broadcast sink for session runtime progress. The transport
+/// layer installs one to forward `SessionProgress` envelopes; unit tests may
+/// leave it `None` (progress is dropped).
+pub type ProgressSink = Arc<dyn Fn(&TranscriptProgress) + Send + Sync>;
 
 /// The minimal connection state the manager needs to enforce attach/detach
 /// exclusivity (upstream `ConnectionState`). `session_ids` is the set of live
 /// session ids this connection is attached to.
-#[derive(Debug, Clone)]
 pub struct ConnectionHandle {
     pub id: String,
     pub session_ids: HashSet<String>,
@@ -38,6 +52,22 @@ pub struct ConnectionHandle {
     pub ready: bool,
     pub disconnected: bool,
     pub closed: bool,
+    /// Best-effort broadcast sink for runtime `Progress` events on this
+    /// connection (see [`ProgressSink`]).
+    pub progress: Option<ProgressSink>,
+}
+
+impl Clone for ConnectionHandle {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            session_ids: self.session_ids.clone(),
+            ready: self.ready,
+            disconnected: self.disconnected,
+            closed: self.closed,
+            progress: self.progress.clone(),
+        }
+    }
 }
 
 impl ConnectionHandle {
@@ -48,6 +78,7 @@ impl ConnectionHandle {
             ready: true,
             disconnected: false,
             closed: false,
+            progress: None,
         }
     }
 
@@ -61,17 +92,21 @@ struct LiveSession {
     runtime: Arc<Mutex<dyn PiSessionRuntime>>,
     /// Connection ids attached to this session.
     connections: HashSet<String>,
+    /// Per-attached-connection progress sink (only those that installed one).
+    progress_sinks: HashMap<String, ProgressSink>,
     operation_count: usize,
     ready: bool,
     terminal: bool,
     disposing: bool,
+    /// Runtime unsubscribe handle, invoked on dispose/close.
+    unsubscribe: Option<Unsubscribe>,
 }
 
 /// Owns the live-session lifecycle over a synchronous `PiServerService`.
 pub struct LiveSessionManager {
     service: Arc<Mutex<dyn PiServerService>>,
     snapshots: Arc<ServerSnapshotPublisher>,
-    live: Mutex<HashMap<String, LiveSession>>,
+    live: Arc<Mutex<HashMap<String, LiveSession>>>,
 }
 
 impl LiveSessionManager {
@@ -82,7 +117,7 @@ impl LiveSessionManager {
         Self {
             service,
             snapshots,
-            live: Mutex::new(HashMap::new()),
+            live: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -96,6 +131,7 @@ impl LiveSessionManager {
                 let mut guard = self.live.lock().unwrap();
                 if let Some(live) = guard.get_mut(id) {
                     live.connections.remove(&conn.id);
+                    live.progress_sinks.remove(&conn.id);
                 }
             }
             self.maybe_dispose(id);
@@ -141,17 +177,13 @@ impl LiveSessionManager {
 
             Command::Detach { session_id } => {
                 if conn.session_ids.remove(&session_id) {
-                    let dispose = {
+                    {
                         let mut guard = self.live.lock().unwrap();
-                        match guard.get_mut(&session_id) {
-                            Some(live) => {
-                                live.connections.remove(&conn.id);
-                                false
-                            }
-                            None => false,
+                        if let Some(live) = guard.get_mut(&session_id) {
+                            live.connections.remove(&conn.id);
+                            live.progress_sinks.remove(&conn.id);
                         }
-                    };
-                    let _ = dispose;
+                    }
                     // If live and no remaining connections/ops and idle, dispose.
                     self.maybe_dispose(&session_id);
                     Ok(CommandResult::Detach { session_id })
@@ -251,17 +283,53 @@ impl LiveSessionManager {
                 ));
             }
         }
+        let unsubscribe = self.subscribe_runtime(runtime.clone(), id.to_string());
         let live = LiveSession {
             id: id.to_string(),
             runtime: runtime.clone(),
             connections: HashSet::new(),
+            progress_sinks: HashMap::new(),
             operation_count: 0,
             ready: true,
             terminal: false,
             disposing: false,
+            unsubscribe,
         };
         self.live.lock().unwrap().insert(id.to_string(), live);
         Ok(runtime)
+    }
+
+    /// Subscribe the manager to a runtime's events so asynchronous progress,
+    /// snapshot, and error signals reach attached connections (upstream
+    /// `LiveSession`'s `runtime.subscribe` + `handleRuntimeEvent`).
+    fn subscribe_runtime(
+        &self,
+        runtime: Arc<Mutex<dyn PiSessionRuntime>>,
+        id: String,
+    ) -> Option<Unsubscribe> {
+        let live = self.live.clone();
+        let snapshots = self.snapshots.clone();
+        let service = self.service.clone();
+        let listener: EventListener = Arc::new(move |event| {
+            manager_handle_event(&live, &snapshots, &service, &id, event);
+        });
+        runtime.lock().unwrap().subscribe(listener).ok()
+    }
+
+    /// Close the manager: unsubcribe and dispose every live session (upstream
+    /// `LiveSessionManager.close`).
+    pub fn close(&self) {
+        let sessions: Vec<LiveSession> = {
+            let mut guard = self.live.lock().unwrap();
+            let snapshots: Vec<LiveSession> = guard.drain().map(|(_, s)| s).collect();
+            snapshots
+        };
+        for live in sessions {
+            if let Some(unsub) = live.unsubscribe {
+                unsub();
+            }
+            let _ = live.runtime.lock().unwrap().dispose();
+        }
     }
 
     /// Attach a connection to a live runtime: record it in the connection's
@@ -284,6 +352,9 @@ impl LiveSessionManager {
         conn.session_ids.insert(id.clone());
         if let Some(live) = self.live.lock().unwrap().get_mut(&id) {
             live.connections.insert(conn.id.clone());
+            if let Some(sink) = conn.progress.as_ref() {
+                live.progress_sinks.insert(conn.id.clone(), sink.clone());
+            }
         }
         Ok(())
     }
@@ -364,38 +435,7 @@ impl LiveSessionManager {
     /// Session metadata merging stored sessions with live snapshot overrides
     /// (upstream `listMetadata`).
     pub fn list_metadata(&self) -> Result<Vec<SessionMetadata>, PiServerError> {
-        let stored = self.service.lock().unwrap().list_sessions()?;
-        let mut live_by_id = HashMap::new();
-        {
-            let guard = self.live.lock().unwrap();
-            for live in guard.values() {
-                if live.disposing {
-                    continue;
-                }
-                if let Ok(snap) = {
-                    let mut rg = live.runtime.lock().unwrap();
-                    let mut s = rg.snapshot()?;
-                    s.phase = rg.get_phase();
-                    s.locked = true;
-                    s.attached = !live.connections.is_empty();
-                    Ok::<_, PiServerError>(s)
-                } {
-                    live_by_id.insert(live.id.clone(), snap);
-                }
-            }
-        }
-        let mut metadata: Vec<SessionMetadata> = Vec::with_capacity(stored.len());
-        for item in stored {
-            if let Some(snap) = live_by_id.remove(&item.id) {
-                metadata.push(metadata_of(&snap));
-            } else {
-                metadata.push(item);
-            }
-        }
-        for snap in live_by_id.values() {
-            metadata.push(metadata_of(snap));
-        }
-        Ok(metadata)
+        compute_metadata(&self.service, &self.live)
     }
 
     /// Dispose a live session iff it is idle, attached by no one, not
@@ -425,7 +465,10 @@ impl LiveSessionManager {
             }
         };
         if should {
-            if let Some(live) = self.live.lock().unwrap().remove(id) {
+            if let Some(mut live) = self.live.lock().unwrap().remove(id) {
+                if let Some(unsub) = live.unsubscribe.take() {
+                    unsub();
+                }
                 let _ = live.runtime.lock().unwrap().dispose();
             }
             // Advance server metadata so the disposed session drops out of the
@@ -448,11 +491,178 @@ fn metadata_of(snap: &SessionSnapshot) -> SessionMetadata {
     }
 }
 
+/// Merge stored sessions with live snapshot overrides (upstream `listMetadata`).
+fn compute_metadata(
+    service: &Arc<Mutex<dyn PiServerService>>,
+    live: &Arc<Mutex<HashMap<String, LiveSession>>>,
+) -> Result<Vec<SessionMetadata>, PiServerError> {
+    let stored = service.lock().unwrap().list_sessions()?;
+    let mut live_by_id = HashMap::new();
+    {
+        let guard = live.lock().unwrap();
+        for sess in guard.values() {
+            if sess.disposing {
+                continue;
+            }
+            if let Ok(snap) = {
+                let mut rg = sess.runtime.lock().unwrap();
+                let mut s = rg.snapshot()?;
+                s.phase = rg.get_phase();
+                s.locked = true;
+                s.attached = !sess.connections.is_empty();
+                Ok::<_, PiServerError>(s)
+            } {
+                live_by_id.insert(sess.id.clone(), snap);
+            }
+        }
+    }
+    let mut metadata: Vec<SessionMetadata> = Vec::with_capacity(stored.len());
+    for item in stored {
+        if let Some(snap) = live_by_id.remove(&item.id) {
+            metadata.push(metadata_of(&snap));
+        } else {
+            metadata.push(item);
+        }
+    }
+    for snap in live_by_id.values() {
+        metadata.push(metadata_of(snap));
+    }
+    Ok(metadata)
+}
+
+/// Runtime-event handler invoked from a session's subscription (upstream
+/// `LiveSessionManager.handleRuntimeEvent`). Runs synchronously but must never
+/// block on a runtime mutex: a runtime event can fire while that runtime's
+/// guard is held on the same thread (an operation mid-flight), so it reads
+/// metadata with `try_lock` (skipping a busy session) instead of `compute_metadata`.
+fn manager_handle_event(
+    live: &Arc<Mutex<HashMap<String, LiveSession>>>,
+    snapshots: &Arc<ServerSnapshotPublisher>,
+    service: &Arc<Mutex<dyn PiServerService>>,
+    id: &str,
+    event: crate::service::PiSessionRuntimeEvent,
+) {
+    match event {
+        crate::service::PiSessionRuntimeEvent::Snapshot => {
+            if let Some(meta) = compute_metadata_event(service, live) {
+                snapshots.refresh(meta);
+            }
+        }
+        crate::service::PiSessionRuntimeEvent::Progress(progress) => {
+            let sinks: Vec<ProgressSink> = {
+                let guard = live.lock().unwrap();
+                match guard.get(id) {
+                    Some(sess) => sess.progress_sinks.values().cloned().collect(),
+                    None => Vec::new(),
+                }
+            };
+            for sink in sinks {
+                sink(&progress);
+            }
+        }
+        crate::service::PiSessionRuntimeEvent::Error(_error) => {
+            // Mark terminal + dispose. The synchronous manager closes the
+            // session's lifecycle; transport closure/error reporting is the
+            // connection layer's concern. Disposal runs on a background thread
+            // so a still-held in-op runtime guard on this thread cannot block.
+            let defer = {
+                let mut guard = live.lock().unwrap();
+                let mut defer = false;
+                if let Some(sess) = guard.get_mut(id) {
+                    if !sess.terminal && !sess.disposing {
+                        sess.terminal = true;
+                        defer = sess.operation_count > 0;
+                    }
+                }
+                defer
+            };
+            if defer {
+                // Disposal happens in run_operation's finally (maybe_dispose).
+                return;
+            }
+            let removed = {
+                let mut guard = live.lock().unwrap();
+                guard.remove(id).map(|mut sess| {
+                    sess.terminal = true;
+                    (sess.runtime.clone(), sess.unsubscribe.take())
+                })
+            };
+            if let Some((runtime, unsub)) = removed {
+                let live_ref = live.clone();
+                let snapshots_ref = snapshots.clone();
+                let service_ref = service.clone();
+                // Off-operation the runtime guard is not held on this thread, so
+                // dispose synchronously (deterministic). If the runtime is still
+                // locked (mid-op on a later tick, or a snapshot read), dispose on
+                // a background thread so it never blocks this stack. The try_lock
+                // guard is dropped by `is_ok()` before we branch on it.
+                let inline = runtime.try_lock().is_ok();
+                if inline {
+                    if let Some(u) = unsub {
+                        u();
+                    }
+                    let _ = runtime.lock().unwrap().dispose();
+                    if let Some(meta) = compute_metadata_event(&service_ref, &live_ref) {
+                        snapshots_ref.refresh(meta);
+                    }
+                } else {
+                    std::thread::spawn(move || {
+                        if let Some(u) = unsub {
+                            u();
+                        }
+                        let _ = runtime.lock().unwrap().dispose();
+                        if let Some(meta) = compute_metadata_event(&service_ref, &live_ref) {
+                            snapshots_ref.refresh(meta);
+                        }
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Best-effort metadata merge for the event handler: unlike [`compute_metadata`],
+/// it uses `try_lock` on each live runtime and skips one that is already locked
+/// (e.g. by the very event that tripped the handler) so it cannot deadlock.
+fn compute_metadata_event(
+    service: &Arc<Mutex<dyn PiServerService>>,
+    live: &Arc<Mutex<HashMap<String, LiveSession>>>,
+) -> Option<Vec<SessionMetadata>> {
+    let stored = service.lock().ok()?.list_sessions().ok()?;
+    let mut live_by_id = HashMap::new();
+    {
+        let guard = live.lock().ok()?;
+        for sess in guard.values() {
+            if sess.disposing {
+                continue;
+            }
+            let Ok(mut rg) = sess.runtime.try_lock() else { continue };
+            let Ok(mut s) = rg.snapshot() else { continue };
+            s.phase = rg.get_phase();
+            s.locked = true;
+            s.attached = !sess.connections.is_empty();
+            live_by_id.insert(sess.id.clone(), s);
+        }
+    }
+    let mut metadata: Vec<SessionMetadata> = Vec::with_capacity(stored.len());
+    for item in stored {
+        if let Some(snap) = live_by_id.remove(&item.id) {
+            metadata.push(metadata_of(&snap));
+        } else {
+            metadata.push(item);
+        }
+    }
+    for snap in live_by_id.values() {
+        metadata.push(metadata_of(snap));
+    }
+    Some(metadata)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::service::InMemoryService;
-    use pi_protocol::{ModelMetadata, ModelRef, ServerSnapshot, ThinkingLevel};
+    use pi_protocol::{ModelMetadata, ModelRef, ServerSnapshot, ThinkingLevel, TranscriptDeltaKind};
 
     fn service() -> Arc<Mutex<dyn PiServerService>> {
         let svc = InMemoryService::new(Vec::new());
@@ -610,5 +820,124 @@ mod tests {
             meta.iter().any(|s| s.id == session.id && s.session_name.as_deref() == Some("live")),
             "live snapshot should override stored metadata"
         );
+    }
+
+    /// Build a manager plus the concrete `InMemoryService` (so tests can drive
+    /// `emit` on a live session).
+    fn manager_with_service() -> (LiveSessionManager, InMemoryService) {
+        let raw = InMemoryService::new(Vec::new());
+        let svc: Arc<Mutex<dyn PiServerService>> = Arc::new(Mutex::new(raw.clone()));
+        let m = LiveSessionManager::new(svc, publisher());
+        (m, raw)
+    }
+
+    fn create_live(m: &LiveSessionManager, conn: &mut ConnectionHandle) -> String {
+        let CommandResult::Create { session } = m
+            .execute_command(conn, Command::Create {
+                cwd: None, name: None, model: Some(model_ref()), thinking_level: None,
+            })
+            .unwrap()
+        else { panic!("expected Create") };
+        session.id
+    }
+
+    #[test]
+    fn runtime_progress_fans_out_to_attached_sinks() {
+        let (m, service) = manager_with_service();
+        let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink: ProgressSink = Arc::new({
+            let received = received.clone();
+            move |p: &TranscriptProgress| {
+                if let TranscriptProgress::AssistantDelta { delta, .. } = p {
+                    received.lock().unwrap().push(delta.clone());
+                }
+            }
+        });
+        let mut conn = ConnectionHandle::new("c1".to_string());
+        conn.progress = Some(sink);
+        let id = create_live(&m, &mut conn);
+
+        service.emit(&id, crate::service::PiSessionRuntimeEvent::Progress(
+            TranscriptProgress::AssistantDelta {
+                message_id: "m1".to_string(),
+                content_index: 0,
+                kind: TranscriptDeltaKind::Text,
+                delta: "hello".to_string(),
+            },
+        ));
+
+        assert_eq!(*received.lock().unwrap(), vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn runtime_progress_is_dropped_when_no_sink() {
+        let (m, service) = manager_with_service();
+        let mut conn = ConnectionHandle::new("c1".to_string());
+        // No progress sink on the connection.
+        let id = create_live(&m, &mut conn);
+        service.emit(&id, crate::service::PiSessionRuntimeEvent::Progress(
+            TranscriptProgress::AssistantDelta {
+                message_id: "m1".to_string(),
+                content_index: 0,
+                kind: TranscriptDeltaKind::Text,
+                delta: "hello".to_string(),
+            },
+        ));
+        // No panic; sink-less connections are simply skipped.
+        assert!(m.live.lock().unwrap().contains_key(&id));
+    }
+
+    #[test]
+    fn runtime_error_terminal_closes_and_disposes_session() {
+        let (m, service) = manager_with_service();
+        let mut conn = ConnectionHandle::new("c1".to_string());
+        let id = create_live(&m, &mut conn);
+        assert!(m.live.lock().unwrap().contains_key(&id));
+
+        service.emit(&id, crate::service::PiSessionRuntimeEvent::Error(
+            PiServerError::new(ProtocolErrorCode::InternalError, "boom"),
+        ));
+
+        // The terminal-close disposal runs on a background thread; poll briefly.
+        let mut dropped = false;
+        for _ in 0..100 {
+            if !m.live.lock().unwrap().contains_key(&id) {
+                dropped = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(dropped, "terminal session should be disposed out of the live set");
+        assert!(
+            !m.list_metadata().unwrap().iter().any(|s| s.id == id),
+            "terminal session should be removed from metadata"
+        );
+    }
+
+    #[test]
+    fn terminal_session_rejects_reuse_on_error() {
+        let (m, service) = manager_with_service();
+        let mut conn = ConnectionHandle::new("c1".to_string());
+        let id = create_live(&m, &mut conn);
+        service.emit(&id, crate::service::PiSessionRuntimeEvent::Error(
+            PiServerError::new(ProtocolErrorCode::InternalError, "boom"),
+        ));
+
+        // A subsequent create/attach for a live session must not resurrect it.
+        let mut second = ConnectionHandle::new("c2".to_string());
+        let err = m
+            .execute_command(&mut second, Command::Prompt { session_id: id.clone(), text: "x".to_string() })
+            .unwrap_err();
+        assert_eq!(err.code, ProtocolErrorCode::InvalidRequest, "unattached connection");
+    }
+
+    #[test]
+    fn close_unsubscribes_and_disposes_all_live_sessions() {
+        let m = manager();
+        let mut conn = ConnectionHandle::new("c1".to_string());
+        let id = create_live(&m, &mut conn);
+        assert!(m.live.lock().unwrap().contains_key(&id));
+        m.close();
+        assert!(m.live.lock().unwrap().is_empty(), "close should dispose every live session");
     }
 }

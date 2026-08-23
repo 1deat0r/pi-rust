@@ -108,6 +108,19 @@ impl InMemoryService {
         snap.revision = revision;
         Ok(snap)
     }
+
+    /// Fire a runtime event at all live listeners for `session_id` (used to
+    /// script progress/error fan-out and terminal-close in tests). Best-effort
+    /// like the upstream test service: the listener registry is append-only.
+    pub fn emit(&self, session_id: &str, event: PiSessionRuntimeEvent) {
+        let listeners = {
+            let inner = self.inner.lock().unwrap();
+            inner.listeners.get(session_id).cloned().unwrap_or_default()
+        };
+        for listener in listeners {
+            listener(event.clone());
+        }
+    }
 }
 
 impl PiServerService for InMemoryService {
@@ -254,6 +267,9 @@ impl PiSessionRuntime for TestSession {
         }))
     }
     fn dispose(&mut self) -> Result<(), PiServerError> {
+        // Disposal removes the session from the store so it drops out of
+        // `listSessions`/server metadata (upstream dispose semantics).
+        self.service.inner.lock().unwrap().sessions.remove(&self.session_id);
         Ok(())
     }
 }
