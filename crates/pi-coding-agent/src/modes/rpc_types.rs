@@ -108,9 +108,20 @@ pub struct RpcSessionState {
 /// Compaction result shape (upstream `CompactionResult`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RpcCompactionResult {
-    pub message: Option<serde_json::Value>,
     pub summary: String,
+    #[serde(rename = "firstKeptEntryId")]
+    pub first_kept_entry_id: String,
+    #[serde(rename = "tokensBefore")]
     pub tokens_before: u64,
+    #[serde(
+        rename = "estimatedTokensAfter",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub estimated_tokens_after: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 #[cfg(test)]

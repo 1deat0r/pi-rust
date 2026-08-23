@@ -68,6 +68,9 @@ impl PendingMessageQueue {
     pub fn len(&self) -> usize {
         self.messages.len()
     }
+    pub fn snapshot(&self) -> Vec<AgentMessage> {
+        self.messages.clone()
+    }
     pub fn drain(&mut self) -> Vec<AgentMessage> {
         if self.mode == QueueMode::All {
             return std::mem::take(&mut self.messages);

@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-42.77% = 71 completed / 166 total tasks
-95 tasks remain open
+43.37% = 72 completed / 166 total tasks
+94 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,10 +26,10 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The earlier port is checkpointed locally through commit `358c30d` (S-040). The
-current S-041 implementation and its documentation are still uncommitted at
-this handoff point. Preserve existing changes; do not use `git reset --hard`,
-`git checkout --`, or broad revert commands.
+The earlier port is checkpointed locally through commit `006c249` (S-041).
+S-042 is implemented and verified in the current working tree, but the
+checkpoint commit/push is still pending. Preserve existing changes; do not use
+`git reset --hard`, `git checkout --`, or broad revert commands.
 
 The worktree is very large because the baseline was already heavily changed
 and `cargo fmt --all` reformatted many Rust files. The meaningful current
@@ -44,7 +44,7 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, no cargo/rustc process still running,
-progress checker reports `42.77% (71/166; 95 open)`.
+progress checker reports `43.37% (72/166; 94 open)`.
 
 ## Verification already completed
 
@@ -65,15 +65,17 @@ integration, and doctest targets.
 
 ## Last code change
 
-The latest change completed RPC abort/lifecycle parity:
+S-042 completed the RPC wire-conformance milestone:
 
-- `rpc.rs`: separates agent abort from standalone bash cancellation, admits
-  concurrent bash tasks, defers bash session records until agent settlement,
-  and emits lifecycle/message/tool terminal events in the upstream wire shape.
-- `rich_agent.rs` and `tools/bash.rs`: continue after successful tool batches
-  and propagate the agent abort signal into bash execution.
-- Focused coverage: 8 rich-agent tests and 34 RPC tests; the full workspace
-  suite also passes offline.
+- `rpc.rs`: adds deterministic command/event golden transcripts, upstream
+  session lifecycle events, incremental bash updates, compaction retry/event
+  handling, malformed-line coverage, and dispatcher error responses.
+- `rich_agent.rs` exposes queue snapshots for exact `queue_update` payloads;
+  `rpc_types.rs` now models the upstream compaction result shape.
+- Focused coverage: 37 RPC tests; command/event golden and malformed-line
+  tests pass; the full `cargo test --workspace --offline` suite passes; live
+  RPC bash smoke confirms update-before-response ordering.
+- Fixtures: `crates/pi-coding-agent/tests/fixtures/rpc/`.
 
 ## Major parity work already present
 
@@ -100,15 +102,13 @@ items just because a similarly named Rust module exists.
 
 ## Recommended next sequence
 
-1. Produce golden transcripts for every RPC command and event type (S-042),
-   including switch/fork/clone, queue modes, compaction, export, and errors.
-2. Complete image/read processing parity and register the model-facing image
+1. Complete image/read processing parity and register the model-facing image
    behavior in the run path (#32 / S-020-related audit).
-3. Finish one-shot print-path auto-compaction and its binary/session fixture
+2. Finish one-shot print-path auto-compaction and its binary/session fixture
    tests (#33–34 / S-025).
-4. Audit client reconnect/timeouts and the remaining TUI/config-selector
+3. Audit client reconnect/timeouts and the remaining TUI/config-selector
    interactive behavior.
-5. Keep `CONVERSION-LEDGER.md` and the percentage in `PLAN.md` synchronized;
+4. Keep `CONVERSION-LEDGER.md` and the percentage in `PLAN.md` synchronized;
    only mark a task complete with an evidence tier and exact command/fixture.
 
 ## Useful source references

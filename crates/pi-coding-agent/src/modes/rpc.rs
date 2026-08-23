@@ -193,6 +193,9 @@ pub struct RpcRuntime {
     /// these messages until the run settles so they cannot split an assistant
     /// tool-call/tool-result sequence.
     pending_bash_messages: Vec<pi_agent::types::AgentMessage>,
+    /// Session events produced by automatic compaction while the prompt
+    /// worker is detached; flushed when the run settles.
+    pending_session_events: Vec<String>,
     /// One cancellation flag per standalone RPC bash task. `abort_bash` must
     /// cancel every current command without allowing a new command to clear
     /// an older command's cancellation state.
@@ -238,8 +241,14 @@ struct RpcBashTaskResult {
     result: serde_json::Value,
 }
 
+struct RpcBashUpdate {
+    id: Option<String>,
+    delta: String,
+}
+
 enum RpcTaskMessage {
     Prompt(RpcPromptTaskMessage),
+    BashUpdate(RpcBashUpdate),
     Bash(RpcBashTaskResult),
 }
 
@@ -342,6 +351,58 @@ fn serialize_rpc_prompt_event(event: RichAgentEvent) -> Option<String> {
             "isError": is_error,
         }))),
     }
+}
+
+fn compaction_retry_callbacks(
+    events: Arc<Mutex<Vec<serde_json::Value>>>,
+    reason: &'static str,
+) -> pi_ai::utils::RetryCallbacks<'static> {
+    let scheduled_events = events.clone();
+    let attempt_events = events.clone();
+    let finished_events = events;
+    pi_ai::utils::RetryCallbacks {
+        on_retry_scheduled: Some(Box::new(
+            move |attempt, max_attempts, delay_ms, error_message| {
+                scheduled_events.lock().unwrap().push(serde_json::json!({
+                    "type": "summarization_retry_scheduled",
+                    "attempt": attempt,
+                    "maxAttempts": max_attempts,
+                    "delayMs": delay_ms,
+                    "errorMessage": error_message,
+                }));
+            },
+        )),
+        on_retry_attempt_start: Some(Box::new(move || {
+            attempt_events.lock().unwrap().push(serde_json::json!({
+                "type": "summarization_retry_attempt_start",
+                "source": "compaction",
+                "reason": reason,
+            }));
+        })),
+        on_retry_finished: Some(Box::new(move |_success, _attempt, _final_error| {
+            finished_events
+                .lock()
+                .unwrap()
+                .push(serde_json::json!({"type": "summarization_retry_finished"}));
+        })),
+    }
+}
+
+fn append_recorded_events(store: &mut Vec<String>, events: &Arc<Mutex<Vec<serde_json::Value>>>) {
+    for event in events.lock().unwrap().drain(..) {
+        store.push(serialize_json_line(&event));
+    }
+}
+
+fn serialize_rpc_bash_update(id: Option<&str>, delta: &str) -> String {
+    let mut event = serde_json::json!({
+        "type": "bash_execution_update",
+        "delta": delta,
+    });
+    if let Some(id) = id {
+        event["id"] = serde_json::Value::String(id.to_string());
+    }
+    serialize_json_line(&event)
 }
 
 async fn run_rpc_prompt(run: RpcPromptRun, events: UnboundedSender<RpcPromptTaskMessage>) {
@@ -522,6 +583,7 @@ impl RpcRuntime {
             repo,
             session,
             pending_bash_messages: Vec::new(),
+            pending_session_events: Vec::new(),
             bash_abort_flags: Vec::new(),
             run_lock: Arc::new(Mutex::new(false)),
             abort_bash: Arc::new(AtomicBool::new(false)),
@@ -541,6 +603,54 @@ impl RpcRuntime {
     /// Available models snapshot (all catalog models across providers).
     fn available_models(&self) -> Vec<Model> {
         self.models.get_models(None)
+    }
+
+    fn queued_texts(queue: &PendingMessageQueue) -> Vec<String> {
+        queue
+            .snapshot()
+            .into_iter()
+            .filter_map(|message| match message {
+                pi_agent::types::AgentMessage::Core(Message::User(user)) => {
+                    Some(pi_agent::agent::user_content_text(&user))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn push_queue_update(&self, store: &mut Vec<String>) {
+        let steering = Self::queued_texts(&self.steering_queue.lock().unwrap());
+        let follow_up = Self::queued_texts(&self.follow_up_queue.lock().unwrap());
+        store.push(serialize_json_line(&serde_json::json!({
+            "type": "queue_update",
+            "steering": steering,
+            "followUp": follow_up,
+        })));
+    }
+
+    fn push_compaction_start(store: &mut Vec<String>) {
+        store.push(serialize_json_line(&serde_json::json!({
+            "type": "compaction_start",
+            "reason": "manual",
+        })));
+    }
+
+    fn push_compaction_end(
+        store: &mut Vec<String>,
+        result: Option<&serde_json::Value>,
+        error_message: Option<String>,
+    ) {
+        let mut event = serde_json::json!({
+            "type": "compaction_end",
+            "reason": "manual",
+            "result": result.cloned().unwrap_or(serde_json::Value::Null),
+            "aborted": false,
+            "willRetry": false,
+        });
+        if let Some(error_message) = error_message {
+            event["errorMessage"] = serde_json::Value::String(error_message);
+        }
+        store.push(serialize_json_line(&event));
     }
 
     fn runtime_simple_stream_options(&self) -> pi_ai::types::SimpleStreamOptions {
@@ -710,8 +820,16 @@ impl RpcRuntime {
         self.register_bash_abort(abort.clone());
         let cwd = self.cwd.clone();
         let task_events = task_events.clone();
+        let update_id = id.clone();
         tokio::spawn(async move {
-            let result = run_bash(&bash_command, &cwd, abort.clone()).await;
+            let result = run_bash_with_updates(
+                &bash_command,
+                &cwd,
+                abort.clone(),
+                Some(task_events.clone()),
+                update_id,
+            )
+            .await;
             let _ = task_events.send(RpcTaskMessage::Bash(RpcBashTaskResult {
                 id,
                 command: bash_command,
@@ -922,7 +1040,9 @@ impl RpcRuntime {
             let mut lock = self.run_lock.lock().unwrap();
             *lock = false;
         }
-        if self.maybe_auto_compact().await.unwrap_or(false) {
+        let auto_compacted = self.maybe_auto_compact().await.unwrap_or(false);
+        store.extend(std::mem::take(&mut self.pending_session_events));
+        if auto_compacted {
             store.push(serialize_json_line(
                 &serde_json::json!({"type": "compacted"}),
             ));
@@ -962,10 +1082,23 @@ impl RpcRuntime {
         else {
             return Ok(false);
         };
+        let first_kept_entry_id = preparation.retained_tail.first().and_then(|kept| {
+            entries.iter().find_map(|entry| {
+                entry
+                    .as_message()
+                    .filter(|message| *message == kept)
+                    .map(|_| entry.id().to_string())
+            })
+        });
+        self.pending_session_events.push(serialize_json_line(
+            &serde_json::json!({"type": "compaction_start", "reason": "threshold"}),
+        ));
         let options = self.simple_models();
         let retry = self.retry_policy();
         let thinking_level = self.thinking_level.as_str().to_string();
-        let result = pi_agent::harness::compaction::compact(
+        let retry_events = Arc::new(Mutex::new(Vec::new()));
+        let retry_callbacks = compaction_retry_callbacks(retry_events.clone(), "threshold");
+        let compact_result = pi_agent::harness::compaction::compact(
             &preparation,
             &options,
             &self.model,
@@ -973,10 +1106,26 @@ impl RpcRuntime {
             None,
             Some(&thinking_level),
             Some(&retry),
-            None,
+            Some(&retry_callbacks),
         )
-        .await
-        .map_err(|e| format!("auto-compact: {e}"))?;
+        .await;
+        append_recorded_events(&mut self.pending_session_events, &retry_events);
+        let result = match compact_result {
+            Ok(result) => result,
+            Err(error) => {
+                let error_message = format!("Auto-compaction failed: {error}");
+                self.pending_session_events
+                    .push(serialize_json_line(&serde_json::json!({
+                        "type": "compaction_end",
+                        "reason": "threshold",
+                        "result": null,
+                        "aborted": false,
+                        "willRetry": false,
+                        "errorMessage": error_message,
+                    })));
+                return Err(format!("auto-compact: {error}"));
+            }
+        };
 
         let summary_msg = pi_agent::agent::user_text_prompt(
             format!("[Compaction summary]\n{}", result.summary),
@@ -986,20 +1135,56 @@ impl RpcRuntime {
         replaced.extend(result.retained_tail.clone());
         self.messages = replaced;
 
-        self.session
+        let usage = result.usage.clone();
+        let details = result.details.as_ref().map(|details| {
+            serde_json::json!({
+                "readFiles": details.read_files,
+                "modifiedFiles": details.modified_files,
+            })
+        });
+        if let Err(error) = self
+            .session
             .append_entry(
                 EntryNoStats::Compaction {
                     id: format!("c-{}", pi_agent::session::new_id()),
                     summary: result.summary.clone(),
                     retained_tail: result.retained_tail,
                     tokens_before: result.tokens_before,
-                    details: None,
-                    usage: result.usage,
+                    details: details.clone(),
+                    usage: usage.clone(),
                 },
                 "main",
             )
             .await
-            .map_err(|e| format!("auto-compact: persist: {e}"))?;
+        {
+            let error_message = format!("Auto-compaction failed: persist: {error}");
+            self.pending_session_events
+                .push(serialize_json_line(&serde_json::json!({
+                    "type": "compaction_end",
+                    "reason": "threshold",
+                    "result": null,
+                    "aborted": false,
+                    "willRetry": false,
+                    "errorMessage": error_message,
+                })));
+            return Err(format!("auto-compact: persist: {error}"));
+        }
+        let response = serde_json::json!({
+            "summary": result.summary,
+            "firstKeptEntryId": first_kept_entry_id,
+            "tokensBefore": result.tokens_before,
+            "estimatedTokensAfter": pi_agent::harness::compaction::estimate_context_tokens(&self.messages).tokens,
+            "usage": usage,
+            "details": details,
+        });
+        self.pending_session_events
+            .push(serialize_json_line(&serde_json::json!({
+                "type": "compaction_end",
+                "reason": "threshold",
+                "result": response,
+                "aborted": false,
+                "willRetry": false,
+            })));
         Ok(true)
     }
 
@@ -1260,6 +1445,7 @@ impl RpcRuntime {
                 } else {
                     self.follow_up_queue.lock().unwrap().enqueue(queued);
                 }
+                self.push_queue_update(store);
                 respond(store, success(id.as_deref(), &cmd, None));
                 Ok(())
             }
@@ -1274,7 +1460,7 @@ impl RpcRuntime {
             "new_session" => {
                 let parent = command.str_field("parentSession");
                 let session_id = pi_agent::session::new_id();
-                let session = self
+                let session = match self
                     .repo
                     .create(CreateOptions {
                         id: Some(session_id.clone()),
@@ -1284,11 +1470,13 @@ impl RpcRuntime {
                         fork_options: ForkOptions::Tree,
                     })
                     .await
-                    .map_err(|e| {
-                        let msg = format!("create session: {e}");
-                        fail(store, &id, &cmd, msg);
-                        e.to_string()
-                    })?;
+                {
+                    Ok(session) => session,
+                    Err(e) => {
+                        fail(store, &id, &cmd, format!("create session: {e}"));
+                        return Ok(());
+                    }
+                };
                 let meta = session.get_metadata().await;
                 self.session_path = Some(meta.path.clone());
                 self.session_id = session_id.clone();
@@ -1326,12 +1514,14 @@ impl RpcRuntime {
             // Model
             // =================================================================
             "set_model" => {
-                let provider_name = command
-                    .str_field("provider")
-                    .ok_or_else(|| "missing provider".to_string())?;
-                let model_id = command
-                    .str_field("modelId")
-                    .ok_or_else(|| "missing modelId".to_string())?;
+                let Some(provider_name) = command.str_field("provider") else {
+                    fail(store, &id, &cmd, "missing provider".to_string());
+                    return Ok(());
+                };
+                let Some(model_id) = command.str_field("modelId") else {
+                    fail(store, &id, &cmd, "missing modelId".to_string());
+                    return Ok(());
+                };
                 let model = self.models.get_model(&provider_name, &model_id);
                 match model {
                     Some(model) => {
@@ -1416,7 +1606,14 @@ impl RpcRuntime {
                 let parsed = level
                     .parse::<pi_ai::types::ModelThinkingLevel>()
                     .unwrap_or(pi_ai::types::ModelThinkingLevel::Off);
+                let previous = self.thinking_level;
                 self.thinking_level = pi_ai::model::clamp_thinking_level(&self.model, parsed);
+                if self.thinking_level != previous {
+                    store.push(serialize_json_line(&serde_json::json!({
+                        "type": "thinking_level_changed",
+                        "level": self.thinking_level.as_str(),
+                    })));
+                }
                 respond(store, success(id.as_deref(), &cmd, None));
                 Ok(())
             }
@@ -1435,7 +1632,14 @@ impl RpcRuntime {
                     Some(idx) => (idx + 1) % available.len(),
                     None => 0,
                 };
+                let previous = self.thinking_level;
                 self.thinking_level = available[next_idx];
+                if self.thinking_level != previous {
+                    store.push(serialize_json_line(&serde_json::json!({
+                        "type": "thinking_level_changed",
+                        "level": self.thinking_level.as_str(),
+                    })));
+                }
                 respond(
                     store,
                     success(
@@ -1568,11 +1772,24 @@ impl RpcRuntime {
                         return Ok(());
                     }
                     Some(preparation) => {
+                        Self::push_compaction_start(store);
+                        let first_kept_entry_id =
+                            preparation.retained_tail.first().and_then(|kept| {
+                                entries.iter().find_map(|entry| {
+                                    entry
+                                        .as_message()
+                                        .filter(|message| *message == kept)
+                                        .map(|_| entry.id().to_string())
+                                })
+                            });
                         let options = self.simple_models();
                         let model = self.model.clone();
                         let retry = self.retry_policy();
                         let thinking_level = self.thinking_level.as_str().to_string();
-                        let result = match pi_agent::harness::compaction::compact(
+                        let retry_events = Arc::new(Mutex::new(Vec::new()));
+                        let retry_callbacks =
+                            compaction_retry_callbacks(retry_events.clone(), "manual");
+                        let compact_result = pi_agent::harness::compaction::compact(
                             &preparation,
                             &options,
                             &model,
@@ -1580,22 +1797,91 @@ impl RpcRuntime {
                             None,
                             Some(&thinking_level),
                             Some(&retry),
-                            None,
+                            Some(&retry_callbacks),
                         )
-                        .await
-                        {
+                        .await;
+                        append_recorded_events(store, &retry_events);
+                        let result = match compact_result {
                             Ok(r) => r,
                             Err(e) => {
                                 let msg = format!("compact: {e}");
+                                Self::push_compaction_end(
+                                    store,
+                                    None,
+                                    Some(format!("Compaction failed: {msg}")),
+                                );
                                 fail(store, &id, &cmd, msg);
                                 return Ok(());
                             }
                         };
-                        serde_json::json!({
-                            "message": null,
-                            "summary": result.summary,
+                        let Some(first_kept_entry_id) = first_kept_entry_id else {
+                            Self::push_compaction_end(
+                                store,
+                                None,
+                                Some(
+                                    "Compaction failed: compact: first kept entry unavailable"
+                                        .to_string(),
+                                ),
+                            );
+                            fail(
+                                store,
+                                &id,
+                                &cmd,
+                                "compact: first kept entry unavailable".to_string(),
+                            );
+                            return Ok(());
+                        };
+                        let summary = result.summary.clone();
+                        let retained_tail = result.retained_tail.clone();
+                        let details = result.details.as_ref().map(|details| {
+                            serde_json::json!({
+                                "readFiles": details.read_files,
+                                "modifiedFiles": details.modified_files,
+                            })
+                        });
+                        self.messages = std::iter::once(pi_agent::agent::user_text_prompt(
+                            format!("[Compaction summary]\n{summary}"),
+                            pi_ai::types::now_ms(),
+                        ))
+                        .chain(retained_tail.iter().cloned())
+                        .collect();
+                        if let Err(error) = self
+                            .session
+                            .append_entry(
+                                EntryNoStats::Compaction {
+                                    id: format!("c-{}", pi_agent::session::new_id()),
+                                    summary: summary.clone(),
+                                    retained_tail,
+                                    tokens_before: result.tokens_before,
+                                    details: details.clone(),
+                                    usage: result.usage.clone(),
+                                },
+                                "main",
+                            )
+                            .await
+                        {
+                            let message = format!("compact: persist: {error}");
+                            Self::push_compaction_end(
+                                store,
+                                None,
+                                Some(format!("Compaction failed: {message}")),
+                            );
+                            fail(store, &id, &cmd, message);
+                            return Ok(());
+                        }
+                        let estimated_tokens_after =
+                            pi_agent::harness::compaction::estimate_context_tokens(&self.messages)
+                                .tokens;
+                        let response = serde_json::json!({
+                            "summary": summary,
+                            "firstKeptEntryId": first_kept_entry_id,
                             "tokensBefore": result.tokens_before,
-                        })
+                            "estimatedTokensAfter": estimated_tokens_after,
+                            "usage": result.usage,
+                            "details": details,
+                        });
+                        Self::push_compaction_end(store, Some(&response), None);
+                        response
                     }
                 };
                 respond(store, success(id.as_deref(), &cmd, Some(result)));
@@ -1606,17 +1892,23 @@ impl RpcRuntime {
             // Bash
             // =================================================================
             "bash" => {
-                let bash_command = command
-                    .str_field("command")
-                    .ok_or_else(|| "missing command".to_string())?;
+                let Some(bash_command) = command.str_field("command") else {
+                    fail(store, &id, &cmd, "missing command".to_string());
+                    return Ok(());
+                };
                 self.abort_bash.store(false, Ordering::SeqCst);
                 let result = run_bash(&bash_command, &self.cwd, self.abort_bash.clone()).await;
-                self.record_bash_result(
-                    &bash_command,
-                    &result,
-                    command.bool_field("excludeFromContext"),
-                )
-                .await?;
+                if let Err(error) = self
+                    .record_bash_result(
+                        &bash_command,
+                        &result,
+                        command.bool_field("excludeFromContext"),
+                    )
+                    .await
+                {
+                    fail(store, &id, &cmd, error);
+                    return Ok(());
+                }
                 respond(
                     store,
                     success(
@@ -1638,10 +1930,13 @@ impl RpcRuntime {
             // Session
             // =================================================================
             "get_session_stats" => {
-                let stats = self.get_entries().await.map_err(|e| {
-                    fail(store, &id, &cmd, e.clone());
-                    e
-                })?;
+                let stats = match self.get_entries().await {
+                    Ok(stats) => stats,
+                    Err(error) => {
+                        fail(store, &id, &cmd, error);
+                        return Ok(());
+                    }
+                };
                 let user_messages = stats
                     .iter()
                     .filter(|e| {
@@ -1729,9 +2024,10 @@ impl RpcRuntime {
             }
 
             "switch_session" => {
-                let session_path = command
-                    .str_field("sessionPath")
-                    .ok_or_else(|| "missing sessionPath".to_string())?;
+                let Some(session_path) = command.str_field("sessionPath") else {
+                    fail(store, &id, &cmd, "missing sessionPath".to_string());
+                    return Ok(());
+                };
                 match self.load_session(&session_path).await {
                     Ok(()) => {
                         respond(
@@ -1752,17 +2048,21 @@ impl RpcRuntime {
             }
 
             "fork" => {
-                let entry_id = command
-                    .str_field("entryId")
-                    .ok_or_else(|| "missing entryId".to_string())?;
+                let Some(entry_id) = command.str_field("entryId") else {
+                    fail(store, &id, &cmd, "missing entryId".to_string());
+                    return Ok(());
+                };
                 match self.fork_session(Some(entry_id)).await {
-                    Ok(_) => {
+                    Ok(selected_text) => {
                         respond(
                             store,
                             success(
                                 id.as_deref(),
                                 &cmd,
-                                Some(serde_json::json!({"text": "", "cancelled": false})),
+                                Some(serde_json::json!({
+                                    "text": selected_text.unwrap_or_default(),
+                                    "cancelled": false
+                                })),
                             ),
                         );
                         Ok(())
@@ -1774,29 +2074,43 @@ impl RpcRuntime {
                 }
             }
 
-            "clone" => match self.fork_session(None).await {
-                Ok(_) => {
-                    respond(
+            "clone" => {
+                if self.session.get_leaf_id().await.ok().flatten().is_none() {
+                    fail(
                         store,
-                        success(
-                            id.as_deref(),
-                            &cmd,
-                            Some(serde_json::json!({"cancelled": false})),
-                        ),
+                        &id,
+                        &cmd,
+                        "Cannot clone session: no current entry selected".to_string(),
                     );
-                    Ok(())
+                    return Ok(());
                 }
-                Err(e) => {
-                    fail(store, &id, &cmd, e);
-                    Ok(())
+                match self.fork_session(None).await {
+                    Ok(_) => {
+                        respond(
+                            store,
+                            success(
+                                id.as_deref(),
+                                &cmd,
+                                Some(serde_json::json!({"cancelled": false})),
+                            ),
+                        );
+                        Ok(())
+                    }
+                    Err(e) => {
+                        fail(store, &id, &cmd, e);
+                        Ok(())
+                    }
                 }
-            },
+            }
 
             "get_fork_messages" => {
-                let entries = self.get_entries().await.map_err(|e| {
-                    fail(store, &id, &cmd, e.clone());
-                    e
-                })?;
+                let entries = match self.get_entries().await {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        fail(store, &id, &cmd, error);
+                        return Ok(());
+                    }
+                };
                 let messages: Vec<serde_json::Value> = entries
                     .iter()
                     .filter_map(|entry| {
@@ -1822,10 +2136,13 @@ impl RpcRuntime {
             }
 
             "get_entries" => {
-                let mut entries = self.get_entries().await.map_err(|e| {
-                    fail(store, &id, &cmd, e.clone());
-                    e
-                })?;
+                let mut entries = match self.get_entries().await {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        fail(store, &id, &cmd, error);
+                        return Ok(());
+                    }
+                };
                 if let Some(since) = command.str_field("since") {
                     let since_index = entries.iter().position(|e| e.id() == since);
                     match since_index {
@@ -1851,10 +2168,13 @@ impl RpcRuntime {
             }
 
             "get_tree" => {
-                let entries = self.get_entries().await.map_err(|e| {
-                    fail(store, &id, &cmd, e.clone());
-                    e
-                })?;
+                let entries = match self.get_entries().await {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        fail(store, &id, &cmd, error);
+                        return Ok(());
+                    }
+                };
                 let mut labels: HashMap<String, String> = HashMap::new();
                 for entry in &entries {
                     let entry_id = entry.id().to_string();
@@ -1897,11 +2217,15 @@ impl RpcRuntime {
                     fail(store, &id, &cmd, "Session name cannot be empty".to_string());
                     return Ok(());
                 }
-                self.session.set_name(Some(&name)).await.map_err(|e| {
-                    fail(store, &id, &cmd, e.to_string());
-                    e.to_string()
-                })?;
-                self.session_name = Some(name);
+                if let Err(error) = self.session.set_name(Some(&name)).await {
+                    fail(store, &id, &cmd, error.to_string());
+                    return Ok(());
+                }
+                self.session_name = Some(name.clone());
+                store.push(serialize_json_line(&serde_json::json!({
+                    "type": "session_info_changed",
+                    "name": name,
+                })));
                 respond(store, success(id.as_deref(), &cmd, None));
                 Ok(())
             }
@@ -1960,7 +2284,23 @@ impl RpcRuntime {
         Ok(())
     }
 
-    async fn fork_session(&mut self, entry_id: Option<String>) -> Result<(), String> {
+    async fn fork_session(&mut self, entry_id: Option<String>) -> Result<Option<String>, String> {
+        let selected_text = if let Some(entry_id) = entry_id.as_deref() {
+            let entries = self.get_entries().await?;
+            let entry = entries
+                .iter()
+                .find(|entry| entry.id() == entry_id)
+                .ok_or_else(|| format!("Fork target not found: {entry_id}"))?;
+            let Some(Message::User(user)) = entry.as_message().and_then(|message| match message {
+                pi_agent::types::AgentMessage::Core(message) => Some(message),
+                pi_agent::types::AgentMessage::Custom(_) => None,
+            }) else {
+                return Err(format!("Fork target is not a message entry: {entry_id}"));
+            };
+            Some(pi_agent::agent::user_content_text(user))
+        } else {
+            None
+        };
         let metadata = SessionMetadata {
             id: self.session_id.clone(),
             created_at: 0,
@@ -2002,13 +2342,23 @@ impl RpcRuntime {
         self.session_id = meta.id;
         self.session_name = self.session.get_name().await;
         self.messages = self.load_context_messages().await?;
-        Ok(())
+        Ok(selected_text)
     }
 }
 
 /// Run a bash command synchronously, capturing combined output
 /// (upstream `BashResult` shape).
 pub async fn run_bash(command: &str, cwd: &str, abort: Arc<AtomicBool>) -> serde_json::Value {
+    run_bash_with_updates(command, cwd, abort, None, None).await
+}
+
+async fn run_bash_with_updates(
+    command: &str,
+    cwd: &str,
+    abort: Arc<AtomicBool>,
+    updates: Option<UnboundedSender<RpcTaskMessage>>,
+    update_id: Option<String>,
+) -> serde_json::Value {
     let mut out: Vec<u8> = Vec::new();
     let mut truncated = false;
     let exit_code = match tokio::process::Command::new("/bin/sh")
@@ -2042,6 +2392,12 @@ pub async fn run_bash(command: &str, cwd: &str, abort: Arc<AtomicBool>) -> serde
                         match result {
                             Ok(0) => stdout_done = true,
                             Ok(n) => {
+                                if let Some(updates) = &updates {
+                                    let _ = updates.send(RpcTaskMessage::BashUpdate(RpcBashUpdate {
+                                        id: update_id.clone(),
+                                        delta: String::from_utf8_lossy(&stdout_buf[..n]).into_owned(),
+                                    }));
+                                }
                                 if out.len() < BASH_TRUNCATE_LIMIT {
                                     let kept = n.min(BASH_TRUNCATE_LIMIT - out.len());
                                     out.extend_from_slice(&stdout_buf[..kept]);
@@ -2057,6 +2413,12 @@ pub async fn run_bash(command: &str, cwd: &str, abort: Arc<AtomicBool>) -> serde
                         match result {
                             Ok(0) => stderr_done = true,
                             Ok(n) => {
+                                if let Some(updates) = &updates {
+                                    let _ = updates.send(RpcTaskMessage::BashUpdate(RpcBashUpdate {
+                                        id: update_id.clone(),
+                                        delta: String::from_utf8_lossy(&stderr_buf[..n]).into_owned(),
+                                    }));
+                                }
                                 if out.len() < BASH_TRUNCATE_LIMIT {
                                     let kept = n.min(BASH_TRUNCATE_LIMIT - out.len());
                                     out.extend_from_slice(&stderr_buf[..kept]);
@@ -2336,12 +2698,33 @@ async fn handle_rpc_task_message<W: AsyncWrite + Unpin>(
             }
             Ok(())
         }
+        Some(RpcTaskMessage::BashUpdate(update)) => {
+            write_rpc_lines(
+                out,
+                std::iter::once(serialize_rpc_bash_update(
+                    update.id.as_deref(),
+                    &update.delta,
+                )),
+            )
+            .await
+        }
         Some(RpcTaskMessage::Bash(result)) => {
             *active_bashes = active_bashes.saturating_sub(1);
             runtime.unregister_bash_abort(&result.abort);
-            runtime
+            if let Err(error) = runtime
                 .record_bash_result(&result.command, &result.result, result.exclude_from_context)
-                .await?;
+                .await
+            {
+                return write_rpc_lines(
+                    out,
+                    std::iter::once(serialize_json_line(&failure(
+                        result.id.as_deref(),
+                        "bash",
+                        error,
+                    ))),
+                )
+                .await;
+            }
             write_rpc_lines(
                 out,
                 std::iter::once(serialize_json_line(&success(
@@ -2353,6 +2736,22 @@ async fn handle_rpc_task_message<W: AsyncWrite + Unpin>(
             .await
         }
         None => Err("RPC task channel ended unexpectedly".to_string()),
+    }
+}
+
+async fn handle_rpc_runtime_command(
+    runtime: &mut RpcRuntime,
+    command: RpcCommand,
+    store: &mut Vec<String>,
+) {
+    let id = command.id.clone();
+    let command_name = command.type_.clone();
+    if let Err(error) = runtime.handle_command(command, store).await {
+        store.push(serialize_json_line(&failure(
+            id.as_deref(),
+            &command_name,
+            error,
+        )));
     }
 }
 
@@ -2401,7 +2800,7 @@ async fn dispatch_rpc_command<W: AsyncWrite + Unpin>(
     }
     if command.type_ == "abort_bash" {
         let mut store = Vec::new();
-        runtime.handle_command(command, &mut store).await?;
+        handle_rpc_runtime_command(runtime, command, &mut store).await;
         return write_rpc_lines(out, store).await;
     }
 
@@ -2409,7 +2808,7 @@ async fn dispatch_rpc_command<W: AsyncWrite + Unpin>(
         if can_handle_during_prompt(&command) {
             let is_abort = command.type_ == "abort";
             let mut store = Vec::new();
-            runtime.handle_command(command, &mut store).await?;
+            handle_rpc_runtime_command(runtime, command, &mut store).await;
             if is_abort {
                 pending_abort_responses.extend(store);
                 return Ok(());
@@ -2427,7 +2826,7 @@ async fn dispatch_rpc_command<W: AsyncWrite + Unpin>(
     }
 
     let mut store = Vec::new();
-    runtime.handle_command(command, &mut store).await?;
+    handle_rpc_runtime_command(runtime, command, &mut store).await;
     write_rpc_lines(out, store).await
 }
 
@@ -3229,7 +3628,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let v: serde_json::Value = serde_json::from_str(store[0].trim()).unwrap();
+        let v: serde_json::Value = store
+            .iter()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).unwrap())
+            .find(|value| value["type"] == "response")
+            .unwrap();
         assert_eq!(v["success"], true);
         let mut store = Vec::new();
         runtime
@@ -3304,12 +3707,28 @@ mod tests {
                 .await
                 .unwrap();
         }
-        assert_eq!(controls.len(), 5);
-        assert!(controls.iter().all(|line| {
-            serde_json::from_str::<serde_json::Value>(line.trim())
-                .map(|value| value["success"] == true)
-                .unwrap_or(false)
-        }));
+        let control_values = controls
+            .iter()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            control_values
+                .iter()
+                .filter(|value| value["type"] == "response")
+                .count(),
+            5
+        );
+        assert_eq!(
+            control_values
+                .iter()
+                .filter(|value| value["type"] == "queue_update")
+                .count(),
+            2
+        );
+        assert!(control_values
+            .iter()
+            .filter(|value| value["type"] == "response")
+            .all(|value| value["success"] == true));
         assert!(runtime.abort_signal.load(Ordering::SeqCst));
 
         let mut state = Vec::new();
@@ -3627,6 +4046,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_rpc_lines_emit_parse_failures() {
+        use tokio::io::AsyncReadExt;
+
+        let mut runtime = runtime_for_test().await;
+        let (mut writer, mut reader) = tokio::io::duplex(8192);
+        let (task_events, _task_receiver) = mpsc::unbounded_channel();
+        let mut prompt_active = false;
+        let mut active_bashes = 0;
+        let mut pending_commands = VecDeque::new();
+        let mut pending_abort_responses = VecDeque::new();
+
+        for line in ["{not-json", r#"{"id":"missing-type"}"#] {
+            dispatch_rpc_line(
+                &mut runtime,
+                line.to_string(),
+                &mut writer,
+                &task_events,
+                &mut prompt_active,
+                &mut active_bashes,
+                &mut pending_commands,
+                &mut pending_abort_responses,
+            )
+            .await
+            .unwrap();
+        }
+        drop(writer);
+
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).await.unwrap();
+        let records = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        for record in records {
+            assert_eq!(record["type"], "response");
+            assert_eq!(record["command"], "parse");
+            assert_eq!(record["success"], false);
+            assert!(record.get("id").is_none());
+        }
+    }
+
+    #[tokio::test]
     async fn faux_provider_is_registered_in_facade_for_compact() {
         // Regression for the known divergence: RPC compact needs a
         // facade-registered provider; faux is intentionally absent from the
@@ -3876,5 +4339,902 @@ mod tests {
         let y = by_id.iter().find(|n| n["entry"]["id"] == "y").unwrap();
         assert!(x.get("label").is_none(), "no label key when unresolved");
         assert_eq!(y["label"], "My label");
+    }
+
+    fn model_signature(value: &serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "provider": value.get("provider").cloned().unwrap_or(serde_json::Value::Null),
+            "id": value.get("id").cloned().unwrap_or(serde_json::Value::Null),
+        })
+    }
+
+    fn data_signature(command: &str, data: &serde_json::Value) -> serde_json::Value {
+        match command {
+            "get_state" => {
+                let mut value = data.clone();
+                value["model"] = model_signature(&data["model"]);
+                value["sessionFile"] = if data["sessionFile"].is_null() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!("<session-file>")
+                };
+                value["sessionId"] = serde_json::json!("<session-id>");
+                value
+            }
+            "set_model" => model_signature(data),
+            "cycle_model" => {
+                if data.is_null() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!({
+                        "model": model_signature(&data["model"]),
+                        "thinkingLevel": data["thinkingLevel"],
+                        "isScoped": data["isScoped"],
+                    })
+                }
+            }
+            "get_available_models" => {
+                let models = data["models"].as_array().cloned().unwrap_or_default();
+                serde_json::json!({
+                    "modelCount": models.len(),
+                    "firstModel": models.first().map(model_signature),
+                    "lastModel": models.last().map(model_signature),
+                })
+            }
+            "compact" => {
+                let mut value = data.clone();
+                if value.get("firstKeptEntryId").is_some() {
+                    value["firstKeptEntryId"] = serde_json::json!("<entry-id>");
+                }
+                value
+            }
+            "get_session_stats" => {
+                let mut value = data.clone();
+                value["sessionFile"] = serde_json::json!("<session-file>");
+                value["sessionId"] = serde_json::json!("<session-id>");
+                value
+            }
+            "export_html" => serde_json::json!({ "path": "<html-path>" }),
+            "fork" => serde_json::json!({
+                "text": data["text"],
+                "cancelled": data["cancelled"],
+            }),
+            "new_session" | "switch_session" | "clone" => data.clone(),
+            "get_fork_messages" => serde_json::json!({
+                "messages": data["messages"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|message| serde_json::json!({
+                        "entryId": "<entry-id>",
+                        "text": message["text"],
+                    }))
+                    .collect::<Vec<_>>(),
+            }),
+            "get_entries" => serde_json::json!({
+                "entryTypes": data["entries"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|entry| entry["type"].as_str())
+                    .collect::<Vec<_>>(),
+                "entryCount": data["entries"].as_array().map_or(0, Vec::len),
+                "leafId": data["leafId"].as_str().map_or_else(
+                    || serde_json::Value::Null,
+                    |_| serde_json::json!("<entry-id>"),
+                ),
+            }),
+            "get_tree" => serde_json::json!({
+                "rootCount": data["tree"].as_array().map_or(0, Vec::len),
+                "rootChildCounts": data["tree"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|node| node["children"].as_array().map_or(0, Vec::len))
+                    .collect::<Vec<_>>(),
+                "leafId": data["leafId"].as_str().map_or_else(
+                    || serde_json::Value::Null,
+                    |_| serde_json::json!("<entry-id>"),
+                ),
+            }),
+            "get_messages" => serde_json::json!({
+                "roles": data["messages"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|message| message["role"].as_str())
+                    .collect::<Vec<_>>(),
+                "messageCount": data["messages"].as_array().map_or(0, Vec::len),
+            }),
+            _ => data.clone(),
+        }
+    }
+
+    fn rpc_wire_signature(value: &serde_json::Value) -> serde_json::Value {
+        if value["type"] == "response" {
+            let mut signature = serde_json::json!({
+                "id": value.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                "type": "response",
+                "command": value["command"],
+                "success": value["success"],
+            });
+            if value["success"] == true {
+                if let Some(data) = value.get("data") {
+                    signature["data"] = data_signature(value["command"].as_str().unwrap(), data);
+                }
+            } else {
+                signature["error"] = value["error"].clone();
+            }
+            return signature;
+        }
+
+        match value["type"].as_str().unwrap_or_default() {
+            "message_start" | "message_end" => serde_json::json!({
+                "type": value["type"],
+                "role": value["message"]["role"],
+                "stopReason": value["message"].get("stopReason").cloned().unwrap_or(serde_json::Value::Null),
+            }),
+            "message_update" => serde_json::json!({
+                "type": "message_update",
+                "assistantEvent": value["assistantMessageEvent"],
+            }),
+            "turn_end" => serde_json::json!({
+                "type": "turn_end",
+                "role": value["message"]["role"],
+                "toolResultCount": value["toolResults"].as_array().map_or(0, Vec::len),
+            }),
+            "agent_end" => serde_json::json!({
+                "type": "agent_end",
+                "messageCount": value["messages"].as_array().map_or(0, Vec::len),
+                "willRetry": value["willRetry"],
+            }),
+            "compaction_end" => {
+                let mut value = value.clone();
+                if value["result"].get("firstKeptEntryId").is_some() {
+                    value["result"]["firstKeptEntryId"] = serde_json::json!("<entry-id>");
+                }
+                value
+            }
+            "tool_execution_start" => serde_json::json!({
+                "type": value["type"],
+                "toolCallId": value["toolCallId"],
+                "toolName": value["toolName"],
+                "args": value["args"],
+            }),
+            "tool_execution_update" => serde_json::json!({
+                "type": value["type"],
+                "toolCallId": value["toolCallId"],
+                "toolName": value["toolName"],
+                "args": value["args"],
+                "partialResult": value["partialResult"],
+            }),
+            "tool_execution_end" => serde_json::json!({
+                "type": value["type"],
+                "toolCallId": value["toolCallId"],
+                "toolName": value["toolName"],
+                "resultRole": value["result"]["role"],
+                "isError": value["isError"],
+            }),
+            _ => value.clone(),
+        }
+    }
+
+    fn rpc_event_signature(value: &serde_json::Value) -> serde_json::Value {
+        if value["type"] != "message_update" {
+            return rpc_wire_signature(value);
+        }
+        let inner = &value["assistantMessageEvent"];
+        let mut signature = serde_json::json!({
+            "type": "message_update",
+            "assistantEventType": inner["type"],
+        });
+        for key in [
+            "contentIndex",
+            "delta",
+            "content",
+            "id",
+            "toolName",
+            "reason",
+            "toolCall",
+        ] {
+            if let Some(value) = inner.get(key) {
+                signature[key] = value.clone();
+            }
+        }
+        if let Some(message) = inner.get("message") {
+            signature["messageRole"] = message["role"].clone();
+            signature["messageContentCount"] =
+                serde_json::json!(message["content"].as_array().map_or(0, Vec::len));
+        }
+        signature
+    }
+
+    fn golden_assistant(
+        content: Vec<pi_ai::types::ContentBlock>,
+    ) -> pi_ai::types::AssistantMessage {
+        let mut message = pi_ai::types::AssistantMessage::new().with_timestamp(7);
+        message.set_api_provider_model("faux", "faux", "faux-1");
+        message.set_usage(pi_ai::types::Usage::default());
+        message.set_content(content);
+        message.set_stop_reason(pi_ai::types::StopReason::Stop);
+        message
+    }
+
+    async fn capture_rpc_command(
+        runtime: &mut RpcRuntime,
+        case_name: &str,
+        input: serde_json::Value,
+        transcript: &mut Vec<serde_json::Value>,
+    ) {
+        let command = RpcCommand::parse(input).unwrap();
+        let command_name = command.type_.clone();
+        let mut store = Vec::new();
+        runtime.handle_command(command, &mut store).await.unwrap();
+        let records = store
+            .iter()
+            .map(|line| {
+                rpc_wire_signature(&serde_json::from_str::<serde_json::Value>(line.trim()).unwrap())
+            })
+            .collect::<Vec<_>>();
+        transcript.push(serde_json::json!({
+            "case": case_name,
+            "command": command_name,
+            "records": records,
+        }));
+    }
+
+    #[test]
+    fn rpc_event_golden_transcript_covers_wire_event_types() {
+        let assistant = golden_assistant(vec![pi_ai::types::ContentBlock::text("hello")]);
+        let tool_call = pi_ai::types::ContentBlock::tool_call(
+            "call-1",
+            "bash",
+            serde_json::json!({"command":"echo hi"}),
+        );
+        let tool_result = pi_ai::types::ToolResultMessage::text("call-1", "bash", "hi", false)
+            .with_details_usage_timestamp(None, None, 7);
+        let user = pi_agent::types::AgentMessage::Core(Message::User(
+            pi_ai::types::UserContent::string("hello", 7),
+        ));
+        let assistant_message =
+            pi_agent::types::AgentMessage::Core(Message::Assistant(assistant.clone()));
+        let partial_text = golden_assistant(vec![pi_ai::types::ContentBlock::text("hello")]);
+        let partial_thinking =
+            golden_assistant(vec![pi_ai::types::ContentBlock::thinking("reason")]);
+        let partial_tool = golden_assistant(vec![tool_call.clone()]);
+        let events = vec![
+            ("agent_start", RichAgentEvent::AgentStart),
+            (
+                "agent_end",
+                RichAgentEvent::AgentEnd {
+                    messages: vec![user.clone(), assistant_message.clone()],
+                },
+            ),
+            (
+                "auto_retry_start",
+                RichAgentEvent::AutoRetryStart {
+                    attempt: 1,
+                    max_attempts: 3,
+                    delay_ms: 25,
+                    error_message: "overloaded".to_string(),
+                },
+            ),
+            (
+                "auto_retry_end",
+                RichAgentEvent::AutoRetryEnd {
+                    success: false,
+                    attempt: 1,
+                    final_error: Some("overloaded".to_string()),
+                },
+            ),
+            ("turn_start", RichAgentEvent::TurnStart),
+            (
+                "turn_end",
+                RichAgentEvent::TurnEnd {
+                    message: assistant_message.clone(),
+                    tool_results: vec![tool_result.clone()],
+                },
+            ),
+            (
+                "message_start",
+                RichAgentEvent::MessageStart {
+                    message: user.clone(),
+                },
+            ),
+            (
+                "message_update.start",
+                RichAgentEvent::MessageUpdate {
+                    message: assistant_message.clone(),
+                    assistant_message_event: AssistantMessageEvent::Start {
+                        partial: partial_text.clone(),
+                    },
+                },
+            ),
+            (
+                "message_update.text_start",
+                RichAgentEvent::MessageUpdate {
+                    message: assistant_message.clone(),
+                    assistant_message_event: AssistantMessageEvent::TextStart {
+                        content_index: 0,
+                        partial: partial_text.clone(),
+                    },
+                },
+            ),
+            (
+                "message_update.text_delta",
+                RichAgentEvent::MessageUpdate {
+                    message: assistant_message.clone(),
+                    assistant_message_event: AssistantMessageEvent::TextDelta {
+                        content_index: 0,
+                        delta: "he".to_string(),
+                        partial: partial_text.clone(),
+                    },
+                },
+            ),
+            (
+                "message_update.text_end",
+                RichAgentEvent::MessageUpdate {
+                    message: assistant_message.clone(),
+                    assistant_message_event: AssistantMessageEvent::TextEnd {
+                        content_index: 0,
+                        content: "hello".to_string(),
+                        partial: partial_text.clone(),
+                    },
+                },
+            ),
+            (
+                "message_update.thinking_start",
+                RichAgentEvent::MessageUpdate {
+                    message: assistant_message.clone(),
+                    assistant_message_event: AssistantMessageEvent::ThinkingStart {
+                        content_index: 0,
+                        partial: partial_thinking.clone(),
+                    },
+                },
+            ),
+            (
+                "message_update.thinking_delta",
+                RichAgentEvent::MessageUpdate {
+                    message: assistant_message.clone(),
+                    assistant_message_event: AssistantMessageEvent::ThinkingDelta {
+                        content_index: 0,
+                        delta: "rea".to_string(),
+                        partial: partial_thinking.clone(),
+                    },
+                },
+            ),
+            (
+                "message_update.thinking_end",
+                RichAgentEvent::MessageUpdate {
+                    message: assistant_message.clone(),
+                    assistant_message_event: AssistantMessageEvent::ThinkingEnd {
+                        content_index: 0,
+                        content: "reason".to_string(),
+                        partial: partial_thinking.clone(),
+                    },
+                },
+            ),
+            (
+                "message_update.toolcall_start",
+                RichAgentEvent::MessageUpdate {
+                    message: assistant_message.clone(),
+                    assistant_message_event: AssistantMessageEvent::ToolCallStart {
+                        content_index: 0,
+                        partial: partial_tool.clone(),
+                    },
+                },
+            ),
+            (
+                "message_update.toolcall_delta",
+                RichAgentEvent::MessageUpdate {
+                    message: assistant_message.clone(),
+                    assistant_message_event: AssistantMessageEvent::ToolCallDelta {
+                        content_index: 0,
+                        delta: "{\"command\":\"echo hi\"}".to_string(),
+                        partial: partial_tool.clone(),
+                    },
+                },
+            ),
+            (
+                "message_update.toolcall_end",
+                RichAgentEvent::MessageUpdate {
+                    message: assistant_message.clone(),
+                    assistant_message_event: AssistantMessageEvent::ToolCallEnd {
+                        content_index: 0,
+                        tool_call: tool_call.clone(),
+                        partial: partial_tool.clone(),
+                    },
+                },
+            ),
+            (
+                "message_update.done",
+                RichAgentEvent::MessageUpdate {
+                    message: assistant_message.clone(),
+                    assistant_message_event: AssistantMessageEvent::Done {
+                        reason: pi_ai::types::DoneReason::Stop,
+                        message: assistant.clone(),
+                    },
+                },
+            ),
+            (
+                "message_update.error",
+                RichAgentEvent::MessageUpdate {
+                    message: assistant_message.clone(),
+                    assistant_message_event: AssistantMessageEvent::Error {
+                        reason: pi_ai::types::ErrorReason::Error,
+                        error_message: assistant.clone(),
+                    },
+                },
+            ),
+            (
+                "message_end",
+                RichAgentEvent::MessageEnd {
+                    message: assistant_message.clone(),
+                },
+            ),
+            (
+                "tool_execution_start",
+                RichAgentEvent::ToolExecutionStart {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "bash".to_string(),
+                    args: serde_json::json!({"command":"echo hi"}),
+                },
+            ),
+            (
+                "tool_execution_update",
+                RichAgentEvent::ToolExecutionUpdate {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "bash".to_string(),
+                    args: serde_json::json!({"command":"echo hi"}),
+                    partial_result: serde_json::json!({"output":"h"}),
+                },
+            ),
+            (
+                "tool_execution_end",
+                RichAgentEvent::ToolExecutionEnd {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "bash".to_string(),
+                    result: tool_result,
+                    is_error: false,
+                },
+            ),
+        ];
+        let mut transcript = events
+            .into_iter()
+            .map(|(case_name, event)| {
+                let line = serialize_rpc_prompt_event(event).unwrap();
+                let value: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+                serde_json::json!({
+                    "case": case_name,
+                    "record": rpc_event_signature(&value),
+                })
+            })
+            .collect::<Vec<_>>();
+        for (case_name, value) in [
+            (
+                "agent_settled",
+                serde_json::json!({"type": "agent_settled"}),
+            ),
+            (
+                "queue_update",
+                serde_json::json!({
+                    "type": "queue_update",
+                    "steering": ["steer"],
+                    "followUp": ["follow"],
+                }),
+            ),
+            (
+                "compaction_start",
+                serde_json::json!({"type": "compaction_start", "reason": "manual"}),
+            ),
+            (
+                "compaction_end",
+                serde_json::json!({
+                    "type": "compaction_end",
+                    "reason": "manual",
+                    "result": {
+                        "summary": "summary",
+                        "firstKeptEntryId": "entry-1",
+                        "tokensBefore": 12,
+                        "estimatedTokensAfter": 4,
+                    },
+                    "aborted": false,
+                    "willRetry": false,
+                }),
+            ),
+            (
+                "session_info_changed",
+                serde_json::json!({"type": "session_info_changed", "name": "session"}),
+            ),
+            (
+                "thinking_level_changed",
+                serde_json::json!({"type": "thinking_level_changed", "level": "high"}),
+            ),
+            (
+                "summarization_retry_scheduled",
+                serde_json::json!({
+                    "type": "summarization_retry_scheduled",
+                    "attempt": 1,
+                    "maxAttempts": 2,
+                    "delayMs": 25,
+                    "errorMessage": "retry",
+                }),
+            ),
+            (
+                "summarization_retry_attempt_start",
+                serde_json::json!({
+                    "type": "summarization_retry_attempt_start",
+                    "source": "compaction",
+                    "reason": "manual",
+                }),
+            ),
+            (
+                "summarization_retry_finished",
+                serde_json::json!({"type": "summarization_retry_finished"}),
+            ),
+        ] {
+            transcript.push(serde_json::json!({
+                "case": case_name,
+                "record": rpc_event_signature(&value),
+            }));
+        }
+        let bash_update: serde_json::Value =
+            serde_json::from_str(serialize_rpc_bash_update(Some("bash-1"), "chunk").trim())
+                .unwrap();
+        transcript.push(serde_json::json!({
+            "case": "bash_execution_update",
+            "record": rpc_event_signature(&bash_update),
+        }));
+        let expected: Vec<serde_json::Value> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/rpc/event_transcript.json"
+        )))
+        .unwrap();
+        assert_eq!(transcript, expected);
+    }
+
+    #[tokio::test]
+    async fn rpc_command_golden_transcript_matches_fixture() {
+        let mut runtime = runtime_for_test().await;
+        let mut transcript = Vec::new();
+        capture_rpc_command(
+            &mut runtime,
+            "state.initial",
+            serde_json::json!({"id":"state-0","type":"get_state"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "prompt.success",
+            serde_json::json!({"id":"prompt-1","type":"prompt","message":"golden"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "steer.success",
+            serde_json::json!({"id":"steer-1","type":"steer","message":"interrupt"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "follow_up.success",
+            serde_json::json!({"id":"follow-1","type":"follow_up","message":"continue"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "set_steering_mode.success",
+            serde_json::json!({"id":"steering-mode","type":"set_steering_mode","mode":"one-at-a-time"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "set_follow_up_mode.success",
+            serde_json::json!({"id":"follow-mode","type":"set_follow_up_mode","mode":"one-at-a-time"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "state.queued",
+            serde_json::json!({"id":"state-1","type":"get_state"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "abort.success",
+            serde_json::json!({"id":"abort-1","type":"abort"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "compact.success",
+            serde_json::json!({"id":"compact-1","type":"compact"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "set_auto_compaction.success",
+            serde_json::json!({"id":"auto-compact","type":"set_auto_compaction","enabled":false}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "set_auto_retry.success",
+            serde_json::json!({"id":"auto-retry","type":"set_auto_retry","enabled":false}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "abort_retry.success",
+            serde_json::json!({"id":"abort-retry","type":"abort_retry"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "bash.success",
+            serde_json::json!({"id":"bash-1","type":"bash","command":"printf golden"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "abort_bash.success",
+            serde_json::json!({"id":"abort-bash","type":"abort_bash"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "get_available_models.success",
+            serde_json::json!({"id":"models","type":"get_available_models"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "set_model.success",
+            serde_json::json!({"id":"set-model","type":"set_model","provider":"google","modelId":"gemini-2.5-flash"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "set_model.unknown",
+            serde_json::json!({"id":"set-model-bad","type":"set_model","provider":"nope","modelId":"missing"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "cycle_model.success",
+            serde_json::json!({"id":"cycle-model","type":"cycle_model"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "set_thinking_level.success",
+            serde_json::json!({"id":"thinking","type":"set_thinking_level","level":"high"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "cycle_thinking_level.success",
+            serde_json::json!({"id":"cycle-thinking","type":"cycle_thinking_level"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "get_available_thinking_levels.success",
+            serde_json::json!({"id":"thinking-levels","type":"get_available_thinking_levels"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "get_session_stats.success",
+            serde_json::json!({"id":"stats","type":"get_session_stats"}),
+            &mut transcript,
+        )
+        .await;
+        let original_session_path = runtime.session_path.clone().unwrap();
+        let entries = runtime.get_entries().await.unwrap();
+        let first_message_id = entries
+            .iter()
+            .find(|entry| entry.as_message().is_some())
+            .map(|entry| entry.id().to_string())
+            .unwrap();
+        let export_path = std::env::temp_dir()
+            .join(format!("pi-rpc-golden-{}.html", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned();
+        capture_rpc_command(
+            &mut runtime,
+            "export_html.success",
+            serde_json::json!({"id":"export","type":"export_html","outputPath":export_path}),
+            &mut transcript,
+        )
+        .await;
+        let _ = std::fs::remove_file(&export_path);
+        capture_rpc_command(
+            &mut runtime,
+            "get_fork_messages.success",
+            serde_json::json!({"id":"fork-messages","type":"get_fork_messages"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "get_entries.success",
+            serde_json::json!({"id":"entries","type":"get_entries"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "get_tree.success",
+            serde_json::json!({"id":"tree","type":"get_tree"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "get_last_assistant_text.success",
+            serde_json::json!({"id":"last","type":"get_last_assistant_text"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "get_messages.success",
+            serde_json::json!({"id":"messages","type":"get_messages"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "set_session_name.success",
+            serde_json::json!({"id":"name","type":"set_session_name","name":"golden session"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "get_commands.success",
+            serde_json::json!({"id":"commands","type":"get_commands"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "fork.success",
+            serde_json::json!({"id":"fork","type":"fork","entryId":first_message_id}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "switch_session.success",
+            serde_json::json!({"id":"switch","type":"switch_session","sessionPath":original_session_path}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "clone.success",
+            serde_json::json!({"id":"clone","type":"clone"}),
+            &mut transcript,
+        )
+        .await;
+        capture_rpc_command(
+            &mut runtime,
+            "new_session.success",
+            serde_json::json!({"id":"new","type":"new_session"}),
+            &mut transcript,
+        )
+        .await;
+
+        for (case_name, input) in [
+            (
+                "prompt.missing_message",
+                serde_json::json!({"id":"e1","type":"prompt"}),
+            ),
+            (
+                "steer.missing_message",
+                serde_json::json!({"id":"e2","type":"steer"}),
+            ),
+            (
+                "follow_up.missing_message",
+                serde_json::json!({"id":"e3","type":"follow_up"}),
+            ),
+            (
+                "set_model.missing_provider",
+                serde_json::json!({"id":"e4","type":"set_model","modelId":"x"}),
+            ),
+            (
+                "set_model.missing_model",
+                serde_json::json!({"id":"e5","type":"set_model","provider":"x"}),
+            ),
+            (
+                "bash.missing_command",
+                serde_json::json!({"id":"e6","type":"bash"}),
+            ),
+            (
+                "switch_session.missing_path",
+                serde_json::json!({"id":"e7","type":"switch_session"}),
+            ),
+            (
+                "fork.missing_entry",
+                serde_json::json!({"id":"e8","type":"fork"}),
+            ),
+            (
+                "set_session_name.empty",
+                serde_json::json!({"id":"e9","type":"set_session_name","name":"  "}),
+            ),
+            (
+                "set_steering_mode.invalid",
+                serde_json::json!({"id":"e10","type":"set_steering_mode","mode":"invalid"}),
+            ),
+            (
+                "set_follow_up_mode.invalid",
+                serde_json::json!({"id":"e11","type":"set_follow_up_mode","mode":"invalid"}),
+            ),
+            (
+                "set_model.unknown_error",
+                serde_json::json!({"id":"e12","type":"set_model","provider":"nope","modelId":"missing"}),
+            ),
+            (
+                "get_entries.unknown_since",
+                serde_json::json!({"id":"e13","type":"get_entries","since":"missing-entry"}),
+            ),
+            (
+                "switch_session.invalid_path",
+                serde_json::json!({"id":"e14","type":"switch_session","sessionPath":"/missing/session.jsonl"}),
+            ),
+            (
+                "unknown.command",
+                serde_json::json!({"id":"e15","type":"not_a_command"}),
+            ),
+        ] {
+            capture_rpc_command(&mut runtime, case_name, input, &mut transcript).await;
+        }
+        let mut in_memory = runtime_for_test().await;
+        in_memory.session_path = None;
+        capture_rpc_command(
+            &mut in_memory,
+            "export_html.in_memory",
+            serde_json::json!({"id":"e16","type":"export_html"}),
+            &mut transcript,
+        )
+        .await;
+        let mut empty = runtime_for_test().await;
+        capture_rpc_command(
+            &mut empty,
+            "clone.empty",
+            serde_json::json!({"id":"e17","type":"clone"}),
+            &mut transcript,
+        )
+        .await;
+
+        let expected: Vec<serde_json::Value> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/rpc/command_transcript.json"
+        )))
+        .unwrap();
+        assert_eq!(transcript, expected);
     }
 }

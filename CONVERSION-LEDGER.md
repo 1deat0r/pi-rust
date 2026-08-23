@@ -633,9 +633,20 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       rich_agent::tests -- --nocapture` (8 passed), `cargo test
       -p pi-coding-agent --offline modes::rpc::tests -- --nocapture` (34
       passed), and `cargo test --workspace --offline`.
-- [ ] S-042 Produce golden transcripts for every RPC command and event type,
+- [x] S-042 Produce golden transcripts for every RPC command and event type,
       including switch/fork/clone, queue modes, compaction, export, and all
-      error responses.
+      error responses. (unit; mock; live) Added deterministic command and
+      event fixtures at `crates/pi-coding-agent/tests/fixtures/rpc/`, covering
+      every RPC command, core/session lifecycle event, switch/fork/clone,
+      queue modes, compaction, export, malformed commands, and failure
+      responses. The dispatcher now converts unexpected command/task errors to
+      RPC failures; standalone bash emits incremental `bash_execution_update`
+      records. Verified with `cargo test -p pi-coding-agent --offline
+      rpc_command_golden_transcript_matches_fixture`, `cargo test
+      -p pi-coding-agent --offline rpc_event_golden_transcript_covers_wire_event_types`,
+      `cargo test -p pi-coding-agent --offline
+      malformed_rpc_lines_emit_parse_failures`, the full RPC test module, and
+      a live `--mode rpc` bash smoke showing update-before-response ordering.
 
 ### S1-F — pi-server/pi-client auxiliary library parity
 

@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 42.77% (71/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 43.37% (72/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -817,6 +817,25 @@ fixes.
   modes::rpc::tests::session_queries_use_reloaded_branch_context` — passed;
   workspace test inventory — 1418 tests; `cargo check --workspace` — clean.
 - NEXT-100 #87 marked done. RPC mutation/runtime behavior remains #88.
+
+### Session 18 — 2026-08-24 — RPC golden command/event conformance
+Scope: S-042, the RPC command/event wire contract and error lifecycle.
+
+- Added deterministic command and event fixtures under
+  `crates/pi-coding-agent/tests/fixtures/rpc/`. They cover every RPC command,
+  core and session lifecycle event, queue modes, compaction, export,
+  switch/fork/clone, malformed input, and failure responses; dynamic ids and
+  paths are normalized in the fixture signature.
+- Added queue, thinking-level, session-name, compaction lifecycle,
+  summarization retry, settlement, and incremental bash execution events, and
+  changed dispatcher/task failures into RPC error responses instead of loop
+  termination. Updated compaction result types to the upstream shape.
+- Evidence: focused RPC module — 37 tests passed; command/event golden tests
+  and malformed-line test passed; live `--mode rpc` bash smoke emitted
+  `bash_execution_update` before the final response; `cargo test --workspace
+  --offline` passed.
+- S-042 marked complete. Next planned audit is image/read processing parity
+  and model-facing image registration (#32 / S-020).
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
