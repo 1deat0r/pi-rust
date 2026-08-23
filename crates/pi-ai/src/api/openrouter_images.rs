@@ -28,7 +28,9 @@ pub fn build_params(model: &ImagesModel, context: &ImagesContext) -> Value {
         .input
         .iter()
         .map(|item| match item {
-            ContentBlock::Text { text, .. } => json!({ "type": "text", "text": sanitize_surrogates(text) }),
+            ContentBlock::Text { text, .. } => {
+                json!({ "type": "text", "text": sanitize_surrogates(text) })
+            }
             ContentBlock::Image { mime_type, data } => json!({
                 "type": "image_url",
                 "image_url": { "url": format!("data:{mime_type};base64,{data}") }
@@ -58,16 +60,19 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Option<Usage> {
     if !raw_usage.is_object() {
         return None;
     }
-    let prompt_tokens = raw_usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let prompt_tokens = raw_usage
+        .get("prompt_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     let reported_cached = raw_usage
         .get("prompt_tokens_details")
         .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64())
+        .and_then(|v| v.as_i64())
         .unwrap_or(0);
     let cache_write_tokens = raw_usage
         .get("prompt_tokens_details")
         .and_then(|d| d.get("cache_write_tokens"))
-        .and_then(|v| v.as_u64())
+        .and_then(|v| v.as_i64())
         .unwrap_or(0);
     let cache_read_tokens = if cache_write_tokens > 0 {
         reported_cached.saturating_sub(cache_write_tokens)
@@ -75,7 +80,10 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Option<Usage> {
         reported_cached
     };
     let input = prompt_tokens.saturating_sub(cache_read_tokens + cache_write_tokens);
-    let output = raw_usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let output = raw_usage
+        .get("completion_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     let input_cost = (model.cost.input / 1_000_000.0) * input as f64;
     let output_cost = (model.cost.output / 1_000_000.0) * output as f64;
     let cache_read_cost = (model.cost.cache_read / 1_000_000.0) * cache_read_tokens as f64;
@@ -178,7 +186,9 @@ pub async fn generate_images(
                 let status = resp.status();
                 let should_retry = retryable_provider_status(
                     status.as_u16(),
-                    resp.headers().get("x-should-retry").and_then(|v| v.to_str().ok()),
+                    resp.headers()
+                        .get("x-should-retry")
+                        .and_then(|v| v.to_str().ok()),
                 );
                 if !should_retry || retries_remaining == 0 {
                     response = Some(resp);
@@ -190,7 +200,12 @@ pub async fn generate_images(
                     .iter()
                     .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
                     .collect::<std::collections::BTreeMap<_, _>>();
-                match retry_delay_ms(&headers_map, retries_remaining, options.max_retry_delay_ms, status.as_u16()) {
+                match retry_delay_ms(
+                    &headers_map,
+                    retries_remaining,
+                    options.max_retry_delay_ms,
+                    status.as_u16(),
+                ) {
                     Ok(Some(delay)) => {
                         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                     }
@@ -219,8 +234,13 @@ pub async fn generate_images(
     let response = match response {
         Some(resp) => resp,
         None => {
-            output.stop_reason = if options.aborted { ImagesStopReason::Aborted } else { ImagesStopReason::Error };
-            output.error_message = Some(response_err.unwrap_or_else(|| "Request failed".to_string()));
+            output.stop_reason = if options.aborted {
+                ImagesStopReason::Aborted
+            } else {
+                ImagesStopReason::Error
+            };
+            output.error_message =
+                Some(response_err.unwrap_or_else(|| "Request failed".to_string()));
             return output;
         }
     };
@@ -232,7 +252,10 @@ pub async fn generate_images(
         .collect::<std::collections::BTreeMap<_, _>>();
     if let Some(on_response) = &options.on_response {
         on_response(
-            &crate::types::ProviderResponse { status: status.as_u16(), headers: headers_map.clone() },
+            &crate::types::ProviderResponse {
+                status: status.as_u16(),
+                headers: headers_map.clone(),
+            },
             &model.as_chat_model(),
         );
     }
@@ -258,7 +281,8 @@ pub async fn generate_images(
         Ok(v) => v,
         Err(_) => {
             output.stop_reason = ImagesStopReason::Error;
-            output.error_message = Some("OpenRouter returned a non-JSON image response".to_string());
+            output.error_message =
+                Some("OpenRouter returned a non-JSON image response".to_string());
             return output;
         }
     };
@@ -275,10 +299,16 @@ pub fn apply_response(output: &mut AssistantImages, model: &ImagesModel, respons
     if let Some(usage) = response.get("usage").and_then(|u| parse_usage(u, model)) {
         output.usage = Some(usage);
     }
-    let Some(choice) = response.get("choices").and_then(|c| c.as_array()).and_then(|c| c.first()) else {
+    let Some(choice) = response
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|c| c.first())
+    else {
         return;
     };
-    let Some(message) = choice.get("message") else { return };
+    let Some(message) = choice.get("message") else {
+        return;
+    };
     if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
         if !content.is_empty() {
             output.output.push(ContentBlock::text(content));
@@ -286,10 +316,12 @@ pub fn apply_response(output: &mut AssistantImages, model: &ImagesModel, respons
     }
     if let Some(images) = message.get("images").and_then(|v| v.as_array()) {
         for image in images {
-            let image_url = image
-                .get("image_url")
-                .and_then(|v| v.as_str())
-                .or_else(|| image.get("image_url").and_then(|v| v.get("url")).and_then(|v| v.as_str()));
+            let image_url = image.get("image_url").and_then(|v| v.as_str()).or_else(|| {
+                image
+                    .get("image_url")
+                    .and_then(|v| v.get("url"))
+                    .and_then(|v| v.as_str())
+            });
             let Some(image_url) = image_url else { continue };
             if !image_url.starts_with("data:") {
                 continue;
@@ -378,11 +410,14 @@ mod tests {
     use crate::images::catalog_images;
 
     fn model(id: &str, output: &[&str]) -> ImagesModel {
-        let mut m = catalog_images("openrouter").into_iter().find(|m| m.id == id).unwrap_or_else(|| {
-            let mut base = catalog_images("openrouter").remove(0);
-            base.id = id.to_string();
-            base
-        });
+        let mut m = catalog_images("openrouter")
+            .into_iter()
+            .find(|m| m.id == id)
+            .unwrap_or_else(|| {
+                let mut base = catalog_images("openrouter").remove(0);
+                base.id = id.to_string();
+                base
+            });
         m.output = output.iter().map(|s| s.to_string()).collect();
         m
     }
@@ -390,12 +425,17 @@ mod tests {
     #[test]
     fn build_params_modalities_match_model_output() {
         let m = model("google/gemini-2.5-flash-image", &["image", "text"]);
-        let ctx = ImagesContext { input: vec![ContentBlock::text("Generate a dog")] };
+        let ctx = ImagesContext {
+            input: vec![ContentBlock::text("Generate a dog")],
+        };
         let params = build_params(&m, &ctx);
         assert_eq!(params["stream"], json!(false));
         assert_eq!(params["modalities"], json!(["image", "text"]));
         assert_eq!(params["messages"][0]["content"][0]["type"], json!("text"));
-        assert_eq!(params["messages"][0]["content"][0]["text"], json!("Generate a dog"));
+        assert_eq!(
+            params["messages"][0]["content"][0]["text"],
+            json!("Generate a dog")
+        );
     }
 
     #[test]
@@ -406,7 +446,10 @@ mod tests {
         };
         let params = build_params(&m, &ctx);
         assert_eq!(params["modalities"], json!(["image"]));
-        assert_eq!(params["messages"][0]["content"][0]["image_url"]["url"], json!("data:image/png;base64,aGVsbG8="));
+        assert_eq!(
+            params["messages"][0]["content"][0]["image_url"]["url"],
+            json!("data:image/png;base64,aGVsbG8=")
+        );
     }
 
     #[test]
@@ -455,7 +498,9 @@ mod tests {
         });
         apply_response(&mut out, &model("fake", &["text"]), &response);
         assert_eq!(out.response_id.as_deref(), Some("img-1"));
-        assert!(matches!(&out.output[0], ContentBlock::Text { text, .. } if text == "Here is your image."));
+        assert!(
+            matches!(&out.output[0], ContentBlock::Text { text, .. } if text == "Here is your image.")
+        );
         match &out.output[1] {
             ContentBlock::Image { mime_type, data } => {
                 assert_eq!(mime_type, "image/png");
@@ -469,12 +514,21 @@ mod tests {
     async fn no_api_key_returns_error_images() {
         let m = model("black-forest-labs/flux.2-pro", &["image"]);
         let client = reqwest::Client::new();
-        let out = generate_images(&m, &ImagesContext { input: vec![] }, &ImagesOptions::default(), client).await;
+        let out = generate_images(
+            &m,
+            &ImagesContext { input: vec![] },
+            &ImagesOptions::default(),
+            client,
+        )
+        .await;
         assert_eq!(out.stop_reason, ImagesStopReason::Error);
-        assert!(out.error_message.as_deref().unwrap_or("").contains("No API key for provider: openrouter"));
+        assert!(out
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("No API key for provider: openrouter"));
     }
 }
-
 
 #[cfg(test)]
 mod retry_tests {
@@ -523,7 +577,9 @@ mod retry_tests {
         let serve = tokio::spawn(async move {
             let mut count = 0;
             loop {
-                let Ok((mut socket, _)) = listener.accept().await else { break };
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
                 let mut buf = vec![0u8; 4096];
                 let _ = socket.read(&mut buf).await;
                 count += 1;
@@ -556,7 +612,13 @@ mod retry_tests {
         };
         let output = generate_images(&m, &context, &options, reqwest::Client::new()).await;
         assert!(output.error_message.is_none(), "{:?}", output.error_message);
-        assert!(output.output.iter().any(|b| matches!(b, ContentBlock::Image { .. })), "expected an image block");
+        assert!(
+            output
+                .output
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Image { .. })),
+            "expected an image block"
+        );
         assert!(serve.await.unwrap() >= 2, "expected at least one retry");
     }
 }

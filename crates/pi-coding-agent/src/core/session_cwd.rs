@@ -95,22 +95,25 @@ mod tests {
 
     #[test]
     fn no_session_file_returns_no_issue() {
-        assert_eq!(get_missing_session_cwd_issue(None, "/nonexistent", "/cwd"), None);
+        assert_eq!(
+            get_missing_session_cwd_issue(None, "/nonexistent", "/cwd"),
+            None
+        );
     }
 
     #[test]
     fn existing_cwd_returns_no_issue() {
         let existing = String::from(env!("CARGO_MANIFEST_DIR"));
-        assert_eq!(get_missing_session_cwd_issue(Some("/s/1.jsonl"), &existing, "/cwd"), None);
+        assert_eq!(
+            get_missing_session_cwd_issue(Some("/s/1.jsonl"), &existing, "/cwd"),
+            None
+        );
     }
 
     #[test]
     fn missing_cwd_reports_issue() {
-        let issue = get_missing_session_cwd_issue(
-            Some("/s/1.jsonl"),
-            "/definitely-not-here",
-            "/current",
-        );
+        let issue =
+            get_missing_session_cwd_issue(Some("/s/1.jsonl"), "/definitely-not-here", "/current");
         let issue = issue.expect("should detect missing cwd");
         assert_eq!(issue.session_cwd, "/definitely-not-here");
         assert_eq!(issue.fallback_cwd, "/current");

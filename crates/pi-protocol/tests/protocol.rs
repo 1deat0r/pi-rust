@@ -86,7 +86,10 @@ fn rejects_image_input_while_mvp_remains_text_only() {
 
 #[test]
 fn parses_server_handshake_snapshot() {
-    assert_eq!(parse_server_message(&as_json(&server_hello())).unwrap(), server_hello());
+    assert_eq!(
+        parse_server_message(&as_json(&server_hello())).unwrap(),
+        server_hello()
+    );
 }
 
 #[test]
@@ -234,7 +237,9 @@ fn model_metadata_validation() {
 
     // unknown field rejected
     let mut bad = json.clone();
-    bad.as_object_mut().unwrap().insert("extra".into(), serde_json::json!(1));
+    bad.as_object_mut()
+        .unwrap()
+        .insert("extra".into(), serde_json::json!(1));
     assert!(ModelMetadata::parse(&bad).is_err());
     // empty thinking levels rejected
     let mut bad = json.clone();

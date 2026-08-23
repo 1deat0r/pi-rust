@@ -156,7 +156,10 @@ pub struct SqlQuery {
 
 impl SqlQuery {
     pub fn new(query_text: impl Into<String>) -> Self {
-        Self { query_text: query_text.into(), params: Vec::new() }
+        Self {
+            query_text: query_text.into(),
+            params: Vec::new(),
+        }
     }
 
     pub fn query_text(&self) -> &str {
@@ -194,11 +197,18 @@ impl SqlQuery {
     pub fn run(&self, db: &Connection) -> rusqlite::Result<SqliteRunResult> {
         let mut stmt = db.prepare(&self.query_text)?;
         let changes = stmt.execute(params_from_iter(self.params.iter()))?;
-        Ok(SqliteRunResult { changes: changes as u64, last_insert_rowid: Some(db.last_insert_rowid()) })
+        Ok(SqliteRunResult {
+            changes: changes as u64,
+            last_insert_rowid: Some(db.last_insert_rowid()),
+        })
     }
 
     /// Executes and returns the first row mapped by `map`, or `None`.
-    pub fn get_row<T>(&self, db: &Connection, map: impl FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>) -> rusqlite::Result<Option<T>> {
+    pub fn get_row<T>(
+        &self,
+        db: &Connection,
+        map: impl FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<Option<T>> {
         let mut stmt = db.prepare(&self.query_text)?;
         let mut rows = stmt.query(params_from_iter(self.params.iter()))?;
         match rows.next()? {
@@ -208,7 +218,11 @@ impl SqlQuery {
     }
 
     /// Executes and returns all rows mapped by `map`.
-    pub fn all_rows<T>(&self, db: &Connection, map: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>) -> rusqlite::Result<Vec<T>> {
+    pub fn all_rows<T>(
+        &self,
+        db: &Connection,
+        map: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<Vec<T>> {
         let mut stmt = db.prepare(&self.query_text)?;
         let rows = stmt.query_map(params_from_iter(self.params.iter()), map)?;
         rows.collect()
@@ -252,8 +266,22 @@ mod tests {
     fn composes_fragments_without_renumbering_parameters() {
         let db = Connection::open_in_memory().unwrap();
         sql(&SqlQuery::new("CREATE TABLE entries (id TEXT PRIMARY KEY, kind TEXT NOT NULL, active INTEGER NOT NULL)")).exec(&db).unwrap();
-        sql(&SqlQuery::new("INSERT INTO entries (id, kind, active) VALUES (?, ?, ?)").bind("one").bind("message").bind(1)).run(&db).unwrap();
-        sql(&SqlQuery::new("INSERT INTO entries (id, kind, active) VALUES (?, ?, ?)").bind("two").bind("message").bind(0)).run(&db).unwrap();
+        sql(
+            &SqlQuery::new("INSERT INTO entries (id, kind, active) VALUES (?, ?, ?)")
+                .bind("one")
+                .bind("message")
+                .bind(1),
+        )
+        .run(&db)
+        .unwrap();
+        sql(
+            &SqlQuery::new("INSERT INTO entries (id, kind, active) VALUES (?, ?, ?)")
+                .bind("two")
+                .bind("message")
+                .bind(0),
+        )
+        .run(&db)
+        .unwrap();
         let filters = join_sql_fragments(
             &[
                 SqlQuery::new("kind = ?").bind("message"),
@@ -271,9 +299,25 @@ mod tests {
     #[test]
     fn executes_parameterized_queries() {
         let db = Connection::open_in_memory().unwrap();
-        sql(&SqlQuery::new("CREATE TABLE values_table (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")).exec(&db).unwrap();
-        sql(&SqlQuery::new("INSERT INTO values_table (id, value) VALUES (?, ?)").bind(1).bind("one")).run(&db).unwrap();
-        sql(&SqlQuery::new("INSERT INTO values_table (id, value) VALUES (?, ?)").bind(2).bind("two")).run(&db).unwrap();
+        sql(&SqlQuery::new(
+            "CREATE TABLE values_table (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+        ))
+        .exec(&db)
+        .unwrap();
+        sql(
+            &SqlQuery::new("INSERT INTO values_table (id, value) VALUES (?, ?)")
+                .bind(1)
+                .bind("one"),
+        )
+        .run(&db)
+        .unwrap();
+        sql(
+            &SqlQuery::new("INSERT INTO values_table (id, value) VALUES (?, ?)")
+                .bind(2)
+                .bind("two"),
+        )
+        .run(&db)
+        .unwrap();
 
         let value = sql(&SqlQuery::new("SELECT value FROM values_table WHERE id = ?").bind(1))
             .get_row(&db, |row| row.get::<_, String>(0))

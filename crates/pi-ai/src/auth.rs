@@ -40,7 +40,10 @@ pub enum Credential {
 
 impl Credential {
     pub fn api_key(key: impl Into<String>) -> Self {
-        Credential::ApiKey(ApiKeyCredential { key: Some(key.into()), env: None })
+        Credential::ApiKey(ApiKeyCredential {
+            key: Some(key.into()),
+            env: None,
+        })
     }
 }
 
@@ -69,7 +72,9 @@ impl Default for AuthContext {
             env: Arc::new(|name| std::env::var(name).ok()),
             file_exists: Arc::new(|path| {
                 let expanded = if let Some(rest) = path.strip_prefix("~/") {
-                    std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or_else(|_| path.to_string())
+                    std::env::var("HOME")
+                        .map(|h| format!("{h}/{rest}"))
+                        .unwrap_or_else(|_| path.to_string())
                 } else {
                     path.to_string()
                 };
@@ -117,11 +122,7 @@ pub struct AuthCheck {
 /// AWS profiles, ADC files).
 pub trait ApiKeyAuth: Send + Sync {
     fn name(&self) -> &str;
-    fn check(
-        &self,
-        ctx: &AuthContext,
-        credential: Option<&ApiKeyCredential>,
-    ) -> Option<AuthCheck>;
+    fn check(&self, ctx: &AuthContext, credential: Option<&ApiKeyCredential>) -> Option<AuthCheck>;
     fn resolve(
         &self,
         ctx: &AuthContext,
@@ -158,10 +159,22 @@ pub trait OAuthAuth: Send + Sync {
 /// One prompt shown to the user during login.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuthPrompt {
-    Text { message: String, placeholder: Option<String> },
-    Secret { message: String, placeholder: Option<String> },
-    Select { message: String, options: Vec<AuthSelectOption> },
-    ManualCode { message: String, placeholder: Option<String> },
+    Text {
+        message: String,
+        placeholder: Option<String>,
+    },
+    Secret {
+        message: String,
+        placeholder: Option<String>,
+    },
+    Select {
+        message: String,
+        options: Vec<AuthSelectOption>,
+    },
+    ManualCode {
+        message: String,
+        placeholder: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -181,15 +194,23 @@ pub struct AuthInfoLink {
 /// Out-of-band event notified to the UI during login.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuthEvent {
-    Info { message: String, links: Vec<AuthInfoLink> },
-    AuthUrl { url: String, instructions: Option<String> },
+    Info {
+        message: String,
+        links: Vec<AuthInfoLink>,
+    },
+    AuthUrl {
+        url: String,
+        instructions: Option<String>,
+    },
     DeviceCode {
         user_code: String,
         verification_uri: String,
         interval_seconds: Option<f64>,
         expires_in_seconds: Option<u64>,
     },
-    Progress { message: String },
+    Progress {
+        message: String,
+    },
 }
 
 /// Login interaction callbacks serving both api-key and OAuth flows.
@@ -208,7 +229,9 @@ pub struct NoopAuthInteraction {
 
 impl NoopAuthInteraction {
     pub fn new() -> Self {
-        Self { error_message: "login requires an interactive prompt".to_string() }
+        Self {
+            error_message: "login requires an interactive prompt".to_string(),
+        }
     }
 }
 
@@ -237,7 +260,11 @@ pub struct ProviderAuth {
 pub trait CredentialStore: Send + Sync {
     fn read(&self, provider_id: &str) -> Option<Credential>;
     fn list(&self) -> Vec<CredentialInfo>;
-    fn modify(&self, provider_id: &str, f: &dyn Fn(Option<&Credential>) -> Option<Credential>) -> Option<Credential>;
+    fn modify(
+        &self,
+        provider_id: &str,
+        f: &dyn Fn(Option<&Credential>) -> Option<Credential>,
+    ) -> Option<Credential>;
     fn delete(&self, provider_id: &str);
 }
 
@@ -274,7 +301,11 @@ impl CredentialStore for InMemoryCredentialStore {
             .collect()
     }
 
-    fn modify(&self, provider_id: &str, f: &dyn Fn(Option<&Credential>) -> Option<Credential>) -> Option<Credential> {
+    fn modify(
+        &self,
+        provider_id: &str,
+        f: &dyn Fn(Option<&Credential>) -> Option<Credential>,
+    ) -> Option<Credential> {
         let mut entries = self.entries.lock().unwrap();
         let current = entries.get(provider_id);
         match f(current) {
@@ -298,7 +329,10 @@ pub struct EnvApiKeyAuth {
     env_vars: Vec<String>,
 }
 
-pub fn env_api_key_auth(name: impl Into<String>, env_vars: Vec<impl Into<String>>) -> Arc<dyn ApiKeyAuth> {
+pub fn env_api_key_auth(
+    name: impl Into<String>,
+    env_vars: Vec<impl Into<String>>,
+) -> Arc<dyn ApiKeyAuth> {
     Arc::new(EnvApiKeyAuth {
         name: name.into(),
         env_vars: env_vars.into_iter().map(|s| s.into()).collect(),
@@ -310,19 +344,34 @@ impl ApiKeyAuth for EnvApiKeyAuth {
         &self.name
     }
 
-    fn check(&self, ctx: &AuthContext, _credential: Option<&ApiKeyCredential>) -> Option<AuthCheck> {
+    fn check(
+        &self,
+        ctx: &AuthContext,
+        _credential: Option<&ApiKeyCredential>,
+    ) -> Option<AuthCheck> {
         if self.env_vars.iter().any(|v| ctx.env(v).is_some()) {
-            Some(AuthCheck { source: Some(self.env_vars.first().cloned().unwrap_or_default()), auth_type: "api_key" })
+            Some(AuthCheck {
+                source: Some(self.env_vars.first().cloned().unwrap_or_default()),
+                auth_type: "api_key",
+            })
         } else {
             None
         }
     }
 
-    fn resolve(&self, ctx: &AuthContext, credential: Option<&ApiKeyCredential>) -> Option<AuthResult> {
+    fn resolve(
+        &self,
+        ctx: &AuthContext,
+        credential: Option<&ApiKeyCredential>,
+    ) -> Option<AuthResult> {
         if let Some(cred) = credential {
             if cred.key.is_some() {
                 return Some(AuthResult {
-                    auth: ModelAuth { api_key: cred.key.clone(), headers: None, base_url: None },
+                    auth: ModelAuth {
+                        api_key: cred.key.clone(),
+                        headers: None,
+                        base_url: None,
+                    },
                     env: cred.env.clone(),
                     source: Some("stored credential".to_string()),
                 });
@@ -331,7 +380,11 @@ impl ApiKeyAuth for EnvApiKeyAuth {
         for env_var in &self.env_vars {
             if let Some(value) = ctx.env(env_var) {
                 return Some(AuthResult {
-                    auth: ModelAuth { api_key: Some(value), headers: None, base_url: None },
+                    auth: ModelAuth {
+                        api_key: Some(value),
+                        headers: None,
+                        base_url: None,
+                    },
                     env: None,
                     source: Some(env_var.clone()),
                 });

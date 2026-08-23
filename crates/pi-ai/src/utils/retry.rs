@@ -3,8 +3,8 @@
 //! retryable/non-retryable error classifier).
 
 use std::future::Future;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use regex::Regex;
@@ -187,7 +187,10 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = AssistantMessage>,
 {
-    let max_attempts = policy.filter(|p| p.enabled).map(|p| p.max_retries).unwrap_or(0);
+    let max_attempts = policy
+        .filter(|p| p.enabled)
+        .map(|p| p.max_retries)
+        .unwrap_or(0);
     let base_delay_ms = policy.map(|p| p.base_delay_ms).unwrap_or(0);
 
     let mut attempt = 0u32;
@@ -221,10 +224,21 @@ where
         }
 
         attempt += 1;
-        last_retry = Some((attempt, response.error_message().unwrap_or("Unknown error").to_string()));
+        last_retry = Some((
+            attempt,
+            response
+                .error_message()
+                .unwrap_or("Unknown error")
+                .to_string(),
+        ));
         let delay_ms = base_delay_ms.saturating_mul(1u64 << (attempt.saturating_sub(1).min(30)));
         if let Some(cb) = callbacks.and_then(|c| c.on_retry_scheduled.as_ref()) {
-            cb(attempt, max_attempts, delay_ms, last_retry.as_ref().unwrap().1.clone());
+            cb(
+                attempt,
+                max_attempts,
+                delay_ms,
+                last_retry.as_ref().unwrap().1.clone(),
+            );
         }
 
         // Normalize aborts during retry backoff to the same AssistantMessage
@@ -233,7 +247,12 @@ where
             Ok(()) => {}
             Err(RetrySleepAbort) => {
                 if let Some((n, _)) = last_retry {
-                    emit_finished(callbacks, false, n, last_retry.as_ref().map(|(_, m)| m.as_str()));
+                    emit_finished(
+                        callbacks,
+                        false,
+                        n,
+                        last_retry.as_ref().map(|(_, m)| m.as_str()),
+                    );
                 }
                 let mut response = response;
                 response.set_stop_reason(StopReason::Aborted);
@@ -248,7 +267,12 @@ where
     }
 }
 
-fn emit_finished(callbacks: Option<&RetryCallbacks<'_>>, success: bool, attempt: u32, final_error: Option<&str>) {
+fn emit_finished(
+    callbacks: Option<&RetryCallbacks<'_>>,
+    success: bool,
+    attempt: u32,
+    final_error: Option<&str>,
+) {
     if let Some(cb) = callbacks.and_then(|c| c.on_retry_finished.as_ref()) {
         cb(success, attempt, final_error.map(|s| s.to_string()));
     }
@@ -262,7 +286,10 @@ mod tests {
     use crate::providers::{faux_assistant_message, FauxAssistantOptions};
 
     fn msg(text: &str) -> AssistantMessage {
-        faux_assistant_message(vec![crate::providers::faux_text(text)], FauxAssistantOptions::default())
+        faux_assistant_message(
+            vec![crate::providers::faux_text(text)],
+            FauxAssistantOptions::default(),
+        )
     }
 
     fn err_msg(text: &str) -> AssistantMessage {
@@ -278,12 +305,19 @@ mod tests {
     fn aborted_msg() -> AssistantMessage {
         faux_assistant_message(
             vec![],
-            FauxAssistantOptions { stop_reason: Some(StopReason::Aborted), error_message: None },
+            FauxAssistantOptions {
+                stop_reason: Some(StopReason::Aborted),
+                error_message: None,
+            },
         )
     }
 
     fn policy(enabled: bool, max_retries: u32, base_delay_ms: u64) -> RetryPolicy {
-        RetryPolicy { enabled, max_retries, base_delay_ms }
+        RetryPolicy {
+            enabled,
+            max_retries,
+            base_delay_ms,
+        }
     }
 
     #[test]
@@ -305,7 +339,9 @@ mod tests {
 
     #[test]
     fn matches_upstream_request_buffer_exhaustion_wording() {
-        assert!(is_retryable_assistant_error(&err_msg("Error: exceeded request buffer limit while retrying upstream")));
+        assert!(is_retryable_assistant_error(&err_msg(
+            "Error: exceeded request buffer limit while retrying upstream"
+        )));
     }
 
     #[test]
@@ -329,13 +365,17 @@ mod tests {
 
     #[test]
     fn keeps_provider_limit_errors_non_retryable() {
-        assert!(!is_retryable_assistant_error(&err_msg("429 quota exceeded")));
+        assert!(!is_retryable_assistant_error(&err_msg(
+            "429 quota exceeded"
+        )));
     }
 
     #[test]
     fn classifies_assistant_error_messages() {
         assert!(is_retryable_assistant_error(&err_msg("overloaded_error")));
-        assert!(is_retryable_assistant_error(&err_msg("524 status code (no body)")));
+        assert!(is_retryable_assistant_error(&err_msg(
+            "524 status code (no body)"
+        )));
         // Non-error responses are never retryable.
         assert!(!is_retryable_assistant_error(&msg("not an error")));
     }
@@ -385,7 +425,10 @@ mod tests {
     #[tokio::test]
     async fn does_not_retry_a_non_retryable_error() {
         let mut calls = 0;
-        let (scheduled, finished) = (std::sync::atomic::AtomicU32::new(0), std::sync::atomic::AtomicU32::new(0));
+        let (scheduled, finished) = (
+            std::sync::atomic::AtomicU32::new(0),
+            std::sync::atomic::AtomicU32::new(0),
+        );
         let cb = RetryCallbacks {
             on_retry_scheduled: Some(Box::new(|_, _, _, _| {
                 scheduled.fetch_add(1, Ordering::SeqCst);
@@ -414,15 +457,19 @@ mod tests {
     #[tokio::test]
     async fn retries_a_transient_error_up_to_max_retries_then_returns_final_error() {
         let mut calls = 0;
-        let (scheduled, finished, finished_args) =
-            (std::sync::atomic::AtomicU32::new(0), std::sync::atomic::AtomicU32::new(0), std::sync::Mutex::new(None));
+        let (scheduled, finished, finished_args) = (
+            std::sync::atomic::AtomicU32::new(0),
+            std::sync::atomic::AtomicU32::new(0),
+            std::sync::Mutex::new(None),
+        );
         let cb = RetryCallbacks {
             on_retry_scheduled: Some(Box::new(|_, _, _, _| {
                 scheduled.fetch_add(1, Ordering::SeqCst);
             })),
             on_retry_finished: Some(Box::new(|ok, attempt, final_error| {
                 finished.fetch_add(1, Ordering::SeqCst);
-                *finished_args.lock().unwrap() = Some((ok, attempt, final_error.map(|s| s.to_string())));
+                *finished_args.lock().unwrap() =
+                    Some((ok, attempt, final_error.map(|s| s.to_string())));
             })),
             ..Default::default()
         };
@@ -511,7 +558,10 @@ mod tests {
     #[tokio::test]
     async fn does_not_retry_when_policy_is_disabled() {
         let mut calls = 0;
-        let (scheduled, finished) = (std::sync::atomic::AtomicU32::new(0), std::sync::atomic::AtomicU32::new(0));
+        let (scheduled, finished) = (
+            std::sync::atomic::AtomicU32::new(0),
+            std::sync::atomic::AtomicU32::new(0),
+        );
         let cb = RetryCallbacks {
             on_retry_scheduled: Some(Box::new(|_, _, _, _| {
                 scheduled.fetch_add(1, Ordering::SeqCst);
@@ -591,7 +641,8 @@ mod tests {
         let finished_args_cb = finished_args.clone();
         let cb = RetryCallbacks {
             on_retry_finished: Some(Box::new(move |ok, attempt, final_error| {
-                *finished_args_cb.lock().unwrap() = Some((ok, attempt, final_error.map(|s| s.to_string())));
+                *finished_args_cb.lock().unwrap() =
+                    Some((ok, attempt, final_error.map(|s| s.to_string())));
             })),
             ..Default::default()
         };
@@ -621,7 +672,10 @@ mod tests {
         assert_eq!(res.stop_reason(), Some(StopReason::Aborted));
         assert_eq!(res.error_message(), None);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(*finished_args.lock().unwrap(), Some((false, 1, Some("terminated".to_string()))));
+        assert_eq!(
+            *finished_args.lock().unwrap(),
+            Some((false, 1, Some("terminated".to_string())))
+        );
         let _ = task.await;
     }
 }

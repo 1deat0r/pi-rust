@@ -64,26 +64,47 @@ async fn stream_turn(
     // separately below); without this each turn would only see its own prompt.
     context.messages = runtime.messages[..runtime.messages.len() - 1].to_vec();
     if runtime.tools_enabled {
-        context.tools.push(pi_agent::tools::bash_tool(runtime.cwd.clone()));
-        context.tools.push(pi_agent::tools::read_tool(runtime.cwd.clone()));
-        context.tools.push(pi_agent::tools::write_tool(runtime.cwd.clone()));
-        context.tools.push(pi_agent::tools::edit_tool(runtime.cwd.clone()));
-        context.tools.push(crate::core::tools::ls_tool(runtime.cwd.clone()));
-        context.tools.push(crate::core::tools::find_tool(runtime.cwd.clone()));
-        context.tools.push(crate::core::tools::grep_tool(runtime.cwd.clone()));
+        context
+            .tools
+            .push(pi_agent::tools::bash_tool(runtime.cwd.clone()));
+        context
+            .tools
+            .push(pi_agent::tools::read_tool(runtime.cwd.clone()));
+        context
+            .tools
+            .push(pi_agent::tools::write_tool(runtime.cwd.clone()));
+        context
+            .tools
+            .push(pi_agent::tools::edit_tool(runtime.cwd.clone()));
+        context
+            .tools
+            .push(crate::core::tools::ls_tool(runtime.cwd.clone()));
+        context
+            .tools
+            .push(crate::core::tools::find_tool(runtime.cwd.clone()));
+        context
+            .tools
+            .push(crate::core::tools::grep_tool(runtime.cwd.clone()));
     }
     let models = runtime.models.clone();
     let api_key = std::env::var(config::ENV_KEY).ok();
     let stream_options = pi_ai::types::StreamOptions {
-        base: pi_ai::types::ProviderRequestOptions { api_key, ..Default::default() },
+        base: pi_ai::types::ProviderRequestOptions {
+            api_key,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let provider = runtime.provider.clone();
     let stream_fn: crate::run::StreamFn = if provider == "faux" {
-        let core = pi_ai::providers::FauxProviderCore::new(&pi_ai::providers::RegisterFauxProviderOptions::default());
+        let core = pi_ai::providers::FauxProviderCore::new(
+            &pi_ai::providers::RegisterFauxProviderOptions::default(),
+        );
         core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
             pi_ai::providers::faux_assistant_message(
-                vec![pi_ai::types::ContentBlock::text(format!("faux response to: {message}"))],
+                vec![pi_ai::types::ContentBlock::text(format!(
+                    "faux response to: {message}"
+                ))],
                 pi_ai::providers::FauxAssistantOptions::default(),
             ),
         )]);
@@ -113,7 +134,11 @@ async fn stream_turn(
 async fn maybe_auto_compact(runtime: &mut InteractiveRuntime) -> Result<bool, String> {
     let settings = pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS;
     let estimate = pi_agent::harness::compaction::estimate_context_tokens(&runtime.messages);
-    if !pi_agent::harness::compaction::should_compact(estimate.tokens, runtime.model.context_window, &settings) {
+    if !pi_agent::harness::compaction::should_compact(
+        estimate.tokens,
+        runtime.model.context_window,
+        &settings,
+    ) {
         return Ok(false);
     }
     let entries = runtime
@@ -144,7 +169,11 @@ async fn maybe_auto_compact(runtime: &mut InteractiveRuntime) -> Result<bool, St
             Box::pin(async move { models.complete_simple(&model, &ctx, Some(&opts)).await })
         });
     let options = pi_agent::harness::SimpleModels { complete_simple_fn };
-    let retry = pi_ai::utils::retry::RetryPolicy { enabled: false, max_retries: 0, base_delay_ms: 0 };
+    let retry = pi_ai::utils::retry::RetryPolicy {
+        enabled: false,
+        max_retries: 0,
+        base_delay_ms: 0,
+    };
     let result = pi_agent::harness::compaction::compact(
         &preparation,
         &options,
@@ -203,7 +232,9 @@ fn meta_short_cwd(cwd: &str) -> String {
 /// Aggregate cumulative usage + the latest assistant turn's cache-hit rate
 /// from the in-memory transcript, for the footer token totals (upstream
 /// `FooterComponent.render`).
-fn footer_usage_from_messages(messages: &[pi_agent::types::AgentMessage]) -> (Option<crate::core::usage_totals::UsageTotals>, Option<f64>) {
+fn footer_usage_from_messages(
+    messages: &[pi_agent::types::AgentMessage],
+) -> (Option<crate::core::usage_totals::UsageTotals>, Option<f64>) {
     use crate::core::usage_totals as ut;
     let mut totals = ut::create_usage_totals();
     let mut saw_any = false;
@@ -213,7 +244,9 @@ fn footer_usage_from_messages(messages: &[pi_agent::types::AgentMessage]) -> (Op
             pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(a)) => a,
             _ => continue,
         };
-        let Some(usage) = assistant.usage() else { continue };
+        let Some(usage) = assistant.usage() else {
+            continue;
+        };
         saw_any = true;
         ut::add_usage_to_totals(&mut totals, usage);
         let prompt_tokens = usage.input + usage.cache_read + usage.cache_write;
@@ -313,7 +346,11 @@ fn short_text(message: &pi_agent::types::AgentMessage) -> String {
                     text.push_str(t);
                 }
             }
-            format!("tool({}) {}", tr.tool_name(), text.chars().take(24).collect::<String>())
+            format!(
+                "tool({}) {}",
+                tr.tool_name(),
+                text.chars().take(24).collect::<String>()
+            )
         }
         _ => String::new(),
     }
@@ -368,7 +405,10 @@ async fn run_share(runtime: &InteractiveRuntime, dry_run: bool) -> Result<String
     let gh_auth = match run_gh(vec!["auth".to_string(), "status".to_string()]).await {
         Ok(out) => out,
         Err(_) => {
-            return Err("GitHub CLI (gh) is not installed. Install it from https://cli.github.com/".to_string())
+            return Err(
+                "GitHub CLI (gh) is not installed. Install it from https://cli.github.com/"
+                    .to_string(),
+            )
         }
     };
     if !gh_auth.status.success() {
@@ -396,7 +436,8 @@ async fn run_share(runtime: &InteractiveRuntime, dry_run: bool) -> Result<String
     let stdout = String::from_utf8_lossy(&gh_gist.stdout);
     let gist_url = stdout.lines().next().unwrap_or("").trim().to_string();
     let gist_id = gist_url.rsplit('/').next().unwrap_or("").to_string();
-    let viewer = std::env::var("PI_SHARE_VIEWER_URL").unwrap_or_else(|_| "https://pi.dev/session/".to_string());
+    let viewer = std::env::var("PI_SHARE_VIEWER_URL")
+        .unwrap_or_else(|_| "https://pi.dev/session/".to_string());
     Ok(format!("Share URL: {viewer}#{gist_id}\nGist: {gist_url}"))
 }
 
@@ -411,7 +452,10 @@ struct TuiAuthInteraction {
 impl pi_ai::auth::AuthInteraction for TuiAuthInteraction {
     fn prompt(&self, prompt: &pi_ai::auth::AuthPrompt) -> Result<String, String> {
         let message = match prompt {
-            pi_ai::auth::AuthPrompt::Text { message, placeholder } => {
+            pi_ai::auth::AuthPrompt::Text {
+                message,
+                placeholder,
+            } => {
                 let mut m = message.clone();
                 if let Some(p) = placeholder {
                     m.push_str(&format!(" ({p})"));
@@ -419,7 +463,10 @@ impl pi_ai::auth::AuthInteraction for TuiAuthInteraction {
                 m
             }
             pi_ai::auth::AuthPrompt::Secret { message, .. } => message.clone(),
-            pi_ai::auth::AuthPrompt::ManualCode { message, placeholder } => {
+            pi_ai::auth::AuthPrompt::ManualCode {
+                message,
+                placeholder,
+            } => {
                 let mut m = message.clone();
                 if let Some(p) = placeholder {
                     m.push_str(&format!(" ({p})"));
@@ -435,22 +482,32 @@ impl pi_ai::auth::AuthInteraction for TuiAuthInteraction {
             }
         };
         let mut terminal = self.terminal.lock().unwrap();
-        terminal.leave_raw().map_err(|e| format!("leave raw: {e}"))?;
+        terminal
+            .leave_raw()
+            .map_err(|e| format!("leave raw: {e}"))?;
         println!("\n{message}");
         let mut line = String::new();
         std::io::stdin()
             .read_line(&mut line)
             .map_err(|e| format!("read input: {e}"))?;
-        terminal.enter_raw().map_err(|e| format!("enter raw: {e}"))?;
+        terminal
+            .enter_raw()
+            .map_err(|e| format!("enter raw: {e}"))?;
         Ok(line.trim().to_string())
     }
 
     fn notify(&self, event: &pi_ai::auth::AuthEvent) {
         let msg = match event {
-            pi_ai::auth::AuthEvent::DeviceCode { user_code, verification_uri, .. } => {
+            pi_ai::auth::AuthEvent::DeviceCode {
+                user_code,
+                verification_uri,
+                ..
+            } => {
                 format!("Open {verification_uri} and enter code: {user_code}")
             }
-            pi_ai::auth::AuthEvent::AuthUrl { url, .. } => format!("Open this URL to sign in: {url}"),
+            pi_ai::auth::AuthEvent::AuthUrl { url, .. } => {
+                format!("Open this URL to sign in: {url}")
+            }
             pi_ai::auth::AuthEvent::Progress { message } => message.clone(),
             pi_ai::auth::AuthEvent::Info { message, .. } => message.clone(),
         };
@@ -510,7 +567,9 @@ async fn run_oauth_login(
 /// Wrap a modal in a renderable SharedComponent for the frame.
 fn modal_shared(modal: &mut Modal) -> SharedComponent {
     match modal {
-        Modal::Model(sel) | Modal::Thinking(sel) | Modal::Theme(sel) => sel.clone() as SharedComponent,
+        Modal::Model(sel) | Modal::Thinking(sel) | Modal::Theme(sel) => {
+            sel.clone() as SharedComponent
+        }
         Modal::Settings(panel) => panel.clone() as SharedComponent,
         Modal::Resume(sel, _) => sel.clone() as SharedComponent,
     }
@@ -520,7 +579,7 @@ fn modal_shared(modal: &mut Modal) -> SharedComponent {
 pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Result<(), String> {
     let mut settings = settings;
     let cwd = config::cwd();
-    let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+    let models = crate::core::model_registry::builtin_models();
     let provider = crate::run::resolve_run_provider(args.provider.as_deref(), &settings);
     let model_hint = crate::run::resolve_run_model(
         args.model.as_deref(),
@@ -530,7 +589,11 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     let model = if provider == "faux" {
         crate::run::build_faux_model(model_hint.as_deref())?
     } else {
-        crate::core::model_runtime::resolve_run_model_for_provider(&models, &provider, model_hint.as_deref())?
+        crate::core::model_runtime::resolve_run_model_for_provider(
+            &models,
+            &provider,
+            model_hint.as_deref(),
+        )?
     };
 
     // Session repo + initial session.
@@ -568,11 +631,29 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         persisted_until: 0,
     };
 
+    // Match the upstream non-blocking startup check: the TUI becomes usable
+    // immediately and the notification is added when the request completes.
+    let mut version_check = if std::env::var_os("PI_OFFLINE").is_some()
+        || std::env::var_os("PI_SKIP_VERSION_CHECK").is_some()
+    {
+        None
+    } else {
+        Some(tokio::spawn(
+            crate::core::version_check::check_for_new_pi_version(config::VERSION),
+        ))
+    };
+
     // Terminal + components.
     let mut terminal = TerminalBackend::new();
-    terminal.enter_raw().map_err(|e| format!("enter raw: {e}"))?;
+    terminal
+        .enter_raw()
+        .map_err(|e| format!("enter raw: {e}"))?;
 
-    it::tui_theme::load_theme(settings.get_theme_setting().unwrap_or(crate::theme::DEFAULT_THEME));
+    it::tui_theme::load_theme(
+        settings
+            .get_theme_setting()
+            .unwrap_or(crate::theme::DEFAULT_THEME),
+    );
     let mut hide_thinking = settings.get_hide_thinking_block();
     let mut thinking_level: String = settings
         .get_default_thinking_level()
@@ -603,9 +684,20 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     let mut pending_text = String::new();
 
     tree.focus(editor.clone());
+    tree.query_cell_size();
 
     let result = tokio::time::timeout(std::time::Duration::from_secs(24 * 60 * 60), async {
         loop {
+            if version_check.as_ref().is_some_and(|task| task.is_finished()) {
+                if let Some(task) = version_check.take() {
+                    if let Ok(Some(release)) = task.await {
+                        status_banner = format!(
+                            "Update available: pi {} — run `pi update` (https://pi.dev/changelog)",
+                            release.version
+                        );
+                    }
+                }
+            }
             // 1) Compose transcript (messages + streams + status banner).
             {
                 let mut md = transcript_md.lock().unwrap();
@@ -657,6 +749,9 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 }
             };
             if key_str.is_empty() {
+                continue;
+            }
+            if tree.consume_cell_size_response(&key_str) {
                 continue;
             }
             let key = parse_key(&key_str);
@@ -1385,14 +1480,13 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use pi_agent::fs::StdFileSystem;
     use pi_agent::session::jsonl::repo::CreateOptions;
-    use pi_agent::session::JsonlSessionRepo;
     use pi_agent::session::state::ForkOptions;
+    use pi_agent::session::JsonlSessionRepo;
 
     /// Serializes tests that mutate the process-global PATH /
     /// PI_SHARE_VIEWER_URL so parallel executions cannot race on the env.
@@ -1419,7 +1513,10 @@ mod tests {
             let old_viewer = std::env::var("PI_SHARE_VIEWER_URL").ok();
             std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), old_path));
             std::env::set_var("PI_SHARE_VIEWER_URL", viewer);
-            EnvGuard { old_path, old_viewer }
+            EnvGuard {
+                old_path,
+                old_viewer,
+            }
         }
 
         fn install_hermetic(bin_dir: &std::path::Path, viewer: &str) -> Self {
@@ -1427,7 +1524,10 @@ mod tests {
             let old_viewer = std::env::var("PI_SHARE_VIEWER_URL").ok();
             std::env::set_var("PATH", bin_dir.as_os_str());
             std::env::set_var("PI_SHARE_VIEWER_URL", viewer);
-            EnvGuard { old_path, old_viewer }
+            EnvGuard {
+                old_path,
+                old_viewer,
+            }
         }
     }
 
@@ -1446,7 +1546,10 @@ mod tests {
         let cwd = root.to_string_lossy().into_owned();
         let session_root = root.join("sessions");
         std::fs::create_dir_all(&session_root).unwrap();
-        let mut repo = JsonlSessionRepo::new(StdFileSystem::new(&cwd), session_root.to_string_lossy().into_owned());
+        let mut repo = JsonlSessionRepo::new(
+            StdFileSystem::new(&cwd),
+            session_root.to_string_lossy().into_owned(),
+        );
         let session_id = pi_agent::session::new_id();
         let session = repo
             .create(CreateOptions {
@@ -1458,7 +1561,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+        let models =
+            pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
         let model = crate::run::build_faux_model(None).unwrap();
         InteractiveRuntime {
             cwd,
@@ -1493,7 +1597,8 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(bin_dir.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(bin_dir.join("gh"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
         }
     }
 
@@ -1503,9 +1608,15 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let _env = env_lock();
         let runtime = test_runtime(&root).await;
-        install_fake_gh(&root.join("bin"), 0, Some("https://gist.github.com/fakeuser/abc123"));
+        install_fake_gh(
+            &root.join("bin"),
+            0,
+            Some("https://gist.github.com/fakeuser/abc123"),
+        );
         let _guard = EnvGuard::install(&root.join("bin"), "https://pi.dev/session/");
-        let msg = run_share(&runtime, false).await.expect("share should succeed");
+        let msg = run_share(&runtime, false)
+            .await
+            .expect("share should succeed");
         assert_eq!(
             msg,
             "Share URL: https://pi.dev/session/#abc123\nGist: https://gist.github.com/fakeuser/abc123"
@@ -1522,7 +1633,10 @@ mod tests {
         install_fake_gh(&root.join("bin"), 1, None);
         let _guard = EnvGuard::install(&root.join("bin"), "https://pi.dev/session/");
         let err = run_share(&runtime, false).await.unwrap_err();
-        assert_eq!(err, "GitHub CLI is not logged in. Run 'gh auth login' first.");
+        assert_eq!(
+            err,
+            "GitHub CLI is not logged in. Run 'gh auth login' first."
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1563,41 +1677,59 @@ mod tests {
         // Register faux in the models facade so complete_simple resolves
         // (mirrors RpcRuntime::new's scripted faux registration).
         {
-            use pi_ai::models::{create_provider, CreateProviderOptions, ProviderApiSpec, ProviderStreams};
+            use pi_ai::models::{
+                create_provider, CreateProviderOptions, ProviderApiSpec, ProviderStreams,
+            };
             use pi_ai::providers::{
                 faux_assistant_message, FauxAssistantOptions, FauxProviderCore, FauxResponseStep,
                 RegisterFauxProviderOptions,
             };
             let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
             core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
-                vec![pi_ai::types::ContentBlock::text("Compaction summary: history retained")],
+                vec![pi_ai::types::ContentBlock::text(
+                    "Compaction summary: history retained",
+                )],
                 FauxAssistantOptions::default(),
             ))]);
             let stream_core = core.clone();
-            let stream = Arc::new(move |model: &pi_ai::model::Model,
-                                        ctx: &pi_ai::types::Context,
-                                        _options: Option<&pi_ai::types::StreamOptions>| {
-                stream_core.stream(model, ctx, None)
-            });
-            let simple_core = core.clone();
-            let stream_simple = Arc::new(move |model: &pi_ai::model::Model,
-                                               ctx: &pi_ai::types::Context,
-                                               options: Option<&pi_ai::types::SimpleStreamOptions>| {
-                simple_core.stream(model, ctx, options)
-            });
-            runtime.models.set_provider(create_provider(CreateProviderOptions {
-                id: "faux".to_string(),
-                name: Some("Faux".to_string()),
-                base_url: None,
-                headers: None,
-                auth: pi_ai::auth::ProviderAuth {
-                    api_key: Some(pi_ai::auth::env_api_key_auth("Faux API key", vec!["FAUX_API_KEY"])),
-                    oauth: None,
+            let stream = Arc::new(
+                move |model: &pi_ai::model::Model,
+                      ctx: &pi_ai::types::Context,
+                      _options: Option<&pi_ai::types::StreamOptions>| {
+                    stream_core.stream(model, ctx, None)
                 },
-                models: core.models.clone(),
-                api: ProviderApiSpec::Single(ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }),
-                filter_models: None,
-            }));
+            );
+            let simple_core = core.clone();
+            let stream_simple = Arc::new(
+                move |model: &pi_ai::model::Model,
+                      ctx: &pi_ai::types::Context,
+                      options: Option<&pi_ai::types::SimpleStreamOptions>| {
+                    simple_core.stream(model, ctx, options)
+                },
+            );
+            runtime
+                .models
+                .set_provider(create_provider(CreateProviderOptions {
+                    id: "faux".to_string(),
+                    name: Some("Faux".to_string()),
+                    base_url: None,
+                    headers: None,
+                    auth: pi_ai::auth::ProviderAuth {
+                        api_key: Some(pi_ai::auth::env_api_key_auth(
+                            "Faux API key",
+                            vec!["FAUX_API_KEY"],
+                        )),
+                        oauth: None,
+                    },
+                    models: core.models.clone(),
+                    api: ProviderApiSpec::Single(ProviderStreams {
+                        stream,
+                        stream_simple,
+                        fetch_deferred: None,
+                        cancel_deferred: None,
+                    }),
+                    filter_models: None,
+                }));
         }
         // The env-key auth resolves when FAUX_API_KEY is set.
         std::env::set_var("FAUX_API_KEY", "test");
@@ -1606,36 +1738,50 @@ mod tests {
         // A few long messages push the estimate over window - reserve.
         for i in 0..8 {
             let text = format!("message {i}: {}", "x".repeat(400));
-            runtime.messages.push(pi_agent::agent::user_text_prompt(text, pi_ai::types::now_ms()));
+            runtime.messages.push(pi_agent::agent::user_text_prompt(
+                text,
+                pi_ai::types::now_ms(),
+            ));
         }
         // prepare_compaction reads session entries, so persist the messages.
         persist_messages(&mut runtime.session, &runtime.messages).await;
         runtime.persisted_until = runtime.messages.len();
         let estimate = pi_agent::harness::compaction::estimate_context_tokens(&runtime.messages);
         assert!(
-            pi_agent::harness::compaction::should_compact(estimate.tokens, runtime.model.context_window, &pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS),
+            pi_agent::harness::compaction::should_compact(
+                estimate.tokens,
+                runtime.model.context_window,
+                &pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS
+            ),
             "test setup: context should be over threshold (tokens={})",
             estimate.tokens
         );
-        let compacted = maybe_auto_compact(&mut runtime).await.expect("auto-compact");
+        let compacted = maybe_auto_compact(&mut runtime)
+            .await
+            .expect("auto-compact");
         assert!(compacted, "compaction should have run");
         // The context is now the summary message + retained tail.
         assert!(runtime.messages.len() >= 1, "context replaced");
         let first = &runtime.messages[0];
         let text: String = match first {
-            pi_agent::types::AgentMessage::Core(pi_ai::types::Message::User(u)) => match u.content() {
-                pi_ai::types::UserContentBody::Blocks(blocks) => blocks
-                    .iter()
-                    .filter_map(|b| match b {
-                        pi_ai::types::ContentBlock::Text { text, .. } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect(),
-                pi_ai::types::UserContentBody::String(s) => s.clone(),
-            },
+            pi_agent::types::AgentMessage::Core(pi_ai::types::Message::User(u)) => {
+                match u.content() {
+                    pi_ai::types::UserContentBody::Blocks(blocks) => blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            pi_ai::types::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect(),
+                    pi_ai::types::UserContentBody::String(s) => s.clone(),
+                }
+            }
             _ => String::new(),
         };
-        assert!(text.contains("Compaction summary"), "summary message: {text}");
+        assert!(
+            text.contains("Compaction summary"),
+            "summary message: {text}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1646,8 +1792,13 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let mut runtime = test_runtime(&root).await;
         runtime.model.context_window = 1_000_000;
-        runtime.messages.push(pi_agent::agent::user_text_prompt("hi".to_string(), pi_ai::types::now_ms()));
-        let compacted = maybe_auto_compact(&mut runtime).await.expect("auto-compact");
+        runtime.messages.push(pi_agent::agent::user_text_prompt(
+            "hi".to_string(),
+            pi_ai::types::now_ms(),
+        ));
+        let compacted = maybe_auto_compact(&mut runtime)
+            .await
+            .expect("auto-compact");
         assert!(!compacted, "no compaction under threshold");
         assert_eq!(runtime.messages.len(), 1);
         let _ = std::fs::remove_dir_all(&root);
@@ -1656,7 +1807,7 @@ mod tests {
     #[test]
     fn footer_usage_aggregates_assistant_messages_and_hit_rate() {
         use pi_ai::types::{Cost, Message, Usage};
-        let usage = |input: u64, cache_read: u64, output: u64| Usage {
+        let usage = |input: i64, cache_read: i64, output: i64| Usage {
             input,
             output,
             cache_read,
@@ -1664,7 +1815,13 @@ mod tests {
             cache_write_1h: None,
             reasoning: None,
             total_tokens: input + output + cache_read,
-            cost: Cost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, total: 0.01 },
+            cost: Cost {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                total: 0.01,
+            },
         };
         let with_usage = |u: Usage| -> pi_agent::types::AgentMessage {
             let mut msg = pi_ai::providers::faux_assistant_message(
@@ -1690,10 +1847,12 @@ mod tests {
 
     #[test]
     fn footer_usage_empty_when_no_assistant_usage() {
-        let messages = vec![pi_agent::agent::user_text_prompt("hi".to_string(), pi_ai::types::now_ms())];
+        let messages = vec![pi_agent::agent::user_text_prompt(
+            "hi".to_string(),
+            pi_ai::types::now_ms(),
+        )];
         let (totals, hit_rate) = footer_usage_from_messages(&messages);
         assert!(totals.is_none());
         assert!(hit_rate.is_none());
     }
-
 }

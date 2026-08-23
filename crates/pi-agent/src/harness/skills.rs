@@ -82,18 +82,29 @@ fn load_skills_from_dir_internal(
 
     let meta = match std::fs::metadata(dir) {
         Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LoadOutcome { skills, diagnostics },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return LoadOutcome {
+                skills,
+                diagnostics,
+            }
+        }
         Err(e) => {
             diagnostics.push(SkillDiagnostic {
                 code: "file_info_failed",
                 message: e.to_string(),
                 path: dir.to_string_lossy().into_owned(),
             });
-            return LoadOutcome { skills, diagnostics };
+            return LoadOutcome {
+                skills,
+                diagnostics,
+            };
         }
     };
     if !meta.is_dir() {
-        return LoadOutcome { skills, diagnostics };
+        return LoadOutcome {
+            skills,
+            diagnostics,
+        };
     }
 
     add_ignore_rules(dir, root_dir, matcher, &mut diagnostics);
@@ -106,7 +117,10 @@ fn load_skills_from_dir_internal(
                 message: e.to_string(),
                 path: dir.to_string_lossy().into_owned(),
             });
-            return LoadOutcome { skills, diagnostics };
+            return LoadOutcome {
+                skills,
+                diagnostics,
+            };
         }
     };
     let mut names: Vec<String> = Vec::new();
@@ -124,7 +138,10 @@ fn load_skills_from_dir_internal(
             }
             diagnostics.extend(result.diagnostics);
         }
-        return LoadOutcome { skills, diagnostics };
+        return LoadOutcome {
+            skills,
+            diagnostics,
+        };
     }
 
     names.sort_by(|a, b| {
@@ -137,7 +154,9 @@ fn load_skills_from_dir_internal(
             continue;
         }
         let full_path = dir.join(&name);
-        let is_dir = std::fs::metadata(&full_path).map(|m| m.is_dir()).unwrap_or(false);
+        let is_dir = std::fs::metadata(&full_path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
         let rel = relative_env_path(root_dir, &full_path);
         let ignore_path = if is_dir { format!("{rel}/") } else { rel };
         if matcher.ignores(&ignore_path) {
@@ -158,7 +177,10 @@ fn load_skills_from_dir_internal(
         }
         diagnostics.extend(result.diagnostics);
     }
-    LoadOutcome { skills, diagnostics }
+    LoadOutcome {
+        skills,
+        diagnostics,
+    }
 }
 
 struct LoadOutcome {
@@ -166,7 +188,12 @@ struct LoadOutcome {
     diagnostics: Vec<SkillDiagnostic>,
 }
 
-fn add_ignore_rules(dir: &Path, root_dir: &Path, matcher: &mut IgnoreMatcher, diagnostics: &mut Vec<SkillDiagnostic>) {
+fn add_ignore_rules(
+    dir: &Path,
+    root_dir: &Path,
+    matcher: &mut IgnoreMatcher,
+    diagnostics: &mut Vec<SkillDiagnostic>,
+) {
     let relative_dir = relative_env_path(root_dir, dir);
     let prefix = if relative_dir.is_empty() {
         String::new()
@@ -239,7 +266,10 @@ fn load_skill_from_file(file_path: &Path, parent_dir: &Path) -> SkillFileOutcome
                 message: e.to_string(),
                 path: file_path.to_string_lossy().into_owned(),
             });
-            return SkillFileOutcome { skill: None, diagnostics };
+            return SkillFileOutcome {
+                skill: None,
+                diagnostics,
+            };
         }
     };
     let Some((frontmatter, body)) = super::frontmatter::parse_frontmatter(&raw) else {
@@ -250,15 +280,26 @@ fn load_skill_from_file(file_path: &Path, parent_dir: &Path) -> SkillFileOutcome
                 path: file_path.to_string_lossy().into_owned(),
             });
         }
-        return SkillFileOutcome { skill: None, diagnostics };
+        return SkillFileOutcome {
+            skill: None,
+            diagnostics,
+        };
     };
 
     let description = frontmatter
         .get("description")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    if !is_declared_skill && description.as_deref().map(|d| d.trim().is_empty()).unwrap_or(true) {
-        return SkillFileOutcome { skill: None, diagnostics };
+    if !is_declared_skill
+        && description
+            .as_deref()
+            .map(|d| d.trim().is_empty())
+            .unwrap_or(true)
+    {
+        return SkillFileOutcome {
+            skill: None,
+            diagnostics,
+        };
     }
     for error in validate_description(description.as_deref()) {
         diagnostics.push(SkillDiagnostic {
@@ -273,7 +314,9 @@ fn load_skill_from_file(file_path: &Path, parent_dir: &Path) -> SkillFileOutcome
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let frontmatter_name = frontmatter.get("name").and_then(|v| v.as_str());
-    let name = frontmatter_name.map(|s| s.to_string()).unwrap_or_else(|| parent_dir_name.clone());
+    let name = frontmatter_name
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| parent_dir_name.clone());
     for error in validate_name(&name, &parent_dir_name) {
         diagnostics.push(SkillDiagnostic {
             code: "invalid_metadata",
@@ -283,10 +326,16 @@ fn load_skill_from_file(file_path: &Path, parent_dir: &Path) -> SkillFileOutcome
     }
 
     let Some(description) = description else {
-        return SkillFileOutcome { skill: None, diagnostics };
+        return SkillFileOutcome {
+            skill: None,
+            diagnostics,
+        };
     };
     if description.trim().is_empty() {
-        return SkillFileOutcome { skill: None, diagnostics };
+        return SkillFileOutcome {
+            skill: None,
+            diagnostics,
+        };
     }
 
     SkillFileOutcome {
@@ -295,7 +344,10 @@ fn load_skill_from_file(file_path: &Path, parent_dir: &Path) -> SkillFileOutcome
             description,
             content: body,
             file_path: file_path.to_string_lossy().into_owned(),
-            disable_model_invocation: frontmatter.get("disable-model-invocation").and_then(|v| v.as_bool()).unwrap_or(false),
+            disable_model_invocation: frontmatter
+                .get("disable-model-invocation")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         }),
         diagnostics,
     }
@@ -309,13 +361,24 @@ struct SkillFileOutcome {
 fn validate_name(name: &str, parent_dir_name: &str) -> Vec<String> {
     let mut errors = Vec::new();
     if name != parent_dir_name {
-        errors.push(format!("name \"{name}\" does not match parent directory \"{parent_dir_name}\""));
+        errors.push(format!(
+            "name \"{name}\" does not match parent directory \"{parent_dir_name}\""
+        ));
     }
     if name.chars().count() > MAX_NAME_LENGTH {
-        errors.push(format!("name exceeds {MAX_NAME_LENGTH} characters ({})", name.chars().count()));
+        errors.push(format!(
+            "name exceeds {MAX_NAME_LENGTH} characters ({})",
+            name.chars().count()
+        ));
     }
-    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
-        errors.push("name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)".to_string());
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        errors.push(
+            "name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)"
+                .to_string(),
+        );
     }
     if name.starts_with('-') || name.ends_with('-') {
         errors.push("name must not start or end with a hyphen".to_string());
@@ -332,7 +395,10 @@ fn validate_description(description: Option<&str>) -> Vec<String> {
         None => errors.push("description is required".to_string()),
         Some(d) if d.trim().is_empty() => errors.push("description is required".to_string()),
         Some(d) if d.chars().count() > MAX_DESCRIPTION_LENGTH => {
-            errors.push(format!("description exceeds {MAX_DESCRIPTION_LENGTH} characters ({})", d.chars().count()));
+            errors.push(format!(
+                "description exceeds {MAX_DESCRIPTION_LENGTH} characters ({})",
+                d.chars().count()
+            ));
         }
         _ => {}
     }
@@ -357,9 +423,7 @@ pub fn format_skill_invocation(skill: &Skill, additional_instructions: Option<&s
 
 fn dirname_env_path(path: &str) -> String {
     let normalized = path.trim_end_matches(['/', '\\']);
-    let separator_index = normalized
-        .rfind('/')
-        .or_else(|| normalized.rfind('\\'));
+    let separator_index = normalized.rfind('/').or_else(|| normalized.rfind('\\'));
     match separator_index {
         Some(1) if normalized.as_bytes().get(1) == Some(&b':') => normalized[..3].to_string(),
         Some(i) if i > 0 => normalized[..i].to_string(),
@@ -478,7 +542,12 @@ impl IgnoreRule {
         }
         let regex_str = glob_to_regex(body);
         let re = regex::Regex::new(&regex_str).ok()?;
-        Some(IgnoreRule { negated, dir_only, anchored, regex: re })
+        Some(IgnoreRule {
+            negated,
+            dir_only,
+            anchored,
+            regex: re,
+        })
     }
 }
 
@@ -526,7 +595,8 @@ mod tests {
     use super::*;
 
     fn tmpdir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("pi-agent-skills-{}-{}", std::process::id(), name));
+        let d =
+            std::env::temp_dir().join(format!("pi-agent-skills-{}-{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -542,29 +612,59 @@ mod tests {
     #[test]
     fn loads_declared_skills_recursively() {
         let dir = tmpdir("declared");
-        write(&dir.join("a/SKILL.md"), "---\nname: a\ndescription: Skill A\n---\nBody A\n");
-        write(&dir.join("b/nested/SKILL.md"), "---\nname: nested\ndescription: Skill N\n---\nBody N\n");
-        write(&dir.join("c/SKILL.md"), "---\nname: c\ndescription: Skill C\n---\nBody C\n");
-        write(&dir.join("c/extra.md"), "---\ndescription: Root inline\n---\nSkip me\n");
-        let (skills, diagnostics) = load_skills(&dir.to_string_lossy(), &[dir.to_string_lossy().into_owned()]);
+        write(
+            &dir.join("a/SKILL.md"),
+            "---\nname: a\ndescription: Skill A\n---\nBody A\n",
+        );
+        write(
+            &dir.join("b/nested/SKILL.md"),
+            "---\nname: nested\ndescription: Skill N\n---\nBody N\n",
+        );
+        write(
+            &dir.join("c/SKILL.md"),
+            "---\nname: c\ndescription: Skill C\n---\nBody C\n",
+        );
+        write(
+            &dir.join("c/extra.md"),
+            "---\ndescription: Root inline\n---\nSkip me\n",
+        );
+        let (skills, diagnostics) = load_skills(
+            &dir.to_string_lossy(),
+            &[dir.to_string_lossy().into_owned()],
+        );
         assert!(diagnostics.is_empty(), "unexpected: {diagnostics:?}");
         assert_eq!(skills.len(), 3);
         // a, b/nested, c sorted by dir traversal
         assert!(skills.iter().any(|s| s.name == "a"));
         assert!(skills.iter().any(|s| s.name == "nested"));
         assert!(skills.iter().any(|s| s.name == "c"));
-        assert!(!skills.iter().any(|s| s.name == "extra"), "inline md inside declared dir skipped");
+        assert!(
+            !skills.iter().any(|s| s.name == "extra"),
+            "inline md inside declared dir skipped"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn loads_root_inline_markdown_with_description() {
         let dir = tmpdir("inline");
-        write(&dir.join("tip.md"), "---\nname: tip\ndescription: A tip\n---\nTip body\n");
-        write(&dir.join("node_modules").join("n.md"), "---\ndescription: NM\n---\nx\n");
-        write(&dir.join(".hidden").join("h.md"), "---\ndescription: H\n---\nx\n");
+        write(
+            &dir.join("tip.md"),
+            "---\nname: tip\ndescription: A tip\n---\nTip body\n",
+        );
+        write(
+            &dir.join("node_modules").join("n.md"),
+            "---\ndescription: NM\n---\nx\n",
+        );
+        write(
+            &dir.join(".hidden").join("h.md"),
+            "---\ndescription: H\n---\nx\n",
+        );
         write(&dir.join("nodesc.md"), "no frontmatter\n");
-        let (skills, diagnostics) = load_skills(&dir.to_string_lossy(), &[dir.to_string_lossy().into_owned()]);
+        let (skills, diagnostics) = load_skills(
+            &dir.to_string_lossy(),
+            &[dir.to_string_lossy().into_owned()],
+        );
         // Upstream reports the name-vs-parentDir mismatch diagnostic for
         // inline files whose frontmatter name differs from the root dir, but
         // still loads the skill.
@@ -578,9 +678,18 @@ mod tests {
     fn ignore_files_exclude_skills() {
         let dir = tmpdir("ignore");
         write(&dir.join(".gitignore"), "skipme/\n");
-        write(&dir.join("keep/SKILL.md"), "---\nname: keep\ndescription: K\n---\nK\n");
-        write(&dir.join("skipme/SKILL.md"), "---\nname: skipme\ndescription: S\n---\nS\n");
-        let (skills, diagnostics) = load_skills(&dir.to_string_lossy(), &[dir.to_string_lossy().into_owned()]);
+        write(
+            &dir.join("keep/SKILL.md"),
+            "---\nname: keep\ndescription: K\n---\nK\n",
+        );
+        write(
+            &dir.join("skipme/SKILL.md"),
+            "---\nname: skipme\ndescription: S\n---\nS\n",
+        );
+        let (skills, diagnostics) = load_skills(
+            &dir.to_string_lossy(),
+            &[dir.to_string_lossy().into_owned()],
+        );
         assert!(diagnostics.is_empty(), "unexpected: {diagnostics:?}");
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "keep");
@@ -590,10 +699,23 @@ mod tests {
     #[test]
     fn invalid_metadata_is_diagnosed() {
         let dir = tmpdir("invalid");
-        write(&dir.join("BAD/SKILL.md"), "---\nname: Bad_Name\ndescription: Skill\n---\nB\n");
-        write(&dir.join("nodesc/SKILL.md"), "---\nname: nodesc\n---\nno desc\n");
-        let (skills, diagnostics) = load_skills(&dir.to_string_lossy(), &[dir.to_string_lossy().into_owned()]);
-        assert_eq!(skills.len(), 1, "nodesc (missing description) produces no skill");
+        write(
+            &dir.join("BAD/SKILL.md"),
+            "---\nname: Bad_Name\ndescription: Skill\n---\nB\n",
+        );
+        write(
+            &dir.join("nodesc/SKILL.md"),
+            "---\nname: nodesc\n---\nno desc\n",
+        );
+        let (skills, diagnostics) = load_skills(
+            &dir.to_string_lossy(),
+            &[dir.to_string_lossy().into_owned()],
+        );
+        assert_eq!(
+            skills.len(),
+            1,
+            "nodesc (missing description) produces no skill"
+        );
         assert_eq!(skills[0].name, "Bad_Name");
         assert!(!diagnostics.is_empty());
         assert!(diagnostics.iter().any(|d| d.code == "invalid_metadata"));

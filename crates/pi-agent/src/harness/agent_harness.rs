@@ -36,8 +36,8 @@ use pi_ai::types::{AssistantMessage, DeferredHandle, SimpleStreamOptions, Usage}
 use pi_ai::utils::retry::RetryPolicy;
 use pi_telemetry::{InMemoryTelemetryContext, SpanHandle, SpanOptions, TelemetryContext};
 
-use crate::harness::compaction::compaction::{CompactionSettings, DEFAULT_COMPACTION_SETTINGS};
 use crate::fs::FileSystem;
+use crate::harness::compaction::compaction::{CompactionSettings, DEFAULT_COMPACTION_SETTINGS};
 use crate::harness::models::BoxFuture;
 use crate::harness::result::TaggedError;
 use crate::session::session::Session;
@@ -72,7 +72,9 @@ impl HarnessTelemetryContext {
         callback: impl FnOnce(&SpanHandle) -> T,
     ) -> T {
         match self {
-            HarnessTelemetryContext::Noop => pi_telemetry::NOOP_TELEMETRY_CONTEXT.start_span(options, callback),
+            HarnessTelemetryContext::Noop => {
+                pi_telemetry::NOOP_TELEMETRY_CONTEXT.start_span(options, callback)
+            }
             HarnessTelemetryContext::InMemory(ctx) => ctx.start_span(options, callback),
         }
     }
@@ -108,57 +110,84 @@ impl HarnessError {
         HarnessError::Tagged(TaggedError::new(tag, message))
     }
     pub fn not_implemented(operation: impl Into<String>) -> Self {
-        HarnessError::NotImplemented { operation: operation.into() }
+        HarnessError::NotImplemented {
+            operation: operation.into(),
+        }
     }
     pub fn closed() -> Self {
         HarnessError::Closed
     }
     pub fn fault(message: impl Into<String>) -> Self {
-        HarnessError::Fault { message: message.into() }
+        HarnessError::Fault {
+            message: message.into(),
+        }
     }
 
     /// Convenience constructors matching the upstream TaggedError classes.
     pub fn lane_busy(lane: &str, operation_id: &str, operation_kind: &str) -> Self {
-        HarnessError::tagged("LaneBusy", format!("lane {lane} is busy")).with_payload("lane", lane.to_string())
+        HarnessError::tagged("LaneBusy", format!("lane {lane} is busy"))
+            .with_payload("lane", lane.to_string())
             .with_payload("operationId", operation_id.to_string())
             .with_payload("operationKind", operation_kind.to_string())
     }
     pub fn missing_identities(lane: &str, tools: Vec<String>, models: Vec<String>) -> Self {
-        HarnessError::tagged("MissingIdentities", format!("lane {lane} is missing tools/models"))
-            .with_payload("lane", lane.to_string())
-            .with_payload("tools", serde_json::to_value(tools).unwrap_or_default())
-            .with_payload("models", serde_json::to_value(models).unwrap_or_default())
+        HarnessError::tagged(
+            "MissingIdentities",
+            format!("lane {lane} is missing tools/models"),
+        )
+        .with_payload("lane", lane.to_string())
+        .with_payload("tools", serde_json::to_value(tools).unwrap_or_default())
+        .with_payload("models", serde_json::to_value(models).unwrap_or_default())
     }
     pub fn no_active_run(lane: &str) -> Self {
-        HarnessError::tagged("NoActiveRun", format!("no active run in lane {lane}")).with_payload("lane", lane.to_string())
+        HarnessError::tagged("NoActiveRun", format!("no active run in lane {lane}"))
+            .with_payload("lane", lane.to_string())
     }
     pub fn no_active_operation(lane: &str) -> Self {
-        HarnessError::tagged("NoActiveOperation", format!("no active operation in lane {lane}")).with_payload("lane", lane.to_string())
+        HarnessError::tagged(
+            "NoActiveOperation",
+            format!("no active operation in lane {lane}"),
+        )
+        .with_payload("lane", lane.to_string())
     }
     pub fn nothing_to_resume(lane: &str) -> Self {
-        HarnessError::tagged("NothingToResume", format!("nothing to resume in lane {lane}")).with_payload("lane", lane.to_string())
+        HarnessError::tagged(
+            "NothingToResume",
+            format!("nothing to resume in lane {lane}"),
+        )
+        .with_payload("lane", lane.to_string())
     }
     pub fn invalid_message(lane: &str, reason: &str) -> Self {
-        HarnessError::tagged("InvalidMessage", format!("invalid message for lane {lane}: {reason}"))
-            .with_payload("lane", lane.to_string())
-            .with_payload("reason", reason.to_string())
+        HarnessError::tagged(
+            "InvalidMessage",
+            format!("invalid message for lane {lane}: {reason}"),
+        )
+        .with_payload("lane", lane.to_string())
+        .with_payload("reason", reason.to_string())
     }
     pub fn unknown_skill(name: &str) -> Self {
-        HarnessError::tagged("UnknownSkill", format!("unknown skill {name}")).with_payload("name", name.to_string())
+        HarnessError::tagged("UnknownSkill", format!("unknown skill {name}"))
+            .with_payload("name", name.to_string())
     }
     pub fn unknown_template(name: &str) -> Self {
-        HarnessError::tagged("UnknownTemplate", format!("unknown prompt template {name}")).with_payload("name", name.to_string())
+        HarnessError::tagged("UnknownTemplate", format!("unknown prompt template {name}"))
+            .with_payload("name", name.to_string())
     }
     pub fn unknown_target(target_id: &str) -> Self {
-        HarnessError::tagged("UnknownTarget", format!("unknown target {target_id}")).with_payload("targetId", target_id.to_string())
+        HarnessError::tagged("UnknownTarget", format!("unknown target {target_id}"))
+            .with_payload("targetId", target_id.to_string())
     }
     pub fn unknown_queue_item(lane: &str, entry_id: &str) -> Self {
-        HarnessError::tagged("UnknownQueueItem", format!("unknown queued item {entry_id} in lane {lane}"))
-            .with_payload("lane", lane.to_string())
-            .with_payload("entryId", entry_id)
+        HarnessError::tagged(
+            "UnknownQueueItem",
+            format!("unknown queued item {entry_id} in lane {lane}"),
+        )
+        .with_payload("lane", lane.to_string())
+        .with_payload("entryId", entry_id)
     }
     pub fn lane_exists(lane: &str) -> Self {
-        HarnessError::tagged("LaneExists", format!("lane {lane} exists")).with_payload("lane", lane.to_string())
+        HarnessError::tagged("LaneExists", format!("lane {lane} exists"))
+            .with_payload("lane", lane.to_string())
     }
     pub fn invalid_lane(lane: &str, reason: &str) -> Self {
         HarnessError::tagged("InvalidLane", format!("invalid lane {lane}: {reason}"))
@@ -166,7 +195,11 @@ impl HarnessError {
             .with_payload("reason", reason.to_string())
     }
     pub fn nothing_to_compact(lane: &str) -> Self {
-        HarnessError::tagged("NothingToCompact", format!("nothing to compact in lane {lane}")).with_payload("lane", lane.to_string())
+        HarnessError::tagged(
+            "NothingToCompact",
+            format!("nothing to compact in lane {lane}"),
+        )
+        .with_payload("lane", lane.to_string())
     }
 
     fn with_payload(mut self, key: &str, value: impl Into<serde_json::Value>) -> Self {
@@ -184,7 +217,9 @@ impl std::fmt::Display for HarnessError {
             HarnessError::NotImplemented { operation } => {
                 write!(f, "AgentHarness.{operation} is not implemented yet")
             }
-            HarnessError::Closed => write!(f, "AgentHarness was closed while the operation was active"),
+            HarnessError::Closed => {
+                write!(f, "AgentHarness was closed while the operation was active")
+            }
             HarnessError::Fault { message } => write!(f, "HarnessFault: {message}"),
         }
     }
@@ -205,44 +240,85 @@ impl From<SessionError> for HarnessError {
 /// Run invocation outcome (upstream `RunOutcome`).
 #[derive(Debug, Clone)]
 pub enum RunOutcome {
-    Completed { leaf_id: String, final_entry_id: String, final_message: AssistantMessage },
-    Aborted { leaf_id: String, final_entry_id: String, final_message: AssistantMessage },
+    Completed {
+        leaf_id: String,
+        final_entry_id: String,
+        final_message: AssistantMessage,
+    },
+    Aborted {
+        leaf_id: String,
+        final_entry_id: String,
+        final_message: AssistantMessage,
+    },
     Failed {
         leaf_id: String,
         error: OperationError,
         final_entry_id: Option<String>,
         final_message: Option<AssistantMessage>,
     },
-    Suspended { leaf_id: String, final_entry_id: String, deferred: DeferredHandle },
+    Suspended {
+        leaf_id: String,
+        final_entry_id: String,
+        deferred: DeferredHandle,
+    },
 }
 
 /// Compaction invocation outcome (upstream `CompactionOutcome`).
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)] // 1:1 upstream union; boxing would diverge
 pub enum CompactionOutcome {
-    Completed { leaf_id: String, entry: Entry },
-    Declined { leaf_id: String },
-    Aborted { leaf_id: String },
-    Failed { leaf_id: String, error: OperationError },
+    Completed {
+        leaf_id: String,
+        entry: Entry,
+    },
+    Declined {
+        leaf_id: String,
+    },
+    Aborted {
+        leaf_id: String,
+    },
+    Failed {
+        leaf_id: String,
+        error: OperationError,
+    },
 }
 
 /// Navigation invocation outcome (upstream `NavigationOutcome`).
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)] // 1:1 upstream union; boxing would diverge
 pub enum NavigationOutcome {
-    Completed { new_leaf_id: Option<String>, summary_entry: Option<Entry> },
-    Declined { leaf_id: Option<String> },
-    Aborted { leaf_id: Option<String> },
-    Failed { leaf_id: Option<String>, error: OperationError },
+    Completed {
+        new_leaf_id: Option<String>,
+        summary_entry: Option<Entry>,
+    },
+    Declined {
+        leaf_id: Option<String>,
+    },
+    Aborted {
+        leaf_id: Option<String>,
+    },
+    Failed {
+        leaf_id: Option<String>,
+        error: OperationError,
+    },
 }
 
 /// Resume outcome tagging the recovered operation kind (upstream
 /// `ResumeOutcome`).
 #[derive(Debug, Clone)]
 pub enum ResumeOutcome {
-    Run { run_id: String, outcome: RunOutcome },
-    Compaction { run_id: String, outcome: CompactionOutcome },
-    Navigation { run_id: String, outcome: NavigationOutcome },
+    Run {
+        run_id: String,
+        outcome: RunOutcome,
+    },
+    Compaction {
+        run_id: String,
+        outcome: CompactionOutcome,
+    },
+    Navigation {
+        run_id: String,
+        outcome: NavigationOutcome,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -439,21 +515,55 @@ pub struct SessionSnapshot {
 /// The next action a manual driver should execute (upstream `ActionInfo`).
 #[derive(Debug, Clone)]
 pub enum ActionInfo {
-    AppendEntry { entry_type: String, entry_id: String },
-    AppendRecord { record_type: String },
-    MoveLane { to: Option<String> },
-    SetFact { fact: String },
-    TryFinishRun { outcome: String },
-    FinishOperation { outcome: String },
+    AppendEntry {
+        entry_type: String,
+        entry_id: String,
+    },
+    AppendRecord {
+        record_type: String,
+    },
+    MoveLane {
+        to: Option<String>,
+    },
+    SetFact {
+        fact: String,
+    },
+    TryFinishRun {
+        outcome: String,
+    },
+    FinishOperation {
+        outcome: String,
+    },
     CommitFollowUp,
-    ConsumeQueueItem { queue: String, entry_id: String },
-    ApplyPendingWrite { entry_id: String },
-    StreamAssistant { step: String, attempt: u32 },
-    ExecuteTool { tool_call_id: String, tool_name: String },
-    FetchDeferred { provider: String, id: String },
-    CancelDeferred { provider: String, id: String },
-    Hook { name: String },
-    Sleep { delay_ms: u64 },
+    ConsumeQueueItem {
+        queue: String,
+        entry_id: String,
+    },
+    ApplyPendingWrite {
+        entry_id: String,
+    },
+    StreamAssistant {
+        step: String,
+        attempt: u32,
+    },
+    ExecuteTool {
+        tool_call_id: String,
+        tool_name: String,
+    },
+    FetchDeferred {
+        provider: String,
+        id: String,
+    },
+    CancelDeferred {
+        provider: String,
+        id: String,
+    },
+    Hook {
+        name: String,
+    },
+    Sleep {
+        delay_ms: u64,
+    },
 }
 
 /// Hook names (upstream `HookName`).
@@ -521,7 +631,10 @@ pub struct HarnessTool {
 
 impl std::fmt::Debug for HarnessTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HarnessTool").field("name", &self.tool.name).field("replay", &self.replay).finish_non_exhaustive()
+        f.debug_struct("HarnessTool")
+            .field("name", &self.tool.name)
+            .field("replay", &self.replay)
+            .finish_non_exhaustive()
     }
 }
 
@@ -611,7 +724,8 @@ pub struct StreamOptionsPatch {
 pub type EntryProjector = Arc<dyn Fn(&Entry) -> Vec<AgentMessage> + Send + Sync>;
 /// Converts agent messages to provider `Message`s (upstream
 /// `toProviderMessages`).
-pub type ProviderMessageConverter = Arc<dyn Fn(&[AgentMessage]) -> Vec<pi_ai::types::Message> + Send + Sync>;
+pub type ProviderMessageConverter =
+    Arc<dyn Fn(&[AgentMessage]) -> Vec<pi_ai::types::Message> + Send + Sync>;
 
 /// Event handler callback used by the harness events surface.
 pub type EventHandler = Arc<dyn Fn(&serde_json::Value) + Send + Sync>;
@@ -627,7 +741,10 @@ pub struct WatchHandle<TSnapshot> {
 
 impl<TSnapshot> WatchHandle<TSnapshot> {
     pub fn new(snapshot: TSnapshot, unsubscribe: Option<Box<dyn FnOnce() + Send>>) -> Self {
-        Self { snapshot, unsubscribe }
+        Self {
+            snapshot,
+            unsubscribe,
+        }
     }
 }
 
@@ -726,23 +843,57 @@ pub trait AgentLane: Send + Sync {
     fn lane_name(&self) -> &str;
 
     async fn get_leaf_id(&self) -> Result<Option<String>, SessionError>;
-    async fn prompt_text(&self, text: &str, images: &[ImageContent]) -> Result<RunResultValue, HarnessError>;
-    async fn prompt_messages(&self, messages: &[AgentMessage]) -> Result<RunResultValue, HarnessError>;
-    async fn skill(&self, name: &str, additional_instructions: Option<&str>) -> Result<RunResultValue, HarnessError>;
-    async fn prompt_from_template(&self, name: &str, args: Option<&[String]>) -> Result<RunResultValue, HarnessError>;
-    async fn compact(&self, custom_instructions: Option<&str>) -> Result<CompactionResultValue, HarnessError>;
-    async fn navigate_tree(&self, target_id: Option<&str>, options: Option<&NavigateOptions>)
-        -> Result<NavigationResultValue, HarnessError>;
+    async fn prompt_text(
+        &self,
+        text: &str,
+        images: &[ImageContent],
+    ) -> Result<RunResultValue, HarnessError>;
+    async fn prompt_messages(
+        &self,
+        messages: &[AgentMessage],
+    ) -> Result<RunResultValue, HarnessError>;
+    async fn skill(
+        &self,
+        name: &str,
+        additional_instructions: Option<&str>,
+    ) -> Result<RunResultValue, HarnessError>;
+    async fn prompt_from_template(
+        &self,
+        name: &str,
+        args: Option<&[String]>,
+    ) -> Result<RunResultValue, HarnessError>;
+    async fn compact(
+        &self,
+        custom_instructions: Option<&str>,
+    ) -> Result<CompactionResultValue, HarnessError>;
+    async fn navigate_tree(
+        &self,
+        target_id: Option<&str>,
+        options: Option<&NavigateOptions>,
+    ) -> Result<NavigationResultValue, HarnessError>;
     async fn resume(&self) -> Result<ResumeOutcome, HarnessError>;
     async fn abort(&self) -> Result<AbortResultValue, HarnessError>;
-    async fn steer_text(&self, text: &str, images: &[ImageContent]) -> Result<String, HarnessError>;
+    async fn steer_text(&self, text: &str, images: &[ImageContent])
+        -> Result<String, HarnessError>;
     async fn steer_message(&self, message: &AgentMessage) -> Result<String, HarnessError>;
-    async fn follow_up_text(&self, text: &str, images: &[ImageContent]) -> Result<String, HarnessError>;
+    async fn follow_up_text(
+        &self,
+        text: &str,
+        images: &[ImageContent],
+    ) -> Result<String, HarnessError>;
     async fn follow_up_message(&self, message: &AgentMessage) -> Result<String, HarnessError>;
-    async fn next_run_text(&self, text: &str, images: &[ImageContent]) -> Result<String, HarnessError>;
+    async fn next_run_text(
+        &self,
+        text: &str,
+        images: &[ImageContent],
+    ) -> Result<String, HarnessError>;
     async fn next_run_message(&self, message: &AgentMessage) -> Result<String, HarnessError>;
     async fn cancel_queued(&self, entry_id: &str) -> Result<CancelQueuedOutcome, HarnessError>;
-    async fn record_usage(&self, usage: &Usage, options: Option<&RecordUsageOptions>) -> Result<(), HarnessError>;
+    async fn record_usage(
+        &self,
+        usage: &Usage,
+        options: Option<&RecordUsageOptions>,
+    ) -> Result<(), HarnessError>;
     async fn wait_for_idle(&self) -> Result<(), HarnessError>;
     async fn run_when_idle(&self, callback: RunWhenIdleCallback) -> Result<(), HarnessError>;
     async fn peek_action(&self) -> Result<Option<ActionInfo>, HarnessError>;
@@ -805,7 +956,10 @@ impl<F: FileSystem> std::fmt::Debug for AgentHarness<F> {
             .field("model", &self.model.id)
             .field("thinking_level", &self.thinking_level)
             .field("active_tool_names", &self.active_tool_names)
-            .field("tools", &self.tools.iter().map(|t| t.name()).collect::<Vec<_>>())
+            .field(
+                "tools",
+                &self.tools.iter().map(|t| t.name()).collect::<Vec<_>>(),
+            )
             .field("stream_options", &"<stream_options>")
             .field("retry_policy", &self.retry_policy)
             .field("compaction_settings", &self.compaction_settings)
@@ -820,10 +974,15 @@ impl<F: FileSystem> AgentHarness<F> {
     /// Open a harness for a record-free session. Sessions that already
     /// contain records reject with `HarnessNotImplemented("create.restore")`
     /// until restore is ported (upstream behavior).
-    pub async fn create(options: AgentHarnessOptions<F>) -> Result<(AgentHarness<F>, Vec<SuspendedOperation>), HarnessError> {
+    pub async fn create(
+        options: AgentHarnessOptions<F>,
+    ) -> Result<(AgentHarness<F>, Vec<SuspendedOperation>), HarnessError> {
         let records = options
             .session
-            .find_records(&RecordQuery { limit: Some(1), ..Default::default() })
+            .find_records(&RecordQuery {
+                limit: Some(1),
+                ..Default::default()
+            })
             .await
             .map_err(HarnessError::from)?;
         if !records.is_empty() {
@@ -841,8 +1000,15 @@ impl<F: FileSystem> AgentHarness<F> {
                 .map(|tools| tools.iter().map(|t| t.name().to_string()).collect())
                 .unwrap_or_default()
         });
-        let retry_policy = options.retry.clone().unwrap_or(RetryPolicy { enabled: false, max_retries: 0, base_delay_ms: 1000 });
-        let compaction_settings = options.compaction.clone().unwrap_or(DEFAULT_COMPACTION_SETTINGS);
+        let retry_policy = options.retry.clone().unwrap_or(RetryPolicy {
+            enabled: false,
+            max_retries: 0,
+            base_delay_ms: 1000,
+        });
+        let compaction_settings = options
+            .compaction
+            .clone()
+            .unwrap_or(DEFAULT_COMPACTION_SETTINGS);
         Self {
             name: "main".to_string(),
             session: options.session,
@@ -887,7 +1053,11 @@ impl<F: FileSystem> AgentHarness<F> {
     }
 
     /// Create a new lane (upstream `createLane(name, at)`); unimplemented.
-    pub async fn create_lane(&self, _name: &str, _at: Option<&str>) -> Result<Box<dyn AgentLane>, HarnessError> {
+    pub async fn create_lane(
+        &self,
+        _name: &str,
+        _at: Option<&str>,
+    ) -> Result<Box<dyn AgentLane>, HarnessError> {
         self.unavailable("createLane")
     }
 
@@ -907,23 +1077,41 @@ impl<F: FileSystem> AgentLane for AgentHarness<F> {
         self.session.get_leaf_id().await
     }
 
-    async fn prompt_text(&self, _text: &str, _images: &[ImageContent]) -> Result<RunResultValue, HarnessError> {
+    async fn prompt_text(
+        &self,
+        _text: &str,
+        _images: &[ImageContent],
+    ) -> Result<RunResultValue, HarnessError> {
         self.unavailable("prompt")
     }
 
-    async fn prompt_messages(&self, _messages: &[AgentMessage]) -> Result<RunResultValue, HarnessError> {
+    async fn prompt_messages(
+        &self,
+        _messages: &[AgentMessage],
+    ) -> Result<RunResultValue, HarnessError> {
         self.unavailable("prompt")
     }
 
-    async fn skill(&self, _name: &str, _additional_instructions: Option<&str>) -> Result<RunResultValue, HarnessError> {
+    async fn skill(
+        &self,
+        _name: &str,
+        _additional_instructions: Option<&str>,
+    ) -> Result<RunResultValue, HarnessError> {
         self.unavailable("skill")
     }
 
-    async fn prompt_from_template(&self, _name: &str, _args: Option<&[String]>) -> Result<RunResultValue, HarnessError> {
+    async fn prompt_from_template(
+        &self,
+        _name: &str,
+        _args: Option<&[String]>,
+    ) -> Result<RunResultValue, HarnessError> {
         self.unavailable("promptFromTemplate")
     }
 
-    async fn compact(&self, _custom_instructions: Option<&str>) -> Result<CompactionResultValue, HarnessError> {
+    async fn compact(
+        &self,
+        _custom_instructions: Option<&str>,
+    ) -> Result<CompactionResultValue, HarnessError> {
         self.unavailable("compact")
     }
 
@@ -943,7 +1131,11 @@ impl<F: FileSystem> AgentLane for AgentHarness<F> {
         self.unavailable("abort")
     }
 
-    async fn steer_text(&self, _text: &str, _images: &[ImageContent]) -> Result<String, HarnessError> {
+    async fn steer_text(
+        &self,
+        _text: &str,
+        _images: &[ImageContent],
+    ) -> Result<String, HarnessError> {
         self.unavailable("steer")
     }
 
@@ -951,7 +1143,11 @@ impl<F: FileSystem> AgentLane for AgentHarness<F> {
         self.unavailable("steer")
     }
 
-    async fn follow_up_text(&self, _text: &str, _images: &[ImageContent]) -> Result<String, HarnessError> {
+    async fn follow_up_text(
+        &self,
+        _text: &str,
+        _images: &[ImageContent],
+    ) -> Result<String, HarnessError> {
         self.unavailable("followUp")
     }
 
@@ -959,7 +1155,11 @@ impl<F: FileSystem> AgentLane for AgentHarness<F> {
         self.unavailable("followUp")
     }
 
-    async fn next_run_text(&self, _text: &str, _images: &[ImageContent]) -> Result<String, HarnessError> {
+    async fn next_run_text(
+        &self,
+        _text: &str,
+        _images: &[ImageContent],
+    ) -> Result<String, HarnessError> {
         self.unavailable("nextRun")
     }
 
@@ -971,7 +1171,11 @@ impl<F: FileSystem> AgentLane for AgentHarness<F> {
         self.unavailable("cancelQueued")
     }
 
-    async fn record_usage(&self, _usage: &Usage, _options: Option<&RecordUsageOptions>) -> Result<(), HarnessError> {
+    async fn record_usage(
+        &self,
+        _usage: &Usage,
+        _options: Option<&RecordUsageOptions>,
+    ) -> Result<(), HarnessError> {
         self.unavailable("recordUsage")
     }
 
@@ -1025,7 +1229,8 @@ impl<F: FileSystem> AgentLane for AgentHarness<F> {
 
     async fn set_tools(&mut self, tools: Vec<HarnessTool>, active_names: Option<Vec<String>>) {
         self.tools = tools.clone();
-        self.active_tool_names = active_names.unwrap_or_else(|| tools.iter().map(|t| t.name().to_string()).collect());
+        self.active_tool_names =
+            active_names.unwrap_or_else(|| tools.iter().map(|t| t.name().to_string()).collect());
     }
 
     async fn get_resources(&self) -> Resources {
@@ -1099,10 +1304,10 @@ impl<F: FileSystem> AgentLane for AgentHarness<F> {
 mod tests {
     use super::*;
     use crate::fs::MemoryFs;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use crate::session::memory::{InMemorySessionStorage, in_memory_metadata};
+    use crate::session::memory::{in_memory_metadata, InMemorySessionStorage};
     use crate::session::types::{NewRecord, OperationIntent};
     use pi_ai::types::{Cost, Message, UserContent};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     type MemSession = Session<MemoryFs>;
 
@@ -1118,10 +1323,13 @@ mod tests {
     }
 
     async fn create_harness() -> AgentHarness<MemoryFs> {
-        AgentHarness::create(AgentHarnessOptions::new(create_session("session"), test_model()))
-            .await
-            .unwrap()
-            .0
+        AgentHarness::create(AgentHarnessOptions::new(
+            create_session("session"),
+            test_model(),
+        ))
+        .await
+        .unwrap()
+        .0
     }
 
     fn user_message(text: &str) -> AgentMessage {
@@ -1137,12 +1345,21 @@ mod tests {
             cache_write_1h: None,
             reasoning: None,
             total_tokens: 3,
-            cost: Cost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, total: 0.0 },
+            cost: Cost {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                total: 0.0,
+            },
         }
     }
 
     fn rt() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
     }
 
     fn not_impl(err: &HarnessError) -> &str {
@@ -1156,9 +1373,10 @@ mod tests {
     fn opens_only_record_free_sessions_before_restore_is_implemented() {
         rt().block_on(async {
             let session = create_session("session");
-            let (mut harness, suspended) = AgentHarness::create(AgentHarnessOptions::new(session, test_model()))
-                .await
-                .unwrap();
+            let (mut harness, suspended) =
+                AgentHarness::create(AgentHarnessOptions::new(session, test_model()))
+                    .await
+                    .unwrap();
             assert!(suspended.is_empty());
             assert_eq!(harness.lane_name(), "main");
             assert_eq!(harness.get_leaf_id().await.unwrap(), None);
@@ -1191,7 +1409,12 @@ mod tests {
     fn keeps_scaffold_safe_configuration_as_defensive_copies() {
         rt().block_on(async {
             let mut harness = create_harness().await;
-            let model = Model::new("claude-sonnet-4-5", "Claude Sonnet 4.5", "anthropic", "anthropic");
+            let model = Model::new(
+                "claude-sonnet-4-5",
+                "Claude Sonnet 4.5",
+                "anthropic",
+                "anthropic",
+            );
             harness.set_model(model.clone()).await;
             assert_eq!(harness.get_model().await, model);
 
@@ -1207,19 +1430,32 @@ mod tests {
             assert_eq!(harness.get_active_tools().await, vec!["one"]);
 
             let tool = HarnessTool {
-                tool: pi_ai::types::json_tool("tool", "Tool", &serde_json::json!({ "type": "object" })),
+                tool: pi_ai::types::json_tool(
+                    "tool",
+                    "Tool",
+                    &serde_json::json!({ "type": "object" }),
+                ),
                 execute: crate::tools::read_tool(".".to_string()).execute,
                 replay: None,
             };
             let mut tools = vec![tool.clone()];
             harness.set_tools(tools.clone(), None).await;
             tools.push(HarnessTool {
-                tool: pi_ai::types::json_tool("mutated", "Mutated", &serde_json::json!({ "type": "object" })),
+                tool: pi_ai::types::json_tool(
+                    "mutated",
+                    "Mutated",
+                    &serde_json::json!({ "type": "object" }),
+                ),
                 execute: crate::tools::read_tool(".".to_string()).execute,
                 replay: None,
             });
             assert_eq!(
-                harness.get_tools().await.iter().map(|t| t.name().to_string()).collect::<Vec<_>>(),
+                harness
+                    .get_tools()
+                    .await
+                    .iter()
+                    .map(|t| t.name().to_string())
+                    .collect::<Vec<_>>(),
                 vec!["tool"]
             );
 
@@ -1246,7 +1482,13 @@ mod tests {
                 disable_model_invocation: false,
             });
             assert_eq!(
-                harness.get_resources().await.skills.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+                harness
+                    .get_resources()
+                    .await
+                    .skills
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>(),
                 vec!["skill"]
             );
 
@@ -1256,18 +1498,34 @@ mod tests {
             stream_options.base.max_tokens = Some(20);
             assert_eq!(harness.get_stream_options().await.base.max_tokens, Some(10));
 
-            let retry_policy = RetryPolicy { enabled: true, max_retries: 2, base_delay_ms: 10 };
+            let retry_policy = RetryPolicy {
+                enabled: true,
+                max_retries: 2,
+                base_delay_ms: 10,
+            };
             harness.set_retry_policy(retry_policy).await;
             assert_eq!(
                 harness.get_retry_policy().await,
-                RetryPolicy { enabled: true, max_retries: 2, base_delay_ms: 10 }
+                RetryPolicy {
+                    enabled: true,
+                    max_retries: 2,
+                    base_delay_ms: 10
+                }
             );
 
-            let compaction_settings = CompactionSettings { enabled: false, reserve_tokens: 1, keep_recent_tokens: 2 };
+            let compaction_settings = CompactionSettings {
+                enabled: false,
+                reserve_tokens: 1,
+                keep_recent_tokens: 2,
+            };
             harness.set_compaction_settings(compaction_settings).await;
             assert_eq!(
                 harness.get_compaction_settings().await,
-                CompactionSettings { enabled: false, reserve_tokens: 1, keep_recent_tokens: 2 }
+                CompactionSettings {
+                    enabled: false,
+                    reserve_tokens: 1,
+                    keep_recent_tokens: 2
+                }
             );
 
             harness.set_steering_mode(QueueMode::All).await;
@@ -1284,25 +1542,85 @@ mod tests {
             let callback_called = Arc::new(AtomicBool::new(false));
             let message = user_message("hello");
             let usage = usage();
-            let mut error_by_op: std::collections::BTreeMap<String, HarnessError> = Default::default();
+            let mut error_by_op: std::collections::BTreeMap<String, HarnessError> =
+                Default::default();
 
-            fn capture(key: &str, map: &mut std::collections::BTreeMap<String, HarnessError>, err: HarnessError) {
+            fn capture(
+                key: &str,
+                map: &mut std::collections::BTreeMap<String, HarnessError>,
+                err: HarnessError,
+            ) {
                 map.insert(key.to_string(), err);
             }
 
-            capture("prompt", &mut error_by_op, harness.prompt_text("hello", &[]).await.unwrap_err());
-            capture("skill", &mut error_by_op, harness.skill("skill", None).await.unwrap_err());
-            capture("promptFromTemplate", &mut error_by_op, harness.prompt_from_template("template", None).await.unwrap_err());
-            capture("compact", &mut error_by_op, harness.compact(None).await.unwrap_err());
-            capture("navigateTree", &mut error_by_op, harness.navigate_tree(None, None).await.unwrap_err());
-            capture("resume", &mut error_by_op, harness.resume().await.unwrap_err());
-            capture("abort", &mut error_by_op, harness.abort().await.unwrap_err());
-            capture("steer", &mut error_by_op, harness.steer_message(&message).await.unwrap_err());
-            capture("followUp", &mut error_by_op, harness.follow_up_message(&message).await.unwrap_err());
-            capture("nextRun", &mut error_by_op, harness.next_run_message(&message).await.unwrap_err());
-            capture("cancelQueued", &mut error_by_op, harness.cancel_queued("queued").await.unwrap_err());
-            capture("recordUsage", &mut error_by_op, harness.record_usage(&usage, None).await.unwrap_err());
-            capture("waitForIdle", &mut error_by_op, harness.wait_for_idle().await.unwrap_err());
+            capture(
+                "prompt",
+                &mut error_by_op,
+                harness.prompt_text("hello", &[]).await.unwrap_err(),
+            );
+            capture(
+                "skill",
+                &mut error_by_op,
+                harness.skill("skill", None).await.unwrap_err(),
+            );
+            capture(
+                "promptFromTemplate",
+                &mut error_by_op,
+                harness
+                    .prompt_from_template("template", None)
+                    .await
+                    .unwrap_err(),
+            );
+            capture(
+                "compact",
+                &mut error_by_op,
+                harness.compact(None).await.unwrap_err(),
+            );
+            capture(
+                "navigateTree",
+                &mut error_by_op,
+                harness.navigate_tree(None, None).await.unwrap_err(),
+            );
+            capture(
+                "resume",
+                &mut error_by_op,
+                harness.resume().await.unwrap_err(),
+            );
+            capture(
+                "abort",
+                &mut error_by_op,
+                harness.abort().await.unwrap_err(),
+            );
+            capture(
+                "steer",
+                &mut error_by_op,
+                harness.steer_message(&message).await.unwrap_err(),
+            );
+            capture(
+                "followUp",
+                &mut error_by_op,
+                harness.follow_up_message(&message).await.unwrap_err(),
+            );
+            capture(
+                "nextRun",
+                &mut error_by_op,
+                harness.next_run_message(&message).await.unwrap_err(),
+            );
+            capture(
+                "cancelQueued",
+                &mut error_by_op,
+                harness.cancel_queued("queued").await.unwrap_err(),
+            );
+            capture(
+                "recordUsage",
+                &mut error_by_op,
+                harness.record_usage(&usage, None).await.unwrap_err(),
+            );
+            capture(
+                "waitForIdle",
+                &mut error_by_op,
+                harness.wait_for_idle().await.unwrap_err(),
+            );
             {
                 let cb_flag = callback_called.clone();
                 let err = harness
@@ -1314,9 +1632,21 @@ mod tests {
                     .unwrap_err();
                 capture("runWhenIdle", &mut error_by_op, err);
             }
-            capture("peekAction", &mut error_by_op, harness.peek_action().await.unwrap_err());
-            capture("executeAction", &mut error_by_op, harness.execute_action().await.unwrap_err());
-            capture("runToCompletion", &mut error_by_op, harness.run_to_completion().await.unwrap_err());
+            capture(
+                "peekAction",
+                &mut error_by_op,
+                harness.peek_action().await.unwrap_err(),
+            );
+            capture(
+                "executeAction",
+                &mut error_by_op,
+                harness.execute_action().await.unwrap_err(),
+            );
+            capture(
+                "runToCompletion",
+                &mut error_by_op,
+                harness.run_to_completion().await.unwrap_err(),
+            );
             {
                 let err = match harness.watch().await {
                     Err(e) => e,
@@ -1338,7 +1668,11 @@ mod tests {
                 };
                 capture("createLane", &mut error_by_op, err);
             }
-            capture("lanes", &mut error_by_op, harness.lanes().await.unwrap_err());
+            capture(
+                "lanes",
+                &mut error_by_op,
+                harness.lanes().await.unwrap_err(),
+            );
             {
                 let err = match harness.watch_session().await {
                     Err(e) => e,
@@ -1348,12 +1682,33 @@ mod tests {
             }
 
             let checks: Vec<&str> = vec![
-                "prompt", "skill", "promptFromTemplate", "compact", "navigateTree", "resume", "abort", "steer",
-                "followUp", "nextRun", "cancelQueued", "recordUsage", "waitForIdle", "runWhenIdle", "peekAction",
-                "executeAction", "runToCompletion", "watch", "lane", "createLane", "lanes", "watchSession",
+                "prompt",
+                "skill",
+                "promptFromTemplate",
+                "compact",
+                "navigateTree",
+                "resume",
+                "abort",
+                "steer",
+                "followUp",
+                "nextRun",
+                "cancelQueued",
+                "recordUsage",
+                "waitForIdle",
+                "runWhenIdle",
+                "peekAction",
+                "executeAction",
+                "runToCompletion",
+                "watch",
+                "lane",
+                "createLane",
+                "lanes",
+                "watchSession",
             ];
             for key in checks {
-                let err = error_by_op.get(key).unwrap_or_else(|| panic!("missing {key}"));
+                let err = error_by_op
+                    .get(key)
+                    .unwrap_or_else(|| panic!("missing {key}"));
                 assert_eq!(not_impl(err), key, "{key}");
             }
             assert!(!callback_called.load(Ordering::Relaxed));
@@ -1367,10 +1722,22 @@ mod tests {
         rt().block_on(async {
             let mut harness = create_harness().await;
             harness.close().await;
-            assert!(matches!(harness.prompt_text("hello", &[]).await, Err(HarnessError::Closed)));
-            assert!(matches!(harness.wait_for_idle().await, Err(HarnessError::Closed)));
-            assert!(matches!(harness.hooks.on("before_run", Arc::new(|_| {})), Err(HarnessError::Closed)));
-            assert!(matches!(harness.events.on("event", Arc::new(|_| {})), Err(HarnessError::Closed)));
+            assert!(matches!(
+                harness.prompt_text("hello", &[]).await,
+                Err(HarnessError::Closed)
+            ));
+            assert!(matches!(
+                harness.wait_for_idle().await,
+                Err(HarnessError::Closed)
+            ));
+            assert!(matches!(
+                harness.hooks.on("before_run", Arc::new(|_| {})),
+                Err(HarnessError::Closed)
+            ));
+            assert!(matches!(
+                harness.events.on("event", Arc::new(|_| {})),
+                Err(HarnessError::Closed)
+            ));
         });
     }
 }

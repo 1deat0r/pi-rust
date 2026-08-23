@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::auth::{
-    AuthCheck, AuthContext, AuthResult, Credential, CredentialStore,
-    InMemoryCredentialStore, ProviderAuth,
+    AuthCheck, AuthContext, AuthResult, Credential, CredentialStore, InMemoryCredentialStore,
+    ProviderAuth,
 };
 use crate::event_stream::{AssistantMessageEventStream, StreamSink};
 use crate::model::Model;
@@ -38,7 +38,10 @@ pub struct ModelsError {
 
 impl ModelsError {
     pub fn new(code: ModelsErrorCode, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self {
+            code,
+            message: message.into(),
+        }
     }
 }
 
@@ -58,7 +61,9 @@ pub type StreamFn = Arc<
 
 /// Simple (provider-neutral) stream function.
 pub type SimpleStreamFn = Arc<
-    dyn Fn(&Model, &Context, Option<&SimpleStreamOptions>) -> AssistantMessageEventStream + Send + Sync,
+    dyn Fn(&Model, &Context, Option<&SimpleStreamOptions>) -> AssistantMessageEventStream
+        + Send
+        + Sync,
 >;
 
 /// Provider-scoped availability filter (upstream `filterModels`).
@@ -97,7 +102,10 @@ impl ModelsStore for InMemoryModelsStore {
         self.entries.lock().unwrap().get(provider_id).cloned()
     }
     fn write(&self, provider_id: &str, entry: &ModelsStoreEntry) {
-        self.entries.lock().unwrap().insert(provider_id.to_string(), entry.clone());
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(provider_id.to_string(), entry.clone());
     }
     fn delete(&self, provider_id: &str) {
         self.entries.lock().unwrap().remove(provider_id);
@@ -108,7 +116,9 @@ impl ModelsStore for InMemoryModelsStore {
 /// (upstream `fetchDeferred`). `None` means the provider does not support
 /// deferred responses.
 pub type DeferredStreamFn = Arc<
-    dyn Fn(&Model, &DeferredHandle, &DeferredFetchOptions) -> AssistantMessageEventStream + Send + Sync,
+    dyn Fn(&Model, &DeferredHandle, &DeferredFetchOptions) -> AssistantMessageEventStream
+        + Send
+        + Sync,
 >;
 
 /// Cancellation for a deferred handle: `(model, handle, options)`.
@@ -158,7 +168,12 @@ impl Provider {
 
     /// Stream dispatcher: single implementation wins; otherwise dispatch on
     /// model.api; missing produces the upstream stream error.
-    pub fn stream(&self, model: &Model, context: &Context, options: Option<&StreamOptions>) -> AssistantMessageEventStream {
+    pub fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<&StreamOptions>,
+    ) -> AssistantMessageEventStream {
         match self.api_for(model) {
             Some(s) => (s.stream)(model, context, options),
             None => make_unknown_api_error_stream(model, &self.id),
@@ -184,7 +199,6 @@ impl Provider {
         self.streams.get(&model.api)
     }
 }
-
 
 fn error_message_for(model: &Model, message: &str) -> AssistantMessage {
     let mut msg = AssistantMessage::new();
@@ -287,15 +301,22 @@ pub struct Models {
 pub fn create_models(options: CreateModelsOptions) -> Models {
     Models {
         providers: Arc::new(std::sync::RwLock::new(BTreeMap::new())),
-        credentials: options.credentials.unwrap_or_else(|| Arc::new(InMemoryCredentialStore::new())),
-        models_store: options.models_store.unwrap_or_else(|| Arc::new(InMemoryModelsStore::new())),
+        credentials: options
+            .credentials
+            .unwrap_or_else(|| Arc::new(InMemoryCredentialStore::new())),
+        models_store: options
+            .models_store
+            .unwrap_or_else(|| Arc::new(InMemoryModelsStore::new())),
         auth_context: options.auth_context.unwrap_or_default(),
     }
 }
 
 impl Models {
     pub fn set_provider(&self, provider: Provider) {
-        self.providers.write().unwrap().insert(provider.id.clone(), provider);
+        self.providers
+            .write()
+            .unwrap()
+            .insert(provider.id.clone(), provider);
     }
 
     pub fn delete_provider(&self, id: &str) {
@@ -331,7 +352,9 @@ impl Models {
     }
 
     pub fn get_model(&self, provider: &str, id: &str) -> Option<Model> {
-        self.get_models(Some(provider)).into_iter().find(|m| m.id == id)
+        self.get_models(Some(provider))
+            .into_iter()
+            .find(|m| m.id == id)
     }
 
     /// Check whether a provider has complete auth configuration (upstream
@@ -342,7 +365,11 @@ impl Models {
         self.check_provider_auth(&provider, credential.as_ref())
     }
 
-    fn check_provider_auth(&self, provider: &Provider, credential: Option<&Credential>) -> Option<AuthCheck> {
+    fn check_provider_auth(
+        &self,
+        provider: &Provider,
+        credential: Option<&Credential>,
+    ) -> Option<AuthCheck> {
         if let Some(Credential::OAuth(_)) = credential {
             return provider.auth.oauth.as_ref().map(|_| AuthCheck {
                 source: Some("OAuth".to_string()),
@@ -410,7 +437,8 @@ impl Models {
                                 .map(|(k, v)| (k.clone(), Some(v.clone())))
                                 .collect();
                             let mut auth = result.auth.clone();
-                            auth.headers = merge_headers(auth.headers.as_ref(), Some(&headers_with_options));
+                            auth.headers =
+                                merge_headers(auth.headers.as_ref(), Some(&headers_with_options));
                             result.auth = auth;
                         }
                     }
@@ -455,7 +483,10 @@ impl Models {
         options: &ProviderRequestOptions,
     ) -> Result<(Model, ProviderRequestOptions), ModelsError> {
         let provider = self.get_provider(&model.provider).ok_or_else(|| {
-            ModelsError::new(ModelsErrorCode::UnknownProvider, format!("Unknown provider: {}", model.provider))
+            ModelsError::new(
+                ModelsErrorCode::UnknownProvider,
+                format!("Unknown provider: {}", model.provider),
+            )
         })?;
         let _ = provider; // used only for existence check and header source below
         let resolution = self.get_auth(&model.provider, Some(model)).ok_or_else(|| {
@@ -465,7 +496,10 @@ impl Models {
             )
         })?;
 
-        let api_key = options.api_key.clone().or_else(|| resolution.auth.api_key.clone());
+        let api_key = options
+            .api_key
+            .clone()
+            .or_else(|| resolution.auth.api_key.clone());
         let headers = merge_headers(resolution.auth.headers.as_ref(), options.headers.as_ref());
         let env = match (&resolution.env, &options.env) {
             (None, None) => None,
@@ -502,7 +536,12 @@ impl Models {
     /// Stream a model request through its provider with auth applied
     /// (upstream `Models.stream` + `lazyStream`): synchronous return, async
     /// setup; auth failures terminate the stream with an error event.
-    pub fn stream(&self, model: &Model, context: &Context, options: Option<&StreamOptions>) -> AssistantMessageEventStream {
+    pub fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<&StreamOptions>,
+    ) -> AssistantMessageEventStream {
         let models = self.clone();
         let model = model.clone();
         let context = context.clone();
@@ -527,9 +566,11 @@ impl Models {
                     match provider {
                         Some(p) => {
                             let inner = p.stream(&request_model, &context, stream_options.as_ref());
-                            let final_message = inner.for_each(|event| {
-                                pusher.push(event);
-                            }).await;
+                            let final_message = inner
+                                .for_each(|event| {
+                                    pusher.push(event);
+                                })
+                                .await;
                             if final_message.stop_reason().is_some() {
                                 pusher.end(Some(final_message));
                             } else {
@@ -592,7 +633,10 @@ impl Models {
         let error_model = model.clone();
         tokio::spawn(async move {
             let mut pusher = crate::event_stream::StreamSinkAdapter::new(tx.clone());
-            let base_options = options.as_ref().map(|o| o.base.base.clone()).unwrap_or_default();
+            let base_options = options
+                .as_ref()
+                .map(|o| o.base.base.clone())
+                .unwrap_or_default();
             let result = models.apply_auth(&model, &base_options);
             match result {
                 Ok((request_model, request_options)) => {
@@ -603,10 +647,13 @@ impl Models {
                     let provider = models.get_provider(&model.provider);
                     match provider {
                         Some(p) => {
-                            let inner = p.stream_simple(&request_model, &context, simple_options.as_ref());
-                            let final_message = inner.for_each(|event| {
-                                pusher.push(event);
-                            }).await;
+                            let inner =
+                                p.stream_simple(&request_model, &context, simple_options.as_ref());
+                            let final_message = inner
+                                .for_each(|event| {
+                                    pusher.push(event);
+                                })
+                                .await;
                             if final_message.stop_reason().is_some() {
                                 pusher.end(Some(final_message));
                             } else {
@@ -647,7 +694,9 @@ impl Models {
         context: &Context,
         options: Option<&SimpleStreamOptions>,
     ) -> AssistantMessage {
-        self.stream_simple(model, context, options).for_each(|_| {}).await
+        self.stream_simple(model, context, options)
+            .for_each(|_| {})
+            .await
     }
 
     /// Fetch a previously-deferred response (upstream `Models.fetchDeferred`).
@@ -657,14 +706,29 @@ impl Models {
         handle: &DeferredHandle,
         options: Option<&DeferredFetchOptions>,
     ) -> Result<AssistantMessage, ModelsError> {
-        let provider = self
-            .get_provider(&model.provider)
-            .ok_or_else(|| ModelsError::new(ModelsErrorCode::UnknownProvider, format!("Unknown provider: {}", model.provider)))?;
-        let streams = provider
-            .api_for(model)
-            .ok_or_else(|| ModelsError::new(ModelsErrorCode::Provider, format!("Provider {} does not support deferred responses", model.provider)))?;
+        let provider = self.get_provider(&model.provider).ok_or_else(|| {
+            ModelsError::new(
+                ModelsErrorCode::UnknownProvider,
+                format!("Unknown provider: {}", model.provider),
+            )
+        })?;
+        let streams = provider.api_for(model).ok_or_else(|| {
+            ModelsError::new(
+                ModelsErrorCode::Provider,
+                format!(
+                    "Provider {} does not support deferred responses",
+                    model.provider
+                ),
+            )
+        })?;
         let fetcher = streams.fetch_deferred.clone().ok_or_else(|| {
-            ModelsError::new(ModelsErrorCode::Provider, format!("Provider {} does not support deferred responses", model.provider))
+            ModelsError::new(
+                ModelsErrorCode::Provider,
+                format!(
+                    "Provider {} does not support deferred responses",
+                    model.provider
+                ),
+            )
         })?;
         let base_options = options.map(|o| o.base.clone()).unwrap_or_default();
         let (request_model, request_options) = self.apply_auth(model, &base_options)?;
@@ -683,14 +747,29 @@ impl Models {
         handle: &DeferredHandle,
         options: Option<&DeferredFetchOptions>,
     ) -> Result<(), ModelsError> {
-        let provider = self
-            .get_provider(&model.provider)
-            .ok_or_else(|| ModelsError::new(ModelsErrorCode::UnknownProvider, format!("Unknown provider: {}", model.provider)))?;
-        let streams = provider
-            .api_for(model)
-            .ok_or_else(|| ModelsError::new(ModelsErrorCode::Provider, format!("Provider {} does not support deferred responses", model.provider)))?;
+        let provider = self.get_provider(&model.provider).ok_or_else(|| {
+            ModelsError::new(
+                ModelsErrorCode::UnknownProvider,
+                format!("Unknown provider: {}", model.provider),
+            )
+        })?;
+        let streams = provider.api_for(model).ok_or_else(|| {
+            ModelsError::new(
+                ModelsErrorCode::Provider,
+                format!(
+                    "Provider {} does not support deferred responses",
+                    model.provider
+                ),
+            )
+        })?;
         let canceller = streams.cancel_deferred.clone().ok_or_else(|| {
-            ModelsError::new(ModelsErrorCode::Provider, format!("Provider {} does not support deferred responses", model.provider))
+            ModelsError::new(
+                ModelsErrorCode::Provider,
+                format!(
+                    "Provider {} does not support deferred responses",
+                    model.provider
+                ),
+            )
         })?;
         let base_options = options.map(|o| o.base.clone()).unwrap_or_default();
         let (request_model, request_options) = self.apply_auth(model, &base_options)?;
@@ -703,7 +782,6 @@ impl Models {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,26 +789,51 @@ mod tests {
 
     struct TestApiKeyAuth;
     impl ApiKeyAuth for TestApiKeyAuth {
-        fn name(&self) -> &str { "Test key" }
-        fn check(&self, ctx: &AuthContext, credential: Option<&ApiKeyCredential>) -> Option<AuthCheck> {
+        fn name(&self) -> &str {
+            "Test key"
+        }
+        fn check(
+            &self,
+            ctx: &AuthContext,
+            credential: Option<&ApiKeyCredential>,
+        ) -> Option<AuthCheck> {
             if credential.is_some() || ctx.env("TEST_API_KEY").is_some() {
-                Some(AuthCheck { source: Some("test".to_string()), auth_type: "api_key" })
+                Some(AuthCheck {
+                    source: Some("test".to_string()),
+                    auth_type: "api_key",
+                })
             } else {
                 None
             }
         }
-        fn resolve(&self, ctx: &AuthContext, credential: Option<&ApiKeyCredential>) -> Option<AuthResult> {
+        fn resolve(
+            &self,
+            ctx: &AuthContext,
+            credential: Option<&ApiKeyCredential>,
+        ) -> Option<AuthResult> {
             if let Some(cred) = credential {
                 if cred.key.is_some() {
                     return Some(AuthResult {
-                        auth: ModelAuth { api_key: cred.key.clone(), headers: None, base_url: None },
+                        auth: ModelAuth {
+                            api_key: cred.key.clone(),
+                            headers: None,
+                            base_url: None,
+                        },
                         env: None,
                         source: Some("stored".to_string()),
                     });
                 }
             }
             let key = ctx.env("TEST_API_KEY")?;
-            Some(AuthResult { auth: ModelAuth { api_key: Some(key), headers: None, base_url: None }, env: None, source: Some("TEST_API_KEY".to_string()) })
+            Some(AuthResult {
+                auth: ModelAuth {
+                    api_key: Some(key),
+                    headers: None,
+                    base_url: None,
+                },
+                env: None,
+                source: Some("TEST_API_KEY".to_string()),
+            })
         }
     }
 
@@ -739,13 +842,16 @@ mod tests {
         let stream = Arc::new(
             |_model: &Model, _ctx: &Context, _options: Option<&StreamOptions>| {
                 let mut msg = crate::types::AssistantMessage::new();
-                msg.content_mut().push(crate::types::ContentBlock::text("hello"));
+                msg.content_mut()
+                    .push(crate::types::ContentBlock::text("hello"));
                 msg.set_stop_reason(crate::types::StopReason::Stop);
                 let stream = AssistantMessageEventStream::new();
                 let tx = stream.sender().unwrap();
                 tokio::spawn(async move {
                     let mut pusher = crate::event_stream::StreamSinkAdapter::new(tx);
-                    pusher.push(crate::types::AssistantMessageEvent::Start { partial: crate::types::AssistantMessage::new() });
+                    pusher.push(crate::types::AssistantMessageEvent::Start {
+                        partial: crate::types::AssistantMessage::new(),
+                    });
                     pusher.push(crate::types::AssistantMessageEvent::Done {
                         reason: crate::types::DoneReason::Stop,
                         message: msg.clone(),
@@ -776,7 +882,12 @@ mod tests {
                 oauth: None,
             },
             models: vec![Model::new("m1", "M1", "test-api", "test")],
-            api: ProviderApiSpec::Single(ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }),
+            api: ProviderApiSpec::Single(ProviderStreams {
+                stream,
+                stream_simple,
+                fetch_deferred: None,
+                cancel_deferred: None,
+            }),
             filter_models: None,
         })
     }
@@ -807,7 +918,11 @@ mod tests {
         let env_key = key.map(|s| s.to_string());
         let ctx = AuthContext {
             env: Arc::new(move |name: &str| {
-                if name == "TEST_API_KEY" { env_key.clone() } else { None }
+                if name == "TEST_API_KEY" {
+                    env_key.clone()
+                } else {
+                    None
+                }
             }),
             file_exists: Arc::new(|_| false),
         };
@@ -868,26 +983,38 @@ mod tests {
 
     #[test]
     fn models_stream_applies_auth_and_dispatches() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let models = test_models_with_env(Some("env-key"));
             let model = models.get_model("test", "m1").expect("model");
             let ctx = Context::default();
             let options = StreamOptions::default();
-            let msg = models.stream(&model, &ctx, Some(&options)).for_each(|_| {}).await;
+            let msg = models
+                .stream(&model, &ctx, Some(&options))
+                .for_each(|_| {})
+                .await;
             assert_eq!(msg.stop_reason(), Some(crate::types::StopReason::Stop));
         });
     }
 
     #[test]
     fn models_stream_error_when_provider_unconfigured() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let models = test_models_with_env(None);
             let model = models.get_model("test", "m1").expect("model");
             let ctx = Context::default();
             let options = StreamOptions::default();
-            let msg = models.stream(&model, &ctx, Some(&options)).for_each(|_| {}).await;
+            let msg = models
+                .stream(&model, &ctx, Some(&options))
+                .for_each(|_| {})
+                .await;
             assert_eq!(msg.stop_reason(), Some(crate::types::StopReason::Error));
             assert!(msg.error_message().is_some());
         });
@@ -899,9 +1026,8 @@ mod tests {
             ("x-test".to_string(), Some("1".to_string())),
             ("keep".to_string(), Some("y".to_string())),
         ]);
-        let override_: ProviderHeaders = BTreeMap::from([
-            ("X-Test".to_string(), Some("2".to_string())),
-        ]);
+        let override_: ProviderHeaders =
+            BTreeMap::from([("X-Test".to_string(), Some("2".to_string()))]);
         let merged = merge_headers(Some(&base), Some(&override_)).unwrap();
         assert_eq!(merged.get("X-Test"), Some(&Some("2".to_string())));
         assert_eq!(merged.get("keep"), Some(&Some("y".to_string())));
@@ -912,15 +1038,26 @@ mod tests {
 #[cfg(test)]
 mod oauth_auth_tests {
     use super::*;
-    use crate::auth::{AuthEvent, AuthInteraction, AuthPrompt, ModelAuth, OAuthAuth, OAuthCredential};
+    use crate::auth::{
+        AuthEvent, AuthInteraction, AuthPrompt, ModelAuth, OAuthAuth, OAuthCredential,
+    };
 
     struct TestOAuthAuth;
     #[async_trait::async_trait]
     impl OAuthAuth for TestOAuthAuth {
-        fn name(&self) -> &str { "Test OAuth" }
-        fn is_subscription(&self) -> bool { true }
-        fn login_label(&self) -> Option<&str> { None }
-        async fn login(&self, _interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
+        fn name(&self) -> &str {
+            "Test OAuth"
+        }
+        fn is_subscription(&self) -> bool {
+            true
+        }
+        fn login_label(&self) -> Option<&str> {
+            None
+        }
+        async fn login(
+            &self,
+            _interaction: &dyn AuthInteraction,
+        ) -> Result<OAuthCredential, String> {
             Ok(OAuthCredential {
                 refresh: "refresh-1".into(),
                 access: "access-1".into(),
@@ -928,7 +1065,11 @@ mod oauth_auth_tests {
                 extra: Default::default(),
             })
         }
-        async fn refresh(&self, _credential: &OAuthCredential, _signal: &std::sync::atomic::AtomicBool) -> Result<OAuthCredential, String> {
+        async fn refresh(
+            &self,
+            _credential: &OAuthCredential,
+            _signal: &std::sync::atomic::AtomicBool,
+        ) -> Result<OAuthCredential, String> {
             Err("not implemented".into())
         }
         fn to_auth(&self, credential: &OAuthCredential) -> Option<ModelAuth> {
@@ -961,7 +1102,12 @@ mod oauth_auth_tests {
                 oauth: Some(Arc::new(TestOAuthAuth)),
             },
             models: vec![Model::new("m1", "M1", "test-api", "oauth-test")],
-            api: ProviderApiSpec::Single(ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }),
+            api: ProviderApiSpec::Single(ProviderStreams {
+                stream,
+                stream_simple,
+                fetch_deferred: None,
+                cancel_deferred: None,
+            }),
             filter_models: None,
         })
     }
@@ -976,12 +1122,19 @@ mod oauth_auth_tests {
             expires: 1_800_000_000_000,
             extra: Default::default(),
         };
-        models.credentials.modify("oauth-test", &|_| Some(Credential::OAuth(cred.clone())));
+        models
+            .credentials
+            .modify("oauth-test", &|_| Some(Credential::OAuth(cred.clone())));
 
-        let auth = models.get_auth("oauth-test", None).expect("oauth auth resolves");
+        let auth = models
+            .get_auth("oauth-test", None)
+            .expect("oauth auth resolves");
         assert_eq!(auth.source.as_deref(), Some("OAuth"));
         assert_eq!(auth.auth.api_key.as_deref(), Some("access-1"));
-        assert_eq!(auth.auth.base_url.as_deref(), Some("https://oauth-proxy.test"));
+        assert_eq!(
+            auth.auth.base_url.as_deref(),
+            Some("https://oauth-proxy.test")
+        );
     }
 
     #[test]
@@ -994,7 +1147,9 @@ mod oauth_auth_tests {
             expires: 1_800_000_000_000,
             extra: Default::default(),
         };
-        models.credentials.modify("oauth-test", &|_| Some(Credential::OAuth(cred.clone())));
+        models
+            .credentials
+            .modify("oauth-test", &|_| Some(Credential::OAuth(cred.clone())));
         let check = models.check_auth("oauth-test").expect("auth check");
         assert_eq!(check.auth_type, "oauth");
         assert_eq!(check.source.as_deref(), Some("OAuth"));
@@ -1010,7 +1165,9 @@ mod oauth_auth_tests {
             expires: 1_800_000_000_000,
             extra: Default::default(),
         };
-        models.credentials.modify("oauth-test", &|_| Some(Credential::OAuth(cred.clone())));
+        models
+            .credentials
+            .modify("oauth-test", &|_| Some(Credential::OAuth(cred.clone())));
         let available = models.get_available(Some("oauth-test"));
         assert_eq!(available.len(), 1);
         assert_eq!(available[0].id, "m1");
@@ -1018,7 +1175,10 @@ mod oauth_auth_tests {
 
     #[test]
     fn auth_prompt_and_event_shapes() {
-        let prompt = AuthPrompt::Text { message: "hi".into(), placeholder: None };
+        let prompt = AuthPrompt::Text {
+            message: "hi".into(),
+            placeholder: None,
+        };
         assert!(matches!(prompt, AuthPrompt::Text { .. }));
         let event = AuthEvent::DeviceCode {
             user_code: "ABCD".into(),

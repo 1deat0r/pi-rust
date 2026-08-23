@@ -7,10 +7,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use pi_ai::types::json_tool;
 use pi_agent::tools::path_utils::resolve_tool_path;
 use pi_agent::tools::truncate::{truncate_head_with, DEFAULT_MAX_BYTES};
 use pi_agent::tools::{AgentTool, AgentToolResult};
+use pi_ai::types::json_tool;
 
 use super::bytes_limit_notice;
 
@@ -29,7 +29,8 @@ pub async fn ls_execute(
     if !path_obj.exists() {
         return Err(format!("Path not found: {dir_path}"));
     }
-    let stat = std::fs::metadata(&dir_path).map_err(|e| format!("Failed to stat {dir_path}: {e}"))?;
+    let stat =
+        std::fs::metadata(&dir_path).map_err(|e| format!("Failed to stat {dir_path}: {e}"))?;
     if !stat.is_dir() {
         return Err(format!("Not a directory: {dir_path}"));
     }
@@ -163,7 +164,9 @@ mod tests {
     async fn empty_directory_returns_marker() {
         let root = std::env::temp_dir().join(format!("pi-ls-empty-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
-        let out = ls_execute(&root.display().to_string(), None, None).await.unwrap();
+        let out = ls_execute(&root.display().to_string(), None, None)
+            .await
+            .unwrap();
         assert_eq!(out, "(empty directory)");
         let _ = fs::remove_dir_all(&root);
     }
@@ -190,13 +193,18 @@ mod tests {
     #[tokio::test]
     async fn limit_caps_entries_and_notices() {
         let tree = Tree::new("limit");
-        let out = ls_execute(&tree.root.display().to_string(), None, Some(2)).await.unwrap();
+        let out = ls_execute(&tree.root.display().to_string(), None, Some(2))
+            .await
+            .unwrap();
         let lines: Vec<&str> = out.lines().collect();
         // 2 entries, a blank line, then the notice line.
         assert_eq!(lines.len(), 4, "got: {out:?}");
         assert_eq!(lines[0], ".hidden-dir/");
         assert_eq!(lines[1], "Cargo.toml");
-        assert!(out.contains("2 entries limit reached. Use limit=4 for more"), "got: {out}");
+        assert!(
+            out.contains("2 entries limit reached. Use limit=4 for more"),
+            "got: {out}"
+        );
     }
 
     #[tokio::test]
@@ -206,7 +214,9 @@ mod tests {
         fs::write(root.join("BETA.txt"), "").unwrap();
         fs::write(root.join("alpha.txt"), "").unwrap();
         fs::write(root.join("Gamma.txt"), "").unwrap();
-        let out = ls_execute(&root.display().to_string(), None, None).await.unwrap();
+        let out = ls_execute(&root.display().to_string(), None, None)
+            .await
+            .unwrap();
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines, vec!["alpha.txt", "BETA.txt", "Gamma.txt"]);
         let _ = fs::remove_dir_all(&root);

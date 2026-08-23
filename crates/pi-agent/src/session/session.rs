@@ -40,11 +40,15 @@ pub struct Session<F: FileSystem> {
 #[allow(clippy::await_holding_lock)]
 impl<F: FileSystem> Session<F> {
     pub fn new(storage: JsonlSessionStorage<F>) -> Self {
-        Self { inner: SessionStorageKind::Jsonl(storage) }
+        Self {
+            inner: SessionStorageKind::Jsonl(storage),
+        }
     }
 
     pub fn from_in_memory(storage: Arc<Mutex<InMemorySessionStorage>>) -> Self {
-        Self { inner: SessionStorageKind::InMemory(storage) }
+        Self {
+            inner: SessionStorageKind::InMemory(storage),
+        }
     }
 
     pub fn kind(&self) -> &SessionStorageKind<F> {
@@ -99,14 +103,23 @@ impl<F: FileSystem> Session<F> {
             .iter()
             .find(|pointer| pointer.lane == lane)
             .map(|pointer| pointer.leaf_id.clone())
-            .ok_or_else(|| session_error(SessionErrorKind::InvalidLane, format!("Lane not found: {lane}")))
+            .ok_or_else(|| {
+                session_error(
+                    SessionErrorKind::InvalidLane,
+                    format!("Lane not found: {lane}"),
+                )
+            })
     }
 
     // ---------------------------------------------------------------------
     // Entries / records
     // ---------------------------------------------------------------------
 
-    pub async fn append_entry(&mut self, entry: EntryNoStats, lane: &str) -> Result<Entry, SessionError> {
+    pub async fn append_entry(
+        &mut self,
+        entry: EntryNoStats,
+        lane: &str,
+    ) -> Result<Entry, SessionError> {
         match &mut self.inner {
             SessionStorageKind::Jsonl(s) => s.append_entry(entry, lane).await,
             SessionStorageKind::InMemory(s) => s.lock().unwrap().append_entry(entry, lane),
@@ -116,7 +129,16 @@ impl<F: FileSystem> Session<F> {
     /// `appendMessage(message) → id`.
     pub async fn append_message(&mut self, message: AgentMessage) -> Result<String, SessionError> {
         let id = new_id();
-        let entry = self.append_entry(EntryNoStats::Message { id, message, terminate: None }, "main").await?;
+        let entry = self
+            .append_entry(
+                EntryNoStats::Message {
+                    id,
+                    message,
+                    terminate: None,
+                },
+                "main",
+            )
+            .await?;
         Ok(entry.id().to_string())
     }
 
@@ -129,7 +151,11 @@ impl<F: FileSystem> Session<F> {
         let id = new_id();
         let entry = self
             .append_entry(
-                EntryNoStats::Custom { id, custom_type: custom_type.to_string(), data },
+                EntryNoStats::Custom {
+                    id,
+                    custom_type: custom_type.to_string(),
+                    data,
+                },
                 "main",
             )
             .await?;
@@ -144,7 +170,14 @@ impl<F: FileSystem> Session<F> {
     ) -> Result<String, SessionError> {
         let id = new_id();
         let entry = self
-            .append_entry(EntryNoStats::Message { id, message, terminate: None }, lane)
+            .append_entry(
+                EntryNoStats::Message {
+                    id,
+                    message,
+                    terminate: None,
+                },
+                lane,
+            )
             .await?;
         Ok(entry.id().to_string())
     }
@@ -159,7 +192,11 @@ impl<F: FileSystem> Session<F> {
         let id = new_id();
         let entry = self
             .append_entry(
-                EntryNoStats::Custom { id, custom_type: custom_type.to_string(), data },
+                EntryNoStats::Custom {
+                    id,
+                    custom_type: custom_type.to_string(),
+                    data,
+                },
                 lane,
             )
             .await?;
@@ -187,7 +224,10 @@ impl<F: FileSystem> Session<F> {
     fn assert_valid_limit(limit: Option<usize>) -> Result<(), SessionError> {
         if let Some(limit) = limit {
             if limit == 0 {
-                return Err(session_error(SessionErrorKind::InvalidQuery, "limit must be a positive integer"));
+                return Err(session_error(
+                    SessionErrorKind::InvalidQuery,
+                    "limit must be a positive integer",
+                ));
             }
         }
         Ok(())
@@ -212,7 +252,10 @@ impl<F: FileSystem> Session<F> {
     pub async fn find_entry(&self, query: &EntryQuery) -> Result<Option<Entry>, SessionError> {
         let narrowed = match query.limit {
             Some(_) => query.clone(),
-            None => EntryQuery { limit: Some(1), ..query.clone() },
+            None => EntryQuery {
+                limit: Some(1),
+                ..query.clone()
+            },
         };
         let result = self.find_entries(&narrowed).await?;
         Ok(result.first().cloned())
@@ -225,7 +268,8 @@ impl<F: FileSystem> Session<F> {
         start: Option<&str>,
         bounds: &BranchBounds,
     ) -> Result<Vec<Entry>, SessionError> {
-        self.query_branch_entries("main", query, start, bounds).await
+        self.query_branch_entries("main", query, start, bounds)
+            .await
     }
 
     /// `findEntryOnBranch`.
@@ -237,9 +281,14 @@ impl<F: FileSystem> Session<F> {
     ) -> Result<Option<Entry>, SessionError> {
         let narrowed = match query.limit {
             Some(_) => query.clone(),
-            None => EntryQuery { limit: Some(1), ..query.clone() },
+            None => EntryQuery {
+                limit: Some(1),
+                ..query.clone()
+            },
         };
-        let result = self.query_branch_entries("main", &narrowed, start, bounds).await?;
+        let result = self
+            .query_branch_entries("main", &narrowed, start, bounds)
+            .await?;
         Ok(result.first().cloned())
     }
 
@@ -258,8 +307,13 @@ impl<F: FileSystem> Session<F> {
         };
         match start {
             Some(start) => match &self.inner {
-                SessionStorageKind::Jsonl(s) => s.find_entries_on_branch(query, &start, bounds).await,
-                SessionStorageKind::InMemory(s) => s.lock().unwrap().find_entries_on_branch(query, &start, bounds),
+                SessionStorageKind::Jsonl(s) => {
+                    s.find_entries_on_branch(query, &start, bounds).await
+                }
+                SessionStorageKind::InMemory(s) => s
+                    .lock()
+                    .unwrap()
+                    .find_entries_on_branch(query, &start, bounds),
             },
             None => Ok(Vec::new()),
         }
@@ -269,7 +323,9 @@ impl<F: FileSystem> Session<F> {
     pub async fn find_records(&self, query: &RecordQuery) -> Result<Vec<LaneRecord>, SessionError> {
         Self::assert_valid_limit(query.limit)?;
         Self::assert_valid_cursor(query.after_seq)?;
-        if query.operation_kind.is_some() && query.record_type.as_deref() != Some("operation_started") {
+        if query.operation_kind.is_some()
+            && query.record_type.as_deref() != Some("operation_started")
+        {
             return Err(session_error(
                 SessionErrorKind::InvalidQuery,
                 "operationKind requires type \"operation_started\"",
@@ -349,7 +405,10 @@ impl<F: FileSystem> Session<F> {
     /// `view(lane)` — a lane-bound SessionTree (borrows this session mutably
     /// so views can append to their lane, mirroring upstream `Session.view`).
     pub fn view<'a>(&'a mut self, lane: &'a str) -> SessionView<'a, F> {
-        SessionView { session: self, lane }
+        SessionView {
+            session: self,
+            lane,
+        }
     }
 }
 
@@ -386,7 +445,11 @@ impl<F: FileSystem> SessionView<'_, F> {
         self.session.get_label(target_id).await
     }
 
-    pub async fn set_label(&mut self, target_id: &str, label: Option<&str>) -> Result<(), SessionError> {
+    pub async fn set_label(
+        &mut self,
+        target_id: &str,
+        label: Option<&str>,
+    ) -> Result<(), SessionError> {
         self.session.set_label(target_id, label).await
     }
 
@@ -403,7 +466,9 @@ impl<F: FileSystem> SessionView<'_, F> {
         query: &EntryQuery,
         bounds: &BranchBounds,
     ) -> Result<Vec<Entry>, SessionError> {
-        self.session.query_branch_entries(self.lane, query, None, bounds).await
+        self.session
+            .query_branch_entries(self.lane, query, None, bounds)
+            .await
     }
 
     pub async fn find_entry_on_branch(
@@ -411,12 +476,17 @@ impl<F: FileSystem> SessionView<'_, F> {
         query: &EntryQuery,
         bounds: &BranchBounds,
     ) -> Result<Option<Entry>, SessionError> {
-        let result = self.session.query_branch_entries(self.lane, query, None, bounds).await?;
+        let result = self
+            .session
+            .query_branch_entries(self.lane, query, None, bounds)
+            .await?;
         Ok(result.first().cloned())
     }
 
     pub async fn append_message(&mut self, message: AgentMessage) -> Result<String, SessionError> {
-        self.session.append_message_to_lane(self.lane, message).await
+        self.session
+            .append_message_to_lane(self.lane, message)
+            .await
     }
 
     pub async fn append_custom_entry(
@@ -424,6 +494,8 @@ impl<F: FileSystem> SessionView<'_, F> {
         custom_type: &str,
         data: Option<serde_json::Value>,
     ) -> Result<String, SessionError> {
-        self.session.append_custom_entry_to_lane(self.lane, custom_type, data).await
+        self.session
+            .append_custom_entry_to_lane(self.lane, custom_type, data)
+            .await
     }
 }

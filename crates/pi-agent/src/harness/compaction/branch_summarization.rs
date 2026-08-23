@@ -8,19 +8,24 @@ use pi_ai::model::Model;
 use pi_ai::types::{ContentBlock, Message, Usage};
 
 use crate::fs::FileSystem;
-use crate::messages::{convert_to_llm, create_branch_summary_message, create_compaction_summary_message};
+use crate::messages::{
+    convert_to_llm, create_branch_summary_message, create_compaction_summary_message,
+};
 use crate::session::session::Session;
 use crate::session::state::{BranchBounds, EntryQuery};
 use crate::session::types::{session_error, Entry, SessionErrorKind};
 use crate::types::AgentMessage;
 use pi_ai::utils::{RetryCallbacks, RetryPolicy};
 
+use super::compaction::{
+    complete_simple_with_retries, estimate_tokens, SummarizationOptions,
+    SUMMARIZATION_SYSTEM_PROMPT,
+};
 use super::utils::{
     compute_file_lists, create_file_ops, extract_file_ops_from_message, format_file_operations,
     serialize_conversation, FileOperations,
 };
 use crate::harness::{BranchSummaryError, SimpleModels};
-use super::compaction::{complete_simple_with_retries, estimate_tokens, SummarizationOptions, SUMMARIZATION_SYSTEM_PROMPT};
 
 /// Generated branch summary data ready to be persisted as a branch-summary
 /// entry.
@@ -75,13 +80,21 @@ pub async fn collect_entries_for_branch_summary<F: FileSystem>(
     // (walk from the start entry back toward the root), so a plain default
     // query keeps the common-ancestor scan identical to upstream.
     let old_path: std::collections::HashSet<String> = session
-        .find_entries_on_branch(&EntryQuery::default(), Some(old_leaf_id), &BranchBounds::default())
+        .find_entries_on_branch(
+            &EntryQuery::default(),
+            Some(old_leaf_id),
+            &BranchBounds::default(),
+        )
         .await?
         .into_iter()
         .map(|entry| entry.id().to_string())
         .collect();
     let target_path = session
-        .find_entries_on_branch(&EntryQuery::default(), Some(target_id), &BranchBounds::default())
+        .find_entries_on_branch(
+            &EntryQuery::default(),
+            Some(target_id),
+            &BranchBounds::default(),
+        )
         .await?;
     let mut common_ancestor_id: Option<String> = None;
     for entry in &target_path {
@@ -97,7 +110,10 @@ pub async fn collect_entries_for_branch_summary<F: FileSystem>(
             break;
         }
         let entry = session.get_entry(&id).await.ok_or_else(|| {
-            session_error(SessionErrorKind::InvalidEntry, format!("Entry {id} not found"))
+            session_error(
+                SessionErrorKind::InvalidEntry,
+                format!("Entry {id} not found"),
+            )
         })?;
         let parent_id = entry.parent_id().map(|s| s.to_string());
         entries.push(entry);
@@ -105,7 +121,10 @@ pub async fn collect_entries_for_branch_summary<F: FileSystem>(
     }
     entries.reverse();
 
-    Ok(CollectEntriesResult { entries, common_ancestor_id })
+    Ok(CollectEntriesResult {
+        entries,
+        common_ancestor_id,
+    })
 }
 
 fn get_message_from_entry(entry: &Entry) -> Option<AgentMessage> {
@@ -116,12 +135,26 @@ fn get_message_from_entry(entry: &Entry) -> Option<AgentMessage> {
             }
             Some(message.clone())
         }
-        Entry::BranchSummary { summary, from_id, timestamp, .. } => {
-            Some(create_branch_summary_message(summary.clone(), from_id.clone(), *timestamp))
-        }
-        Entry::Compaction { summary, tokens_before, timestamp, .. } => {
-            Some(create_compaction_summary_message(summary.clone(), *tokens_before, *timestamp))
-        }
+        Entry::BranchSummary {
+            summary,
+            from_id,
+            timestamp,
+            ..
+        } => Some(create_branch_summary_message(
+            summary.clone(),
+            from_id.clone(),
+            *timestamp,
+        )),
+        Entry::Compaction {
+            summary,
+            tokens_before,
+            timestamp,
+            ..
+        } => Some(create_compaction_summary_message(
+            summary.clone(),
+            *tokens_before,
+            *timestamp,
+        )),
         Entry::ThinkingLevel { .. }
         | Entry::ModelChange { .. }
         | Entry::ActiveTools { .. }
@@ -136,15 +169,25 @@ pub fn prepare_branch_entries(entries: &[Entry], token_budget: u64) -> BranchPre
     let mut total_tokens = 0u64;
 
     for entry in entries {
-        if let Entry::BranchSummary { details: Some(details), .. } = entry {
-            if let Some(read) = details.get("readFiles").and_then(pi_ai::types::JsonValue::as_array) {
+        if let Entry::BranchSummary {
+            details: Some(details),
+            ..
+        } = entry
+        {
+            if let Some(read) = details
+                .get("readFiles")
+                .and_then(pi_ai::types::JsonValue::as_array)
+            {
                 for f in read {
                     if let Some(s) = f.as_str() {
                         file_ops.read.insert(s.to_string());
                     }
                 }
             }
-            if let Some(modified) = details.get("modifiedFiles").and_then(pi_ai::types::JsonValue::as_array) {
+            if let Some(modified) = details
+                .get("modifiedFiles")
+                .and_then(pi_ai::types::JsonValue::as_array)
+            {
                 for f in modified {
                     if let Some(s) = f.as_str() {
                         file_ops.edited.insert(s.to_string());
@@ -162,8 +205,10 @@ pub fn prepare_branch_entries(entries: &[Entry], token_budget: u64) -> BranchPre
 
         let tokens = estimate_tokens(&message);
         if token_budget > 0 && total_tokens + tokens > token_budget {
-            if matches!(entry, Entry::Compaction { .. } | Entry::BranchSummary { .. })
-                && total_tokens < (token_budget as f64 * 0.9).floor() as u64
+            if matches!(
+                entry,
+                Entry::Compaction { .. } | Entry::BranchSummary { .. }
+            ) && total_tokens < (token_budget as f64 * 0.9).floor() as u64
             {
                 messages.insert(0, message);
                 total_tokens += tokens;
@@ -175,15 +220,21 @@ pub fn prepare_branch_entries(entries: &[Entry], token_budget: u64) -> BranchPre
         total_tokens += tokens;
     }
 
-    BranchPreparation { messages, file_ops, total_tokens }
+    BranchPreparation {
+        messages,
+        file_ops,
+        total_tokens,
+    }
 }
 
-const BRANCH_SUMMARY_PREAMBLE: &str = "The user explored a different conversation branch before returning here.
+const BRANCH_SUMMARY_PREAMBLE: &str =
+    "The user explored a different conversation branch before returning here.
 Summary of that exploration:
 
 ";
 
-const BRANCH_SUMMARY_PROMPT: &str = "Create a structured summary of this conversation branch for context when returning later.
+const BRANCH_SUMMARY_PROMPT: &str =
+    "Create a structured summary of this conversation branch for context when returning later.
 
 Use this EXACT format:
 
@@ -237,14 +288,25 @@ pub async fn generate_branch_summary(
     options: &GenerateBranchSummaryOptions<'_>,
 ) -> Result<BranchSummaryResult, BranchSummaryError> {
     let reserve_tokens = options.reserve_tokens.unwrap_or(16_384);
-    let context_window = if model.context_window != 0 { model.context_window } else { 128_000 };
+    let context_window = if model.context_window != 0 {
+        model.context_window
+    } else {
+        128_000
+    };
     let token_budget = context_window.saturating_sub(reserve_tokens);
 
     let preparation = prepare_branch_entries(entries, token_budget);
-    let BranchPreparation { messages, file_ops, .. } = preparation;
+    let BranchPreparation {
+        messages, file_ops, ..
+    } = preparation;
 
     if messages.is_empty() {
-        return Ok(BranchSummaryResult { summary: "No content to summarize".to_string(), usage: None, read_files: vec![], modified_files: vec![] });
+        return Ok(BranchSummaryResult {
+            summary: "No content to summarize".to_string(),
+            usage: None,
+            read_files: vec![],
+            modified_files: vec![],
+        });
     }
     let llm_messages = convert_to_llm(&messages);
     let conversation_text = serialize_conversation(&llm_messages);
@@ -290,7 +352,10 @@ pub async fn generate_branch_summary(
     if response.stop_reason() == Some(pi_ai::types::StopReason::Error) {
         return Err(BranchSummaryError::new(
             "summarization_failed",
-            format!("Branch summary failed: {}", response.error_message().unwrap_or("Unknown error")),
+            format!(
+                "Branch summary failed: {}",
+                response.error_message().unwrap_or("Unknown error")
+            ),
         ));
     }
 
@@ -307,7 +372,11 @@ pub async fn generate_branch_summary(
     summary += &format_file_operations(&read_files, &modified_files);
 
     Ok(BranchSummaryResult {
-        summary: if summary.is_empty() { "No summary generated".to_string() } else { summary },
+        summary: if summary.is_empty() {
+            "No summary generated".to_string()
+        } else {
+            summary
+        },
         usage: response.usage().cloned(),
         read_files,
         modified_files,

@@ -84,7 +84,13 @@ where
     C: pi_telemetry::TelemetryContext,
     F: FnOnce(&pi_telemetry::SpanHandle) -> R,
 {
-    context.start_span(pi_telemetry::SpanOptions { name: name.to_string(), attributes: Some(attributes) }, callback)
+    context.start_span(
+        pi_telemetry::SpanOptions {
+            name: name.to_string(),
+            attributes: Some(attributes),
+        },
+        callback,
+    )
 }
 
 /// Start a span scoped to a callback for a harness span, mirroring upstream
@@ -99,7 +105,13 @@ where
     C: pi_telemetry::TelemetryContext,
     F: FnOnce(&pi_telemetry::SpanHandle) -> R,
 {
-    context.start_span(pi_telemetry::SpanOptions { name: name.to_string(), attributes: Some(attributes) }, callback)
+    context.start_span(
+        pi_telemetry::SpanOptions {
+            name: name.to_string(),
+            attributes: Some(attributes),
+        },
+        callback,
+    )
 }
 
 #[cfg(test)]
@@ -122,13 +134,21 @@ mod tests {
     fn ai_schema_exposes_request_span_with_required_attributes() {
         let schema = ai_telemetry_schema();
         let request = &schema["spans"]["pi.ai.request"];
-        assert_eq!(request["description"], "One logical request to an AI provider");
+        assert_eq!(
+            request["description"],
+            "One logical request to an AI provider"
+        );
         assert_eq!(request["parents"]["kind"], "any");
         let start = &request["startAttributes"];
         assert_eq!(start["pi.ai.operation"]["required"], true);
         assert_eq!(
             start["pi.ai.operation"]["values"],
-            serde_json::json!(["stream", "fetch_deferred", "cancel_deferred", "generate_images"])
+            serde_json::json!([
+                "stream",
+                "fetch_deferred",
+                "cancel_deferred",
+                "generate_images"
+            ])
         );
         assert_eq!(start["pi.ai.provider"]["required"], true);
         assert_eq!(start["pi.ai.model"]["required"], true);
@@ -162,11 +182,20 @@ mod tests {
     fn harness_run_start_attributes_include_operation_kind() {
         let schema = harness_telemetry_schema();
         let start = &schema["spans"]["pi.harness.run"]["startAttributes"];
-        for key in ["pi.session.id", "pi.lane.name", "pi.operation.id", "pi.operation.recovery", "pi.operation.kind"] {
+        for key in [
+            "pi.session.id",
+            "pi.lane.name",
+            "pi.operation.id",
+            "pi.operation.recovery",
+            "pi.operation.kind",
+        ] {
             assert!(start.get(key).is_some(), "missing {key}");
         }
         assert_eq!(start["pi.operation.kind"]["required"], true);
-        assert_eq!(start["pi.operation.kind"]["values"], serde_json::json!(["run"]));
+        assert_eq!(
+            start["pi.operation.kind"]["values"],
+            serde_json::json!(["run"])
+        );
         assert_eq!(start["pi.operation.recovery"]["type"], "boolean");
     }
 
@@ -185,7 +214,10 @@ mod tests {
     fn hook_span_uses_hook_names() {
         let schema = harness_telemetry_schema();
         let start = &schema["spans"]["pi.harness.hook"]["startAttributes"];
-        assert_eq!(start["pi.hook.name"]["values"], serde_json::to_value(HOOK_NAMES).unwrap());
+        assert_eq!(
+            start["pi.hook.name"]["values"],
+            serde_json::to_value(HOOK_NAMES).unwrap()
+        );
         let end = &schema["spans"]["pi.harness.hook"]["endAttributes"];
         assert_eq!(
             end["pi.hook.outcome"]["values"],
@@ -197,21 +229,30 @@ mod tests {
     fn event_handler_span_uses_event_types() {
         let schema = harness_telemetry_schema();
         let start = &schema["spans"]["pi.harness.event_handler"]["startAttributes"];
-        assert_eq!(start["pi.event.type"]["values"], serde_json::to_value(EVENT_TYPES).unwrap());
+        assert_eq!(
+            start["pi.event.type"]["values"],
+            serde_json::to_value(EVENT_TYPES).unwrap()
+        );
     }
 
     #[test]
     fn session_write_mutation_values() {
         let schema = harness_telemetry_schema();
         let start = &schema["spans"]["pi.session.write"]["startAttributes"];
-        assert_eq!(start["pi.session.mutation"]["values"], serde_json::json!(["entry", "record", "lane", "fact"]));
+        assert_eq!(
+            start["pi.session.mutation"]["values"],
+            serde_json::json!(["entry", "record", "lane", "fact"])
+        );
     }
 
     #[test]
     fn tool_span_replay_and_recovery() {
         let schema = harness_telemetry_schema();
         let start = &schema["spans"]["pi.harness.tool"]["startAttributes"];
-        assert_eq!(start["pi.tool.replay"]["values"], serde_json::json!(["never", "safe"]));
+        assert_eq!(
+            start["pi.tool.replay"]["values"],
+            serde_json::json!(["never", "safe"])
+        );
         assert_eq!(start["pi.tool.recovery"]["type"], "boolean");
         assert_eq!(start["pi.tool.call_id"]["cardinality"], "high");
     }
@@ -225,13 +266,20 @@ mod tests {
             "pi.harness.run",
             attr("pi.operation.kind", serde_json::json!("run")),
             |span| {
-                pi_telemetry::TelemetrySpan::add_event(span, "run_start", Some(attr("pi.lane.name", serde_json::json!("default"))));
+                pi_telemetry::TelemetrySpan::add_event(
+                    span,
+                    "run_start",
+                    Some(attr("pi.lane.name", serde_json::json!("default"))),
+                );
             },
         );
         let spans = ctx.get_spans();
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].name, "pi.harness.run");
-        assert_eq!(spans[0].attributes.get("pi.operation.kind"), Some(&serde_json::json!("run")));
+        assert_eq!(
+            spans[0].attributes.get("pi.operation.kind"),
+            Some(&serde_json::json!("run"))
+        );
         assert_eq!(spans[0].events.len(), 1);
         assert_eq!(spans[0].events[0].name, "run_start");
         assert!(spans[0].settled);

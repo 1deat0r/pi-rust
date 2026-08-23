@@ -12,11 +12,16 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("pi-json-mode-{tag}-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("pi-json-mode-{tag}-{}", uuid::Uuid::new_v4()));
         let home = root.join("home");
         let agent_dir = home.join(".pi").join("agent");
         fs::create_dir_all(&agent_dir).unwrap();
-        Self { root, home, agent_dir }
+        Self {
+            root,
+            home,
+            agent_dir,
+        }
     }
 
     fn pi(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
@@ -52,7 +57,15 @@ fn json_mode_emits_event_lines() {
     let sandbox = Sandbox::new("events");
     let out = sandbox.pi(
         &sandbox.root,
-        &["--mode", "json", "--provider", "faux", "--model", "faux-1", "hello"],
+        &[
+            "--mode",
+            "json",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "hello",
+        ],
     );
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
     let stdout = sandbox.stdout(&out);
@@ -71,7 +84,10 @@ fn json_mode_emits_event_lines() {
     });
     assert!(has_update, "expected message_update events: {stdout}");
     let all = stdout.clone();
-    assert!(all.contains("faux response to: hello"), "expected faux reply: {all}");
+    assert!(
+        all.contains("faux response to: hello"),
+        "expected faux reply: {all}"
+    );
 }
 
 #[test]
@@ -83,9 +99,21 @@ fn json_mode_streams_terminal_error_as_event_and_exits_zero() {
     // nonzero exit).
     let out = sandbox.pi(
         &sandbox.root,
-        &["--mode", "json", "--provider", "openai", "--model", "gpt-5.4", "hi"],
+        &[
+            "--mode",
+            "json",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-5.4",
+            "hi",
+        ],
     );
-    assert!(out.status.success(), "json mode must exit 0, stderr: {}", sandbox.stderr(&out));
+    assert!(
+        out.status.success(),
+        "json mode must exit 0, stderr: {}",
+        sandbox.stderr(&out)
+    );
     let stdout = sandbox.stdout(&out);
     // Every line is valid JSON carrying a type.
     let mut seen_update = false;
@@ -98,6 +126,12 @@ fn json_mode_streams_terminal_error_as_event_and_exits_zero() {
     }
     // A terminal error still reaches the stream as a message_update event
     // (the falsey text is not required; the event envelope is the contract).
-    assert!(!stdout.trim().is_empty(), "expected JSON event lines on stdout");
-    assert!(seen_update, "expected a message_update event on the wire: {stdout}");
+    assert!(
+        !stdout.trim().is_empty(),
+        "expected JSON event lines on stdout"
+    );
+    assert!(
+        seen_update,
+        "expected a message_update event on the wire: {stdout}"
+    );
 }

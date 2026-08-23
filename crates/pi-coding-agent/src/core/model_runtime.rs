@@ -99,7 +99,10 @@ pub fn resolve_run_model_for_provider(
             }
             // Catalog substring match (upstream glob/fuzzy).
             let lower = base.to_lowercase();
-            if let Some(model) = provider_models.iter().find(|m| m.id.to_lowercase().contains(&lower)) {
+            if let Some(model) = provider_models
+                .iter()
+                .find(|m| m.id.to_lowercase().contains(&lower))
+            {
                 return Ok(model.clone());
             }
             let _ = thinking;
@@ -151,7 +154,8 @@ mod tests {
     #[test]
     fn exact_model_resolution() {
         let models = test_models();
-        let model = resolve_run_model_for_provider(&models, "google", Some("gemini-2.5-flash")).unwrap();
+        let model =
+            resolve_run_model_for_provider(&models, "google", Some("gemini-2.5-flash")).unwrap();
         assert_eq!(model.id, "gemini-2.5-flash");
         assert_eq!(model.provider, "google");
     }
@@ -166,7 +170,8 @@ mod tests {
     #[test]
     fn unknown_model_errors() {
         let models = test_models();
-        let err = resolve_run_model_for_provider(&models, "google", Some("does-not-exist")).unwrap_err();
+        let err =
+            resolve_run_model_for_provider(&models, "google", Some("does-not-exist")).unwrap_err();
         assert!(err.contains("Unknown model"), "{err}");
     }
 
@@ -179,8 +184,20 @@ mod tests {
 
     #[test]
     fn default_table_covers_primary_providers() {
-        for p in ["google", "openai", "anthropic", "xai", "deepseek", "groq", "mistral", "openrouter"] {
-            assert!(default_model_per_provider(p).is_some(), "{p} missing default");
+        for p in [
+            "google",
+            "openai",
+            "anthropic",
+            "xai",
+            "deepseek",
+            "groq",
+            "mistral",
+            "openrouter",
+        ] {
+            assert!(
+                default_model_per_provider(p).is_some(),
+                "{p} missing default"
+            );
         }
     }
 }

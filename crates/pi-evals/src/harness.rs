@@ -41,7 +41,10 @@ pub fn resolve_model_selection(
         .filter(|s| !s.is_empty());
     match (provider, id) {
         (Some(provider), Some(id)) => Ok(ModelSelection { provider, id }),
-        _ => Err("Select a harness model explicitly or set both PI_PROVIDER and PI_MODEL as defaults.".to_string()),
+        _ => Err(
+            "Select a harness model explicitly or set both PI_PROVIDER and PI_MODEL as defaults."
+                .to_string(),
+        ),
     }
 }
 
@@ -114,8 +117,9 @@ impl HarnessContext {
 }
 
 /// Harness run-closure signature.
-type HarnessRunFn<TOutput> =
-    std::sync::Arc<dyn Fn(&serde_json::Value, &mut HarnessContext) -> HarnessResult<TOutput> + Send + Sync>;
+type HarnessRunFn<TOutput> = std::sync::Arc<
+    dyn Fn(&serde_json::Value, &mut HarnessContext) -> HarnessResult<TOutput> + Send + Sync,
+>;
 
 /// A single eval harness (port of the `Harness` interface).
 #[derive(Clone)]
@@ -125,11 +129,24 @@ pub struct Harness<TOutput = String> {
 }
 
 impl<TOutput> Harness<TOutput> {
-    pub fn new(name: impl Into<String>, run: impl Fn(&serde_json::Value, &mut HarnessContext) -> HarnessResult<TOutput> + Send + Sync + 'static) -> Self {
-        Self { name: name.into(), run: std::sync::Arc::new(run) }
+    pub fn new(
+        name: impl Into<String>,
+        run: impl Fn(&serde_json::Value, &mut HarnessContext) -> HarnessResult<TOutput>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            run: std::sync::Arc::new(run),
+        }
     }
 
-    pub fn run(&self, input: &serde_json::Value, context: &mut HarnessContext) -> HarnessResult<TOutput> {
+    pub fn run(
+        &self,
+        input: &serde_json::Value,
+        context: &mut HarnessContext,
+    ) -> HarnessResult<TOutput> {
         (self.run)(input, context)
     }
 }
@@ -199,19 +216,29 @@ pub fn run_pi_binary(
     let mut killed = false;
     let output = loop {
         // Poll completion without blocking past the deadline.
-        let Some(_status) = child.try_wait().map_err(|error| format!("failed to wait: {error}"))? else {
+        let Some(_status) = child
+            .try_wait()
+            .map_err(|error| format!("failed to wait: {error}"))?
+        else {
             if std::time::Instant::now() >= deadline {
                 let _ = child.kill();
                 killed = true;
-                break child.wait_with_output().map_err(|error| format!("failed to wait: {error}"))?;
+                break child
+                    .wait_with_output()
+                    .map_err(|error| format!("failed to wait: {error}"))?;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
             continue;
         };
-        break child.wait_with_output().map_err(|error| format!("failed to wait: {error}"))?;
+        break child
+            .wait_with_output()
+            .map_err(|error| format!("failed to wait: {error}"))?;
     };
     if killed {
-        return Err(format!("{} timed out after {}s", options.binary, options.timeout_secs));
+        return Err(format!(
+            "{} timed out after {}s",
+            options.binary, options.timeout_secs
+        ));
     }
     let exit_code = output.status.code().unwrap_or(-1);
     Ok(PiRunOutput {

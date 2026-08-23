@@ -23,14 +23,47 @@ pub const KNOWN_IMAGES_APIS: [&str; 1] = ["openrouter-images"];
 pub type ImagesApi = String;
 
 pub const KNOWN_PROVIDERS: [&str; 41] = [
-    "amazon-bedrock", "ant-ling", "anthropic", "google", "google-vertex", "openai",
-    "azure-openai-responses", "openai-codex", "radius", "nvidia", "deepseek",
-    "github-copilot", "xai", "groq", "cerebras", "openrouter", "vercel-ai-gateway",
-    "zai", "zai-coding-cn", "mistral", "minimax", "minimax-cn", "moonshotai",
-    "moonshotai-cn", "huggingface", "fireworks", "together", "baseten", "opencode",
-    "opencode-go", "kimi-coding", "cloudflare-workers-ai", "cloudflare-ai-gateway",
-    "qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual", "xiaomi",
-    "xiaomi-token-plan-cn", "xiaomi-token-plan-ams", "xiaomi-token-plan-sgp", "faux",
+    "amazon-bedrock",
+    "ant-ling",
+    "anthropic",
+    "google",
+    "google-vertex",
+    "openai",
+    "azure-openai-responses",
+    "openai-codex",
+    "radius",
+    "nvidia",
+    "deepseek",
+    "github-copilot",
+    "xai",
+    "groq",
+    "cerebras",
+    "openrouter",
+    "vercel-ai-gateway",
+    "zai",
+    "zai-coding-cn",
+    "mistral",
+    "minimax",
+    "minimax-cn",
+    "moonshotai",
+    "moonshotai-cn",
+    "huggingface",
+    "fireworks",
+    "together",
+    "baseten",
+    "opencode",
+    "opencode-go",
+    "kimi-coding",
+    "cloudflare-workers-ai",
+    "cloudflare-ai-gateway",
+    "qwen-token-plan",
+    "qwen-token-plan-cn",
+    "qwen-token-plan-individual",
+    "xiaomi",
+    "xiaomi-token-plan-cn",
+    "xiaomi-token-plan-ams",
+    "xiaomi-token-plan-sgp",
+    "faux",
 ];
 
 pub type ProviderId = String;
@@ -56,7 +89,9 @@ pub enum ThinkingLevel {
 }
 
 /// `ModelThinkingLevel`: `"off" | ThinkingLevel`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelThinkingLevel {
     Off,
@@ -159,7 +194,12 @@ pub enum ChatTemplateKwargValue {
     Number(f64),
     Bool(bool),
     Null,
-    Var { #[serde(rename = "$var")] var: String, #[serde(skip_serializing_if = "Option::is_none")] omit_when_off: Option<bool> },
+    Var {
+        #[serde(rename = "$var")]
+        var: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        omit_when_off: Option<bool>,
+    },
 }
 
 pub type CacheRetention = String; // "none" | "short" | "long"
@@ -297,16 +337,32 @@ pub enum ContentBlock {
 
 impl ContentBlock {
     pub fn text(text: impl Into<String>) -> Self {
-        ContentBlock::Text { text: text.into(), text_signature: None }
+        ContentBlock::Text {
+            text: text.into(),
+            text_signature: None,
+        }
     }
     pub fn thinking(thinking: impl Into<String>) -> Self {
-        ContentBlock::Thinking { thinking: thinking.into(), thinking_signature: None, redacted: None }
+        ContentBlock::Thinking {
+            thinking: thinking.into(),
+            thinking_signature: None,
+            redacted: None,
+        }
     }
     pub fn image(data: impl Into<String>, mime_type: impl Into<String>) -> Self {
-        ContentBlock::Image { data: data.into(), mime_type: mime_type.into() }
+        ContentBlock::Image {
+            data: data.into(),
+            mime_type: mime_type.into(),
+        }
     }
     pub fn tool_call(id: impl Into<String>, name: impl Into<String>, arguments: JsonValue) -> Self {
-        ContentBlock::ToolCall { id: id.into(), name: name.into(), arguments, thought_signature: None, namespace: None }
+        ContentBlock::ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+            thought_signature: None,
+            namespace: None,
+        }
     }
     pub fn as_thinking(&self) -> Option<&ContentBlock> {
         match self {
@@ -322,7 +378,9 @@ impl ContentBlock {
     }
     pub fn clear_thought_signature(&mut self) {
         match self {
-            ContentBlock::ToolCall { thought_signature, .. } => *thought_signature = None,
+            ContentBlock::ToolCall {
+                thought_signature, ..
+            } => *thought_signature = None,
             _ => {}
         }
     }
@@ -343,19 +401,21 @@ pub struct Cost {
 
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Usage {
-    pub input: u64,
-    pub output: u64,
+    /// Provider-reported token counts are signed because session adjustment
+    /// records can reconcile a previous report with negative deltas.
+    pub input: i64,
+    pub output: i64,
     #[serde(rename = "cacheRead")]
-    pub cache_read: u64,
+    pub cache_read: i64,
     #[serde(rename = "cacheWrite")]
-    pub cache_write: u64,
+    pub cache_write: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "cacheWrite1h")]
-    pub cache_write_1h: Option<u64>,
+    pub cache_write_1h: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<u64>,
+    pub reasoning: Option<i64>,
     #[serde(rename = "totalTokens")]
-    pub total_tokens: u64,
+    pub total_tokens: i64,
     pub cost: Cost,
 }
 
@@ -373,11 +433,12 @@ impl Cost {
 }
 
 impl Usage {
-    pub fn input_only(input: u64) -> Self {
-        let mut usage = Usage::default();
-        usage.input = input;
-        usage.total_tokens = input;
-        usage
+    pub fn input_only(input: i64) -> Self {
+        Self {
+            input,
+            total_tokens: input,
+            ..Default::default()
+        }
     }
 }
 
@@ -432,21 +493,34 @@ pub struct DeferredHandle {
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum UserContent {
     #[serde(rename = "user")]
-    RoleUser { content: UserContentBody, timestamp: u64 },
+    RoleUser {
+        content: UserContentBody,
+        timestamp: u64,
+    },
 }
 
 impl UserContent {
     pub fn string(content: impl Into<String>, timestamp: u64) -> Self {
-        UserContent::RoleUser { content: UserContentBody::String(content.into()), timestamp }
+        UserContent::RoleUser {
+            content: UserContentBody::String(content.into()),
+            timestamp,
+        }
     }
     pub fn blocks(content: Vec<ContentBlock>, timestamp: u64) -> Self {
-        UserContent::RoleUser { content: UserContentBody::Blocks(content), timestamp }
+        UserContent::RoleUser {
+            content: UserContentBody::Blocks(content),
+            timestamp,
+        }
     }
     pub fn timestamp(&self) -> u64 {
-        match self { UserContent::RoleUser { timestamp, .. } => *timestamp }
+        match self {
+            UserContent::RoleUser { timestamp, .. } => *timestamp,
+        }
     }
     pub fn content(&self) -> &UserContentBody {
-        match self { UserContent::RoleUser { content, .. } => content }
+        match self {
+            UserContent::RoleUser { content, .. } => content,
+        }
     }
 }
 
@@ -509,22 +583,34 @@ impl AssistantMessage {
         }
     }
     pub fn content(&self) -> &[ContentBlock] {
-        match self { AssistantMessage::Assistant { content, .. } => content }
+        match self {
+            AssistantMessage::Assistant { content, .. } => content,
+        }
     }
     pub fn content_mut(&mut self) -> &mut Vec<ContentBlock> {
-        match self { AssistantMessage::Assistant { content, .. } => content }
+        match self {
+            AssistantMessage::Assistant { content, .. } => content,
+        }
     }
     pub fn content_len(&self) -> usize {
-        match self { AssistantMessage::Assistant { content, .. } => content.len() }
+        match self {
+            AssistantMessage::Assistant { content, .. } => content.len(),
+        }
     }
     pub fn usage_mut(&mut self) -> Option<&mut Usage> {
-        match self { AssistantMessage::Assistant { usage, .. } => usage.as_mut() }
+        match self {
+            AssistantMessage::Assistant { usage, .. } => usage.as_mut(),
+        }
     }
     pub fn timestamp(&self) -> u64 {
-        match self { AssistantMessage::Assistant { timestamp, .. } => *timestamp }
+        match self {
+            AssistantMessage::Assistant { timestamp, .. } => *timestamp,
+        }
     }
     pub fn set_content(&mut self, content: Vec<ContentBlock>) {
-        match self { AssistantMessage::Assistant { content: c, .. } => *c = content }
+        match self {
+            AssistantMessage::Assistant { content: c, .. } => *c = content,
+        }
     }
     pub fn with_timestamp(mut self, ts: u64) -> Self {
         let AssistantMessage::Assistant { timestamp, .. } = &mut self;
@@ -532,24 +618,32 @@ impl AssistantMessage {
         self
     }
     pub fn stop_reason(&self) -> Option<StopReason> {
-        match self { AssistantMessage::Assistant { stop_reason, .. } => *stop_reason }
+        match self {
+            AssistantMessage::Assistant { stop_reason, .. } => *stop_reason,
+        }
     }
     pub fn set_stop_reason(&mut self, reason: StopReason) {
         let AssistantMessage::Assistant { stop_reason, .. } = self;
         *stop_reason = Some(reason);
     }
     pub fn error_message(&self) -> Option<&str> {
-        match self { AssistantMessage::Assistant { error_message, .. } => error_message.as_deref() }
+        match self {
+            AssistantMessage::Assistant { error_message, .. } => error_message.as_deref(),
+        }
     }
     pub fn usage(&self) -> Option<&Usage> {
-        match self { AssistantMessage::Assistant { usage, .. } => usage.as_ref() }
+        match self {
+            AssistantMessage::Assistant { usage, .. } => usage.as_ref(),
+        }
     }
     pub fn set_usage(&mut self, usage: Usage) {
         let AssistantMessage::Assistant { usage: slot, .. } = self;
         *slot = Some(usage);
     }
     pub fn response_id(&self) -> Option<&str> {
-        match self { AssistantMessage::Assistant { response_id, .. } => response_id.as_deref() }
+        match self {
+            AssistantMessage::Assistant { response_id, .. } => response_id.as_deref(),
+        }
     }
     pub fn set_response_id(&mut self, id: String) {
         let AssistantMessage::Assistant { response_id, .. } = self;
@@ -560,30 +654,49 @@ impl AssistantMessage {
         *response_model = Some(model);
     }
     pub fn raw_stop_reason(&self) -> Option<&str> {
-        match self { AssistantMessage::Assistant { raw_stop_reason, .. } => raw_stop_reason.as_deref() }
+        match self {
+            AssistantMessage::Assistant {
+                raw_stop_reason, ..
+            } => raw_stop_reason.as_deref(),
+        }
     }
     pub fn set_raw_stop_reason(&mut self, reason: String) {
-        let AssistantMessage::Assistant { raw_stop_reason, .. } = self;
+        let AssistantMessage::Assistant {
+            raw_stop_reason, ..
+        } = self;
         *raw_stop_reason = Some(reason);
     }
     pub fn deferred(&self) -> Option<&DeferredHandle> {
-        match self { AssistantMessage::Assistant { deferred, .. } => deferred.as_ref() }
+        match self {
+            AssistantMessage::Assistant { deferred, .. } => deferred.as_ref(),
+        }
     }
     pub fn set_deferred(&mut self, handle: DeferredHandle) {
         let AssistantMessage::Assistant { deferred, .. } = self;
         *deferred = Some(handle);
     }
     pub fn api(&self) -> Option<&str> {
-        match self { AssistantMessage::Assistant { api, .. } => api.as_deref() }
+        match self {
+            AssistantMessage::Assistant { api, .. } => api.as_deref(),
+        }
     }
     pub fn provider(&self) -> Option<&str> {
-        match self { AssistantMessage::Assistant { provider, .. } => provider.as_deref() }
+        match self {
+            AssistantMessage::Assistant { provider, .. } => provider.as_deref(),
+        }
     }
     pub fn model(&self) -> Option<&str> {
-        match self { AssistantMessage::Assistant { model, .. } => model.as_deref() }
+        match self {
+            AssistantMessage::Assistant { model, .. } => model.as_deref(),
+        }
     }
     pub fn set_api_provider_model(&mut self, api: &str, provider: &str, model: &str) {
-        let AssistantMessage::Assistant { api: a, provider: p, model: m, .. } = self;
+        let AssistantMessage::Assistant {
+            api: a,
+            provider: p,
+            model: m,
+            ..
+        } = self;
         *a = Some(api.to_string());
         *p = Some(provider.to_string());
         *m = Some(model.to_string());
@@ -620,7 +733,12 @@ pub enum ToolResultMessage {
 }
 
 impl ToolResultMessage {
-    pub fn new(tool_call_id: impl Into<String>, tool_name: impl Into<String>, content: Vec<ContentBlock>, is_error: bool) -> Self {
+    pub fn new(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        content: Vec<ContentBlock>,
+        is_error: bool,
+    ) -> Self {
         ToolResultMessage::ToolResult {
             tool_call_id: tool_call_id.into(),
             tool_name: tool_name.into(),
@@ -632,8 +750,18 @@ impl ToolResultMessage {
             timestamp: now_ms(),
         }
     }
-    pub fn text(tool_call_id: impl Into<String>, tool_name: impl Into<String>, output: impl Into<String>, is_error: bool) -> Self {
-        Self::new(tool_call_id, tool_name, vec![ContentBlock::text(output)], is_error)
+    pub fn text(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        output: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
+        Self::new(
+            tool_call_id,
+            tool_name,
+            vec![ContentBlock::text(output)],
+            is_error,
+        )
     }
 
     /// Builder: attach tool usage, details, and an explicit timestamp.
@@ -643,7 +771,12 @@ impl ToolResultMessage {
         details: Option<JsonValue>,
         timestamp: u64,
     ) -> Self {
-        let ToolResultMessage::ToolResult { details: d, usage: u, timestamp: t, .. } = &mut self;
+        let ToolResultMessage::ToolResult {
+            details: d,
+            usage: u,
+            timestamp: t,
+            ..
+        } = &mut self;
         *d = details;
         *u = usage;
         *t = timestamp;
@@ -651,7 +784,9 @@ impl ToolResultMessage {
     }
 
     pub fn timestamp(&self) -> u64 {
-        match self { ToolResultMessage::ToolResult { timestamp, .. } => *timestamp }
+        match self {
+            ToolResultMessage::ToolResult { timestamp, .. } => *timestamp,
+        }
     }
 }
 
@@ -679,10 +814,16 @@ impl Message {
         }
     }
     pub fn as_assistant(&self) -> Option<&AssistantMessage> {
-        match self { Message::Assistant(a) => Some(a), _ => None }
+        match self {
+            Message::Assistant(a) => Some(a),
+            _ => None,
+        }
     }
     pub fn as_tool_result(&self) -> Option<&ToolResultMessage> {
-        match self { Message::ToolResult(t) => Some(t), _ => None }
+        match self {
+            Message::ToolResult(t) => Some(t),
+            _ => None,
+        }
     }
 }
 
@@ -760,18 +901,59 @@ pub struct Context {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssistantMessageEvent {
-    Start { partial: AssistantMessage },
-    TextStart { content_index: usize, partial: AssistantMessage },
-    TextDelta { content_index: usize, delta: String, partial: AssistantMessage },
-    TextEnd { content_index: usize, content: String, partial: AssistantMessage },
-    ThinkingStart { content_index: usize, partial: AssistantMessage },
-    ThinkingDelta { content_index: usize, delta: String, partial: AssistantMessage },
-    ThinkingEnd { content_index: usize, content: String, partial: AssistantMessage },
-    ToolCallStart { content_index: usize, partial: AssistantMessage },
-    ToolCallDelta { content_index: usize, delta: String, partial: AssistantMessage },
-    ToolCallEnd { content_index: usize, tool_call: ContentBlock, partial: AssistantMessage },
-    Done { reason: DoneReason, message: AssistantMessage },
-    Error { reason: ErrorReason, error_message: AssistantMessage },
+    Start {
+        partial: AssistantMessage,
+    },
+    TextStart {
+        content_index: usize,
+        partial: AssistantMessage,
+    },
+    TextDelta {
+        content_index: usize,
+        delta: String,
+        partial: AssistantMessage,
+    },
+    TextEnd {
+        content_index: usize,
+        content: String,
+        partial: AssistantMessage,
+    },
+    ThinkingStart {
+        content_index: usize,
+        partial: AssistantMessage,
+    },
+    ThinkingDelta {
+        content_index: usize,
+        delta: String,
+        partial: AssistantMessage,
+    },
+    ThinkingEnd {
+        content_index: usize,
+        content: String,
+        partial: AssistantMessage,
+    },
+    ToolCallStart {
+        content_index: usize,
+        partial: AssistantMessage,
+    },
+    ToolCallDelta {
+        content_index: usize,
+        delta: String,
+        partial: AssistantMessage,
+    },
+    ToolCallEnd {
+        content_index: usize,
+        tool_call: ContentBlock,
+        partial: AssistantMessage,
+    },
+    Done {
+        reason: DoneReason,
+        message: AssistantMessage,
+    },
+    Error {
+        reason: ErrorReason,
+        error_message: AssistantMessage,
+    },
 }
 
 impl AssistantMessageEvent {
@@ -816,31 +998,43 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-
 impl ToolResultMessage {
     pub fn tool_call_id(&self) -> &str {
-        match self { ToolResultMessage::ToolResult { tool_call_id, .. } => tool_call_id }
+        match self {
+            ToolResultMessage::ToolResult { tool_call_id, .. } => tool_call_id,
+        }
     }
     pub fn tool_name(&self) -> &str {
-        match self { ToolResultMessage::ToolResult { tool_name, .. } => tool_name }
+        match self {
+            ToolResultMessage::ToolResult { tool_name, .. } => tool_name,
+        }
     }
     pub fn content(&self) -> &[ContentBlock] {
-        match self { ToolResultMessage::ToolResult { content, .. } => content }
+        match self {
+            ToolResultMessage::ToolResult { content, .. } => content,
+        }
     }
     pub fn is_error(&self) -> bool {
-        match self { ToolResultMessage::ToolResult { is_error, .. } => *is_error }
+        match self {
+            ToolResultMessage::ToolResult { is_error, .. } => *is_error,
+        }
     }
     pub fn details(&self) -> Option<&JsonValue> {
-        match self { ToolResultMessage::ToolResult { details, .. } => details.as_ref() }
+        match self {
+            ToolResultMessage::ToolResult { details, .. } => details.as_ref(),
+        }
     }
     pub fn set_content(&mut self, content: Vec<ContentBlock>) {
-        match self { ToolResultMessage::ToolResult { content: c, .. } => *c = content }
+        match self {
+            ToolResultMessage::ToolResult { content: c, .. } => *c = content,
+        }
     }
     pub fn set_tool_call_id(&mut self, id: String) {
-        match self { ToolResultMessage::ToolResult { tool_call_id, .. } => *tool_call_id = id }
+        match self {
+            ToolResultMessage::ToolResult { tool_call_id, .. } => *tool_call_id = id,
+        }
     }
 }
-
 
 /// Convenience constructor for a tool with a JSON-schema parameter object.
 pub fn json_tool(name: &str, description: &str, parameters: &serde_json::Value) -> Tool {

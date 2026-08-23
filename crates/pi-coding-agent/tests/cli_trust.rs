@@ -19,11 +19,16 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("pi-trust-cli-{tag}-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("pi-trust-cli-{tag}-{}", uuid::Uuid::new_v4()));
         let home = root.join("home");
         let agent_dir = home.join(".pi").join("agent");
         fs::create_dir_all(&agent_dir).unwrap();
-        Self { root, home, agent_dir }
+        Self {
+            root,
+            home,
+            agent_dir,
+        }
     }
 
     fn pi(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
@@ -79,7 +84,9 @@ fn no_approve_skips_project_settings() {
     // The run must not resolve faux (project settings skipped). It either
     // errors on the unconfigured default provider or on the missing key.
     assert!(
-        stderr.contains("not configured") || stderr.contains("No API key") || stderr.contains("provider"),
+        stderr.contains("not configured")
+            || stderr.contains("No API key")
+            || stderr.contains("provider"),
         "expected a provider error, got stderr: {stderr}"
     );
 }
@@ -101,6 +108,12 @@ fn trust_flags_parse_and_help_lists_them() {
     let sandbox = Sandbox::new("help");
     let out = sandbox.pi(&sandbox.root, &["--help"]);
     let stdout = sandbox.stdout(&out);
-    assert!(stdout.contains("--approve, -a"), "help must list --approve: {stdout}");
-    assert!(stdout.contains("--no-approve, -na"), "help must list --no-approve: {stdout}");
+    assert!(
+        stdout.contains("--approve, -a"),
+        "help must list --approve: {stdout}"
+    );
+    assert!(
+        stdout.contains("--no-approve, -na"),
+        "help must list --no-approve: {stdout}"
+    );
 }

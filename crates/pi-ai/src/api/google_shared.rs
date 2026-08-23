@@ -5,8 +5,7 @@ use serde_json::{json, Value};
 
 use crate::model::Model;
 use crate::types::{
-    ContentBlock, Context, Message, ModelThinkingLevel, StopReason, UserContent,
-    UserContentBody,
+    ContentBlock, Context, Message, ModelThinkingLevel, StopReason, UserContent, UserContentBody,
 };
 
 use super::transform_messages::transform_messages;
@@ -37,7 +36,10 @@ impl ResolvedGoogleThinkingLevel {
 
 /// Resolve a supported pi level or model-specific Google mapping to a
 /// standard Google level (upstream `resolveGoogleThinkingLevel`).
-pub fn resolve_google_thinking_level(level: ModelThinkingLevel, model: &Model) -> ResolvedGoogleThinkingLevel {
+pub fn resolve_google_thinking_level(
+    level: ModelThinkingLevel,
+    model: &Model,
+) -> ResolvedGoogleThinkingLevel {
     if level == ModelThinkingLevel::Off {
         return ResolvedGoogleThinkingLevel::High;
     }
@@ -77,15 +79,14 @@ fn model_level_string(level: &ModelThinkingLevel) -> &'static str {
 
 /// A streamed Gemini part is thinking when `thought == true`.
 pub fn is_thinking_part(part: &Value) -> bool {
-    part.get("thought").and_then(|v| v.as_bool()).unwrap_or(false)
+    part.get("thought")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// Retain the last non-empty thought signature within a streamed block
 /// (some backends only send it on the first delta).
-pub fn retain_thought_signature(
-    existing: Option<&str>,
-    incoming: Option<&str>,
-) -> Option<String> {
+pub fn retain_thought_signature(existing: Option<&str>, incoming: Option<&str>) -> Option<String> {
     match incoming {
         Some(s) if !s.is_empty() => Some(s.to_string()),
         _ => existing.map(|s| s.to_string()),
@@ -148,16 +149,23 @@ fn supports_multimodal_function_response(model_id: &str) -> bool {
 /// `Value` objects shaped like Gemini `Content[]`.
 pub fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
     let mut contents: Vec<Value> = Vec::new();
-    let normalize_tool_call_id = |id: &str, _model: &Model, _source: &crate::types::AssistantMessage| {
-        if !requires_tool_call_id(&model.id) {
-            return id.to_string();
-        }
-        let normalized: String = id
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
-            .collect();
-        normalized.chars().take(64).collect()
-    };
+    let normalize_tool_call_id =
+        |id: &str, _model: &Model, _source: &crate::types::AssistantMessage| {
+            if !requires_tool_call_id(&model.id) {
+                return id.to_string();
+            }
+            let normalized: String = id
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            normalized.chars().take(64).collect()
+        };
 
     let transformed = transform_messages(&context.messages, model, Some(&normalize_tool_call_id));
 
@@ -175,7 +183,9 @@ pub fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                         .iter()
                         .map(|item| match item {
                             ContentBlock::Text { text, .. } => json!({ "text": text }),
-                            ContentBlock::Image { data, mime_type, .. } => json!({
+                            ContentBlock::Image {
+                                data, mime_type, ..
+                            } => json!({
                                 "inlineData": { "mimeType": mime_type, "data": data },
                             }),
                             _ => json!({}),
@@ -197,9 +207,14 @@ pub fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
 
                 for block in assistant.content() {
                     match block {
-                        ContentBlock::Text { text, text_signature } => {
-                            let thought_signature =
-                                resolve_thought_signature(is_same_provider_and_model, text_signature.as_deref());
+                        ContentBlock::Text {
+                            text,
+                            text_signature,
+                        } => {
+                            let thought_signature = resolve_thought_signature(
+                                is_same_provider_and_model,
+                                text_signature.as_deref(),
+                            );
                             if text.trim().is_empty() && thought_signature.is_none() {
                                 continue;
                             }
@@ -234,8 +249,17 @@ pub fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                                 parts.push(json!({ "text": thinking }));
                             }
                         }
-                        ContentBlock::ToolCall { id, name, arguments, thought_signature, .. } => {
-                            let sig = resolve_thought_signature(is_same_provider_and_model, thought_signature.as_deref());
+                        ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            thought_signature,
+                            ..
+                        } => {
+                            let sig = resolve_thought_signature(
+                                is_same_provider_and_model,
+                                thought_signature.as_deref(),
+                            );
                             let mut function_call = json!({
                                 "name": name,
                                 "args": arguments,
@@ -271,16 +295,16 @@ pub fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                     })
                     .collect();
                 let text_result = text_content.join("\n");
-                let image_content: Vec<&ContentBlock> = if model.input.contains(&crate::model::ModelInput::Image)
-                {
-                    result
-                        .content()
-                        .iter()
-                        .filter(|c| matches!(c, ContentBlock::Image { .. }))
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+                let image_content: Vec<&ContentBlock> =
+                    if model.input.contains(&crate::model::ModelInput::Image) {
+                        result
+                            .content()
+                            .iter()
+                            .filter(|c| matches!(c, ContentBlock::Image { .. }))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
 
                 let has_text = !text_result.is_empty();
                 let has_images = !image_content.is_empty();
@@ -297,7 +321,9 @@ pub fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                 let image_parts: Vec<Value> = image_content
                     .iter()
                     .map(|image_block| match image_block {
-                        ContentBlock::Image { data, mime_type, .. } => json!({
+                        ContentBlock::Image {
+                            data, mime_type, ..
+                        } => json!({
                             "inlineData": { "mimeType": mime_type, "data": data },
                         }),
                         _ => json!({}),
@@ -531,7 +557,10 @@ mod tests {
 
     #[test]
     fn retain_signature_keeps_last_nonempty() {
-        assert_eq!(retain_thought_signature(Some("a"), Some("b")), Some("b".into()));
+        assert_eq!(
+            retain_thought_signature(Some("a"), Some("b")),
+            Some("b".into())
+        );
         assert_eq!(retain_thought_signature(Some("a"), None), Some("a".into()));
         assert_eq!(retain_thought_signature(None, Some("")), None);
     }
@@ -582,19 +611,23 @@ mod tests {
     fn convert_messages_tool_result_merges_and_images() {
         let m = model("gemini-2.5-pro"); // < 3 -> images separate
         let mut ctx = Context::default();
-        ctx.messages = vec![
-            Message::ToolResult(ToolResultMessage::new(
-                "call_1",
-                "bash",
-                vec![ContentBlock::text("out"), ContentBlock::image("aGk=", "image/png")],
-                false,
-            )),
-        ];
+        ctx.messages = vec![Message::ToolResult(ToolResultMessage::new(
+            "call_1",
+            "bash",
+            vec![
+                ContentBlock::text("out"),
+                ContentBlock::image("aGk=", "image/png"),
+            ],
+            false,
+        ))];
         let contents = convert_messages(&m, &ctx);
         // Function response user turn + separate image user turn for <3.
         assert_eq!(contents.len(), 2);
         assert_eq!(contents[0]["parts"][0]["functionResponse"]["name"], "bash");
-        assert_eq!(contents[0]["parts"][0]["functionResponse"]["response"]["output"], "out");
+        assert_eq!(
+            contents[0]["parts"][0]["functionResponse"]["response"]["output"],
+            "out"
+        );
         assert_eq!(contents[1]["parts"][1]["inlineData"]["data"], "aGk=");
     }
 

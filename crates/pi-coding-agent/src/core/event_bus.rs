@@ -53,13 +53,20 @@ impl EventBus {
     }
 
     /// Subscribe to a channel. Returns an unsubscribe closure.
-    pub fn on(&self, channel: &str, handler: Box<EventHandler>) -> Box<dyn Fn() + Send + Sync + '_> {
+    pub fn on(
+        &self,
+        channel: &str,
+        handler: Box<EventHandler>,
+    ) -> Box<dyn Fn() + Send + Sync + '_> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut guard = self.handlers.lock().unwrap();
         guard
             .entry(channel.to_string())
             .or_default()
-            .push(Registered { id, handler: Arc::new(handler) });
+            .push(Registered {
+                id,
+                handler: Arc::new(handler),
+            });
         let handlers = self.handlers.clone();
         let channel = channel.to_string();
         drop(guard);
@@ -83,7 +90,12 @@ impl EventBus {
 
     /// Number of handlers on a channel (test helper).
     pub fn handler_count(&self, channel: &str) -> usize {
-        self.handlers.lock().unwrap().get(channel).map(|l| l.len()).unwrap_or(0)
+        self.handlers
+            .lock()
+            .unwrap()
+            .get(channel)
+            .map(|l| l.len())
+            .unwrap_or(0)
     }
 }
 
@@ -96,10 +108,13 @@ mod tests {
         let bus = EventBus::new();
         let received = Arc::new(Mutex::new(Vec::new()));
         let got = received.clone();
-        let _unsub = bus.on("x", Box::new(move |data| {
-            let value = data.downcast_ref::<u32>().copied().unwrap_or(0);
-            got.lock().unwrap().push(value);
-        }));
+        let _unsub = bus.on(
+            "x",
+            Box::new(move |data| {
+                let value = data.downcast_ref::<u32>().copied().unwrap_or(0);
+                got.lock().unwrap().push(value);
+            }),
+        );
         bus.emit("x", 42u32);
         bus.emit("x", 7u32);
         assert_eq!(*received.lock().unwrap(), vec![42, 7]);

@@ -8,8 +8,12 @@ pub mod session;
 pub mod state;
 pub mod types;
 
-pub use jsonl::repo::{jsonl_session_directory_name, session_file_name, CreateOptions, JsonlSessionRepo};
+pub use jsonl::repo::{
+    jsonl_session_directory_name, session_file_name, CreateOptions, JsonlSessionRepo,
+};
 pub use jsonl::storage::{JsonlSessionStorage, LoadError};
 pub use session::{new_id, Session};
-pub use state::{EntryCursor, EntryOrder, EntryQuery, ForkOptions, ForkPosition, RecordQuery, SessionState};
+pub use state::{
+    EntryCursor, EntryOrder, EntryQuery, ForkOptions, ForkPosition, RecordQuery, SessionState,
+};
 pub use types::*;

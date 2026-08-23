@@ -62,8 +62,9 @@ pub type ImagesFunction = std::sync::Arc<
     dyn Fn(&ImagesModel, &ImagesContext, &ImagesOptions) -> AssistantImages + Send + Sync,
 >;
 
-static REGISTRY: std::sync::OnceLock<std::sync::RwLock<std::collections::BTreeMap<String, ImagesFunction>>> =
-    std::sync::OnceLock::new();
+static REGISTRY: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::BTreeMap<String, ImagesFunction>>,
+> = std::sync::OnceLock::new();
 
 fn registry() -> &'static std::sync::RwLock<std::collections::BTreeMap<String, ImagesFunction>> {
     REGISTRY.get_or_init(|| std::sync::RwLock::new(std::collections::BTreeMap::new()))
@@ -111,28 +112,51 @@ pub fn catalog_images(provider_id: &str) -> Vec<ImagesModel> {
         Err(_) => return Vec::new(),
     };
     let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    let Some(obj) = value.as_object() else { return Vec::new() };
+    let Some(obj) = value.as_object() else {
+        return Vec::new();
+    };
     obj.iter()
         .map(|(id, v)| {
-            let headers = v
-                .get("headers")
-                .and_then(|h| h.as_object())
-                .map(|m| {
-                    m.iter()
-                        .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
-                        .collect()
-                });
+            let headers = v.get("headers").and_then(|h| h.as_object()).map(|m| {
+                m.iter()
+                    .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            });
             ImagesModel {
-                id: v.get("id").and_then(|x| x.as_str()).unwrap_or(id).to_string(),
-                name: v.get("name").and_then(|x| x.as_str()).unwrap_or(id).to_string(),
-                api: v.get("api").and_then(|x| x.as_str()).unwrap_or("openrouter-images").to_string(),
-                provider: v.get("provider").and_then(|x| x.as_str()).unwrap_or(provider_id).to_string(),
-                base_url: v.get("baseUrl").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                id: v
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or(id)
+                    .to_string(),
+                name: v
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or(id)
+                    .to_string(),
+                api: v
+                    .get("api")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("openrouter-images")
+                    .to_string(),
+                provider: v
+                    .get("provider")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or(provider_id)
+                    .to_string(),
+                base_url: v
+                    .get("baseUrl")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 input: v.get("input").map(parse_model_input).unwrap_or_default(),
                 output: v
                     .get("output")
                     .and_then(|o| o.as_array())
-                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 cost: v.get("cost").map(parse_cost).unwrap_or_default(),
                 headers,
@@ -146,24 +170,24 @@ pub fn catalog_images(provider_id: &str) -> Vec<ImagesModel> {
 pub fn register_builtin_images_api_providers() {
     use crate::api::openrouter_images;
 
-    let f: ImagesFunction = std::sync::Arc::new(move |model: &ImagesModel,
-                                                 context: &ImagesContext,
-                                                 options: &ImagesOptions| {
-        // The openrouter_images adaptor is async; run it on a fresh current-
-        // thread runtime so the sync images facade can reuse `generate_images`.
-        let client = reqwest::Client::new();
-        let mut opts = options.clone();
-        let aborted = opts.aborted;
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("images runtime");
-        rt.block_on(async move {
-            // The abort signal is a request-granular flag in this bridge.
-            opts.aborted = aborted;
-            openrouter_images::generate_images(model, context, &opts, client).await
-        })
-    });
+    let f: ImagesFunction = std::sync::Arc::new(
+        move |model: &ImagesModel, context: &ImagesContext, options: &ImagesOptions| {
+            // The openrouter_images adaptor is async; run it on a fresh current-
+            // thread runtime so the sync images facade can reuse `generate_images`.
+            let client = reqwest::Client::new();
+            let mut opts = options.clone();
+            let aborted = opts.aborted;
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("images runtime");
+            rt.block_on(async move {
+                // The abort signal is a request-granular flag in this bridge.
+                opts.aborted = aborted;
+                openrouter_images::generate_images(model, context, &opts, client).await
+            })
+        },
+    );
     register_images_api_provider("openrouter-images", f);
 }
 
@@ -239,8 +263,15 @@ mod tests {
     #[test]
     fn catalog_vendors_openrouter_image_models() {
         let models = catalog_images("openrouter");
-        assert!(models.len() >= 36, "expected 36+ image models, got {}", models.len());
-        let nano = models.iter().find(|m| m.id == "google/gemini-2.5-flash-image").unwrap();
+        assert!(
+            models.len() >= 36,
+            "expected 36+ image models, got {}",
+            models.len()
+        );
+        let nano = models
+            .iter()
+            .find(|m| m.id == "google/gemini-2.5-flash-image")
+            .unwrap();
         assert_eq!(nano.api, "openrouter-images");
         assert_eq!(nano.provider, "openrouter");
         assert_eq!(nano.base_url, "https://openrouter.ai/api/v1");
@@ -260,8 +291,16 @@ mod tests {
             cost: ModelCost::default(),
             headers: None,
         };
-        let out = generate_images(&model, &ImagesContext { input: vec![] }, &ImagesOptions::default());
+        let out = generate_images(
+            &model,
+            &ImagesContext { input: vec![] },
+            &ImagesOptions::default(),
+        );
         assert_eq!(out.stop_reason, ImagesStopReason::Error);
-        assert!(out.error_message.as_deref().unwrap_or("").contains("No API provider registered"));
+        assert!(out
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("No API provider registered"));
     }
 }

@@ -14,10 +14,22 @@ pub struct PiServerError {
 
 impl PiServerError {
     pub fn new(code: ProtocolErrorCode, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), details: None }
+        Self {
+            code,
+            message: message.into(),
+            details: None,
+        }
     }
-    pub fn with_details(code: ProtocolErrorCode, message: impl Into<String>, details: serde_json::Value) -> Self {
-        Self { code, message: message.into(), details: Some(details) }
+    pub fn with_details(
+        code: ProtocolErrorCode,
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            details: Some(details),
+        }
     }
     pub fn into_protocol(&self) -> pi_protocol::ProtocolError {
         pi_protocol::ProtocolError {
@@ -30,7 +42,12 @@ impl PiServerError {
 
 impl std::fmt::Display for PiServerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", serde_json::to_string(&self.code).unwrap_or_default(), self.message)
+        write!(
+            f,
+            "{}: {}",
+            serde_json::to_string(&self.code).unwrap_or_default(),
+            self.message
+        )
     }
 }
 
@@ -48,7 +65,9 @@ pub fn not_implemented_error() -> PiServerError {
 }
 
 pub fn internal_server_error(cause: impl Into<String>) -> InternalServerError {
-    InternalServerError { cause: cause.into() }
+    InternalServerError {
+        cause: cause.into(),
+    }
 }
 
 #[cfg(test)]
@@ -57,7 +76,11 @@ mod tests {
 
     #[test]
     fn protocol_roundtrip_preserves_fields() {
-        let err = PiServerError::with_details(ProtocolErrorCode::Busy, "busy", serde_json::json!({"sessionId": "s1"}));
+        let err = PiServerError::with_details(
+            ProtocolErrorCode::Busy,
+            "busy",
+            serde_json::json!({"sessionId": "s1"}),
+        );
         let p = err.into_protocol();
         assert_eq!(p.code, ProtocolErrorCode::Busy);
         assert_eq!(p.details.as_ref().unwrap()["sessionId"], "s1");

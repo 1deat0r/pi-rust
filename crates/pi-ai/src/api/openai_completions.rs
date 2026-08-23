@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
+use crate::event_stream::StreamSink;
 use crate::model::{calculate_cost, clamp_thinking_level, Model};
 use crate::partial_json::parse_streaming_json;
 use crate::types::{
@@ -25,7 +26,6 @@ use crate::types::{
     ErrorReason, ProviderEnv, ProviderHeaders, SimpleStreamOptions, StopReason, StreamOptions,
     Tool, ToolChoice, Usage,
 };
-use crate::event_stream::StreamSink;
 use crate::AssistantMessageEventStream;
 
 // ---------------------------------------------------------------------------
@@ -65,12 +65,21 @@ impl OpenAiCompletionsCompat {
         let provider = &model.provider;
         let base_url = model.base_url.to_lowercase();
 
-        let is_zai = provider == "zai" || provider == "zai-coding-cn" || base_url.contains("api.z.ai") || base_url.contains("open.bigmodel.cn");
-        let is_together = provider == "together" || base_url.contains("api.together.ai") || base_url.contains("api.together.xyz");
-        let is_moonshot = provider == "moonshotai" || provider == "moonshotai-cn" || base_url.contains("api.moonshot.");
+        let is_zai = provider == "zai"
+            || provider == "zai-coding-cn"
+            || base_url.contains("api.z.ai")
+            || base_url.contains("open.bigmodel.cn");
+        let is_together = provider == "together"
+            || base_url.contains("api.together.ai")
+            || base_url.contains("api.together.xyz");
+        let is_moonshot = provider == "moonshotai"
+            || provider == "moonshotai-cn"
+            || base_url.contains("api.moonshot.");
         let is_openrouter = provider == "openrouter" || base_url.contains("openrouter.ai");
-        let is_cloudflare_workers_ai = provider == "cloudflare-workers-ai" || base_url.contains("api.cloudflare.com");
-        let is_cloudflare_ai_gateway = provider == "cloudflare-ai-gateway" || base_url.contains("gateway.ai.cloudflare.com");
+        let is_cloudflare_workers_ai =
+            provider == "cloudflare-workers-ai" || base_url.contains("api.cloudflare.com");
+        let is_cloudflare_ai_gateway =
+            provider == "cloudflare-ai-gateway" || base_url.contains("gateway.ai.cloudflare.com");
         let is_nvidia = provider == "nvidia" || base_url.contains("integrate.api.nvidia.com");
         let is_ant_ling = provider == "ant-ling" || base_url.contains("api.ant-ling.com");
         let is_deepseek = provider == "deepseek" || base_url.contains("deepseek.com");
@@ -101,9 +110,10 @@ impl OpenAiCompletionsCompat {
             || is_zai;
 
         let is_grok = provider == "xai" || base_url.contains("api.x.ai");
-        let is_openrouter_developer_role_model =
-            is_openrouter && (model.id.starts_with("anthropic/") || model.id.starts_with("openai/"));
-        let cache_control_format = if provider == "openrouter" && model.id.starts_with("anthropic/") {
+        let is_openrouter_developer_role_model = is_openrouter
+            && (model.id.starts_with("anthropic/") || model.id.starts_with("openai/"));
+        let cache_control_format = if provider == "openrouter" && model.id.starts_with("anthropic/")
+        {
             Some("anthropic".to_string())
         } else {
             None
@@ -125,7 +135,8 @@ impl OpenAiCompletionsCompat {
 
         Self {
             supports_store: !is_non_standard,
-            supports_developer_role: is_openrouter_developer_role_model || (!is_non_standard && !is_openrouter),
+            supports_developer_role: is_openrouter_developer_role_model
+                || (!is_non_standard && !is_openrouter),
             supports_reasoning_effort: !is_grok
                 && !is_zai
                 && !is_moonshot
@@ -135,7 +146,12 @@ impl OpenAiCompletionsCompat {
                 && !is_ant_ling,
             supports_usage_in_streaming: true,
             supports_finish_reason: true,
-            max_tokens_field: if use_max_tokens { "max_tokens" } else { "max_completion_tokens" }.to_string(),
+            max_tokens_field: if use_max_tokens {
+                "max_tokens"
+            } else {
+                "max_completion_tokens"
+            }
+            .to_string(),
             requires_tool_result_name: false,
             requires_assistant_after_tool_result: false,
             requires_thinking_as_text: false,
@@ -144,12 +160,20 @@ impl OpenAiCompletionsCompat {
             zai_tool_stream: false,
             supports_thinking_token_budget: false,
             thinking_token_budget_field: None,
-            supports_strict_mode: !is_moonshot && !is_together && !is_cloudflare_ai_gateway && !is_nvidia,
+            supports_strict_mode: !is_moonshot
+                && !is_together
+                && !is_cloudflare_ai_gateway
+                && !is_nvidia,
             supports_openai_grammar_tools: false,
             cache_control_format,
             send_session_affinity_headers: false,
             deferred_tools_mode: None,
-            session_affinity_format: if is_openrouter { "openrouter" } else { "openai" }.to_string(),
+            session_affinity_format: if is_openrouter {
+                "openrouter"
+            } else {
+                "openai"
+            }
+            .to_string(),
             supports_long_cache_retention: !(is_together
                 || is_cloudflare_workers_ai
                 || is_cloudflare_ai_gateway
@@ -166,7 +190,12 @@ impl OpenAiCompletionsCompat {
             return detected;
         };
         let get_bool = |k: &str| compat.get(k).and_then(|v| v.as_bool());
-        let get_str = |k: &str| compat.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+        let get_str = |k: &str| {
+            compat
+                .get(k)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        };
         let get_str_opt = |k: &str| compat.get(k).cloned();
         let cache_control_format_override = match get_str_opt("cacheControlFormat") {
             Some(Value::String(s)) => Some(s),
@@ -176,27 +205,43 @@ impl OpenAiCompletionsCompat {
 
         Self {
             supports_store: get_bool("supportsStore").unwrap_or(detected.supports_store),
-            supports_developer_role: get_bool("supportsDeveloperRole").unwrap_or(detected.supports_developer_role),
-            supports_reasoning_effort: get_bool("supportsReasoningEffort").unwrap_or(detected.supports_reasoning_effort),
-            supports_usage_in_streaming: get_bool("supportsUsageInStreaming").unwrap_or(detected.supports_usage_in_streaming),
-            supports_finish_reason: get_bool("supportsFinishReason").unwrap_or(detected.supports_finish_reason),
+            supports_developer_role: get_bool("supportsDeveloperRole")
+                .unwrap_or(detected.supports_developer_role),
+            supports_reasoning_effort: get_bool("supportsReasoningEffort")
+                .unwrap_or(detected.supports_reasoning_effort),
+            supports_usage_in_streaming: get_bool("supportsUsageInStreaming")
+                .unwrap_or(detected.supports_usage_in_streaming),
+            supports_finish_reason: get_bool("supportsFinishReason")
+                .unwrap_or(detected.supports_finish_reason),
             max_tokens_field: get_str("maxTokensField").unwrap_or(detected.max_tokens_field),
-            requires_tool_result_name: get_bool("requiresToolResultName").unwrap_or(detected.requires_tool_result_name),
-            requires_assistant_after_tool_result: get_bool("requiresAssistantAfterToolResult").unwrap_or(detected.requires_assistant_after_tool_result),
-            requires_thinking_as_text: get_bool("requiresThinkingAsText").unwrap_or(detected.requires_thinking_as_text),
-            requires_reasoning_content_on_assistant_messages: get_bool("requiresReasoningContentOnAssistantMessages")
-                .unwrap_or(detected.requires_reasoning_content_on_assistant_messages),
+            requires_tool_result_name: get_bool("requiresToolResultName")
+                .unwrap_or(detected.requires_tool_result_name),
+            requires_assistant_after_tool_result: get_bool("requiresAssistantAfterToolResult")
+                .unwrap_or(detected.requires_assistant_after_tool_result),
+            requires_thinking_as_text: get_bool("requiresThinkingAsText")
+                .unwrap_or(detected.requires_thinking_as_text),
+            requires_reasoning_content_on_assistant_messages: get_bool(
+                "requiresReasoningContentOnAssistantMessages",
+            )
+            .unwrap_or(detected.requires_reasoning_content_on_assistant_messages),
             thinking_format: get_str("thinkingFormat").unwrap_or(detected.thinking_format),
             zai_tool_stream: get_bool("zaiToolStream").unwrap_or(detected.zai_tool_stream),
-            supports_thinking_token_budget: get_bool("supportsThinkingTokenBudget").unwrap_or(detected.supports_thinking_token_budget),
-            thinking_token_budget_field: get_str("thinkingTokenBudgetField").or(detected.thinking_token_budget_field),
-            supports_strict_mode: get_bool("supportsStrictMode").unwrap_or(detected.supports_strict_mode),
-            supports_openai_grammar_tools: get_bool("supportsOpenAIGrammarTools").unwrap_or(detected.supports_openai_grammar_tools),
+            supports_thinking_token_budget: get_bool("supportsThinkingTokenBudget")
+                .unwrap_or(detected.supports_thinking_token_budget),
+            thinking_token_budget_field: get_str("thinkingTokenBudgetField")
+                .or(detected.thinking_token_budget_field),
+            supports_strict_mode: get_bool("supportsStrictMode")
+                .unwrap_or(detected.supports_strict_mode),
+            supports_openai_grammar_tools: get_bool("supportsOpenAIGrammarTools")
+                .unwrap_or(detected.supports_openai_grammar_tools),
             cache_control_format: cache_control_format_override,
-            send_session_affinity_headers: get_bool("sendSessionAffinityHeaders").unwrap_or(detected.send_session_affinity_headers),
+            send_session_affinity_headers: get_bool("sendSessionAffinityHeaders")
+                .unwrap_or(detected.send_session_affinity_headers),
             deferred_tools_mode: get_str("deferredToolsMode").or(detected.deferred_tools_mode),
-            session_affinity_format: get_str("sessionAffinityFormat").unwrap_or(detected.session_affinity_format),
-            supports_long_cache_retention: get_bool("supportsLongCacheRetention").unwrap_or(detected.supports_long_cache_retention),
+            session_affinity_format: get_str("sessionAffinityFormat")
+                .unwrap_or(detected.session_affinity_format),
+            supports_long_cache_retention: get_bool("supportsLongCacheRetention")
+                .unwrap_or(detected.supports_long_cache_retention),
         }
     }
 }
@@ -213,7 +258,11 @@ fn has_header(headers: Option<&ProviderHeaders>, name: &str) -> bool {
     })
 }
 
-fn get_client_api_key(provider: &str, api_key: Option<&str>, headers: Option<&ProviderHeaders>) -> Result<String, String> {
+fn get_client_api_key(
+    provider: &str,
+    api_key: Option<&str>,
+    headers: Option<&ProviderHeaders>,
+) -> Result<String, String> {
     if let Some(key) = api_key {
         if !key.is_empty() {
             return Ok(key.to_string());
@@ -230,7 +279,10 @@ fn has_tool_history(messages: &[crate::types::Message]) -> bool {
         match msg {
             crate::types::Message::ToolResult(_) => return true,
             crate::types::Message::Assistant(a) => {
-                if a.content().iter().any(|b| matches!(b, ContentBlock::ToolCall { .. })) {
+                if a.content()
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolCall { .. }))
+                {
                     return true;
                 }
             }
@@ -251,7 +303,10 @@ pub fn get_provider_env_value(name: &str, env: Option<&ProviderEnv>) -> Option<S
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
-pub fn resolve_cache_retention(cache_retention: Option<&CacheRetention>, env: Option<&ProviderEnv>) -> String {
+pub fn resolve_cache_retention(
+    cache_retention: Option<&CacheRetention>,
+    env: Option<&ProviderEnv>,
+) -> String {
     if let Some(retention) = cache_retention {
         return retention.clone();
     }
@@ -279,10 +334,24 @@ pub fn short_hash(text: &str) -> String {
 fn normalize_tool_call_id(id: &str, provider: &str) -> String {
     if id.contains('|') {
         let (call_id, item_id) = id.split_once('|').unwrap_or((id, ""));
-        let sanitize = |s: &str| s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect::<String>();
+        let sanitize = |s: &str| {
+            s.chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>()
+        };
         let call_id = sanitize(call_id);
         let item_id = sanitize(item_id);
-        let combined = if item_id.is_empty() { call_id.clone() } else { format!("{call_id}_{item_id}") };
+        let combined = if item_id.is_empty() {
+            call_id.clone()
+        } else {
+            format!("{call_id}_{item_id}")
+        };
         if combined.len() <= 40 {
             return combined;
         }
@@ -317,7 +386,11 @@ pub fn convert_messages(
 
     if let Some(system_prompt) = &context.system_prompt {
         let use_developer_role = model.reasoning && compat.supports_developer_role;
-        let role = if use_developer_role { "developer" } else { "system" };
+        let role = if use_developer_role {
+            "developer"
+        } else {
+            "system"
+        };
         params.push(json!({ "role": role, "content": system_prompt }));
     }
 
@@ -342,7 +415,9 @@ pub fn convert_messages(
                                 ContentBlock::Text { text, .. } => {
                                     content.push(json!({ "type": "text", "text": text }));
                                 }
-                                ContentBlock::Image { data, mime_type, .. } => {
+                                ContentBlock::Image {
+                                    data, mime_type, ..
+                                } => {
                                     content.push(json!({
                                         "type": "image_url",
                                         "image_url": { "url": format!("data:{mime_type};base64,{data}") }
@@ -361,11 +436,12 @@ pub fn convert_messages(
             crate::types::Message::Assistant(a) => {
                 let mut assistant_msg = serde_json::Map::new();
                 assistant_msg.insert("role".into(), json!("assistant"));
-                let assistant_content: Option<Value> = if compat.requires_assistant_after_tool_result {
-                    Some(Value::String(String::new()))
-                } else {
-                    None
-                };
+                let assistant_content: Option<Value> =
+                    if compat.requires_assistant_after_tool_result {
+                        Some(Value::String(String::new()))
+                    } else {
+                        None
+                    };
                 if let Some(c) = assistant_content {
                     assistant_msg.insert("content".into(), c);
                 }
@@ -374,7 +450,9 @@ pub fn convert_messages(
                 let assistant_text_parts: Vec<String> = blocks
                     .iter()
                     .filter_map(|b| match b {
-                        ContentBlock::Text { text, .. } if !text.trim().is_empty() => Some(text.clone()),
+                        ContentBlock::Text { text, .. } if !text.trim().is_empty() => {
+                            Some(text.clone())
+                        }
                         _ => None,
                     })
                     .collect();
@@ -417,12 +495,12 @@ pub fn convert_messages(
                         }
                         // Reasoning signature replay: use the first thinking
                         // block's signature as the reasoning field.
-                        let signature = non_empty_thinking[0]
-                            .as_thinking()
-                            .and_then(|t| match t {
-                                ContentBlock::Thinking { thinking_signature, .. } => thinking_signature.clone(),
-                                _ => None,
-                            });
+                        let signature = non_empty_thinking[0].as_thinking().and_then(|t| match t {
+                            ContentBlock::Thinking {
+                                thinking_signature, ..
+                            } => thinking_signature.clone(),
+                            _ => None,
+                        });
                         let signature = signature.as_deref();
                         if let Some(sig) = signature {
                             let sig = if model.provider == "opencode-go" && sig == "reasoning" {
@@ -434,7 +512,9 @@ pub fn convert_messages(
                                 let content = non_empty_thinking
                                     .iter()
                                     .filter_map(|b| match b {
-                                        ContentBlock::Thinking { thinking, .. } => Some(thinking.clone()),
+                                        ContentBlock::Thinking { thinking, .. } => {
+                                            Some(thinking.clone())
+                                        }
                                         _ => None,
                                     })
                                     .collect::<Vec<_>>()
@@ -503,7 +583,10 @@ pub fn convert_messages(
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        let has_images = tr.content().iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+                        let has_images = tr
+                            .content()
+                            .iter()
+                            .any(|b| matches!(b, ContentBlock::Image { .. }));
                         let has_text = !text_result.is_empty();
                         let tool_result_text = if has_text {
                             text_result
@@ -523,7 +606,10 @@ pub fn convert_messages(
 
                         if has_images && model.input.contains(&crate::model::ModelInput::Image) {
                             for block in tr.content() {
-                                if let ContentBlock::Image { data, mime_type, .. } = block {
+                                if let ContentBlock::Image {
+                                    data, mime_type, ..
+                                } = block
+                                {
                                     image_blocks.push(json!({
                                         "type": "image_url",
                                         "image_url": { "url": format!("data:{mime_type};base64,{data}") }
@@ -541,7 +627,9 @@ pub fn convert_messages(
                     if compat.requires_assistant_after_tool_result {
                         params.push(json!({ "role": "assistant", "content": "I have processed the tool results." }));
                     }
-                    let mut user_content: Vec<Value> = vec![json!({ "type": "text", "text": "Attached image(s) from tool result:" })];
+                    let mut user_content: Vec<Value> = vec![
+                        json!({ "type": "text", "text": "Attached image(s) from tool result:" }),
+                    ];
                     user_content.extend(image_blocks);
                     params.push(json!({ "role": "user", "content": user_content }));
                     last_role = Some("user");
@@ -563,9 +651,13 @@ pub fn convert_messages(
 // ---------------------------------------------------------------------------
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER: &str = "(image omitted: model does not support images)";
-const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str = "(tool image omitted: model does not support images)";
+const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str =
+    "(tool image omitted: model does not support images)";
 
-fn replace_images_with_placeholder(content: &[ContentBlock], placeholder: &str) -> Vec<ContentBlock> {
+fn replace_images_with_placeholder(
+    content: &[ContentBlock],
+    placeholder: &str,
+) -> Vec<ContentBlock> {
     let mut result: Vec<ContentBlock> = Vec::new();
     let mut previous_was_placeholder = false;
     for block in content {
@@ -576,8 +668,14 @@ fn replace_images_with_placeholder(content: &[ContentBlock], placeholder: &str) 
                 }
                 previous_was_placeholder = true;
             }
-            ContentBlock::Text { text, text_signature } => {
-                result.push(ContentBlock::Text { text: text.clone(), text_signature: text_signature.clone() });
+            ContentBlock::Text {
+                text,
+                text_signature,
+            } => {
+                result.push(ContentBlock::Text {
+                    text: text.clone(),
+                    text_signature: text_signature.clone(),
+                });
                 previous_was_placeholder = text == placeholder;
             }
             other => result.push(other.clone()),
@@ -588,7 +686,10 @@ fn replace_images_with_placeholder(content: &[ContentBlock], placeholder: &str) 
 
 /// Downgrade unsupported images to placeholder text (upstream
 /// `downgradeUnsupportedImages`).
-fn downgrade_unsupported_images(messages: &[crate::types::Message], model: &Model) -> Vec<crate::types::Message> {
+fn downgrade_unsupported_images(
+    messages: &[crate::types::Message],
+    model: &Model,
+) -> Vec<crate::types::Message> {
     if model.input.contains(&crate::model::ModelInput::Image) {
         return messages.to_vec();
     }
@@ -633,7 +734,10 @@ fn is_same_model(assistant: &AssistantMessage, model: &Model) -> bool {
 
 /// Port of `transformMessages`: cross-model thinking-signature downgrade,
 /// redacted-thinking dropping, tool-call-id normalization.
-pub fn transform_messages(model: &Model, messages: &[crate::types::Message]) -> Vec<crate::types::Message> {
+pub fn transform_messages(
+    model: &Model,
+    messages: &[crate::types::Message],
+) -> Vec<crate::types::Message> {
     let mut tool_call_id_map: BTreeMap<String, String> = BTreeMap::new();
     let image_aware = downgrade_unsupported_images(messages, model);
     let mut transformed: Vec<crate::types::Message> = Vec::new();
@@ -660,7 +764,11 @@ pub fn transform_messages(model: &Model, messages: &[crate::types::Message]) -> 
                 let mut new_content: Vec<ContentBlock> = Vec::new();
                 for block in a.content() {
                     match block {
-                        ContentBlock::Thinking { thinking, thinking_signature, redacted } => {
+                        ContentBlock::Thinking {
+                            thinking,
+                            thinking_signature,
+                            redacted,
+                        } => {
                             if matches!(redacted, Some(true)) {
                                 if same_model {
                                     new_content.push(block.clone());
@@ -681,7 +789,9 @@ pub fn transform_messages(model: &Model, messages: &[crate::types::Message]) -> 
                             let mut tc = block.clone();
                             if !same_model {
                                 match &tc {
-                                    ContentBlock::ToolCall { thought_signature, .. } if thought_signature.is_some() => {
+                                    ContentBlock::ToolCall {
+                                        thought_signature, ..
+                                    } if thought_signature.is_some() => {
                                         tc.clear_thought_signature();
                                     }
                                     _ => {}
@@ -735,13 +845,21 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), String> {
     let Some(obj) = schema.as_object_mut() else {
         return Err("boolean schemas are unsupported".to_string());
     };
-    for key in ["anyOf", "items", "properties", "required", "additionalProperties"] {
+    for key in [
+        "anyOf",
+        "items",
+        "properties",
+        "required",
+        "additionalProperties",
+    ] {
         if obj.contains_key(key) {
             // handled below per-key
         }
     }
     if let Some(any_of) = obj.get("anyOf") {
-        let variants = any_of.as_array().ok_or("anyOf must contain at least one schema")?;
+        let variants = any_of
+            .as_array()
+            .ok_or("anyOf must contain at least one schema")?;
         if variants.is_empty() {
             return Err("anyOf must contain at least one schema".to_string());
         }
@@ -798,7 +916,11 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), String> {
     let required: std::collections::BTreeSet<String> = obj
         .get("required")
         .and_then(|r| r.as_array())
-        .map(|arr| arr.iter().filter_map(|k| k.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|k| k.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
     for key in &required {
         if !property_names.contains(key) {
@@ -883,7 +1005,8 @@ pub fn convert_tools(tools: &[Tool], compat: &OpenAiCompletionsCompat) -> Vec<Va
             }
         };
         let parameters = match strict {
-            Some(true) => make_strict_json_schema(&tool.parameters).unwrap_or_else(|_| tool.parameters.clone()),
+            Some(true) => make_strict_json_schema(&tool.parameters)
+                .unwrap_or_else(|_| tool.parameters.clone()),
             _ => tool.parameters.clone(),
         };
         let mut function = serde_json::Map::new();
@@ -898,7 +1021,10 @@ pub fn convert_tools(tools: &[Tool], compat: &OpenAiCompletionsCompat) -> Vec<Va
     out
 }
 
-fn get_compat_cache_control(compat: &OpenAiCompletionsCompat, cache_retention: &str) -> Option<Value> {
+fn get_compat_cache_control(
+    compat: &OpenAiCompletionsCompat,
+    cache_retention: &str,
+) -> Option<Value> {
     if compat.cache_control_format.as_deref() != Some("anthropic") || cache_retention == "none" {
         return None;
     }
@@ -938,7 +1064,9 @@ pub fn build_params(
     let openai_cache_key = base_url_openai && cache_retention != "none";
     let long_cache_retention = cache_retention == "long" && compat.supports_long_cache_retention;
     if openai_cache_key || long_cache_retention {
-        let session_id = options.and_then(|o| o.session_id.clone()).unwrap_or_default();
+        let session_id = options
+            .and_then(|o| o.session_id.clone())
+            .unwrap_or_default();
         if base_url_openai || long_cache_retention {
             let key = clamp_openai_prompt_cache_key(session_id.as_str());
             params.insert("prompt_cache_key".into(), json!(key));
@@ -1031,13 +1159,21 @@ fn apply_thinking_params(
     match compat.thinking_format.as_str() {
         "zai" if model.reasoning => {
             if reasoning_effort.is_some() {
-                params.insert("thinking".into(), json!({ "type": "enabled", "clear_thinking": false }));
+                params.insert(
+                    "thinking".into(),
+                    json!({ "type": "enabled", "clear_thinking": false }),
+                );
             } else {
                 params.insert("thinking".into(), json!({ "type": "disabled" }));
             }
             if let Some(effort) = &reasoning_effort {
                 if compat.supports_reasoning_effort {
-                    let mapped = model.thinking_level_map.as_ref().and_then(|m| m.get(&thinking_level_from_str(effort))).cloned().flatten();
+                    let mapped = model
+                        .thinking_level_map
+                        .as_ref()
+                        .and_then(|m| m.get(&thinking_level_from_str(effort)))
+                        .cloned()
+                        .flatten();
                     let value = mapped.unwrap_or_else(|| effort.clone());
                     params.insert("reasoning_effort".into(), json!(value));
                 }
@@ -1046,28 +1182,59 @@ fn apply_thinking_params(
         "deepseek" if model.reasoning => {
             if reasoning_effort.is_some() {
                 params.insert("thinking".into(), json!({ "type": "enabled" }));
-            } else if model.thinking_level_map.as_ref().map(|m| m.get(&crate::types::ModelThinkingLevel::Off)).flatten() != Some(&Some("off".to_string())) {
+            } else if model
+                .thinking_level_map
+                .as_ref()
+                .map(|m| m.get(&crate::types::ModelThinkingLevel::Off))
+                .flatten()
+                != Some(&Some("off".to_string()))
+            {
                 // off not explicitly mapped to null -> disable
                 params.insert("thinking".into(), json!({ "type": "disabled" }));
             }
             if let Some(effort) = &reasoning_effort {
                 if compat.supports_reasoning_effort {
-                    let mapped = model.thinking_level_map.as_ref().and_then(|m| m.get(&thinking_level_from_str(effort))).cloned().flatten();
-                    params.insert("reasoning_effort".into(), json!(mapped.unwrap_or_else(|| effort.clone())));
+                    let mapped = model
+                        .thinking_level_map
+                        .as_ref()
+                        .and_then(|m| m.get(&thinking_level_from_str(effort)))
+                        .cloned()
+                        .flatten();
+                    params.insert(
+                        "reasoning_effort".into(),
+                        json!(mapped.unwrap_or_else(|| effort.clone())),
+                    );
                 }
             }
         }
         "openrouter" if model.reasoning => {
             if reasoning_effort.is_some() {
-                let mapped = model.thinking_level_map.as_ref().and_then(|m| m.get(&thinking_level_from_str(reasoning_effort.as_deref().unwrap_or("")))).cloned().flatten();
+                let mapped = model
+                    .thinking_level_map
+                    .as_ref()
+                    .and_then(|m| {
+                        m.get(&thinking_level_from_str(
+                            reasoning_effort.as_deref().unwrap_or(""),
+                        ))
+                    })
+                    .cloned()
+                    .flatten();
                 params.insert("reasoning".into(), json!({ "effort": mapped.unwrap_or_else(|| reasoning_effort.clone().unwrap_or_default()) }));
             }
         }
         "together" | "ant-ling" if model.reasoning => {
             if let Some(effort) = &reasoning_effort {
                 if compat.supports_reasoning_effort {
-                    let mapped = model.thinking_level_map.as_ref().and_then(|m| m.get(&thinking_level_from_str(effort))).cloned().flatten();
-                    params.insert("reasoning_effort".into(), json!(mapped.unwrap_or_else(|| effort.clone())));
+                    let mapped = model
+                        .thinking_level_map
+                        .as_ref()
+                        .and_then(|m| m.get(&thinking_level_from_str(effort)))
+                        .cloned()
+                        .flatten();
+                    params.insert(
+                        "reasoning_effort".into(),
+                        json!(mapped.unwrap_or_else(|| effort.clone())),
+                    );
                 }
             }
         }
@@ -1081,7 +1248,10 @@ fn apply_thinking_params(
                         .and_then(|m| m.get(&thinking_level_from_str(effort)))
                         .cloned()
                         .flatten();
-                    params.insert("reasoning_effort".into(), json!(mapped.unwrap_or_else(|| effort.clone())));
+                    params.insert(
+                        "reasoning_effort".into(),
+                        json!(mapped.unwrap_or_else(|| effort.clone())),
+                    );
                 }
             }
             if thinking_budget.is_some() {
@@ -1097,40 +1267,53 @@ fn apply_thinking_params(
 
 /// Port of `parseChunkUsage`.
 pub fn parse_chunk_usage(raw_usage: &Value, model: &Model) -> Option<Usage> {
-    let prompt_tokens = raw_usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let prompt_tokens = raw_usage
+        .get("prompt_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     let cache_read_tokens = raw_usage
         .get("prompt_tokens_details")
         .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64())
-        .or_else(|| raw_usage.get("prompt_cache_hit_tokens").and_then(|v| v.as_u64()))
-        .or_else(|| raw_usage.get("cached_tokens").and_then(|v| v.as_u64()))
+        .and_then(|v| v.as_i64())
+        .or_else(|| {
+            raw_usage
+                .get("prompt_cache_hit_tokens")
+                .and_then(|v| v.as_i64())
+        })
+        .or_else(|| raw_usage.get("cached_tokens").and_then(|v| v.as_i64()))
         .unwrap_or(0);
     let cache_write_tokens = raw_usage
         .get("prompt_tokens_details")
         .and_then(|d| d.get("cache_write_tokens"))
-        .and_then(|v| v.as_u64())
+        .and_then(|v| v.as_i64())
         .unwrap_or(0);
-    let completion_tokens = raw_usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let completion_tokens = raw_usage
+        .get("completion_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     let reasoning_tokens = raw_usage
         .get("completion_tokens_details")
         .and_then(|d| d.get("reasoning_tokens"))
-        .and_then(|v| v.as_u64());
+        .and_then(|v| v.as_i64());
 
     let input = prompt_tokens;
     let output = completion_tokens;
     let cache_read = cache_read_tokens;
     let cache_write = cache_write_tokens;
     let total = input + output + cache_read + cache_write;
-    let cost = calculate_cost(model, &crate::types::Usage {
-        input,
-        output,
-        cache_read,
-        cache_write,
-        cache_write_1h: None,
-        reasoning: reasoning_tokens,
-        total_tokens: total,
-        cost: crate::types::Cost::default(),
-    });
+    let cost = calculate_cost(
+        model,
+        &crate::types::Usage {
+            input,
+            output,
+            cache_read,
+            cache_write,
+            cache_write_1h: None,
+            reasoning: reasoning_tokens,
+            total_tokens: total,
+            cost: crate::types::Cost::default(),
+        },
+    );
     Some(Usage {
         input,
         output,
@@ -1149,9 +1332,18 @@ pub fn map_stop_reason(reason: &str) -> (StopReason, Option<String>) {
         "stop" | "end" => (StopReason::Stop, None),
         "length" => (StopReason::Length, None),
         "function_call" | "tool_calls" => (StopReason::ToolUse, None),
-        "content_filter" => (StopReason::Error, Some("Provider finish_reason: content_filter".to_string())),
-        "network_error" => (StopReason::Error, Some("Provider finish_reason: network_error".to_string())),
-        _ => (StopReason::Error, Some(format!("Provider finish_reason: {reason}"))),
+        "content_filter" => (
+            StopReason::Error,
+            Some("Provider finish_reason: content_filter".to_string()),
+        ),
+        "network_error" => (
+            StopReason::Error,
+            Some("Provider finish_reason: network_error".to_string()),
+        ),
+        _ => (
+            StopReason::Error,
+            Some(format!("Provider finish_reason: {reason}")),
+        ),
     }
 }
 
@@ -1212,9 +1404,15 @@ pub fn default_base_url(provider: &str) -> String {
         "huggingface" => "https://router.huggingface.co/v1".to_string(),
         "zai" => "https://api.z.ai/api/coding/paas/v4".to_string(),
         "zai-coding-cn" => "https://open.bigmodel.cn/api/coding/paas/v4".to_string(),
-        "qwen-token-plan" => "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1".to_string(),
-        "qwen-token-plan-cn" => "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string(),
-        "qwen-token-plan-individual" => "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1".to_string(),
+        "qwen-token-plan" => {
+            "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1".to_string()
+        }
+        "qwen-token-plan-cn" => {
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string()
+        }
+        "qwen-token-plan-individual" => {
+            "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1".to_string()
+        }
         "xiaomi" => "https://api.xiaomimimo.com/v1".to_string(),
         "xiaomi-token-plan-ams" => "https://token-plan-ams.xiaomimimo.com/v1".to_string(),
         "xiaomi-token-plan-cn" => "https://token-plan-cn.xiaomimimo.com/v1".to_string(),
@@ -1250,14 +1448,24 @@ pub fn stream(
     tokio::spawn(async move {
         let mut pusher = crate::event_stream::StreamSinkAdapter::new(sender);
         let compat = OpenAiCompletionsCompat::get(&model);
-        let cache_retention = resolve_cache_retention(options.base.cache_retention.as_ref(), options.base.base.env.as_ref());
-        let params = build_params(&model, &context, Some(&options.base), &compat, &cache_retention);
+        let cache_retention = resolve_cache_retention(
+            options.base.cache_retention.as_ref(),
+            options.base.base.env.as_ref(),
+        );
+        let params = build_params(
+            &model,
+            &context,
+            Some(&options.base),
+            &compat,
+            &cache_retention,
+        );
 
         // Resolve the api key: options first, else env var for common providers.
         let resolved_key = match api_key {
             Some(k) => k,
             None => {
-                match get_client_api_key(&model.provider, None, options.base.base.headers.as_ref()) {
+                match get_client_api_key(&model.provider, None, options.base.base.headers.as_ref())
+                {
                     Ok(k) => k,
                     Err(e) => {
                         let mut message = new_output(&model);
@@ -1275,13 +1483,17 @@ pub fn stream(
         };
 
         let mut request = client
-            .post(format!("{}/chat/completions", base_url.trim_end_matches('/')))
+            .post(format!(
+                "{}/chat/completions",
+                base_url.trim_end_matches('/')
+            ))
             .header("content-type", "application/json")
             .bearer_auth(&resolved_key)
             .json(&params);
         // GitHub Copilot proxy dynamic headers (upstream github-copilot-headers.ts).
         if model.provider == "github-copilot" {
-            let has_images = super::github_copilot_headers::has_copilot_vision_input(&context.messages);
+            let has_images =
+                super::github_copilot_headers::has_copilot_vision_input(&context.messages);
             for (name, value) in super::github_copilot_headers::build_copilot_dynamic_headers(
                 &context.messages,
                 has_images,
@@ -1337,7 +1549,14 @@ pub fn stream(
             let detail = extract_openai_error(&body_text);
             let mut message = new_output(&model);
             message.set_stop_reason(StopReason::Error);
-            set_error_message(&mut message, format!("OpenAI-completions API error ({}): {}", status.as_u16(), detail));
+            set_error_message(
+                &mut message,
+                format!(
+                    "OpenAI-completions API error ({}): {}",
+                    status.as_u16(),
+                    detail
+                ),
+            );
             pusher.push(AssistantMessageEvent::Error {
                 reason: ErrorReason::Error,
                 error_message: message.clone(),
@@ -1348,14 +1567,19 @@ pub fn stream(
 
         let body_text = String::from_utf8_lossy(&body).to_string();
         let events = crate::sse::SseParser::parse_text(&body_text);
-        pusher.push(AssistantMessageEvent::Start { partial: new_output(&model) });
+        pusher.push(AssistantMessageEvent::Start {
+            partial: new_output(&model),
+        });
 
         match process_completions_events(&model, &events, &compat, |event| {
             pusher.push(event);
         }) {
             Ok(message) => {
                 if message.stop_reason() == Some(StopReason::Error) {
-                    let err_text = message.error_message().map(|s| s.to_string()).unwrap_or_default();
+                    let err_text = message
+                        .error_message()
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
                     pusher.push(AssistantMessageEvent::Error {
                         reason: ErrorReason::Error,
                         error_message: message.clone(),
@@ -1405,7 +1629,8 @@ pub fn stream_simple(
         .reasoning
         .map(|r| clamp_thinking_level(model, r.into()));
     let reasoning_effort = match clamped {
-        Some(crate::types::ModelThinkingLevel::Off) | Some(crate::types::ModelThinkingLevel::Minimal) => None,
+        Some(crate::types::ModelThinkingLevel::Off)
+        | Some(crate::types::ModelThinkingLevel::Minimal) => None,
         Some(crate::types::ModelThinkingLevel::Low) => Some("low".to_string()),
         Some(crate::types::ModelThinkingLevel::Medium) => Some("medium".to_string()),
         Some(crate::types::ModelThinkingLevel::High) => Some("high".to_string()),
@@ -1478,7 +1703,11 @@ pub fn process_completions_events(
         if !event.data.starts_with("data:") && event.data.trim().is_empty() {
             continue;
         }
-        let data = event.data.strip_prefix("data:").unwrap_or(&event.data).trim();
+        let data = event
+            .data
+            .strip_prefix("data:")
+            .unwrap_or(&event.data)
+            .trim();
         if data == "[DONE]" {
             break;
         }
@@ -1492,7 +1721,10 @@ pub fn process_completions_events(
             }
         }
         if let Some(response_model) = chunk.get("model").and_then(|m| m.as_str()) {
-            if !response_model.is_empty() && response_model != model.id && output.model() != Some(model.id.as_str()) {
+            if !response_model.is_empty()
+                && response_model != model.id
+                && output.model() != Some(model.id.as_str())
+            {
                 output.set_response_model(response_model.to_string());
             }
         }
@@ -1502,7 +1734,11 @@ pub fn process_completions_events(
             }
         }
 
-        let Some(choice) = chunk.get("choices").and_then(|c| c.as_array()).and_then(|a| a.first()) else {
+        let Some(choice) = chunk
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+        else {
             continue;
         };
 
@@ -1525,7 +1761,9 @@ pub fn process_completions_events(
             has_finish_reason = true;
         }
 
-        let Some(delta) = choice.get("delta") else { continue };
+        let Some(delta) = choice.get("delta") else {
+            continue;
+        };
 
         if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
             if !content.is_empty() {
@@ -1550,7 +1788,13 @@ pub fn process_completions_events(
                     } else {
                         field.to_string()
                     };
-                    let idx = ensure_thinking_block(&mut blocks, &mut thinking_block, sig, &mut on_event, &output);
+                    let idx = ensure_thinking_block(
+                        &mut blocks,
+                        &mut thinking_block,
+                        sig,
+                        &mut on_event,
+                        &output,
+                    );
                     if let Some(block) = blocks.get_mut(idx) {
                         block.thinking += value;
                     }
@@ -1566,8 +1810,15 @@ pub fn process_completions_events(
 
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
             for tool_call in tool_calls {
-                let index = tool_call.get("index").and_then(|i| i.as_u64()).map(|i| i as usize);
-                let id = tool_call.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                let index = tool_call
+                    .get("index")
+                    .and_then(|i| i.as_u64())
+                    .map(|i| i as usize);
+                let id = tool_call
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let name = tool_call
                     .get("function")
                     .and_then(|f| f.get("name"))
@@ -1585,7 +1836,11 @@ pub fn process_completions_events(
                     &output,
                 );
                 let mut delta_str = String::new();
-                if let Some(args) = tool_call.get("function").and_then(|f| f.get("arguments")).and_then(|a| a.as_str()) {
+                if let Some(args) = tool_call
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(|a| a.as_str())
+                {
                     delta_str = args.to_string();
                     if let Some(block) = blocks.get_mut(idx) {
                         block.partial_args += args;
@@ -1641,7 +1896,11 @@ pub fn process_completions_events(
 
     if !has_finish_reason && !compat.supports_finish_reason {
         let has_tool = blocks.iter().any(|b| matches!(b.kind, BlockKind::ToolCall));
-        output.set_stop_reason(if has_tool { StopReason::ToolUse } else { StopReason::Stop });
+        output.set_stop_reason(if has_tool {
+            StopReason::ToolUse
+        } else {
+            StopReason::Stop
+        });
     }
 
     // Assemble the final content blocks into the message in block order.
@@ -1672,10 +1931,15 @@ pub fn process_completions_events(
     output.set_content(content_blocks);
 
     if output.stop_reason() == Some(StopReason::Error) {
-        let err = output.error_message().map(|s| s.to_string()).unwrap_or_default();
+        let err = output
+            .error_message()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
         return Err(err);
     }
-    if (compat.supports_finish_reason && !has_finish_reason) || output.stop_reason() == Some(StopReason::Pending) {
+    if (compat.supports_finish_reason && !has_finish_reason)
+        || output.stop_reason() == Some(StopReason::Pending)
+    {
         return Err("Stream ended without finish_reason".to_string());
     }
 
@@ -1750,7 +2014,13 @@ fn ensure_tool_call_block(
 ) -> usize {
     let existing = stream_index
         .and_then(|i| by_index.get(&i).copied())
-        .or_else(|| if id.is_empty() { None } else { by_id.get(id).copied() });
+        .or_else(|| {
+            if id.is_empty() {
+                None
+            } else {
+                by_id.get(id).copied()
+            }
+        });
     if let Some(idx) = existing {
         if let Some(block) = blocks.get_mut(idx) {
             if block.tool_id.is_empty() && !id.is_empty() {
@@ -1787,12 +2057,11 @@ fn ensure_tool_call_block(
     idx
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ContentBlock, Message, Tool, UserContent};
     use crate::types::AssistantMessage;
+    use crate::types::{ContentBlock, Message, Tool, UserContent};
 
     fn model(id: &str, provider: &str) -> Model {
         let mut m = Model::new(id, id, "openai-completions", provider);
@@ -1879,9 +2148,15 @@ mod tests {
             vec![
                 Message::User(UserContent::string("hello", 1)),
                 Message::Assistant(assistant_with_text("hi there")),
-                Message::ToolResult(crate::types::ToolResultMessage::text("call-1", "bash", "ok", false)),
+                Message::ToolResult(crate::types::ToolResultMessage::text(
+                    "call-1", "bash", "ok", false,
+                )),
             ],
-            vec![crate::types::json_tool("bash", "Run a command", &json!({"type":"object","properties":{}}))],
+            vec![crate::types::json_tool(
+                "bash",
+                "Run a command",
+                &json!({"type":"object","properties":{}}),
+            )],
         );
         let compat = OpenAiCompletionsCompat::get(&m);
         let messages = convert_messages(&m, &ctx, &compat);
@@ -1926,7 +2201,11 @@ mod tests {
     #[test]
     fn build_params_openai_shape() {
         let m = model("gpt-5", "openai");
-        let ctx = context(Some("sys"), vec![Message::User(UserContent::string("hi", 1))], vec![]);
+        let ctx = context(
+            Some("sys"),
+            vec![Message::User(UserContent::string("hi", 1))],
+            vec![],
+        );
         let compat = OpenAiCompletionsCompat::get(&m);
         let params = build_params(&m, &ctx, None, &compat, "short");
         assert_eq!(params["model"], "gpt-5");
@@ -1958,13 +2237,22 @@ data: [DONE]
         let text: String = msg
             .content()
             .iter()
-            .filter_map(|b| match b { ContentBlock::Text { text, .. } => Some(text.as_str()), _ => None })
+            .filter_map(|b| match b {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
             .collect();
         assert_eq!(text, "Hello world");
-        assert!(received.iter().any(|e| matches!(e, AssistantMessageEvent::TextStart { .. })));
-        assert!(received.iter().any(|e| matches!(e, AssistantMessageEvent::TextDelta { delta, .. } if delta == " world")));
+        assert!(received
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::TextStart { .. })));
+        assert!(received.iter().any(
+            |e| matches!(e, AssistantMessageEvent::TextDelta { delta, .. } if delta == " world")
+        ));
         // Done is pushed by the stream() wrapper, not the pure processor.
-        assert!(!received.iter().any(|e| matches!(e, AssistantMessageEvent::Done { .. })));
+        assert!(!received
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::Done { .. })));
     }
 
     #[test]
@@ -1985,10 +2273,16 @@ data: [DONE]
         let result = process_completions_events(&m, &events, &compat, |_| {});
         let msg = result.unwrap();
         assert_eq!(msg.stop_reason(), Some(StopReason::ToolUse));
-        let tool_calls: Vec<&ContentBlock> = msg.content().iter().filter(|b| matches!(b, ContentBlock::ToolCall { .. })).collect();
+        let tool_calls: Vec<&ContentBlock> = msg
+            .content()
+            .iter()
+            .filter(|b| matches!(b, ContentBlock::ToolCall { .. }))
+            .collect();
         assert_eq!(tool_calls.len(), 1);
         match tool_calls[0] {
-            ContentBlock::ToolCall { name, arguments, .. } => {
+            ContentBlock::ToolCall {
+                name, arguments, ..
+            } => {
                 assert_eq!(name, "bash");
                 assert_eq!(arguments["cmd"], "ls");
             }
@@ -2011,9 +2305,15 @@ data: [DONE]
         let events = crate::sse::SseParser::parse_text(sse);
         let result = process_completions_events(&m, &events, &compat, |_| {});
         let msg = result.unwrap();
-        let thinking: Vec<&ContentBlock> = msg.content().iter().filter(|b| matches!(b, ContentBlock::Thinking { .. })).collect();
+        let thinking: Vec<&ContentBlock> = msg
+            .content()
+            .iter()
+            .filter(|b| matches!(b, ContentBlock::Thinking { .. }))
+            .collect();
         assert_eq!(thinking.len(), 1);
-        assert!(matches!(thinking[0], ContentBlock::Thinking { thinking, .. } if thinking == "Let me think"));
+        assert!(
+            matches!(thinking[0], ContentBlock::Thinking { thinking, .. } if thinking == "Let me think")
+        );
     }
 
     #[test]

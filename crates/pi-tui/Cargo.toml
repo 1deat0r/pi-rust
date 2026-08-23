@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 crossterm = "0.28"
+libc = "0.2"
 tokio = { workspace = true, features = ["full"] }
 serde_json = { workspace = true }
 regex = { workspace = true }

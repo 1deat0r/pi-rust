@@ -11,11 +11,11 @@
 //! The polling loop itself lives in `crate::oauth` (device-code.ts + pkce.ts
 //! port); this module layers the provider-specific endpoints on top.
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use crate::auth::{AuthEvent, AuthInteraction, ModelAuth, OAuthAuth, OAuthCredential};
-use crate::oauth::{DeviceCodePollOptions, DeviceCodePollResult, poll_oauth_device_code_flow};
+use crate::oauth::{poll_oauth_device_code_flow, DeviceCodePollOptions, DeviceCodePollResult};
 
 /// RFC 8628 device-authorization response.
 #[derive(Debug, Clone)]
@@ -38,9 +38,15 @@ async fn post_form_json(
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
-    let resp = req.send().await.map_err(|e| format!("request failed: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("read response: {e}"))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read response: {e}"))?;
     if !status.is_success() {
         return Err(format!("{status}: {text}"));
     }
@@ -57,9 +63,15 @@ async fn get_json(
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
-    let resp = req.send().await.map_err(|e| format!("request failed: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("read response: {e}"))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read response: {e}"))?;
     if !status.is_success() {
         return Err(format!("{status}: {text}"));
     }
@@ -127,8 +139,14 @@ pub async fn poll_for_access_token(
     let mut options = DeviceCodePollOptions::new(Box::new({
         let client = client.clone();
         let token_url = token_url.to_string();
-        let form: Vec<(String, String)> = form.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        let headers: Vec<(String, String)> = headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let form: Vec<(String, String)> = form
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let headers: Vec<(String, String)> = headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         let device_code = device.device_code.clone();
         move || {
             let client = client.clone();
@@ -139,8 +157,24 @@ pub async fn poll_for_access_token(
             Box::pin(async move {
                 let mut body = form.clone();
                 body.push(("device_code".to_string(), device_code));
-                body.push(("grant_type".to_string(), "urn:ietf:params:oauth:grant-type:device_code".to_string()));
-                let data = match post_form_json(&client, &token_url, &body.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(), &headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>()).await {
+                body.push((
+                    "grant_type".to_string(),
+                    "urn:ietf:params:oauth:grant-type:device_code".to_string(),
+                ));
+                let data = match post_form_json(
+                    &client,
+                    &token_url,
+                    &body
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str()))
+                        .collect::<Vec<_>>(),
+                    &headers
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str()))
+                        .collect::<Vec<_>>(),
+                )
+                .await
+                {
                     Ok(d) => d,
                     Err(e) => return DeviceCodePollResult::Failed { message: e },
                 };
@@ -152,16 +186,29 @@ pub async fn poll_for_access_token(
                         "authorization_pending" => return DeviceCodePollResult::Pending,
                         "slow_down" => {
                             let interval = data.get("interval").and_then(|v| v.as_f64());
-                            return DeviceCodePollResult::SlowDown { interval_seconds: interval };
+                            return DeviceCodePollResult::SlowDown {
+                                interval_seconds: interval,
+                            };
                         }
                         _ => {
-                            let description = data.get("error_description").and_then(|v| v.as_str()).unwrap_or("");
-                            let suffix = if description.is_empty() { String::new() } else { format!(": {description}") };
-                            return DeviceCodePollResult::Failed { message: format!("Device flow failed: {error}{suffix}") };
+                            let description = data
+                                .get("error_description")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let suffix = if description.is_empty() {
+                                String::new()
+                            } else {
+                                format!(": {description}")
+                            };
+                            return DeviceCodePollResult::Failed {
+                                message: format!("Device flow failed: {error}{suffix}"),
+                            };
                         }
                     }
                 }
-                DeviceCodePollResult::Failed { message: "Invalid device token response".to_string() }
+                DeviceCodePollResult::Failed {
+                    message: "Invalid device token response".to_string(),
+                }
             })
         }
     }));
@@ -198,14 +245,23 @@ fn normalize_domain(input: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let with_scheme = if trimmed.contains("://") { trimmed.to_string() } else { format!("https://{trimmed}") };
-    url::Url::parse(&with_scheme).ok().map(|u| u.host_str().unwrap_or("").to_string()).filter(|h| !h.is_empty())
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    url::Url::parse(&with_scheme)
+        .ok()
+        .map(|u| u.host_str().unwrap_or("").to_string())
+        .filter(|h| !h.is_empty())
 }
 
 /// Parse `proxy-ep=...` from a Copilot token and convert to the API base URL
 /// (upstream `getBaseUrlFromToken`).
 fn copilot_base_url_from_token(token: &str) -> Option<String> {
-    let proxy_host = token.split(';').find_map(|part| part.strip_prefix("proxy-ep="))?;
+    let proxy_host = token
+        .split(';')
+        .find_map(|part| part.strip_prefix("proxy-ep="))?;
     // Convert proxy.xxx to api.xxx
     let api_host = if let Some(rest) = proxy_host.strip_prefix("proxy.") {
         format!("api.{rest}")
@@ -239,16 +295,27 @@ async fn copilot_token_exchange(
     let data = get_json(client, &copilot_token_url, &COPILOT_HEADERS)
         .await
         .map_err(|e| format!("copilot token request failed: {e}"))?;
-    let token = data.get("token").and_then(|v| v.as_str()).ok_or_else(|| "Invalid Copilot token response fields".to_string())?;
-    let expires_at = data.get("expires_at").and_then(|v| v.as_u64()).ok_or_else(|| "Invalid Copilot token response fields".to_string())?;
+    let token = data
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Invalid Copilot token response fields".to_string())?;
+    let expires_at = data
+        .get("expires_at")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "Invalid Copilot token response fields".to_string())?;
     Ok(OAuthCredential {
         refresh: refresh_token.to_string(),
         access: token.to_string(),
-        expires: expires_at.saturating_mul(1000).saturating_sub(5 * 60 * 1000),
+        expires: expires_at
+            .saturating_mul(1000)
+            .saturating_sub(5 * 60 * 1000),
         extra: {
             let mut m = std::collections::BTreeMap::new();
             if let Some(d) = enterprise_domain {
-                m.insert("enterpriseUrl".to_string(), serde_json::Value::String(d.to_string()));
+                m.insert(
+                    "enterpriseUrl".to_string(),
+                    serde_json::Value::String(d.to_string()),
+                );
             }
             m
         },
@@ -288,7 +355,9 @@ impl OAuthAuth for GitHubCopilotOAuth {
         if !trimmed.is_empty() && enterprise_domain.is_none() {
             return Err("Invalid GitHub Enterprise URL/domain".to_string());
         }
-        let domain = enterprise_domain.clone().unwrap_or_else(|| "github.com".to_string());
+        let domain = enterprise_domain
+            .clone()
+            .unwrap_or_else(|| "github.com".to_string());
         let (device_code_url, access_token_url, _) = copilot_urls(&domain);
 
         let client = reqwest::Client::new();
@@ -296,7 +365,11 @@ impl OAuthAuth for GitHubCopilotOAuth {
             &client,
             &device_code_url,
             &[("client_id", COPILOT_CLIENT_ID), ("scope", "read:user")],
-            &[("Accept", "application/json"), ("Content-Type", "application/x-www-form-urlencoded"), ("User-Agent", "GitHubCopilotChat/0.35.0")],
+            &[
+                ("Accept", "application/json"),
+                ("Content-Type", "application/x-www-form-urlencoded"),
+                ("User-Agent", "GitHubCopilotChat/0.35.0"),
+            ],
         )
         .await?;
 
@@ -311,7 +384,11 @@ impl OAuthAuth for GitHubCopilotOAuth {
             &client,
             &access_token_url,
             &[("client_id", COPILOT_CLIENT_ID)],
-            &[("Accept", "application/json"), ("Content-Type", "application/x-www-form-urlencoded"), ("User-Agent", "GitHubCopilotChat/0.35.0")],
+            &[
+                ("Accept", "application/json"),
+                ("Content-Type", "application/x-www-form-urlencoded"),
+                ("User-Agent", "GitHubCopilotChat/0.35.0"),
+            ],
             &device,
             None,
         )
@@ -342,7 +419,10 @@ impl OAuthAuth for GitHubCopilotOAuth {
             .and_then(normalize_domain);
         Some(ModelAuth {
             api_key: Some(credential.access.clone()),
-            base_url: Some(copilot_base_url(Some(&credential.access), enterprise_domain.as_deref())),
+            base_url: Some(copilot_base_url(
+                Some(&credential.access),
+                enterprise_domain.as_deref(),
+            )),
             headers: None,
         })
     }
@@ -372,7 +452,10 @@ impl CallbackServer {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|e| format!("bind callback server: {e}"))?;
-        let port = listener.local_addr().map_err(|e| format!("callback addr: {e}"))?.port();
+        let port = listener
+            .local_addr()
+            .map_err(|e| format!("callback addr: {e}"))?
+            .port();
         let url = format!("http://127.0.0.1:{port}{callback_path}");
         Ok((Self { listener }, url))
     }
@@ -393,10 +476,17 @@ impl CallbackServer {
             .map_err(|e| format!("callback accept: {e}"))?;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut buf = [0u8; 8192];
-        let n = socket.read(&mut buf).await.map_err(|e| format!("callback read: {e}"))?;
+        let n = socket
+            .read(&mut buf)
+            .await
+            .map_err(|e| format!("callback read: {e}"))?;
         let request = String::from_utf8_lossy(&buf[..n]).to_string();
         let request_line = request.lines().next().unwrap_or("").to_string();
-        let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_string();
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("/")
+            .to_string();
         let query = path.split('?').nth(1).unwrap_or("").to_string();
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -417,14 +507,23 @@ fn parse_authorization_code(input: &str) -> Option<String> {
         return None;
     }
     if let Ok(url) = url::Url::parse(value) {
-        let pairs: Vec<(String, String)> = url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
-        return pairs.iter().find(|(k, _)| k == "code").map(|(_, v)| v.clone());
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        return pairs
+            .iter()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.clone());
     }
     if value.contains("code=") {
         let pairs: Vec<(String, String)> = url::form_urlencoded::parse(value.as_bytes())
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
-        return pairs.iter().find(|(k, _)| k == "code").map(|(_, v)| v.clone());
+        return pairs
+            .iter()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.clone());
     }
     Some(value.to_string())
 }
@@ -449,7 +548,10 @@ async fn openrouter_exchange_code(
         .await
         .map_err(|e| format!("OpenRouter key exchange failed: {e}"))?;
     let status = resp.status();
-    let body: serde_json::Value = resp.json().await.map_err(|e| format!("OpenRouter key exchange returned invalid JSON: {e}"))?;
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("OpenRouter key exchange returned invalid JSON: {e}"))?;
     if !status.is_success() {
         let detail = body
             .get("error_description")
@@ -457,9 +559,14 @@ async fn openrouter_exchange_code(
             .or_else(|| body.get("error"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        return Err(format!("OpenRouter OAuth key exchange failed (HTTP {status}){detail}"));
+        return Err(format!(
+            "OpenRouter OAuth key exchange failed (HTTP {status}){detail}"
+        ));
     }
-    let key = body.get("key").and_then(|v| v.as_str()).filter(|k| !k.is_empty());
+    let key = body
+        .get("key")
+        .and_then(|v| v.as_str())
+        .filter(|k| !k.is_empty());
     match key {
         Some(key) => Ok(OAuthCredential {
             access: key.to_string(),
@@ -524,7 +631,8 @@ impl OAuthAuth for OpenRouterOAuth {
             )
             .await
             .map_err(|_| "OpenRouter OAuth login timed out".to_string())??;
-            parse_authorization_code(&query).ok_or_else(|| "OpenRouter returned no authorization code".to_string())
+            parse_authorization_code(&query)
+                .ok_or_else(|| "OpenRouter returned no authorization code".to_string())
         };
 
         let manual_future = async {
@@ -592,9 +700,14 @@ async fn post_json_text(
         .await
         .map_err(|e| format!("HTTP request failed: {e}"))?;
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("read response: {e}"))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read response: {e}"))?;
     if !status.is_success() {
-        return Err(format!("HTTP request failed. status={status}; url={url}; body={text}"));
+        return Err(format!(
+            "HTTP request failed. status={status}; url={url}; body={text}"
+        ));
     }
     Ok(text)
 }
@@ -616,11 +729,20 @@ async fn anthropic_exchange_code(
         "code_verifier": verifier,
     });
     let text = post_json_text(client, ANTHROPIC_TOKEN_URL, &body).await?;
-    let data: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("Token exchange returned invalid JSON: {e}"))?;
-    let access = data.get("access_token").and_then(|v| v.as_str()).ok_or("missing access_token")?;
-    let refresh = data.get("refresh_token").and_then(|v| v.as_str()).ok_or("missing refresh_token")?;
-    let expires_in = data.get("expires_in").and_then(|v| v.as_u64()).ok_or("missing expires_in")?;
+    let data: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("Token exchange returned invalid JSON: {e}"))?;
+    let access = data
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or("missing access_token")?;
+    let refresh = data
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .ok_or("missing refresh_token")?;
+    let expires_in = data
+        .get("expires_in")
+        .and_then(|v| v.as_u64())
+        .ok_or("missing expires_in")?;
     let now_ms = crate::types::now_ms();
     Ok(OAuthCredential {
         refresh: refresh.to_string(),
@@ -641,11 +763,20 @@ async fn anthropic_refresh_token(
         "refresh_token": refresh_token,
     });
     let text = post_json_text(client, ANTHROPIC_TOKEN_URL, &body).await?;
-    let data: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("Token refresh returned invalid JSON: {e}"))?;
-    let access = data.get("access_token").and_then(|v| v.as_str()).ok_or("missing access_token")?;
-    let refresh = data.get("refresh_token").and_then(|v| v.as_str()).ok_or("missing refresh_token")?;
-    let expires_in = data.get("expires_in").and_then(|v| v.as_u64()).ok_or("missing expires_in")?;
+    let data: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("Token refresh returned invalid JSON: {e}"))?;
+    let access = data
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or("missing access_token")?;
+    let refresh = data
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .ok_or("missing refresh_token")?;
+    let expires_in = data
+        .get("expires_in")
+        .and_then(|v| v.as_u64())
+        .ok_or("missing expires_in")?;
     let now_ms = crate::types::now_ms();
     Ok(OAuthCredential {
         refresh: refresh.to_string(),
@@ -680,8 +811,11 @@ impl OAuthAuth for AnthropicOAuth {
 
     async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
         let (verifier, challenge) = crate::oauth::generate_pkce();
-        let (server, _) = CallbackServer::start_on(ANTHROPIC_CALLBACK_PATH.to_string(), Some(ANTHROPIC_CALLBACK_PORT))
-            .await?;
+        let (server, _) = CallbackServer::start_on(
+            ANTHROPIC_CALLBACK_PATH.to_string(),
+            Some(ANTHROPIC_CALLBACK_PORT),
+        )
+        .await?;
 
         let auth_params = format!(
             "code=true&client_id={}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
@@ -710,8 +844,14 @@ impl OAuthAuth for AnthropicOAuth {
             let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
                 .map(|(k, v)| (k.into_owned(), v.into_owned()))
                 .collect();
-            let code = pairs.iter().find(|(k, _)| k == "code").map(|(_, v)| v.clone());
-            let state = pairs.iter().find(|(k, _)| k == "state").map(|(_, v)| v.clone());
+            let code = pairs
+                .iter()
+                .find(|(k, _)| k == "code")
+                .map(|(_, v)| v.clone());
+            let state = pairs
+                .iter()
+                .find(|(k, _)| k == "state")
+                .map(|(_, v)| v.clone());
             match (code, state) {
                 (Some(code), Some(state)) => Ok((code, state)),
                 _ => Err("Missing code or state parameter".to_string()),
@@ -723,7 +863,8 @@ impl OAuthAuth for AnthropicOAuth {
                 message: "Complete login in your browser, or paste the authorization code / redirect URL here:".to_string(),
                 placeholder: Some(ANTHROPIC_REDIRECT_URI.to_string()),
             })?;
-            let parsed = parse_authorization_code(&input).ok_or_else(|| "Missing authorization code".to_string())?;
+            let parsed = parse_authorization_code(&input)
+                .ok_or_else(|| "Missing authorization code".to_string())?;
             Ok::<(String, String), String>((parsed, verifier.clone()))
         };
 
@@ -797,8 +938,14 @@ mod tests {
 
     #[test]
     fn normalize_domain_accepts_urls_and_hosts() {
-        assert_eq!(normalize_domain("company.ghe.com").as_deref(), Some("company.ghe.com"));
-        assert_eq!(normalize_domain("https://company.ghe.com").as_deref(), Some("company.ghe.com"));
+        assert_eq!(
+            normalize_domain("company.ghe.com").as_deref(),
+            Some("company.ghe.com")
+        );
+        assert_eq!(
+            normalize_domain("https://company.ghe.com").as_deref(),
+            Some("company.ghe.com")
+        );
         assert_eq!(normalize_domain("  "), None);
         assert_eq!(normalize_domain("not a url"), None);
     }
@@ -806,27 +953,46 @@ mod tests {
     #[test]
     fn copilot_base_url_parses_proxy_ep() {
         assert_eq!(
-            copilot_base_url_from_token("tid=1;exp=2;proxy-ep=proxy.individual.githubcopilot.com;x=1").as_deref(),
+            copilot_base_url_from_token(
+                "tid=1;exp=2;proxy-ep=proxy.individual.githubcopilot.com;x=1"
+            )
+            .as_deref(),
             Some("https://api.individual.githubcopilot.com")
         );
-        assert_eq!(copilot_base_url(None, None), "https://api.individual.githubcopilot.com");
-        assert_eq!(copilot_base_url(None, Some("company.ghe.com")), "https://copilot-api.company.ghe.com");
+        assert_eq!(
+            copilot_base_url(None, None),
+            "https://api.individual.githubcopilot.com"
+        );
+        assert_eq!(
+            copilot_base_url(None, Some("company.ghe.com")),
+            "https://copilot-api.company.ghe.com"
+        );
     }
 
     #[test]
     fn parse_authorization_code_handles_urls_queries_and_raw() {
         assert_eq!(
-            parse_authorization_code("http://127.0.0.1:54321/oauth/callback/abc?code=sekret&state=x").as_deref(),
+            parse_authorization_code(
+                "http://127.0.0.1:54321/oauth/callback/abc?code=sekret&state=x"
+            )
+            .as_deref(),
             Some("sekret")
         );
-        assert_eq!(parse_authorization_code("code=abc123").as_deref(), Some("abc123"));
-        assert_eq!(parse_authorization_code("rawcode").as_deref(), Some("rawcode"));
+        assert_eq!(
+            parse_authorization_code("code=abc123").as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(
+            parse_authorization_code("rawcode").as_deref(),
+            Some("rawcode")
+        );
         assert_eq!(parse_authorization_code(""), None);
     }
 
     #[test]
     fn openrouter_flow_prompts_and_emits_auth_url() {
-        let interaction = ScriptedInteraction::new(vec!["http://127.0.0.1:1/cb?code=manual-code".to_string()]);
+        let interaction =
+            ScriptedInteraction::new(vec!["http://127.0.0.1:1/cb?code=manual-code".to_string()]);
         // The callback server never receives a connection; the manual paste
         // path must win via the select. We can't easily run the full login
         // here (it would block on the callback accept), so verify the prompt
@@ -841,7 +1007,11 @@ mod tests {
 
     #[test]
     fn select_option_shape() {
-        let opt = AuthSelectOption { id: "a".into(), label: "A".into(), description: None };
+        let opt = AuthSelectOption {
+            id: "a".into(),
+            label: "A".into(),
+            description: None,
+        };
         assert_eq!(opt.id, "a");
     }
 }
@@ -852,7 +1022,9 @@ mod device_flow_tests {
     /// Minimal HTTP server that answers a fixed set of (path, response) pairs
     /// in order, then closes. Returns the base URL.
     async fn mock_server(routes: Vec<(String, String)>) -> String {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let port = listener.local_addr().unwrap().port();
         let base = format!("http://127.0.0.1:{port}");
         tokio::spawn(async move {
@@ -1031,7 +1203,9 @@ mod callback_server_tests {
 
     #[tokio::test]
     async fn callback_server_captures_code_and_state() {
-        let (server, url) = CallbackServer::start("/oauth/callback/test".to_string()).await.unwrap();
+        let (server, url) = CallbackServer::start("/oauth/callback/test".to_string())
+            .await
+            .unwrap();
         let url_for_request = url.clone();
         let server_future = async move {
             let query = server.wait_for_callback("ok").await.unwrap();
@@ -1054,7 +1228,9 @@ mod callback_server_tests {
     #[tokio::test]
     async fn anthropic_exchange_code_parses_tokens() {
         // Mock the token endpoint.
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};

@@ -22,7 +22,9 @@ pub fn infer_copilot_initiator(messages: &[Message]) -> &'static str {
 
 fn content_has_image(content: &UserContentBody) -> bool {
     match content {
-        UserContentBody::Blocks(blocks) => blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. })),
+        UserContentBody::Blocks(blocks) => blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. })),
         UserContentBody::String(_) => false,
     }
 }
@@ -31,7 +33,10 @@ fn content_has_image(content: &UserContentBody) -> bool {
 pub fn has_copilot_vision_input(messages: &[Message]) -> bool {
     messages.iter().any(|msg| match msg {
         Message::User(UserContent::RoleUser { content, .. }) => content_has_image(content),
-        Message::ToolResult(t) => t.content().iter().any(|b| matches!(b, ContentBlock::Image { .. })),
+        Message::ToolResult(t) => t
+            .content()
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. })),
         _ => false,
     })
 }
@@ -39,10 +44,19 @@ pub fn has_copilot_vision_input(messages: &[Message]) -> bool {
 /// Build the dynamic headers for a request to the Copilot proxy.
 /// `has_images` is precomputed by the caller (mirrors upstream, where the
 /// vision-scan runs once for both `stream` and `streamSimple`).
-pub fn build_copilot_dynamic_headers(messages: &[Message], has_images: bool) -> Vec<(String, String)> {
+pub fn build_copilot_dynamic_headers(
+    messages: &[Message],
+    has_images: bool,
+) -> Vec<(String, String)> {
     let mut headers = vec![
-        ("X-Initiator".to_string(), infer_copilot_initiator(messages).to_string()),
-        ("Openai-Intent".to_string(), "conversation-edits".to_string()),
+        (
+            "X-Initiator".to_string(),
+            infer_copilot_initiator(messages).to_string(),
+        ),
+        (
+            "Openai-Intent".to_string(),
+            "conversation-edits".to_string(),
+        ),
     ];
     if has_images {
         headers.push(("Copilot-Vision-Request".to_string(), "true".to_string()));
@@ -81,7 +95,10 @@ mod tests {
         assert_eq!(infer_copilot_initiator(&messages), "agent");
 
         let tool_result = Message::ToolResult(ToolResultMessage::text("t1", "read", "ok", false));
-        assert_eq!(infer_copilot_initiator(&[user_msg("x"), tool_result]), "agent");
+        assert_eq!(
+            infer_copilot_initiator(&[user_msg("x"), tool_result]),
+            "agent"
+        );
     }
 
     #[test]
@@ -115,8 +132,14 @@ mod tests {
         let headers = build_copilot_dynamic_headers(&[user_msg("hi")], true);
         let map: std::collections::BTreeMap<_, _> = headers.iter().cloned().collect();
         assert_eq!(map.get("X-Initiator").map(|s| s.as_str()), Some("user"));
-        assert_eq!(map.get("Openai-Intent").map(|s| s.as_str()), Some("conversation-edits"));
-        assert_eq!(map.get("Copilot-Vision-Request").map(|s| s.as_str()), Some("true"));
+        assert_eq!(
+            map.get("Openai-Intent").map(|s| s.as_str()),
+            Some("conversation-edits")
+        );
+        assert_eq!(
+            map.get("Copilot-Vision-Request").map(|s| s.as_str()),
+            Some("true")
+        );
         assert_eq!(headers.len(), 3);
     }
 
@@ -167,7 +190,12 @@ mod tests {
             ).await;
         });
 
-        let mut model = Model::new("claude-sonnet-4.6", "Claude Sonnet 4.6", "anthropic-messages", "github-copilot");
+        let mut model = Model::new(
+            "claude-sonnet-4.6",
+            "Claude Sonnet 4.6",
+            "anthropic-messages",
+            "github-copilot",
+        );
         model.base_url = format!("http://{addr}");
         let context = crate::types::Context {
             system_prompt: None,
@@ -196,7 +224,10 @@ mod tests {
         let req = captured.lock().unwrap().clone().unwrap_or_default();
         let lower = req.to_lowercase();
         assert!(lower.contains("x-initiator: agent"), "got: {req}");
-        assert!(lower.contains("openai-intent: conversation-edits"), "got: {req}");
+        assert!(
+            lower.contains("openai-intent: conversation-edits"),
+            "got: {req}"
+        );
         assert!(lower.contains("copilot-vision-request: true"), "got: {req}");
     }
 }

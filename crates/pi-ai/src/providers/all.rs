@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use crate::auth::{env_api_key_auth, ProviderAuth};
 use crate::model::Model;
-use crate::models::{create_provider, CreateProviderOptions, Models, Provider};
 use crate::model_catalog::get_builtin_models;
+use crate::models::{create_provider, CreateProviderOptions, Models, Provider};
 
 /// Build a provider with catalog models + env-key auth and no (yet) stream
 /// implementation. The delegate registers the real API adaptor when ported.
@@ -34,7 +34,10 @@ pub fn provider_with_env_auth(
         base_url: base_url_opt,
         headers: None,
         auth: ProviderAuth {
-            api_key: Some(env_api_key_auth(name, env_vars.iter().map(|s| s.to_string()).collect())),
+            api_key: Some(env_api_key_auth(
+                name,
+                env_vars.iter().map(|s| s.to_string()).collect(),
+            )),
             oauth: None,
         },
         models,
@@ -45,7 +48,10 @@ pub fn provider_with_env_auth(
 
 /// Models from the vendored catalog for a provider id.
 pub fn catalog_models(provider_id: &str) -> Vec<Model> {
-    get_builtin_models(provider_id).into_iter().cloned().collect()
+    get_builtin_models(provider_id)
+        .into_iter()
+        .cloned()
+        .collect()
 }
 
 /// All built-in providers, freshly constructed.
@@ -99,17 +105,21 @@ fn anthropic_streams() -> crate::models::ProviderStreams {
     let stream = {
         let client = client.clone();
         let base_url = base_url.clone();
-        Arc::new(move |model: &Model, ctx: &crate::types::Context, options: Option<&crate::types::StreamOptions>| {
-            let api_key = options.and_then(|o| o.base.api_key.as_deref());
-            crate::api::anthropic_messages::stream(
-                model,
-                ctx,
-                client.clone(),
-                &base_url,
-                api_key,
-                &crate::api::anthropic_messages::AnthropicOptions::default(),
-            )
-        })
+        Arc::new(
+            move |model: &Model,
+                  ctx: &crate::types::Context,
+                  options: Option<&crate::types::StreamOptions>| {
+                let api_key = options.and_then(|o| o.base.api_key.as_deref());
+                crate::api::anthropic_messages::stream(
+                    model,
+                    ctx,
+                    client.clone(),
+                    &base_url,
+                    api_key,
+                    &crate::api::anthropic_messages::AnthropicOptions::default(),
+                )
+            },
+        )
     };
     let stream_simple = {
         let client = client.clone();
@@ -130,7 +140,12 @@ fn anthropic_streams() -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }
+    crate::models::ProviderStreams {
+        stream,
+        stream_simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }
 
 /// ProviderStreams for the openai-completions API family. Each provider
@@ -173,7 +188,9 @@ pub fn openai_completions_streams(base_url: String) -> crate::models::ProviderSt
                 let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
                 let Some(options) = options else {
                     return crate::event_stream::create_error_stream(
-                        &model.api, &model.provider, &model.id,
+                        &model.api,
+                        &model.provider,
+                        &model.id,
                         "streamSimple requires options".to_string(),
                     );
                 };
@@ -188,7 +205,12 @@ pub fn openai_completions_streams(base_url: String) -> crate::models::ProviderSt
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }
+    crate::models::ProviderStreams {
+        stream,
+        stream_simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }
 
 macro_rules! env_provider {
@@ -199,16 +221,27 @@ macro_rules! env_provider {
                 $name,
                 Some($base),
                 &$env_vars,
-                crate::models::ProviderApiSpec::Single(openai_completions_streams($base.to_string())),
+                crate::models::ProviderApiSpec::Single(openai_completions_streams(
+                    $base.to_string(),
+                )),
             )
         }
     };
 }
 
-env_provider!(ant_ling_provider, "ant-ling", "Ant Ling", "https://api.ant-ling.com/v1", ["ANT_LING_API_KEY"]);
+env_provider!(
+    ant_ling_provider,
+    "ant-ling",
+    "Ant Ling",
+    "https://api.ant-ling.com/v1",
+    ["ANT_LING_API_KEY"]
+);
 pub fn azure_openai_responses_provider() -> Provider {
     let models = catalog_models("azure-openai-responses");
-    let base_url = models.first().map(|m| m.base_url.clone()).unwrap_or_default();
+    let base_url = models
+        .first()
+        .map(|m| m.base_url.clone())
+        .unwrap_or_default();
     let client = reqwest::Client::new();
     let stream = {
         let client = client.clone();
@@ -233,7 +266,13 @@ pub fn azure_openai_responses_provider() -> Provider {
                   options: Option<&crate::types::SimpleStreamOptions>| {
                 let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
                 let opts = options.cloned().unwrap_or_default();
-                crate::api::azure_openai_responses::stream_simple(model, ctx, client.clone(), api_key, &opts)
+                crate::api::azure_openai_responses::stream_simple(
+                    model,
+                    ctx,
+                    client.clone(),
+                    api_key,
+                    &opts,
+                )
             },
         )
     };
@@ -243,26 +282,88 @@ pub fn azure_openai_responses_provider() -> Provider {
         base_url: Some(base_url),
         headers: None,
         auth: ProviderAuth {
-            api_key: Some(env_api_key_auth("Azure OpenAI API key", vec!["AZURE_OPENAI_API_KEY".to_string()])),
+            api_key: Some(env_api_key_auth(
+                "Azure OpenAI API key",
+                vec!["AZURE_OPENAI_API_KEY".to_string()],
+            )),
             oauth: None,
         },
         models,
-        api: crate::models::ProviderApiSpec::Single(crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }),
+        api: crate::models::ProviderApiSpec::Single(crate::models::ProviderStreams {
+            stream,
+            stream_simple: simple,
+            fetch_deferred: None,
+            cancel_deferred: None,
+        }),
         filter_models: None,
     })
 }
-env_provider!(baseten_provider, "baseten", "Baseten", "https://inference.baseten.co/v1", ["BASETEN_API_KEY"]);
-env_provider!(cerebras_provider, "cerebras", "Cerebras", "https://api.cerebras.ai/v1", ["CEREBRAS_API_KEY"]);
-env_provider!(deepseek_provider, "deepseek", "DeepSeek", "https://api.deepseek.com", ["DEEPSEEK_API_KEY"]);
-env_provider!(fireworks_provider, "fireworks", "Fireworks", "https://api.fireworks.ai/inference", ["FIREWORKS_API_KEY"]);
+env_provider!(
+    baseten_provider,
+    "baseten",
+    "Baseten",
+    "https://inference.baseten.co/v1",
+    ["BASETEN_API_KEY"]
+);
+env_provider!(
+    cerebras_provider,
+    "cerebras",
+    "Cerebras",
+    "https://api.cerebras.ai/v1",
+    ["CEREBRAS_API_KEY"]
+);
+env_provider!(
+    deepseek_provider,
+    "deepseek",
+    "DeepSeek",
+    "https://api.deepseek.com",
+    ["DEEPSEEK_API_KEY"]
+);
+env_provider!(
+    fireworks_provider,
+    "fireworks",
+    "Fireworks",
+    "https://api.fireworks.ai/inference",
+    ["FIREWORKS_API_KEY"]
+);
 pub fn google_provider() -> Provider {
     google_provider_real()
 }
-env_provider!(groq_provider, "groq", "Groq", "https://api.groq.com/openai/v1", ["GROQ_API_KEY"]);
-env_provider!(huggingface_provider, "huggingface", "Hugging Face", "https://router.huggingface.co/v1", ["HF_TOKEN"]);
-env_provider!(kimi_coding_provider, "kimi-coding", "Kimi (Coding)", "https://api.kimi.com/coding", ["KIMI_API_KEY"]);
-env_provider!(minimax_provider, "minimax", "MiniMax", "https://api.minimax.io/anthropic", ["MINIMAX_API_KEY"]);
-env_provider!(minimax_cn_provider, "minimax-cn", "MiniMax (CN)", "https://api.minimaxi.com/anthropic", ["MINIMAX_CN_API_KEY"]);
+env_provider!(
+    groq_provider,
+    "groq",
+    "Groq",
+    "https://api.groq.com/openai/v1",
+    ["GROQ_API_KEY"]
+);
+env_provider!(
+    huggingface_provider,
+    "huggingface",
+    "Hugging Face",
+    "https://router.huggingface.co/v1",
+    ["HF_TOKEN"]
+);
+env_provider!(
+    kimi_coding_provider,
+    "kimi-coding",
+    "Kimi (Coding)",
+    "https://api.kimi.com/coding",
+    ["KIMI_API_KEY"]
+);
+env_provider!(
+    minimax_provider,
+    "minimax",
+    "MiniMax",
+    "https://api.minimax.io/anthropic",
+    ["MINIMAX_API_KEY"]
+);
+env_provider!(
+    minimax_cn_provider,
+    "minimax-cn",
+    "MiniMax (CN)",
+    "https://api.minimaxi.com/anthropic",
+    ["MINIMAX_CN_API_KEY"]
+);
 pub fn mistral_provider() -> Provider {
     provider_with_env_auth(
         "mistral",
@@ -272,9 +373,27 @@ pub fn mistral_provider() -> Provider {
         crate::models::ProviderApiSpec::Single(mistral_conversations_streams()),
     )
 }
-env_provider!(moonshotai_provider, "moonshotai", "Moonshot AI", "https://api.moonshot.ai/v1", ["MOONSHOT_API_KEY"]);
-env_provider!(moonshotai_cn_provider, "moonshotai-cn", "Moonshot AI (CN)", "https://api.moonshot.cn/v1", ["MOONSHOT_API_KEY"]);
-env_provider!(nvidia_provider, "nvidia", "NVIDIA", "https://integrate.api.nvidia.com/v1", ["NVIDIA_API_KEY"]);
+env_provider!(
+    moonshotai_provider,
+    "moonshotai",
+    "Moonshot AI",
+    "https://api.moonshot.ai/v1",
+    ["MOONSHOT_API_KEY"]
+);
+env_provider!(
+    moonshotai_cn_provider,
+    "moonshotai-cn",
+    "Moonshot AI (CN)",
+    "https://api.moonshot.cn/v1",
+    ["MOONSHOT_API_KEY"]
+);
+env_provider!(
+    nvidia_provider,
+    "nvidia",
+    "NVIDIA",
+    "https://integrate.api.nvidia.com/v1",
+    ["NVIDIA_API_KEY"]
+);
 pub fn openai_provider() -> Provider {
     let base = "https://api.openai.com/v1";
     provider_with_env_auth(
@@ -287,12 +406,30 @@ pub fn openai_provider() -> Provider {
 }
 pub fn opencode_provider() -> Provider {
     let models = catalog_models("opencode");
-    let base_url = models.first().map(|m| m.base_url.clone()).unwrap_or_default();
+    let base_url = models
+        .first()
+        .map(|m| m.base_url.clone())
+        .unwrap_or_default();
     let mut streams = std::collections::BTreeMap::new();
-    streams.insert("anthropic-messages".to_string(), anthropic_streams_for(&base_url));
-    streams.insert("google-generative-ai".to_string(), google_streams(base_url.clone(), crate::api::google_generative_ai::DEFAULT_BASE_URL));
-    streams.insert("openai-completions".to_string(), openai_completions_streams(base_url.clone()));
-    streams.insert("openai-responses".to_string(), openai_responses_streams(base_url));
+    streams.insert(
+        "anthropic-messages".to_string(),
+        anthropic_streams_for(&base_url),
+    );
+    streams.insert(
+        "google-generative-ai".to_string(),
+        google_streams(
+            base_url.clone(),
+            crate::api::google_generative_ai::DEFAULT_BASE_URL,
+        ),
+    );
+    streams.insert(
+        "openai-completions".to_string(),
+        openai_completions_streams(base_url.clone()),
+    );
+    streams.insert(
+        "openai-responses".to_string(),
+        openai_responses_streams(base_url),
+    );
     provider_with_env_auth(
         "opencode",
         "opencode",
@@ -303,10 +440,19 @@ pub fn opencode_provider() -> Provider {
 }
 pub fn opencode_go_provider() -> Provider {
     let models = catalog_models("opencode-go");
-    let base_url = models.first().map(|m| m.base_url.clone()).unwrap_or_default();
+    let base_url = models
+        .first()
+        .map(|m| m.base_url.clone())
+        .unwrap_or_default();
     let mut streams = std::collections::BTreeMap::new();
-    streams.insert("openai-completions".to_string(), openai_completions_streams(base_url.clone()));
-    streams.insert("openai-responses".to_string(), openai_responses_streams(base_url));
+    streams.insert(
+        "openai-completions".to_string(),
+        openai_completions_streams(base_url.clone()),
+    );
+    streams.insert(
+        "openai-responses".to_string(),
+        openai_responses_streams(base_url),
+    );
     provider_with_env_auth(
         "opencode-go",
         "opencode (Go)",
@@ -321,31 +467,101 @@ pub fn openrouter_provider() -> Provider {
         "OpenRouter",
         Some("https://openrouter.ai/api/v1"),
         &["OPENROUTER_API_KEY"],
-        crate::models::ProviderApiSpec::Single(openai_completions_streams("https://openrouter.ai/api/v1".to_string())),
+        crate::models::ProviderApiSpec::Single(openai_completions_streams(
+            "https://openrouter.ai/api/v1".to_string(),
+        )),
     );
     provider.auth.oauth = Some(crate::auth_flows::OpenRouterOAuth::new());
     provider
 }
-env_provider!(qwen_token_plan_provider, "qwen-token-plan", "Qwen Token Plan", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", ["QWEN_TOKEN_PLAN_API_KEY"]);
-env_provider!(qwen_token_plan_cn_provider, "qwen-token-plan-cn", "Qwen Token Plan (CN)", "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", ["QWEN_TOKEN_PLAN_CN_API_KEY"]);
-env_provider!(qwen_token_plan_individual_provider, "qwen-token-plan-individual", "Qwen Token Plan (Individual)", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", ["QWEN_TOKEN_PLAN_API_KEY"]);
-env_provider!(together_provider, "together", "Together", "https://api.together.ai/v1", ["TOGETHER_API_KEY"]);
+env_provider!(
+    qwen_token_plan_provider,
+    "qwen-token-plan",
+    "Qwen Token Plan",
+    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+    ["QWEN_TOKEN_PLAN_API_KEY"]
+);
+env_provider!(
+    qwen_token_plan_cn_provider,
+    "qwen-token-plan-cn",
+    "Qwen Token Plan (CN)",
+    "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    ["QWEN_TOKEN_PLAN_CN_API_KEY"]
+);
+env_provider!(
+    qwen_token_plan_individual_provider,
+    "qwen-token-plan-individual",
+    "Qwen Token Plan (Individual)",
+    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+    ["QWEN_TOKEN_PLAN_API_KEY"]
+);
+env_provider!(
+    together_provider,
+    "together",
+    "Together",
+    "https://api.together.ai/v1",
+    ["TOGETHER_API_KEY"]
+);
 pub fn vercel_ai_gateway_provider() -> Provider {
     provider_with_env_auth(
         "vercel-ai-gateway",
         "Vercel AI Gateway",
         Some("https://ai-gateway.vercel.sh"),
         &["AI_GATEWAY_API_KEY"],
-        crate::models::ProviderApiSpec::Single(anthropic_streams_for("https://ai-gateway.vercel.sh")),
+        crate::models::ProviderApiSpec::Single(anthropic_streams_for(
+            "https://ai-gateway.vercel.sh",
+        )),
     )
 }
-env_provider!(xai_provider, "xai", "xAI", "https://api.x.ai/v1", ["XAI_API_KEY"]);
-env_provider!(xiaomi_provider, "xiaomi", "Xiaomi", "https://api.xiaomimimo.com/v1", ["XIAOMI_API_KEY"]);
-env_provider!(xiaomi_token_plan_ams_provider, "xiaomi-token-plan-ams", "Xiaomi Token Plan (AMS)", "https://token-plan-ams.xiaomimimo.com/v1", ["XIAOMI_TOKEN_PLAN_AMS_API_KEY"]);
-env_provider!(xiaomi_token_plan_cn_provider, "xiaomi-token-plan-cn", "Xiaomi Token Plan (CN)", "https://token-plan-cn.xiaomimimo.com/v1", ["XIAOMI_TOKEN_PLAN_CN_API_KEY"]);
-env_provider!(xiaomi_token_plan_sgp_provider, "xiaomi-token-plan-sgp", "Xiaomi Token Plan (SGP)", "https://token-plan-sgp.xiaomimimo.com/v1", ["XIAOMI_TOKEN_PLAN_SGP_API_KEY"]);
-env_provider!(zai_provider, "zai", "Z.ai", "https://api.z.ai/api/coding/paas/v4", ["ZAI_API_KEY"]);
-env_provider!(zai_coding_cn_provider, "zai-coding-cn", "Z.ai Coding (CN)", "https://open.bigmodel.cn/api/coding/paas/v4", ["ZAI_CODING_CN_API_KEY"]);
+env_provider!(
+    xai_provider,
+    "xai",
+    "xAI",
+    "https://api.x.ai/v1",
+    ["XAI_API_KEY"]
+);
+env_provider!(
+    xiaomi_provider,
+    "xiaomi",
+    "Xiaomi",
+    "https://api.xiaomimimo.com/v1",
+    ["XIAOMI_API_KEY"]
+);
+env_provider!(
+    xiaomi_token_plan_ams_provider,
+    "xiaomi-token-plan-ams",
+    "Xiaomi Token Plan (AMS)",
+    "https://token-plan-ams.xiaomimimo.com/v1",
+    ["XIAOMI_TOKEN_PLAN_AMS_API_KEY"]
+);
+env_provider!(
+    xiaomi_token_plan_cn_provider,
+    "xiaomi-token-plan-cn",
+    "Xiaomi Token Plan (CN)",
+    "https://token-plan-cn.xiaomimimo.com/v1",
+    ["XIAOMI_TOKEN_PLAN_CN_API_KEY"]
+);
+env_provider!(
+    xiaomi_token_plan_sgp_provider,
+    "xiaomi-token-plan-sgp",
+    "Xiaomi Token Plan (SGP)",
+    "https://token-plan-sgp.xiaomimimo.com/v1",
+    ["XIAOMI_TOKEN_PLAN_SGP_API_KEY"]
+);
+env_provider!(
+    zai_provider,
+    "zai",
+    "Z.ai",
+    "https://api.z.ai/api/coding/paas/v4",
+    ["ZAI_API_KEY"]
+);
+env_provider!(
+    zai_coding_cn_provider,
+    "zai-coding-cn",
+    "Z.ai Coding (CN)",
+    "https://open.bigmodel.cn/api/coding/paas/v4",
+    ["ZAI_CODING_CN_API_KEY"]
+);
 
 pub fn anthropic_provider() -> Provider {
     let models = catalog_models("anthropic");
@@ -359,7 +575,10 @@ pub fn anthropic_provider() -> Provider {
         base_url: Some(base_url),
         headers: None,
         auth: ProviderAuth {
-            api_key: Some(env_api_key_auth("Anthropic API key", vec!["ANTHROPIC_API_KEY".to_string()])),
+            api_key: Some(env_api_key_auth(
+                "Anthropic API key",
+                vec!["ANTHROPIC_API_KEY".to_string()],
+            )),
             oauth: Some(crate::auth_flows::AnthropicOAuth::new()),
         },
         models,
@@ -400,17 +619,29 @@ fn env_api_key_auth_with_env_check() -> Arc<dyn crate::auth::ApiKeyAuth> {
             credential: Option<&crate::auth::ApiKeyCredential>,
         ) -> Option<crate::auth::AuthCheck> {
             if credential.map(|c| c.key.is_some()).unwrap_or(false) {
-                return Some(crate::auth::AuthCheck { source: Some("stored credential".to_string()), auth_type: "api_key" });
+                return Some(crate::auth::AuthCheck {
+                    source: Some("stored credential".to_string()),
+                    auth_type: "api_key",
+                });
             }
-            if credential.and_then(|c| c.env.as_ref()).is_some_and(|e| e.contains_key("AWS_PROFILE")) {
-                return Some(crate::auth::AuthCheck { source: Some("AWS_PROFILE".to_string()), auth_type: "api_key" });
+            if credential
+                .and_then(|c| c.env.as_ref())
+                .is_some_and(|e| e.contains_key("AWS_PROFILE"))
+            {
+                return Some(crate::auth::AuthCheck {
+                    source: Some("AWS_PROFILE".to_string()),
+                    auth_type: "api_key",
+                });
             }
             let env = |name: &str| ctx.env(name).filter(|v| !v.is_empty());
             if env("AWS_BEARER_TOKEN_BEDROCK").is_some()
                 || env("AWS_PROFILE").is_some()
                 || (env("AWS_ACCESS_KEY_ID").is_some() && env("AWS_SECRET_ACCESS_KEY").is_some())
             {
-                return Some(crate::auth::AuthCheck { source: Some("AWS credentials".to_string()), auth_type: "api_key" });
+                return Some(crate::auth::AuthCheck {
+                    source: Some("AWS credentials".to_string()),
+                    auth_type: "api_key",
+                });
             }
             None
         }
@@ -422,12 +653,20 @@ fn env_api_key_auth_with_env_check() -> Arc<dyn crate::auth::ApiKeyAuth> {
             if let Some(cred) = credential {
                 if cred.key.is_some() {
                     return Some(crate::auth::AuthResult {
-                        auth: crate::auth::ModelAuth { api_key: cred.key.clone(), headers: None, base_url: None },
+                        auth: crate::auth::ModelAuth {
+                            api_key: cred.key.clone(),
+                            headers: None,
+                            base_url: None,
+                        },
                         env: cred.env.clone(),
                         source: Some("stored credential".to_string()),
                     });
                 }
-                if cred.env.as_ref().is_some_and(|e| e.contains_key("AWS_PROFILE")) {
+                if cred
+                    .env
+                    .as_ref()
+                    .is_some_and(|e| e.contains_key("AWS_PROFILE"))
+                {
                     return Some(crate::auth::AuthResult {
                         auth: crate::auth::ModelAuth::default(),
                         env: cred.env.clone(),
@@ -467,16 +706,28 @@ fn env_api_key_auth_with_env_check() -> Arc<dyn crate::auth::ApiKeyAuth> {
 pub fn github_copilot_provider() -> Provider {
     let mut streams = std::collections::BTreeMap::new();
     let base = "https://api.individual.githubcopilot.com";
-    streams.insert("anthropic-messages".to_string(), anthropic_streams_for(base));
-    streams.insert("openai-completions".to_string(), openai_completions_streams(base.to_string()));
-    streams.insert("openai-responses".to_string(), openai_responses_streams(base.to_string()));
+    streams.insert(
+        "anthropic-messages".to_string(),
+        anthropic_streams_for(base),
+    );
+    streams.insert(
+        "openai-completions".to_string(),
+        openai_completions_streams(base.to_string()),
+    );
+    streams.insert(
+        "openai-responses".to_string(),
+        openai_responses_streams(base.to_string()),
+    );
     create_provider(CreateProviderOptions {
         id: "github-copilot".to_string(),
         name: Some("GitHub Copilot".to_string()),
         base_url: Some(base.to_string()),
         headers: None,
         auth: ProviderAuth {
-            api_key: Some(env_api_key_auth("GitHub Copilot token", vec!["COPILOT_GITHUB_TOKEN".to_string()])),
+            api_key: Some(env_api_key_auth(
+                "GitHub Copilot token",
+                vec!["COPILOT_GITHUB_TOKEN".to_string()],
+            )),
             oauth: Some(crate::auth_flows::GitHubCopilotOAuth::new()),
         },
         models: catalog_models("github-copilot"),
@@ -502,9 +753,13 @@ pub fn cloudflare_ai_gateway_provider() -> Provider {
     create_provider(CreateProviderOptions {
         id: "cloudflare-ai-gateway".to_string(),
         name: Some("Cloudflare AI Gateway".to_string()),
-        base_url: Some(crate::api::cloudflare::CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL.to_string()),
+        base_url: Some(
+            crate::api::cloudflare::CLOUDFLARE_AI_GATEWAY_ANTHROPIC_BASE_URL.to_string(),
+        ),
         headers: None,
-        auth: crate::api::cloudflare::cloudflare_auth(crate::api::cloudflare::CloudflareAuthKind::AiGateway),
+        auth: crate::api::cloudflare::cloudflare_auth(
+            crate::api::cloudflare::CloudflareAuthKind::AiGateway,
+        ),
         models: catalog_models("cloudflare-ai-gateway"),
         api: crate::models::ProviderApiSpec::ByApi(streams),
         filter_models: None,
@@ -517,11 +772,13 @@ pub fn cloudflare_workers_ai_provider() -> Provider {
         name: Some("Cloudflare Workers AI".to_string()),
         base_url: Some(crate::api::cloudflare::CLOUDFLARE_WORKERS_AI_BASE_URL.to_string()),
         headers: None,
-        auth: crate::api::cloudflare::cloudflare_auth(crate::api::cloudflare::CloudflareAuthKind::WorkersAi),
-        models: catalog_models("cloudflare-workers-ai"),
-        api: crate::models::ProviderApiSpec::Single(
-            crate::api::cloudflare::cloudflare_streams(openai_completions_streams_from_model()),
+        auth: crate::api::cloudflare::cloudflare_auth(
+            crate::api::cloudflare::CloudflareAuthKind::WorkersAi,
         ),
+        models: catalog_models("cloudflare-workers-ai"),
+        api: crate::models::ProviderApiSpec::Single(crate::api::cloudflare::cloudflare_streams(
+            openai_completions_streams_from_model(),
+        )),
         filter_models: None,
     })
 }
@@ -567,16 +824,27 @@ fn vertex_auth() -> Arc<dyn crate::auth::ApiKeyAuth> {
             credential: Option<&crate::auth::ApiKeyCredential>,
         ) -> Option<crate::auth::AuthCheck> {
             if credential.map(|c| c.key.is_some()).unwrap_or(false) {
-                return Some(crate::auth::AuthCheck { source: Some("stored credential".to_string()), auth_type: "api_key" });
+                return Some(crate::auth::AuthCheck {
+                    source: Some("stored credential".to_string()),
+                    auth_type: "api_key",
+                });
             }
             let env = |name: &str| ctx.env(name).filter(|v| !v.is_empty());
             let has_adc = env("GOOGLE_APPLICATION_CREDENTIALS").is_some()
                 || ctx
                     .env("HOME")
-                    .map(|h| std::path::Path::new(&format!("{h}/.config/gcloud/application_default_credentials.json")).exists())
+                    .map(|h| {
+                        std::path::Path::new(&format!(
+                            "{h}/.config/gcloud/application_default_credentials.json"
+                        ))
+                        .exists()
+                    })
                     .unwrap_or(false);
             if env("GOOGLE_CLOUD_API_KEY").is_some() || has_adc {
-                return Some(crate::auth::AuthCheck { source: Some("Google Cloud credentials".to_string()), auth_type: "api_key" });
+                return Some(crate::auth::AuthCheck {
+                    source: Some("Google Cloud credentials".to_string()),
+                    auth_type: "api_key",
+                });
             }
             None
         }
@@ -588,7 +856,11 @@ fn vertex_auth() -> Arc<dyn crate::auth::ApiKeyAuth> {
             if let Some(cred) = credential {
                 if cred.key.is_some() {
                     return Some(crate::auth::AuthResult {
-                        auth: crate::auth::ModelAuth { api_key: cred.key.clone(), headers: None, base_url: None },
+                        auth: crate::auth::ModelAuth {
+                            api_key: cred.key.clone(),
+                            headers: None,
+                            base_url: None,
+                        },
                         env: cred.env.clone(),
                         source: Some("stored credential".to_string()),
                     });
@@ -597,7 +869,11 @@ fn vertex_auth() -> Arc<dyn crate::auth::ApiKeyAuth> {
             let env = |name: &str| ctx.env(name).filter(|v| !v.is_empty());
             if let Some(key) = env("GOOGLE_CLOUD_API_KEY") {
                 return Some(crate::auth::AuthResult {
-                    auth: crate::auth::ModelAuth { api_key: Some(key), headers: None, base_url: None },
+                    auth: crate::auth::ModelAuth {
+                        api_key: Some(key),
+                        headers: None,
+                        base_url: None,
+                    },
                     env: None,
                     source: Some("GOOGLE_CLOUD_API_KEY".to_string()),
                 });
@@ -607,7 +883,12 @@ fn vertex_auth() -> Arc<dyn crate::auth::ApiKeyAuth> {
             if env("GOOGLE_APPLICATION_CREDENTIALS").is_some()
                 || ctx
                     .env("HOME")
-                    .map(|h| std::path::Path::new(&format!("{h}/.config/gcloud/application_default_credentials.json")).exists())
+                    .map(|h| {
+                        std::path::Path::new(&format!(
+                            "{h}/.config/gcloud/application_default_credentials.json"
+                        ))
+                        .exists()
+                    })
                     .unwrap_or(false)
             {
                 return Some(crate::auth::AuthResult {
@@ -631,15 +912,44 @@ pub fn builtin_images_provider() -> crate::images::ImagesProvider {
 
 /// A `Models` collection with every built-in provider registered.
 pub fn builtin_models(options: crate::models::CreateModelsOptions) -> Models {
+    let models_store = options.models_store.clone();
     let models = crate::models::create_models(options);
-    for provider in builtin_providers() {
+    let local_generated_at = crate::model_catalog::get_builtin_model_data_generated_at();
+    for mut provider in builtin_providers() {
+        // Dynamic catalogs are persisted by the coding-agent runtime in the
+        // shared ModelsStore. Keep only entries newer than the bundled
+        // catalog; matching ids replace the bundled model in place and new
+        // ids are appended, exactly like the upstream remote provider.
+        if let Some(entry) = models_store
+            .as_ref()
+            .and_then(|store| store.read(&provider.id))
+        {
+            let is_newer = entry
+                .last_modified
+                .zip(local_generated_at)
+                .map(|(remote, local)| remote > local)
+                .unwrap_or(false);
+            if is_newer {
+                for dynamic in entry.models {
+                    if let Some(index) = provider
+                        .models
+                        .iter()
+                        .position(|model| model.id == dynamic.id)
+                    {
+                        provider.models[index] = dynamic;
+                    } else {
+                        provider.models.push(dynamic);
+                    }
+                }
+            }
+        }
         models.set_provider(provider);
     }
     models
 }
 
 /// Typed read of the generated built-in catalog (delegates to catalog read).
-pub use crate::model_catalog::get_builtin_model as get_builtin_model;
+pub use crate::model_catalog::get_builtin_model;
 
 #[cfg(test)]
 mod tests {
@@ -650,7 +960,23 @@ mod tests {
         let providers = builtin_providers();
         assert_eq!(providers.len(), 39);
         let ids: Vec<&str> = providers.iter().map(|p| p.id.as_str()).collect();
-        for expected in ["google", "anthropic", "openai", "deepseek", "xai", "groq", "openrouter", "openai-codex", "github-copilot", "cloudflare-ai-gateway", "mistral", "together", "zai", "xiaomi", "qwen-token-plan-cn"] {
+        for expected in [
+            "google",
+            "anthropic",
+            "openai",
+            "deepseek",
+            "xai",
+            "groq",
+            "openrouter",
+            "openai-codex",
+            "github-copilot",
+            "cloudflare-ai-gateway",
+            "mistral",
+            "together",
+            "zai",
+            "xiaomi",
+            "qwen-token-plan-cn",
+        ] {
             assert!(ids.contains(&expected), "missing provider {expected}");
         }
     }
@@ -671,18 +997,23 @@ mod tests {
     fn providers_have_auth() {
         let providers = builtin_providers();
         for p in &providers {
-            assert!(p.auth.api_key.is_some() || p.auth.oauth.is_some(), "{} has no auth", p.id);
+            assert!(
+                p.auth.api_key.is_some() || p.auth.oauth.is_some(),
+                "{} has no auth",
+                p.id
+            );
         }
         let google = providers.iter().find(|p| p.id == "google").unwrap();
         assert!(google.auth.api_key.is_some());
     }
 
     #[cfg(test)]
-
-
     #[test]
     fn anthropic_provider_streams_error_without_key() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let provider = anthropic_provider();
             let model = provider.models.first().cloned().unwrap();
@@ -697,7 +1028,10 @@ mod tests {
 
     #[test]
     fn unported_api_models_stream_error() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let provider = google_provider();
             let model = provider.models.first().cloned().unwrap();
@@ -715,13 +1049,19 @@ mod tests {
         // The google provider must route through the Google Generative AI
         // adaptor (missing key -> "No API key" error), not the openai-
         // completions fallback or "no API implementation".
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let _guard = crate::utils::env_lock();
             std::env::remove_var("GEMINI_API_KEY");
             let provider = google_provider();
             let model = provider.models.first().cloned().unwrap();
-            assert_eq!(model.api, "google-generative-ai", "google catalog models must declare the google api");
+            assert_eq!(
+                model.api, "google-generative-ai",
+                "google catalog models must declare the google api"
+            );
             let ctx = crate::types::Context::default();
             let stream = provider.stream(&model, &ctx, None);
             let msg = stream.for_each(|_| {}).await;
@@ -739,7 +1079,10 @@ mod tests {
         // Upstream openaiProvider uses openAIResponsesApi as its single api.
         // The no-key path must surface the responses adaptor's error, not the
         // completions adaptor's or "no API implementation".
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let _guard = crate::utils::env_lock();
             std::env::remove_var("OPENAI_API_KEY");
@@ -750,14 +1093,20 @@ mod tests {
             let stream = provider.stream(&model, &ctx, None);
             let msg = stream.for_each(|_| {}).await;
             let err = msg.error_message().unwrap_or("").to_string();
-            assert!(err.contains("No API key for provider: openai"), "got: {err}");
+            assert!(
+                err.contains("No API key for provider: openai"),
+                "got: {err}"
+            );
             assert!(!err.contains("no API implementation"), "got: {err}");
         });
     }
 
     #[test]
     fn azure_provider_routes_through_azure_adaptor() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let _guard = crate::utils::env_lock();
             std::env::remove_var("AZURE_OPENAI_API_KEY");
@@ -767,7 +1116,10 @@ mod tests {
             let stream = provider.stream(&model, &ctx, None);
             let msg = stream.for_each(|_| {}).await;
             let err = msg.error_message().unwrap_or("").to_string();
-            assert!(err.contains("No API key for provider: azure-openai-responses"), "got: {err}");
+            assert!(
+                err.contains("No API key for provider: azure-openai-responses"),
+                "got: {err}"
+            );
         });
     }
 
@@ -776,18 +1128,27 @@ mod tests {
         // Upstream mistralProvider uses mistralConversationsApi as its single
         // api. The no-key path must surface the mistral-conversations adaptor's
         // error, not the openai-completions fallback or "no API implementation".
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let _guard = crate::utils::env_lock();
             std::env::remove_var("MISTRAL_API_KEY");
             let provider = mistral_provider();
             let model = provider.models.first().cloned().unwrap();
-            assert_eq!(model.api, "mistral-conversations", "mistral catalog models must declare the mistral api");
+            assert_eq!(
+                model.api, "mistral-conversations",
+                "mistral catalog models must declare the mistral api"
+            );
             let ctx = crate::types::Context::default();
             let stream = provider.stream(&model, &ctx, None);
             let msg = stream.for_each(|_| {}).await;
             let err = msg.error_message().unwrap_or("").to_string();
-            assert!(err.contains("No API key for provider: mistral"), "got: {err}");
+            assert!(
+                err.contains("No API key for provider: mistral"),
+                "got: {err}"
+            );
             assert!(!err.contains("no API implementation"), "got: {err}");
         });
     }
@@ -798,16 +1159,25 @@ mod tests {
         // provider has no ambient api key (OAuth is not ported), so the
         // no-key path surfaces the adaptor's error rather than "no API
         // implementation".
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let provider = openai_codex_provider();
             let model = provider.models.first().cloned().unwrap();
-            assert_eq!(model.api, "openai-codex-responses", "codex catalog models must declare the codex api");
+            assert_eq!(
+                model.api, "openai-codex-responses",
+                "codex catalog models must declare the codex api"
+            );
             let ctx = crate::types::Context::default();
             let stream = provider.stream(&model, &ctx, None);
             let msg = stream.for_each(|_| {}).await;
             let err = msg.error_message().unwrap_or("").to_string();
-            assert!(err.contains("No API key for provider: openai-codex"), "got: {err}");
+            assert!(
+                err.contains("No API key for provider: openai-codex"),
+                "got: {err}"
+            );
             assert!(!err.contains("no API implementation"), "got: {err}");
         });
     }
@@ -826,7 +1196,11 @@ mod tests {
         for m in models.iter().take(5) {
             let streams = provider.streams.clone();
             let has_entry = streams.get(&m.api).is_some();
-            assert!(has_entry, "model {} api {} missing provider stream", m.id, m.api);
+            assert!(
+                has_entry,
+                "model {} api {} missing provider stream",
+                m.id, m.api
+            );
         }
     }
 
@@ -842,7 +1216,10 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     #[test]
     fn amazon_bedrock_routes_through_bedrock_adaptor() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let _guard = crate::utils::env_lock();
             std::env::remove_var("AWS_ACCESS_KEY_ID");
@@ -850,12 +1227,20 @@ mod tests {
             std::env::remove_var("AWS_BEARER_TOKEN_BEDROCK");
             std::env::remove_var("AWS_PROFILE");
             let provider = amazon_bedrock_provider();
-            let model = provider.models.iter().find(|m| m.api == "bedrock-converse-stream").cloned().unwrap();
+            let model = provider
+                .models
+                .iter()
+                .find(|m| m.api == "bedrock-converse-stream")
+                .cloned()
+                .unwrap();
             let ctx = crate::types::Context::default();
             let stream = provider.stream(&model, &ctx, None);
             let msg = stream.for_each(|_| {}).await;
             let err = msg.error_message().unwrap_or("").to_string();
-            assert!(err.contains("Could not load credentials") || err.contains("Request failed"), "got: {err}");
+            assert!(
+                err.contains("Could not load credentials") || err.contains("Request failed"),
+                "got: {err}"
+            );
             assert!(!err.contains("no API implementation"), "got: {err}");
         });
     }
@@ -863,26 +1248,40 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     #[test]
     fn google_vertex_routes_through_vertex_adaptor() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let _guard = crate::utils::env_lock();
             std::env::remove_var("GCLOUD_PROJECT");
             std::env::remove_var("GOOGLE_CLOUD_PROJECT");
             std::env::remove_var("GOOGLE_CLOUD_LOCATION");
             let provider = google_vertex_provider();
-            let model = provider.models.iter().find(|m| m.api == "google-vertex").cloned().unwrap();
+            let model = provider
+                .models
+                .iter()
+                .find(|m| m.api == "google-vertex")
+                .cloned()
+                .unwrap();
             let ctx = crate::types::Context::default();
             let stream = provider.stream(&model, &ctx, None);
             let msg = stream.for_each(|_| {}).await;
             let err = msg.error_message().unwrap_or("").to_string();
-            assert!(err.contains("Vertex AI requires a project ID"), "got: {err}");
+            assert!(
+                err.contains("Vertex AI requires a project ID"),
+                "got: {err}"
+            );
             assert!(!err.contains("no API implementation"), "got: {err}");
         });
     }
 
     #[test]
     fn cloudflare_providers_require_account_credentials() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let _guard = crate::utils::env_lock();
             std::env::remove_var("CLOUDFLARE_API_KEY");
@@ -891,11 +1290,15 @@ mod tests {
             let provider = cloudflare_ai_gateway_provider();
             let model = provider.models.first().cloned().unwrap();
             // apply_auth fails without api key + account/gateway ids.
-            let models = crate::models::create_models(crate::models::CreateModelsOptions::default());
+            let models =
+                crate::models::create_models(crate::models::CreateModelsOptions::default());
             models.set_provider(provider);
             let options = crate::types::ProviderRequestOptions::default();
             let result = models.apply_auth(&model, &options);
-            assert!(result.is_err(), "expected auth failure without Cloudflare env");
+            assert!(
+                result.is_err(),
+                "expected auth failure without Cloudflare env"
+            );
         });
     }
 
@@ -918,7 +1321,10 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     #[test]
     fn github_copilot_dispatches_by_model_api_and_streams() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let _guard = crate::utils::env_lock();
             std::env::remove_var("COPILOT_GITHUB_TOKEN");
@@ -933,7 +1339,8 @@ mod tests {
             // Route through the Models facade so auth is applied; no key
             // must surface a terminal auth error, not a network request and
             // not "no API implementation".
-            let models = crate::models::create_models(crate::models::CreateModelsOptions::default());
+            let models =
+                crate::models::create_models(crate::models::CreateModelsOptions::default());
             models.set_provider(provider);
             let model = models
                 .get_model("github-copilot", "claude-sonnet-4.6")
@@ -948,7 +1355,9 @@ mod tests {
                 .expect("a copilot anthropic-messages model");
             let ctx = crate::types::Context {
                 system_prompt: None,
-                messages: vec![crate::types::Message::User(crate::types::UserContent::string("hi", 1))],
+                messages: vec![crate::types::Message::User(
+                    crate::types::UserContent::string("hi", 1),
+                )],
                 tools: vec![],
             };
             let stream = models.stream(&model, &ctx, None);
@@ -1046,7 +1455,12 @@ pub fn google_streams(base_url: String, _default_base: &str) -> crate::models::P
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
+    crate::models::ProviderStreams {
+        stream,
+        stream_simple: simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }
 
 pub fn google_provider_real() -> Provider {
@@ -1077,7 +1491,14 @@ pub fn openai_responses_streams(base_url: String) -> crate::models::ProviderStre
                     base: options.cloned().unwrap_or_default(),
                     ..Default::default()
                 };
-                crate::api::openai_responses::stream(model, ctx, client.clone(), &base_url, api_key, &opts)
+                crate::api::openai_responses::stream(
+                    model,
+                    ctx,
+                    client.clone(),
+                    &base_url,
+                    api_key,
+                    &opts,
+                )
             },
         )
     };
@@ -1090,11 +1511,23 @@ pub fn openai_responses_streams(base_url: String) -> crate::models::ProviderStre
                   options: Option<&crate::types::SimpleStreamOptions>| {
                 let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
                 let opts = options.cloned().unwrap_or_default();
-                crate::api::openai_responses::stream_simple(model, ctx, client.clone(), &base_url, api_key, &opts)
+                crate::api::openai_responses::stream_simple(
+                    model,
+                    ctx,
+                    client.clone(),
+                    &base_url,
+                    api_key,
+                    &opts,
+                )
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
+    crate::models::ProviderStreams {
+        stream,
+        stream_simple: simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }
 
 /// Anthropic Messages streams bound to an explicit base URL (for mixed-api
@@ -1140,7 +1573,12 @@ pub fn anthropic_streams_for(base_url: &str) -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }
+    crate::models::ProviderStreams {
+        stream,
+        stream_simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1185,7 +1623,9 @@ fn openai_completions_streams_from_model() -> crate::models::ProviderStreams {
                 let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
                 let Some(options) = options else {
                     return crate::event_stream::create_error_stream(
-                        &model.api, &model.provider, &model.id,
+                        &model.api,
+                        &model.provider,
+                        &model.id,
                         "streamSimple requires options".to_string(),
                     );
                 };
@@ -1200,7 +1640,12 @@ fn openai_completions_streams_from_model() -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
+    crate::models::ProviderStreams {
+        stream,
+        stream_simple: simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }
 
 /// OpenAI-responses streams deriving the base URL from the model.
@@ -1217,7 +1662,14 @@ fn openai_responses_streams_from_model() -> crate::models::ProviderStreams {
                     base: options.cloned().unwrap_or_default(),
                     ..Default::default()
                 };
-                crate::api::openai_responses::stream(model, ctx, client.clone(), &model.base_url, api_key, &opts)
+                crate::api::openai_responses::stream(
+                    model,
+                    ctx,
+                    client.clone(),
+                    &model.base_url,
+                    api_key,
+                    &opts,
+                )
             },
         )
     };
@@ -1229,11 +1681,23 @@ fn openai_responses_streams_from_model() -> crate::models::ProviderStreams {
                   options: Option<&crate::types::SimpleStreamOptions>| {
                 let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
                 let opts = options.cloned().unwrap_or_default();
-                crate::api::openai_responses::stream_simple(model, ctx, client.clone(), &model.base_url, api_key, &opts)
+                crate::api::openai_responses::stream_simple(
+                    model,
+                    ctx,
+                    client.clone(),
+                    &model.base_url,
+                    api_key,
+                    &opts,
+                )
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
+    crate::models::ProviderStreams {
+        stream,
+        stream_simple: simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }
 
 /// Anthropic-messages streams deriving the base URL from the model.
@@ -1275,7 +1739,12 @@ fn anthropic_streams_from_model() -> crate::models::ProviderStreams {
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
+    crate::models::ProviderStreams {
+        stream,
+        stream_simple: simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }
 
 /// Bedrock Converse streams (SigV4/bearer auth resolves inside the adaptor).
@@ -1287,12 +1756,20 @@ fn bedrock_streams() -> crate::models::ProviderStreams {
             move |model: &Model,
                   ctx: &crate::types::Context,
                   options: Option<&crate::types::StreamOptions>| {
-                let api_key = options.and_then(|o| o.base.api_key.as_deref()).map(|s| s.to_string());
+                let api_key = options
+                    .and_then(|o| o.base.api_key.as_deref())
+                    .map(|s| s.to_string());
                 let opts = crate::api::bedrock_converse::BedrockOptions {
                     base: options.cloned().unwrap_or_default(),
                     ..Default::default()
                 };
-                crate::api::bedrock_converse::stream(model, ctx, client.clone(), api_key.as_deref(), &opts)
+                crate::api::bedrock_converse::stream(
+                    model,
+                    ctx,
+                    client.clone(),
+                    api_key.as_deref(),
+                    &opts,
+                )
             },
         )
     };
@@ -1302,18 +1779,33 @@ fn bedrock_streams() -> crate::models::ProviderStreams {
             move |model: &Model,
                   ctx: &crate::types::Context,
                   options: Option<&crate::types::SimpleStreamOptions>| {
-                let api_key = options.and_then(|o| o.base.base.api_key.as_deref()).map(|s| s.to_string());
+                let api_key = options
+                    .and_then(|o| o.base.base.api_key.as_deref())
+                    .map(|s| s.to_string());
                 let Some(options) = options else {
                     return crate::event_stream::create_error_stream(
-                        &model.api, &model.provider, &model.id,
+                        &model.api,
+                        &model.provider,
+                        &model.id,
                         "streamSimple requires options".to_string(),
                     );
                 };
-                crate::api::bedrock_converse::stream_simple(model, ctx, client.clone(), api_key.as_deref(), options)
+                crate::api::bedrock_converse::stream_simple(
+                    model,
+                    ctx,
+                    client.clone(),
+                    api_key.as_deref(),
+                    options,
+                )
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
+    crate::models::ProviderStreams {
+        stream,
+        stream_simple: simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }
 
 /// Google Vertex streams (API-key / ADC auth resolves inside the adaptor).
@@ -1325,12 +1817,20 @@ fn google_vertex_streams() -> crate::models::ProviderStreams {
             move |model: &Model,
                   ctx: &crate::types::Context,
                   options: Option<&crate::types::StreamOptions>| {
-                let api_key = options.and_then(|o| o.base.api_key.as_deref()).map(|s| s.to_string());
+                let api_key = options
+                    .and_then(|o| o.base.api_key.as_deref())
+                    .map(|s| s.to_string());
                 let go = crate::api::google_vertex::GoogleVertexOptions {
                     base: options.cloned().unwrap_or_default(),
                     ..Default::default()
                 };
-                crate::api::google_vertex::stream(model, ctx, client.clone(), api_key.as_deref(), &go)
+                crate::api::google_vertex::stream(
+                    model,
+                    ctx,
+                    client.clone(),
+                    api_key.as_deref(),
+                    &go,
+                )
             },
         )
     };
@@ -1340,18 +1840,33 @@ fn google_vertex_streams() -> crate::models::ProviderStreams {
             move |model: &Model,
                   ctx: &crate::types::Context,
                   options: Option<&crate::types::SimpleStreamOptions>| {
-                let api_key = options.and_then(|o| o.base.base.api_key.as_deref()).map(|s| s.to_string());
+                let api_key = options
+                    .and_then(|o| o.base.base.api_key.as_deref())
+                    .map(|s| s.to_string());
                 let Some(options) = options else {
                     return crate::event_stream::create_error_stream(
-                        &model.api, &model.provider, &model.id,
+                        &model.api,
+                        &model.provider,
+                        &model.id,
                         "streamSimple requires options".to_string(),
                     );
                 };
-                crate::api::google_vertex::stream_simple(model, ctx, client.clone(), api_key.as_deref(), options)
+                crate::api::google_vertex::stream_simple(
+                    model,
+                    ctx,
+                    client.clone(),
+                    api_key.as_deref(),
+                    options,
+                )
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
+    crate::models::ProviderStreams {
+        stream,
+        stream_simple: simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }
 
 /// ProviderStreams for the mistral-conversations API family. The base URL is
@@ -1382,11 +1897,22 @@ pub fn mistral_conversations_streams() -> crate::models::ProviderStreams {
                   options: Option<&crate::types::SimpleStreamOptions>| {
                 let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
                 let opts = options.cloned().unwrap_or_default();
-                crate::api::mistral_conversations::stream_simple(model, ctx, client.clone(), api_key, &opts)
+                crate::api::mistral_conversations::stream_simple(
+                    model,
+                    ctx,
+                    client.clone(),
+                    api_key,
+                    &opts,
+                )
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
+    crate::models::ProviderStreams {
+        stream,
+        stream_simple: simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }
 
 /// ProviderStreams for the openai-codex-responses API family. The Codex URL is
@@ -1419,9 +1945,20 @@ pub fn openai_codex_streams() -> crate::models::ProviderStreams {
                   options: Option<&crate::types::SimpleStreamOptions>| {
                 let api_key = options.and_then(|o| o.base.base.api_key.as_deref());
                 let opts = options.cloned().unwrap_or_default();
-                crate::api::openai_codex_responses::stream_simple(model, ctx, client.clone(), api_key, &opts)
+                crate::api::openai_codex_responses::stream_simple(
+                    model,
+                    ctx,
+                    client.clone(),
+                    api_key,
+                    &opts,
+                )
             },
         )
     };
-    crate::models::ProviderStreams { stream, stream_simple: simple, fetch_deferred: None, cancel_deferred: None }
+    crate::models::ProviderStreams {
+        stream,
+        stream_simple: simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }

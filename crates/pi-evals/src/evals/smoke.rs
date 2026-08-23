@@ -26,22 +26,36 @@ pub struct SmokeOutcome {
 pub fn run_smoke(runner: &PiCliRunnerOptions, cwd: &std::path::Path, prompt: &str) -> SmokeOutcome {
     let output = crate::harness::run_pi_binary(runner, cwd, prompt);
     match output {
-        Ok(PiRunOutput { stdout, stderr, exit_code }) => SmokeOutcome {
+        Ok(PiRunOutput {
+            stdout,
+            stderr,
+            exit_code,
+        }) => SmokeOutcome {
             output: crate::harness::extract_response_text(&stdout),
             errors: if exit_code == 0 {
                 Vec::new()
             } else {
-                vec![format!("pi exited with code {exit_code}: {}", stderr.trim())]
+                vec![format!(
+                    "pi exited with code {exit_code}: {}",
+                    stderr.trim()
+                )]
             },
             exit_code,
         },
-        Err(error) => SmokeOutcome { output: String::new(), errors: vec![error], exit_code: -1 },
+        Err(error) => SmokeOutcome {
+            output: String::new(),
+            errors: vec![error],
+            exit_code: -1,
+        },
     }
 }
 
 /// Applies the scenario assertions; returns the parse of the output for the
 /// observation.
-pub fn assert_smoke_result(runner: &PiCliRunnerOptions, outcome: &SmokeOutcome) -> Result<f64, String> {
+pub fn assert_smoke_result(
+    runner: &PiCliRunnerOptions,
+    outcome: &SmokeOutcome,
+) -> Result<f64, String> {
     let mut failures = Vec::new();
     if !outcome.errors.is_empty() {
         failures.extend(outcome.errors.iter().cloned());
@@ -49,10 +63,14 @@ pub fn assert_smoke_result(runner: &PiCliRunnerOptions, outcome: &SmokeOutcome) 
     let output = outcome.output.trim();
     if runner.provider == "faux" {
         if !output.starts_with("faux response to:") {
-            failures.push(format!("faux provider response did not match the scripted pattern: {output:?}"));
+            failures.push(format!(
+                "faux provider response did not match the scripted pattern: {output:?}"
+            ));
         }
     } else if output != EXPECTED_ANSWER {
-        failures.push(format!("expected output {EXPECTED_ANSWER:?}, got {output:?}"));
+        failures.push(format!(
+            "expected output {EXPECTED_ANSWER:?}, got {output:?}"
+        ));
     }
     if failures.is_empty() {
         Ok(1.0)

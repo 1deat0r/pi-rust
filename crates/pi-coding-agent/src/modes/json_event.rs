@@ -25,7 +25,9 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
     );
 
     let (model, stream_fn): (pi_ai::model::Model, crate::run::StreamFn) = if provider == "faux" {
-        let core = pi_ai::providers::FauxProviderCore::new(&pi_ai::providers::RegisterFauxProviderOptions::default());
+        let core = pi_ai::providers::FauxProviderCore::new(
+            &pi_ai::providers::RegisterFauxProviderOptions::default(),
+        );
         let model = match model_hint.as_deref() {
             Some(hint) => {
                 let id = hint.rsplit('/').next().unwrap_or(hint);
@@ -33,7 +35,11 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
                     .cloned()
                     .ok_or_else(|| format!("unknown faux model {id:?}"))?
             }
-            None => core.models.first().cloned().ok_or_else(|| "no faux model".to_string())?,
+            None => core
+                .models
+                .first()
+                .cloned()
+                .ok_or_else(|| "no faux model".to_string())?,
         };
         let reply = args
             .messages
@@ -42,16 +48,19 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
             .unwrap_or_else(|| "Hello from pi-rust".to_string());
         core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
             pi_ai::providers::faux_assistant_message(
-                vec![pi_ai::types::ContentBlock::text(format!("faux response to: {reply}"))],
+                vec![pi_ai::types::ContentBlock::text(format!(
+                    "faux response to: {reply}"
+                ))],
                 pi_ai::providers::FauxAssistantOptions::default(),
             ),
         )]);
         let core = core.clone();
-        let stream_fn: crate::run::StreamFn = Arc::new(move |model, ctx| core.stream(model, ctx, None));
+        let stream_fn: crate::run::StreamFn =
+            Arc::new(move |model, ctx| core.stream(model, ctx, None));
         (model, stream_fn)
     } else {
         let models = {
-            let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+            let models = crate::core::model_registry::builtin_models();
             let config = crate::core::model_config::ModelConfig::load(
                 crate::core::model_config::models_json_path().as_deref(),
             );
@@ -59,9 +68,15 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
             registry.into_models()
         };
         if models.get_provider(&provider).is_none() {
-            return Err(format!("provider {provider:?} is not registered in the model registry"));
+            return Err(format!(
+                "provider {provider:?} is not registered in the model registry"
+            ));
         }
-        let model = crate::core::model_runtime::resolve_run_model_for_provider(&models, &provider, model_hint.as_deref())?;
+        let model = crate::core::model_runtime::resolve_run_model_for_provider(
+            &models,
+            &provider,
+            model_hint.as_deref(),
+        )?;
         let api_key = args
             .api_key
             .clone()
@@ -74,9 +89,8 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
             ..Default::default()
         };
         let models = models.clone();
-        let stream_fn: crate::run::StreamFn = Arc::new(move |_model, ctx| {
-            models.stream(_model, ctx, Some(&stream_options))
-        });
+        let stream_fn: crate::run::StreamFn =
+            Arc::new(move |_model, ctx| models.stream(_model, ctx, Some(&stream_options)));
         (model, stream_fn)
     };
 
@@ -87,8 +101,12 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         context.tools.push(pi_agent::tools::write_tool(cwd.clone()));
         context.tools.push(pi_agent::tools::edit_tool(cwd.clone()));
         context.tools.push(crate::core::tools::ls_tool(cwd.clone()));
-        context.tools.push(crate::core::tools::find_tool(cwd.clone()));
-        context.tools.push(crate::core::tools::grep_tool(cwd.clone()));
+        context
+            .tools
+            .push(crate::core::tools::find_tool(cwd.clone()));
+        context
+            .tools
+            .push(crate::core::tools::grep_tool(cwd.clone()));
     }
 
     let prompts: Vec<pi_agent::types::AgentMessage> = args
@@ -144,6 +162,9 @@ mod tests {
 
     #[test]
     fn json_line_serialization() {
-        assert_eq!(serialize_json_line(&json!({"type": "x"})), r#"{"type":"x"}"#);
+        assert_eq!(
+            serialize_json_line(&json!({"type": "x"})),
+            r#"{"type":"x"}"#
+        );
     }
 }

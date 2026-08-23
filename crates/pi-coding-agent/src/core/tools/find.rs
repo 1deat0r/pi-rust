@@ -9,10 +9,10 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
 
-use pi_ai::types::json_tool;
 use pi_agent::tools::path_utils::resolve_tool_path;
 use pi_agent::tools::truncate::{truncate_head_with, DEFAULT_MAX_BYTES};
 use pi_agent::tools::{AgentTool, AgentToolResult};
+use pi_ai::types::json_tool;
 
 use super::bytes_limit_notice;
 
@@ -271,7 +271,10 @@ mod tests {
             .await
             .unwrap();
         let lines = sorted_lines(&out);
-        assert!(!lines.iter().any(|l| l.starts_with("vendor/")), "got: {lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.starts_with("vendor/")),
+            "got: {lines:?}"
+        );
         assert!(lines.contains(&"ignored/skip.rs".to_string()));
     }
 

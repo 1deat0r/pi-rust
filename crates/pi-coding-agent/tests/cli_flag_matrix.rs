@@ -16,11 +16,16 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("pi-flag-matrix-{tag}-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("pi-flag-matrix-{tag}-{}", uuid::Uuid::new_v4()));
         let home = root.join("home");
         let agent_dir = home.join(".pi").join("agent");
         fs::create_dir_all(&agent_dir).unwrap();
-        Self { root, home, agent_dir }
+        Self {
+            root,
+            home,
+            agent_dir,
+        }
     }
 
     fn pi(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
@@ -142,9 +147,20 @@ fn newly_added_boolean_flags_are_not_unknown() {
     let out = sandbox.pi(
         &sandbox.root,
         &[
-            "--provider", "faux", "--model", "faux-1", "-p",
-            "-nbt", "-ne", "-ns", "-np", "--no-themes", "-nc",
-            "-a", "-na", "--offline",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "-p",
+            "-nbt",
+            "-ne",
+            "-ns",
+            "-np",
+            "--no-themes",
+            "-nc",
+            "-a",
+            "-na",
+            "--offline",
             "hi",
         ],
     );
@@ -155,7 +171,10 @@ fn newly_added_boolean_flags_are_not_unknown() {
     );
     assert!(out.status.success(), "stderr: {stderr}");
     // The run completed (faux reply present).
-    assert!(sandbox.stdout(&out).contains("faux response to: hi"), "no faux reply");
+    assert!(
+        sandbox.stdout(&out).contains("faux response to: hi"),
+        "no faux reply"
+    );
 }
 
 #[test]
@@ -166,15 +185,27 @@ fn newly_added_value_flags_are_not_unknown() {
     let out = sandbox.pi(
         &sandbox.root,
         &[
-            "--provider", "faux", "--model", "faux-1", "-p",
-            "--fork", "abc123",
-            "-e", "/tmp/ext.ts",
-            "--skill", "/tmp/skill",
-            "--prompt-template", "/tmp/tpl",
-            "--theme", "/tmp/theme",
-            "--use-theme", "solarized",
-            "--append-system-prompt", "extra",
-            "--models", "anthropic,openai",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "-p",
+            "--fork",
+            "abc123",
+            "-e",
+            "/tmp/ext.ts",
+            "--skill",
+            "/tmp/skill",
+            "--prompt-template",
+            "/tmp/tpl",
+            "--theme",
+            "/tmp/theme",
+            "--use-theme",
+            "solarized",
+            "--append-system-prompt",
+            "extra",
+            "--models",
+            "anthropic,openai",
             "hi",
         ],
     );
@@ -184,7 +215,10 @@ fn newly_added_value_flags_are_not_unknown() {
         "expected no unknown-flag diagnostic, got: {stderr}"
     );
     assert!(out.status.success(), "stderr: {stderr}");
-    assert!(sandbox.stdout(&out).contains("faux response to: hi"), "no faux reply");
+    assert!(
+        sandbox.stdout(&out).contains("faux response to: hi"),
+        "no faux reply"
+    );
 }
 
 #[test]
@@ -195,7 +229,10 @@ fn error_diagnostic_exits_nonzero() {
     let out = sandbox.pi(&sandbox.root, &["--use-theme", "--print", "hi"]);
     assert!(!out.status.success(), "expected nonzero exit");
     let stderr = sandbox.stderr(&out);
-    assert!(stderr.contains("Error: --use-theme requires a theme name"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("Error: --use-theme requires a theme name"),
+        "stderr: {stderr}"
+    );
 }
 
 #[test]
@@ -205,7 +242,16 @@ fn thinking_warning_does_not_exit_nonzero() {
     // the run continues (upstream behavior).
     let out = sandbox.pi(
         &sandbox.root,
-        &["--provider", "faux", "--model", "faux-1", "-p", "--thinking", "bogus", "hi"],
+        &[
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "-p",
+            "--thinking",
+            "bogus",
+            "hi",
+        ],
     );
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
     let stderr = sandbox.stderr(&out);
@@ -213,5 +259,8 @@ fn thinking_warning_does_not_exit_nonzero() {
         stderr.contains("Warning: Invalid thinking level"),
         "expected warning diagnostic, got: {stderr}"
     );
-    assert!(sandbox.stdout(&out).contains("faux response to: hi"), "no faux reply");
+    assert!(
+        sandbox.stdout(&out).contains("faux response to: hi"),
+        "no faux reply"
+    );
 }

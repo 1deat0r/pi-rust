@@ -12,7 +12,9 @@ use indexmap::IndexMap;
 fn editor_env_lock() -> std::sync::MutexGuard<'static, ()> {
     use std::sync::OnceLock;
     static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap()
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap()
 }
 use pi_coding_agent::core::settings::{
     deep_merge, migrate_settings, parse_http_idle_timeout_ms, strip_bom, InMemorySettingsStorage,
@@ -78,7 +80,10 @@ fn b_slash_theme_is_theme_setting_only() {
 
 #[test]
 fn b_project_overrides_global_for_merge() {
-    let storage = seeded_storage(json!({ "defaultTools": ["read"] }), json!({ "defaultTools": ["grep"] }));
+    let storage = seeded_storage(
+        json!({ "defaultTools": ["read"] }),
+        json!({ "defaultTools": ["grep"] }),
+    );
     let m = SettingsManager::from_storage(Box::new(storage));
     assert_eq!(m.get_default_tools(), Some(vec!["grep".to_string()]));
     // Scope views are separate
@@ -136,7 +141,10 @@ fn b_getter_defaults() {
 fn b_http_idle_timeout_invalid_errors() {
     let m = SettingsManager::in_memory(map(json!({ "httpIdleTimeoutMs": -1 })));
     let err = m.get_http_idle_timeout_ms().unwrap_err();
-    assert!(err.contains("Invalid httpIdleTimeoutMs setting"), "got: {err}");
+    assert!(
+        err.contains("Invalid httpIdleTimeoutMs setting"),
+        "got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -146,7 +154,11 @@ async fn b_set_and_persist_in_memory_preserves_unknown_keys() {
     m.set_theme("dark".to_string());
     // Simulate external write of an unknown key while manager holds the file
     // via storage: only possible through the same storage (in-memory seam).
-    write_seeded(m.storage().as_ref(), SettingsScope::Global, json!({ "enabledModels": ["x"] }));
+    write_seeded(
+        m.storage().as_ref(),
+        SettingsScope::Global,
+        json!({ "enabledModels": ["x"] }),
+    );
     m.set_default_thinking_level("high");
     m.flush().await;
     let saved = read_seeded(m.storage().as_ref(), SettingsScope::Global);
@@ -172,7 +184,6 @@ fn b_pure_helpers_are_public() {
     assert_eq!(strip_bom("\u{FEFF}{}"), "{}");
 }
 
-
 // ---------------------------------------------------------------------------
 // Slice C — file-backed persistence (upstream oracle)
 // ---------------------------------------------------------------------------
@@ -190,7 +201,11 @@ impl TestDirs {
         let project_dir = root.join("project");
         fs::create_dir_all(&agent_dir).unwrap();
         fs::create_dir_all(project_dir.join(".pi")).unwrap();
-        Self { root, agent_dir, project_dir }
+        Self {
+            root,
+            agent_dir,
+            project_dir,
+        }
     }
 
     fn write_global(&self, v: Value) {
@@ -198,7 +213,11 @@ impl TestDirs {
     }
 
     fn write_project(&self, v: Value) {
-        fs::write(self.project_dir.join(".pi").join("settings.json"), v.to_string()).unwrap();
+        fs::write(
+            self.project_dir.join(".pi").join("settings.json"),
+            v.to_string(),
+        )
+        .unwrap();
     }
 
     fn read_global(&self) -> Value {
@@ -244,17 +263,20 @@ async fn c_preserves_enabled_models_when_changing_thinking_level() {
     let mut manager = dirs.manager();
     // External edit adds enabledModels.
     let mut current = dirs.read_global();
-    current
-        .as_object_mut()
-        .unwrap()
-        .insert("enabledModels".into(), json!(["claude-opus-4-5", "gpt-5.2-codex"]));
+    current.as_object_mut().unwrap().insert(
+        "enabledModels".into(),
+        json!(["claude-opus-4-5", "gpt-5.2-codex"]),
+    );
     dirs.write_global(current);
 
     manager.set_default_thinking_level("high");
     manager.flush().await;
 
     let saved = dirs.read_global();
-    assert_eq!(saved.get("enabledModels"), Some(&json!(["claude-opus-4-5", "gpt-5.2-codex"])));
+    assert_eq!(
+        saved.get("enabledModels"),
+        Some(&json!(["claude-opus-4-5", "gpt-5.2-codex"]))
+    );
     assert_eq!(saved.get("defaultThinkingLevel"), Some(&json!("high")));
     assert_eq!(saved.get("theme"), Some(&json!("dark")));
     assert_eq!(saved.get("defaultModel"), Some(&json!("claude-sonnet")));
@@ -277,7 +299,10 @@ async fn c_preserves_custom_settings_when_changing_theme() {
 
     let saved = dirs.read_global();
     assert_eq!(saved.get("shellPath"), Some(&json!("/bin/zsh")));
-    assert_eq!(saved.get("extensions"), Some(&json!(["/path/to/extension.ts"])));
+    assert_eq!(
+        saved.get("extensions"),
+        Some(&json!(["/path/to/extension.ts"]))
+    );
     assert_eq!(saved.get("theme"), Some(&json!("light")));
 }
 
@@ -315,7 +340,10 @@ async fn c_slash_theme_persists_raw() {
     manager.set_theme("solarized-light/tokyo-night".to_string());
     manager.flush().await;
     let saved = dirs.read_global();
-    assert_eq!(saved.get("theme"), Some(&json!("solarized-light/tokyo-night")));
+    assert_eq!(
+        saved.get("theme"),
+        Some(&json!("solarized-light/tokyo-night"))
+    );
 }
 
 #[tokio::test]
@@ -349,7 +377,10 @@ async fn c_mermaid_defaults_and_persists() {
     manager.flush().await;
     assert_eq!(manager.get_mermaid_rendering_mode(), "final");
     let saved = dirs.read_global();
-    assert_eq!(saved.get("markdown").and_then(|v| v.get("mermaid")), Some(&json!("final")));
+    assert_eq!(
+        saved.get("markdown").and_then(|v| v.get("mermaid")),
+        Some(&json!("final"))
+    );
 }
 
 #[test]
@@ -387,7 +418,10 @@ async fn c_shell_command_prefix_preserved_when_saving_other_settings() {
     manager.set_theme("light".to_string());
     manager.flush().await;
     let saved = dirs.read_global();
-    assert_eq!(saved.get("shellCommandPrefix"), Some(&json!("shopt -s expand_aliases")));
+    assert_eq!(
+        saved.get("shellCommandPrefix"),
+        Some(&json!("shopt -s expand_aliases"))
+    );
     assert_eq!(saved.get("theme"), Some(&json!("light")));
 }
 
@@ -402,11 +436,16 @@ async fn c_fullscreen_settings_validate_and_persist() {
     manager.set_fullscreen_scrollbar("hidden");
     manager.flush().await;
     let saved = dirs.read_global();
-    assert_eq!(saved.get("fullscreenExitOutput"), Some(&json!("resume-hint")));
+    assert_eq!(
+        saved.get("fullscreenExitOutput"),
+        Some(&json!("resume-hint"))
+    );
     assert_eq!(saved.get("fullscreenScrollbar"), Some(&json!("hidden")));
 
     // Unsupported values fall back on next load.
-    dirs.write_global(json!({ "fullscreenExitOutput": "nothing", "fullscreenScrollbar": "sometimes" }));
+    dirs.write_global(
+        json!({ "fullscreenExitOutput": "nothing", "fullscreenScrollbar": "sometimes" }),
+    );
     let reloaded = dirs.manager();
     assert_eq!(reloaded.get_fullscreen_exit_output(), "transcript");
     assert_eq!(reloaded.get_fullscreen_scrollbar(), "auto");
@@ -417,13 +456,15 @@ fn c_default_tools_global_then_project_replace() {
     let dirs = TestDirs::new();
     dirs.write_global(json!({ "defaultTools": ["read", "bash"] }));
     let manager = dirs.manager();
-    assert_eq!(manager.get_default_tools(), Some(vec!["read".to_string(), "bash".to_string()]));
+    assert_eq!(
+        manager.get_default_tools(),
+        Some(vec!["read".to_string(), "bash".to_string()])
+    );
 
     dirs.write_project(json!({ "defaultTools": ["grep"] }));
     let manager = dirs.manager();
     assert_eq!(manager.get_default_tools(), Some(vec!["grep".to_string()]));
 }
-
 
 // ---------------------------------------------------------------------------
 // Slice D — reload, errors, project trust, directory creation, remaining groups
@@ -435,7 +476,9 @@ async fn d_reload_global_from_disk() {
     dirs.write_global(json!({ "theme": "dark", "extensions": ["/before.ts"] }));
     let mut manager = dirs.manager();
 
-    dirs.write_global(json!({ "theme": "light", "extensions": ["/after.ts"], "defaultModel": "claude-sonnet" }));
+    dirs.write_global(
+        json!({ "theme": "light", "extensions": ["/after.ts"], "defaultModel": "claude-sonnet" }),
+    );
     manager.reload().await;
 
     assert_eq!(manager.get_theme(), Some("light".to_string()));
@@ -461,8 +504,16 @@ async fn d_reload_keeps_previous_settings_and_reports_path_when_invalid() {
 #[test]
 fn d_drain_errors_collects_both_scopes() {
     let dirs = TestDirs::new();
-    fs::write(dirs.agent_dir.join("settings.json"), "{ invalid global json").unwrap();
-    fs::write(dirs.project_dir.join(".pi").join("settings.json"), "{ invalid project json").unwrap();
+    fs::write(
+        dirs.agent_dir.join("settings.json"),
+        "{ invalid global json",
+    )
+    .unwrap();
+    fs::write(
+        dirs.project_dir.join(".pi").join("settings.json"),
+        "{ invalid project json",
+    )
+    .unwrap();
 
     let mut manager = dirs.manager();
     let errors = manager.drain_errors();
@@ -470,7 +521,10 @@ fn d_drain_errors_collects_both_scopes() {
     assert_eq!(errors[0].scope, SettingsScope::Global);
     assert_eq!(errors[0].path.as_deref(), Some(dirs.global_path().as_str()));
     assert_eq!(errors[1].scope, SettingsScope::Project);
-    assert_eq!(errors[1].path.as_deref(), Some(dirs.project_path().as_str()));
+    assert_eq!(
+        errors[1].path.as_deref(),
+        Some(dirs.project_path().as_str())
+    );
     assert_eq!(manager.drain_errors().len(), 0);
 }
 
@@ -483,7 +537,9 @@ fn d_project_untrusted_skips_project_settings() {
     let manager = SettingsManager::create(
         &dirs.project_dir.display().to_string(),
         &dirs.agent_dir.display().to_string(),
-        pi_coding_agent::core::settings::SettingsManagerCreateOptions { project_trusted: false },
+        pi_coding_agent::core::settings::SettingsManagerCreateOptions {
+            project_trusted: false,
+        },
     );
 
     assert!(!manager.is_project_trusted());
@@ -500,7 +556,9 @@ fn d_project_trust_change_reloads_project_settings() {
     let mut manager = SettingsManager::create(
         &dirs.project_dir.display().to_string(),
         &dirs.agent_dir.display().to_string(),
-        pi_coding_agent::core::settings::SettingsManagerCreateOptions { project_trusted: false },
+        pi_coding_agent::core::settings::SettingsManagerCreateOptions {
+            project_trusted: false,
+        },
     );
     manager.set_project_trusted(true);
 
@@ -516,7 +574,9 @@ async fn d_project_untrusted_fails_writes() {
     let mut manager = SettingsManager::create(
         &dirs.project_dir.display().to_string(),
         &dirs.agent_dir.display().to_string(),
-        pi_coding_agent::core::settings::SettingsManagerCreateOptions { project_trusted: false },
+        pi_coding_agent::core::settings::SettingsManagerCreateOptions {
+            project_trusted: false,
+        },
     );
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -524,7 +584,10 @@ async fn d_project_untrusted_fails_writes() {
             "npm:new".to_string(),
         )]);
     }));
-    assert!(result.is_err(), "set_project_packages should panic when untrusted");
+    assert!(
+        result.is_err(),
+        "set_project_packages should panic when untrusted"
+    );
 
     manager.flush().await;
     assert!(manager.get_project_settings().is_empty());
@@ -763,7 +826,6 @@ fn d_packages_migration_filtering_objects() {
     );
 }
 
-
 // ---------------------------------------------------------------------------
 // Slice E — review findings regressions (provider retry depth, key removal)
 // ---------------------------------------------------------------------------
@@ -781,7 +843,10 @@ fn e_provider_retry_settings_read_from_retry_provider() {
     }));
     let manager = dirs.manager();
     assert_eq!(manager.get_retry_settings(), (false, 5, 100));
-    assert_eq!(manager.get_provider_retry_settings(), (Some(1234), Some(7), 9999));
+    assert_eq!(
+        manager.get_provider_retry_settings(),
+        (Some(1234), Some(7), 9999)
+    );
 }
 
 #[test]

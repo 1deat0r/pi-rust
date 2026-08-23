@@ -3,7 +3,7 @@
 //! clients must split records on `\n` only.
 
 use serde::Serialize;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 /// Serialize a single strict JSONL record (LF-terminated).
 pub fn serialize_json_line(value: &impl Serialize) -> String {
@@ -38,7 +38,10 @@ pub struct JsonlLineReader<R> {
 
 impl<R: AsyncRead + Unpin> JsonlLineReader<R> {
     pub fn new(reader: R) -> Self {
-        Self { reader: BufReader::new(reader), pending: Vec::with_capacity(256) }
+        Self {
+            reader: BufReader::new(reader),
+            pending: Vec::with_capacity(256),
+        }
     }
 
     /// Read the next LF-terminated line; trailing \r stripped.
@@ -72,7 +75,10 @@ impl<R: AsyncRead + Unpin> JsonlLineReader<R> {
 }
 
 /// Write a JSONL record to an async writer and flush.
-pub async fn write_json_line<W: AsyncWrite + Unpin>(writer: &mut W, line: String) -> std::io::Result<()> {
+pub async fn write_json_line<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    line: String,
+) -> std::io::Result<()> {
     writer.write_all(line.as_bytes()).await?;
     writer.flush().await
 }
@@ -91,7 +97,9 @@ mod tests {
     #[test]
     fn split_handles_lf_and_crlf() {
         let mut lines = Vec::new();
-        split_jsonl_lines("{\"a\":1}\n{\"b\":2}\r\n", &mut |l| lines.push(l.to_string()));
+        split_jsonl_lines("{\"a\":1}\n{\"b\":2}\r\n", &mut |l| {
+            lines.push(l.to_string())
+        });
         assert_eq!(lines, vec!["{\"a\":1}", "{\"b\":2}"]);
     }
 
@@ -106,9 +114,18 @@ mod tests {
     async fn line_reader_framing() {
         let input: &[u8] = b"{\"a\":1}\n{\"b\":2}\r\n{\"c\":3}";
         let mut reader = JsonlLineReader::new(input);
-        assert_eq!(reader.next_line().await.unwrap().as_deref(), Some("{\"a\":1}"));
-        assert_eq!(reader.next_line().await.unwrap().as_deref(), Some("{\"b\":2}"));
-        assert_eq!(reader.next_line().await.unwrap().as_deref(), Some("{\"c\":3}"));
+        assert_eq!(
+            reader.next_line().await.unwrap().as_deref(),
+            Some("{\"a\":1}")
+        );
+        assert_eq!(
+            reader.next_line().await.unwrap().as_deref(),
+            Some("{\"b\":2}")
+        );
+        assert_eq!(
+            reader.next_line().await.unwrap().as_deref(),
+            Some("{\"c\":3}")
+        );
         assert_eq!(reader.next_line().await.unwrap(), None);
     }
 

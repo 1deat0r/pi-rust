@@ -161,22 +161,36 @@ impl ProxyStreamOptions {
             session_id: base.session_id.clone(),
             headers: base.base.headers.clone().filter(|h| !h.is_empty()),
             metadata: base.metadata.clone(),
-            transport: base.transport.as_ref().map(|t| serde_json::to_value(t).unwrap_or(JsonValue::Null)),
+            transport: base
+                .transport
+                .as_ref()
+                .map(|t| serde_json::to_value(t).unwrap_or(JsonValue::Null)),
             max_retry_delay_ms: base.base.max_retry_delay_ms,
             ..Default::default()
         };
         if let Some(o) = options {
-            serializable.reasoning = o.reasoning.as_ref().map(|r| serde_json::to_value(r).unwrap_or(JsonValue::Null));
+            serializable.reasoning = o
+                .reasoning
+                .as_ref()
+                .map(|r| serde_json::to_value(r).unwrap_or(JsonValue::Null));
             serializable.thinking_budgets = o.thinking_budgets.clone();
         }
-        Self { signal, auth_token: auth_token.into(), proxy_url: proxy_url.into(), options: serializable }
+        Self {
+            signal,
+            auth_token: auth_token.into(),
+            proxy_url: proxy_url.into(),
+            options: serializable,
+        }
     }
 }
 
-
 /// Stream function that proxies through a server instead of calling LLM
 /// providers directly (upstream `streamProxy`).
-pub fn stream_proxy(model: &Model, context: &Context, options: ProxyStreamOptions) -> AssistantMessageEventStream {
+pub fn stream_proxy(
+    model: &Model,
+    context: &Context,
+    options: ProxyStreamOptions,
+) -> AssistantMessageEventStream {
     let outer = AssistantMessageEventStream::new();
     let Some(event_tx) = outer.sender() else {
         return outer;
@@ -189,10 +203,16 @@ pub fn stream_proxy(model: &Model, context: &Context, options: ProxyStreamOption
     let signal = options.signal.clone();
 
     let body = async move {
-        let mut sink = ProxyStreamPusher { tx: event_tx, finished: false };
+        let mut sink = ProxyStreamPusher {
+            tx: event_tx,
+            finished: false,
+        };
         let mut partial = init_partial(&model);
         let aborted = |signal: &Option<Arc<AtomicBool>>| -> bool {
-            signal.as_ref().map(|s| s.load(Ordering::SeqCst)).unwrap_or(false)
+            signal
+                .as_ref()
+                .map(|s| s.load(Ordering::SeqCst))
+                .unwrap_or(false)
         };
 
         let client = reqwest::Client::new();
@@ -201,7 +221,8 @@ pub fn stream_proxy(model: &Model, context: &Context, options: ProxyStreamOption
             "messages": serde_json::to_value(&context.messages).unwrap_or(JsonValue::Array(vec![])),
             "tools": serde_json::to_value(&context.tools).unwrap_or(JsonValue::Array(vec![])),
         });
-        let body_json = serde_json::json!({ "model": model, "context": context_json, "options": serializable });
+        let body_json =
+            serde_json::json!({ "model": model, "context": context_json, "options": serializable });
 
         let response = match client
             .post(format!("{proxy_url}/api/stream"))
@@ -213,7 +234,12 @@ pub fn stream_proxy(model: &Model, context: &Context, options: ProxyStreamOption
         {
             Ok(resp) => resp,
             Err(e) => {
-                finalize_error(&mut sink, &mut partial, aborted(&signal), format!("Proxy error: {e}"));
+                finalize_error(
+                    &mut sink,
+                    &mut partial,
+                    aborted(&signal),
+                    format!("Proxy error: {e}"),
+                );
                 return;
             }
         };
@@ -239,7 +265,12 @@ pub fn stream_proxy(model: &Model, context: &Context, options: ProxyStreamOption
         let mut tool_partials: BTreeMap<usize, String> = BTreeMap::new();
         loop {
             if aborted(&signal) {
-                finalize_error(&mut sink, &mut partial, true, "Request aborted by user".to_string());
+                finalize_error(
+                    &mut sink,
+                    &mut partial,
+                    true,
+                    "Request aborted by user".to_string(),
+                );
                 return;
             }
             match stream.next().await {
@@ -264,7 +295,12 @@ pub fn stream_proxy(model: &Model, context: &Context, options: ProxyStreamOption
             }
         }
         if aborted(&signal) {
-            finalize_error(&mut sink, &mut partial, true, "Request aborted by user".to_string());
+            finalize_error(
+                &mut sink,
+                &mut partial,
+                true,
+                "Request aborted by user".to_string(),
+            );
             return;
         }
         // Trailing line without a newline.
@@ -285,7 +321,11 @@ pub fn stream_proxy(model: &Model, context: &Context, options: ProxyStreamOption
 
 fn init_partial(model: &Model) -> AssistantMessage {
     let mut partial = AssistantMessage::new();
-    partial.set_api_provider_model(model.api.as_str(), model.provider.as_str(), model.id.as_str());
+    partial.set_api_provider_model(
+        model.api.as_str(),
+        model.provider.as_str(),
+        model.id.as_str(),
+    );
     partial.set_usage(Usage {
         input: 0,
         output: 0,
@@ -294,7 +334,13 @@ fn init_partial(model: &Model) -> AssistantMessage {
         cache_write_1h: None,
         reasoning: None,
         total_tokens: 0,
-        cost: Cost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, total: 0.0 },
+        cost: Cost {
+            input: 0.0,
+            output: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            total: 0.0,
+        },
     });
     partial
 }
@@ -306,7 +352,9 @@ fn handle_sse_line(
     partial: &mut AssistantMessage,
     tool_partials: &mut BTreeMap<usize, String>,
 ) {
-    let Some(data) = line.strip_prefix("data:") else { return };
+    let Some(data) = line.strip_prefix("data:") else {
+        return;
+    };
     let data = data.trim();
     if data.is_empty() {
         return;
@@ -330,23 +378,48 @@ fn process_proxy_event(
     tool_partials: &mut BTreeMap<usize, String>,
 ) -> Option<AssistantMessageEvent> {
     match proxy_event {
-        ProxyAssistantMessageEvent::Start => Some(AssistantMessageEvent::Start { partial: partial.clone() }),
+        ProxyAssistantMessageEvent::Start => Some(AssistantMessageEvent::Start {
+            partial: partial.clone(),
+        }),
         ProxyAssistantMessageEvent::TextStart { content_index } => {
             ensure_len(partial, content_index);
-            partial.content_mut()[content_index] = ContentBlock::Text { text: String::new(), text_signature: None };
-            Some(AssistantMessageEvent::TextStart { content_index, partial: partial.clone() })
+            partial.content_mut()[content_index] = ContentBlock::Text {
+                text: String::new(),
+                text_signature: None,
+            };
+            Some(AssistantMessageEvent::TextStart {
+                content_index,
+                partial: partial.clone(),
+            })
         }
-        ProxyAssistantMessageEvent::TextDelta { content_index, delta } => {
+        ProxyAssistantMessageEvent::TextDelta {
+            content_index,
+            delta,
+        } => {
             let text = text_mut(partial, content_index)?;
             text.push_str(&delta);
-            Some(AssistantMessageEvent::TextDelta { content_index, delta, partial: partial.clone() })
+            Some(AssistantMessageEvent::TextDelta {
+                content_index,
+                delta,
+                partial: partial.clone(),
+            })
         }
-        ProxyAssistantMessageEvent::TextEnd { content_index, content_signature } => {
+        ProxyAssistantMessageEvent::TextEnd {
+            content_index,
+            content_signature,
+        } => {
             let block = partial.content_mut().get_mut(content_index)?;
             match block {
-                ContentBlock::Text { text, text_signature } => {
+                ContentBlock::Text {
+                    text,
+                    text_signature,
+                } => {
                     *text_signature = content_signature;
-                    Some(AssistantMessageEvent::TextEnd { content_index, content: text.clone(), partial: partial.clone() })
+                    Some(AssistantMessageEvent::TextEnd {
+                        content_index,
+                        content: text.clone(),
+                        partial: partial.clone(),
+                    })
                 }
                 _ => None,
             }
@@ -358,46 +431,99 @@ fn process_proxy_event(
                 thinking_signature: None,
                 redacted: None,
             };
-            Some(AssistantMessageEvent::ThinkingStart { content_index, partial: partial.clone() })
+            Some(AssistantMessageEvent::ThinkingStart {
+                content_index,
+                partial: partial.clone(),
+            })
         }
-        ProxyAssistantMessageEvent::ThinkingDelta { content_index, delta } => {
+        ProxyAssistantMessageEvent::ThinkingDelta {
+            content_index,
+            delta,
+        } => {
             let thinking = thinking_mut(partial, content_index)?;
             thinking.push_str(&delta);
-            Some(AssistantMessageEvent::ThinkingDelta { content_index, delta, partial: partial.clone() })
+            Some(AssistantMessageEvent::ThinkingDelta {
+                content_index,
+                delta,
+                partial: partial.clone(),
+            })
         }
-        ProxyAssistantMessageEvent::ThinkingEnd { content_index, content_signature } => {
+        ProxyAssistantMessageEvent::ThinkingEnd {
+            content_index,
+            content_signature,
+        } => {
             let block = partial.content_mut().get_mut(content_index)?;
             match block {
-                ContentBlock::Thinking { thinking, thinking_signature, .. } => {
+                ContentBlock::Thinking {
+                    thinking,
+                    thinking_signature,
+                    ..
+                } => {
                     *thinking_signature = content_signature;
-                    Some(AssistantMessageEvent::ThinkingEnd { content_index, content: thinking.clone(), partial: partial.clone() })
+                    Some(AssistantMessageEvent::ThinkingEnd {
+                        content_index,
+                        content: thinking.clone(),
+                        partial: partial.clone(),
+                    })
                 }
                 _ => None,
             }
         }
-        ProxyAssistantMessageEvent::ToolCallStart { content_index, id, tool_name } => {
+        ProxyAssistantMessageEvent::ToolCallStart {
+            content_index,
+            id,
+            tool_name,
+        } => {
             ensure_len(partial, content_index);
-            partial.content_mut()[content_index] = ContentBlock::tool_call(id, tool_name, serde_json::json!({}));
+            partial.content_mut()[content_index] =
+                ContentBlock::tool_call(id, tool_name, serde_json::json!({}));
             tool_partials.insert(content_index, String::new());
-            Some(AssistantMessageEvent::ToolCallStart { content_index, partial: partial.clone() })
+            Some(AssistantMessageEvent::ToolCallStart {
+                content_index,
+                partial: partial.clone(),
+            })
         }
-        ProxyAssistantMessageEvent::ToolCallDelta { content_index, delta } => {
+        ProxyAssistantMessageEvent::ToolCallDelta {
+            content_index,
+            delta,
+        } => {
             let block = partial.content_mut().get_mut(content_index)?;
-            let ContentBlock::ToolCall { arguments, .. } = block else { return None };
+            let ContentBlock::ToolCall { arguments, .. } = block else {
+                return None;
+            };
             let acc = tool_partials.entry(content_index).or_default();
             acc.push_str(&delta);
             let parsed = parse_streaming_json(acc);
-            *arguments = if parsed.is_null() { serde_json::json!({}) } else { parsed };
-            Some(AssistantMessageEvent::ToolCallDelta { content_index, delta, partial: partial.clone() })
+            *arguments = if parsed.is_null() {
+                serde_json::json!({})
+            } else {
+                parsed
+            };
+            Some(AssistantMessageEvent::ToolCallDelta {
+                content_index,
+                delta,
+                partial: partial.clone(),
+            })
         }
-        ProxyAssistantMessageEvent::ToolCallEnd { content_index, tool_call } => {
-            let ContentBlock::ToolCall { id, name, .. } = &tool_call else { return None };
+        ProxyAssistantMessageEvent::ToolCallEnd {
+            content_index,
+            tool_call,
+        } => {
+            let ContentBlock::ToolCall { id, name, .. } = &tool_call else {
+                return None;
+            };
             let block = partial.content_mut().get_mut(content_index)?;
-            let ContentBlock::ToolCall { arguments, .. } = block else { return None };
+            let ContentBlock::ToolCall { arguments, .. } = block else {
+                return None;
+            };
             let arguments = arguments.clone();
             *block = ContentBlock::tool_call(id.clone(), name.clone(), arguments);
             tool_partials.remove(&content_index);
-            Some(AssistantMessageEvent::ToolCallEnd { content_index, tool_call: block.clone(), partial: partial.clone() })
+            Some(AssistantMessageEvent::ToolCallEnd {
+                content_index,
+                tool_call: block.clone(),
+                partial: partial.clone(),
+            })
         }
         ProxyAssistantMessageEvent::Done { reason, usage } => {
             partial.set_stop_reason(match reason {
@@ -411,16 +537,34 @@ fn process_proxy_event(
                 Some(StopReason::Length) => DoneReason::Length,
                 _ => DoneReason::Stop,
             };
-            Some(AssistantMessageEvent::Done { reason: done_reason, message: partial.clone() })
+            Some(AssistantMessageEvent::Done {
+                reason: done_reason,
+                message: partial.clone(),
+            })
         }
-        ProxyAssistantMessageEvent::Error { reason, error_message, usage } => {
+        ProxyAssistantMessageEvent::Error {
+            reason,
+            error_message,
+            usage,
+        } => {
             let is_aborted = matches!(reason, ProxyErrorReason::Aborted);
-            partial.set_stop_reason(if is_aborted { StopReason::Aborted } else { StopReason::Error });
-            let AssistantMessage::Assistant { error_message: slot, .. } = partial;
+            partial.set_stop_reason(if is_aborted {
+                StopReason::Aborted
+            } else {
+                StopReason::Error
+            });
+            let AssistantMessage::Assistant {
+                error_message: slot,
+                ..
+            } = partial;
             *slot = error_message;
             partial.set_usage(parse_usage(usage));
             Some(AssistantMessageEvent::Error {
-                reason: if is_aborted { ErrorReason::Aborted } else { ErrorReason::Error },
+                reason: if is_aborted {
+                    ErrorReason::Aborted
+                } else {
+                    ErrorReason::Error
+                },
                 error_message: partial.clone(),
             })
         }
@@ -443,7 +587,10 @@ fn thinking_mut(partial: &mut AssistantMessage, index: usize) -> Option<&mut Str
 
 fn ensure_len(partial: &mut AssistantMessage, index: usize) {
     while partial.content_len() <= index {
-        partial.content_mut().push(ContentBlock::Text { text: String::new(), text_signature: None });
+        partial.content_mut().push(ContentBlock::Text {
+            text: String::new(),
+            text_signature: None,
+        });
     }
 }
 
@@ -451,12 +598,25 @@ fn parse_usage(value: JsonValue) -> Usage {
     serde_json::from_value(value).unwrap_or_default()
 }
 
-fn finalize_error(sink: &mut ProxyStreamPusher, partial: &mut AssistantMessage, aborted: bool, message: String) {
-    partial.set_stop_reason(if aborted { StopReason::Aborted } else { StopReason::Error });
+fn finalize_error(
+    sink: &mut ProxyStreamPusher,
+    partial: &mut AssistantMessage,
+    aborted: bool,
+    message: String,
+) {
+    partial.set_stop_reason(if aborted {
+        StopReason::Aborted
+    } else {
+        StopReason::Error
+    });
     let AssistantMessage::Assistant { error_message, .. } = partial;
     *error_message = Some(message);
     sink.push(AssistantMessageEvent::Error {
-        reason: if aborted { ErrorReason::Aborted } else { ErrorReason::Error },
+        reason: if aborted {
+            ErrorReason::Aborted
+        } else {
+            ErrorReason::Error
+        },
         error_message: partial.clone(),
     });
     sink.end(None);
@@ -473,7 +633,10 @@ impl ProxyStreamPusher {
         if self.finished {
             return;
         }
-        if matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }) {
+        if matches!(
+            event,
+            AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+        ) {
             self.finished = true;
         }
         let _ = self.tx.send(event);
@@ -532,18 +695,51 @@ mod tests {
     fn text_events_reconstruct_partial() {
         let mut partial = new_partial();
         let mut tool_partials = BTreeMap::new();
-        process_proxy_event(ProxyAssistantMessageEvent::TextStart { content_index: 0 }, &mut partial, &mut tool_partials);
-        process_proxy_event(ProxyAssistantMessageEvent::TextDelta { content_index: 0, delta: "hel".into() }, &mut partial, &mut tool_partials);
-        process_proxy_event(ProxyAssistantMessageEvent::TextDelta { content_index: 0, delta: "lo".into() }, &mut partial, &mut tool_partials);
-        assert!(matches!(&partial.content()[0], ContentBlock::Text { text, .. } if text == "hello"));
+        process_proxy_event(
+            ProxyAssistantMessageEvent::TextStart { content_index: 0 },
+            &mut partial,
+            &mut tool_partials,
+        );
+        process_proxy_event(
+            ProxyAssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "hel".into(),
+            },
+            &mut partial,
+            &mut tool_partials,
+        );
+        process_proxy_event(
+            ProxyAssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "lo".into(),
+            },
+            &mut partial,
+            &mut tool_partials,
+        );
+        assert!(
+            matches!(&partial.content()[0], ContentBlock::Text { text, .. } if text == "hello")
+        );
     }
 
     #[test]
     fn done_sets_reason_and_usage() {
         let mut partial = new_partial();
         let mut tool_partials = BTreeMap::new();
-        let ev = process_proxy_event(ProxyAssistantMessageEvent::Done { reason: ProxyDoneReason::Stop, usage: test_usage() }, &mut partial, &mut tool_partials);
-        assert!(matches!(ev, Some(AssistantMessageEvent::Done { reason: DoneReason::Stop, .. })));
+        let ev = process_proxy_event(
+            ProxyAssistantMessageEvent::Done {
+                reason: ProxyDoneReason::Stop,
+                usage: test_usage(),
+            },
+            &mut partial,
+            &mut tool_partials,
+        );
+        assert!(matches!(
+            ev,
+            Some(AssistantMessageEvent::Done {
+                reason: DoneReason::Stop,
+                ..
+            })
+        ));
         assert_eq!(partial.stop_reason(), Some(StopReason::Stop));
     }
 
@@ -552,11 +748,21 @@ mod tests {
         let mut partial = new_partial();
         let mut tool_partials = BTreeMap::new();
         let ev = process_proxy_event(
-            ProxyAssistantMessageEvent::Error { reason: ProxyErrorReason::Error, error_message: Some("boom".into()), usage: test_usage() },
+            ProxyAssistantMessageEvent::Error {
+                reason: ProxyErrorReason::Error,
+                error_message: Some("boom".into()),
+                usage: test_usage(),
+            },
             &mut partial,
             &mut tool_partials,
         );
-        assert!(matches!(ev, Some(AssistantMessageEvent::Error { reason: ErrorReason::Error, .. })));
+        assert!(matches!(
+            ev,
+            Some(AssistantMessageEvent::Error {
+                reason: ErrorReason::Error,
+                ..
+            })
+        ));
         assert_eq!(partial.stop_reason(), Some(StopReason::Error));
         assert_eq!(partial.error_message(), Some("boom"));
     }
@@ -565,21 +771,69 @@ mod tests {
     fn tool_call_deltas_reconstruct_arguments() {
         let mut partial = new_partial();
         let mut tool_partials = BTreeMap::new();
-        process_proxy_event(ProxyAssistantMessageEvent::ToolCallStart { content_index: 0, id: "tc1".into(), tool_name: "bash".into() }, &mut partial, &mut tool_partials);
-        process_proxy_event(ProxyAssistantMessageEvent::ToolCallDelta { content_index: 0, delta: "{\"command\": \"ls\"".into() }, &mut partial, &mut tool_partials);
-        process_proxy_event(ProxyAssistantMessageEvent::ToolCallDelta { content_index: 0, delta: "}".into() }, &mut partial, &mut tool_partials);
-        assert!(matches!(&partial.content()[0], ContentBlock::ToolCall { name, .. } if name == "bash"));
-        assert!(matches!(&partial.content()[0], ContentBlock::ToolCall { arguments, .. } if arguments.get("command").and_then(|v| v.as_str()) == Some("ls")));
+        process_proxy_event(
+            ProxyAssistantMessageEvent::ToolCallStart {
+                content_index: 0,
+                id: "tc1".into(),
+                tool_name: "bash".into(),
+            },
+            &mut partial,
+            &mut tool_partials,
+        );
+        process_proxy_event(
+            ProxyAssistantMessageEvent::ToolCallDelta {
+                content_index: 0,
+                delta: "{\"command\": \"ls\"".into(),
+            },
+            &mut partial,
+            &mut tool_partials,
+        );
+        process_proxy_event(
+            ProxyAssistantMessageEvent::ToolCallDelta {
+                content_index: 0,
+                delta: "}".into(),
+            },
+            &mut partial,
+            &mut tool_partials,
+        );
+        assert!(
+            matches!(&partial.content()[0], ContentBlock::ToolCall { name, .. } if name == "bash")
+        );
+        assert!(
+            matches!(&partial.content()[0], ContentBlock::ToolCall { arguments, .. } if arguments.get("command").and_then(|v| v.as_str()) == Some("ls"))
+        );
     }
 
     #[test]
     fn tool_call_end_replaces_block() {
         let mut partial = new_partial();
         let mut tool_partials = BTreeMap::new();
-        process_proxy_event(ProxyAssistantMessageEvent::ToolCallStart { content_index: 0, id: "tc1".into(), tool_name: "bash".into() }, &mut partial, &mut tool_partials);
-        process_proxy_event(ProxyAssistantMessageEvent::ToolCallDelta { content_index: 0, delta: "{\"command\":\"ls\"}".into() }, &mut partial, &mut tool_partials);
         process_proxy_event(
-            ProxyAssistantMessageEvent::ToolCallEnd { content_index: 0, tool_call: ContentBlock::tool_call("tc1", "bash", serde_json::json!({"command": "ls"})) },
+            ProxyAssistantMessageEvent::ToolCallStart {
+                content_index: 0,
+                id: "tc1".into(),
+                tool_name: "bash".into(),
+            },
+            &mut partial,
+            &mut tool_partials,
+        );
+        process_proxy_event(
+            ProxyAssistantMessageEvent::ToolCallDelta {
+                content_index: 0,
+                delta: "{\"command\":\"ls\"}".into(),
+            },
+            &mut partial,
+            &mut tool_partials,
+        );
+        process_proxy_event(
+            ProxyAssistantMessageEvent::ToolCallEnd {
+                content_index: 0,
+                tool_call: ContentBlock::tool_call(
+                    "tc1",
+                    "bash",
+                    serde_json::json!({"command": "ls"}),
+                ),
+            },
             &mut partial,
             &mut tool_partials,
         );
@@ -592,17 +846,39 @@ mod tests {
         let mut partial = new_partial();
         let mut tool_partials = BTreeMap::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut sink = ProxyStreamPusher { tx, finished: false };
-        handle_sse_line("data: {\"type\":\"start\"}", &mut sink, &mut partial, &mut tool_partials);
-        handle_sse_line("data: {\"type\":\"text_start\",\"contentIndex\":0}", &mut sink, &mut partial, &mut tool_partials);
-        handle_sse_line("data: {\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"hi\"}", &mut sink, &mut partial, &mut tool_partials);
+        let mut sink = ProxyStreamPusher {
+            tx,
+            finished: false,
+        };
+        handle_sse_line(
+            "data: {\"type\":\"start\"}",
+            &mut sink,
+            &mut partial,
+            &mut tool_partials,
+        );
+        handle_sse_line(
+            "data: {\"type\":\"text_start\",\"contentIndex\":0}",
+            &mut sink,
+            &mut partial,
+            &mut tool_partials,
+        );
+        handle_sse_line(
+            "data: {\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"hi\"}",
+            &mut sink,
+            &mut partial,
+            &mut tool_partials,
+        );
         assert!(matches!(&partial.content()[0], ContentBlock::Text { text, .. } if text == "hi"));
     }
 
     #[tokio::test]
     async fn stream_proxy_surfaces_error_for_unreachable_url() {
         let model = sample_model();
-        let context = Context { system_prompt: None, messages: vec![], tools: Vec::<Tool>::new() };
+        let context = Context {
+            system_prompt: None,
+            messages: vec![],
+            tools: Vec::<Tool>::new(),
+        };
         let opts = ProxyStreamOptions {
             signal: None,
             auth_token: "token".into(),

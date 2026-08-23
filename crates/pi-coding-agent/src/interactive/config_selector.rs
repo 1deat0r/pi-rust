@@ -48,8 +48,18 @@ pub struct PathMetadata {
 }
 
 impl PathMetadata {
-    pub fn synthetic(source: &str, scope: SourceScope, origin: ResourceOrigin, base_dir: Option<String>) -> Self {
-        Self { source: source.to_string(), scope, origin, base_dir }
+    pub fn synthetic(
+        source: &str,
+        scope: SourceScope,
+        origin: ResourceOrigin,
+        base_dir: Option<String>,
+    ) -> Self {
+        Self {
+            source: source.to_string(),
+            scope,
+            origin,
+            base_dir,
+        }
     }
 }
 
@@ -164,7 +174,12 @@ pub fn format_base_dir(base_dir: &str, home: Option<&str>) -> String {
     }
 }
 
-fn get_group_label(metadata: &PathMetadata, agent_dir: &str, config_dir_name: &str, home: Option<&str>) -> String {
+fn get_group_label(
+    metadata: &PathMetadata,
+    agent_dir: &str,
+    config_dir_name: &str,
+    home: Option<&str>,
+) -> String {
     match metadata.origin {
         ResourceOrigin::Package => format!("{} ({})", metadata.source, metadata.scope.as_str()),
         ResourceOrigin::TopLevel => {
@@ -172,7 +187,9 @@ fn get_group_label(metadata: &PathMetadata, agent_dir: &str, config_dir_name: &s
                 match metadata.base_dir {
                     Some(ref base) => match metadata.scope {
                         SourceScope::User => format!("User ({})", format_base_dir(base, home)),
-                        SourceScope::Project => format!("Project ({})", format_base_dir(base, home)),
+                        SourceScope::Project => {
+                            format!("Project ({})", format_base_dir(base, home))
+                        }
                         SourceScope::Temporary => "Temporary".to_string(),
                     },
                     None => match metadata.scope {
@@ -203,7 +220,9 @@ fn display_name_for(resource_type: ResourceType, path: &str) -> String {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     match resource_type {
-        ResourceType::Extensions if parent_folder != "extensions" => format!("{parent_folder}/{file_name}"),
+        ResourceType::Extensions if parent_folder != "extensions" => {
+            format!("{parent_folder}/{file_name}")
+        }
         ResourceType::Skills if file_name == "SKILL.md" => parent_folder,
         _ => file_name,
     }
@@ -256,13 +275,15 @@ fn add_group_resources(
             groups[group_idx].subgroups.len() - 1
         };
 
-        groups[group_idx].subgroups[subgroup_idx].items.push(ResourceItem {
-            path: res.path.clone(),
-            enabled: res.enabled,
-            metadata: m.clone(),
-            resource_type,
-            display_name: display_name_for(resource_type, &res.path),
-        });
+        groups[group_idx].subgroups[subgroup_idx]
+            .items
+            .push(ResourceItem {
+                path: res.path.clone(),
+                enabled: res.enabled,
+                metadata: m.clone(),
+                resource_type,
+                display_name: display_name_for(resource_type, &res.path),
+            });
     }
 }
 
@@ -278,31 +299,421 @@ pub fn build_groups(
 ) -> Vec<ResourceGroup> {
     let mut groups: Vec<ResourceGroup> = Vec::new();
 
-    add_group_resources(&mut groups, &resolved.extensions, ResourceType::Extensions, agent_dir, config_dir_name, home);
-    add_group_resources(&mut groups, &resolved.skills, ResourceType::Skills, agent_dir, config_dir_name, home);
-    add_group_resources(&mut groups, &resolved.prompts, ResourceType::Prompts, agent_dir, config_dir_name, home);
-    add_group_resources(&mut groups, &resolved.themes, ResourceType::Themes, agent_dir, config_dir_name, home);
+    add_group_resources(
+        &mut groups,
+        &resolved.extensions,
+        ResourceType::Extensions,
+        agent_dir,
+        config_dir_name,
+        home,
+    );
+    add_group_resources(
+        &mut groups,
+        &resolved.skills,
+        ResourceType::Skills,
+        agent_dir,
+        config_dir_name,
+        home,
+    );
+    add_group_resources(
+        &mut groups,
+        &resolved.prompts,
+        ResourceType::Prompts,
+        agent_dir,
+        config_dir_name,
+        home,
+    );
+    add_group_resources(
+        &mut groups,
+        &resolved.themes,
+        ResourceType::Themes,
+        agent_dir,
+        config_dir_name,
+        home,
+    );
 
     // Sort groups: packages first, then user before project, then by source.
     groups.sort_by(|a, b| {
         if a.origin != b.origin {
-            return if a.origin == ResourceOrigin::Package { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater };
+            return if a.origin == ResourceOrigin::Package {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            };
         }
         if a.scope != b.scope {
-            return if a.scope == SourceScope::User { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater };
+            return if a.scope == SourceScope::User {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            };
         }
         a.source.cmp(&b.source)
     });
 
     // Sort subgroups by type order, items by display name.
     for group in &mut groups {
-        group.subgroups.sort_by(|a, b| a.resource_type.order().cmp(&b.resource_type.order()));
+        group
+            .subgroups
+            .sort_by(|a, b| a.resource_type.order().cmp(&b.resource_type.order()));
         for subgroup in &mut group.subgroups {
-            subgroup.items.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+            subgroup
+                .items
+                .sort_by(|a, b| a.display_name.cmp(&b.display_name));
         }
     }
 
     groups
+}
+
+/// Interactive resource selector used by `pi config` when attached to a
+/// terminal. The data model above remains independently testable; this
+/// component owns only cursor navigation, scope switching, rendering, and
+/// persistence of the selected enable/disable pattern.
+pub struct ConfigSelectorComponent {
+    global_groups: Vec<ResourceGroup>,
+    project_groups: Vec<ResourceGroup>,
+    write_scope: ConfigWriteScope,
+    selected: usize,
+    closed: bool,
+    settings: crate::core::settings::SettingsManager,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigWriteScope {
+    Global,
+    Project,
+}
+
+impl ConfigSelectorComponent {
+    pub fn new(
+        global: ResolvedPaths,
+        project: ResolvedPaths,
+        settings: crate::core::settings::SettingsManager,
+        _cwd: String,
+        agent_dir: String,
+        write_scope: &str,
+    ) -> Self {
+        let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned());
+        let global_groups = build_groups(
+            &global,
+            &agent_dir,
+            crate::config::CONFIG_DIR_NAME,
+            home.as_deref(),
+        );
+        let project_groups = build_groups(
+            &project,
+            &agent_dir,
+            crate::config::CONFIG_DIR_NAME,
+            home.as_deref(),
+        );
+        Self {
+            global_groups,
+            project_groups,
+            write_scope: if write_scope == "project" {
+                ConfigWriteScope::Project
+            } else {
+                ConfigWriteScope::Global
+            },
+            selected: 0,
+            closed: false,
+            settings,
+        }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    fn groups(&self) -> &[ResourceGroup] {
+        match self.write_scope {
+            ConfigWriteScope::Global => &self.global_groups,
+            ConfigWriteScope::Project => &self.project_groups,
+        }
+    }
+
+    fn item_locations(&self) -> Vec<(usize, usize, usize)> {
+        let mut locations = Vec::new();
+        for (group_idx, group) in self.groups().iter().enumerate() {
+            for (subgroup_idx, subgroup) in group.subgroups.iter().enumerate() {
+                for item_idx in 0..subgroup.items.len() {
+                    locations.push((group_idx, subgroup_idx, item_idx));
+                }
+            }
+        }
+        locations
+    }
+
+    fn selected_location(&self) -> Option<(usize, usize, usize)> {
+        let locations = self.item_locations();
+        locations
+            .get(self.selected.min(locations.len().saturating_sub(1)))
+            .copied()
+    }
+
+    fn toggle_selected(&mut self) {
+        let Some((group_idx, subgroup_idx, item_idx)) = self.selected_location() else {
+            return;
+        };
+        let Some(item) = self
+            .groups()
+            .get(group_idx)
+            .and_then(|group| group.subgroups.get(subgroup_idx))
+            .and_then(|subgroup| subgroup.items.get(item_idx))
+            .cloned()
+        else {
+            return;
+        };
+
+        let inherited = self
+            .global_groups
+            .iter()
+            .flat_map(|group| group.subgroups.iter())
+            .flat_map(|subgroup| subgroup.items.iter())
+            .find(|candidate| {
+                candidate.resource_type == item.resource_type && candidate.path == item.path
+            })
+            .map(|candidate| candidate.enabled)
+            .unwrap_or(item.enabled);
+        let enabled = match self.write_scope {
+            ConfigWriteScope::Global => !item.enabled,
+            ConfigWriteScope::Project => !item.enabled,
+        };
+        let pattern = resource_pattern(&item);
+        let prefix = if enabled { '+' } else { '-' };
+        let override_pattern = format!("{prefix}{pattern}");
+
+        match item.metadata.origin {
+            ResourceOrigin::TopLevel => {
+                let paths = self.resource_paths(item.resource_type, self.write_scope);
+                let mut updated = paths
+                    .into_iter()
+                    .filter(|entry| pattern_target(entry) != pattern)
+                    .collect::<Vec<_>>();
+                if self.write_scope == ConfigWriteScope::Project
+                    && inherited != item.enabled
+                    && pattern_target(&item.path) != pattern
+                {
+                    updated.push(item.path.clone());
+                }
+                updated.push(override_pattern);
+                self.set_resource_paths(item.resource_type, self.write_scope, updated);
+            }
+            ResourceOrigin::Package => self.toggle_package_resource(&item, &override_pattern),
+        }
+
+        if let Some(group) = self.groups_mut().get_mut(group_idx) {
+            if let Some(subgroup) = group.subgroups.get_mut(subgroup_idx) {
+                if let Some(item) = subgroup.items.get_mut(item_idx) {
+                    item.enabled = enabled;
+                }
+            }
+        }
+    }
+
+    fn groups_mut(&mut self) -> &mut Vec<ResourceGroup> {
+        match self.write_scope {
+            ConfigWriteScope::Global => &mut self.global_groups,
+            ConfigWriteScope::Project => &mut self.project_groups,
+        }
+    }
+
+    fn resource_paths(&self, resource_type: ResourceType, scope: ConfigWriteScope) -> Vec<String> {
+        let settings = match scope {
+            ConfigWriteScope::Global => self.settings.get_global_settings(),
+            ConfigWriteScope::Project => self.settings.get_project_settings(),
+        };
+        let key = resource_type.as_str();
+        settings
+            .get(key)
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    fn set_resource_paths(
+        &mut self,
+        resource_type: ResourceType,
+        scope: ConfigWriteScope,
+        paths: Vec<String>,
+    ) {
+        match (scope, resource_type) {
+            (ConfigWriteScope::Global, ResourceType::Extensions) => {
+                self.settings.set_extension_paths(paths)
+            }
+            (ConfigWriteScope::Global, ResourceType::Skills) => {
+                self.settings.set_skill_paths(paths)
+            }
+            (ConfigWriteScope::Global, ResourceType::Prompts) => {
+                self.settings.set_prompt_template_paths(paths)
+            }
+            (ConfigWriteScope::Global, ResourceType::Themes) => {
+                self.settings.set_theme_paths(paths)
+            }
+            (ConfigWriteScope::Project, ResourceType::Extensions) => {
+                self.settings.set_project_extension_paths(paths)
+            }
+            (ConfigWriteScope::Project, ResourceType::Skills) => {
+                self.settings.set_project_skill_paths(paths)
+            }
+            (ConfigWriteScope::Project, ResourceType::Prompts) => {
+                self.settings.set_project_prompt_template_paths(paths)
+            }
+            (ConfigWriteScope::Project, ResourceType::Themes) => {
+                self.settings.set_project_theme_paths(paths)
+            }
+        }
+    }
+
+    fn toggle_package_resource(&mut self, item: &ResourceItem, override_pattern: &str) {
+        let packages = match self.write_scope {
+            ConfigWriteScope::Global => self.settings.get_packages(),
+            ConfigWriteScope::Project => self.settings.get_project_packages(),
+        };
+        let mut packages = packages;
+        let Some(package) = packages
+            .iter_mut()
+            .find(|package| package_source(package) == item.metadata.source)
+        else {
+            return;
+        };
+        let package = match package {
+            crate::core::settings::PackageSource::Str(source) => {
+                let source = source.clone();
+                *package = crate::core::settings::PackageSource::Obj(
+                    crate::core::settings::PackageSourceObj {
+                        source,
+                        autoload: None,
+                        ..Default::default()
+                    },
+                );
+                package
+            }
+            crate::core::settings::PackageSource::Obj(_) => package,
+        };
+        let crate::core::settings::PackageSource::Obj(package) = package else {
+            return;
+        };
+        let entries = match item.resource_type {
+            ResourceType::Extensions => &mut package.extensions,
+            ResourceType::Skills => &mut package.skills,
+            ResourceType::Prompts => &mut package.prompts,
+            ResourceType::Themes => &mut package.themes,
+        };
+        let pattern = resource_pattern(item);
+        entries
+            .get_or_insert_with(Vec::new)
+            .retain(|entry| pattern_target(entry) != pattern);
+        entries
+            .get_or_insert_with(Vec::new)
+            .push(override_pattern.to_string());
+        match self.write_scope {
+            ConfigWriteScope::Global => self.settings.set_packages(packages),
+            ConfigWriteScope::Project => self.settings.set_project_packages(packages),
+        }
+    }
+}
+
+impl pi_tui::Component for ConfigSelectorComponent {
+    fn render(&self, width: usize) -> Vec<String> {
+        let title = match self.write_scope {
+            ConfigWriteScope::Global => "Global Resources",
+            ConfigWriteScope::Project => "Project Local Resources",
+        };
+        let scope_path = match self.write_scope {
+            ConfigWriteScope::Global => {
+                format!("~/{}/agent/settings.json", crate::config::CONFIG_DIR_NAME)
+            }
+            ConfigWriteScope::Project => {
+                format!("{}/settings.json", crate::config::CONFIG_DIR_NAME)
+            }
+        };
+        let mut lines = vec![title.to_string(), scope_path, String::new()];
+        let selected = self.selected_location();
+        for (group_idx, group) in self.groups().iter().enumerate() {
+            let inherited = self.write_scope == ConfigWriteScope::Project && group.is_user();
+            lines.push(format!(
+                "  {}{}",
+                group.label,
+                if inherited {
+                    " · inherited global"
+                } else {
+                    ""
+                }
+            ));
+            for (subgroup_idx, subgroup) in group.subgroups.iter().enumerate() {
+                lines.push(format!("    {}", subgroup.label));
+                for (item_idx, item) in subgroup.items.iter().enumerate() {
+                    let is_selected = selected == Some((group_idx, subgroup_idx, item_idx));
+                    let cursor = if is_selected { ">" } else { " " };
+                    let marker = if item.enabled { "[x]" } else { "[ ]" };
+                    lines.push(format!("{cursor}       {marker} {}", item.display_name));
+                }
+            }
+        }
+        lines.push(String::new());
+        lines.push("↑/↓ select · Space toggle · Tab switch scope · Esc close".to_string());
+        lines
+            .into_iter()
+            .map(|line| pi_tui::utils::truncate_to_width(&line, width, ""))
+            .collect()
+    }
+
+    fn handle_input(&mut self, key: &pi_tui::keys::TuiKey) {
+        let count = self.item_locations().len();
+        match key.base.as_str() {
+            "up" => self.selected = self.selected.saturating_sub(1),
+            "down" => self.selected = (self.selected + 1).min(count.saturating_sub(1)),
+            "pageup" => self.selected = self.selected.saturating_sub(8),
+            "pagedown" => self.selected = (self.selected + 8).min(count.saturating_sub(1)),
+            "tab" if !self.project_groups.is_empty() => {
+                self.write_scope = match self.write_scope {
+                    ConfigWriteScope::Global => ConfigWriteScope::Project,
+                    ConfigWriteScope::Project => ConfigWriteScope::Global,
+                };
+                self.selected = self
+                    .selected
+                    .min(self.item_locations().len().saturating_sub(1));
+            }
+            "esc" | "escape" | "q" => self.closed = true,
+            "enter" if !key.ctrl && !key.alt => self.toggle_selected(),
+            " " => self.toggle_selected(),
+            _ => {}
+        }
+    }
+}
+
+fn pattern_target(value: &str) -> &str {
+    value
+        .strip_prefix('+')
+        .or_else(|| value.strip_prefix('-'))
+        .or_else(|| value.strip_prefix('!'))
+        .unwrap_or(value)
+}
+
+fn resource_pattern(item: &ResourceItem) -> String {
+    if item.metadata.origin == ResourceOrigin::Package {
+        let base = item.metadata.base_dir.as_deref().unwrap_or_else(|| {
+            std::path::Path::new(&item.path)
+                .parent()
+                .and_then(|p| p.to_str())
+                .unwrap_or("")
+        });
+        std::path::Path::new(&item.path)
+            .strip_prefix(base)
+            .ok()
+            .and_then(|p| p.to_str())
+            .unwrap_or(&item.path)
+            .replace('\\', "/")
+    } else {
+        item.path.clone()
+    }
+}
+
+fn package_source(source: &crate::core::settings::PackageSource) -> &str {
+    match source {
+        crate::core::settings::PackageSource::Str(source) => source,
+        crate::core::settings::PackageSource::Obj(source) => &source.source,
+    }
 }
 
 #[cfg(test)]
@@ -313,7 +724,12 @@ mod tests {
         ResolvedResource {
             path: path.to_string(),
             enabled,
-            metadata: PathMetadata::synthetic(source, SourceScope::User, ResourceOrigin::Package, base.map(String::from)),
+            metadata: PathMetadata::synthetic(
+                source,
+                SourceScope::User,
+                ResourceOrigin::Package,
+                base.map(String::from),
+            ),
         }
     }
 
@@ -321,7 +737,12 @@ mod tests {
         ResolvedResource {
             path: path.to_string(),
             enabled,
-            metadata: PathMetadata::synthetic("auto", SourceScope::User, ResourceOrigin::TopLevel, None),
+            metadata: PathMetadata::synthetic(
+                "auto",
+                SourceScope::User,
+                ResourceOrigin::TopLevel,
+                None,
+            ),
         }
     }
 
@@ -330,11 +751,21 @@ mod tests {
         let resolved = ResolvedPaths {
             extensions: vec![
                 user_top("/home/u/.pi/agent/extensions/hook.md", true),
-                user_pkg("/home/u/.pi/agent/extensions/pkg/ext.md", true, "npm:x", Some("/home/u/.pi/agent/extensions/pkg".into())),
+                user_pkg(
+                    "/home/u/.pi/agent/extensions/pkg/ext.md",
+                    true,
+                    "npm:x",
+                    Some("/home/u/.pi/agent/extensions/pkg".into()),
+                ),
                 ResolvedResource {
                     path: "/home/u/.pi/proj/.pi/extensions/proj.md".into(),
                     enabled: false,
-                    metadata: PathMetadata::synthetic("auto", SourceScope::Project, ResourceOrigin::TopLevel, None),
+                    metadata: PathMetadata::synthetic(
+                        "auto",
+                        SourceScope::Project,
+                        ResourceOrigin::TopLevel,
+                        None,
+                    ),
                 },
             ],
             ..Default::default()
@@ -368,7 +799,12 @@ mod tests {
             skills: vec![ResolvedResource {
                 path: "/p/skills/my-skill/SKILL.md".into(),
                 enabled: true,
-                metadata: PathMetadata::synthetic("auto", SourceScope::User, ResourceOrigin::TopLevel, None),
+                metadata: PathMetadata::synthetic(
+                    "auto",
+                    SourceScope::User,
+                    ResourceOrigin::TopLevel,
+                    None,
+                ),
             }],
             ..Default::default()
         };
@@ -384,7 +820,10 @@ mod tests {
     #[test]
     fn subgroups_ordered_by_type_and_items_by_name() {
         let resolved = ResolvedPaths {
-            extensions: vec![user_top("/p/extensions/ext.md", true), user_top("/p/extensions/zext.md", true)],
+            extensions: vec![
+                user_top("/p/extensions/ext.md", true),
+                user_top("/p/extensions/zext.md", true),
+            ],
             themes: vec![user_top("/p/themes/theme.json", true)],
             skills: vec![user_top("/p/skills/sk.md", true)],
             prompts: vec![user_top("/p/prompts/pr.md", true)],
@@ -392,15 +831,26 @@ mod tests {
         };
         let groups = build_groups(&resolved, "/p", ".pi", None);
         assert_eq!(groups.len(), 1);
-        let kinds: Vec<&str> = groups[0].subgroups.iter().map(|s| s.resource_type.as_str()).collect();
+        let kinds: Vec<&str> = groups[0]
+            .subgroups
+            .iter()
+            .map(|s| s.resource_type.as_str())
+            .collect();
         assert_eq!(kinds, vec!["extensions", "skills", "prompts", "themes"]);
-        let ext_names: Vec<&str> = groups[0].subgroups[0].items.iter().map(|i| i.display_name.as_str()).collect();
+        let ext_names: Vec<&str> = groups[0].subgroups[0]
+            .items
+            .iter()
+            .map(|i| i.display_name.as_str())
+            .collect();
         assert_eq!(ext_names, vec!["ext.md", "zext.md"]);
     }
 
     #[test]
     fn format_base_dir_home_relative() {
-        assert_eq!(format_base_dir("/home/u/.pi/agent", Some("/home/u")), "~/.pi/agent/");
+        assert_eq!(
+            format_base_dir("/home/u/.pi/agent", Some("/home/u")),
+            "~/.pi/agent/"
+        );
         assert_eq!(format_base_dir("/home/u", Some("/home/u")), "~/");
         assert_eq!(format_base_dir("/opt/x", Some("/home/u")), "/opt/x/");
         assert_eq!(format_base_dir("/p", None), "/p/");

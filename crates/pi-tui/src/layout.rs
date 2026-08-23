@@ -67,7 +67,13 @@ pub fn solve_flex(total: u32, constraints: &[LayoutConstraint]) -> Vec<u32> {
         let each = remaining / grows.len() as u32;
         let mut extra = remaining % grows.len() as u32;
         for idx in grows {
-            out[idx] = each + if extra > 0 { extra -= 1; 1 } else { 0 };
+            out[idx] = each
+                + if extra > 0 {
+                    extra -= 1;
+                    1
+                } else {
+                    0
+                };
         }
     }
     out
@@ -79,19 +85,32 @@ mod tests {
 
     #[test]
     fn fixed_and_grow_split() {
-        let sizes = solve_flex(100, &[LayoutConstraint::Fixed(20), LayoutConstraint::Grow, LayoutConstraint::Grow]);
+        let sizes = solve_flex(
+            100,
+            &[
+                LayoutConstraint::Fixed(20),
+                LayoutConstraint::Grow,
+                LayoutConstraint::Grow,
+            ],
+        );
         assert_eq!(sizes, vec![20, 40, 40]);
     }
 
     #[test]
     fn percent_then_grow() {
-        let sizes = solve_flex(100, &[LayoutConstraint::Percent(0.5), LayoutConstraint::Grow]);
+        let sizes = solve_flex(
+            100,
+            &[LayoutConstraint::Percent(0.5), LayoutConstraint::Grow],
+        );
         assert_eq!(sizes, vec![50, 50]);
     }
 
     #[test]
     fn all_fixed_no_remainder() {
-        let sizes = solve_flex(40, &[LayoutConstraint::Fixed(10), LayoutConstraint::Fixed(30)]);
+        let sizes = solve_flex(
+            40,
+            &[LayoutConstraint::Fixed(10), LayoutConstraint::Fixed(30)],
+        );
         assert_eq!(sizes, vec![10, 30]);
         // grow children get zero when nothing remains.
         let sizes = solve_flex(40, &[LayoutConstraint::Fixed(50)]);

@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use crate::api::anthropic_messages::{default_base_url, stream, AnthropicOptions};
-use crate::model::{Model, ModelCost, ModelCostTier};
 use crate::model::ModelInput;
+use crate::model::{Model, ModelCost, ModelCostTier};
 use crate::types::ModelThinkingLevel;
 use crate::AssistantMessageEventStream;
 
@@ -144,7 +144,14 @@ impl AnthropicProvider {
         api_key: Option<&str>,
         options: &AnthropicOptions,
     ) -> AssistantMessageEventStream {
-        stream(model, context, self.client.clone(), &self.base_url, api_key, options)
+        stream(
+            model,
+            context,
+            self.client.clone(),
+            &self.base_url,
+            api_key,
+            options,
+        )
     }
 }
 

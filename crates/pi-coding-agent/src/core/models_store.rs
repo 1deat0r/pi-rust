@@ -126,8 +126,16 @@ impl FileLockGuard {
     fn acquire(path: &Path) -> Self {
         // Retry briefly to mirror the upstream lock-acquire with retry.
         for _ in 0..200 {
-            match fs::OpenOptions::new().write(true).create_new(true).open(path) {
-                Ok(_) => return Self { path: path.to_path_buf() },
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
+                Ok(_) => {
+                    return Self {
+                        path: path.to_path_buf(),
+                    }
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
@@ -139,7 +147,9 @@ impl FileLockGuard {
         // Fall back to overwriting the lock if it is stale (mirrors the
         // upstream lock-acquire-with-retry timeout behavior).
         let _ = fs::write(path, "");
-        Self { path: path.to_path_buf() }
+        Self {
+            path: path.to_path_buf(),
+        }
     }
 }
 
@@ -179,7 +189,10 @@ struct CachedState {
 impl FileModelsStore {
     pub fn new(path: PathBuf) -> Self {
         let state = CachedState::default();
-        Self { path, cache: Arc::new(Mutex::new(state)) }
+        Self {
+            path,
+            cache: Arc::new(Mutex::new(state)),
+        }
     }
 
     /// Default path: `getAgentDir()/models-store.json`.
@@ -211,14 +224,18 @@ impl FileModelsStore {
 
     /// Read the on-disk JSON into the internal entry shape.
     fn read_entry(&self, provider_id: &str) -> Option<ModelsStoreEntry> {
-        self.read_latest().get(provider_id).cloned().map(ModelsStoreEntry::from)
+        self.read_latest()
+            .get(provider_id)
+            .cloned()
+            .map(ModelsStoreEntry::from)
     }
 
     fn write_locked(&self, f: impl FnOnce(&mut StoredModels)) {
         with_file_lock(&self.path, || {
             let mut data = self.read_latest();
             f(&mut data);
-            let serialized = serde_json::to_string_pretty(&data).unwrap_or_else(|_| "{}".to_string());
+            let serialized =
+                serde_json::to_string_pretty(&data).unwrap_or_else(|_| "{}".to_string());
             if let Some(parent) = self.path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
@@ -291,7 +308,10 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         // Pretty-printed with 2-space indent.
         assert!(content.contains("\n  \"demo\": {"), "content: {content}");
-        assert!(content.contains("\n    \"models\": ["), "content: {content}");
+        assert!(
+            content.contains("\n    \"models\": ["),
+            "content: {content}"
+        );
         // Round trip.
         let store2 = FileModelsStore::new(path.clone());
         let read = store2.read("demo").unwrap();
@@ -341,6 +361,9 @@ mod tests {
     #[test]
     fn default_path_is_agent_dir_models_store() {
         let p = FileModelsStore::default_path();
-        assert_eq!(p.file_name().unwrap().to_string_lossy(), "models-store.json");
+        assert_eq!(
+            p.file_name().unwrap().to_string_lossy(),
+            "models-store.json"
+        );
     }
 }

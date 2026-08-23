@@ -24,7 +24,11 @@ impl Sandbox {
         let home = root.join("home");
         let agent_dir = home.join(".pi").join("agent");
         fs::create_dir_all(&agent_dir).unwrap();
-        Self { root, home, agent_dir }
+        Self {
+            root,
+            home,
+            agent_dir,
+        }
     }
 
     fn write_global_settings(&self, v: serde_json::Value) {
@@ -76,7 +80,8 @@ if [ "$mode" = "uninstall" ]; then
 fi
 exit 0
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -136,20 +141,35 @@ fn list_no_packages() {
 fn list_user_and_project_packages() {
     let sandbox = Sandbox::new("list");
     // User package whose install dir exists, and project package missing.
-    fs::create_dir_all(sandbox.agent_dir.join("git").join("github.com").join("u").join("r")).unwrap();
+    fs::create_dir_all(
+        sandbox
+            .agent_dir
+            .join("git")
+            .join("github.com")
+            .join("u")
+            .join("r"),
+    )
+    .unwrap();
     sandbox.write_global_settings(json!({
         "packages": ["git:github.com/u/r"]
     }));
     let cwd = project(&sandbox, "work");
     fs::create_dir_all(cwd.join(".pi")).unwrap();
-    fs::write(cwd.join(".pi").join("settings.json"), json!({ "packages": ["npm:missing"] }).to_string()).unwrap();
+    fs::write(
+        cwd.join(".pi").join("settings.json"),
+        json!({ "packages": ["npm:missing"] }).to_string(),
+    )
+    .unwrap();
 
     let out = sandbox.pi(&cwd, &["list", "--approve"]);
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
     let stdout = sandbox.stdout(&out);
     assert!(stdout.contains("User packages:"), "{stdout}");
     assert!(stdout.contains("git:github.com/u/r"), "{stdout}");
-    assert!(stdout.contains(&sandbox.agent_dir.display().to_string()), "{stdout}");
+    assert!(
+        stdout.contains(&sandbox.agent_dir.display().to_string()),
+        "{stdout}"
+    );
     assert!(stdout.contains("Project packages:"), "{stdout}");
     assert!(stdout.contains("npm:missing"), "{stdout}");
 }
@@ -174,7 +194,11 @@ fn install_local_package_persists_settings() {
     let settings = sandbox.read_global_settings();
     let packages = settings["packages"].as_array().expect("packages array");
     assert_eq!(packages.len(), 1);
-    assert!(packages[0].as_str().unwrap().contains("pkg"), "{}", packages[0]);
+    assert!(
+        packages[0].as_str().unwrap().contains("pkg"),
+        "{}",
+        packages[0]
+    );
 }
 
 #[test]
@@ -201,20 +225,41 @@ fn install_npm_with_fake_npm() {
     assert!(stdout.contains("Installed npm:demo-pkg"), "{stdout}");
 
     // The managed layout appeared under the agent dir npm root.
-    let installed = sandbox.agent_dir.join("npm").join("node_modules").join("demo-pkg").join("package.json");
-    assert!(installed.exists(), "fake npm must create the managed install layout");
+    let installed = sandbox
+        .agent_dir
+        .join("npm")
+        .join("node_modules")
+        .join("demo-pkg")
+        .join("package.json");
+    assert!(
+        installed.exists(),
+        "fake npm must create the managed install layout"
+    );
 
     // The settings entry was persisted.
     let settings = sandbox.read_global_settings();
-    assert!(settings["packages"].as_array().unwrap().iter().any(|p| p == "npm:demo-pkg"));
+    assert!(settings["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p == "npm:demo-pkg"));
 }
 
 #[test]
 fn remove_npm_package_updates_settings_and_layout() {
     let sandbox = Sandbox::new("remove-npm");
     let fake = sandbox.write_fake_npm();
-    sandbox.write_global_settings(json!({ "npmCommand": [fake.to_string_lossy()], "packages": ["npm:demo-pkg"] }));
-    fs::create_dir_all(sandbox.agent_dir.join("npm").join("node_modules").join("demo-pkg")).unwrap();
+    sandbox.write_global_settings(
+        json!({ "npmCommand": [fake.to_string_lossy()], "packages": ["npm:demo-pkg"] }),
+    );
+    fs::create_dir_all(
+        sandbox
+            .agent_dir
+            .join("npm")
+            .join("node_modules")
+            .join("demo-pkg"),
+    )
+    .unwrap();
     let cwd = project(&sandbox, "work");
 
     let out = sandbox.pi(&cwd, &["remove", "npm:demo-pkg"]);
@@ -222,8 +267,16 @@ fn remove_npm_package_updates_settings_and_layout() {
     let stdout = sandbox.stdout(&out);
     assert!(stdout.contains("Removed npm:demo-pkg"), "{stdout}");
     let settings = sandbox.read_global_settings();
-    assert!(settings.get("packages").map(|p| p.as_array().map(|a| a.is_empty()).unwrap_or(true)).unwrap_or(true));
-    assert!(!sandbox.agent_dir.join("npm").join("node_modules").join("demo-pkg").exists());
+    assert!(settings
+        .get("packages")
+        .map(|p| p.as_array().map(|a| a.is_empty()).unwrap_or(true))
+        .unwrap_or(true));
+    assert!(!sandbox
+        .agent_dir
+        .join("npm")
+        .join("node_modules")
+        .join("demo-pkg")
+        .exists());
 }
 
 #[test]
@@ -234,7 +287,10 @@ fn remove_unmatched_package_errors() {
     let out = sandbox.pi(&cwd, &["remove", "npm:ghost"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = sandbox.stderr(&out);
-    assert!(stderr.contains("No matching package found for npm:ghost"), "{stderr}");
+    assert!(
+        stderr.contains("No matching package found for npm:ghost"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -267,7 +323,10 @@ fn install_unknown_flag_errors() {
     let out = sandbox.pi(&cwd, &["install", "--wat", "npm:x"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = sandbox.stderr(&out);
-    assert!(stderr.contains("Unknown option --wat for \"install\""), "{stderr}");
+    assert!(
+        stderr.contains("Unknown option --wat for \"install\""),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -277,7 +336,10 @@ fn install_help_prints_usage() {
     let out = sandbox.pi(&cwd, &["install", "--help"]);
     assert!(out.status.success());
     let stdout = sandbox.stdout(&out);
-    assert!(stdout.contains("pi install <source> [-l] [--approve|--no-approve]"), "{stdout}");
+    assert!(
+        stdout.contains("pi install <source> [-l] [--approve|--no-approve]"),
+        "{stdout}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -293,23 +355,43 @@ fn update_reports_extensions_skipped_for_default_self() {
     // Default target is self; the compiled port reports the upstream
     // skip note then the cannot-self-update instruction.
     let stdout = sandbox.stdout(&out);
-    assert!(stdout.contains("Extensions are skipped. Run pi update --extensions to update extensions."), "{stdout}");
+    assert!(
+        stdout.contains("Extensions are skipped. Run pi update --extensions to update extensions."),
+        "{stdout}"
+    );
     assert!(!out.status.success());
     let stderr = sandbox.stderr(&out);
-    assert!(stderr.contains("cannot self-update this installation"), "{stderr}");
+    assert!(
+        stderr.contains("cannot self-update this installation"),
+        "{stderr}"
+    );
 }
 
 #[test]
 fn update_extension_with_fake_npm() {
     let sandbox = Sandbox::new("update-ext");
     let fake = sandbox.write_fake_npm();
-    fs::create_dir_all(sandbox.agent_dir.join("npm").join("node_modules").join("demo-pkg")).unwrap();
+    fs::create_dir_all(
+        sandbox
+            .agent_dir
+            .join("npm")
+            .join("node_modules")
+            .join("demo-pkg"),
+    )
+    .unwrap();
     fs::write(
-        sandbox.agent_dir.join("npm").join("node_modules").join("demo-pkg").join("package.json"),
+        sandbox
+            .agent_dir
+            .join("npm")
+            .join("node_modules")
+            .join("demo-pkg")
+            .join("package.json"),
         r#"{ "name": "demo-pkg", "version": "1.0.0" }"#,
     )
     .unwrap();
-    sandbox.write_global_settings(json!({ "npmCommand": [fake.to_string_lossy()], "packages": ["npm:demo-pkg"] }));
+    sandbox.write_global_settings(
+        json!({ "npmCommand": [fake.to_string_lossy()], "packages": ["npm:demo-pkg"] }),
+    );
     let cwd = project(&sandbox, "work");
 
     let out = sandbox.pi(&cwd, &["update", "--extensions"]);
@@ -322,13 +404,27 @@ fn update_extension_with_fake_npm() {
 fn update_single_extension_reports_updated_source() {
     let sandbox = Sandbox::new("update-ext-one");
     let fake = sandbox.write_fake_npm();
-    fs::create_dir_all(sandbox.agent_dir.join("npm").join("node_modules").join("demo-pkg")).unwrap();
+    fs::create_dir_all(
+        sandbox
+            .agent_dir
+            .join("npm")
+            .join("node_modules")
+            .join("demo-pkg"),
+    )
+    .unwrap();
     fs::write(
-        sandbox.agent_dir.join("npm").join("node_modules").join("demo-pkg").join("package.json"),
+        sandbox
+            .agent_dir
+            .join("npm")
+            .join("node_modules")
+            .join("demo-pkg")
+            .join("package.json"),
         r#"{ "name": "demo-pkg", "version": "1.0.0" }"#,
     )
     .unwrap();
-    sandbox.write_global_settings(json!({ "npmCommand": [fake.to_string_lossy()], "packages": ["npm:demo-pkg"] }));
+    sandbox.write_global_settings(
+        json!({ "npmCommand": [fake.to_string_lossy()], "packages": ["npm:demo-pkg"] }),
+    );
     let cwd = project(&sandbox, "work");
 
     let out = sandbox.pi(&cwd, &["update", "npm:demo-pkg"]);
@@ -348,7 +444,10 @@ fn config_help_prints_usage() {
     let out = sandbox.pi(&cwd, &["config", "--help"]);
     assert!(out.status.success());
     let stdout = sandbox.stdout(&out);
-    assert!(stdout.contains("pi config [-l] [--approve|--no-approve]"), "{stdout}");
+    assert!(
+        stdout.contains("pi config [-l] [--approve|--no-approve]"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -361,7 +460,10 @@ fn config_local_requires_trust() {
     let out = sandbox.pi(&cwd, &["config", "-l"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = sandbox.stderr(&out);
-    assert!(stderr.contains("Project is not trusted. Use --approve to modify local resource config."), "{stderr}");
+    assert!(
+        stderr.contains("Project is not trusted. Use --approve to modify local resource config."),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -371,7 +473,10 @@ fn config_unknown_option_errors() {
     let out = sandbox.pi(&cwd, &["config", "--bogus"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = sandbox.stderr(&out);
-    assert!(stderr.contains("Unknown option --bogus for \"config\""), "{stderr}");
+    assert!(
+        stderr.contains("Unknown option --bogus for \"config\""),
+        "{stderr}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -397,7 +502,10 @@ fn auth_check_without_flags_errors() {
     let out = sandbox.pi(&cwd, &["auth", "check"]);
     assert_eq!(out.status.code(), Some(2));
     let stderr = sandbox.stderr(&out);
-    assert!(stderr.contains("Auth checks require --provider <provider> or --model <model>"), "{stderr}");
+    assert!(
+        stderr.contains("Auth checks require --provider <provider> or --model <model>"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -419,7 +527,12 @@ fn auth_check_ready_with_stored_api_key() {
     sandbox.write_auth(json!({ "google": { "type": "api_key", "key": "test-key" } }));
     let cwd = project(&sandbox, "work");
     let out = sandbox.pi(&cwd, &["auth", "check", "--provider", "google"]);
-    assert_eq!(out.status.code(), Some(0), "stderr: {}", sandbox.stderr(&out));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        sandbox.stderr(&out)
+    );
     assert_eq!(sandbox.stdout(&out).trim(), "ready");
 }
 
@@ -430,8 +543,14 @@ fn auth_check_json_ready() {
     sandbox.write_auth(json!({ "google": { "type": "api_key", "key": "test-key" } }));
     let cwd = project(&sandbox, "work");
     let out = sandbox.pi(&cwd, &["auth", "check", "--provider", "google", "--json"]);
-    assert_eq!(out.status.code(), Some(0), "stderr: {}", sandbox.stderr(&out));
-    let parsed: serde_json::Value = serde_json::from_str(sandbox.stdout(&out).trim()).expect("json");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        sandbox.stderr(&out)
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(sandbox.stdout(&out).trim()).expect("json");
     assert_eq!(parsed["status"], "ready");
     assert_eq!(parsed["provider"], "google");
     assert_eq!(parsed["authType"], "api_key");
@@ -443,9 +562,20 @@ fn auth_check_json_with_credentials() {
     sandbox.write_global_settings(json!({}));
     sandbox.write_auth(json!({ "google": { "type": "api_key", "key": "secret-value" } }));
     let cwd = project(&sandbox, "work");
-    let out = sandbox.pi(&cwd, &["auth", "check", "--provider", "google", "--credentials", "--json"]);
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "auth",
+            "check",
+            "--provider",
+            "google",
+            "--credentials",
+            "--json",
+        ],
+    );
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
-    let parsed: serde_json::Value = serde_json::from_str(sandbox.stdout(&out).trim()).expect("json");
+    let parsed: serde_json::Value =
+        serde_json::from_str(sandbox.stdout(&out).trim()).expect("json");
     assert_eq!(parsed["credentials"], "secret-value");
 }
 
@@ -466,7 +596,10 @@ fn auth_print_bearer_token_oauth() {
     sandbox.write_global_settings(json!({}));
     sandbox.write_auth(json!({ "google": { "type": "oauth", "access": "access-tok", "refresh": "r", "expires": 1 } }));
     let cwd = project(&sandbox, "work");
-    let out = sandbox.pi(&cwd, &["auth", "print-bearer-token", "--provider", "google"]);
+    let out = sandbox.pi(
+        &cwd,
+        &["auth", "print-bearer-token", "--provider", "google"],
+    );
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
     assert_eq!(sandbox.stdout(&out).trim(), "access-tok");
 }
@@ -475,12 +608,17 @@ fn auth_print_bearer_token_oauth() {
 fn auth_print_api_key_for_oauth_provider_errors() {
     let sandbox = Sandbox::new("auth-key-oauth");
     sandbox.write_global_settings(json!({}));
-    sandbox.write_auth(json!({ "google": { "type": "oauth", "access": "a", "refresh": "r", "expires": 1 } }));
+    sandbox.write_auth(
+        json!({ "google": { "type": "oauth", "access": "a", "refresh": "r", "expires": 1 } }),
+    );
     let cwd = project(&sandbox, "work");
     let out = sandbox.pi(&cwd, &["auth", "print-api-key", "--provider", "google"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = sandbox.stderr(&out);
-    assert!(stderr.contains("configured with OAuth, not an API key"), "{stderr}");
+    assert!(
+        stderr.contains("configured with OAuth, not an API key"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -491,7 +629,10 @@ fn auth_print_api_key_no_credentials_errors() {
     let out = sandbox.pi(&cwd, &["auth", "print-api-key", "--provider", "google"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = sandbox.stderr(&out);
-    assert!(stderr.contains("No usable API key is configured"), "{stderr}");
+    assert!(
+        stderr.contains("No usable API key is configured"),
+        "{stderr}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -509,5 +650,8 @@ fn normal_run_still_works_after_dispatch() {
     let out = sandbox.pi(&cwd, &["-p", "hello from cli commands"]);
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
     let stdout = sandbox.stdout(&out);
-    assert!(stdout.contains("faux response to: hello from cli commands"), "{stdout}");
+    assert!(
+        stdout.contains("faux response to: hello from cli commands"),
+        "{stdout}"
+    );
 }

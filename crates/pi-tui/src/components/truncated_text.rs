@@ -10,7 +10,10 @@ pub struct TruncatedText {
 
 impl TruncatedText {
     pub fn new(text: impl Into<String>, ellipsis: impl Into<String>) -> Self {
-        Self { text: text.into(), ellipsis: ellipsis.into() }
+        Self {
+            text: text.into(),
+            ellipsis: ellipsis.into(),
+        }
     }
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();

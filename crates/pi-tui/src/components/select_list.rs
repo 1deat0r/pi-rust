@@ -31,8 +31,16 @@ pub struct SelectItem {
 }
 
 impl SelectItem {
-    pub fn new(value: impl Into<String>, label: impl Into<String>, description: Option<String>) -> Self {
-        Self { value: value.into(), label: label.into(), description }
+    pub fn new(
+        value: impl Into<String>,
+        label: impl Into<String>,
+        description: Option<String>,
+    ) -> Self {
+        Self {
+            value: value.into(),
+            label: label.into(),
+            description,
+        }
     }
 }
 
@@ -183,19 +191,29 @@ impl SelectList {
 
         if let Some(description) = description_single_line {
             if width > 40 {
-                let effective_primary_column_width =
-                    std::cmp::max(1, std::cmp::min(primary_column_width, width.saturating_sub(prefix_width + 4)));
-                let max_primary_width = std::cmp::max(1, effective_primary_column_width.saturating_sub(PRIMARY_COLUMN_GAP));
+                let effective_primary_column_width = std::cmp::max(
+                    1,
+                    std::cmp::min(primary_column_width, width.saturating_sub(prefix_width + 4)),
+                );
+                let max_primary_width = std::cmp::max(
+                    1,
+                    effective_primary_column_width.saturating_sub(PRIMARY_COLUMN_GAP),
+                );
                 let truncated_value = self.truncate_primary(item, max_primary_width);
                 let truncated_value_width = visible_width(&truncated_value);
-                let spacing = " ".repeat(std::cmp::max(1, effective_primary_column_width.saturating_sub(truncated_value_width)));
+                let spacing = " ".repeat(std::cmp::max(
+                    1,
+                    effective_primary_column_width.saturating_sub(truncated_value_width),
+                ));
                 let description_start = prefix_width + truncated_value_width + spacing.len();
                 let remaining_width = width.saturating_sub(description_start + 2);
 
                 if remaining_width > MIN_DESCRIPTION_WIDTH {
                     let truncated_desc = truncate_to_width(description, remaining_width, "");
                     if is_selected {
-                        return (self.theme.selected_text)(&format!("{prefix}{truncated_value}{spacing}{truncated_desc}"));
+                        return (self.theme.selected_text)(&format!(
+                            "{prefix}{truncated_value}{spacing}{truncated_desc}"
+                        ));
                     }
                     let desc_text = (self.theme.description)(&format!("{spacing}{truncated_desc}"));
                     return format!("{prefix}{truncated_value}{desc_text}");
@@ -247,8 +265,16 @@ impl Component for SelectList {
         }
 
         if start_index > 0 || end_index < self.filtered_items.len() {
-            let scroll_text = format!("  ({}/{})", self.selected_index + 1, self.filtered_items.len());
-            lines.push((self.theme.scroll_info)(&truncate_to_width(&scroll_text, width.saturating_sub(2), "")));
+            let scroll_text = format!(
+                "  ({}/{})",
+                self.selected_index + 1,
+                self.filtered_items.len()
+            );
+            lines.push((self.theme.scroll_info)(&truncate_to_width(
+                &scroll_text,
+                width.saturating_sub(2),
+                "",
+            )));
         }
 
         lines
@@ -259,13 +285,21 @@ impl Component for SelectList {
             "up" => {
                 let len = self.filtered_items.len();
                 if len > 0 {
-                    self.selected_index = if self.selected_index == 0 { len - 1 } else { self.selected_index - 1 };
+                    self.selected_index = if self.selected_index == 0 {
+                        len - 1
+                    } else {
+                        self.selected_index - 1
+                    };
                 }
             }
             "down" => {
                 let len = self.filtered_items.len();
                 if len > 0 {
-                    self.selected_index = if self.selected_index == len - 1 { 0 } else { self.selected_index + 1 };
+                    self.selected_index = if self.selected_index == len - 1 {
+                        0
+                    } else {
+                        self.selected_index + 1
+                    };
                 }
             }
             _ => {}
@@ -278,7 +312,11 @@ mod tests {
     use super::*;
 
     fn item(value: &str, description: Option<&str>) -> SelectItem {
-        SelectItem::new(value.to_string(), value.to_string(), description.map(|s| s.to_string()))
+        SelectItem::new(
+            value.to_string(),
+            value.to_string(),
+            description.map(|s| s.to_string()),
+        )
     }
 
     #[allow(dead_code)] // helper kept for snapshot tests
@@ -307,7 +345,10 @@ mod tests {
     fn keeps_descriptions_aligned_when_truncated() {
         let items = vec![
             item("short", Some("short description")),
-            item("very-long-command-name-that-needs-truncation", Some("long description")),
+            item(
+                "very-long-command-name-that-needs-truncation",
+                Some("long description"),
+            ),
         ];
         let list = SelectList::new(items, 5, plain_theme(), SelectListLayoutOptions::default());
         let rendered = list.render(80);
@@ -333,7 +374,10 @@ mod tests {
     #[test]
     fn uses_configured_maximum_primary_column_width() {
         let items = vec![
-            item("very-long-command-name-that-needs-truncation", Some("first")),
+            item(
+                "very-long-command-name-that-needs-truncation",
+                Some("first"),
+            ),
             item("short", Some("second")),
         ];
         let layout = SelectListLayoutOptions {
@@ -368,4 +412,3 @@ mod tests {
         assert!(strip_ansi_codes(&rendered.last().unwrap().to_string()).contains("3/3"));
     }
 }
-

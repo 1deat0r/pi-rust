@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 
 use crate::core::extensions::types::{
-    Extension, ExtensionContext, ExtensionError, ExtensionFlag, ExtensionRuntime, RegisteredCommand,
-    RegisteredTool, ResolvedCommand, SourceInfo,
+    Extension, ExtensionContext, ExtensionError, ExtensionFlag, ExtensionRuntime,
+    RegisteredCommand, RegisteredTool, ResolvedCommand, SourceInfo,
 };
 
 /// Error listener closure (upstream `ExtensionErrorListener`).
@@ -96,7 +96,11 @@ pub struct ExtensionRunner {
 }
 
 impl ExtensionRunner {
-    pub fn new(extensions: Vec<Extension>, runtime: Arc<Mutex<ExtensionRuntime>>, cwd: String) -> Self {
+    pub fn new(
+        extensions: Vec<Extension>,
+        runtime: Arc<Mutex<ExtensionRuntime>>,
+        cwd: String,
+    ) -> Self {
         let has_ui = false;
         let mode = "print".to_string();
         Self {
@@ -140,7 +144,9 @@ impl ExtensionRunner {
 
     /// Get a tool definition by name (upstream `getToolDefinition`).
     pub fn get_tool_definition(&self, tool_name: &str) -> Option<RegisteredTool> {
-        self.get_all_registered_tools().into_iter().find(|t| t.name == tool_name)
+        self.get_all_registered_tools()
+            .into_iter()
+            .find(|t| t.name == tool_name)
     }
 
     /// All extension flags (first registration per name wins; upstream
@@ -158,7 +164,11 @@ impl ExtensionRunner {
     }
 
     pub fn set_flag_value(&self, name: &str, value: Value) {
-        self.runtime.lock().unwrap().flag_values.insert(name.to_string(), value);
+        self.runtime
+            .lock()
+            .unwrap()
+            .flag_values
+            .insert(name.to_string(), value);
     }
 
     pub fn get_flag_values(&self) -> BTreeMap<String, Value> {
@@ -168,9 +178,12 @@ impl ExtensionRunner {
     /// Whether any extension registered a handler for an event type
     /// (upstream `hasHandlers`).
     pub fn has_handlers(&self, event_type: &str) -> bool {
-        self.extensions
-            .iter()
-            .any(|ext| ext.handlers.get(event_type).map(|h| !h.is_empty()).unwrap_or(false))
+        self.extensions.iter().any(|ext| {
+            ext.handlers
+                .get(event_type)
+                .map(|h| !h.is_empty())
+                .unwrap_or(false)
+        })
     }
 
     /// Resolve registered commands with invocation-name disambiguation
@@ -225,16 +238,23 @@ impl ExtensionRunner {
     }
 
     pub fn get_command(&mut self, name: &str) -> Option<ResolvedCommand> {
-        self.get_registered_commands().into_iter().find(|c| c.invocation_name == name)
+        self.get_registered_commands()
+            .into_iter()
+            .find(|c| c.invocation_name == name)
     }
 
     /// Get shortcuts with built-in conflict diagnostics (upstream
     /// `getShortcuts`). Reserved keybindings skip extension shortcuts.
-    pub fn get_shortcuts(&mut self, keybindings: &KeybindingsConfig) -> BTreeMap<String, crate::core::extensions::types::ExtensionShortcut> {
+    pub fn get_shortcuts(
+        &mut self,
+        keybindings: &KeybindingsConfig,
+    ) -> BTreeMap<String, crate::core::extensions::types::ExtensionShortcut> {
         self.shortcut_diagnostics = Vec::new();
         let builtin = keybindings.builtin_by_key();
-        let mut extension_shortcuts: BTreeMap<String, crate::core::extensions::types::ExtensionShortcut> =
-            BTreeMap::new();
+        let mut extension_shortcuts: BTreeMap<
+            String,
+            crate::core::extensions::types::ExtensionShortcut,
+        > = BTreeMap::new();
         for ext in &self.extensions {
             for (key, shortcut) in &ext.shortcuts {
                 let normalized = key.to_lowercase();
@@ -305,7 +325,11 @@ impl ExtensionRunner {
     /// Emit an event to all handlers in registration order (upstream generic
     /// `emit`). Returns the first `cancel`-style result for session_before_*
     /// events (modeled here as the first non-None handler result).
-    pub fn emit(&self, event_type: &str, payload: &Value) -> Result<Option<Value>, Vec<ExtensionError>> {
+    pub fn emit(
+        &self,
+        event_type: &str,
+        payload: &Value,
+    ) -> Result<Option<Value>, Vec<ExtensionError>> {
         let ctx = ExtensionContext {
             mode: self.mode.clone(),
             cwd: self.cwd.clone(),
@@ -358,9 +382,9 @@ pub fn synthetic_source_info(path: &str, source: &str, base_dir: Option<String>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::extensions::types::ExtensionShortcut;
     use crate::core::extensions::types::HandlerFn;
     use serde_json::json;
-    use crate::core::extensions::types::ExtensionShortcut;
     use std::sync::Arc as StdArc;
 
     fn tool(name: &str) -> RegisteredTool {
@@ -382,11 +406,19 @@ mod tests {
     }
 
     fn dummy_handler() -> HandlerFn {
-        StdArc::new(|_ctx: &ExtensionContext, _payload: &Value| -> Result<Option<Value>, String> { Ok(None) })
+        StdArc::new(
+            |_ctx: &ExtensionContext, _payload: &Value| -> Result<Option<Value>, String> {
+                Ok(None)
+            },
+        )
     }
 
     fn runner_with(extensions: Vec<Extension>) -> ExtensionRunner {
-        ExtensionRunner::new(extensions, Arc::new(Mutex::new(ExtensionRuntime::new())), "/tmp".to_string())
+        ExtensionRunner::new(
+            extensions,
+            Arc::new(Mutex::new(ExtensionRuntime::new())),
+            "/tmp".to_string(),
+        )
     }
 
     #[test]
@@ -419,10 +451,12 @@ mod tests {
     fn commands_disambiguated_with_name_suffix() {
         let mut e1 = Extension::default();
         e1.path = "e1".into();
-        e1.commands.insert("dup".into(), command("dup", dummy_handler()));
+        e1.commands
+            .insert("dup".into(), command("dup", dummy_handler()));
         let mut e2 = Extension::default();
         e2.path = "e2".into();
-        e2.commands.insert("dup".into(), command("dup", dummy_handler()));
+        e2.commands
+            .insert("dup".into(), command("dup", dummy_handler()));
         let mut runner = runner_with(vec![e1, e2]);
         let commands = runner.get_registered_commands();
         let names: Vec<String> = commands.iter().map(|c| c.invocation_name.clone()).collect();
@@ -436,7 +470,8 @@ mod tests {
     fn single_command_keeps_invocation_name() {
         let mut e1 = Extension::default();
         e1.path = "e1".into();
-        e1.commands.insert("solo".into(), command("solo", dummy_handler()));
+        e1.commands
+            .insert("solo".into(), command("solo", dummy_handler()));
         let mut runner = runner_with(vec![e1]);
         let commands = runner.get_registered_commands();
         assert_eq!(commands[0].invocation_name, "solo");
@@ -447,22 +482,28 @@ mod tests {
     fn flags_first_wins_and_values() {
         let mut e1 = Extension::default();
         e1.path = "e1".into();
-        e1.flags.insert("artist".into(), ExtensionFlag {
-            name: "artist".into(),
-            description: None,
-            flag_type: crate::core::extensions::types::FlagType::Boolean,
-            default: Some(Value::Bool(false)),
-            extension_path: "e1".into(),
-        });
+        e1.flags.insert(
+            "artist".into(),
+            ExtensionFlag {
+                name: "artist".into(),
+                description: None,
+                flag_type: crate::core::extensions::types::FlagType::Boolean,
+                default: Some(Value::Bool(false)),
+                extension_path: "e1".into(),
+            },
+        );
         let mut e2 = Extension::default();
         e2.path = "e2".into();
-        e2.flags.insert("artist".into(), ExtensionFlag {
-            name: "artist".into(),
-            description: None,
-            flag_type: crate::core::extensions::types::FlagType::Boolean,
-            default: Some(Value::Bool(true)),
-            extension_path: "e2".into(),
-        });
+        e2.flags.insert(
+            "artist".into(),
+            ExtensionFlag {
+                name: "artist".into(),
+                description: None,
+                flag_type: crate::core::extensions::types::FlagType::Boolean,
+                default: Some(Value::Bool(true)),
+                extension_path: "e2".into(),
+            },
+        );
         let runner = runner_with(vec![e1, e2]);
         let flags = runner.get_flags();
         assert_eq!(flags.len(), 1);
@@ -473,7 +514,8 @@ mod tests {
     fn has_handlers_detects_registered_handlers() {
         let mut e1 = Extension::default();
         e1.path = "e1".into();
-        e1.handlers.insert("agent_start".to_string(), vec![dummy_handler()]);
+        e1.handlers
+            .insert("agent_start".to_string(), vec![dummy_handler()]);
         let runner = runner_with(vec![e1]);
         assert!(runner.has_handlers("agent_start"));
         assert!(!runner.has_handlers("agent_end"));
@@ -483,14 +525,15 @@ mod tests {
     fn emit_dispatches_to_handlers_and_collects_errors() {
         let mut e1 = Extension::default();
         e1.path = "e1".into();
-        let handler: HandlerFn = StdArc::new(|_ctx, payload: &Value| -> Result<Option<Value>, String> {
-            let n = payload.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
-            if n > 0 {
-                Ok(Some(payload.clone()))
-            } else {
-                Err("boom".to_string())
-            }
-        });
+        let handler: HandlerFn =
+            StdArc::new(|_ctx, payload: &Value| -> Result<Option<Value>, String> {
+                let n = payload.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
+                if n > 0 {
+                    Ok(Some(payload.clone()))
+                } else {
+                    Err("boom".to_string())
+                }
+            });
         e1.handlers.insert("turn_end".to_string(), vec![handler]);
         let runner = runner_with(vec![e1]);
         // Errored handler -> collected error.
@@ -508,13 +551,22 @@ mod tests {
     fn error_listeners_receive_errors() {
         let mut e1 = Extension::default();
         e1.path = "e1".into();
-        e1.handlers.insert("x".to_string(), vec![StdArc::new(|_ctx, _p| Err("fail".to_string()))]);
+        e1.handlers.insert(
+            "x".to_string(),
+            vec![StdArc::new(|_ctx, _p| Err("fail".to_string()))],
+        );
         let runner = runner_with(vec![e1]);
         let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let got = received.clone();
-        let _unsub = runner.on_error(StdArc::new(move |error: ExtensionError| got.lock().unwrap().push(error.error)));
+        let _unsub = runner.on_error(StdArc::new(move |error: ExtensionError| {
+            got.lock().unwrap().push(error.error)
+        }));
         // Direct emitError notifies listeners.
-        runner.emit_error(ExtensionError { extension_path: "e".into(), event: "x".into(), error: "test".into() });
+        runner.emit_error(ExtensionError {
+            extension_path: "e".into(),
+            event: "x".into(),
+            error: "test".into(),
+        });
         assert_eq!(received.lock().unwrap().len(), 1);
     }
 
@@ -522,12 +574,15 @@ mod tests {
     fn reserved_shortcuts_are_skipped_with_diagnostics() {
         let mut e1 = Extension::default();
         e1.path = "e1".into();
-        e1.shortcuts.insert("ctrl+c".into(), ExtensionShortcut {
-            shortcut: "ctrl+c".into(),
-            description: None,
-            handler: dummy_handler(),
-            extension_path: "e1".into(),
-        });
+        e1.shortcuts.insert(
+            "ctrl+c".into(),
+            ExtensionShortcut {
+                shortcut: "ctrl+c".into(),
+                description: None,
+                handler: dummy_handler(),
+                extension_path: "e1".into(),
+            },
+        );
         let mut runner = runner_with(vec![e1]);
         let keybindings = KeybindingsConfig {
             bindings: BTreeMap::from([
@@ -540,19 +595,24 @@ mod tests {
         assert!(shortcuts.is_empty());
         let diagnostics = runner.get_shortcut_diagnostics();
         assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0].message.contains("conflicts with built-in shortcut"));
+        assert!(diagnostics[0]
+            .message
+            .contains("conflicts with built-in shortcut"));
     }
 
     #[test]
     fn non_reserved_shortcuts_are_allowed() {
         let mut e1 = Extension::default();
         e1.path = "e1".into();
-        e1.shortcuts.insert("ctrl+alt+m".into(), ExtensionShortcut {
-            shortcut: "ctrl+alt+m".into(),
-            description: None,
-            handler: dummy_handler(),
-            extension_path: "e1".into(),
-        });
+        e1.shortcuts.insert(
+            "ctrl+alt+m".into(),
+            ExtensionShortcut {
+                shortcut: "ctrl+alt+m".into(),
+                description: None,
+                handler: dummy_handler(),
+                extension_path: "e1".into(),
+            },
+        );
         let mut runner = runner_with(vec![e1]);
         let keybindings = KeybindingsConfig::default();
         let shortcuts = runner.get_shortcuts(&keybindings);

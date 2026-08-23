@@ -12,7 +12,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use crate::harness::env::{
-    ChunkHandler, CreateTempFileOptions, ExecutionEnv, ExecutionError, ExecutionErrorCode, FileContent, ShellExecOptions,
+    ChunkHandler, CreateTempFileOptions, ExecutionEnv, ExecutionError, ExecutionErrorCode,
+    FileContent, ShellExecOptions,
 };
 use crate::tools::truncate::{truncate_tail, TruncatedBy, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES};
 
@@ -38,7 +39,8 @@ pub struct ShellCaptureProgress {
 
 /// Chunk callback with progress access (upstream `onChunk?: (chunk,
 /// getProgress)`).
-pub type ChunkHandlerWithProgress = Arc<dyn Fn(&str, &Mutex<ShellCaptureProgress>) -> Result<(), String> + Send + Sync>;
+pub type ChunkHandlerWithProgress =
+    Arc<dyn Fn(&str, &Mutex<ShellCaptureProgress>) -> Result<(), String> + Send + Sync>;
 
 /// Options for `execute_shell_with_capture` (upstream `ShellCaptureOptions`).
 #[derive(Default)]
@@ -132,10 +134,14 @@ enum WriteOp {
 }
 
 fn is_aborted_flag(flag: Option<&AtomicBool>) -> bool {
-    flag.map(|f| f.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false)
+    flag.map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(false)
 }
 
-fn create_progress(accum: &CaptureAccumulator, full_output_path: &Option<String>) -> ShellCaptureProgress {
+fn create_progress(
+    accum: &CaptureAccumulator,
+    full_output_path: &Option<String>,
+) -> ShellCaptureProgress {
     let (tail_truncation, _, _) = truncate_tail(&accum.tail_output);
     let total_lines = accum.completed_lines + usize::from(accum.has_open_line);
     let truncated = total_lines > DEFAULT_MAX_LINES || accum.total_bytes > DEFAULT_MAX_BYTES;
@@ -143,14 +149,22 @@ fn create_progress(accum: &CaptureAccumulator, full_output_path: &Option<String>
         Some(
             tail_truncation
                 .truncated_by
-                .unwrap_or(if accum.total_bytes > DEFAULT_MAX_BYTES { TruncatedBy::Bytes } else { TruncatedBy::Lines }),
+                .unwrap_or(if accum.total_bytes > DEFAULT_MAX_BYTES {
+                    TruncatedBy::Bytes
+                } else {
+                    TruncatedBy::Lines
+                }),
         )
     } else {
         None
     };
     let tail_content = tail_truncation.content;
     ShellCaptureProgress {
-        output: if truncated { tail_content.clone() } else { accum.tail_output.clone() },
+        output: if truncated {
+            tail_content.clone()
+        } else {
+            accum.tail_output.clone()
+        },
         truncation: TruncationResult {
             content: tail_content,
             truncated,
@@ -207,13 +221,18 @@ pub async fn execute_shell_with_capture<E: ExecutionEnv>(
             }
             accum.tail_output += &text;
             let total_lines = accum.completed_lines + usize::from(accum.has_open_line);
-            if (accum.total_bytes > DEFAULT_MAX_BYTES || total_lines > DEFAULT_MAX_LINES) && !accum.full_output_requested {
+            if (accum.total_bytes > DEFAULT_MAX_BYTES || total_lines > DEFAULT_MAX_LINES)
+                && !accum.full_output_requested
+            {
                 accum.full_output_requested = true;
-                writes.push(WriteOp::CreateTempFile { initial: accum.tail_output.clone() });
+                writes.push(WriteOp::CreateTempFile {
+                    initial: accum.tail_output.clone(),
+                });
             } else if accum.full_output_requested {
                 writes.push(WriteOp::Append { text: text.clone() });
             }
-            accum.tail_output = trim_to_last_utf8_bytes(&accum.tail_output.clone(), max_output_bytes);
+            accum.tail_output =
+                trim_to_last_utf8_bytes(&accum.tail_output.clone(), max_output_bytes);
             // The capture machinery always runs; the optional user callback
             // is an observer (upstream `onChunk`).
             if let Some(progress_cb) = &on_chunk {
@@ -253,7 +272,9 @@ pub async fn execute_shell_with_capture<E: ExecutionEnv>(
         let progress = create_progress(&accum, &maybe_full_path.lock().unwrap());
         if progress.truncation.truncated && !accum.full_output_requested {
             accum.full_output_requested = true;
-            writes.push(WriteOp::CreateTempFile { initial: accum.tail_output.clone() });
+            writes.push(WriteOp::CreateTempFile {
+                initial: accum.tail_output.clone(),
+            });
         }
     }
 
@@ -265,19 +286,28 @@ pub async fn execute_shell_with_capture<E: ExecutionEnv>(
             match op {
                 WriteOp::CreateTempFile { initial } => {
                     let temp = env
-                        .create_temp_file(CreateTempFileOptions { prefix: Some("bash-"), suffix: Some(".log") })
+                        .create_temp_file(CreateTempFileOptions {
+                            prefix: Some("bash-"),
+                            suffix: Some(".log"),
+                        })
                         .await
-                        .map_err(|e| ExecutionError::new(ExecutionErrorCode::Unknown, e.to_string()))?;
+                        .map_err(|e| {
+                            ExecutionError::new(ExecutionErrorCode::Unknown, e.to_string())
+                        })?;
                     full_output_path = Some(temp.clone());
                     env.append_file(&temp, FileContent::Text(initial))
                         .await
-                        .map_err(|e| ExecutionError::new(ExecutionErrorCode::Unknown, e.to_string()))?;
+                        .map_err(|e| {
+                            ExecutionError::new(ExecutionErrorCode::Unknown, e.to_string())
+                        })?;
                 }
                 WriteOp::Append { text } => {
                     if let Some(path) = &full_output_path {
                         env.append_file(path, FileContent::Text(text))
                             .await
-                            .map_err(|e| ExecutionError::new(ExecutionErrorCode::Unknown, e.to_string()))?;
+                            .map_err(|e| {
+                                ExecutionError::new(ExecutionErrorCode::Unknown, e.to_string())
+                            })?;
                     }
                 }
             }
@@ -324,7 +354,11 @@ pub async fn execute_shell_with_capture<E: ExecutionEnv>(
                 truncation: truncation.clone(),
                 full_output_path,
                 last_line_bytes: progress.last_line_bytes,
-                exit_code: if cancelled { None } else { Some(exec_result.exit_code) },
+                exit_code: if cancelled {
+                    None
+                } else {
+                    Some(exec_result.exit_code)
+                },
                 cancelled,
                 truncated: progress.truncation.truncated,
                 execution_error: None,
@@ -361,13 +395,20 @@ mod tests {
 
     #[test]
     fn captures_small_output() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let root = temp_root();
             let env = StdExecutionEnv::new(root.clone());
-            let result = execute_shell_with_capture(&env, "printf hello; printf ' world' >&2", &ShellCaptureOptions::default())
-                .await
-                .unwrap();
+            let result = execute_shell_with_capture(
+                &env,
+                "printf hello; printf ' world' >&2",
+                &ShellCaptureOptions::default(),
+            )
+            .await
+            .unwrap();
             assert!(result.output.contains("hello"));
             assert!(result.output.contains("world"));
             assert_eq!(result.exit_code, Some(0));
@@ -377,13 +418,20 @@ mod tests {
 
     #[test]
     fn captures_large_output_to_full_output_file() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let root = temp_root();
             let env = StdExecutionEnv::new(root.clone());
-            let result = execute_shell_with_capture(&env, "yes line | head -n 15000", &ShellCaptureOptions::default())
-                .await
-                .unwrap();
+            let result = execute_shell_with_capture(
+                &env,
+                "yes line | head -n 15000",
+                &ShellCaptureOptions::default(),
+            )
+            .await
+            .unwrap();
             assert!(result.truncated);
             let path = result.full_output_path.clone().expect("full output path");
             let full = std::fs::read_to_string(&path).unwrap();
@@ -394,18 +442,27 @@ mod tests {
 
     #[test]
     fn returns_execution_errors_when_requested() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let root = temp_root();
             let env = StdExecutionEnv::new(format!("{root}/missing-cwd"));
             let result = execute_shell_with_capture(
                 &env,
                 "printf ok",
-                &ShellCaptureOptions { return_execution_errors: true, ..Default::default() },
+                &ShellCaptureOptions {
+                    return_execution_errors: true,
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
-            assert_eq!(result.execution_error.as_ref().map(|e| e.code), Some(ExecutionErrorCode::SpawnError));
+            assert_eq!(
+                result.execution_error.as_ref().map(|e| e.code),
+                Some(ExecutionErrorCode::SpawnError)
+            );
         });
     }
 }

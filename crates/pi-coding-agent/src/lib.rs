@@ -8,10 +8,10 @@
 
 pub mod args;
 pub mod commands;
-pub mod core;
 pub mod config;
-pub mod list_models;
-pub mod run;
+pub mod core;
 pub mod interactive;
+pub mod list_models;
 pub mod modes;
+pub mod run;
 pub mod theme;

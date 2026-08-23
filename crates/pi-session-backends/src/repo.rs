@@ -13,51 +13,66 @@ use pi_agent::session::types::{
 use rusqlite::Connection;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::branch_cache::{append_entry_to_branch_cache, build_cached_branch, delete_branch_cache, rebuild_branch_cache};
+use crate::branch_cache::{
+    append_entry_to_branch_cache, build_cached_branch, delete_branch_cache, rebuild_branch_cache,
+};
 use crate::migrations::{apply_migrations, transaction};
+use crate::new_id;
 use crate::storage::branch_entries::{
     query_cached_branch_rows, read_cached_branch, CachedBranchEntryRow, CachedBranchQuery,
 };
 use crate::storage::branch_tips::read_branch_tip_ids;
 use crate::storage::entries::{
-    delete_entry_rows, id_exists_in_entries, insert_entry_row, read_entry_row, read_entry_rows, serialize_payload,
-    EntryRow, NewEntryRow, ReadEntryRowsOptions,
+    delete_entry_rows, id_exists_in_entries, insert_entry_row, read_entry_row, read_entry_rows,
+    serialize_payload, EntryRow, NewEntryRow, ReadEntryRowsOptions,
 };
-use crate::storage::facts::{append_fact, delete_fact_rows, read_fact_rows, read_latest_fact, read_latest_label_facts};
+use crate::storage::facts::{
+    append_fact, delete_fact_rows, read_fact_rows, read_latest_fact, read_latest_label_facts,
+};
 use crate::storage::lanes::{
-    create_initial_lane, create_lane, delete_lane_rows, finish_lane_operation, move_lane, read_lane, read_lane_head,
-    read_lane_move_rows, read_lanes, set_lane_leaf, start_lane_operation, LaneMoveRow,
+    create_initial_lane, create_lane, delete_lane_rows, finish_lane_operation, move_lane,
+    read_lane, read_lane_head, read_lane_move_rows, read_lanes, set_lane_leaf,
+    start_lane_operation, LaneMoveRow,
 };
 use crate::storage::records::{
-    append_record_row, delete_record_rows, id_exists_in_records, read_open_operation_rows, read_record_rows,
-    NewRecordRow, ReadRecordRowsOptions, RecordRow,
+    append_record_row, delete_record_rows, id_exists_in_records, read_open_operation_rows,
+    read_record_rows, NewRecordRow, ReadRecordRowsOptions, RecordRow,
 };
 use crate::storage::session_sequences::{
     advance_sequence, create_sequence, delete_sequence, get_next_sequence, set_next_sequence,
 };
-use crate::storage::session_stats::{add_usage_to_stats, create_stats, delete_stats, increment_message_count, read_stats};
+use crate::storage::session_stats::{
+    add_usage_to_stats, create_stats, delete_stats, increment_message_count, read_stats,
+};
 use crate::storage::sessions::{
-    decode_session_metadata, delete_session_row, insert_session_row, read_session_row, read_session_rows,
-    session_exists, NewSessionRow, SessionRow,
+    decode_session_metadata, delete_session_row, insert_session_row, read_session_row,
+    read_session_rows, session_exists, NewSessionRow, SessionRow,
 };
 use crate::storage::writer_leases::{
-    acquire_writer_lease, delete_writer_lease, release_writer_lease, renew_writer_lease, WriterLease,
+    acquire_writer_lease, delete_writer_lease, release_writer_lease, renew_writer_lease,
+    WriterLease,
 };
 use crate::types::{
-    SqliteSessionCreateOptions, SqliteSessionListOptions, SqliteSessionMetadata, SqliteWriterLeaseOptions,
+    SqliteSessionCreateOptions, SqliteSessionListOptions, SqliteSessionMetadata,
+    SqliteWriterLeaseOptions,
 };
-use crate::new_id;
 
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
 fn active_writer_error(session_id: &str) -> SessionError {
-    session_error(SessionErrorKind::Storage, format!("SQLite session {session_id} already has an active writer"))
+    session_error(
+        SessionErrorKind::Storage,
+        format!("SQLite session {session_id} already has an active writer"),
+    )
 }
 
 fn lost_writer_error(session_id: &str) -> SessionError {
-    session_error(SessionErrorKind::Storage, format!("SQLite session {session_id} writer lease was lost"))
+    session_error(
+        SessionErrorKind::Storage,
+        format!("SQLite session {session_id} writer lease was lost"),
+    )
 }
 
 fn now_ms() -> i64 {
@@ -183,7 +198,10 @@ impl RepoState {
     }
 
     pub(crate) fn register_storage(&self, storage: &Arc<SqliteSessionStorage>) {
-        self.active_storages.lock().unwrap().push(Arc::clone(storage));
+        self.active_storages
+            .lock()
+            .unwrap()
+            .push(Arc::clone(storage));
     }
 
     pub(crate) fn unregister_storage(&self, storage: &Arc<SqliteSessionStorage>) {
@@ -193,7 +211,10 @@ impl RepoState {
             .retain(|candidate| !Arc::ptr_eq(candidate, storage));
     }
 
-    pub(crate) fn find_active_storage(&self, session_id: &str) -> Option<Arc<SqliteSessionStorage>> {
+    pub(crate) fn find_active_storage(
+        &self,
+        session_id: &str,
+    ) -> Option<Arc<SqliteSessionStorage>> {
         let storages = self.active_storages.lock().unwrap();
         for storage in storages.iter() {
             if storage.is_for_session(session_id) {
@@ -226,7 +247,10 @@ fn decode_entry(row: &EntryRow) -> Result<Entry, SessionError> {
     let payload: serde_json::Value = serde_json::from_str(&row.payload).map_err(|_| {
         SessionError::new(
             SessionErrorKind::InvalidEntry,
-            format!("Invalid SQLite session entry {}: failed to decode entry {}", row.id, row.id),
+            format!(
+                "Invalid SQLite session entry {}: failed to decode entry {}",
+                row.id, row.id
+            ),
         )
     })?;
     let mut frame = match payload {
@@ -234,7 +258,10 @@ fn decode_entry(row: &EntryRow) -> Result<Entry, SessionError> {
         _ => {
             return Err(SessionError::new(
                 SessionErrorKind::InvalidEntry,
-                format!("Invalid SQLite session entry {}: failed to decode entry {}", row.id, row.id),
+                format!(
+                    "Invalid SQLite session entry {}: failed to decode entry {}",
+                    row.id, row.id
+                ),
             ))
         }
     };
@@ -246,7 +273,10 @@ fn decode_entry(row: &EntryRow) -> Result<Entry, SessionError> {
     serde_json::from_value(serde_json::Value::Object(frame)).map_err(|error| {
         SessionError::new(
             SessionErrorKind::InvalidEntry,
-            format!("Invalid SQLite session entry {}: failed to decode entry {}: {error}", row.id, row.id),
+            format!(
+                "Invalid SQLite session entry {}: failed to decode entry {}: {error}",
+                row.id, row.id
+            ),
         )
     })
 }
@@ -255,10 +285,17 @@ fn decode_record(row: &RecordRow) -> Result<LaneRecord, SessionError> {
     let new_record: NewRecord = serde_json::from_str(&row.payload).map_err(|_| {
         SessionError::new(
             SessionErrorKind::Storage,
-            format!("Invalid SQLite session record at sequence {}: failed to decode payload", row.seq),
+            format!(
+                "Invalid SQLite session record at sequence {}: failed to decode payload",
+                row.seq
+            ),
         )
     })?;
-    Ok(new_record_complete(new_record, row.seq as u64, row.timestamp as u64))
+    Ok(new_record_complete(
+        new_record,
+        row.seq as u64,
+        row.timestamp as u64,
+    ))
 }
 
 /// Completes a provisioning-time record with storage-assigned seq/timestamp,
@@ -267,45 +304,151 @@ fn decode_record(row: &RecordRow) -> Result<LaneRecord, SessionError> {
 fn new_record_complete(new_record: NewRecord, seq: u64, timestamp: u64) -> LaneRecord {
     use pi_agent::session::types::NewRecord::*;
     match new_record {
-        OperationStarted { id, lane, source_leaf_id, intent } => LaneRecord::OperationStarted {
-            id, seq, lane, timestamp, source_leaf_id, intent,
+        OperationStarted {
+            id,
+            lane,
+            source_leaf_id,
+            intent,
+        } => LaneRecord::OperationStarted {
+            id,
+            seq,
+            lane,
+            timestamp,
+            source_leaf_id,
+            intent,
         },
-        AbortRequested { id, lane, run_id } => LaneRecord::AbortRequested { id, seq, lane, timestamp, run_id },
-        OperationFinished { id, lane, run_id, outcome, error } => {
-            LaneRecord::OperationFinished { id, seq, lane, timestamp, run_id, outcome, error }
-        }
-        StepAttempt { id, lane, run_id, step, attempt, result_entry_id, compaction_reason } => {
-            LaneRecord::StepAttempt {
-                id, seq, lane, timestamp, run_id, step, attempt, result_entry_id, compaction_reason,
-            }
-        }
+        AbortRequested { id, lane, run_id } => LaneRecord::AbortRequested {
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id,
+        },
+        OperationFinished {
+            id,
+            lane,
+            run_id,
+            outcome,
+            error,
+        } => LaneRecord::OperationFinished {
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id,
+            outcome,
+            error,
+        },
+        StepAttempt {
+            id,
+            lane,
+            run_id,
+            step,
+            attempt,
+            result_entry_id,
+            compaction_reason,
+        } => LaneRecord::StepAttempt {
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id,
+            step,
+            attempt,
+            result_entry_id,
+            compaction_reason,
+        },
         ToolStarted {
-            id, lane, run_id, assistant_entry_id, tool_index, tool_call_id, tool_name, effective_args,
-            result_entry_id, replay,
+            id,
+            lane,
+            run_id,
+            assistant_entry_id,
+            tool_index,
+            tool_call_id,
+            tool_name,
+            effective_args,
+            result_entry_id,
+            replay,
         } => LaneRecord::ToolStarted {
-            id, seq, lane, timestamp, run_id, assistant_entry_id, tool_index, tool_call_id, tool_name,
-            effective_args, result_entry_id, replay,
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id,
+            assistant_entry_id,
+            tool_index,
+            tool_call_id,
+            tool_name,
+            effective_args,
+            result_entry_id,
+            replay,
         },
-        QueueEnqueued { id, lane, queue, run_id, target } => {
-            LaneRecord::QueueEnqueued { id, seq, lane, timestamp, queue, run_id, target }
-        }
-        QueueCancelled { id, lane, run_id, entry_id } =>
-            LaneRecord::QueueCancelled { id, seq, lane, timestamp, run_id, entry_id },
-        WriteDeferred { id, lane, run_id, target } => {
-            LaneRecord::WriteDeferred { id, seq, lane, timestamp, run_id, target }
-        }
-        Usage { id, lane, cause, run_id, entry_id, attempt, stop_reason, tool_call_id, details, usage } => {
-            LaneRecord::Usage {
-                id, seq, lane, timestamp, cause,
-                run_id: run_id.unwrap_or_default(),
-                entry_id: entry_id.unwrap_or_default(),
-                attempt: attempt.unwrap_or(0),
-                stop_reason,
-                tool_call_id,
-                details,
-                usage,
-            }
-        }
+        QueueEnqueued {
+            id,
+            lane,
+            queue,
+            run_id,
+            target,
+        } => LaneRecord::QueueEnqueued {
+            id,
+            seq,
+            lane,
+            timestamp,
+            queue,
+            run_id,
+            target,
+        },
+        QueueCancelled {
+            id,
+            lane,
+            run_id,
+            entry_id,
+        } => LaneRecord::QueueCancelled {
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id,
+            entry_id,
+        },
+        WriteDeferred {
+            id,
+            lane,
+            run_id,
+            target,
+        } => LaneRecord::WriteDeferred {
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id,
+            target,
+        },
+        Usage {
+            id,
+            lane,
+            cause,
+            run_id,
+            entry_id,
+            attempt,
+            stop_reason,
+            tool_call_id,
+            details,
+            usage,
+        } => LaneRecord::Usage {
+            id,
+            seq,
+            lane,
+            timestamp,
+            cause,
+            run_id: run_id.unwrap_or_default(),
+            entry_id: entry_id.unwrap_or_default(),
+            attempt: attempt.unwrap_or(0),
+            stop_reason,
+            tool_call_id,
+            details,
+            usage,
+        },
     }
 }
 
@@ -336,8 +479,18 @@ fn record_op_kind(record: &NewRecord) -> Option<&'static str> {
 
 fn require_session_row(db: &Connection, session_id: &str) -> Result<SessionRow, SessionError> {
     read_session_row(db, session_id)
-        .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to read session: {error}")))?
-        .ok_or_else(|| session_error(SessionErrorKind::NotFound, format!("Session not found: {session_id}")))
+        .map_err(|error| {
+            session_error(
+                SessionErrorKind::Storage,
+                format!("Failed to read session: {error}"),
+            )
+        })?
+        .ok_or_else(|| {
+            session_error(
+                SessionErrorKind::NotFound,
+                format!("Session not found: {session_id}"),
+            )
+        })
 }
 
 pub(crate) fn entry_type_of(entry: &Entry) -> &'static str {
@@ -365,7 +518,9 @@ fn matches_entry_query(entry: &Entry, query: &EntryQuery) -> bool {
         None => true,
     };
     let custom_matches = match &query.custom_type {
-        Some(expected) => entry_type_of(entry) == "custom" && custom_type_of(entry) == Some(expected.as_str()),
+        Some(expected) => {
+            entry_type_of(entry) == "custom" && custom_type_of(entry) == Some(expected.as_str())
+        }
         None => true,
     };
     let cursor_matches = match query.cursor {
@@ -379,12 +534,23 @@ fn matches_entry_query(entry: &Entry, query: &EntryQuery) -> bool {
 }
 
 fn assert_unused_id(db: &Connection, session_id: &str, id: &str) -> Result<(), SessionError> {
-    let in_entries = id_exists_in_entries(db, session_id, id)
-        .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to check id: {error}")))?;
-    let in_records = id_exists_in_records(db, session_id, id)
-        .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to check id: {error}")))?;
+    let in_entries = id_exists_in_entries(db, session_id, id).map_err(|error| {
+        session_error(
+            SessionErrorKind::Storage,
+            format!("Failed to check id: {error}"),
+        )
+    })?;
+    let in_records = id_exists_in_records(db, session_id, id).map_err(|error| {
+        session_error(
+            SessionErrorKind::Storage,
+            format!("Failed to check id: {error}"),
+        )
+    })?;
     if in_entries || in_records {
-        return Err(session_error(SessionErrorKind::AlreadyExists, format!("ID already exists: {id}")));
+        return Err(session_error(
+            SessionErrorKind::AlreadyExists,
+            format!("ID already exists: {id}"),
+        ));
     }
     Ok(())
 }
@@ -408,7 +574,10 @@ fn validate_cached_branch_rows(
     if should_include_root && path[0].parent_id.is_some() {
         return Err(session_error(
             SessionErrorKind::InvalidEntry,
-            format!("Entry {} not found", path[0].parent_id.as_deref().unwrap_or_default()),
+            format!(
+                "Entry {} not found",
+                path[0].parent_id.as_deref().unwrap_or_default()
+            ),
         ));
     }
     for index in 1..path.len() {
@@ -417,7 +586,10 @@ fn validate_cached_branch_rows(
         if current.parent_id.as_deref() != Some(previous.id.as_str()) {
             return Err(session_error(
                 SessionErrorKind::InvalidEntry,
-                format!("Entry {} not found", current.parent_id.as_deref().unwrap_or_default()),
+                format!(
+                    "Entry {} not found",
+                    current.parent_id.as_deref().unwrap_or_default()
+                ),
             ));
         }
     }
@@ -434,8 +606,14 @@ fn claim_writer_lease(
     ttl_ms: u64,
 ) -> Result<WriterLease, SessionError> {
     let now = now_ms();
-    let lease = acquire_writer_lease(db, session_id, &new_id(), now, now + ttl_ms as i64)
-        .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to claim writer lease: {error}")))?;
+    let lease = acquire_writer_lease(db, session_id, &new_id(), now, now + ttl_ms as i64).map_err(
+        |error| {
+            session_error(
+                SessionErrorKind::Storage,
+                format!("Failed to claim writer lease: {error}"),
+            )
+        },
+    )?;
     lease.ok_or_else(|| active_writer_error(session_id))
 }
 
@@ -446,12 +624,15 @@ fn claim_storage(
 ) -> Result<Arc<SqliteSessionStorage>, SessionError> {
     require_session_row(db, &metadata.id)?;
     let ttl = repo.lease_options().ttl_ms;
-    let claimed = transaction(db, |tx| -> Result<(WriterLease, SessionRow), SessionError> {
-        let lease = claim_writer_lease(tx, &metadata.id, ttl)?;
-        let row = require_session_row(tx, &metadata.id)?;
-        read_lanes(tx, &metadata.id).map_err(|e| SessionError::new(e.kind, e.message))?;
-        Ok((lease, row))
-    })?;
+    let claimed = transaction(
+        db,
+        |tx| -> Result<(WriterLease, SessionRow), SessionError> {
+            let lease = claim_writer_lease(tx, &metadata.id, ttl)?;
+            let row = require_session_row(tx, &metadata.id)?;
+            read_lanes(tx, &metadata.id).map_err(|e| SessionError::new(e.kind, e.message))?;
+            Ok((lease, row))
+        },
+    )?;
     let decoded = decode_session_metadata(&claimed.1, &absolute_path(&repo.database_path))
         .map_err(|e| SessionError::new(e.kind, e.message))?;
     Ok(SqliteSessionStorage::new(repo.clone(), decoded, claimed.0))
@@ -530,7 +711,9 @@ impl SqliteSessionStorage {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 ticker.tick().await;
-                let Some(storage) = storage.upgrade() else { break };
+                let Some(storage) = storage.upgrade() else {
+                    break;
+                };
                 storage.heartbeat_once().await;
                 if storage.is_done() {
                     break;
@@ -552,7 +735,8 @@ impl SqliteSessionStorage {
         let ttl = repo.lease_options().ttl_ms as i64;
         let _ = repo
             .with_db(move |db| {
-                if this.closing.load(Ordering::SeqCst) || this.lease_error.lock().unwrap().is_some() {
+                if this.closing.load(Ordering::SeqCst) || this.lease_error.lock().unwrap().is_some()
+                {
                     return Ok(());
                 }
                 let now = now_ms();
@@ -632,14 +816,21 @@ impl SqliteSessionStorage {
             read_lanes(db, &session_id).map(|lanes| {
                 lanes
                     .into_iter()
-                    .map(|row| LanePointer { lane: row.lane, leaf_id: row.leaf_id })
+                    .map(|row| LanePointer {
+                        lane: row.lane,
+                        leaf_id: row.leaf_id,
+                    })
                     .collect()
             })
         })
         .await
     }
 
-    pub(crate) async fn create_lane(self: &Arc<Self>, lane: &str, at: Option<&str>) -> Result<(), SessionError> {
+    pub(crate) async fn create_lane(
+        self: &Arc<Self>,
+        lane: &str,
+        at: Option<&str>,
+    ) -> Result<(), SessionError> {
         let session_id = self.session_id();
         let lane = lane.to_string();
         let at = at.map(|s| s.to_string());
@@ -648,14 +839,20 @@ impl SqliteSessionStorage {
                 .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?
                 .is_some()
             {
-                return Err(session_error(SessionErrorKind::AlreadyExists, format!("Lane already exists: {lane}")));
+                return Err(session_error(
+                    SessionErrorKind::AlreadyExists,
+                    format!("Lane already exists: {lane}"),
+                ));
             }
             if let Some(at) = &at {
                 if read_entry_row(db, &session_id, at)
                     .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?
                     .is_none()
                 {
-                    return Err(session_error(SessionErrorKind::NotFound, format!("Entry not found: {at}")));
+                    return Err(session_error(
+                        SessionErrorKind::NotFound,
+                        format!("Entry not found: {at}"),
+                    ));
                 }
             }
             let seq = get_next_sequence(db, &session_id)?;
@@ -667,7 +864,11 @@ impl SqliteSessionStorage {
         .await
     }
 
-    pub(crate) async fn move_lane(self: &Arc<Self>, lane: &str, to: Option<&str>) -> Result<(), SessionError> {
+    pub(crate) async fn move_lane(
+        self: &Arc<Self>,
+        lane: &str,
+        to: Option<&str>,
+    ) -> Result<(), SessionError> {
         let session_id = self.session_id();
         let lane = lane.to_string();
         let to = to.map(|s| s.to_string());
@@ -676,14 +877,20 @@ impl SqliteSessionStorage {
                 .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?
                 .is_none()
             {
-                return Err(session_error(SessionErrorKind::InvalidLane, format!("Lane not found: {lane}")));
+                return Err(session_error(
+                    SessionErrorKind::InvalidLane,
+                    format!("Lane not found: {lane}"),
+                ));
             }
             if let Some(to) = &to {
                 if read_entry_row(db, &session_id, to)
                     .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?
                     .is_none()
                 {
-                    return Err(session_error(SessionErrorKind::NotFound, format!("Entry not found: {to}")));
+                    return Err(session_error(
+                        SessionErrorKind::NotFound,
+                        format!("Entry not found: {to}"),
+                    ));
                 }
             }
             let seq = get_next_sequence(db, &session_id)?;
@@ -694,7 +901,11 @@ impl SqliteSessionStorage {
         .await
     }
 
-    pub(crate) async fn append_entry(self: &Arc<Self>, entry: EntryNoStats, lane: &str) -> Result<Entry, SessionError> {
+    pub(crate) async fn append_entry(
+        self: &Arc<Self>,
+        entry: EntryNoStats,
+        lane: &str,
+    ) -> Result<Entry, SessionError> {
         let session_id = self.session_id();
         let lane = lane.to_string();
         self.enqueue_write(move |db| {
@@ -704,9 +915,18 @@ impl SqliteSessionStorage {
             let id = entry.id().to_string();
             let entry_type = entry_type_of_no_stats(&entry).to_string();
             let custom_type = custom_type_of_no_stats(&entry).map(|s| s.to_string());
-            let committed = commit_entry(db, &session_id, entry, parent_id.as_deref(), seq, now_ms())?;
+            let committed =
+                commit_entry(db, &session_id, entry, parent_id.as_deref(), seq, now_ms())?;
             set_lane_leaf(db, &session_id, &lane, &id)?;
-            append_entry_to_branch_cache(db, &session_id, &id, seq, &entry_type, custom_type.as_deref(), parent_id.as_deref())?;
+            append_entry_to_branch_cache(
+                db,
+                &session_id,
+                &id,
+                seq,
+                &entry_type,
+                custom_type.as_deref(),
+                parent_id.as_deref(),
+            )?;
             if entry_type == "message" {
                 increment_message_count(db, &session_id)?;
             }
@@ -717,10 +937,17 @@ impl SqliteSessionStorage {
         .await
     }
 
-    pub(crate) async fn append_record(self: &Arc<Self>, record: NewRecord) -> Result<LaneRecord, SessionError> {
+    pub(crate) async fn append_record(
+        self: &Arc<Self>,
+        record: NewRecord,
+    ) -> Result<LaneRecord, SessionError> {
         let session_id = self.session_id();
-        let record_str = serde_json::to_string(&record)
-            .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to serialize record: {error}")))?;
+        let record_str = serde_json::to_string(&record).map_err(|error| {
+            session_error(
+                SessionErrorKind::Storage,
+                format!("Failed to serialize record: {error}"),
+            )
+        })?;
         let record_id = record.id().to_string();
         let lane = record.lane().to_string();
         let record_type = record.record_type().to_string();
@@ -735,7 +962,10 @@ impl SqliteSessionStorage {
                 .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?
                 .is_none()
             {
-                return Err(session_error(SessionErrorKind::InvalidLane, format!("Lane not found: {lane}")));
+                return Err(session_error(
+                    SessionErrorKind::InvalidLane,
+                    format!("Lane not found: {lane}"),
+                ));
             }
             assert_unused_id(db, &session_id, &record_id)?;
             let seq = get_next_sequence(db, &session_id)?;
@@ -757,10 +987,21 @@ impl SqliteSessionStorage {
                     payload: record_str.clone(),
                 },
             )
-            .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to append record: {error}")))?;
+            .map_err(|error| {
+                session_error(
+                    SessionErrorKind::Storage,
+                    format!("Failed to append record: {error}"),
+                )
+            })?;
             if record_type == "operation_finished" {
-                finish_lane_operation(db, &session_id, &lane, run_id.as_deref())
-                    .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to finish operation: {error}")))?;
+                finish_lane_operation(db, &session_id, &lane, run_id.as_deref()).map_err(
+                    |error| {
+                        session_error(
+                            SessionErrorKind::Storage,
+                            format!("Failed to finish operation: {error}"),
+                        )
+                    },
+                )?;
             }
             if record_type == "usage" {
                 if let Some(usage) = &usage {
@@ -769,8 +1010,12 @@ impl SqliteSessionStorage {
             }
             advance_sequence(db, &session_id, seq)
                 .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-            let record: NewRecord = serde_json::from_str(&record_str)
-                .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to decode committed record: {error}")))?;
+            let record: NewRecord = serde_json::from_str(&record_str).map_err(|error| {
+                session_error(
+                    SessionErrorKind::Storage,
+                    format!("Failed to decode committed record: {error}"),
+                )
+            })?;
             Ok(new_record_complete(record, seq as u64, timestamp as u64))
         })
         .await
@@ -788,16 +1033,26 @@ impl SqliteSessionStorage {
         .await
     }
 
-    pub(crate) async fn find_entries(&self, query: &EntryQuery) -> Result<Vec<Entry>, SessionError> {
+    pub(crate) async fn find_entries(
+        &self,
+        query: &EntryQuery,
+    ) -> Result<Vec<Entry>, SessionError> {
         let session_id = self.session_id();
         let query = query.clone();
         let repo = self.repo.clone();
         repo.with_db(move |db| {
-            let sql_type = query
-                .entry_type
-                .clone()
-                .or_else(|| if query.custom_type.is_none() { None } else { Some("custom".to_string()) });
-            let sql_limit = if query.custom_type.is_none() { query.limit.map(|l| l as i64) } else { None };
+            let sql_type = query.entry_type.clone().or_else(|| {
+                if query.custom_type.is_none() {
+                    None
+                } else {
+                    Some("custom".to_string())
+                }
+            });
+            let sql_limit = if query.custom_type.is_none() {
+                query.limit.map(|l| l as i64)
+            } else {
+                None
+            };
             let rows = read_entry_rows(
                 db,
                 &session_id,
@@ -843,12 +1098,20 @@ impl SqliteSessionStorage {
                 Some(cached) => cached,
                 None => {
                     if read_entry_row(db, &session_id, &start)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?
+                        .map_err(|error| {
+                            session_error(SessionErrorKind::Storage, error.to_string())
+                        })?
                         .is_none()
                     {
-                        return Err(session_error(SessionErrorKind::NotFound, format!("Entry not found: {start}")));
+                        return Err(session_error(
+                            SessionErrorKind::NotFound,
+                            format!("Entry not found: {start}"),
+                        ));
                     }
-                    return Err(session_error(SessionErrorKind::InvalidEntry, format!("Branch cache missing entry {start}")));
+                    return Err(session_error(
+                        SessionErrorKind::InvalidEntry,
+                        format!("Branch cache missing entry {start}"),
+                    ));
                 }
             };
             let rows = query_cached_branch_rows(
@@ -883,7 +1146,10 @@ impl SqliteSessionStorage {
         .await
     }
 
-    pub(crate) async fn find_records(&self, query: &RecordQuery) -> Result<Vec<LaneRecord>, SessionError> {
+    pub(crate) async fn find_records(
+        &self,
+        query: &RecordQuery,
+    ) -> Result<Vec<LaneRecord>, SessionError> {
         let session_id = self.session_id();
         let query = query.clone();
         let repo = self.repo.clone();
@@ -1002,12 +1268,17 @@ impl SqliteSessionStorage {
                 match source {
                     LogSource::Entry(row) => items.push(LogItem::Entry(decode_entry(&row)?)),
                     LogSource::Record(row) => items.push(LogItem::Record(decode_record(&row)?)),
-                    LogSource::Lane(row) => {
-                        items.push(LogItem::Lane { seq: row.seq as u64, lane: row.lane, leaf_id: row.leaf_id })
-                    }
+                    LogSource::Lane(row) => items.push(LogItem::Lane {
+                        seq: row.seq as u64,
+                        lane: row.lane,
+                        leaf_id: row.leaf_id,
+                    }),
                     LogSource::Fact(row) => {
                         if row.kind == "name" {
-                            let name = row.value.as_deref().and_then(|v| serde_json::from_str::<String>(v).ok());
+                            let name = row
+                                .value
+                                .as_deref()
+                                .and_then(|v| serde_json::from_str::<String>(v).ok());
                             items.push(LogItem::Fact(pi_agent::session::types::FactLogItem {
                                 seq: row.seq as u64,
                                 fact: "name".to_string(),
@@ -1016,7 +1287,10 @@ impl SqliteSessionStorage {
                                 label: None,
                             }));
                         } else {
-                            let label = row.value.as_deref().and_then(|v| serde_json::from_str::<String>(v).ok());
+                            let label = row
+                                .value
+                                .as_deref()
+                                .and_then(|v| serde_json::from_str::<String>(v).ok());
                             items.push(LogItem::Fact(pi_agent::session::types::FactLogItem {
                                 seq: row.seq as u64,
                                 fact: "label".to_string(),
@@ -1040,9 +1314,12 @@ impl SqliteSessionStorage {
             let row = read_latest_fact(db, &session_id, "name", None)
                 .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
             match row.and_then(|row| row.value) {
-                Some(value) => serde_json::from_str(&value)
-                    .map(Some)
-                    .map_err(|error| session_error(SessionErrorKind::Storage, format!("Invalid stored name: {error}"))),
+                Some(value) => serde_json::from_str(&value).map(Some).map_err(|error| {
+                    session_error(
+                        SessionErrorKind::Storage,
+                        format!("Invalid stored name: {error}"),
+                    )
+                }),
                 None => Ok(None),
             }
         })
@@ -1054,7 +1331,9 @@ impl SqliteSessionStorage {
         let name = name.map(|s| s.to_string());
         self.enqueue_write(move |db| {
             let seq = get_next_sequence(db, &session_id)?;
-            let value = name.as_deref().map(|n| serde_json::to_string(n).expect("string serializes"));
+            let value = name
+                .as_deref()
+                .map(|n| serde_json::to_string(n).expect("string serializes"));
             append_fact(db, &session_id, seq, "name", None, value.as_deref())
                 .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
             advance_sequence(db, &session_id, seq)
@@ -1071,16 +1350,23 @@ impl SqliteSessionStorage {
             let row = read_latest_fact(db, &session_id, "label", Some(&id))
                 .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
             match row.and_then(|row| row.value) {
-                Some(value) => serde_json::from_str(&value)
-                    .map(Some)
-                    .map_err(|error| session_error(SessionErrorKind::Storage, format!("Invalid stored label: {error}"))),
+                Some(value) => serde_json::from_str(&value).map(Some).map_err(|error| {
+                    session_error(
+                        SessionErrorKind::Storage,
+                        format!("Invalid stored label: {error}"),
+                    )
+                }),
                 None => Ok(None),
             }
         })
         .await
     }
 
-    pub(crate) async fn set_label(self: &Arc<Self>, id: &str, label: Option<&str>) -> Result<(), SessionError> {
+    pub(crate) async fn set_label(
+        self: &Arc<Self>,
+        id: &str,
+        label: Option<&str>,
+    ) -> Result<(), SessionError> {
         let session_id = self.session_id();
         let id = id.to_string();
         let label = label.map(|s| s.to_string());
@@ -1089,10 +1375,15 @@ impl SqliteSessionStorage {
                 .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?
                 .is_none()
             {
-                return Err(session_error(SessionErrorKind::NotFound, format!("Entry not found: {id}")));
+                return Err(session_error(
+                    SessionErrorKind::NotFound,
+                    format!("Entry not found: {id}"),
+                ));
             }
             let seq = get_next_sequence(db, &session_id)?;
-            let value = label.as_deref().map(|l| serde_json::to_string(l).expect("string serializes"));
+            let value = label
+                .as_deref()
+                .map(|l| serde_json::to_string(l).expect("string serializes"));
             append_fact(db, &session_id, seq, "label", Some(&id), value.as_deref())
                 .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
             advance_sequence(db, &session_id, seq)
@@ -1157,7 +1448,12 @@ fn commit_entry(
             payload,
         },
     )
-    .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to insert entry: {error}")))?;
+    .map_err(|error| {
+        session_error(
+            SessionErrorKind::Storage,
+            format!("Failed to insert entry: {error}"),
+        )
+    })?;
     Ok(committed)
 }
 
@@ -1168,7 +1464,11 @@ fn provisioned_to_entry(
     timestamp: u64,
 ) -> Result<Entry, SessionError> {
     let entry = match entry {
-        EntryNoStats::Message { id, message, terminate } => Entry::Message {
+        EntryNoStats::Message {
+            id,
+            message,
+            terminate,
+        } => Entry::Message {
             id,
             seq,
             parent_id: parent_id.map(|s| s.to_string()),
@@ -1176,7 +1476,11 @@ fn provisioned_to_entry(
             message,
             terminate,
         },
-        EntryNoStats::ModelChange { id, provider, model_id } => Entry::ModelChange {
+        EntryNoStats::ModelChange {
+            id,
+            provider,
+            model_id,
+        } => Entry::ModelChange {
             id,
             seq,
             parent_id: parent_id.map(|s| s.to_string()),
@@ -1191,14 +1495,24 @@ fn provisioned_to_entry(
             timestamp,
             thinking_level,
         },
-        EntryNoStats::ActiveTools { id, active_tool_names } => Entry::ActiveTools {
+        EntryNoStats::ActiveTools {
+            id,
+            active_tool_names,
+        } => Entry::ActiveTools {
             id,
             seq,
             parent_id: parent_id.map(|s| s.to_string()),
             timestamp,
             active_tool_names,
         },
-        EntryNoStats::Compaction { id, summary, retained_tail, tokens_before, details, usage } => Entry::Compaction {
+        EntryNoStats::Compaction {
+            id,
+            summary,
+            retained_tail,
+            tokens_before,
+            details,
+            usage,
+        } => Entry::Compaction {
             id,
             seq,
             parent_id: parent_id.map(|s| s.to_string()),
@@ -1209,7 +1523,13 @@ fn provisioned_to_entry(
             details,
             usage,
         },
-        EntryNoStats::BranchSummary { id, from_id, summary, details, usage } => Entry::BranchSummary {
+        EntryNoStats::BranchSummary {
+            id,
+            from_id,
+            summary,
+            details,
+            usage,
+        } => Entry::BranchSummary {
             id,
             seq,
             parent_id: parent_id.map(|s| s.to_string()),
@@ -1219,7 +1539,11 @@ fn provisioned_to_entry(
             details,
             usage,
         },
-        EntryNoStats::Custom { id, custom_type, data } => Entry::Custom {
+        EntryNoStats::Custom {
+            id,
+            custom_type,
+            data,
+        } => Entry::Custom {
             id,
             seq,
             parent_id: parent_id.map(|s| s.to_string()),
@@ -1242,12 +1566,17 @@ pub struct SqliteSessionRepository {
 }
 
 impl SqliteSessionRepository {
-    pub fn new(database_path: impl Into<String>, lease_options: Option<SqliteWriterLeaseOptions>) -> Self {
+    pub fn new(
+        database_path: impl Into<String>,
+        lease_options: Option<SqliteWriterLeaseOptions>,
+    ) -> Self {
         let lease_options = lease_options.unwrap_or_default();
         if lease_options.ttl_ms == 0 {
             panic!("writerLease.ttlMs must be positive");
         }
-        if lease_options.heartbeat_interval_ms == 0 || lease_options.heartbeat_interval_ms >= lease_options.ttl_ms {
+        if lease_options.heartbeat_interval_ms == 0
+            || lease_options.heartbeat_interval_ms >= lease_options.ttl_ms
+        {
             panic!("writerLease.heartbeatIntervalMs must be positive and less than ttlMs");
         }
         Self {
@@ -1260,61 +1589,85 @@ impl SqliteSessionRepository {
         &self.lease_options
     }
 
-    pub async fn create(&self, options: &SqliteSessionCreateOptions) -> Result<crate::session::SqliteSession, SessionError> {
+    pub async fn create(
+        &self,
+        options: &SqliteSessionCreateOptions,
+    ) -> Result<crate::session::SqliteSession, SessionError> {
         let state = self.state.clone();
         let options = options.clone();
         let state_inner = Arc::clone(&state);
         let path = absolute_path(&state_inner.database_path);
         let id = options.id.clone().unwrap_or_else(new_id);
         let ttl = state.lease_options().ttl_ms;
-        state.with_db(move |db| {
-            if session_exists(db, &id)
-                .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?
-            {
-                return Err(session_error(SessionErrorKind::AlreadyExists, format!("Session already exists: {id}")));
-            }
-            let created_at = now_ms();
-            let metadata = options.metadata.clone();
-            let serialized = serialize_metadata_option(&metadata)?;
-            let lease = transaction(db, |tx| {
-                insert_session_row(
-                    tx,
-                    &NewSessionRow {
-                        id: id.clone(),
-                        created_at,
-                        cwd: options.cwd.clone(),
-                        parent_session_id: options.parent_session_id.clone(),
-                        metadata: serialized.clone(),
-                    },
-                )
-                .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to insert session: {error}")))?;
-                create_sequence(tx, &id, 1)
-                    .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                create_stats(tx, &id, 0)
-                    .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                create_initial_lane(tx, &id, "main", None)
-                    .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                claim_writer_lease(tx, &id, ttl)
-            })?;
-            let row = require_session_row(db, &id)?;
-            let decoded = decode_session_metadata(&row, &path).map_err(|e| SessionError::new(e.kind, e.message))?;
-            let storage = SqliteSessionStorage::new(state_inner.clone(), decoded, lease);
-            state_inner.register_storage(&storage);
-            Ok(crate::session::SqliteSession::new(storage))
-        })
-        .await
+        state
+            .with_db(move |db| {
+                if session_exists(db, &id)
+                    .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?
+                {
+                    return Err(session_error(
+                        SessionErrorKind::AlreadyExists,
+                        format!("Session already exists: {id}"),
+                    ));
+                }
+                let created_at = now_ms();
+                let metadata = options.metadata.clone();
+                let serialized = serialize_metadata_option(&metadata)?;
+                let lease = transaction(db, |tx| {
+                    insert_session_row(
+                        tx,
+                        &NewSessionRow {
+                            id: id.clone(),
+                            created_at,
+                            cwd: options.cwd.clone(),
+                            parent_session_id: options.parent_session_id.clone(),
+                            metadata: serialized.clone(),
+                        },
+                    )
+                    .map_err(|error| {
+                        session_error(
+                            SessionErrorKind::Storage,
+                            format!("Failed to insert session: {error}"),
+                        )
+                    })?;
+                    create_sequence(tx, &id, 1).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    create_stats(tx, &id, 0).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    create_initial_lane(tx, &id, "main", None).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    claim_writer_lease(tx, &id, ttl)
+                })?;
+                let row = require_session_row(db, &id)?;
+                let decoded = decode_session_metadata(&row, &path)
+                    .map_err(|e| SessionError::new(e.kind, e.message))?;
+                let storage = SqliteSessionStorage::new(state_inner.clone(), decoded, lease);
+                state_inner.register_storage(&storage);
+                Ok(crate::session::SqliteSession::new(storage))
+            })
+            .await
     }
 
-    pub async fn open(&self, metadata: &SqliteSessionMetadata) -> Result<crate::session::SqliteSession, SessionError> {
+    pub async fn open(
+        &self,
+        metadata: &SqliteSessionMetadata,
+    ) -> Result<crate::session::SqliteSession, SessionError> {
         let state = self.state.clone();
         let state_inner = Arc::clone(&state);
         let metadata = metadata.clone();
-        state.with_db(move |db| self_claim_session(&state_inner, db, &metadata)).await
+        state
+            .with_db(move |db| self_claim_session(&state_inner, db, &metadata))
+            .await
     }
 
     /// Rebuilds this session's private branch-read cache from canonical entry
     /// parent links.
-    pub async fn repair_branch_cache(&self, metadata: &SqliteSessionMetadata) -> Result<(), SessionError> {
+    pub async fn repair_branch_cache(
+        &self,
+        metadata: &SqliteSessionMetadata,
+    ) -> Result<(), SessionError> {
         let state = self.state.clone();
         let state_inner = Arc::clone(&state);
         let metadata = metadata.clone();
@@ -1322,11 +1675,13 @@ impl SqliteSessionRepository {
         state
             .with_db(move |db| {
                 transaction(db, |tx| {
-                    let lease = claim_writer_lease(tx, &metadata.id, state_inner.lease_options().ttl_ms)?;
+                    let lease =
+                        claim_writer_lease(tx, &metadata.id, state_inner.lease_options().ttl_ms)?;
                     require_session_row(tx, &metadata.id)?;
                     rebuild_branch_cache(tx, &metadata.id)?;
-                    release_writer_lease(tx, &metadata.id, &lease)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
+                    release_writer_lease(tx, &metadata.id, &lease).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
                     Ok(())
                 })
             })
@@ -1335,19 +1690,26 @@ impl SqliteSessionRepository {
 
     /// Reads the session catalog without acquiring or renewing per-session
     /// writer leases.
-    pub async fn list(&self, options: &SqliteSessionListOptions) -> Result<Vec<SqliteSessionMetadata>, SessionError> {
+    pub async fn list(
+        &self,
+        options: &SqliteSessionListOptions,
+    ) -> Result<Vec<SqliteSessionMetadata>, SessionError> {
         let state = self.state.clone();
         let state_inner = Arc::clone(&state);
         let options = options.clone();
-        state.with_db(move |db| {
-            let path = absolute_path(&state_inner.database_path);
-            let rows = read_session_rows(db, options.cwd.as_deref())
-                .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-            rows.iter()
-                .map(|row| decode_session_metadata(row, &path).map_err(|e| SessionError::new(e.kind, e.message)))
-                .collect()
-        })
-        .await
+        state
+            .with_db(move |db| {
+                let path = absolute_path(&state_inner.database_path);
+                let rows = read_session_rows(db, options.cwd.as_deref())
+                    .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
+                rows.iter()
+                    .map(|row| {
+                        decode_session_metadata(row, &path)
+                            .map_err(|e| SessionError::new(e.kind, e.message))
+                    })
+                    .collect()
+            })
+            .await
     }
 
     pub async fn delete(&self, metadata: &SqliteSessionMetadata) -> Result<(), SessionError> {
@@ -1358,32 +1720,43 @@ impl SqliteSessionRepository {
         state
             .with_db(move |db| {
                 transaction(db, |tx| {
-                    if !session_exists(tx, &metadata.id)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?
-                    {
-                        delete_writer_lease(tx, &metadata.id)
-                            .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
+                    if !session_exists(tx, &metadata.id).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })? {
+                        delete_writer_lease(tx, &metadata.id).map_err(|error| {
+                            session_error(SessionErrorKind::Storage, error.to_string())
+                        })?;
                         return Ok(());
                     }
-                    let _lease = claim_writer_lease(tx, &metadata.id, state_inner.lease_options().ttl_ms)?;
-                    delete_branch_cache(tx, &metadata.id)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                    delete_fact_rows(tx, &metadata.id)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                    delete_lane_rows(tx, &metadata.id)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                    delete_record_rows(tx, &metadata.id)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                    delete_entry_rows(tx, &metadata.id)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                    delete_writer_lease(tx, &metadata.id)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                    delete_stats(tx, &metadata.id)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                    delete_sequence(tx, &metadata.id)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                    delete_session_row(tx, &metadata.id)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
+                    let _lease =
+                        claim_writer_lease(tx, &metadata.id, state_inner.lease_options().ttl_ms)?;
+                    delete_branch_cache(tx, &metadata.id).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    delete_fact_rows(tx, &metadata.id).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    delete_lane_rows(tx, &metadata.id).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    delete_record_rows(tx, &metadata.id).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    delete_entry_rows(tx, &metadata.id).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    delete_writer_lease(tx, &metadata.id).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    delete_stats(tx, &metadata.id).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    delete_sequence(tx, &metadata.id).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    delete_session_row(tx, &metadata.id).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
                     Ok(())
                 })
             })
@@ -1399,206 +1772,268 @@ impl SqliteSessionRepository {
         let state_inner = Arc::clone(&state);
         let source = source.clone();
         let options = options.clone();
-        state.with_db(move |db| {
-            let path = absolute_path(&state_inner.database_path);
-            let source_row = require_session_row(db, &source.id)?;
-            let source_metadata = decode_session_metadata(&source_row, &path).map_err(|e| SessionError::new(e.kind, e.message))?;
-            let id = options.id.clone().unwrap_or_else(new_id);
-            if session_exists(db, &id)
-                .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?
-            {
-                return Err(session_error(SessionErrorKind::AlreadyExists, format!("Session already exists: {id}")));
-            }
-
-            let mut entries: Vec<EntryRow> = Vec::new();
-            let mut lanes: Vec<(String, Option<String>)> = Vec::new();
-            let mut branch_tips: Vec<String> = Vec::new();
-            let mut branch_fork_target_id: Option<String> = None;
-
-            match &options.fork_options {
-                ForkOptions::Tree => {
-                    entries.extend(
-                        read_entry_rows(
-                            db,
-                            &source.id,
-                            ReadEntryRowsOptions {
-                                after_seq: None,
-                                cursor: None,
-                                entry_type: None,
-                                order: Some(EntryOrder::OldestFirst),
-                                limit: None,
-                            },
-                        )
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?,
-                    );
-                    lanes.extend(
-                        read_lanes(db, &source.id)
-                            .map_err(|e| SessionError::new(e.kind, e.message))?
-                            .into_iter()
-                            .map(|row| (row.lane, row.leaf_id)),
-                    );
-                    branch_tips = read_branch_tip_ids(db, &source.id)
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                }
-                ForkOptions::Branch { entry_id, position } => {
-                    let main = read_lane(db, &source.id, "main")
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                    let main = main.ok_or_else(|| session_error(SessionErrorKind::InvalidLane, "Lane not found: main"))?;
-                    let selected_entry_id = entry_id.clone().or(main.leaf_id.clone());
-                    if let Some(selected_entry_id) = selected_entry_id {
-                        let target = read_entry_row(db, &source.id, &selected_entry_id)
-                            .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                        let target = match target.as_ref() {
-                            Some(target) if target.entry_type == "message" => target,
-                            _ => {
-                                return Err(session_error(
-                                    SessionErrorKind::InvalidForkTarget,
-                                    format!("Fork target is not a message entry: {selected_entry_id}"),
-                                ))
-                            }
-                        };
-                        let position = position.unwrap_or(if entry_id.is_none() {
-                            pi_agent::session::state::ForkPosition::At
-                        } else {
-                            pi_agent::session::state::ForkPosition::Before
-                        });
-                        branch_fork_target_id = match position {
-                            pi_agent::session::state::ForkPosition::At => Some(target.id.clone()),
-                            pi_agent::session::state::ForkPosition::Before => target.parent_id.clone(),
-                        };
-                    }
-                    lanes.push(("main".to_string(), branch_fork_target_id.clone()));
-                    if let Some(target) = branch_fork_target_id.clone() {
-                        let cached = read_cached_branch(db, &source.id, &target)
-                            .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                        let cached = cached.ok_or_else(|| {
-                            session_error(
-                                SessionErrorKind::InvalidForkTarget,
-                                format!("Fork target is not on a cached branch: {target}"),
-                            )
-                        })?;
-                        let rows = query_cached_branch_rows(
-                            db,
-                            &source.id,
-                            &cached,
-                            &CachedBranchQuery {
-                                order: Some(EntryOrder::OldestFirst),
-                                ..Default::default()
-                            },
-                        )
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                        // cached rows carry `entry_seq`; normalize into EntryRow
-                        // before copying (upstream `entryRowFromCached`).
-                        entries.extend(rows.into_iter().map(entry_row_from_cached));
-                        branch_tips.push(target);
-                    }
-                }
-            }
-
-            let copied_ids: std::collections::HashSet<String> =
-                entries.iter().map(|entry| entry.id.clone()).collect();
-            let latest_name = read_latest_fact(db, &source.id, "name", None)
-                .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-            let latest_labels = read_latest_label_facts(db, &source.id)
-                .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-            let labels_to_copy: Vec<(String, String)> = latest_labels
-                .into_iter()
-                .filter(|(key, _)| matches!(options.fork_options, ForkOptions::Tree) || copied_ids.contains(key))
-                .collect();
-            let created_at = now_ms();
-            let metadata = options.metadata.clone().or_else(|| source_metadata.metadata.clone());
-            let serialized = serialize_metadata_option(&metadata)?;
-            let lease = transaction(db, |tx| {
-                insert_session_row(
-                    tx,
-                    &NewSessionRow {
-                        id: id.clone(),
-                        created_at,
-                        cwd: options.cwd.clone(),
-                        parent_session_id: options.parent_session_id.clone().or(Some(source.id.clone())),
-                        metadata: serialized.clone(),
-                    },
-                )
-                .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to insert session: {error}")))?;
-                create_sequence(tx, &id, 1)
-                    .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                create_stats(
-                    tx,
-                    &id,
-                    entries.iter().filter(|entry| entry.entry_type == "message").count() as i64,
-                )
-                .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-
-                let mut next_seq = 1i64;
-                let mut allocate_seq = || {
-                    let seq = next_seq;
-                    next_seq += 1;
-                    seq
-                };
-                for entry in entries.clone() {
-                    insert_entry_row(
-                        tx,
-                        &id,
-                        &NewEntryRow {
-                            seq: allocate_seq(),
-                            id: entry.id.clone(),
-                            parent_id: entry.parent_id.clone(),
-                            entry_type: entry.entry_type.clone(),
-                            timestamp: entry.timestamp,
-                            payload: entry.payload.clone(),
-                        },
-                    )
-                    .map_err(|error| session_error(SessionErrorKind::Storage, format!("Failed to insert entry: {error}")))?;
+        state
+            .with_db(move |db| {
+                let path = absolute_path(&state_inner.database_path);
+                let source_row = require_session_row(db, &source.id)?;
+                let source_metadata = decode_session_metadata(&source_row, &path)
+                    .map_err(|e| SessionError::new(e.kind, e.message))?;
+                let id = options.id.clone().unwrap_or_else(new_id);
+                if session_exists(db, &id)
+                    .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?
+                {
+                    return Err(session_error(
+                        SessionErrorKind::AlreadyExists,
+                        format!("Session already exists: {id}"),
+                    ));
                 }
 
-                match options.fork_options {
+                let mut entries: Vec<EntryRow> = Vec::new();
+                let mut lanes: Vec<(String, Option<String>)> = Vec::new();
+                let mut branch_tips: Vec<String> = Vec::new();
+                let mut branch_fork_target_id: Option<String> = None;
+
+                match &options.fork_options {
                     ForkOptions::Tree => {
-                        for (lane, leaf_id) in &lanes {
-                            create_lane(tx, &id, allocate_seq(), lane, leaf_id.as_deref())
-                                .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
+                        entries.extend(
+                            read_entry_rows(
+                                db,
+                                &source.id,
+                                ReadEntryRowsOptions {
+                                    after_seq: None,
+                                    cursor: None,
+                                    entry_type: None,
+                                    order: Some(EntryOrder::OldestFirst),
+                                    limit: None,
+                                },
+                            )
+                            .map_err(|error| {
+                                session_error(SessionErrorKind::Storage, error.to_string())
+                            })?,
+                        );
+                        lanes.extend(
+                            read_lanes(db, &source.id)
+                                .map_err(|e| SessionError::new(e.kind, e.message))?
+                                .into_iter()
+                                .map(|row| (row.lane, row.leaf_id)),
+                        );
+                        branch_tips = read_branch_tip_ids(db, &source.id).map_err(|error| {
+                            session_error(SessionErrorKind::Storage, error.to_string())
+                        })?;
+                    }
+                    ForkOptions::Branch { entry_id, position } => {
+                        let main = read_lane(db, &source.id, "main").map_err(|error| {
+                            session_error(SessionErrorKind::Storage, error.to_string())
+                        })?;
+                        let main = main.ok_or_else(|| {
+                            session_error(SessionErrorKind::InvalidLane, "Lane not found: main")
+                        })?;
+                        let selected_entry_id = entry_id.clone().or(main.leaf_id.clone());
+                        if let Some(selected_entry_id) = selected_entry_id {
+                            let target = read_entry_row(db, &source.id, &selected_entry_id)
+                                .map_err(|error| {
+                                    session_error(SessionErrorKind::Storage, error.to_string())
+                                })?;
+                            let target = match target.as_ref() {
+                                Some(target) if target.entry_type == "message" => target,
+                                _ => {
+                                    return Err(session_error(
+                                        SessionErrorKind::InvalidForkTarget,
+                                        format!(
+                                        "Fork target is not a message entry: {selected_entry_id}"
+                                    ),
+                                    ))
+                                }
+                            };
+                            let position = position.unwrap_or(if entry_id.is_none() {
+                                pi_agent::session::state::ForkPosition::At
+                            } else {
+                                pi_agent::session::state::ForkPosition::Before
+                            });
+                            branch_fork_target_id = match position {
+                                pi_agent::session::state::ForkPosition::At => {
+                                    Some(target.id.clone())
+                                }
+                                pi_agent::session::state::ForkPosition::Before => {
+                                    target.parent_id.clone()
+                                }
+                            };
+                        }
+                        lanes.push(("main".to_string(), branch_fork_target_id.clone()));
+                        if let Some(target) = branch_fork_target_id.clone() {
+                            let cached =
+                                read_cached_branch(db, &source.id, &target).map_err(|error| {
+                                    session_error(SessionErrorKind::Storage, error.to_string())
+                                })?;
+                            let cached = cached.ok_or_else(|| {
+                                session_error(
+                                    SessionErrorKind::InvalidForkTarget,
+                                    format!("Fork target is not on a cached branch: {target}"),
+                                )
+                            })?;
+                            let rows = query_cached_branch_rows(
+                                db,
+                                &source.id,
+                                &cached,
+                                &CachedBranchQuery {
+                                    order: Some(EntryOrder::OldestFirst),
+                                    ..Default::default()
+                                },
+                            )
+                            .map_err(|error| {
+                                session_error(SessionErrorKind::Storage, error.to_string())
+                            })?;
+                            // cached rows carry `entry_seq`; normalize into EntryRow
+                            // before copying (upstream `entryRowFromCached`).
+                            entries.extend(rows.into_iter().map(entry_row_from_cached));
+                            branch_tips.push(target);
                         }
                     }
-                    ForkOptions::Branch { .. } => {
-                        create_initial_lane(tx, &id, "main", branch_fork_target_id.as_deref())
-                            .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                    }
                 }
 
-                if let Some(name_row) = &latest_name {
-                    if let Some(value) = &name_row.value {
-                        append_fact(tx, &id, allocate_seq(), "name", None, Some(value))
-                            .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                    }
-                }
-                for (key, value) in &labels_to_copy {
-                    append_fact(tx, &id, allocate_seq(), "label", Some(key), Some(value))
-                        .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                }
-
-                set_next_sequence(tx, &id, next_seq)
+                let copied_ids: std::collections::HashSet<String> =
+                    entries.iter().map(|entry| entry.id.clone()).collect();
+                let latest_name = read_latest_fact(db, &source.id, "name", None)
                     .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
-                for tip in &branch_tips {
-                    build_cached_branch(tx, &id, tip)?;
-                }
-                claim_writer_lease(tx, &id, state_inner.lease_options().ttl_ms)
-            })
-            .map_err(|error: SessionError| {
-                if matches!(error.kind, SessionErrorKind::Storage | SessionErrorKind::InvalidForkTarget | SessionErrorKind::AlreadyExists | SessionErrorKind::InvalidLane) {
-                    error
-                } else {
-                    SessionError::new(
-                        SessionErrorKind::Storage,
-                        format!("Failed to fork SQLite session {id}: {}", error.message),
+                let latest_labels = read_latest_label_facts(db, &source.id)
+                    .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
+                let labels_to_copy: Vec<(String, String)> = latest_labels
+                    .into_iter()
+                    .filter(|(key, _)| {
+                        matches!(options.fork_options, ForkOptions::Tree)
+                            || copied_ids.contains(key)
+                    })
+                    .collect();
+                let created_at = now_ms();
+                let metadata = options
+                    .metadata
+                    .clone()
+                    .or_else(|| source_metadata.metadata.clone());
+                let serialized = serialize_metadata_option(&metadata)?;
+                let lease = transaction(db, |tx| {
+                    insert_session_row(
+                        tx,
+                        &NewSessionRow {
+                            id: id.clone(),
+                            created_at,
+                            cwd: options.cwd.clone(),
+                            parent_session_id: options
+                                .parent_session_id
+                                .clone()
+                                .or(Some(source.id.clone())),
+                            metadata: serialized.clone(),
+                        },
                     )
-                }
-            })?;
-            let row = require_session_row(db, &id)?;
-            let decoded = decode_session_metadata(&row, &path).map_err(|e| SessionError::new(e.kind, e.message))?;
-            let storage = SqliteSessionStorage::new(state_inner.clone(), decoded, lease);
-            state_inner.register_storage(&storage);
-            Ok(crate::session::SqliteSession::new(storage))
-        })
-        .await
+                    .map_err(|error| {
+                        session_error(
+                            SessionErrorKind::Storage,
+                            format!("Failed to insert session: {error}"),
+                        )
+                    })?;
+                    create_sequence(tx, &id, 1).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    create_stats(
+                        tx,
+                        &id,
+                        entries
+                            .iter()
+                            .filter(|entry| entry.entry_type == "message")
+                            .count() as i64,
+                    )
+                    .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
+
+                    let mut next_seq = 1i64;
+                    let mut allocate_seq = || {
+                        let seq = next_seq;
+                        next_seq += 1;
+                        seq
+                    };
+                    for entry in entries.clone() {
+                        insert_entry_row(
+                            tx,
+                            &id,
+                            &NewEntryRow {
+                                seq: allocate_seq(),
+                                id: entry.id.clone(),
+                                parent_id: entry.parent_id.clone(),
+                                entry_type: entry.entry_type.clone(),
+                                timestamp: entry.timestamp,
+                                payload: entry.payload.clone(),
+                            },
+                        )
+                        .map_err(|error| {
+                            session_error(
+                                SessionErrorKind::Storage,
+                                format!("Failed to insert entry: {error}"),
+                            )
+                        })?;
+                    }
+
+                    match options.fork_options {
+                        ForkOptions::Tree => {
+                            for (lane, leaf_id) in &lanes {
+                                create_lane(tx, &id, allocate_seq(), lane, leaf_id.as_deref())
+                                    .map_err(|error| {
+                                        session_error(SessionErrorKind::Storage, error.to_string())
+                                    })?;
+                            }
+                        }
+                        ForkOptions::Branch { .. } => {
+                            create_initial_lane(tx, &id, "main", branch_fork_target_id.as_deref())
+                                .map_err(|error| {
+                                    session_error(SessionErrorKind::Storage, error.to_string())
+                                })?;
+                        }
+                    }
+
+                    if let Some(name_row) = &latest_name {
+                        if let Some(value) = &name_row.value {
+                            append_fact(tx, &id, allocate_seq(), "name", None, Some(value))
+                                .map_err(|error| {
+                                    session_error(SessionErrorKind::Storage, error.to_string())
+                                })?;
+                        }
+                    }
+                    for (key, value) in &labels_to_copy {
+                        append_fact(tx, &id, allocate_seq(), "label", Some(key), Some(value))
+                            .map_err(|error| {
+                                session_error(SessionErrorKind::Storage, error.to_string())
+                            })?;
+                    }
+
+                    set_next_sequence(tx, &id, next_seq).map_err(|error| {
+                        session_error(SessionErrorKind::Storage, error.to_string())
+                    })?;
+                    for tip in &branch_tips {
+                        build_cached_branch(tx, &id, tip)?;
+                    }
+                    claim_writer_lease(tx, &id, state_inner.lease_options().ttl_ms)
+                })
+                .map_err(|error: SessionError| {
+                    if matches!(
+                        error.kind,
+                        SessionErrorKind::Storage
+                            | SessionErrorKind::InvalidForkTarget
+                            | SessionErrorKind::AlreadyExists
+                            | SessionErrorKind::InvalidLane
+                    ) {
+                        error
+                    } else {
+                        SessionError::new(
+                            SessionErrorKind::Storage,
+                            format!("Failed to fork SQLite session {id}: {}", error.message),
+                        )
+                    }
+                })?;
+                let row = require_session_row(db, &id)?;
+                let decoded = decode_session_metadata(&row, &path)
+                    .map_err(|e| SessionError::new(e.kind, e.message))?;
+                let storage = SqliteSessionStorage::new(state_inner.clone(), decoded, lease);
+                state_inner.register_storage(&storage);
+                Ok(crate::session::SqliteSession::new(storage))
+            })
+            .await
     }
 
     /// Releases all active storages and closes the shared database
@@ -1638,12 +2073,17 @@ impl Default for ForkCreateOptions {
             cwd: "/workspace".to_string(),
             parent_session_id: None,
             metadata: None,
-            fork_options: ForkOptions::Branch { entry_id: None, position: None },
+            fork_options: ForkOptions::Branch {
+                entry_id: None,
+                position: None,
+            },
         }
     }
 }
 
-fn serialize_metadata_option(metadata: &Option<serde_json::Value>) -> Result<Option<String>, SessionError> {
+fn serialize_metadata_option(
+    metadata: &Option<serde_json::Value>,
+) -> Result<Option<String>, SessionError> {
     match metadata {
         None => Ok(None),
         Some(metadata) => {
@@ -1653,10 +2093,12 @@ fn serialize_metadata_option(metadata: &Option<serde_json::Value>) -> Result<Opt
                     "SQLite session metadata must be an object",
                 ));
             }
-            Ok(Some(
-                serde_json::to_string(metadata)
-                    .map_err(|error| session_error(SessionErrorKind::InvalidPayload, format!("Metadata is not serializable: {error}")))?,
-            ))
+            Ok(Some(serde_json::to_string(metadata).map_err(|error| {
+                session_error(
+                    SessionErrorKind::InvalidPayload,
+                    format!("Metadata is not serializable: {error}"),
+                )
+            })?))
         }
     }
 }

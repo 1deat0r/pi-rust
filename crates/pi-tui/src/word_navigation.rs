@@ -89,7 +89,11 @@ pub fn segment_text(text: &str) -> Vec<Segment> {
             i += 1;
         }
         let seg_text: String = chars[start..i].iter().collect();
-        let index_before = text.char_indices().nth(start).map(|(b, _)| b).unwrap_or(text.len());
+        let index_before = text
+            .char_indices()
+            .nth(start)
+            .map(|(b, _)| b)
+            .unwrap_or(text.len());
         segments.push(Segment {
             segment: seg_text,
             index: index_before,
@@ -129,7 +133,6 @@ fn last_index_of_punctuation(segment: &str) -> Option<usize> {
     }
     last
 }
-
 
 fn prev_char_boundary(text: &str, cursor: usize) -> usize {
     if cursor >= text.len() {
@@ -172,7 +175,13 @@ pub fn find_word_backward(text: &str, cursor: usize, options: &WordNavigationOpt
     while let Some(last) = segments.back() {
         let seg = &last.segment;
         let atomic = is_atomic.map(|f| f(seg)).unwrap_or(false);
-        if !atomic && seg.chars().next().map(|c| c.is_whitespace()).unwrap_or(false) {
+        if !atomic
+            && seg
+                .chars()
+                .next()
+                .map(|c| c.is_whitespace())
+                .unwrap_or(false)
+        {
             new_cursor -= seg.len();
             segments.pop_back();
         } else {
@@ -197,7 +206,11 @@ pub fn find_word_backward(text: &str, cursor: usize, options: &WordNavigationOpt
         if segment_has_no_punctuation(&last.segment) {
             new_cursor -= last.segment.len();
         } else if let Some(last_match_byte) = last_index_of_punctuation(&last.segment) {
-            let last_match_char_len = last.segment[last_match_byte..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+            let last_match_char_len = last.segment[last_match_byte..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
             new_cursor -= last.segment.len() - (last_match_byte + last_match_char_len);
         } else {
             new_cursor -= last.segment.len();
@@ -208,7 +221,14 @@ pub fn find_word_backward(text: &str, cursor: usize, options: &WordNavigationOpt
         while let Some(last) = segments.back() {
             let seg = &last.segment;
             let atomic = is_atomic.map(|f| f(seg)).unwrap_or(false);
-            if atomic || last.is_word_like || seg.chars().next().map(|c| c.is_whitespace()).unwrap_or(false) {
+            if atomic
+                || last.is_word_like
+                || seg
+                    .chars()
+                    .next()
+                    .map(|c| c.is_whitespace())
+                    .unwrap_or(false)
+            {
                 break;
             }
             new_cursor -= seg.len();
@@ -238,7 +258,14 @@ pub fn find_word_forward(text: &str, cursor: usize, options: &WordNavigationOpti
     // Skip leading whitespace
     while let Some(seg) = segments.peek() {
         let atomic = is_atomic.map(|f| f(&seg.segment)).unwrap_or(false);
-        if !atomic && seg.segment.chars().next().map(|c| c.is_whitespace()).unwrap_or(false) {
+        if !atomic
+            && seg
+                .segment
+                .chars()
+                .next()
+                .map(|c| c.is_whitespace())
+                .unwrap_or(false)
+        {
             new_cursor += seg.segment.len();
             segments.next();
         } else {
@@ -258,7 +285,11 @@ pub fn find_word_forward(text: &str, cursor: usize, options: &WordNavigationOpti
     } else if first.is_word_like {
         // Skip inside one word-like segment, preserving punctuation boundaries
         // (first punctuation char index, or full length).
-        match first.segment.char_indices().find(|(_, c)| is_punctuation_char(*c)) {
+        match first
+            .segment
+            .char_indices()
+            .find(|(_, c)| is_punctuation_char(*c))
+        {
             Some((idx, _)) => new_cursor += idx,
             None => new_cursor += first.segment.len(),
         }
@@ -267,7 +298,15 @@ pub fn find_word_forward(text: &str, cursor: usize, options: &WordNavigationOpti
         // segment is included in the loop, mirroring upstream.
         while let Some(seg) = next.as_ref() {
             let atomic = is_atomic.map(|f| f(&seg.segment)).unwrap_or(false);
-            if atomic || seg.is_word_like || seg.segment.chars().next().map(|c| c.is_whitespace()).unwrap_or(false) {
+            if atomic
+                || seg.is_word_like
+                || seg
+                    .segment
+                    .chars()
+                    .next()
+                    .map(|c| c.is_whitespace())
+                    .unwrap_or(false)
+            {
                 break;
             }
             new_cursor += seg.segment.len();
@@ -455,7 +494,11 @@ mod tests {
                 if start > pos {
                     result.extend(segment_text(&input[pos..start]));
                 }
-                result.push(Segment { segment: marker.to_string(), index: start, is_word_like: true });
+                result.push(Segment {
+                    segment: marker.to_string(),
+                    index: start,
+                    is_word_like: true,
+                });
                 pos = start + marker.len();
             }
             if pos < input.len() {
@@ -477,5 +520,3 @@ mod tests {
         assert_eq!(find_word_forward(&full, 6, &opts), 6 + marker.len());
     }
 }
-
-

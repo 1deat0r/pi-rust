@@ -166,14 +166,13 @@ impl<F: FileSystem> ScanningSessionSearch<F> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fs::MemoryFs;
     use crate::session::jsonl::storage::JsonlSessionStorage;
-    use crate::session::{jsonl_session_directory_name, CreateOptions, JsonlSessionRepo};
     use crate::session::types::{EntryNoStats, JsonlV4Header};
+    use crate::session::{jsonl_session_directory_name, CreateOptions, JsonlSessionRepo};
     use pi_ai::types::{ContentBlock, Message, UserContent};
 
     fn user_message(text: &str) -> crate::types::AgentMessage {
@@ -200,7 +199,9 @@ mod tests {
     async fn memory_session(id: &str, cwd: &str) -> Session<MemoryFs> {
         let fs = MemoryFs::new();
         let path = format!("/sessions/{id}.jsonl");
-        let storage = JsonlSessionStorage::create(fs, &path, header(id, cwd)).await.unwrap();
+        let storage = JsonlSessionStorage::create(fs, &path, header(id, cwd))
+            .await
+            .unwrap();
         Session::new(storage)
     }
 
@@ -226,7 +227,9 @@ mod tests {
         text: &str,
         options: &SessionSearchOptions,
     ) -> Result<Vec<SessionSearchHit>, String> {
-        ScanningSessionSearch::new(sessions).search(text, options).await
+        ScanningSessionSearch::new(sessions)
+            .search(text, options)
+            .await
     }
 
     fn default_options() -> SessionSearchOptions {
@@ -238,45 +241,83 @@ mod tests {
     #[tokio::test]
     async fn scans_in_memory_projected_source() {
         let mut root = memory_session("root", "/repo").await;
-        root.append_entry(notes_entry("fix auth flow"), "main").await.unwrap();
+        root.append_entry(notes_entry("fix auth flow"), "main")
+            .await
+            .unwrap();
         let mut other = memory_session("other", "/other").await;
-        other.append_entry(notes_entry("auth in another workspace"), "main").await.unwrap();
+        other
+            .append_entry(notes_entry("auth in another workspace"), "main")
+            .await
+            .unwrap();
 
-        let root_hits = hit_search(vec![root], "auth", &default_options()).await.unwrap();
+        let root_hits = hit_search(vec![root], "auth", &default_options())
+            .await
+            .unwrap();
         assert_eq!(root_hits.len(), 1);
         assert_eq!(root_hits[0].session_id, "root");
 
-        let other_hits = hit_search(vec![other], "auth", &default_options()).await.unwrap();
+        let other_hits = hit_search(vec![other], "auth", &default_options())
+            .await
+            .unwrap();
         assert_eq!(other_hits[0].session_id, "other");
 
         let root = memory_session("root", "/repo").await;
-        assert!(hit_search(vec![root], "missing", &default_options()).await.unwrap().is_empty());
-        assert!(hit_search(vec![], "auth", &default_options()).await.unwrap().is_empty());
+        assert!(hit_search(vec![root], "missing", &default_options())
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(hit_search(vec![], "auth", &default_options())
+            .await
+            .unwrap()
+            .is_empty());
         // Trims and is case-insensitive.
         let mut root = memory_session("root", "/repo").await;
-        root.append_entry(notes_entry("Fix Auth Flow"), "main").await.unwrap();
-        let hits = hit_search(vec![root], "  auth  ", &default_options()).await.unwrap();
+        root.append_entry(notes_entry("Fix Auth Flow"), "main")
+            .await
+            .unwrap();
+        let hits = hit_search(vec![root], "  auth  ", &default_options())
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
     }
 
     #[tokio::test]
     async fn includes_labels_in_projection() {
         let mut session = memory_session("session", "/repo").await;
-        let entry = session.append_entry(notes_entry("plain body"), "main").await.unwrap();
-        session.set_label(entry.id(), Some("important label")).await.unwrap();
+        let entry = session
+            .append_entry(notes_entry("plain body"), "main")
+            .await
+            .unwrap();
+        session
+            .set_label(entry.id(), Some("important label"))
+            .await
+            .unwrap();
 
-        let hits = hit_search(vec![session], "important", &default_options()).await.unwrap();
+        let hits = hit_search(vec![session], "important", &default_options())
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, "session");
         assert_eq!(hits[0].entry_id, entry.id());
-        assert!(hits[0].snippet.contains("important label"), "got: {:?}", hits[0].snippet);
+        assert!(
+            hits[0].snippet.contains("important label"),
+            "got: {:?}",
+            hits[0].snippet
+        );
     }
 
     #[tokio::test]
     async fn honors_entry_type_filters_and_abort() {
         let mut session = memory_session("session", "/repo").await;
-        session.append_entry(notes_entry("auth message"), "main").await.unwrap();
-        session.append_entry(custom_entry("note", serde_json::json!({ "text": "auth custom" })), "main")
+        session
+            .append_entry(notes_entry("auth message"), "main")
+            .await
+            .unwrap();
+        session
+            .append_entry(
+                custom_entry("note", serde_json::json!({ "text": "auth custom" })),
+                "main",
+            )
             .await
             .unwrap();
 
@@ -286,12 +327,22 @@ mod tests {
         };
         let hits = hit_search(vec![session], "auth", &options).await.unwrap();
         assert_eq!(hits.len(), 1, "got: {hits:?}");
-        assert!(hits[0].snippet.contains("auth message"), "got: {:?}", hits[0].snippet);
+        assert!(
+            hits[0].snippet.contains("auth message"),
+            "got: {:?}",
+            hits[0].snippet
+        );
 
         // Abort requested -> error surfaced immediately.
         let mut session = memory_session("session", "/repo").await;
-        session.append_entry(notes_entry("auth message"), "main").await.unwrap();
-        let abort = SessionSearchOptions { abort_requested: true, ..Default::default() };
+        session
+            .append_entry(notes_entry("auth message"), "main")
+            .await
+            .unwrap();
+        let abort = SessionSearchOptions {
+            abort_requested: true,
+            ..Default::default()
+        };
         let err = hit_search(vec![session], "auth", &abort).await.unwrap_err();
         assert!(err.to_lowercase().contains("abort"), "got: {err}");
     }
@@ -322,15 +373,27 @@ mod tests {
             .create(CreateOptions::new("/work").with_id("jsonl"))
             .await
             .unwrap();
-        let entry = session.append_entry(notes_entry("jsonl backed auth entry"), "main").await.unwrap();
-        session.set_label(entry.id(), Some("disk label")).await.unwrap();
+        let entry = session
+            .append_entry(notes_entry("jsonl backed auth entry"), "main")
+            .await
+            .unwrap();
+        session
+            .set_label(entry.id(), Some("disk label"))
+            .await
+            .unwrap();
         drop(session);
 
         let mut other = repo
             .create(CreateOptions::new("/other").with_id("other"))
             .await
             .unwrap();
-        other.append_entry(notes_entry("jsonl backed auth entry in another cwd"), "main").await.unwrap();
+        other
+            .append_entry(
+                notes_entry("jsonl backed auth entry in another cwd"),
+                "main",
+            )
+            .await
+            .unwrap();
         drop(other);
 
         let metadata_list = repo.list(None).await.unwrap();
@@ -340,7 +403,9 @@ mod tests {
             sessions.push(repo.open(metadata).await.unwrap());
         }
 
-        let hits = hit_search(sessions, "auth", &default_options()).await.unwrap();
+        let hits = hit_search(sessions, "auth", &default_options())
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 2, "got: {hits:?}");
         let ids: Vec<&str> = hits.iter().map(|h| h.session_id.as_str()).collect();
         assert!(ids.contains(&"jsonl"), "got: {ids:?}");
@@ -354,7 +419,9 @@ mod tests {
             }
             v
         };
-        let disk_hits = hit_search(sessions, "disk", &default_options()).await.unwrap();
+        let disk_hits = hit_search(sessions, "disk", &default_options())
+            .await
+            .unwrap();
         assert_eq!(disk_hits.len(), 1, "got: {disk_hits:?}");
         assert_eq!(disk_hits[0].session_id, "jsonl");
     }

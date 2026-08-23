@@ -370,53 +370,14 @@ pub static ACCENTS: &[(&str, &str)] = &[
 
 /// Upstream `const NAMED_OPERATORS` (a Set).
 pub static NAMED_OPERATORS: &[&str] = &[
-    "arccos",
-    "arcsin",
-    "arctan",
-    "arg",
-    "cos",
-    "cosh",
-    "cot",
-    "coth",
-    "csc",
-    "deg",
-    "det",
-    "dim",
-    "exp",
-    "gcd",
-    "hom",
-    "inf",
-    "ker",
-    "lg",
-    "lim",
-    "liminf",
-    "limsup",
-    "ln",
-    "log",
-    "max",
-    "min",
-    "Pr",
-    "sec",
-    "sin",
-    "sinh",
-    "sup",
-    "tan",
-    "tanh",
+    "arccos", "arcsin", "arctan", "arg", "cos", "cosh", "cot", "coth", "csc", "deg", "det", "dim",
+    "exp", "gcd", "hom", "inf", "ker", "lg", "lim", "liminf", "limsup", "ln", "log", "max", "min",
+    "Pr", "sec", "sin", "sinh", "sup", "tan", "tanh",
 ];
 
 /// Upstream `const LIMIT_OPERATORS` (a Set).
 pub static LIMIT_OPERATORS: &[&str] = &[
-    "argmax",
-    "argmin",
-    "inf",
-    "injlim",
-    "lim",
-    "liminf",
-    "limsup",
-    "max",
-    "min",
-    "projlim",
-    "sup",
+    "argmax", "argmin", "inf", "injlim", "lim", "liminf", "limsup", "max", "min", "projlim", "sup",
 ];
 
 /// Upstream `const DISPLAY_LIMIT_SYMBOLS` (a Set).
@@ -541,12 +502,8 @@ pub static SPACING_COMMANDS: &[&str] = &[
 ];
 
 /// Upstream `const NEGATIVE_SPACING_COMMANDS` (a Set).
-pub static NEGATIVE_SPACING_COMMANDS: &[&str] = &[
-    "!",
-    "negmedspace",
-    "negthickspace",
-    "negthinspace",
-];
+pub static NEGATIVE_SPACING_COMMANDS: &[&str] =
+    &["!", "negmedspace", "negthickspace", "negthinspace"];
 
 /// Upstream `const IGNORED_COMMANDS` (a Set).
 pub static IGNORED_COMMANDS: &[&str] = &[
@@ -560,17 +517,7 @@ pub static IGNORED_COMMANDS: &[&str] = &[
 
 /// Upstream `const SIZE_COMMANDS` (a Set).
 pub static SIZE_COMMANDS: &[&str] = &[
-    "big",
-    "Big",
-    "bigg",
-    "Bigg",
-    "bigl",
-    "Bigl",
-    "biggl",
-    "Biggl",
-    "bigr",
-    "Bigr",
-    "biggr",
+    "big", "Big", "bigg", "Bigg", "bigl", "Bigl", "biggl", "Biggl", "bigr", "Bigr", "biggr",
     "Biggr",
 ];
 

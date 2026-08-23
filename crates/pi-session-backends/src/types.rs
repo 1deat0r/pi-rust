@@ -78,6 +78,9 @@ pub struct SqliteWriterLeaseOptions {
 
 impl Default for SqliteWriterLeaseOptions {
     fn default() -> Self {
-        Self { ttl_ms: 30_000, heartbeat_interval_ms: 10_000 }
+        Self {
+            ttl_ms: 30_000,
+            heartbeat_interval_ms: 10_000,
+        }
     }
 }

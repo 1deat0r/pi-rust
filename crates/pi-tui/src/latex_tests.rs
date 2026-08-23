@@ -109,7 +109,10 @@ mod latex_tests {
             let actual = render_latex(source, false);
             if actual.as_deref() != Some(*expected) {
                 failed += 1;
-                eprintln!("[{}] source: {:?}\n  expected: {:?}\n  actual:   {:?}", i, source, expected, actual);
+                eprintln!(
+                    "[{}] source: {:?}\n  expected: {:?}\n  actual:   {:?}",
+                    i, source, expected, actual
+                );
             }
         }
         assert_eq!(failed, 0, "{failed} latex cases mismatched");

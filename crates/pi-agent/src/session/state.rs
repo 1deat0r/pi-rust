@@ -157,24 +157,32 @@ impl SessionState {
     pub fn get_lanes(&self) -> Vec<LanePointer> {
         self.lanes
             .iter()
-            .map(|(lane, leaf)| LanePointer { lane: lane.clone(), leaf_id: leaf.clone() })
+            .map(|(lane, leaf)| LanePointer {
+                lane: lane.clone(),
+                leaf_id: leaf.clone(),
+            })
             .collect()
     }
 
     pub fn validate_new_lane(&self, lane: &str) -> Result<(), SessionError> {
         if self.lanes.contains_key(lane) {
             // Upstream validateNewLane: already_exists (`Lane already exists`).
-            Err(session_error(SessionErrorKind::AlreadyExists, format!("Lane already exists: {lane}")))
+            Err(session_error(
+                SessionErrorKind::AlreadyExists,
+                format!("Lane already exists: {lane}"),
+            ))
         } else {
             Ok(())
         }
     }
 
     pub fn require_lane(&self, lane: &str) -> Result<Option<String>, SessionError> {
-        self.lanes
-            .get(lane)
-            .cloned()
-            .ok_or_else(|| session_error(SessionErrorKind::InvalidLane, format!("unknown lane {lane}")))
+        self.lanes.get(lane).cloned().ok_or_else(|| {
+            session_error(
+                SessionErrorKind::InvalidLane,
+                format!("unknown lane {lane}"),
+            )
+        })
     }
 
     pub fn validate_target(&self, target: Option<&str>) -> Result<(), SessionError> {
@@ -190,13 +198,18 @@ impl SessionState {
             .find(|e| e.id() == id)
             .map(|_| ())
             // Upstream validateTarget: not_found (`Entry not found`).
-            .ok_or_else(|| session_error(SessionErrorKind::NotFound, format!("Entry not found: {id}")))
+            .ok_or_else(|| {
+                session_error(SessionErrorKind::NotFound, format!("Entry not found: {id}"))
+            })
     }
 
     pub fn validate_unused_id(&self, id: &str) -> Result<(), SessionError> {
         if self.used_ids.contains(id) {
             // Upstream validateUnusedId: already_exists (`Session id already exists`).
-            Err(session_error(SessionErrorKind::AlreadyExists, format!("Session id already exists: {id}")))
+            Err(session_error(
+                SessionErrorKind::AlreadyExists,
+                format!("Session id already exists: {id}"),
+            ))
         } else {
             Ok(())
         }
@@ -205,7 +218,10 @@ impl SessionState {
     /// Internal open-operation ids for a lane (oldest first) — used by the
     /// one-open-operation-per-lane enforcement.
     pub fn open_operation_ids(&self, lane: &str) -> Vec<String> {
-        self.open_operations_by_lane.get(lane).cloned().unwrap_or_default()
+        self.open_operations_by_lane
+            .get(lane)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// `findOpenOperations(lane, { limit })` — full operation-started records,
@@ -216,7 +232,11 @@ impl SessionState {
         limit: Option<usize>,
     ) -> Result<Vec<LaneRecord>, SessionError> {
         Self::assert_valid_limit(limit)?;
-        let ids: Vec<String> = self.open_operations_by_lane.get(lane).cloned().unwrap_or_default();
+        let ids: Vec<String> = self
+            .open_operations_by_lane
+            .get(lane)
+            .cloned()
+            .unwrap_or_default();
         let mut ops: Vec<LaneRecord> = ids
             .iter()
             .filter_map(|id| self.records.iter().find(|r| r.id() == id).cloned())
@@ -235,7 +255,10 @@ impl SessionState {
     fn assert_valid_limit(limit: Option<usize>) -> Result<(), SessionError> {
         if let Some(limit) = limit {
             if limit == 0 {
-                return Err(session_error(SessionErrorKind::InvalidQuery, "limit must be a positive integer"));
+                return Err(session_error(
+                    SessionErrorKind::InvalidQuery,
+                    "limit must be a positive integer",
+                ));
             }
         }
         Ok(())
@@ -309,7 +332,10 @@ impl SessionState {
             }
         }
         if out.is_empty() {
-            return Err(session_error(SessionErrorKind::NotFound, format!("Entry not found: {start}")));
+            return Err(session_error(
+                SessionErrorKind::NotFound,
+                format!("Entry not found: {start}"),
+            ));
         }
         Ok(out)
     }
@@ -458,10 +484,16 @@ impl SessionState {
     /// Builds the mutation list for a fork (port of
     /// `SessionState.createForkMutations`): copied entries renumbered from 1,
     /// then lane lines, then the name fact, then label facts.
-    pub fn create_fork_mutations(&self, options: &ForkOptions) -> Result<Vec<Mutation>, SessionError> {
+    pub fn create_fork_mutations(
+        &self,
+        options: &ForkOptions,
+    ) -> Result<Vec<Mutation>, SessionError> {
         let (copied_entries, fork_lanes) = match options {
             ForkOptions::Tree => {
-                let entries = self.find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() })?;
+                let entries = self.find_entries(&EntryQuery {
+                    order: Some(EntryOrder::OldestFirst),
+                    ..Default::default()
+                })?;
                 (entries, self.get_lanes())
             }
             ForkOptions::Branch { entry_id, position } => {
@@ -473,15 +505,12 @@ impl SessionState {
                 if let Some(selected) = selected {
                     // Upstream: `!entry || entry.type !== "message"` →
                     // invalid_fork_target with the same message either way.
-                    let entry = self
-                        .get_entry(&selected)
-                        .cloned()
-                        .ok_or_else(|| {
-                            session_error(
-                                SessionErrorKind::InvalidForkTarget,
-                                format!("Fork target is not a message entry: {selected}"),
-                            )
-                        })?;
+                    let entry = self.get_entry(&selected).cloned().ok_or_else(|| {
+                        session_error(
+                            SessionErrorKind::InvalidForkTarget,
+                            format!("Fork target is not a message entry: {selected}"),
+                        )
+                    })?;
                     if entry.entry_type_str() != "message" {
                         return Err(session_error(
                             SessionErrorKind::InvalidForkTarget,
@@ -528,7 +557,13 @@ impl SessionState {
                     }
                     None => Vec::new(),
                 };
-                (entries, vec![crate::session::types::LanePointer { lane: "main".into(), leaf_id: target_id }])
+                (
+                    entries,
+                    vec![crate::session::types::LanePointer {
+                        lane: "main".into(),
+                        leaf_id: target_id,
+                    }],
+                )
             }
         };
 
@@ -541,11 +576,18 @@ impl SessionState {
             sequence += 1;
         }
         for pointer in &fork_lanes {
-            mutations.push(Mutation::Lane { seq: sequence, lane: pointer.lane.clone(), leaf_id: pointer.leaf_id.clone() });
+            mutations.push(Mutation::Lane {
+                seq: sequence,
+                lane: pointer.lane.clone(),
+                leaf_id: pointer.leaf_id.clone(),
+            });
             sequence += 1;
         }
         if let Some(name) = &self.name {
-            mutations.push(Mutation::Fact(crate::session::types::Fact::Name { seq: sequence, name: Some(name.clone()) }));
+            mutations.push(Mutation::Fact(crate::session::types::Fact::Name {
+                seq: sequence,
+                name: Some(name.clone()),
+            }));
             sequence += 1;
         }
         for entry in &copied_entries {
@@ -592,7 +634,8 @@ impl SessionState {
                 self.sequence = self.sequence.max(seq);
                 self.entries.push(entry.clone());
                 if let Some(lane) = lane {
-                    self.lanes.insert(lane.clone(), Some(entry.id().to_string()));
+                    self.lanes
+                        .insert(lane.clone(), Some(entry.id().to_string()));
                 }
                 if entry.entry_type_str() == "message" {
                     self.stats.message_count += 1;
@@ -606,7 +649,11 @@ impl SessionState {
                 self.validate_unused_id(record.id())?;
                 self.require_lane(record.lane())?;
                 if record.record_type() == "operation_started" {
-                    if self.open_operations_by_lane.get(record.lane()).is_some_and(|ops| !ops.is_empty()) {
+                    if self
+                        .open_operations_by_lane
+                        .get(record.lane())
+                        .is_some_and(|ops| !ops.is_empty())
+                    {
                         return Err(session_error(
                             SessionErrorKind::Storage,
                             format!("lane {} already has an open operation", record.lane()),
@@ -623,14 +670,8 @@ impl SessionState {
                     }
                 }
                 if let LaneRecord::Usage { usage, .. } = &record {
-                    // DECISION (2026-08-22, session 12): pi-ai Usage token counts
-                    // stay u64. Upstream can emit negative token "adjustment"
-                    // records for correction true-ups; widening the entire Usage
-                    // surface to i64 would ripple through every adaptor, the
-                    // images facade, formatting, and RPC. u64 additions saturate
-                    // in debug and stay correct for all non-negative real usage;
-                    // a rare negative adjustment record is dropped from totals
-                    // rather than corrupting them. Accepted divergence.
+                    // Usage records include caller-supplied adjustment rows, so
+                    // ledger totals must preserve signed corrections exactly.
                     self.stats.cached_tokens += usage.cache_read;
                     self.stats.uncached_tokens += usage.input + usage.cache_write;
                     self.stats.total_tokens += usage.total_tokens;
@@ -675,7 +716,9 @@ impl SessionState {
                         ));
                         Ok(())
                     }
-                    Fact::Label { target_id, label, .. } => {
+                    Fact::Label {
+                        target_id, label, ..
+                    } => {
                         self.require_entry_id(target_id)?;
                         match label {
                             Some(label) => {

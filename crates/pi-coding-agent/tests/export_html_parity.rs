@@ -31,11 +31,14 @@ fn first_diff(a: &str, b: &str) -> Option<(usize, String, String)> {
         }
     }
     if ab.len() != bb.len() {
-        return Some((n, format!("len {} (ours)", ab.len()), format!("len {} (golden)", bb.len())));
+        return Some((
+            n,
+            format!("len {} (ours)", ab.len()),
+            format!("len {} (golden)", bb.len()),
+        ));
     }
     None
 }
-
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -44,8 +47,13 @@ fn fixture_dir() -> PathBuf {
 #[test]
 fn export_matches_oracle_golden_dark() {
     let session = fixture_dir().join("export_session.jsonl");
-    let golden = std::fs::read_to_string(fixture_dir().join("export_html_golden/dark.html")).unwrap();
-    let out_dir = std::env::temp_dir().join(format!("pi-export-parity-{}-{}", std::process::id(), line!()));
+    let golden =
+        std::fs::read_to_string(fixture_dir().join("export_html_golden/dark.html")).unwrap();
+    let out_dir = std::env::temp_dir().join(format!(
+        "pi-export-parity-{}-{}",
+        std::process::id(),
+        line!()
+    ));
     std::fs::create_dir_all(&out_dir).unwrap();
     let out = out_dir.join("dark.html");
     let path = pi_coding_agent::core::export_html::export_session_file(
@@ -65,8 +73,13 @@ fn export_matches_oracle_golden_dark() {
 #[test]
 fn export_matches_oracle_golden_light() {
     let session = fixture_dir().join("export_session.jsonl");
-    let golden = std::fs::read_to_string(fixture_dir().join("export_html_golden/light.html")).unwrap();
-    let out_dir = std::env::temp_dir().join(format!("pi-export-parity-{}-{}", std::process::id(), line!()));
+    let golden =
+        std::fs::read_to_string(fixture_dir().join("export_html_golden/light.html")).unwrap();
+    let out_dir = std::env::temp_dir().join(format!(
+        "pi-export-parity-{}-{}",
+        std::process::id(),
+        line!()
+    ));
     std::fs::create_dir_all(&out_dir).unwrap();
     let out = out_dir.join("light.html");
     let path = pi_coding_agent::core::export_html::export_session_file(
@@ -89,7 +102,8 @@ fn msg_has_content_block(v: &serde_json::Value, block_type: &str) -> bool {
         .and_then(|m| m.get("content"))
         .and_then(|c| c.as_array())
         .is_some_and(|c| {
-            c.iter().any(|b| b.get("type").and_then(|t| t.as_str()) == Some(block_type))
+            c.iter()
+                .any(|b| b.get("type").and_then(|t| t.as_str()) == Some(block_type))
         })
 }
 
@@ -102,7 +116,11 @@ fn fixture_covers_tool_compaction_and_branch_summary() {
     let loaded =
         pi_coding_agent::core::export_html::load_session_file(session.to_str().unwrap()).unwrap();
     let entries = &loaded.entries;
-    assert_eq!(entries.len(), 8, "expected the 8 expanded non-session entries");
+    assert_eq!(
+        entries.len(),
+        8,
+        "expected the 8 expanded non-session entries"
+    );
     assert_eq!(loaded.leaf_id.as_deref(), Some("msg_6"));
 
     assert!(
@@ -122,7 +140,9 @@ fn fixture_covers_tool_compaction_and_branch_summary() {
         "fixture must include a compaction entry"
     );
     assert!(
-        entries.iter().any(|e| entry_type(e) == Some("branch_summary")),
+        entries
+            .iter()
+            .any(|e| entry_type(e) == Some("branch_summary")),
         "fixture must include a branch_summary entry"
     );
 }

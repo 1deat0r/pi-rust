@@ -22,12 +22,18 @@ impl RpcCommand {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "command missing type".to_string())?
             .to_string();
-        let id = value.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let id = value
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         Ok(Self { id, type_, value })
     }
 
     pub fn str_field(&self, name: &str) -> Option<String> {
-        self.value.get(name).and_then(|v| v.as_str()).map(|s| s.to_string())
+        self.value
+            .get(name)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     }
     pub fn bool_field(&self, name: &str) -> Option<bool> {
         self.value.get(name).and_then(|v| v.as_bool())
@@ -38,13 +44,23 @@ impl RpcCommand {
 }
 
 /// Build a success response object (upstream `success` helper).
-pub fn success(id: Option<&str>, command: &str, data: Option<serde_json::Value>) -> serde_json::Value {
+pub fn success(
+    id: Option<&str>,
+    command: &str,
+    data: Option<serde_json::Value>,
+) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     if let Some(id) = id {
         obj.insert("id".to_string(), serde_json::Value::String(id.to_string()));
     }
-    obj.insert("type".to_string(), serde_json::Value::String("response".to_string()));
-    obj.insert("command".to_string(), serde_json::Value::String(command.to_string()));
+    obj.insert(
+        "type".to_string(),
+        serde_json::Value::String("response".to_string()),
+    );
+    obj.insert(
+        "command".to_string(),
+        serde_json::Value::String(command.to_string()),
+    );
     obj.insert("success".to_string(), serde_json::Value::Bool(true));
     if let Some(data) = data {
         obj.insert("data".to_string(), data);
@@ -58,8 +74,14 @@ pub fn failure(id: Option<&str>, command: &str, message: String) -> serde_json::
     if let Some(id) = id {
         obj.insert("id".to_string(), serde_json::Value::String(id.to_string()));
     }
-    obj.insert("type".to_string(), serde_json::Value::String("response".to_string()));
-    obj.insert("command".to_string(), serde_json::Value::String(command.to_string()));
+    obj.insert(
+        "type".to_string(),
+        serde_json::Value::String("response".to_string()),
+    );
+    obj.insert(
+        "command".to_string(),
+        serde_json::Value::String(command.to_string()),
+    );
     obj.insert("success".to_string(), serde_json::Value::Bool(false));
     obj.insert("error".to_string(), serde_json::Value::String(message));
     serde_json::Value::Object(obj)
@@ -97,7 +119,9 @@ mod tests {
 
     #[test]
     fn parse_extracts_id_and_type() {
-        let cmd = RpcCommand::parse(serde_json::json!({"id": "1", "type": "prompt", "message": "hi"})).unwrap();
+        let cmd =
+            RpcCommand::parse(serde_json::json!({"id": "1", "type": "prompt", "message": "hi"}))
+                .unwrap();
         assert_eq!(cmd.type_, "prompt");
         assert_eq!(cmd.id.as_deref(), Some("1"));
         assert_eq!(cmd.str_field("message").as_deref(), Some("hi"));

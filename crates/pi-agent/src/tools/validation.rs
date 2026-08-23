@@ -16,7 +16,9 @@ fn coerce_primitive_by_type(value: &Value, type_name: &str) -> Value {
             Value::String(s) if !s.trim().is_empty() => {
                 if let Ok(parsed) = s.trim().parse::<f64>() {
                     if parsed.is_finite() {
-                        return serde_json::Number::from_f64(parsed).map(Value::Number).unwrap_or_else(|| value.clone());
+                        return serde_json::Number::from_f64(parsed)
+                            .map(Value::Number)
+                            .unwrap_or_else(|| value.clone());
                     }
                 }
                 value.clone()
@@ -91,7 +93,10 @@ fn matches_json_type(value: &Value, type_name: &str) -> bool {
 fn schema_types(schema: &Value) -> Vec<String> {
     match schema.get("type") {
         Some(Value::String(t)) => vec![t.clone()],
-        Some(Value::Array(types)) => types.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect(),
+        Some(Value::Array(types)) => types
+            .iter()
+            .filter_map(|t| t.as_str().map(|s| s.to_string()))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -196,14 +201,20 @@ fn normalize_optional_nulls(value: &mut Value, schema: &Value) {
         }
         return;
     }
-    let Some(obj) = value.as_object_mut() else { return };
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
     let Some(properties) = schema.get("properties").and_then(|v| v.as_object()) else {
         return;
     };
     let required: Vec<String> = schema
         .get("required")
         .and_then(|v| v.as_array())
-        .map(|r| r.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .map(|r| {
+            r.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
     for (key, property_schema) in properties {
         if let Some(field) = obj.get_mut(key) {
@@ -229,12 +240,20 @@ fn validate_value(value: &Value, schema: &Value) -> Result<(), Vec<(String, Stri
     }
 }
 
-fn validate_value_at(value: &Value, schema: &Value, path: &str, errors: &mut Vec<(String, String)>) {
+fn validate_value_at(
+    value: &Value,
+    schema: &Value,
+    path: &str,
+    errors: &mut Vec<(String, String)>,
+) {
     let types = schema_types(schema);
     if !types.is_empty() {
         let matches = types.iter().any(|t| matches_json_type(value, t));
         if !matches {
-            errors.push((path.to_string(), format!("Expected type: {}", types.join(" | "))));
+            errors.push((
+                path.to_string(),
+                format!("Expected type: {}", types.join(" | ")),
+            ));
             return;
         }
     }
@@ -243,7 +262,11 @@ fn validate_value_at(value: &Value, schema: &Value, path: &str, errors: &mut Vec
         if let Some(properties) = schema.get("properties").and_then(|v| v.as_object()) {
             for (key, property_schema) in properties {
                 if let Some(field) = value.get(key) {
-                    let child_path = if path.is_empty() { key.clone() } else { format!("{path}.{key}") };
+                    let child_path = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{path}.{key}")
+                    };
                     validate_value_at(field, property_schema, &child_path, errors);
                 }
             }
@@ -251,7 +274,11 @@ fn validate_value_at(value: &Value, schema: &Value, path: &str, errors: &mut Vec
         if let Some(required) = schema.get("required").and_then(|v| v.as_array()) {
             for req in required.iter().filter_map(|v| v.as_str()) {
                 if !value.get(req).is_some() {
-                    let child_path = if path.is_empty() { req.to_string() } else { format!("{path}.{req}") };
+                    let child_path = if path.is_empty() {
+                        req.to_string()
+                    } else {
+                        format!("{path}.{req}")
+                    };
                     errors.push((child_path, "Required property missing".to_string()));
                 }
             }
@@ -304,7 +331,8 @@ pub fn validate_tool_arguments(
             let error_message = format!(
                 "Validation failed for tool \"{tool_name}\":\n{}\n\nReceived arguments:\n{}",
                 lines.join("\n"),
-                serde_json::to_string_pretty(raw_arguments).unwrap_or_else(|_| raw_arguments.to_string())
+                serde_json::to_string_pretty(raw_arguments)
+                    .unwrap_or_else(|_| raw_arguments.to_string())
             );
             Err(error_message)
         }
@@ -328,8 +356,14 @@ mod tests {
         });
         assert!(validate_tool_arguments("read", &schema, &json!({"path": "a.txt"})).is_ok());
         let err = validate_tool_arguments("read", &schema, &json!({"limit": 5})).unwrap_err();
-        assert!(err.contains("Validation failed for tool \"read\""), "got: {err}");
-        assert!(err.contains("path: Required property missing"), "got: {err}");
+        assert!(
+            err.contains("Validation failed for tool \"read\""),
+            "got: {err}"
+        );
+        assert!(
+            err.contains("path: Required property missing"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -366,7 +400,8 @@ mod tests {
                 "limit": {"type": "number"}
             }
         });
-        let err = validate_tool_arguments("read", &schema, &json!({"limit": {"nested": true}})).unwrap_err();
+        let err = validate_tool_arguments("read", &schema, &json!({"limit": {"nested": true}}))
+            .unwrap_err();
         assert!(err.contains("limit: Expected type: number"), "got: {err}");
     }
 
@@ -389,9 +424,18 @@ mod tests {
             },
             "required": ["edits"]
         });
-        assert!(validate_tool_arguments("edit", &schema, &json!({"edits": [{"oldText": "a", "newText": "b"}]})).is_ok());
-        let err = validate_tool_arguments("edit", &schema, &json!({"edits": [{"oldText": "a"}]})).unwrap_err();
-        assert!(err.contains("edits[0].newText: Required property missing"), "got: {err}");
+        assert!(validate_tool_arguments(
+            "edit",
+            &schema,
+            &json!({"edits": [{"oldText": "a", "newText": "b"}]})
+        )
+        .is_ok());
+        let err = validate_tool_arguments("edit", &schema, &json!({"edits": [{"oldText": "a"}]}))
+            .unwrap_err();
+        assert!(
+            err.contains("edits[0].newText: Required property missing"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -404,7 +448,11 @@ mod tests {
             },
             "required": ["path"]
         });
-        let validated = validate_tool_arguments("read", &schema, &json!({"path": "a", "limit": null})).unwrap();
-        assert!(validated.get("limit").is_none(), "optional null should be dropped: {validated}");
+        let validated =
+            validate_tool_arguments("read", &schema, &json!({"path": "a", "limit": null})).unwrap();
+        assert!(
+            validated.get("limit").is_none(),
+            "optional null should be dropped: {validated}"
+        );
     }
 }

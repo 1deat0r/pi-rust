@@ -4,9 +4,7 @@
 
 use serde_json::Value;
 
-use crate::types::{
-    ContentBlock, Context, Message, Tool, Usage, UserContentBody,
-};
+use crate::types::{ContentBlock, Context, Message, Tool, Usage, UserContentBody};
 
 const CHARS_PER_TOKEN: u64 = 4;
 const ESTIMATED_IMAGE_CHARS: u64 = 4800;
@@ -24,11 +22,14 @@ pub struct ContextUsageEstimate {
 }
 
 pub fn calculate_context_tokens(usage: &Usage) -> u64 {
-    if usage.total_tokens != 0 {
+    let tokens = if usage.total_tokens != 0 {
         usage.total_tokens
     } else {
         usage.input + usage.output + usage.cache_read + usage.cache_write
-    }
+    };
+    // Context estimates are consumed by non-negative window arithmetic. A
+    // negative usage adjustment is a ledger correction, not usable context.
+    tokens.max(0) as u64
 }
 
 fn safe_json_stringify(value: &Value) -> String {
@@ -77,9 +78,14 @@ fn estimate_message_tokens(message: &Message) -> u64 {
             for block in a.content() {
                 match block {
                     ContentBlock::Text { text, .. } => chars += text.chars().count() as u64,
-                    ContentBlock::Thinking { thinking, .. } => chars += thinking.chars().count() as u64,
-                    ContentBlock::ToolCall { name, arguments, .. } => {
-                        chars += name.chars().count() as u64 + safe_json_stringify(arguments).chars().count() as u64;
+                    ContentBlock::Thinking { thinking, .. } => {
+                        chars += thinking.chars().count() as u64
+                    }
+                    ContentBlock::ToolCall {
+                        name, arguments, ..
+                    } => {
+                        chars += name.chars().count() as u64
+                            + safe_json_stringify(arguments).chars().count() as u64;
                     }
                     _ => {}
                 }
@@ -100,7 +106,10 @@ fn get_last_assistant_usage_info(messages: &[Message]) -> Option<(Usage, usize)>
                 has_usage = calculate_context_tokens(u) > 0;
             }
             if usage_applies_to_prefix
-                && !matches!(a.stop_reason(), Some(crate::types::StopReason::Aborted) | Some(crate::types::StopReason::Error))
+                && !matches!(
+                    a.stop_reason(),
+                    Some(crate::types::StopReason::Aborted) | Some(crate::types::StopReason::Error)
+                )
                 && has_usage
             {
                 usage_info = Some((a.usage().cloned().unwrap_or_default(), i));
@@ -170,7 +179,12 @@ pub fn estimate_context_tokens(context: &Context) -> ContextUsageEstimate {
             }
         }
         let added_tool_tokens = estimate_tools_tokens(
-            &context.tools.iter().filter(|t| added_names.contains(&t.name)).cloned().collect::<Vec<_>>(),
+            &context
+                .tools
+                .iter()
+                .filter(|t| added_names.contains(&t.name))
+                .cloned()
+                .collect::<Vec<_>>(),
         );
         return ContextUsageEstimate {
             tokens: estimate.tokens + added_tool_tokens,
@@ -193,7 +207,6 @@ pub fn estimate_context_tokens(context: &Context) -> ContextUsageEstimate {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,7 +226,7 @@ mod tests {
         let mut assistant = AssistantMessage::new();
         assistant.set_api_provider_model("anthropic-messages", "anthropic", "claude-sonnet-4-6");
         *assistant.content_mut() = vec![
-            ContentBlock::text("four"),          // 4 chars -> 1
+            ContentBlock::text("four"),           // 4 chars -> 1
             ContentBlock::thinking("think more"), // 10 chars -> 3
         ];
         let assistant_msg = Message::Assistant(assistant);
@@ -222,7 +235,10 @@ mod tests {
 
     #[test]
     fn estimates_images_at_4800_chars() {
-        let user = Message::User(UserContent::blocks(vec![ContentBlock::image("aGVsbG8=", "image/png")], 1));
+        let user = Message::User(UserContent::blocks(
+            vec![ContentBlock::image("aGVsbG8=", "image/png")],
+            1,
+        ));
         assert_eq!(estimate_message_tokens(&user), 1200); // 4800 / 4
     }
 

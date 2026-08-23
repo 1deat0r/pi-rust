@@ -21,7 +21,7 @@ pub use codec::{
 };
 pub use error::{CborError, FrameError, ProtocolValidationError};
 pub use framing::{
-    encode_frame, assert_complete_frame, FrameDecoder, FrameDecoderOptions,
+    assert_complete_frame, encode_frame, FrameDecoder, FrameDecoderOptions,
     DEFAULT_MAX_FRAME_LENGTH, FRAME_HEADER_LENGTH,
 };
 pub use schemas::*;

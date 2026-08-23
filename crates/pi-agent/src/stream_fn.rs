@@ -41,7 +41,12 @@ mod tests {
 
     fn dummy_stream() -> StreamFn {
         std::sync::Arc::new(|_model: &pi_ai::model::Model, _ctx: &Context| {
-            pi_ai::event_stream::create_error_stream("faux", "faux", "faux-1", "not used".to_string())
+            pi_ai::event_stream::create_error_stream(
+                "faux",
+                "faux",
+                "faux-1",
+                "not used".to_string(),
+            )
         })
     }
 

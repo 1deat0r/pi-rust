@@ -11,22 +11,24 @@
 pub mod agent_harness;
 pub mod compaction;
 pub mod env;
-pub mod frontmatter;
-pub mod skills;
 pub mod events;
+pub mod frontmatter;
+mod models;
 pub mod prompt_templates;
 pub mod reducer;
 pub mod result;
 pub mod shell_output;
+pub mod skills;
 pub mod system_prompt;
 pub mod telemetry;
 pub mod tools;
-mod models;
 
 pub use models::{BoxFuture, CompleteSimpleFn, SimpleModels};
-pub use prompt_templates::{PromptTemplateDiagnostic, load_prompt_templates};
-pub use skills::{SkillDiagnostic, load_skills};
-pub use reducer::{LaneReductionInput, LaneReductionResult, LaneState, reduce_lane_state, validate_record_log};
+pub use prompt_templates::{load_prompt_templates, PromptTemplateDiagnostic};
+pub use reducer::{
+    reduce_lane_state, validate_record_log, LaneReductionInput, LaneReductionResult, LaneState,
+};
+pub use skills::{load_skills, SkillDiagnostic};
 
 /// Stable error codes returned by compaction helpers
 /// (upstream `CompactionErrorCode`).
@@ -38,7 +40,10 @@ pub struct CompactionError {
 
 impl CompactionError {
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self {
+            code,
+            message: message.into(),
+        }
     }
 }
 
@@ -60,7 +65,10 @@ pub struct BranchSummaryError {
 
 impl BranchSummaryError {
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self {
+            code,
+            message: message.into(),
+        }
     }
 }
 

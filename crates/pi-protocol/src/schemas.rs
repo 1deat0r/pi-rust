@@ -43,10 +43,7 @@ fn require_integer(value: &JsonValue, field: &str, minimum: i64) -> VResult<i64>
 }
 
 /// Collects unknown keys on a strict object.
-fn strict_object<'a>(
-    map: &'a serde_json::Map<String, JsonValue>,
-    allowed: &[&str],
-) -> VResult<()> {
+fn strict_object<'a>(map: &'a serde_json::Map<String, JsonValue>, allowed: &[&str]) -> VResult<()> {
     for key in map.keys() {
         if !allowed.contains(&key.as_str()) {
             return Err(format!("unexpected property {key:?}"));
@@ -56,7 +53,8 @@ fn strict_object<'a>(
 }
 
 fn get<'a>(map: &'a serde_json::Map<String, JsonValue>, key: &str) -> VResult<&'a JsonValue> {
-    map.get(key).ok_or_else(|| format!("missing property {key:?}"))
+    map.get(key)
+        .ok_or_else(|| format!("missing property {key:?}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -443,7 +441,10 @@ impl Usage {
             ],
         )?;
         let cost_map = require_object(get(map, "cost")?)?;
-        strict_object(cost_map, &["input", "output", "cacheRead", "cacheWrite", "total"])?;
+        strict_object(
+            cost_map,
+            &["input", "output", "cacheRead", "cacheWrite", "total"],
+        )?;
         let cost_number = |key: &str| -> VResult<f64> {
             match cost_map.get(key) {
                 Some(JsonValue::Number(n)) => n
@@ -572,15 +573,21 @@ pub enum TranscriptItem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TranscriptProgress {
-    ItemStarted { item: TranscriptItem },
+    ItemStarted {
+        item: TranscriptItem,
+    },
     AssistantDelta {
         message_id: String,
         content_index: i64,
         kind: TranscriptDeltaKind,
         delta: String,
     },
-    ItemUpdated { item: TranscriptItemUpdate },
-    ItemFinished { item: TranscriptItemFinished },
+    ItemUpdated {
+        item: TranscriptItemUpdate,
+    },
+    ItemFinished {
+        item: TranscriptItemFinished,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -718,33 +725,15 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandResult {
-    List {
-        sessions: Vec<SessionMetadata>,
-    },
-    Create {
-        session: SessionSnapshot,
-    },
-    Attach {
-        session: SessionSnapshot,
-    },
-    Detach {
-        session_id: String,
-    },
-    Prompt {
-        session: SessionSnapshot,
-    },
-    Steer {
-        session: SessionSnapshot,
-    },
-    Abort {
-        session: SessionSnapshot,
-    },
-    SetModel {
-        session: SessionSnapshot,
-    },
-    SetThinking {
-        session: SessionSnapshot,
-    },
+    List { sessions: Vec<SessionMetadata> },
+    Create { session: SessionSnapshot },
+    Attach { session: SessionSnapshot },
+    Detach { session_id: String },
+    Prompt { session: SessionSnapshot },
+    Steer { session: SessionSnapshot },
+    Abort { session: SessionSnapshot },
+    SetModel { session: SessionSnapshot },
+    SetThinking { session: SessionSnapshot },
 }
 
 // ---------------------------------------------------------------------------
@@ -761,13 +750,19 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServerEvent {
-    ServerSnapshot { snapshot: ServerSnapshot },
-    SessionSnapshot { snapshot: SessionSnapshot },
+    ServerSnapshot {
+        snapshot: ServerSnapshot,
+    },
+    SessionSnapshot {
+        snapshot: SessionSnapshot,
+    },
     SessionProgress {
         session_id: String,
         progress: TranscriptProgress,
     },
-    SessionRemoved { session_id: String },
+    SessionRemoved {
+        session_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -791,7 +786,9 @@ pub enum ServerMessage {
         error: Option<ProtocolError>,
     },
     #[serde(rename = "event")]
-    Event { event: ServerEvent },
+    Event {
+        event: ServerEvent,
+    },
 }
 
 pub fn is_supported_protocol_version(version: u64) -> bool {

@@ -16,7 +16,9 @@ pub struct FrameDecoderOptions {
 
 impl Default for FrameDecoderOptions {
     fn default() -> Self {
-        Self { max_frame_length: None }
+        Self {
+            max_frame_length: None,
+        }
     }
 }
 
@@ -34,7 +36,9 @@ fn resolve_max_frame_length(options: &FrameDecoderOptions) -> Result<usize, Fram
 /// Prefixes a payload with its unsigned 32-bit big-endian byte length.
 pub fn encode_frame(payload: &[u8]) -> Result<Vec<u8>, FrameError> {
     if payload.len() > u32::MAX as usize {
-        return Err(FrameError::new("Frame payload exceeds the unsigned 32-bit length limit".to_string()));
+        return Err(FrameError::new(
+            "Frame payload exceeds the unsigned 32-bit length limit".to_string(),
+        ));
     }
     let length = payload.len() as u32;
     let mut frame = Vec::with_capacity(FRAME_HEADER_LENGTH + payload.len());
@@ -47,9 +51,14 @@ pub fn encode_frame(payload: &[u8]) -> Result<Vec<u8>, FrameError> {
 }
 
 /// Validates that bytes contain exactly one complete frame within the configured limit.
-pub fn assert_complete_frame(frame: &[u8], options: &FrameDecoderOptions) -> Result<(), FrameError> {
+pub fn assert_complete_frame(
+    frame: &[u8],
+    options: &FrameDecoderOptions,
+) -> Result<(), FrameError> {
     if frame.len() < FRAME_HEADER_LENGTH {
-        return Err(FrameError::new("Frame does not contain a complete length prefix".to_string()));
+        return Err(FrameError::new(
+            "Frame does not contain a complete length prefix".to_string(),
+        ));
     }
     let length = (frame[0] as u32) * 0x1_000_000
         + (frame[1] as u32) * 0x1_0000
@@ -62,7 +71,9 @@ pub fn assert_complete_frame(frame: &[u8], options: &FrameDecoderOptions) -> Res
         )));
     }
     if frame.len() != FRAME_HEADER_LENGTH + length as usize {
-        return Err(FrameError::new("Frame must contain exactly one complete payload".to_string()));
+        return Err(FrameError::new(
+            "Frame must contain exactly one complete payload".to_string(),
+        ));
     }
     Ok(())
 }
@@ -110,7 +121,8 @@ impl FrameDecoder {
         let mut offset = 0usize;
         while offset < chunk.len() {
             if self.pending_payload_length.is_none() {
-                let header_bytes = (FRAME_HEADER_LENGTH - self.header_length).min(chunk.len() - offset);
+                let header_bytes =
+                    (FRAME_HEADER_LENGTH - self.header_length).min(chunk.len() - offset);
                 self.header[self.header_length..self.header_length + header_bytes]
                     .copy_from_slice(&chunk[offset..offset + header_bytes]);
                 self.header_length += header_bytes;
@@ -141,7 +153,8 @@ impl FrameDecoder {
             let expected = self.pending_payload_length.expect("payload length set");
             while offset < chunk.len() && self.payload.len() < expected {
                 let payload_bytes = (expected - self.payload.len()).min(chunk.len() - offset);
-                self.payload.extend_from_slice(&chunk[offset..offset + payload_bytes]);
+                self.payload
+                    .extend_from_slice(&chunk[offset..offset + payload_bytes]);
                 offset += payload_bytes;
             }
             if self.payload.len() == expected {
@@ -156,13 +169,20 @@ impl FrameDecoder {
     /// Called after the final chunk. Errors if a partial frame is pending.
     pub fn end(&mut self) -> Result<(), FrameError> {
         match self.state {
-            DecoderState::Failed => return Err(FrameError::new("Frame decoder has failed".to_string())),
+            DecoderState::Failed => {
+                return Err(FrameError::new("Frame decoder has failed".to_string()))
+            }
             DecoderState::Ended => return Ok(()),
             DecoderState::Open => {}
         }
-        if self.header_length != 0 || self.pending_payload_length.is_some() || !self.payload.is_empty() {
+        if self.header_length != 0
+            || self.pending_payload_length.is_some()
+            || !self.payload.is_empty()
+        {
             self.state = DecoderState::Failed;
-            return Err(FrameError::new("Frame decoder ended with a partial frame".to_string()));
+            return Err(FrameError::new(
+                "Frame decoder ended with a partial frame".to_string(),
+            ));
         }
         self.state = DecoderState::Ended;
         Ok(())
@@ -199,7 +219,10 @@ mod tests {
 
     #[test]
     fn incremental_decode_splits_chunks() {
-        let payloads: Vec<Vec<u8>> = ["aa", "bb", "cc"].iter().map(|s| s.as_bytes().to_vec()).collect();
+        let payloads: Vec<Vec<u8>> = ["aa", "bb", "cc"]
+            .iter()
+            .map(|s| s.as_bytes().to_vec())
+            .collect();
         let frames: Vec<Vec<u8>> = payloads.iter().map(|p| encode_frame(p).unwrap()).collect();
         let mut all = Vec::new();
         for f in &frames {

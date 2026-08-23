@@ -40,17 +40,21 @@ fn create_empty_usage() -> Usage {
 /// struct serializes snake_case, so build the struct field-by-field instead
 /// of relying on serde rename symmetry.
 fn parse_usage_value(value: &Value) -> Option<Usage> {
-    let u64_field = |name: &str| value.get(name).and_then(|v| v.as_u64()).unwrap_or(0);
+    let token_field = |name: &str| value.get(name).and_then(|v| v.as_i64()).unwrap_or(0);
     let cost = value.get("cost");
-    let f64_field = |name: &str| cost.and_then(|c| c.get(name)).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let f64_field = |name: &str| {
+        cost.and_then(|c| c.get(name))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+    };
     let mut usage = Usage {
-        input: u64_field("input"),
-        output: u64_field("output"),
-        cache_read: u64_field("cacheRead"),
-        cache_write: u64_field("cacheWrite"),
-        cache_write_1h: value.get("cacheWrite1h").and_then(|v| v.as_u64()),
-        reasoning: value.get("reasoning").and_then(|v| v.as_u64()),
-        total_tokens: u64_field("totalTokens"),
+        input: token_field("input"),
+        output: token_field("output"),
+        cache_read: token_field("cacheRead"),
+        cache_write: token_field("cacheWrite"),
+        cache_write_1h: value.get("cacheWrite1h").and_then(|v| v.as_i64()),
+        reasoning: value.get("reasoning").and_then(|v| v.as_i64()),
+        total_tokens: token_field("totalTokens"),
         cost: crate::types::Cost {
             input: f64_field("input"),
             output: f64_field("output"),
@@ -77,14 +81,20 @@ impl EventConverter {
         let mut partial = AssistantMessage::new();
         partial.set_api_provider_model(&model.api, &model.provider, &model.id);
         partial.set_stop_reason(StopReason::Pending);
-        Self { partial, tool_json: std::collections::HashMap::new() }
+        Self {
+            partial,
+            tool_json: std::collections::HashMap::new(),
+        }
     }
 
     fn convert(&mut self, event: &Value) -> AssistantMessageEvent {
         let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
         match event_type {
             "done" => {
-                let reason = event.get("reason").and_then(|v| v.as_str()).unwrap_or("stop");
+                let reason = event
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("stop");
                 let dreason = done_reason(reason);
                 if let Some(usage) = event.get("usage").and_then(parse_usage_value) {
                     self.partial.set_usage(usage);
@@ -93,94 +103,214 @@ impl EventConverter {
                     self.partial.set_response_id(rid.to_string());
                 }
                 self.partial.set_stop_reason(stop_reason_for_done(reason));
-                AssistantMessageEvent::Done { reason: dreason, message: self.partial.clone() }
+                AssistantMessageEvent::Done {
+                    reason: dreason,
+                    message: self.partial.clone(),
+                }
             }
             "error" => {
-                let reason = event.get("reason").and_then(|v| v.as_str()).unwrap_or("error");
+                let reason = event
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("error");
                 if let Some(usage) = event.get("usage").and_then(parse_usage_value) {
                     self.partial.set_usage(usage);
                 }
                 if let Some(rid) = event.get("responseId").and_then(|v| v.as_str()) {
                     self.partial.set_response_id(rid.to_string());
                 }
-                let error_message = event.get("errorMessage").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let AssistantMessage::Assistant { error_message: slot, .. } = &mut self.partial;
+                let error_message = event
+                    .get("errorMessage")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let AssistantMessage::Assistant {
+                    error_message: slot,
+                    ..
+                } = &mut self.partial;
                 *slot = error_message;
-                self.partial.set_stop_reason(if reason == "aborted" { StopReason::Aborted } else { StopReason::Error });
+                self.partial.set_stop_reason(if reason == "aborted" {
+                    StopReason::Aborted
+                } else {
+                    StopReason::Error
+                });
                 AssistantMessageEvent::Error {
-                    reason: if reason == "aborted" { ErrorReason::Aborted } else { ErrorReason::Error },
+                    reason: if reason == "aborted" {
+                        ErrorReason::Aborted
+                    } else {
+                        ErrorReason::Error
+                    },
                     error_message: self.partial.clone(),
                 }
             }
-            "start" => AssistantMessageEvent::Start { partial: self.partial.clone() },
+            "start" => AssistantMessageEvent::Start {
+                partial: self.partial.clone(),
+            },
             "text_start" => {
                 let index = content_index(event);
                 set_content_at(&mut self.partial, index, ContentBlock::text(""));
-                AssistantMessageEvent::TextStart { content_index: index, partial: self.partial.clone() }
+                AssistantMessageEvent::TextStart {
+                    content_index: index,
+                    partial: self.partial.clone(),
+                }
             }
             "text_delta" => {
                 let index = content_index(event);
-                let delta = event.get("delta").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let delta = event
+                    .get("delta")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 append_text(&mut self.partial, index, &delta);
-                AssistantMessageEvent::TextDelta { content_index: index, delta, partial: self.partial.clone() }
+                AssistantMessageEvent::TextDelta {
+                    content_index: index,
+                    delta,
+                    partial: self.partial.clone(),
+                }
             }
             "text_end" => {
                 let index = content_index(event);
-                let content = event.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let signature = event.get("contentSignature").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let content = event
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let signature = event
+                    .get("contentSignature")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 set_text_end(&mut self.partial, index, content.clone(), signature);
-                AssistantMessageEvent::TextEnd { content_index: index, content, partial: self.partial.clone() }
+                AssistantMessageEvent::TextEnd {
+                    content_index: index,
+                    content,
+                    partial: self.partial.clone(),
+                }
             }
             "thinking_start" => {
                 let index = content_index(event);
                 set_content_at(&mut self.partial, index, ContentBlock::thinking(""));
-                AssistantMessageEvent::ThinkingStart { content_index: index, partial: self.partial.clone() }
+                AssistantMessageEvent::ThinkingStart {
+                    content_index: index,
+                    partial: self.partial.clone(),
+                }
             }
             "thinking_delta" => {
                 let index = content_index(event);
-                let delta = event.get("delta").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let delta = event
+                    .get("delta")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 append_thinking(&mut self.partial, index, &delta);
-                AssistantMessageEvent::ThinkingDelta { content_index: index, delta, partial: self.partial.clone() }
+                AssistantMessageEvent::ThinkingDelta {
+                    content_index: index,
+                    delta,
+                    partial: self.partial.clone(),
+                }
             }
             "thinking_end" => {
                 let index = content_index(event);
-                let content = event.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let signature = event.get("contentSignature").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let content = event
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let signature = event
+                    .get("contentSignature")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let redacted = event.get("redacted").and_then(|v| v.as_bool());
-                set_thinking_end(&mut self.partial, index, content.clone(), signature, redacted);
-                AssistantMessageEvent::ThinkingEnd { content_index: index, content, partial: self.partial.clone() }
+                set_thinking_end(
+                    &mut self.partial,
+                    index,
+                    content.clone(),
+                    signature,
+                    redacted,
+                );
+                AssistantMessageEvent::ThinkingEnd {
+                    content_index: index,
+                    content,
+                    partial: self.partial.clone(),
+                }
             }
             "toolcall_start" => {
                 let index = content_index(event);
-                let id = event.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let tool_name = event.get("toolName").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                set_content_at(&mut self.partial, index, ContentBlock::tool_call(id, tool_name, json!({})));
+                let id = event
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tool_name = event
+                    .get("toolName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                set_content_at(
+                    &mut self.partial,
+                    index,
+                    ContentBlock::tool_call(id, tool_name, json!({})),
+                );
                 self.tool_json.insert(index, String::new());
-                AssistantMessageEvent::ToolCallStart { content_index: index, partial: self.partial.clone() }
+                AssistantMessageEvent::ToolCallStart {
+                    content_index: index,
+                    partial: self.partial.clone(),
+                }
             }
             "toolcall_delta" => {
                 let index = content_index(event);
-                let delta = event.get("delta").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let json = format!("{}{}", self.tool_json.get(&index).map(String::as_str).unwrap_or(""), delta);
+                let delta = event
+                    .get("delta")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let json = format!(
+                    "{}{}",
+                    self.tool_json.get(&index).map(String::as_str).unwrap_or(""),
+                    delta
+                );
                 self.tool_json.insert(index, json.clone());
                 set_tool_arguments(&mut self.partial, index, &json);
-                AssistantMessageEvent::ToolCallDelta { content_index: index, delta, partial: self.partial.clone() }
+                AssistantMessageEvent::ToolCallDelta {
+                    content_index: index,
+                    delta,
+                    partial: self.partial.clone(),
+                }
             }
             "toolcall_end" => {
                 let index = content_index(event);
                 let tool_call_value = event.get("toolCall").cloned().unwrap_or_else(|| json!({}));
-                let id = tool_call_value.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let name = tool_call_value.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let arguments = tool_call_value.get("arguments").cloned().unwrap_or_else(|| json!({}));
-                let thought_signature = tool_call_value.get("thoughtSignature").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let namespace = tool_call_value.get("namespace").and_then(|v| v.as_str()).map(|s| s.to_string());
-                set_content_at(&mut self.partial, index, ContentBlock::ToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    arguments: arguments.clone(),
-                    thought_signature,
-                    namespace,
-                });
+                let id = tool_call_value
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = tool_call_value
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let arguments = tool_call_value
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                let thought_signature = tool_call_value
+                    .get("thoughtSignature")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let namespace = tool_call_value
+                    .get("namespace")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                set_content_at(
+                    &mut self.partial,
+                    index,
+                    ContentBlock::ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                        thought_signature,
+                        namespace,
+                    },
+                );
                 self.tool_json.remove(&index);
                 AssistantMessageEvent::ToolCallEnd {
                     content_index: index,
@@ -197,14 +327,19 @@ impl EventConverter {
             _ => {
                 // Unknown event type: mirror "start" passthrough semantics by
                 // returning a start event (the partial is unchanged).
-                AssistantMessageEvent::Start { partial: self.partial.clone() }
+                AssistantMessageEvent::Start {
+                    partial: self.partial.clone(),
+                }
             }
         }
     }
 }
 
 fn content_index(event: &Value) -> usize {
-    event.get("contentIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize
+    event
+        .get("contentIndex")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize
 }
 
 fn set_content_at(msg: &mut AssistantMessage, index: usize, block: ContentBlock) {
@@ -240,7 +375,10 @@ fn set_text_end(msg: &mut AssistantMessage, index: usize, text: String, signatur
     if index >= content.len() {
         content.resize(index + 1, ContentBlock::text(""));
     }
-    content[index] = ContentBlock::Text { text, text_signature: signature };
+    content[index] = ContentBlock::Text {
+        text,
+        text_signature: signature,
+    };
 }
 
 fn set_thinking_end(
@@ -333,14 +471,23 @@ fn context_to_json(context: &Context) -> Value {
     if let Some(sp) = &context.system_prompt {
         obj.insert("systemPrompt".to_string(), Value::String(sp.clone()));
     }
-    obj.insert("messages".to_string(), serde_json::to_value(&context.messages).unwrap_or(Value::Null));
+    obj.insert(
+        "messages".to_string(),
+        serde_json::to_value(&context.messages).unwrap_or(Value::Null),
+    );
     if !context.tools.is_empty() {
-        obj.insert("tools".to_string(), serde_json::to_value(&context.tools).unwrap_or(Value::Null));
+        obj.insert(
+            "tools".to_string(),
+            serde_json::to_value(&context.tools).unwrap_or(Value::Null),
+        );
     }
     Value::Object(obj)
 }
 
-fn resolve_cache_retention(cache_retention: Option<&str>, env: Option<&crate::types::ProviderEnv>) -> Option<String> {
+fn resolve_cache_retention(
+    cache_retention: Option<&str>,
+    env: Option<&crate::types::ProviderEnv>,
+) -> Option<String> {
     if let Some(retention) = cache_retention {
         return Some(retention.to_string());
     }
@@ -383,7 +530,10 @@ pub fn stream(
                 let mut terminal = false;
                 for event in events {
                     let ev = converter.convert(&event);
-                    let is_terminal = matches!(ev, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. });
+                    let is_terminal = matches!(
+                        ev,
+                        AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+                    );
                     pusher.push(ev);
                     if is_terminal {
                         terminal = true;
@@ -391,10 +541,10 @@ pub fn stream(
                     }
                 }
                 if !terminal {
-                    let message = error_event_message(&model, format!(
-                        "{} stream ended without a terminal event",
-                        model.provider
-                    ));
+                    let message = error_event_message(
+                        &model,
+                        format!("{} stream ended without a terminal event", model.provider),
+                    );
                     pusher.push(AssistantMessageEvent::Error {
                         reason: ErrorReason::Error,
                         error_message: message.clone(),
@@ -403,7 +553,7 @@ pub fn stream(
                 }
             }
             Err(message) => {
-               	let message = error_event_message(&model, message);
+                let message = error_event_message(&model, message);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -432,7 +582,8 @@ async fn run(
     api_key: Option<&str>,
     options: &PiMessagesOptions,
 ) -> Result<Vec<Value>, String> {
-    let api_key = api_key.ok_or_else(|| format!("No API key provided for provider \"{}\"", model.provider))?;
+    let api_key = api_key
+        .ok_or_else(|| format!("No API key provided for provider \"{}\"", model.provider))?;
 
     let mut url = format!("{}/messages", model.base_url.trim_end_matches('/'));
     if options.debug {
@@ -453,7 +604,10 @@ async fn run(
     if let Some(r) = &options.reasoning {
         inner.insert("reasoning".to_string(), json!(r));
     }
-    if let Some(c) = resolve_cache_retention(options.base.cache_retention.as_deref(), options.base.base.env.as_ref()) {
+    if let Some(c) = resolve_cache_retention(
+        options.base.cache_retention.as_deref(),
+        options.base.base.env.as_ref(),
+    ) {
         inner.insert("cacheRetention".to_string(), json!(c));
     }
     if let Some(s) = &options.base.session_id {
@@ -489,7 +643,10 @@ async fn run(
         .collect::<std::collections::BTreeMap<_, _>>();
     if let Some(on_response) = &options.base.on_response {
         on_response(
-            &crate::types::ProviderResponse { status: status.as_u16(), headers: headers_map },
+            &crate::types::ProviderResponse {
+                status: status.as_u16(),
+                headers: headers_map,
+            },
             model,
         );
     }
@@ -500,7 +657,11 @@ async fn run(
 
     if !status.is_success() {
         let body_text = String::from_utf8_lossy(&body).to_string();
-        return Err(format_pi_messages_response_error(status.as_u16(), status.canonical_reason().unwrap_or(""), &body_text));
+        return Err(format_pi_messages_response_error(
+            status.as_u16(),
+            status.canonical_reason().unwrap_or(""),
+            &body_text,
+        ));
     }
 
     let chunks: Vec<Vec<u8>> = if body.is_empty() {
@@ -515,9 +676,9 @@ async fn run(
 /// `"<status> <statusText>: <message> (<code>)"` (upstream
 /// `formatPiMessagesResponseError`).
 fn format_pi_messages_response_error(status: u16, status_text: &str, body: &str) -> String {
-    let error_body: Option<Value> = serde_json::from_str(body).ok().filter(|v: &Value| {
-        v.get("error").map(|e| e.is_object()).unwrap_or(false)
-    });
+    let error_body: Option<Value> = serde_json::from_str(body)
+        .ok()
+        .filter(|v: &Value| v.get("error").map(|e| e.is_object()).unwrap_or(false));
     let message = error_body
         .as_ref()
         .and_then(|v| v.get("error").and_then(|e| e.get("message")))
@@ -572,13 +733,19 @@ mod tests {
         headers: &[(&str, &str)],
         events: &[Value],
         raw_body: Option<&str>,
-    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<RecordedRequest>>>) {
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<RecordedRequest>>>,
+    ) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let requests: std::sync::Arc<std::sync::Mutex<Vec<RecordedRequest>>> = Default::default();
         let requests_handle = requests.clone();
         let events = events.to_vec();
-        let headers_owned: Vec<(String, String)> = headers.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let headers_owned: Vec<(String, String)> = headers
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
         let raw_body = raw_body.map(|s| s.to_string());
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -624,11 +791,17 @@ mod tests {
                 buf.extend_from_slice(&tmp[..n]);
             }
             let body = if content_length > 0 {
-                String::from_utf8_lossy(&buf[body_start..body_start + content_length]).trim().to_string()
+                String::from_utf8_lossy(&buf[body_start..body_start + content_length])
+                    .trim()
+                    .to_string()
             } else {
                 String::new()
             };
-            let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_string();
+            let path = request_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("/")
+                .to_string();
             requests_handle.lock().unwrap().push(RecordedRequest {
                 url: path,
                 headers: req_headers,
@@ -672,7 +845,9 @@ mod tests {
     fn ctx() -> Context {
         Context {
             system_prompt: None,
-            messages: vec![crate::types::Message::User(crate::types::UserContent::string("Hello", 1))],
+            messages: vec![crate::types::Message::User(
+                crate::types::UserContent::string("Hello", 1),
+            )],
             tools: vec![],
         }
     }
@@ -727,15 +902,27 @@ mod tests {
         assert_eq!(message.model(), Some("auto"));
         assert_eq!(message.provider(), Some("radius"));
         assert_eq!(message.content().len(), 2);
-        assert!(matches!(&message.content()[0], ContentBlock::Text { text, .. } if text == "Hello"));
-        assert!(matches!(&message.content()[1], ContentBlock::ToolCall { id, name, .. } if id == "call_1" && name == "read"));
-        assert!(events_out.iter().any(|e| matches!(e, AssistantMessageEvent::TextDelta { .. })));
+        assert!(
+            matches!(&message.content()[0], ContentBlock::Text { text, .. } if text == "Hello")
+        );
+        assert!(
+            matches!(&message.content()[1], ContentBlock::ToolCall { id, name, .. } if id == "call_1" && name == "read")
+        );
+        assert!(events_out
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::TextDelta { .. })));
 
         let reqs = requests.lock().unwrap();
         assert_eq!(reqs.len(), 1);
         assert_eq!(reqs[0].url, "/messages");
-        assert_eq!(reqs[0].headers.get("authorization").map(|s| s.as_str()), Some("Bearer test-key"));
-        assert_eq!(reqs[0].headers.get("x-custom").map(|s| s.as_str()), Some("1"));
+        assert_eq!(
+            reqs[0].headers.get("authorization").map(|s| s.as_str()),
+            Some("Bearer test-key")
+        );
+        assert_eq!(
+            reqs[0].headers.get("x-custom").map(|s| s.as_str()),
+            Some("1")
+        );
         assert_eq!(reqs[0].body["model"], json!("auto"));
         assert_eq!(reqs[0].body["options"]["maxTokens"], json!(100));
         assert_eq!(reqs[0].body["options"]["sessionId"], json!("session-1"));
@@ -744,15 +931,24 @@ mod tests {
 
     #[tokio::test]
     async fn appends_debug_and_reports_response_headers() {
-        let (base_url, requests) = start_server(200, &[("x-pi-gateway-upstream-provider", "anthropic")], &[json!({"type": "done", "reason": "stop", "usage": usage_json()})], None).await;
+        let (base_url, requests) = start_server(
+            200,
+            &[("x-pi-gateway-upstream-provider", "anthropic")],
+            &[json!({"type": "done", "reason": "stop", "usage": usage_json()})],
+            None,
+        )
+        .await;
         let model = model(&base_url);
-        let observed: std::sync::Arc<std::sync::Mutex<Option<crate::types::ProviderResponse>>> = Default::default();
+        let observed: std::sync::Arc<std::sync::Mutex<Option<crate::types::ProviderResponse>>> =
+            Default::default();
         let observed2 = observed.clone();
         let options = PiMessagesOptions {
             base: StreamOptions {
-                on_response: Some(std::sync::Arc::new(move |resp: &crate::types::ProviderResponse, _m: &Model| {
-                    *observed2.lock().unwrap() = Some(resp.clone());
-                })),
+                on_response: Some(std::sync::Arc::new(
+                    move |resp: &crate::types::ProviderResponse, _m: &Model| {
+                        *observed2.lock().unwrap() = Some(resp.clone());
+                    },
+                )),
                 ..Default::default()
             },
             reasoning: None,
@@ -765,16 +961,28 @@ mod tests {
         assert_eq!(message.stop_reason(), Some(StopReason::Stop));
         assert_eq!(requests.lock().unwrap()[0].url, "/messages?debug=1");
         let resp = observed.lock().unwrap().clone().unwrap();
-        assert_eq!(resp.headers.get("x-pi-gateway-upstream-provider").map(|s| s.as_str()), Some("anthropic"));
+        assert_eq!(
+            resp.headers
+                .get("x-pi-gateway-upstream-provider")
+                .map(|s| s.as_str()),
+            Some("anthropic")
+        );
     }
 
     #[tokio::test]
     async fn surfaces_backend_error_responses() {
-        let body = json!({"error": {"message": "Token expired", "code": "unauthorized"}}).to_string();
+        let body =
+            json!({"error": {"message": "Token expired", "code": "unauthorized"}}).to_string();
         let (base_url, _) = start_server(401, &[], &[], Some(&body)).await;
         let model = model(&base_url);
         let client = reqwest::Client::new();
-        let s = stream(&model, &ctx(), client, Some("stale"), &PiMessagesOptions::default());
+        let s = stream(
+            &model,
+            &ctx(),
+            client,
+            Some("stale"),
+            &PiMessagesOptions::default(),
+        );
         let (_, message) = s.collect().await;
         assert_eq!(message.stop_reason(), Some(StopReason::Error));
         let err = message.error_message().unwrap_or("");
@@ -791,7 +999,13 @@ mod tests {
         ], None).await;
         let model = model(&base_url);
         let client = reqwest::Client::new();
-        let s = stream(&model, &ctx(), client, Some("test-key"), &PiMessagesOptions::default());
+        let s = stream(
+            &model,
+            &ctx(),
+            client,
+            Some("test-key"),
+            &PiMessagesOptions::default(),
+        );
         let (_, message) = s.collect().await;
         assert_eq!(message.stop_reason(), Some(StopReason::Error));
         assert_eq!(message.error_message(), Some("Upstream failed"));
@@ -805,21 +1019,39 @@ mod tests {
         let s = stream(&model, &ctx(), client, None, &PiMessagesOptions::default());
         let (_, message) = s.collect().await;
         assert_eq!(message.stop_reason(), Some(StopReason::Error));
-        assert!(message.error_message().unwrap_or("").contains("No API key provided"));
+        assert!(message
+            .error_message()
+            .unwrap_or("")
+            .contains("No API key provided"));
     }
 
     #[tokio::test]
     async fn errors_when_stream_ends_without_terminal_event() {
-        let (base_url, _) = start_server(200, &[], &[
-            json!({"type": "start"}),
-            json!({"type": "text_start", "contentIndex": 0}),
-            json!({"type": "text_delta", "contentIndex": 0, "delta": "partial"}),
-        ], None).await;
+        let (base_url, _) = start_server(
+            200,
+            &[],
+            &[
+                json!({"type": "start"}),
+                json!({"type": "text_start", "contentIndex": 0}),
+                json!({"type": "text_delta", "contentIndex": 0, "delta": "partial"}),
+            ],
+            None,
+        )
+        .await;
         let model = model(&base_url);
         let client = reqwest::Client::new();
-        let s = stream(&model, &ctx(), client, Some("test-key"), &PiMessagesOptions::default());
+        let s = stream(
+            &model,
+            &ctx(),
+            client,
+            Some("test-key"),
+            &PiMessagesOptions::default(),
+        );
         let (_, message) = s.collect().await;
-        assert!(message.error_message().unwrap_or("").contains("stream ended without a terminal event"));
+        assert!(message
+            .error_message()
+            .unwrap_or("")
+            .contains("stream ended without a terminal event"));
     }
 
     #[test]

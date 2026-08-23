@@ -17,7 +17,9 @@ fn decode_embedded_payload(html: &str) -> String {
         .and_then(|s| s.split("</script>").next())
         .expect("session-data script tag");
     use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).expect("base64 payload");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .expect("base64 payload");
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
@@ -28,7 +30,8 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("pi-cli-export-{tag}-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("pi-cli-export-{tag}-{}", uuid::Uuid::new_v4()));
         let home = root.join("home");
         fs::create_dir_all(&home).unwrap();
         Self { root, home }
@@ -62,7 +65,9 @@ impl Drop for Sandbox {
 }
 
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
 }
 
 #[test]
@@ -70,27 +75,49 @@ fn export_with_explicit_output() {
     let sandbox = Sandbox::new("explicit");
     let cwd = sandbox.root.clone();
     let out_path = cwd.join("out.html");
-    let out = sandbox.pi(&cwd, &["--export", fixture("export_session.jsonl").to_str().unwrap(), out_path.to_str().unwrap()]);
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "--export",
+            fixture("export_session.jsonl").to_str().unwrap(),
+            out_path.to_str().unwrap(),
+        ],
+    );
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
-    assert_eq!(sandbox.stdout(&out).trim(), format!("Exported to: {}", out_path.display()));
+    assert_eq!(
+        sandbox.stdout(&out).trim(),
+        format!("Exported to: {}", out_path.display())
+    );
     let html = fs::read_to_string(&out_path).unwrap();
     assert!(html.contains("<html"), "expected html document in output");
     let payload = decode_embedded_payload(&html);
     assert!(payload.contains("hello"), "expected user text in payload");
-    assert!(payload.contains("hi there"), "expected assistant text in payload");
+    assert!(
+        payload.contains("hi there"),
+        "expected assistant text in payload"
+    );
 }
 
 #[test]
 fn export_default_output_name() {
     let sandbox = Sandbox::new("default-name");
     let cwd = sandbox.root.clone();
-    let out = sandbox.pi(&cwd, &["--export", fixture("export_session.jsonl").to_str().unwrap()]);
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "--export",
+            fixture("export_session.jsonl").to_str().unwrap(),
+        ],
+    );
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
     let stdout = sandbox.stdout(&out);
     let trimmed = stdout.trim();
     assert!(trimmed.starts_with("Exported to: "), "got: {trimmed}");
     let printed = trimmed.trim_start_matches("Exported to: ").trim();
-    assert!(printed.ends_with("-session-export_session.html"), "got: {printed}");
+    assert!(
+        printed.ends_with("-session-export_session.html"),
+        "got: {printed}"
+    );
     // The binary runs with cwd = sandbox root, so a relative output path
     // lands there.
     let html = fs::read_to_string(cwd.join(printed)).unwrap();
@@ -103,5 +130,9 @@ fn export_missing_file_is_error() {
     let cwd = sandbox.root.clone();
     let out = sandbox.pi(&cwd, &["--export", "/nonexistent/session.jsonl"]);
     assert!(!out.status.success(), "expected failure");
-    assert!(sandbox.stderr(&out).contains("Error: File not found"), "stderr: {}", sandbox.stderr(&out));
+    assert!(
+        sandbox.stderr(&out).contains("Error: File not found"),
+        "stderr: {}",
+        sandbox.stderr(&out)
+    );
 }

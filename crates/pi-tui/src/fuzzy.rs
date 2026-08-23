@@ -16,10 +16,16 @@ fn is_word_boundary_separator(c: char) -> bool {
 
 fn match_query(query_lower: &str, text_lower: &str) -> FuzzyMatch {
     if query_lower.is_empty() {
-        return FuzzyMatch { matches: true, score: 0.0 };
+        return FuzzyMatch {
+            matches: true,
+            score: 0.0,
+        };
     }
     if query_lower.chars().count() > text_lower.chars().count() {
-        return FuzzyMatch { matches: false, score: 0.0 };
+        return FuzzyMatch {
+            matches: false,
+            score: 0.0,
+        };
     }
 
     let qchars: Vec<char> = query_lower.chars().collect();
@@ -64,14 +70,20 @@ fn match_query(query_lower: &str, text_lower: &str) -> FuzzyMatch {
     }
 
     if query_index < qchars.len() {
-        return FuzzyMatch { matches: false, score: 0.0 };
+        return FuzzyMatch {
+            matches: false,
+            score: 0.0,
+        };
     }
 
     if query_lower == text_lower {
         score -= 100.0;
     }
 
-    FuzzyMatch { matches: true, score }
+    FuzzyMatch {
+        matches: true,
+        score,
+    }
 }
 
 fn split_alphanumeric(query_lower: &str) -> Option<(String, String)> {
@@ -152,7 +164,10 @@ pub fn fuzzy_match(query: &str, text: &str) -> FuzzyMatch {
         return primary;
     }
 
-    FuzzyMatch { matches: true, score: swapped_match.score + 5.0 }
+    FuzzyMatch {
+        matches: true,
+        score: swapped_match.score + 5.0,
+    }
 }
 
 /// Upstream `fuzzyFilter` — filter items by fuzzy quality, best first.
@@ -259,14 +274,22 @@ mod tests {
 
     #[test]
     fn filter_empty_query_returns_all() {
-        let items = vec!["apple".to_string(), "banana".to_string(), "cherry".to_string()];
+        let items = vec![
+            "apple".to_string(),
+            "banana".to_string(),
+            "cherry".to_string(),
+        ];
         let result = fuzzy_filter(items.clone(), "", |x| x.clone());
         assert_eq!(result, items);
     }
 
     #[test]
     fn filter_removes_non_matching() {
-        let items = vec!["apple".to_string(), "banana".to_string(), "cherry".to_string()];
+        let items = vec![
+            "apple".to_string(),
+            "banana".to_string(),
+            "cherry".to_string(),
+        ];
         let result = fuzzy_filter(items, "an", |x| x.clone());
         assert!(result.contains(&"banana".to_string()));
         assert!(!result.contains(&"apple".to_string()));
@@ -275,7 +298,11 @@ mod tests {
 
     #[test]
     fn filter_sorts_by_match_quality() {
-        let items = vec!["a_p_p".to_string(), "app".to_string(), "application".to_string()];
+        let items = vec![
+            "a_p_p".to_string(),
+            "app".to_string(),
+            "application".to_string(),
+        ];
         let result = fuzzy_filter(items, "app", |x| x.clone());
         assert_eq!(result[0], "app");
     }
@@ -290,9 +317,11 @@ mod tests {
     #[test]
     fn filter_matches_slash_separated_provider_model_queries() {
         let item = ("gpt-5.5".to_string(), "openai-codex".to_string());
-        let result = fuzzy_filter(vec![item.clone()], "openai-codex/gpt-5.5", |(id, provider)| {
-            format!("{id} {provider}")
-        });
+        let result = fuzzy_filter(
+            vec![item.clone()],
+            "openai-codex/gpt-5.5",
+            |(id, provider)| format!("{id} {provider}"),
+        );
         assert_eq!(result, vec![item]);
     }
 }

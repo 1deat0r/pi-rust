@@ -74,13 +74,22 @@ pub fn read_lanes(db: &Connection, session_id: &str) -> Result<Vec<LaneRow>, Ses
             row.get::<_, i64>(4)?,
         ))
     })
-    .map_err(|error| SessionError::new(SessionErrorKind::Storage, format!("Failed to read lanes: {error}")))?;
+    .map_err(|error| {
+        SessionError::new(
+            SessionErrorKind::Storage,
+            format!("Failed to read lanes: {error}"),
+        )
+    })?;
     let mut out = Vec::with_capacity(rows.len());
     for (row, leaf_exists) in rows {
         if leaf_exists == 0 {
             return Err(SessionError::new(
                 SessionErrorKind::Storage,
-                format!("Lane {} points at missing entry {}", row.lane, row.leaf_id.as_deref().unwrap_or("null")),
+                format!(
+                    "Lane {} points at missing entry {}",
+                    row.lane,
+                    row.leaf_id.as_deref().unwrap_or("null")
+                ),
             ));
         }
         out.push(row);
@@ -88,7 +97,11 @@ pub fn read_lanes(db: &Connection, session_id: &str) -> Result<Vec<LaneRow>, Ses
     Ok(out)
 }
 
-pub fn read_lane(db: &Connection, session_id: &str, lane: &str) -> rusqlite::Result<Option<LaneRow>> {
+pub fn read_lane(
+    db: &Connection,
+    session_id: &str,
+    lane: &str,
+) -> rusqlite::Result<Option<LaneRow>> {
     SqlQuery::new(
         "SELECT session_id, lane, leaf_id, open_operation_id
         FROM lanes
@@ -108,7 +121,11 @@ pub fn read_lane(db: &Connection, session_id: &str, lane: &str) -> rusqlite::Res
 
 /// `readLaneHead`: reads a lane's leaf, validating that a non-null leaf still
 /// exists.
-pub fn read_lane_head(db: &Connection, session_id: &str, lane: &str) -> Result<Option<String>, SessionError> {
+pub fn read_lane_head(
+    db: &Connection,
+    session_id: &str,
+    lane: &str,
+) -> Result<Option<String>, SessionError> {
     let row = SqlQuery::new(
         "SELECT
             l.leaf_id,
@@ -120,13 +137,26 @@ pub fn read_lane_head(db: &Connection, session_id: &str, lane: &str) -> Result<O
     )
     .bind(session_id)
     .bind(lane)
-    .get_row(db, |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)))
-    .map_err(|error| SessionError::new(SessionErrorKind::Storage, format!("Failed to read lane head: {error}")))?;
+    .get_row(db, |row| {
+        Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?))
+    })
+    .map_err(|error| {
+        SessionError::new(
+            SessionErrorKind::Storage,
+            format!("Failed to read lane head: {error}"),
+        )
+    })?;
     match row {
-        None => Err(SessionError::new(SessionErrorKind::InvalidLane, format!("Lane not found: {lane}"))),
+        None => Err(SessionError::new(
+            SessionErrorKind::InvalidLane,
+            format!("Lane not found: {lane}"),
+        )),
         Some((leaf_id, leaf_exists)) => {
             if leaf_exists == 0 {
-                Err(SessionError::new(SessionErrorKind::Storage, format!("Entry {} not found", leaf_id.as_deref().unwrap_or("null"))))
+                Err(SessionError::new(
+                    SessionErrorKind::Storage,
+                    format!("Entry {} not found", leaf_id.as_deref().unwrap_or("null")),
+                ))
             } else {
                 Ok(leaf_id)
             }
@@ -134,7 +164,13 @@ pub fn read_lane_head(db: &Connection, session_id: &str, lane: &str) -> Result<O
     }
 }
 
-pub fn create_lane(db: &Connection, session_id: &str, seq: i64, lane: &str, leaf_id: Option<&str>) -> rusqlite::Result<()> {
+pub fn create_lane(
+    db: &Connection,
+    session_id: &str,
+    seq: i64,
+    lane: &str,
+    leaf_id: Option<&str>,
+) -> rusqlite::Result<()> {
     SqlQuery::new(
         "INSERT INTO lanes (session_id, lane, leaf_id, open_operation_id)
         VALUES (?, ?, ?, NULL)",
@@ -147,38 +183,74 @@ pub fn create_lane(db: &Connection, session_id: &str, seq: i64, lane: &str, leaf
 }
 
 /// `moveLane`: updates the lane and records a lane move at `seq`.
-pub fn move_lane(db: &Connection, session_id: &str, seq: i64, lane: &str, leaf_id: Option<&str>) -> Result<(), SessionError> {
+pub fn move_lane(
+    db: &Connection,
+    session_id: &str,
+    seq: i64,
+    lane: &str,
+    leaf_id: Option<&str>,
+) -> Result<(), SessionError> {
     let result = SqlQuery::new("UPDATE lanes SET leaf_id = ? WHERE session_id = ? AND lane = ?")
         .bind(leaf_id)
         .bind(session_id)
         .bind(lane)
         .run(db)
         .map(|r| r.changes)
-        .map_err(|error| SessionError::new(SessionErrorKind::Storage, format!("Failed to move lane: {error}")))?;
+        .map_err(|error| {
+            SessionError::new(
+                SessionErrorKind::Storage,
+                format!("Failed to move lane: {error}"),
+            )
+        })?;
     if result != 1 {
-        return Err(SessionError::new(SessionErrorKind::InvalidLane, format!("Lane not found: {lane}")));
+        return Err(SessionError::new(
+            SessionErrorKind::InvalidLane,
+            format!("Lane not found: {lane}"),
+        ));
     }
-    append_lane_move(db, session_id, seq, lane, leaf_id)
-        .map_err(|error| SessionError::new(SessionErrorKind::Storage, format!("Failed to record lane move: {error}")))
+    append_lane_move(db, session_id, seq, lane, leaf_id).map_err(|error| {
+        SessionError::new(
+            SessionErrorKind::Storage,
+            format!("Failed to record lane move: {error}"),
+        )
+    })
 }
 
 /// `setLaneLeaf`: updates only the lane row (used by entry appends). Does not
 /// record a lane move.
-pub fn set_lane_leaf(db: &Connection, session_id: &str, lane: &str, leaf_id: &str) -> Result<(), SessionError> {
+pub fn set_lane_leaf(
+    db: &Connection,
+    session_id: &str,
+    lane: &str,
+    leaf_id: &str,
+) -> Result<(), SessionError> {
     let result = SqlQuery::new("UPDATE lanes SET leaf_id = ? WHERE session_id = ? AND lane = ?")
         .bind(leaf_id)
         .bind(session_id)
         .bind(lane)
         .run(db)
         .map(|r| r.changes)
-        .map_err(|error| SessionError::new(SessionErrorKind::Storage, format!("Failed to set lane leaf: {error}")))?;
+        .map_err(|error| {
+            SessionError::new(
+                SessionErrorKind::Storage,
+                format!("Failed to set lane leaf: {error}"),
+            )
+        })?;
     if result != 1 {
-        return Err(SessionError::new(SessionErrorKind::InvalidLane, format!("Lane not found: {lane}")));
+        return Err(SessionError::new(
+            SessionErrorKind::InvalidLane,
+            format!("Lane not found: {lane}"),
+        ));
     }
     Ok(())
 }
 
-pub fn start_lane_operation(db: &Connection, session_id: &str, lane: &str, run_id: &str) -> Result<(), SessionError> {
+pub fn start_lane_operation(
+    db: &Connection,
+    session_id: &str,
+    lane: &str,
+    run_id: &str,
+) -> Result<(), SessionError> {
     let result = SqlQuery::new(
         "UPDATE lanes SET open_operation_id = ?
         WHERE session_id = ? AND lane = ? AND open_operation_id IS NULL",
@@ -188,14 +260,26 @@ pub fn start_lane_operation(db: &Connection, session_id: &str, lane: &str, run_i
     .bind(lane)
     .run(db)
     .map(|r| r.changes)
-    .map_err(|error| SessionError::new(SessionErrorKind::Storage, format!("Failed to start lane operation: {error}")))?;
+    .map_err(|error| {
+        SessionError::new(
+            SessionErrorKind::Storage,
+            format!("Failed to start lane operation: {error}"),
+        )
+    })?;
     if result == 1 {
         return Ok(());
     }
-    let current = read_lane(db, session_id, lane)
-        .map_err(|error| SessionError::new(SessionErrorKind::Storage, format!("Failed to read lane: {error}")))?;
+    let current = read_lane(db, session_id, lane).map_err(|error| {
+        SessionError::new(
+            SessionErrorKind::Storage,
+            format!("Failed to read lane: {error}"),
+        )
+    })?;
     match current {
-        None => Err(SessionError::new(SessionErrorKind::InvalidLane, format!("Lane not found: {lane}"))),
+        None => Err(SessionError::new(
+            SessionErrorKind::InvalidLane,
+            format!("Lane not found: {lane}"),
+        )),
         Some(current) => Err(SessionError::new(
             SessionErrorKind::Storage,
             format!(
@@ -246,8 +330,12 @@ pub fn read_lane_move_rows(
 }
 
 pub fn delete_lane_rows(db: &Connection, session_id: &str) -> rusqlite::Result<()> {
-    SqlQuery::new("DELETE FROM lane_moves WHERE session_id = ?").bind(session_id).run(db)?;
-    SqlQuery::new("DELETE FROM lanes WHERE session_id = ?").bind(session_id).run(db)?;
+    SqlQuery::new("DELETE FROM lane_moves WHERE session_id = ?")
+        .bind(session_id)
+        .run(db)?;
+    SqlQuery::new("DELETE FROM lanes WHERE session_id = ?")
+        .bind(session_id)
+        .run(db)?;
     Ok(())
 }
 

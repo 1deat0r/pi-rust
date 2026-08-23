@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use pi_protocol::{
     encode_server_message, is_supported_protocol_version, ClientMessage, Command, CommandResult,
-    ProtocolError, ProtocolErrorCode, PROTOCOL_VERSION, ServerMessage,
+    ProtocolError, ProtocolErrorCode, ServerMessage, PROTOCOL_VERSION,
 };
 
 use crate::connection::{
@@ -23,7 +23,6 @@ pub struct ConnectionHandler {
     closing: Arc<Mutex<bool>>,
 }
 
-
 impl ConnectionHandler {
     fn receive(&mut self, chunk: &[u8], self_arc: &Arc<Mutex<dyn ByteConnectionHandler>>) {
         if is_terminal_connection(&self.state) {
@@ -32,12 +31,11 @@ impl ConnectionHandler {
         let messages = match self.state.decoder.push(chunk) {
             Ok(messages) => messages,
             Err(_) => {
-                let _ = self
-                    .fail_protocol_sync(ProtocolError {
-                        code: ProtocolErrorCode::InvalidRequest,
-                        message: "Invalid protocol message".to_string(),
-                        details: None,
-                    });
+                let _ = self.fail_protocol_sync(ProtocolError {
+                    code: ProtocolErrorCode::InvalidRequest,
+                    message: "Invalid protocol message".to_string(),
+                    details: None,
+                });
                 return;
             }
         };
@@ -49,7 +47,11 @@ impl ConnectionHandler {
         }
     }
 
-    fn dispatch_message(&mut self, message: ClientMessage, self_arc: &Arc<Mutex<dyn ByteConnectionHandler>>) {
+    fn dispatch_message(
+        &mut self,
+        message: ClientMessage,
+        self_arc: &Arc<Mutex<dyn ByteConnectionHandler>>,
+    ) {
         match self.state.stage {
             "awaitingHello" => match message {
                 ClientMessage::Hello { version } => {
@@ -86,7 +88,9 @@ impl ConnectionHandler {
         // Shared with the async path: run the fail inline (close is async;
         // spawn it to avoid blocking on the socket).
         self.state.stage = "closing";
-        if let Ok(frame) = encode_server_message(&ServerMessage::HelloError { error }, &Default::default()) {
+        if let Ok(frame) =
+            encode_server_message(&ServerMessage::HelloError { error }, &Default::default())
+        {
             let connection = self.state.connection.clone();
             tokio::spawn(async move {
                 let conn = connection;
@@ -99,9 +103,6 @@ impl ConnectionHandler {
     }
 }
 
-
-
-
 /// Handshake future: pre-computes under lock, sends on the connection, then
 /// applies post-send state under a fresh lock (the handler mutex is never
 /// held across await).
@@ -111,7 +112,9 @@ async fn run_handshake(arc: Arc<Mutex<dyn ByteConnectionHandler>>, version: u64)
             &ServerMessage::HelloError {
                 error: ProtocolError {
                     code: ProtocolErrorCode::Version,
-                    message: format!("Unsupported protocol version {version}; expected {PROTOCOL_VERSION}"),
+                    message: format!(
+                        "Unsupported protocol version {version}; expected {PROTOCOL_VERSION}"
+                    ),
                     details: None,
                 },
             },
@@ -140,8 +143,14 @@ async fn run_handshake(arc: Arc<Mutex<dyn ByteConnectionHandler>>, version: u64)
         let connection_id = handler.state.id.clone();
         (connection, connection_id, snapshot)
     };
-    let message = ServerMessage::Hello { version: PROTOCOL_VERSION, connection_id, snapshot };
-    let Ok(frame) = encode_server_message(&message, &Default::default()) else { return };
+    let message = ServerMessage::Hello {
+        version: PROTOCOL_VERSION,
+        connection_id,
+        snapshot,
+    };
+    let Ok(frame) = encode_server_message(&message, &Default::default()) else {
+        return;
+    };
     let sent = {
         let conn = connection;
         conn.send(&frame).await.is_ok()
@@ -176,10 +185,22 @@ async fn run_request(arc: Arc<Mutex<dyn ByteConnectionHandler>>, id: String, req
         outcome
     };
     let message = match &result {
-        Ok(result) => ServerMessage::Response { id, ok: true, result: Some(result.clone()), error: None },
-        Err(error) => ServerMessage::Response { id, ok: false, result: None, error: Some(error.into_protocol()) },
+        Ok(result) => ServerMessage::Response {
+            id,
+            ok: true,
+            result: Some(result.clone()),
+            error: None,
+        },
+        Err(error) => ServerMessage::Response {
+            id,
+            ok: false,
+            result: None,
+            error: Some(error.into_protocol()),
+        },
     };
-    let Ok(frame) = encode_server_message(&message, &Default::default()) else { return };
+    let Ok(frame) = encode_server_message(&message, &Default::default()) else {
+        return;
+    };
     let conn = connection;
     let _ = conn.send(&frame).await;
     if !closing.lock().unwrap().clone() && handshake_complete {
@@ -211,8 +232,13 @@ pub struct PiServer {
 }
 
 impl PiServer {
-    pub fn new(service: Box<dyn PiServerService>, options: PiServerOptions) -> Result<Self, String> {
-        let id = options.server_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    pub fn new(
+        service: Box<dyn PiServerService>,
+        options: PiServerOptions,
+    ) -> Result<Self, String> {
+        let id = options
+            .server_id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         // Prime the model cache synchronously (the in-memory service is
         // immediately available; heavier services populate via refresh).
         let service_box = service;
@@ -334,10 +360,20 @@ pub fn run_command_sync(
             let sessions = service.list_sessions()?;
             Ok(CommandResult::List { sessions })
         }
-        Command::Create { cwd, name, model, thinking_level } => {
+        Command::Create {
+            cwd,
+            name,
+            model,
+            thinking_level,
+        } => {
             let id = uuid::Uuid::new_v4().to_string();
-            let runtime = service
-                .create_session(crate::types::CreateSessionOptions { id, cwd, name, model, thinking_level })?;
+            let runtime = service.create_session(crate::types::CreateSessionOptions {
+                id,
+                cwd,
+                name,
+                model,
+                thinking_level,
+            })?;
             let snapshot = runtime.lock().unwrap().snapshot()?;
             refresh_metadata(service, snapshots);
             Ok(CommandResult::Create { session: snapshot })
@@ -347,19 +383,23 @@ pub fn run_command_sync(
             let snapshot = runtime.lock().unwrap().snapshot()?;
             Ok(CommandResult::Attach { session: snapshot })
         }
-        Command::Detach { session_id } => {
-            Ok(CommandResult::Detach { session_id })
-        }
+        Command::Detach { session_id } => Ok(CommandResult::Detach { session_id }),
         Command::Prompt { session_id, text } => {
             let runtime = service.open_session(session_id.clone())?;
-            runtime.lock().unwrap().prompt(crate::types::PromptInput { text })?;
+            runtime
+                .lock()
+                .unwrap()
+                .prompt(crate::types::PromptInput { text })?;
             let snapshot = runtime.lock().unwrap().snapshot()?;
             refresh_metadata(service, snapshots);
             Ok(CommandResult::Prompt { session: snapshot })
         }
         Command::Steer { session_id, text } => {
             let runtime = service.open_session(session_id.clone())?;
-            runtime.lock().unwrap().steer(crate::types::SteerInput { text })?;
+            runtime
+                .lock()
+                .unwrap()
+                .steer(crate::types::SteerInput { text })?;
             let snapshot = runtime.lock().unwrap().snapshot()?;
             refresh_metadata(service, snapshots);
             Ok(CommandResult::Steer { session: snapshot })
@@ -377,7 +417,10 @@ pub fn run_command_sync(
             let snapshot = runtime.lock().unwrap().snapshot()?;
             Ok(CommandResult::SetModel { session: snapshot })
         }
-        Command::SetThinking { session_id, thinking_level } => {
+        Command::SetThinking {
+            session_id,
+            thinking_level,
+        } => {
             let runtime = service.open_session(session_id.clone())?;
             runtime.lock().unwrap().set_thinking(thinking_level)?;
             let snapshot = runtime.lock().unwrap().snapshot()?;

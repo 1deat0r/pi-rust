@@ -16,8 +16,8 @@ use crate::types::{
     UserContent, UserContentBody,
 };
 
-use super::transform_messages::transform_messages;
 use super::openai_completions::short_hash;
+use super::transform_messages::transform_messages;
 
 // ---------------------------------------------------------------------------
 // Text signatures
@@ -31,7 +31,9 @@ fn encode_text_signature_v1(id: &str, phase: Option<&str>) -> String {
 }
 
 fn parse_text_signature(signature: Option<&str>) -> (Option<String>, Option<String>) {
-    let Some(signature) = signature else { return (None, None) };
+    let Some(signature) = signature else {
+        return (None, None);
+    };
     if signature.starts_with('{') {
         if let Ok(parsed) = serde_json::from_str::<Value>(signature) {
             if parsed.get("v").and_then(|v| v.as_u64()) == Some(1) {
@@ -62,8 +64,10 @@ fn convert_tool_result_output(model: &Model, content: &[ContentBlock]) -> Value 
         })
         .collect();
     let text_result = text_result.join("\n");
-    let images: Vec<&ContentBlock> =
-        content.iter().filter(|c| matches!(c, ContentBlock::Image { .. })).collect();
+    let images: Vec<&ContentBlock> = content
+        .iter()
+        .filter(|c| matches!(c, ContentBlock::Image { .. }))
+        .collect();
     let has_text = !text_result.is_empty();
 
     if images.is_empty() || !model.input.contains(&crate::model::ModelInput::Image) {
@@ -82,7 +86,10 @@ fn convert_tool_result_output(model: &Model, content: &[ContentBlock]) -> Value 
         output.push(json!({ "type": "input_text", "text": text_result }));
     }
     for image in images {
-        if let ContentBlock::Image { data, mime_type, .. } = image {
+        if let ContentBlock::Image {
+            data, mime_type, ..
+        } = image
+        {
             output.push(json!({
                 "type": "input_image",
                 "detail": "auto",
@@ -103,14 +110,22 @@ pub struct ConvertResponsesMessagesOptions {
 
 impl Default for ConvertResponsesMessagesOptions {
     fn default() -> Self {
-        Self { include_system_prompt: true }
+        Self {
+            include_system_prompt: true,
+        }
     }
 }
 
 fn normalize_id_part(part: &str) -> String {
     let sanitized: String = part
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let normalized: String = if sanitized.len() > 64 {
         sanitized.chars().take(64).collect()
@@ -138,28 +153,29 @@ pub fn convert_responses_messages(
 ) -> Vec<Value> {
     let mut messages: Vec<Value> = Vec::new();
 
-    let normalize_tool_call_id = |id: &str, target_model: &Model, source: &AssistantMessage| -> String {
-        let provider = target_model.provider.as_str();
-        if !allowed_tool_call_providers.contains(&provider) {
-            return normalize_id_part(id);
-        }
-        if !id.contains('|') {
-            return normalize_id_part(id);
-        }
-        let (call_id, item_id) = id.split_once('|').unwrap_or((id, ""));
-        let normalized_call_id = normalize_id_part(call_id);
-        let is_foreign =
-            source.provider() != Some(&target_model.provider) || source.api() != Some(&target_model.api);
-        let mut normalized_item_id = if is_foreign {
-            build_foreign_responses_item_id(item_id)
-        } else {
-            normalize_id_part(item_id)
+    let normalize_tool_call_id =
+        |id: &str, target_model: &Model, source: &AssistantMessage| -> String {
+            let provider = target_model.provider.as_str();
+            if !allowed_tool_call_providers.contains(&provider) {
+                return normalize_id_part(id);
+            }
+            if !id.contains('|') {
+                return normalize_id_part(id);
+            }
+            let (call_id, item_id) = id.split_once('|').unwrap_or((id, ""));
+            let normalized_call_id = normalize_id_part(call_id);
+            let is_foreign = source.provider() != Some(&target_model.provider)
+                || source.api() != Some(&target_model.api);
+            let mut normalized_item_id = if is_foreign {
+                build_foreign_responses_item_id(item_id)
+            } else {
+                normalize_id_part(item_id)
+            };
+            if !normalized_item_id.starts_with("fc_") {
+                normalized_item_id = normalize_id_part(&format!("fc_{normalized_item_id}"));
+            }
+            format!("{normalized_call_id}|{normalized_item_id}")
         };
-        if !normalized_item_id.starts_with("fc_") {
-            normalized_item_id = normalize_id_part(&format!("fc_{normalized_item_id}"));
-        }
-        format!("{normalized_call_id}|{normalized_item_id}")
-    };
 
     let transformed = transform_messages(&context.messages, model, Some(&normalize_tool_call_id));
 
@@ -173,7 +189,11 @@ pub fn convert_responses_messages(
                     .and_then(|c| c.get("supportsDeveloperRole"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
-                let role = if model.reasoning && supports_developer { "developer" } else { "system" };
+                let role = if model.reasoning && supports_developer {
+                    "developer"
+                } else {
+                    "system"
+                };
                 messages.push(json!({ "role": role, "content": system_prompt }));
             }
         }
@@ -196,7 +216,9 @@ pub fn convert_responses_messages(
                             ContentBlock::Text { text, .. } => {
                                 json!({ "type": "input_text", "text": text })
                             }
-                            ContentBlock::Image { data, mime_type, .. } => json!({
+                            ContentBlock::Image {
+                                data, mime_type, ..
+                            } => json!({
                                 "type": "input_image",
                                 "detail": "auto",
                                 "image_url": format!("data:{mime_type};base64,{data}"),
@@ -214,13 +236,17 @@ pub fn convert_responses_messages(
                 let mut output: Vec<Value> = Vec::new();
                 let is_same_provider_and_api = assistant.provider() == Some(&model.provider)
                     && assistant.api() == Some(&model.api);
-                let is_same_model = is_same_provider_and_api && assistant.model() == Some(&model.id);
-                let is_different_model = is_same_provider_and_api && assistant.model() != Some(&model.id);
+                let is_same_model =
+                    is_same_provider_and_api && assistant.model() == Some(&model.id);
+                let is_different_model =
+                    is_same_provider_and_api && assistant.model() != Some(&model.id);
                 let mut text_block_index = 0usize;
 
                 for block in assistant.content() {
                     match block {
-                        ContentBlock::Thinking { thinking_signature, .. } => {
+                        ContentBlock::Thinking {
+                            thinking_signature, ..
+                        } => {
                             // Signature carries a ResponseReasoningItem JSON for replay.
                             if let Some(sig) = thinking_signature {
                                 if let Ok(item) = serde_json::from_str::<Value>(sig) {
@@ -228,8 +254,12 @@ pub fn convert_responses_messages(
                                 }
                             }
                         }
-                        ContentBlock::Text { text, text_signature } => {
-                            let (parsed_id, phase) = parse_text_signature(text_signature.as_deref());
+                        ContentBlock::Text {
+                            text,
+                            text_signature,
+                        } => {
+                            let (parsed_id, phase) =
+                                parse_text_signature(text_signature.as_deref());
                             let fallback = if text_block_index == 0 {
                                 format!("msg_pi_{msg_index}")
                             } else {
@@ -253,13 +283,20 @@ pub fn convert_responses_messages(
                             }
                             output.push(item);
                         }
-                        ContentBlock::ToolCall { id, name, arguments, namespace, .. } => {
+                        ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            namespace,
+                            ..
+                        } => {
                             let (call_id, item_id_raw) = id
                                 .split_once('|')
                                 .map(|(a, b)| (a.to_string(), Some(b.to_string())))
                                 .unwrap_or_else(|| (id.clone(), None));
                             let mut item_id = item_id_raw;
-                            if (is_different_model && item_id.as_deref().is_some_and(|s| s.starts_with("fc_")))
+                            if (is_different_model
+                                && item_id.as_deref().is_some_and(|s| s.starts_with("fc_")))
                                 || !item_id.as_deref().is_some_and(|s| s.starts_with("fc_"))
                             {
                                 item_id = None;
@@ -380,9 +417,16 @@ pub fn convert_responses_tools(
 
 #[derive(Debug)]
 enum ResponsesSlot {
-    Thinking { content_index: usize },
-    Text { content_index: usize },
-    ToolCall { content_index: usize, partial_json: String },
+    Thinking {
+        content_index: usize,
+    },
+    Text {
+        content_index: usize,
+    },
+    ToolCall {
+        content_index: usize,
+        partial_json: String,
+    },
 }
 
 pub struct ProcessResponsesOptions {
@@ -405,7 +449,8 @@ pub fn process_responses_stream(
 ) -> Result<(), String> {
     let mut saw_terminal_response_event = false;
     let mut output_slots: std::collections::HashMap<usize, ResponsesSlot> = Default::default();
-    let mut reasoning_signatures_by_id: std::collections::HashMap<String, ContentBlock> = Default::default();
+    let mut reasoning_signatures_by_id: std::collections::HashMap<String, ContentBlock> =
+        Default::default();
 
     let apply_message_phase_stop_reason = |item: &Value, output: &mut AssistantMessage| {
         if item.get("type").and_then(|t| t.as_str()) == Some("message")
@@ -429,19 +474,27 @@ pub fn process_responses_stream(
 
         match event_type.as_str() {
             "response.created" => {
-                if let Some(id) = parsed.get("response").and_then(|r| r.get("id")).and_then(|v| v.as_str()) {
+                if let Some(id) = parsed
+                    .get("response")
+                    .and_then(|r| r.get("id"))
+                    .and_then(|v| v.as_str())
+                {
                     output.set_response_id(id.to_string());
                 }
             }
             "response.output_item.added" => {
-                let output_index = parsed.get("output_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let output_index = parsed
+                    .get("output_index")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
                 let item = parsed.get("item").cloned().unwrap_or(json!({}));
                 let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 match item_type {
                     "reasoning" => {
                         output.content_mut().push(ContentBlock::thinking(""));
                         let content_index = output.content_len().saturating_sub(1);
-                        output_slots.insert(output_index, ResponsesSlot::Thinking { content_index });
+                        output_slots
+                            .insert(output_index, ResponsesSlot::Thinking { content_index });
                         push(AssistantMessageEvent::ThinkingStart {
                             content_index,
                             partial: output.clone(),
@@ -458,10 +511,26 @@ pub fn process_responses_stream(
                         });
                     }
                     "function_call" => {
-                        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let arguments = item.get("arguments").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let name = item
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let call_id = item
+                            .get("call_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let id = item
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let arguments = item
+                            .get("arguments")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let block = ContentBlock::ToolCall {
                             id: format!("{call_id}|{id}"),
                             name,
@@ -473,7 +542,10 @@ pub fn process_responses_stream(
                         let content_index = output.content_len().saturating_sub(1);
                         output_slots.insert(
                             output_index,
-                            ResponsesSlot::ToolCall { content_index, partial_json: arguments },
+                            ResponsesSlot::ToolCall {
+                                content_index,
+                                partial_json: arguments,
+                            },
                         );
                         push(AssistantMessageEvent::ToolCallStart {
                             content_index,
@@ -483,13 +555,23 @@ pub fn process_responses_stream(
                     _ => {}
                 }
             }
-            "response.reasoning_summary_text.delta"
-            | "response.reasoning_text.delta" => {
-                let output_index = parsed.get("output_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let delta = parsed.get("delta").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                if let Some(ResponsesSlot::Thinking { content_index }) = output_slots.get(&output_index) {
+            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                let output_index = parsed
+                    .get("output_index")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let delta = parsed
+                    .get("delta")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Some(ResponsesSlot::Thinking { content_index }) =
+                    output_slots.get(&output_index)
+                {
                     let idx = *content_index;
-                    if let Some(ContentBlock::Thinking { thinking, .. }) = output.content_mut().get_mut(idx) {
+                    if let Some(ContentBlock::Thinking { thinking, .. }) =
+                        output.content_mut().get_mut(idx)
+                    {
                         *thinking += &delta;
                     }
                     push(AssistantMessageEvent::ThinkingDelta {
@@ -500,10 +582,17 @@ pub fn process_responses_stream(
                 }
             }
             "response.reasoning_summary_part.done" => {
-                let output_index = parsed.get("output_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                if let Some(ResponsesSlot::Thinking { content_index }) = output_slots.get(&output_index) {
+                let output_index = parsed
+                    .get("output_index")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                if let Some(ResponsesSlot::Thinking { content_index }) =
+                    output_slots.get(&output_index)
+                {
                     let idx = *content_index;
-                    if let Some(ContentBlock::Thinking { thinking, .. }) = output.content_mut().get_mut(idx) {
+                    if let Some(ContentBlock::Thinking { thinking, .. }) =
+                        output.content_mut().get_mut(idx)
+                    {
                         *thinking += "\n\n";
                     }
                     push(AssistantMessageEvent::ThinkingDelta {
@@ -514,11 +603,20 @@ pub fn process_responses_stream(
                 }
             }
             "response.output_text.delta" | "response.refusal.delta" => {
-                let output_index = parsed.get("output_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let delta = parsed.get("delta").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                if let Some(ResponsesSlot::Text { content_index }) = output_slots.get(&output_index) {
+                let output_index = parsed
+                    .get("output_index")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let delta = parsed
+                    .get("delta")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Some(ResponsesSlot::Text { content_index }) = output_slots.get(&output_index)
+                {
                     let idx = *content_index;
-                    if let Some(ContentBlock::Text { text, .. }) = output.content_mut().get_mut(idx) {
+                    if let Some(ContentBlock::Text { text, .. }) = output.content_mut().get_mut(idx)
+                    {
                         *text += &delta;
                     }
                     push(AssistantMessageEvent::TextDelta {
@@ -529,12 +627,25 @@ pub fn process_responses_stream(
                 }
             }
             "response.function_call_arguments.delta" => {
-                let output_index = parsed.get("output_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let delta = parsed.get("delta").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                if let Some(ResponsesSlot::ToolCall { content_index, partial_json }) = output_slots.get_mut(&output_index) {
+                let output_index = parsed
+                    .get("output_index")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let delta = parsed
+                    .get("delta")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Some(ResponsesSlot::ToolCall {
+                    content_index,
+                    partial_json,
+                }) = output_slots.get_mut(&output_index)
+                {
                     *partial_json += &delta;
                     let args = parse_streaming_json(partial_json);
-                    if let Some(ContentBlock::ToolCall { arguments, .. }) = output.content_mut().get_mut(*content_index) {
+                    if let Some(ContentBlock::ToolCall { arguments, .. }) =
+                        output.content_mut().get_mut(*content_index)
+                    {
                         *arguments = args;
                     }
                     push(AssistantMessageEvent::ToolCallDelta {
@@ -545,13 +656,26 @@ pub fn process_responses_stream(
                 }
             }
             "response.function_call_arguments.done" => {
-                let output_index = parsed.get("output_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let final_arguments = parsed.get("arguments").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                if let Some(ResponsesSlot::ToolCall { content_index, partial_json }) = output_slots.get_mut(&output_index) {
+                let output_index = parsed
+                    .get("output_index")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let final_arguments = parsed
+                    .get("arguments")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Some(ResponsesSlot::ToolCall {
+                    content_index,
+                    partial_json,
+                }) = output_slots.get_mut(&output_index)
+                {
                     let previous = partial_json.clone();
                     *partial_json = final_arguments.clone();
                     let args = parse_streaming_json(&final_arguments);
-                    if let Some(ContentBlock::ToolCall { arguments, .. }) = output.content_mut().get_mut(*content_index) {
+                    if let Some(ContentBlock::ToolCall { arguments, .. }) =
+                        output.content_mut().get_mut(*content_index)
+                    {
                         *arguments = args;
                     }
                     if final_arguments.starts_with(&previous) {
@@ -567,20 +691,33 @@ pub fn process_responses_stream(
                 }
             }
             "response.output_item.done" => {
-                let output_index = parsed.get("output_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let output_index = parsed
+                    .get("output_index")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
                 let item = parsed.get("item").cloned().unwrap_or(json!({}));
                 apply_message_phase_stop_reason(&item, output);
-                let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                let item_type = item
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 match item_type.as_str() {
                     "reasoning" => {
-                        if let Some(ResponsesSlot::Thinking { content_index }) = output_slots.get(&output_index) {
+                        if let Some(ResponsesSlot::Thinking { content_index }) =
+                            output_slots.get(&output_index)
+                        {
                             let idx = *content_index;
                             let summary_text: Vec<String> = item
                                 .get("summary")
                                 .and_then(|s| s.as_array())
                                 .map(|arr| {
                                     arr.iter()
-                                        .filter_map(|s| s.get("text").and_then(|t| t.as_str()).map(|t| t.to_string()))
+                                        .filter_map(|s| {
+                                            s.get("text")
+                                                .and_then(|t| t.as_str())
+                                                .map(|t| t.to_string())
+                                        })
                                         .collect()
                                 })
                                 .unwrap_or_default();
@@ -589,7 +726,11 @@ pub fn process_responses_stream(
                                 .and_then(|c| c.as_array())
                                 .map(|arr| {
                                     arr.iter()
-                                        .filter_map(|s| s.get("text").and_then(|t| t.as_str()).map(|t| t.to_string()))
+                                        .filter_map(|s| {
+                                            s.get("text")
+                                                .and_then(|t| t.as_str())
+                                                .map(|t| t.to_string())
+                                        })
                                         .collect()
                                 })
                                 .unwrap_or_default();
@@ -600,8 +741,11 @@ pub fn process_responses_stream(
                             } else {
                                 String::new()
                             };
-                            if let Some(ContentBlock::Thinking { thinking, thinking_signature, .. }) =
-                                output.content_mut().get_mut(idx)
+                            if let Some(ContentBlock::Thinking {
+                                thinking,
+                                thinking_signature,
+                                ..
+                            }) = output.content_mut().get_mut(idx)
                             {
                                 if assembled.is_empty() {
                                     // keep accumulated deltas
@@ -620,7 +764,8 @@ pub fn process_responses_stream(
                                     );
                                 }
                             }
-                            let content = match &output.content()[idx.min(output.content_len() - 1)] {
+                            let content = match &output.content()[idx.min(output.content_len() - 1)]
+                            {
                                 ContentBlock::Thinking { thinking, .. } => thinking.clone(),
                                 _ => String::new(),
                             };
@@ -633,7 +778,9 @@ pub fn process_responses_stream(
                         }
                     }
                     "message" => {
-                        if let Some(ResponsesSlot::Text { content_index }) = output_slots.get(&output_index) {
+                        if let Some(ResponsesSlot::Text { content_index }) =
+                            output_slots.get(&output_index)
+                        {
                             let idx = *content_index;
                             let assembled: String = item
                                 .get("content")
@@ -641,22 +788,38 @@ pub fn process_responses_stream(
                                 .map(|arr| {
                                     arr.iter()
                                         .filter_map(|c| {
-                                            if c.get("type").and_then(|t| t.as_str()) == Some("output_text") {
-                                                c.get("text").and_then(|t| t.as_str()).map(|t| t.to_string())
+                                            if c.get("type").and_then(|t| t.as_str())
+                                                == Some("output_text")
+                                            {
+                                                c.get("text")
+                                                    .and_then(|t| t.as_str())
+                                                    .map(|t| t.to_string())
                                             } else {
-                                                c.get("refusal").and_then(|t| t.as_str()).map(|t| t.to_string())
+                                                c.get("refusal")
+                                                    .and_then(|t| t.as_str())
+                                                    .map(|t| t.to_string())
                                             }
                                         })
                                         .collect()
                                 })
                                 .unwrap_or_default();
-                            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let phase = item.get("phase").and_then(|v| v.as_str()).map(|s| s.to_string());
-                            if let Some(ContentBlock::Text { text, text_signature }) =
-                                output.content_mut().get_mut(idx)
+                            let id = item
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let phase = item
+                                .get("phase")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            if let Some(ContentBlock::Text {
+                                text,
+                                text_signature,
+                            }) = output.content_mut().get_mut(idx)
                             {
                                 *text = assembled.clone();
-                                *text_signature = Some(encode_text_signature_v1(&id, phase.as_deref()));
+                                *text_signature =
+                                    Some(encode_text_signature_v1(&id, phase.as_deref()));
                             }
                             push(AssistantMessageEvent::TextEnd {
                                 content_index: idx,
@@ -667,15 +830,25 @@ pub fn process_responses_stream(
                         }
                     }
                     "function_call" => {
-                        if let Some(ResponsesSlot::ToolCall { content_index, partial_json }) = output_slots.get_mut(&output_index) {
+                        if let Some(ResponsesSlot::ToolCall {
+                            content_index,
+                            partial_json,
+                        }) = output_slots.get_mut(&output_index)
+                        {
                             let idx = *content_index;
-                            let final_args = item.get("arguments").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let final_args = item
+                                .get("arguments")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             let parsed_args = parse_streaming_json(if final_args.is_empty() {
                                 partial_json
                             } else {
                                 &final_args
                             });
-                            if let Some(ContentBlock::ToolCall { arguments, .. }) = output.content_mut().get_mut(idx) {
+                            if let Some(ContentBlock::ToolCall { arguments, .. }) =
+                                output.content_mut().get_mut(idx)
+                            {
                                 *arguments = parsed_args;
                             }
                             let tool_call = output.content()[idx].clone();
@@ -697,16 +870,29 @@ pub fn process_responses_stream(
                 if let Some(rest_output) = response.get("output").and_then(|o| o.as_array()) {
                     for item in rest_output {
                         if item.get("type").and_then(|t| t.as_str()) == Some("reasoning") {
-                            if let Some(encrypted) = item.get("encrypted_content").and_then(|e| e.as_str()) {
+                            if let Some(encrypted) =
+                                item.get("encrypted_content").and_then(|e| e.as_str())
+                            {
                                 if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
                                     if let Some(block) = reasoning_signatures_by_id.get_mut(id) {
-                                        if let ContentBlock::Thinking { thinking_signature, .. } = block {
+                                        if let ContentBlock::Thinking {
+                                            thinking_signature, ..
+                                        } = block
+                                        {
                                             if let Some(sig) = thinking_signature {
-                                                if let Ok(mut stored) = serde_json::from_str::<Value>(sig) {
-                                                    if stored.get("encrypted_content").and_then(|v| v.as_str()).is_none() {
-                                                        stored["encrypted_content"] = json!(encrypted);
+                                                if let Ok(mut stored) =
+                                                    serde_json::from_str::<Value>(sig)
+                                                {
+                                                    if stored
+                                                        .get("encrypted_content")
+                                                        .and_then(|v| v.as_str())
+                                                        .is_none()
+                                                    {
+                                                        stored["encrypted_content"] =
+                                                            json!(encrypted);
                                                         // Update the live block too.
-                                                        *thinking_signature = Some(stored.to_string());
+                                                        *thinking_signature =
+                                                            Some(stored.to_string());
                                                     }
                                                 }
                                             }
@@ -726,24 +912,33 @@ pub fn process_responses_stream(
                     let cached = usage
                         .get("input_tokens_details")
                         .and_then(|d| d.get("cached_tokens"))
-                        .and_then(|v| v.as_u64())
+                        .and_then(|v| v.as_i64())
                         .unwrap_or(0);
                     let cache_write = usage
                         .get("input_tokens_details")
                         .and_then(|d| d.get("cache_write_tokens"))
-                        .and_then(|v| v.as_u64())
+                        .and_then(|v| v.as_i64())
                         .unwrap_or(0);
-                    let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let input = usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
                     let mut u = Usage {
                         input: input.saturating_sub(cached + cache_write),
-                        output: usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                        output: usage
+                            .get("output_tokens")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0),
                         cache_read: cached,
                         cache_write,
                         reasoning: usage
                             .get("output_tokens_details")
                             .and_then(|d| d.get("reasoning_tokens"))
-                            .and_then(|v| v.as_u64()),
-                        total_tokens: usage.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                            .and_then(|v| v.as_i64()),
+                        total_tokens: usage
+                            .get("total_tokens")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0),
                         cache_write_1h: None,
                         cost: Default::default(),
                     };
@@ -761,7 +956,10 @@ pub fn process_responses_stream(
                     apply_service_tier_pricing(output, &tier, &model.id);
                 }
                 // Status -> stop reason.
-                let status = response.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                let status = response
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let incomplete_reason = response
                     .get("incomplete_details")
                     .and_then(|d| d.get("reason"))
@@ -772,12 +970,16 @@ pub fn process_responses_stream(
                     None => status.to_string(),
                 };
                 output.set_raw_stop_reason(raw);
-                let (stop_reason, error_message) = map_stop_reason(status, incomplete_reason.as_deref());
+                let (stop_reason, error_message) =
+                    map_stop_reason(status, incomplete_reason.as_deref());
                 output.set_stop_reason(stop_reason);
                 if let Some(err) = error_message {
                     set_msg_error_message(output, err);
                 }
-                if output.content().iter().any(|b| matches!(b, ContentBlock::ToolCall { .. }))
+                if output
+                    .content()
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolCall { .. }))
                     && output.stop_reason() == Some(StopReason::Stop)
                 {
                     output.set_stop_reason(StopReason::ToolUse);
@@ -790,15 +992,27 @@ pub fn process_responses_stream(
             }
             "response.failed" => {
                 let response = parsed.get("response").cloned().unwrap_or(json!({}));
-                let status = response.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                let status = response
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 output.set_raw_stop_reason(status.to_string());
                 let error = response.get("error");
                 let details = response.get("incomplete_details");
                 let msg = if let Some(error) = error {
-                    let code = error.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
-                    let message = error.get("message").and_then(|v| v.as_str()).unwrap_or("no message");
+                    let code = error
+                        .get("code")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let message = error
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("no message");
                     format!("{code}: {message}")
-                } else if let Some(reason) = details.and_then(|d| d.get("reason")).and_then(|v| v.as_str()) {
+                } else if let Some(reason) = details
+                    .and_then(|d| d.get("reason"))
+                    .and_then(|v| v.as_str())
+                {
                     format!("incomplete: {reason}")
                 } else {
                     "Unknown error (no error details in response)".to_string()
@@ -826,7 +1040,11 @@ fn set_msg_error_message(output: &mut AssistantMessage, message: String) {
     *error_message = Some(message);
 }
 
-pub fn apply_service_tier_pricing(output: &mut AssistantMessage, service_tier: &str, model_id: &str) {
+pub fn apply_service_tier_pricing(
+    output: &mut AssistantMessage,
+    service_tier: &str,
+    model_id: &str,
+) {
     let multiplier = match service_tier {
         "flex" => 0.5,
         "priority" => {
@@ -899,10 +1117,17 @@ mod tests {
 
     #[test]
     fn tools_converted_with_strict() {
-        let tools = vec![json_tool("bash", "run", &json!({"type":"object","properties":{}}))];
+        let tools = vec![json_tool(
+            "bash",
+            "run",
+            &json!({"type":"object","properties":{}}),
+        )];
         let out = convert_responses_tools(
             &tools,
-            &ConvertResponsesToolsOptions { strict: Some(true), ..Default::default() },
+            &ConvertResponsesToolsOptions {
+                strict: Some(true),
+                ..Default::default()
+            },
         );
         assert_eq!(out[0]["type"], "function");
         assert_eq!(out[0]["strict"], true);
@@ -915,7 +1140,12 @@ mod tests {
         let mut ctx = Context::default();
         ctx.system_prompt = Some("be good".into());
         ctx.messages = vec![Message::User(UserContent::string("hi", 1))];
-        let out = convert_responses_messages(&m, &ctx, &["openai"], &ConvertResponsesMessagesOptions::default());
+        let out = convert_responses_messages(
+            &m,
+            &ctx,
+            &["openai"],
+            &ConvertResponsesMessagesOptions::default(),
+        );
         assert_eq!(out[0]["role"], "developer");
         assert_eq!(out[0]["content"], "be good");
         assert_eq!(out[1]["role"], "user");
@@ -931,7 +1161,12 @@ mod tests {
             vec![ContentBlock::text("out")],
             false,
         ))];
-        let out = convert_responses_messages(&m, &ctx, &["openai"], &ConvertResponsesMessagesOptions::default());
+        let out = convert_responses_messages(
+            &m,
+            &ctx,
+            &["openai"],
+            &ConvertResponsesMessagesOptions::default(),
+        );
         assert_eq!(out[0]["type"], "function_call_output");
         assert_eq!(out[0]["call_id"], "call_1");
         assert_eq!(out[0]["output"], "out");
@@ -944,18 +1179,33 @@ mod tests {
         ctx.messages = vec![Message::ToolResult(ToolResultMessage::new(
             "call_1",
             "bash",
-            vec![ContentBlock::text("out"), ContentBlock::image("aGk=", "image/png")],
+            vec![
+                ContentBlock::text("out"),
+                ContentBlock::image("aGk=", "image/png"),
+            ],
             false,
         ))];
-        let out = convert_responses_messages(&m, &ctx, &["openai"], &ConvertResponsesMessagesOptions::default());
+        let out = convert_responses_messages(
+            &m,
+            &ctx,
+            &["openai"],
+            &ConvertResponsesMessagesOptions::default(),
+        );
         let arr = out[0]["output"].as_array().unwrap();
         assert_eq!(arr[0]["type"], "input_text");
         assert_eq!(arr[1]["type"], "input_image");
-        assert!(arr[1]["image_url"].as_str().unwrap().starts_with("data:image/png;base64,"));
+        assert!(arr[1]["image_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
     }
 
     fn sse(data: &str) -> crate::sse::SseEvent {
-        crate::sse::SseEvent { data: data.to_string(), event: None, id: None }
+        crate::sse::SseEvent {
+            data: data.to_string(),
+            event: None,
+            id: None,
+        }
     }
 
     #[test]
@@ -966,14 +1216,27 @@ mod tests {
         output.set_stop_reason(StopReason::Pending);
         let events = vec![
             sse(r#"{"type":"response.created","response":{"id":"resp_1"}}"#),
-            sse(r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","status":"in_progress","role":"assistant","content":[]}}"#),
+            sse(
+                r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","status":"in_progress","role":"assistant","content":[]}}"#,
+            ),
             sse(r#"{"type":"response.output_text.delta","output_index":0,"delta":"Hello"}"#),
             sse(r#"{"type":"response.output_text.delta","output_index":0,"delta":" world"}"#),
-            sse(r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello world","annotations":[]}]}}"#),
-            sse(r#"{"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#),
+            sse(
+                r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello world","annotations":[]}]}}"#,
+            ),
+            sse(
+                r#"{"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#,
+            ),
         ];
         let mut pushes: Vec<AssistantMessageEvent> = Vec::new();
-        process_responses_stream(&events, &mut output, &mut |e| pushes.push(e), &m, &ProcessResponsesOptions::default()).unwrap();
+        process_responses_stream(
+            &events,
+            &mut output,
+            &mut |e| pushes.push(e),
+            &m,
+            &ProcessResponsesOptions::default(),
+        )
+        .unwrap();
         assert_eq!(output.stop_reason(), Some(StopReason::Stop));
         assert_eq!(output.response_id().unwrap(), "resp_1");
         let usage = output.usage().unwrap();
@@ -988,9 +1251,15 @@ mod tests {
             })
             .collect();
         assert_eq!(text, "Hello world");
-        assert!(pushes.iter().any(|e| matches!(e, AssistantMessageEvent::TextDelta { .. })));
-        assert!(pushes.iter().any(|e| matches!(e, AssistantMessageEvent::TextEnd { .. })));
-        assert!(pushes.iter().any(|e| matches!(e, AssistantMessageEvent::Done { .. }) == false));
+        assert!(pushes
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::TextDelta { .. })));
+        assert!(pushes
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::TextEnd { .. })));
+        assert!(pushes
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::Done { .. }) == false));
         // Message phase stop from final_answer item.
     }
 
@@ -1001,19 +1270,41 @@ mod tests {
         output.set_api_provider_model("openai-responses", "openai", "gpt-5");
         output.set_stop_reason(StopReason::Pending);
         let events = vec![
-            sse(r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_abc","name":"bash","arguments":"","status":"in_progress"}}"#),
-            sse(r#"{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"cmd\":"}"#),
-            sse(r#"{"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"ls\""}"#),
-            sse(r#"{"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"cmd\":\"ls\"}"}"#),
-            sse(r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_abc","name":"bash","arguments":"{\"cmd\":\"ls\"}","status":"completed"}}"#),
+            sse(
+                r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_abc","name":"bash","arguments":"","status":"in_progress"}}"#,
+            ),
+            sse(
+                r#"{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"cmd\":"}"#,
+            ),
+            sse(
+                r#"{"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"ls\""}"#,
+            ),
+            sse(
+                r#"{"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"cmd\":\"ls\"}"}"#,
+            ),
+            sse(
+                r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_abc","name":"bash","arguments":"{\"cmd\":\"ls\"}","status":"completed"}}"#,
+            ),
             sse(r#"{"type":"response.completed","response":{"id":"resp_1","status":"completed"}}"#),
         ];
         let mut pushes: Vec<AssistantMessageEvent> = Vec::new();
-        process_responses_stream(&events, &mut output, &mut |e| pushes.push(e), &m, &ProcessResponsesOptions::default()).unwrap();
+        process_responses_stream(
+            &events,
+            &mut output,
+            &mut |e| pushes.push(e),
+            &m,
+            &ProcessResponsesOptions::default(),
+        )
+        .unwrap();
         // Tool call present -> stop reason becomes toolUse on completed.
         assert_eq!(output.stop_reason(), Some(StopReason::ToolUse));
         match &output.content()[0] {
-            ContentBlock::ToolCall { id, name, arguments, .. } => {
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } => {
                 assert_eq!(id, "call_abc|fc_1");
                 assert_eq!(name, "bash");
                 assert_eq!(arguments["cmd"], "ls");
@@ -1028,12 +1319,22 @@ mod tests {
         let mut output = AssistantMessage::new();
         output.set_api_provider_model("openai-responses", "openai", "gpt-5");
         output.set_stop_reason(StopReason::Pending);
-        let events = vec![
-            sse(r#"{"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}"#),
-        ];
-        process_responses_stream(&events, &mut output, &mut |_| {}, &m, &ProcessResponsesOptions::default()).unwrap();
+        let events = vec![sse(
+            r#"{"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}"#,
+        )];
+        process_responses_stream(
+            &events,
+            &mut output,
+            &mut |_| {},
+            &m,
+            &ProcessResponsesOptions::default(),
+        )
+        .unwrap();
         assert_eq!(output.stop_reason(), Some(StopReason::Length));
-        assert_eq!(output.raw_stop_reason().unwrap(), "incomplete.max_output_tokens");
+        assert_eq!(
+            output.raw_stop_reason().unwrap(),
+            "incomplete.max_output_tokens"
+        );
     }
 
     #[test]
@@ -1041,8 +1342,17 @@ mod tests {
         let m = model("gpt-5");
         let mut output = AssistantMessage::new();
         output.set_api_provider_model("openai-responses", "openai", "gpt-5");
-        let events = vec![sse(r#"{"type":"response.created","response":{"id":"resp_1"}}"#)];
-        let err = process_responses_stream(&events, &mut output, &mut |_| {}, &m, &ProcessResponsesOptions::default()).unwrap_err();
+        let events = vec![sse(
+            r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+        )];
+        let err = process_responses_stream(
+            &events,
+            &mut output,
+            &mut |_| {},
+            &m,
+            &ProcessResponsesOptions::default(),
+        )
+        .unwrap_err();
         assert!(err.contains("before a terminal response event"));
     }
 
@@ -1054,14 +1364,29 @@ mod tests {
         output.set_stop_reason(StopReason::Pending);
         let reasoning_item = r#"{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"thinking"}],"content":[],"status":"completed"}"#;
         let events = vec![
-            sse(r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","status":"in_progress"}}"#),
+            sse(
+                r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","status":"in_progress"}}"#,
+            ),
             sse(r#"{"type":"response.reasoning_text.delta","output_index":0,"delta":"think"}"#),
-            sse(&format!(r#"{{"type":"response.output_item.done","output_index":0,"item":{reasoning_item}}}"#)),
+            sse(&format!(
+                r#"{{"type":"response.output_item.done","output_index":0,"item":{reasoning_item}}}"#
+            )),
             sse(r#"{"type":"response.completed","response":{"id":"resp_1","status":"completed"}}"#),
         ];
-        process_responses_stream(&events, &mut output, &mut |_| {}, &m, &ProcessResponsesOptions::default()).unwrap();
+        process_responses_stream(
+            &events,
+            &mut output,
+            &mut |_| {},
+            &m,
+            &ProcessResponsesOptions::default(),
+        )
+        .unwrap();
         match &output.content()[0] {
-            ContentBlock::Thinking { thinking, thinking_signature, .. } => {
+            ContentBlock::Thinking {
+                thinking,
+                thinking_signature,
+                ..
+            } => {
                 assert_eq!(thinking, "thinking");
                 let sig = thinking_signature.as_ref().unwrap();
                 let parsed: Value = serde_json::from_str(sig).unwrap();

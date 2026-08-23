@@ -20,7 +20,9 @@
 
 use std::sync::Arc;
 
-use crate::auth::{ApiKeyAuth, ApiKeyCredential, AuthCheck, AuthContext, AuthResult, ModelAuth, ProviderAuth};
+use crate::auth::{
+    ApiKeyAuth, ApiKeyCredential, AuthCheck, AuthContext, AuthResult, ModelAuth, ProviderAuth,
+};
 use crate::model::Model;
 use crate::models::ProviderStreams;
 use crate::types::{ProviderEnv, ProviderHeaders};
@@ -114,7 +116,9 @@ impl CloudflareAuth {
         let account_id = resolve_value(CLOUDFLARE_ACCOUNT_ID, ctx, credential)?;
         let gateway_id = match self.kind {
             CloudflareAuthKind::WorkersAi => None,
-            CloudflareAuthKind::AiGateway => Some(resolve_value(CLOUDFLARE_GATEWAY_ID, ctx, credential)?),
+            CloudflareAuthKind::AiGateway => {
+                Some(resolve_value(CLOUDFLARE_GATEWAY_ID, ctx, credential)?)
+            }
         };
         if api_key.is_empty() || account_id.is_empty() {
             return None;
@@ -124,7 +128,15 @@ impl CloudflareAuth {
         if let Some(gateway_id) = gateway_id {
             env.insert(CLOUDFLARE_GATEWAY_ID.to_string(), gateway_id);
         }
-        Some((api_key, env, if credential.is_some() { "stored credential".to_string() } else { CLOUDFLARE_API_KEY.to_string() }))
+        Some((
+            api_key,
+            env,
+            if credential.is_some() {
+                "stored credential".to_string()
+            } else {
+                CLOUDFLARE_API_KEY.to_string()
+            },
+        ))
     }
 }
 
@@ -134,13 +146,18 @@ impl ApiKeyAuth for CloudflareAuth {
     }
 
     fn check(&self, ctx: &AuthContext, credential: Option<&ApiKeyCredential>) -> Option<AuthCheck> {
-        self.resolved(ctx, credential).map(|(_, _, source)| AuthCheck {
-            source: Some(source),
-            auth_type: "api_key",
-        })
+        self.resolved(ctx, credential)
+            .map(|(_, _, source)| AuthCheck {
+                source: Some(source),
+                auth_type: "api_key",
+            })
     }
 
-    fn resolve(&self, ctx: &AuthContext, credential: Option<&ApiKeyCredential>) -> Option<AuthResult> {
+    fn resolve(
+        &self,
+        ctx: &AuthContext,
+        credential: Option<&ApiKeyCredential>,
+    ) -> Option<AuthResult> {
         let (api_key, env, source) = self.resolved(ctx, credential)?;
         let auth = match self.kind {
             CloudflareAuthKind::WorkersAi => ModelAuth {
@@ -150,13 +167,24 @@ impl ApiKeyAuth for CloudflareAuth {
             },
             CloudflareAuthKind::AiGateway => {
                 let mut headers = ProviderHeaders::new();
-                headers.insert("cf-aig-authorization".to_string(), Some(format!("Bearer {api_key}")));
+                headers.insert(
+                    "cf-aig-authorization".to_string(),
+                    Some(format!("Bearer {api_key}")),
+                );
                 headers.insert("Authorization".to_string(), None);
                 headers.insert("x-api-key".to_string(), None);
-                ModelAuth { api_key: None, headers: Some(headers), base_url: None }
+                ModelAuth {
+                    api_key: None,
+                    headers: Some(headers),
+                    base_url: None,
+                }
             }
         };
-        Some(AuthResult { auth, env: Some(env), source: Some(source) })
+        Some(AuthResult {
+            auth,
+            env: Some(env),
+            source: Some(source),
+        })
     }
 }
 
@@ -197,7 +225,8 @@ pub fn cloudflare_streams(inner: ProviderStreams) -> ProviderStreams {
         Arc::new(
             move |model: &Model,
                   ctx: &crate::types::Context,
-                  options: Option<&crate::types::StreamOptions>| -> crate::event_stream::AssistantMessageEventStream {
+                  options: Option<&crate::types::StreamOptions>|
+                  -> crate::event_stream::AssistantMessageEventStream {
                 let env = options.and_then(|o| o.base.env.as_ref());
                 let resolved = resolve_cloudflare_model(model, env);
                 let f = inner.stream.clone();
@@ -210,7 +239,8 @@ pub fn cloudflare_streams(inner: ProviderStreams) -> ProviderStreams {
         Arc::new(
             move |model: &Model,
                   ctx: &crate::types::Context,
-                  options: Option<&crate::types::SimpleStreamOptions>| -> crate::event_stream::AssistantMessageEventStream {
+                  options: Option<&crate::types::SimpleStreamOptions>|
+                  -> crate::event_stream::AssistantMessageEventStream {
                 let env = options.and_then(|o| o.base.base.env.as_ref());
                 let resolved = resolve_cloudflare_model(model, env);
                 let f = inner.stream_simple.clone();
@@ -218,7 +248,12 @@ pub fn cloudflare_streams(inner: ProviderStreams) -> ProviderStreams {
             },
         )
     };
-    ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }
+    ProviderStreams {
+        stream,
+        stream_simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    }
 }
 
 #[cfg(test)]
@@ -265,20 +300,33 @@ mod tests {
         let stream_fn: crate::models::StreamFn = Arc::new(
             move |model: &Model,
                   _ctx: &crate::types::Context,
-                  _o: Option<&crate::types::StreamOptions>| -> AssistantMessageEventStream {
-                captured_for_stream.lock().unwrap().push(model.base_url.clone());
+                  _o: Option<&crate::types::StreamOptions>|
+                  -> AssistantMessageEventStream {
+                captured_for_stream
+                    .lock()
+                    .unwrap()
+                    .push(model.base_url.clone());
                 AssistantMessageEventStream::new()
             },
         );
         let simple_fn: crate::models::SimpleStreamFn = Arc::new(
             move |model: &Model,
                   _ctx: &crate::types::Context,
-                  _o: Option<&crate::types::SimpleStreamOptions>| -> AssistantMessageEventStream {
-                captured_for_simple.lock().unwrap().push(model.base_url.clone());
+                  _o: Option<&crate::types::SimpleStreamOptions>|
+                  -> AssistantMessageEventStream {
+                captured_for_simple
+                    .lock()
+                    .unwrap()
+                    .push(model.base_url.clone());
                 AssistantMessageEventStream::new()
             },
         );
-        let inner = ProviderStreams { stream: stream_fn, stream_simple: simple_fn, fetch_deferred: None, cancel_deferred: None };
+        let inner = ProviderStreams {
+            stream: stream_fn,
+            stream_simple: simple_fn,
+            fetch_deferred: None,
+            cancel_deferred: None,
+        };
         let wrapped = cloudflare_streams(inner);
         let model = cloudflare_model();
         let ctx = crate::types::Context::default();
@@ -286,7 +334,10 @@ mod tests {
         env.insert("CLOUDFLARE_ACCOUNT_ID".to_string(), "account".to_string());
         env.insert("CLOUDFLARE_GATEWAY_ID".to_string(), "gateway".to_string());
         let options = crate::types::StreamOptions {
-            base: crate::types::ProviderRequestOptions { env: Some(env), ..Default::default() },
+            base: crate::types::ProviderRequestOptions {
+                env: Some(env),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let stream = wrapped.stream.clone();
@@ -307,33 +358,58 @@ mod tests {
     #[test]
     fn workers_ai_auth_resolves_key_and_account_env() {
         let _guard = crate::utils::env_lock();
-        let auth = CloudflareAuth { kind: CloudflareAuthKind::WorkersAi };
+        let auth = CloudflareAuth {
+            kind: CloudflareAuthKind::WorkersAi,
+        };
         let ctx = AuthContext::default();
         // Simulate ambient env with an injected AuthContext.
-        unsafe { std::env::set_var("CLOUDFLARE_API_KEY", "k"); std::env::set_var("CLOUDFLARE_ACCOUNT_ID", "acct"); }
+        unsafe {
+            std::env::set_var("CLOUDFLARE_API_KEY", "k");
+            std::env::set_var("CLOUDFLARE_ACCOUNT_ID", "acct");
+        }
         let check = auth.check(&ctx, None);
         assert!(check.is_some());
         let resolved = auth.resolve(&ctx, None).unwrap();
         assert_eq!(resolved.auth.api_key.as_deref(), Some("k"));
-        assert_eq!(resolved.env.as_ref().unwrap().get("CLOUDFLARE_ACCOUNT_ID").map(|s| s.as_str()), Some("acct"));
-        unsafe { std::env::remove_var("CLOUDFLARE_API_KEY"); std::env::remove_var("CLOUDFLARE_ACCOUNT_ID"); }
+        assert_eq!(
+            resolved
+                .env
+                .as_ref()
+                .unwrap()
+                .get("CLOUDFLARE_ACCOUNT_ID")
+                .map(|s| s.as_str()),
+            Some("acct")
+        );
+        unsafe {
+            std::env::remove_var("CLOUDFLARE_API_KEY");
+            std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+        }
     }
 
     #[test]
     fn workers_ai_auth_fails_without_account_id() {
         let _guard = crate::utils::env_lock();
-        let auth = CloudflareAuth { kind: CloudflareAuthKind::WorkersAi };
+        let auth = CloudflareAuth {
+            kind: CloudflareAuthKind::WorkersAi,
+        };
         let ctx = AuthContext::default();
-        unsafe { std::env::set_var("CLOUDFLARE_API_KEY", "k"); std::env::remove_var("CLOUDFLARE_ACCOUNT_ID"); }
+        unsafe {
+            std::env::set_var("CLOUDFLARE_API_KEY", "k");
+            std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+        }
         assert!(auth.check(&ctx, None).is_none());
         assert!(auth.resolve(&ctx, None).is_none());
-        unsafe { std::env::remove_var("CLOUDFLARE_API_KEY"); }
+        unsafe {
+            std::env::remove_var("CLOUDFLARE_API_KEY");
+        }
     }
 
     #[test]
     fn ai_gateway_auth_sets_cf_aig_authorization_headers() {
         let _guard = crate::utils::env_lock();
-        let auth = CloudflareAuth { kind: CloudflareAuthKind::AiGateway };
+        let auth = CloudflareAuth {
+            kind: CloudflareAuthKind::AiGateway,
+        };
         let ctx = AuthContext::default();
         unsafe {
             std::env::set_var("CLOUDFLARE_API_KEY", "k");
@@ -345,10 +421,23 @@ mod tests {
         let resolved = auth.resolve(&ctx, None).unwrap();
         assert_eq!(resolved.auth.api_key, None);
         let headers = resolved.auth.headers.unwrap();
-        assert_eq!(headers.get("cf-aig-authorization").and_then(|v| v.as_deref()), Some("Bearer k"));
+        assert_eq!(
+            headers
+                .get("cf-aig-authorization")
+                .and_then(|v| v.as_deref()),
+            Some("Bearer k")
+        );
         assert_eq!(headers.get("Authorization"), Some(&None));
         assert_eq!(headers.get("x-api-key"), Some(&None));
-        assert_eq!(resolved.env.as_ref().unwrap().get("CLOUDFLARE_GATEWAY_ID").map(|s| s.as_str()), Some("gw"));
+        assert_eq!(
+            resolved
+                .env
+                .as_ref()
+                .unwrap()
+                .get("CLOUDFLARE_GATEWAY_ID")
+                .map(|s| s.as_str()),
+            Some("gw")
+        );
         unsafe {
             std::env::remove_var("CLOUDFLARE_API_KEY");
             std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
@@ -359,9 +448,13 @@ mod tests {
     #[test]
     fn stored_credential_wins_over_ambient_env() {
         let _guard = crate::utils::env_lock();
-        let auth = CloudflareAuth { kind: CloudflareAuthKind::WorkersAi };
+        let auth = CloudflareAuth {
+            kind: CloudflareAuthKind::WorkersAi,
+        };
         let ctx = AuthContext::default();
-        unsafe { std::env::set_var("CLOUDFLARE_API_KEY", "ambient"); }
+        unsafe {
+            std::env::set_var("CLOUDFLARE_API_KEY", "ambient");
+        }
         let cred = ApiKeyCredential {
             key: Some("stored".to_string()),
             env: Some({
@@ -373,6 +466,8 @@ mod tests {
         let resolved = auth.resolve(&ctx, Some(&cred)).unwrap();
         assert_eq!(resolved.auth.api_key.as_deref(), Some("stored"));
         assert_eq!(resolved.source.as_deref(), Some("stored credential"));
-        unsafe { std::env::remove_var("CLOUDFLARE_API_KEY"); }
+        unsafe {
+            std::env::remove_var("CLOUDFLARE_API_KEY");
+        }
     }
 }

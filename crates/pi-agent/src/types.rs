@@ -94,7 +94,6 @@ impl CustomAgentMessage {
     }
 }
 
-
 impl AgentMessage {
     pub fn role(&self) -> &'static str {
         match self {
@@ -172,7 +171,9 @@ pub struct FileError {
 
 impl FileError {
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self {
+            message: message.into(),
+        }
     }
 }
 
@@ -199,6 +200,9 @@ pub struct SessionError {
 
 impl SessionError {
     pub fn new(kind: SessionErrorKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into() }
+        Self {
+            kind,
+            message: message.into(),
+        }
     }
 }

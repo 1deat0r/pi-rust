@@ -9,9 +9,7 @@ use serde_json::Value as JsonValue;
 
 pub use errors::{InvalidSessionFileError, JsonlDecodeError, JsonlDecodeErrorKind};
 
-use super::types::{
-    Entry, Fact, JsonlV4Header, LaneRecord, Mutation, SessionMetadata,
-};
+use super::types::{Entry, Fact, JsonlV4Header, LaneRecord, Mutation, SessionMetadata};
 
 // Port of ENTRY_TYPES / RECORD_TYPES / OPERATION_KINDS.
 pub const ENTRY_TYPES: [&str; 7] = [
@@ -47,11 +45,17 @@ fn parse_object(line: &str) -> Result<serde_json::Map<String, JsonValue>, JsonlD
         .map_err(|_| JsonlDecodeError::new(JsonlDecodeErrorKind::Syntax, "is not valid JSON"))?;
     match value {
         JsonValue::Object(map) => Ok(map),
-        _ => Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "is not a JSON object")),
+        _ => Err(JsonlDecodeError::new(
+            JsonlDecodeErrorKind::Schema,
+            "is not a JSON object",
+        )),
     }
 }
 
-fn require_string(map: &serde_json::Map<String, JsonValue>, field: &str) -> Result<String, JsonlDecodeError> {
+fn require_string(
+    map: &serde_json::Map<String, JsonValue>,
+    field: &str,
+) -> Result<String, JsonlDecodeError> {
     require_string_label(map, field, field)
 }
 
@@ -62,16 +66,23 @@ fn require_string_label(
 ) -> Result<String, JsonlDecodeError> {
     match map.get(field) {
         Some(JsonValue::String(s)) => Ok(s.clone()),
-        _ => Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, format!("has invalid {label}"))),
+        _ => Err(JsonlDecodeError::new(
+            JsonlDecodeErrorKind::Schema,
+            format!("has invalid {label}"),
+        )),
     }
 }
 
 fn require_sequence(value: Option<&JsonValue>) -> Result<u64, JsonlDecodeError> {
     match value {
-        Some(JsonValue::Number(n)) => n.as_u64().filter(|v| *v > 0).ok_or_else(|| {
-            JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid seq")
-        }),
-        _ => Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid seq")),
+        Some(JsonValue::Number(n)) => n
+            .as_u64()
+            .filter(|v| *v > 0)
+            .ok_or_else(|| JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid seq")),
+        _ => Err(JsonlDecodeError::new(
+            JsonlDecodeErrorKind::Schema,
+            "has invalid seq",
+        )),
     }
 }
 
@@ -80,15 +91,24 @@ fn require_timestamp(value: Option<&JsonValue>) -> Result<u64, JsonlDecodeError>
         Some(JsonValue::Number(n)) => n.as_u64().ok_or_else(|| {
             JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid timestamp")
         }),
-        _ => Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid timestamp")),
+        _ => Err(JsonlDecodeError::new(
+            JsonlDecodeErrorKind::Schema,
+            "has invalid timestamp",
+        )),
     }
 }
 
-fn require_nullable_id(value: Option<&JsonValue>, field: &str) -> Result<Option<String>, JsonlDecodeError> {
+fn require_nullable_id(
+    value: Option<&JsonValue>,
+    field: &str,
+) -> Result<Option<String>, JsonlDecodeError> {
     match value {
         None | Some(JsonValue::Null) => Ok(None),
         Some(JsonValue::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, format!("has invalid {field}"))),
+        Some(_) => Err(JsonlDecodeError::new(
+            JsonlDecodeErrorKind::Schema,
+            format!("has invalid {field}"),
+        )),
     }
 }
 
@@ -96,16 +116,29 @@ fn require_nullable_id(value: Option<&JsonValue>, field: &str) -> Result<Option<
 fn decode_header(line: &str) -> Result<JsonlV4Header, JsonlDecodeError> {
     let value = parse_object(line)?;
     if !matches!(value.get("kind"), Some(JsonValue::String(k)) if k == "header") {
-        return Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "is not a header"));
+        return Err(JsonlDecodeError::new(
+            JsonlDecodeErrorKind::Schema,
+            "is not a header",
+        ));
     }
     let version = match value.get("version").and_then(|v| v.as_u64()) {
         Some(4) => 4,
-        _ => return Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has unsupported session version")),
+        _ => {
+            return Err(JsonlDecodeError::new(
+                JsonlDecodeErrorKind::Schema,
+                "has unsupported session version",
+            ))
+        }
     };
     let parent_session_id = match value.get("parentSessionId") {
         Some(JsonValue::String(s)) => Some(s.clone()),
         None => None,
-        Some(_) => return Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid parentSessionId")),
+        Some(_) => {
+            return Err(JsonlDecodeError::new(
+                JsonlDecodeErrorKind::Schema,
+                "has invalid parentSessionId",
+            ))
+        }
     };
     let legacy_parent_session_path = match value.get("legacyParentSessionPath") {
         Some(JsonValue::String(s)) => Some(s.clone()),
@@ -126,7 +159,12 @@ fn decode_header(line: &str) -> Result<JsonlV4Header, JsonlDecodeError> {
     let metadata = match value.get("metadata") {
         None => None,
         Some(JsonValue::Object(_)) => Some(value.get("metadata").cloned().unwrap()),
-        Some(_) => return Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid metadata")),
+        Some(_) => {
+            return Err(JsonlDecodeError::new(
+                JsonlDecodeErrorKind::Schema,
+                "has invalid metadata",
+            ))
+        }
     };
     Ok(JsonlV4Header {
         kind: "header".into(),
@@ -206,9 +244,13 @@ fn decode_mutation(line: &str) -> Result<Mutation, JsonlDecodeError> {
                     JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid intent")
                 })?;
                 if !is_object(intent) {
-                    return Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid intent"));
+                    return Err(JsonlDecodeError::new(
+                        JsonlDecodeErrorKind::Schema,
+                        "has invalid intent",
+                    ));
                 }
-                let operation_kind = require_string_label(intent.as_object().unwrap(), "kind", "operation kind")?;
+                let operation_kind =
+                    require_string_label(intent.as_object().unwrap(), "kind", "operation kind")?;
                 if !OPERATION_KINDS.contains(&operation_kind.as_str()) {
                     return Err(JsonlDecodeError::new(
                         JsonlDecodeErrorKind::Schema,
@@ -233,10 +275,16 @@ fn decode_mutation(line: &str) -> Result<Mutation, JsonlDecodeError> {
                 "name" => {
                     if let Some(name) = value.get("name") {
                         if !name.is_string() {
-                            return Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid name"));
+                            return Err(JsonlDecodeError::new(
+                                JsonlDecodeErrorKind::Schema,
+                                "has invalid name",
+                            ));
                         }
                     }
-                    let name = value.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let name = value
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     Ok(Mutation::Fact(Fact::Name { seq, name }))
                 }
                 "label" => {
@@ -245,15 +293,28 @@ fn decode_mutation(line: &str) -> Result<Mutation, JsonlDecodeError> {
                         None => None,
                         Some(JsonValue::String(s)) => Some(s.clone()),
                         Some(_) => {
-                            return Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid label"))
+                            return Err(JsonlDecodeError::new(
+                                JsonlDecodeErrorKind::Schema,
+                                "has invalid label",
+                            ))
                         }
                     };
-                    Ok(Mutation::Fact(Fact::Label { seq, target_id, label }))
+                    Ok(Mutation::Fact(Fact::Label {
+                        seq,
+                        target_id,
+                        label,
+                    }))
                 }
-                _ => Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has unknown fact type")),
+                _ => Err(JsonlDecodeError::new(
+                    JsonlDecodeErrorKind::Schema,
+                    "has unknown fact type",
+                )),
             }
         }
-        _ => Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has unknown mutation kind")),
+        _ => Err(JsonlDecodeError::new(
+            JsonlDecodeErrorKind::Schema,
+            "has unknown mutation kind",
+        )),
     }
 }
 
@@ -288,63 +349,106 @@ fn build_entry_from_map(
             seq,
             parent_id,
             timestamp,
-            message: serde_json::from_value(
-                map.get("message").cloned().ok_or_else(|| {
-                    JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid message")
-                })?,
-            )
-            .map_err(|_| JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid message"))?,
+            message: serde_json::from_value(map.get("message").cloned().ok_or_else(|| {
+                JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid message")
+            })?)
+            .map_err(|_| {
+                JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid message")
+            })?,
             terminate: map.get("terminate").and_then(|v| v.as_bool()),
         },
         "model_change" => Entry::ModelChange {
-            id, seq, parent_id, timestamp,
+            id,
+            seq,
+            parent_id,
+            timestamp,
             provider: require_string(map, "provider")?,
             model_id: require_string(map, "modelId")?,
         },
         "thinking_level_change" => Entry::ThinkingLevel {
-            id, seq, parent_id, timestamp,
+            id,
+            seq,
+            parent_id,
+            timestamp,
             thinking_level: require_string(map, "thinkingLevel")?,
         },
         "active_tools_change" => Entry::ActiveTools {
-            id, seq, parent_id, timestamp,
+            id,
+            seq,
+            parent_id,
+            timestamp,
             active_tool_names: match map.get("activeToolNames") {
                 Some(JsonValue::Array(items)) => items
                     .iter()
                     .map(|v| match v {
                         JsonValue::String(s) => Ok(s.clone()),
-                        _ => Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid activeToolNames")),
+                        _ => Err(JsonlDecodeError::new(
+                            JsonlDecodeErrorKind::Schema,
+                            "has invalid activeToolNames",
+                        )),
                     })
                     .collect::<Result<Vec<_>, _>>()?,
-                _ => return Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid activeToolNames")),
+                _ => {
+                    return Err(JsonlDecodeError::new(
+                        JsonlDecodeErrorKind::Schema,
+                        "has invalid activeToolNames",
+                    ))
+                }
             },
         },
         "compaction" => Entry::Compaction {
-            id, seq, parent_id, timestamp,
+            id,
+            seq,
+            parent_id,
+            timestamp,
             summary: require_string(map, "summary")?,
             retained_tail: match map.get("retainedTail") {
                 Some(JsonValue::Array(items)) => items
                     .iter()
-                    .map(|v| serde_json::from_value(v.clone())
-                        .map_err(|_| JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid retainedTail")))
+                    .map(|v| {
+                        serde_json::from_value(v.clone()).map_err(|_| {
+                            JsonlDecodeError::new(
+                                JsonlDecodeErrorKind::Schema,
+                                "has invalid retainedTail",
+                            )
+                        })
+                    })
                     .collect::<Result<Vec<_>, _>>()?,
                 _ => Vec::new(),
             },
             tokens_before: match map.get("tokensBefore").and_then(|v| v.as_u64()) {
                 Some(v) => v,
-                None => return Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid tokensBefore")),
+                None => {
+                    return Err(JsonlDecodeError::new(
+                        JsonlDecodeErrorKind::Schema,
+                        "has invalid tokensBefore",
+                    ))
+                }
             },
             details: map.get("details").cloned(),
-            usage: map.get("usage").cloned().map(|v| serde_json::from_value(v).unwrap_or_default()),
+            usage: map
+                .get("usage")
+                .cloned()
+                .map(|v| serde_json::from_value(v).unwrap_or_default()),
         },
         "branch_summary" => Entry::BranchSummary {
-            id, seq, parent_id, timestamp,
+            id,
+            seq,
+            parent_id,
+            timestamp,
             from_id: require_string(map, "fromId")?,
             summary: require_string(map, "summary")?,
             details: map.get("details").cloned(),
-            usage: map.get("usage").cloned().map(|v| serde_json::from_value(v).unwrap_or_default()),
+            usage: map
+                .get("usage")
+                .cloned()
+                .map(|v| serde_json::from_value(v).unwrap_or_default()),
         },
         "custom" => Entry::Custom {
-            id, seq, parent_id, timestamp,
+            id,
+            seq,
+            parent_id,
+            timestamp,
             custom_type: require_string(map, "customType")?,
             data: map.get("data").cloned(),
         },
@@ -362,83 +466,138 @@ fn build_record_from_map(
 ) -> Result<LaneRecord, JsonlDecodeError> {
     Ok(match record_type.as_str() {
         "operation_started" => LaneRecord::OperationStarted {
-            id, seq, lane, timestamp,
+            id,
+            seq,
+            lane,
+            timestamp,
             source_leaf_id: require_nullable_id(map.get("sourceLeafId"), "sourceLeafId")?,
-            intent: serde_json::from_value(
-                map.get("intent").cloned().ok_or_else(|| {
-                    JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid intent")
-                })?,
-            )
-            .map_err(|_| JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid intent"))?,
+            intent: serde_json::from_value(map.get("intent").cloned().ok_or_else(|| {
+                JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid intent")
+            })?)
+            .map_err(|_| {
+                JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid intent")
+            })?,
         },
         "abort_requested" => LaneRecord::AbortRequested {
-            id, seq, lane, timestamp,
+            id,
+            seq,
+            lane,
+            timestamp,
             run_id: require_string(map, "runId")?,
         },
         "operation_finished" => LaneRecord::OperationFinished {
-            id, seq, lane, timestamp,
+            id,
+            seq,
+            lane,
+            timestamp,
             run_id: require_string(map, "runId")?,
             outcome: require_string(map, "outcome")?,
-            error: map.get("error").cloned().and_then(|v| serde_json::from_value(v).ok()),
+            error: map
+                .get("error")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok()),
         },
         "step_attempt" => LaneRecord::StepAttempt {
-            id, seq, lane, timestamp,
+            id,
+            seq,
+            lane,
+            timestamp,
             run_id: require_string(map, "runId")?,
             step: require_string(map, "step")?,
             attempt: match map.get("attempt").and_then(|v| v.as_u64()) {
                 Some(v) => v,
-                None => return Err(JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid attempt")),
+                None => {
+                    return Err(JsonlDecodeError::new(
+                        JsonlDecodeErrorKind::Schema,
+                        "has invalid attempt",
+                    ))
+                }
             },
             result_entry_id: require_string(map, "resultEntryId")?,
-            compaction_reason: map.get("compactionReason").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            compaction_reason: map
+                .get("compactionReason")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
         },
         "tool_started" => LaneRecord::ToolStarted {
-            id, seq, lane, timestamp,
+            id,
+            seq,
+            lane,
+            timestamp,
             run_id: require_string(map, "runId")?,
             assistant_entry_id: require_string(map, "assistantEntryId")?,
-            tool_index: map.get("toolIndex").and_then(|v| v.as_u64())
-                .ok_or_else(|| JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid toolIndex"))?,
+            tool_index: map
+                .get("toolIndex")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| {
+                    JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid toolIndex")
+                })?,
             tool_call_id: require_string(map, "toolCallId")?,
             tool_name: require_string(map, "toolName")?,
-            effective_args: map.get("effectiveArgs").cloned()
-                .ok_or_else(|| JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid effectiveArgs"))?,
+            effective_args: map.get("effectiveArgs").cloned().ok_or_else(|| {
+                JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid effectiveArgs")
+            })?,
             result_entry_id: require_string(map, "resultEntryId")?,
             replay: require_string(map, "replay")?,
         },
         "queue_enqueued" => LaneRecord::QueueEnqueued {
-            id, seq, lane, timestamp,
+            id,
+            seq,
+            lane,
+            timestamp,
             queue: require_string(map, "queue")?,
             run_id: require_string(map, "runId")?,
-            target: map.get("target").cloned()
-                .ok_or_else(|| JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid target"))?,
+            target: map.get("target").cloned().ok_or_else(|| {
+                JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid target")
+            })?,
         },
         "queue_cancelled" => LaneRecord::QueueCancelled {
-            id, seq, lane, timestamp,
-            run_id: map.get("runId").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id: map
+                .get("runId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             entry_id: require_string(map, "entryId")?,
         },
         "write_deferred" => LaneRecord::WriteDeferred {
-            id, seq, lane, timestamp,
+            id,
+            seq,
+            lane,
+            timestamp,
             run_id: require_string(map, "runId")?,
-            target: map.get("target").cloned()
-                .ok_or_else(|| JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid target"))?,
+            target: map.get("target").cloned().ok_or_else(|| {
+                JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid target")
+            })?,
         },
         "usage" => LaneRecord::Usage {
-            id, seq, lane, timestamp,
+            id,
+            seq,
+            lane,
+            timestamp,
             cause: require_string(map, "cause")?,
             run_id: require_string(map, "runId")?,
             entry_id: require_string(map, "entryId")?,
-            attempt: map.get("attempt").and_then(|v| v.as_u64())
-                .ok_or_else(|| JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid attempt"))?,
-            stop_reason: map.get("stopReason").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            tool_call_id: map.get("toolCallId").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            attempt: map.get("attempt").and_then(|v| v.as_u64()).ok_or_else(|| {
+                JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid attempt")
+            })?,
+            stop_reason: map
+                .get("stopReason")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            tool_call_id: map
+                .get("toolCallId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             details: map.get("details").cloned(),
-            usage: serde_json::from_value(
-                map.get("usage").cloned().ok_or_else(|| {
-                    JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid usage")
-                })?,
-            )
-            .map_err(|_| JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid usage"))?,
+            usage: serde_json::from_value(map.get("usage").cloned().ok_or_else(|| {
+                JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid usage")
+            })?)
+            .map_err(|_| {
+                JsonlDecodeError::new(JsonlDecodeErrorKind::Schema, "has invalid usage")
+            })?,
         },
         _ => unreachable!("record type validated above"),
     })

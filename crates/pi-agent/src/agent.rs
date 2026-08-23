@@ -3,8 +3,8 @@
 //! handling, termination signs). The harness-level hooks (compaction,
 //! extensions, memory) layer on at the coding-agent level.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use pi_ai::types::{
     AssistantMessage, Context, Message, StopReason, ToolResultMessage, UserContentBody,
@@ -26,7 +26,11 @@ pub struct AgentContext {
 
 impl AgentContext {
     pub fn new(system_prompt: Option<String>, tools: Vec<AgentTool>) -> Self {
-        Self { system_prompt, messages: Vec::new(), tools }
+        Self {
+            system_prompt,
+            messages: Vec::new(),
+            tools,
+        }
     }
 }
 
@@ -34,10 +38,19 @@ impl AgentContext {
 pub enum AgentEvent {
     AgentStart,
     TurnStart,
-    MessageStart { message: AgentMessage },
-    MessageEnd { message: AgentMessage },
-    TurnEnd { message: AssistantMessage, tool_results: Vec<ToolResultMessage> },
-    AgentEnd { messages: Vec<AgentMessage> },
+    MessageStart {
+        message: AgentMessage,
+    },
+    MessageEnd {
+        message: AgentMessage,
+    },
+    TurnEnd {
+        message: AssistantMessage,
+        tool_results: Vec<ToolResultMessage>,
+    },
+    AgentEnd {
+        messages: Vec<AgentMessage>,
+    },
 }
 
 pub struct AgentLoopConfig {
@@ -61,26 +74,41 @@ pub async fn run_agent_loop(
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Vec<AgentMessage> {
     let mut new_messages: Vec<AgentMessage> = prompts.clone();
-    let mut current_messages: Vec<AgentMessage> =
-        context.messages.iter().cloned().chain(prompts.clone()).collect();
+    let mut current_messages: Vec<AgentMessage> = context
+        .messages
+        .iter()
+        .cloned()
+        .chain(prompts.clone())
+        .collect();
 
     emit(AgentEvent::AgentStart);
     emit(AgentEvent::TurnStart);
     for prompt in &prompts {
-        emit(AgentEvent::MessageStart { message: prompt.clone() });
-        emit(AgentEvent::MessageEnd { message: prompt.clone() });
+        emit(AgentEvent::MessageStart {
+            message: prompt.clone(),
+        });
+        emit(AgentEvent::MessageEnd {
+            message: prompt.clone(),
+        });
     }
 
     loop {
         // Stream an assistant response.
-        let message =
-            stream_assistant_response(&current_messages, context, config).await;
+        let message = stream_assistant_response(&current_messages, context, config).await;
         new_messages.push(AgentMessage::Core(Message::Assistant(message.clone())));
 
         // Terminal error/abort ends the run.
-        if matches!(message.stop_reason(), Some(StopReason::Error) | Some(StopReason::Aborted)) {
-            emit(AgentEvent::TurnEnd { message, tool_results: vec![] });
-            let agent_end = AgentEvent::AgentEnd { messages: new_messages.clone() };
+        if matches!(
+            message.stop_reason(),
+            Some(StopReason::Error) | Some(StopReason::Aborted)
+        ) {
+            emit(AgentEvent::TurnEnd {
+                message,
+                tool_results: vec![],
+            });
+            let agent_end = AgentEvent::AgentEnd {
+                messages: new_messages.clone(),
+            };
             emit(agent_end);
             return new_messages;
         }
@@ -98,7 +126,12 @@ pub async fn run_agent_loop(
             let truncated = message.stop_reason() == Some(StopReason::Length);
             for call in &tool_calls {
                 let result = match call {
-                    pi_ai::types::ContentBlock::ToolCall { id, name, arguments, .. } => {
+                    pi_ai::types::ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                        ..
+                    } => {
                         if truncated {
                             ToolResultMessage::text(
                                 id.clone(),
@@ -108,29 +141,39 @@ pub async fn run_agent_loop(
                             )
                         } else {
                             match context.tools.iter().find(|t| t.tool.name == *name) {
-                                Some(tool) => match (tool.execute)(id.clone(), arguments.clone(), None, None).await {
-                                    Ok(result) => {
-                                        let content = result.content;
-                                        let details = result.details;
-                                        let usage = result.usage;
-                                        let added_tool_names = if result.added_tool_names.is_empty() {
-                                            None
-                                        } else {
-                                            Some(result.added_tool_names)
-                                        };
-                                        ToolResultMessage::ToolResult {
-                                            tool_call_id: id.clone(),
-                                            tool_name: name.clone(),
-                                            content,
-                                            details: Some(details),
-                                            usage,
-                                            added_tool_names,
-                                            is_error: false,
-                                            timestamp: pi_ai::types::now_ms(),
+                                Some(tool) => {
+                                    match (tool.execute)(id.clone(), arguments.clone(), None, None)
+                                        .await
+                                    {
+                                        Ok(result) => {
+                                            let content = result.content;
+                                            let details = result.details;
+                                            let usage = result.usage;
+                                            let added_tool_names =
+                                                if result.added_tool_names.is_empty() {
+                                                    None
+                                                } else {
+                                                    Some(result.added_tool_names)
+                                                };
+                                            ToolResultMessage::ToolResult {
+                                                tool_call_id: id.clone(),
+                                                tool_name: name.clone(),
+                                                content,
+                                                details: Some(details),
+                                                usage,
+                                                added_tool_names,
+                                                is_error: false,
+                                                timestamp: pi_ai::types::now_ms(),
+                                            }
                                         }
+                                        Err(e) => ToolResultMessage::text(
+                                            id.clone(),
+                                            name.clone(),
+                                            e,
+                                            true,
+                                        ),
                                     }
-                                    Err(e) => ToolResultMessage::text(id.clone(), name.clone(), e, true),
-                                },
+                                }
                                 None => ToolResultMessage::text(
                                     id.clone(),
                                     name.clone(),
@@ -149,10 +192,15 @@ pub async fn run_agent_loop(
             has_more_tool_calls = tool_results.iter().any(|r| !r.is_error());
         }
 
-        emit(AgentEvent::TurnEnd { message: message.clone(), tool_results: tool_results.clone() });
+        emit(AgentEvent::TurnEnd {
+            message: message.clone(),
+            tool_results: tool_results.clone(),
+        });
 
         if config.stop_after_turn || !has_more_tool_calls {
-            let agent_end = AgentEvent::AgentEnd { messages: new_messages.clone() };
+            let agent_end = AgentEvent::AgentEnd {
+                messages: new_messages.clone(),
+            };
             emit(agent_end);
             return new_messages;
         }
@@ -258,7 +306,11 @@ mod tests {
     #[test]
     fn bash_execution_excluded_from_context_is_suppressed() {
         let mut message = bash_message();
-        if let AgentMessage::Custom(CustomAgentMessage::BashExecution { exclude_from_context, .. }) = &mut message {
+        if let AgentMessage::Custom(CustomAgentMessage::BashExecution {
+            exclude_from_context,
+            ..
+        }) = &mut message
+        {
             *exclude_from_context = Some(true);
         }
         let llm = crate::messages::convert_to_llm(&[message]);

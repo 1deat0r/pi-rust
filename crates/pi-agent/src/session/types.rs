@@ -108,31 +108,100 @@ pub enum Entry {
 }
 
 impl Entry {
-    pub fn from_provisioned(entry: EntryNoStats, parent_id: Option<String>, seq: u64, timestamp: u64) -> Self {
+    pub fn from_provisioned(
+        entry: EntryNoStats,
+        parent_id: Option<String>,
+        seq: u64,
+        timestamp: u64,
+    ) -> Self {
         let pid = parent_id;
         match entry {
-            EntryNoStats::Message { id, message, terminate } => Entry::Message {
-                id, seq, parent_id: pid, timestamp, message, terminate,
+            EntryNoStats::Message {
+                id,
+                message,
+                terminate,
+            } => Entry::Message {
+                id,
+                seq,
+                parent_id: pid,
+                timestamp,
+                message,
+                terminate,
             },
-            EntryNoStats::ModelChange { id, provider, model_id } => Entry::ModelChange {
-                id, seq, parent_id: pid, timestamp, provider, model_id,
+            EntryNoStats::ModelChange {
+                id,
+                provider,
+                model_id,
+            } => Entry::ModelChange {
+                id,
+                seq,
+                parent_id: pid,
+                timestamp,
+                provider,
+                model_id,
             },
             EntryNoStats::ThinkingLevel { id, thinking_level } => Entry::ThinkingLevel {
-                id, seq, parent_id: pid, timestamp, thinking_level,
+                id,
+                seq,
+                parent_id: pid,
+                timestamp,
+                thinking_level,
             },
-            EntryNoStats::ActiveTools { id, active_tool_names } => Entry::ActiveTools {
-                id, seq, parent_id: pid, timestamp, active_tool_names,
+            EntryNoStats::ActiveTools {
+                id,
+                active_tool_names,
+            } => Entry::ActiveTools {
+                id,
+                seq,
+                parent_id: pid,
+                timestamp,
+                active_tool_names,
             },
-            EntryNoStats::Compaction { id, summary, retained_tail, tokens_before, details, usage } => {
-                Entry::Compaction {
-                    id, seq, parent_id: pid, timestamp, summary, retained_tail, tokens_before, details, usage,
-                }
-            }
-            EntryNoStats::BranchSummary { id, from_id, summary, details, usage } => Entry::BranchSummary {
-                id, seq, parent_id: pid, timestamp, from_id, summary, details, usage,
+            EntryNoStats::Compaction {
+                id,
+                summary,
+                retained_tail,
+                tokens_before,
+                details,
+                usage,
+            } => Entry::Compaction {
+                id,
+                seq,
+                parent_id: pid,
+                timestamp,
+                summary,
+                retained_tail,
+                tokens_before,
+                details,
+                usage,
             },
-            EntryNoStats::Custom { id, custom_type, data } => Entry::Custom {
-                id, seq, parent_id: pid, timestamp, custom_type, data,
+            EntryNoStats::BranchSummary {
+                id,
+                from_id,
+                summary,
+                details,
+                usage,
+            } => Entry::BranchSummary {
+                id,
+                seq,
+                parent_id: pid,
+                timestamp,
+                from_id,
+                summary,
+                details,
+                usage,
+            },
+            EntryNoStats::Custom {
+                id,
+                custom_type,
+                data,
+            } => Entry::Custom {
+                id,
+                seq,
+                parent_id: pid,
+                timestamp,
+                custom_type,
+                data,
             },
         }
     }
@@ -801,9 +870,9 @@ pub struct SessionMetadata {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SessionStats {
     pub message_count: u64,
-    pub cached_tokens: u64,
-    pub uncached_tokens: u64,
-    pub total_tokens: u64,
+    pub cached_tokens: i64,
+    pub uncached_tokens: i64,
+    pub total_tokens: i64,
     pub cost_total: f64,
 }
 
@@ -812,7 +881,11 @@ pub struct SessionStats {
 pub enum LogItem {
     Entry(Entry),
     Record(LaneRecord),
-    Lane { seq: u64, lane: String, leaf_id: Option<String> },
+    Lane {
+        seq: u64,
+        lane: String,
+        leaf_id: Option<String>,
+    },
     Fact(FactLogItem),
 }
 
@@ -854,7 +927,6 @@ pub struct LanePointer {
 pub fn session_error(kind: SessionErrorKind, message: impl Into<String>) -> SessionError {
     SessionError::new(kind, message)
 }
-
 
 /// Storage-internal helper: rewrite an entry's sequence (used by fork).
 pub fn set_entry_seq(entry: &mut Entry, seq: u64) {

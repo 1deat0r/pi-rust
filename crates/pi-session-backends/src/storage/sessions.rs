@@ -2,8 +2,8 @@
 //! `packages/session-backends/sqlite-node/src/sqlite/storage/sessions.ts`.
 
 use pi_agent::session::types::{SessionError, SessionErrorKind};
-use serde_json::Value;
 use rusqlite::Connection;
+use serde_json::Value;
 
 use crate::sql::SqlQuery;
 use crate::types::SqliteSessionMetadata;
@@ -40,8 +40,13 @@ fn map_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
     })
 }
 
-fn parse_metadata(metadata: Option<String>, session_id: &str) -> Result<Option<Value>, SessionError> {
-    let Some(metadata) = metadata else { return Ok(None) };
+fn parse_metadata(
+    metadata: Option<String>,
+    session_id: &str,
+) -> Result<Option<Value>, SessionError> {
+    let Some(metadata) = metadata else {
+        return Ok(None);
+    };
     let parsed: Value = serde_json::from_str(&metadata).map_err(|error| {
         SessionError::new(
             SessionErrorKind::Storage,
@@ -57,7 +62,10 @@ fn parse_metadata(metadata: Option<String>, session_id: &str) -> Result<Option<V
     Ok(Some(parsed))
 }
 
-fn parse_session_name(value: Option<String>, session_id: &str) -> Result<Option<String>, SessionError> {
+fn parse_session_name(
+    value: Option<String>,
+    session_id: &str,
+) -> Result<Option<String>, SessionError> {
     let Some(value) = value else { return Ok(None) };
     let parsed: Value = serde_json::from_str(&value).map_err(|error| {
         SessionError::new(
@@ -75,10 +83,12 @@ fn parse_session_name(value: Option<String>, session_id: &str) -> Result<Option<
 }
 
 pub fn session_exists(db: &Connection, session_id: &str) -> rusqlite::Result<bool> {
-    Ok(SqlQuery::new("SELECT 1 AS found FROM sessions WHERE id = ?")
-        .bind(session_id)
-        .get_row(db, |_row| Ok(()))?
-        .is_some())
+    Ok(
+        SqlQuery::new("SELECT 1 AS found FROM sessions WHERE id = ?")
+            .bind(session_id)
+            .get_row(db, |_row| Ok(()))?
+            .is_some(),
+    )
 }
 
 pub fn insert_session_row(db: &Connection, session: &NewSessionRow) -> rusqlite::Result<()> {
@@ -95,7 +105,8 @@ pub fn insert_session_row(db: &Connection, session: &NewSessionRow) -> rusqlite:
     Ok(())
 }
 
-const SESSION_ROW_SELECT: &str = "SELECT s.id, s.created_at, s.metadata, s.cwd, s.parent_session_id,
+const SESSION_ROW_SELECT: &str =
+    "SELECT s.id, s.created_at, s.metadata, s.cwd, s.parent_session_id,
         name_fact.seq IS NOT NULL AS has_session_name,
         name_fact.value AS session_name
     FROM sessions AS s
@@ -125,11 +136,16 @@ pub fn read_session_rows(db: &Connection, cwd: Option<&str>) -> rusqlite::Result
 }
 
 pub fn delete_session_row(db: &Connection, session_id: &str) -> rusqlite::Result<()> {
-    SqlQuery::new("DELETE FROM sessions WHERE id = ?").bind(session_id).run(db)?;
+    SqlQuery::new("DELETE FROM sessions WHERE id = ?")
+        .bind(session_id)
+        .run(db)?;
     Ok(())
 }
 
-pub fn decode_session_metadata(row: &SessionRow, path: &str) -> Result<SqliteSessionMetadata, SessionError> {
+pub fn decode_session_metadata(
+    row: &SessionRow,
+    path: &str,
+) -> Result<SqliteSessionMetadata, SessionError> {
     let metadata = parse_metadata(row.metadata.clone(), &row.id)?;
     let name = if row.has_session_name {
         parse_session_name(row.session_name.clone(), &row.id)?

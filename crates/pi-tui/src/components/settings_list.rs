@@ -3,14 +3,15 @@
 //! A settings screen: selectable items with a current value, cycling on
 //! Enter/Space, optional submenu components, and optional search filtering.
 
+use crate::components::input::Input;
 use crate::fuzzy::fuzzy_filter;
 use crate::keys::TuiKey;
 use crate::tui::Component;
 use crate::utils::{truncate_to_width, visible_width, wrap_text_with_ansi};
-use crate::components::input::Input;
 
 /// A submenu closure: (current value, expanded) -> optional component.
-pub type SubmenuFn = Box<dyn Fn(&str, bool) -> Option<Box<dyn Component + Send + Sync>> + Send + Sync>;
+pub type SubmenuFn =
+    Box<dyn Fn(&str, bool) -> Option<Box<dyn Component + Send + Sync>> + Send + Sync>;
 /// A two-argument style function (text, selected).
 pub type LabelStyleFn = Box<dyn Fn(&str, bool) -> String + Send + Sync>;
 
@@ -28,19 +29,31 @@ pub struct SettingItem {
 
 impl std::fmt::Debug for SettingItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SettingItem").field("id", &self.id).field("label", &self.label).finish()
+        f.debug_struct("SettingItem")
+            .field("id", &self.id)
+            .field("label", &self.label)
+            .finish()
     }
 }
 
 /// A minimal settings item for simple cycling lists.
 impl SettingItem {
-    pub fn new(id: impl Into<String>, label: impl Into<String>, current_value: impl Into<String>, values: Vec<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        current_value: impl Into<String>,
+        values: Vec<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
             description: None,
             current_value: current_value.into(),
-            values: if values.is_empty() { None } else { Some(values) },
+            values: if values.is_empty() {
+                None
+            } else {
+                Some(values)
+            },
             submenu: None,
         }
     }
@@ -91,12 +104,19 @@ pub struct SettingsList {
 
 impl std::fmt::Debug for SettingsList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SettingsList").field("selected", &self.selected_index).finish()
+        f.debug_struct("SettingsList")
+            .field("selected", &self.selected_index)
+            .finish()
     }
 }
 
 impl SettingsList {
-    pub fn new(items: Vec<SettingItem>, max_visible: usize, theme: SettingsListTheme, options: SettingsListOptions) -> Self {
+    pub fn new(
+        items: Vec<SettingItem>,
+        max_visible: usize,
+        theme: SettingsListTheme,
+        options: SettingsListOptions,
+    ) -> Self {
         self_ready_init(items, max_visible, theme, options)
     }
 
@@ -109,7 +129,10 @@ impl SettingsList {
 
     pub fn select_item(&mut self, id: &str) {
         let items: Vec<&SettingItem> = if self.search_enabled {
-            self.filtered_items.iter().map(|i| &self.items[*i]).collect()
+            self.filtered_items
+                .iter()
+                .map(|i| &self.items[*i])
+                .collect()
         } else {
             self.items.iter().collect()
         };
@@ -121,7 +144,9 @@ impl SettingsList {
     /// The selected item's id (used by the parent to persist changes).
     pub fn selected_id(&self) -> Option<String> {
         if self.search_enabled {
-            self.filtered_items.get(self.selected_index).map(|i| self.items[*i].id.clone())
+            self.filtered_items
+                .get(self.selected_index)
+                .map(|i| self.items[*i].id.clone())
         } else {
             self.items.get(self.selected_index).map(|i| i.id.clone())
         }
@@ -129,7 +154,10 @@ impl SettingsList {
 
     pub fn visible_items(&self) -> Vec<&SettingItem> {
         if self.search_enabled {
-            self.filtered_items.iter().map(|i| &self.items[*i]).collect()
+            self.filtered_items
+                .iter()
+                .map(|i| &self.items[*i])
+                .collect()
         } else {
             self.items.iter().collect()
         }
@@ -163,9 +191,17 @@ impl SettingsList {
             return lines;
         }
 
-        let display_len = if self.search_enabled { self.filtered_items.len() } else { self.items.len() };
+        let display_len = if self.search_enabled {
+            self.filtered_items.len()
+        } else {
+            self.items.len()
+        };
         if display_len == 0 {
-            lines.push(truncate_to_width(&(self.theme.hint)("  No matching settings"), width, ""));
+            lines.push(truncate_to_width(
+                &(self.theme.hint)("  No matching settings"),
+                width,
+                "",
+            ));
             self.add_hint_line(&mut lines, width);
             return lines;
         }
@@ -178,7 +214,14 @@ impl SettingsList {
             ),
         );
         let end_index = std::cmp::min(start_index + self.max_visible, display_len);
-        let max_label_width = std::cmp::min(36, self.items.iter().map(|i| visible_width(&i.label)).max().unwrap_or(0));
+        let max_label_width = std::cmp::min(
+            36,
+            self.items
+                .iter()
+                .map(|i| visible_width(&i.label))
+                .max()
+                .unwrap_or(0),
+        );
 
         for i in start_index..end_index {
             let item = if self.search_enabled {
@@ -187,25 +230,46 @@ impl SettingsList {
                 &self.items[i]
             };
             let is_selected = i == self.selected_index;
-            let prefix = if is_selected { self.theme.cursor.clone() } else { "  ".to_string() };
+            let prefix = if is_selected {
+                self.theme.cursor.clone()
+            } else {
+                "  ".to_string()
+            };
             let prefix_width = visible_width(&prefix);
 
-            let label_padded = format!("{}{}", item.label, " ".repeat(max_label_width.saturating_sub(visible_width(&item.label))));
+            let label_padded = format!(
+                "{}{}",
+                item.label,
+                " ".repeat(max_label_width.saturating_sub(visible_width(&item.label)))
+            );
             let label_text = (self.theme.label)(&label_padded, is_selected);
             let separator = "  ";
             let used_width = prefix_width + max_label_width + visible_width(separator);
             let value_max_width = width.saturating_sub(used_width + 2);
-            let value_text = (self.theme.value)(&truncate_to_width(&item.current_value, value_max_width, ""), is_selected);
-            lines.push(truncate_to_width(&format!("{prefix}{label_text}{separator}{value_text}"), width, ""));
+            let value_text = (self.theme.value)(
+                &truncate_to_width(&item.current_value, value_max_width, ""),
+                is_selected,
+            );
+            lines.push(truncate_to_width(
+                &format!("{prefix}{label_text}{separator}{value_text}"),
+                width,
+                "",
+            ));
         }
 
         if start_index > 0 || end_index < display_len {
             let scroll_text = format!("  ({}/{display_len})", self.selected_index + 1);
-            lines.push((self.theme.hint)(&truncate_to_width(&scroll_text, width.saturating_sub(2), "")));
+            lines.push((self.theme.hint)(&truncate_to_width(
+                &scroll_text,
+                width.saturating_sub(2),
+                "",
+            )));
         }
 
         if let Some(selected_item) = if self.search_enabled {
-            self.filtered_items.get(self.selected_index).map(|i| &self.items[*i])
+            self.filtered_items
+                .get(self.selected_index)
+                .map(|i| &self.items[*i])
         } else {
             self.items.get(self.selected_index)
         } {
@@ -236,7 +300,9 @@ impl SettingsList {
 
     fn activate_item(&mut self) {
         let item = if self.search_enabled {
-            self.filtered_items.get(self.selected_index).map(|i| &self.items[*i])
+            self.filtered_items
+                .get(self.selected_index)
+                .map(|i| &self.items[*i])
         } else {
             self.items.get(self.selected_index)
         };
@@ -250,7 +316,10 @@ impl SettingsList {
             }
         } else if let Some(values) = &item.values {
             if !values.is_empty() {
-                let current_index = values.iter().position(|v| *v == item.current_value).unwrap_or(0);
+                let current_index = values
+                    .iter()
+                    .position(|v| *v == item.current_value)
+                    .unwrap_or(0);
                 let next_index = (current_index + 1) % values.len();
                 let new_value = values[next_index].clone();
                 let id = item.id.clone();
@@ -272,9 +341,18 @@ impl SettingsList {
     }
 }
 
-fn self_ready_init(mut items: Vec<SettingItem>, max_visible: usize, theme: SettingsListTheme, options: SettingsListOptions) -> SettingsList {
+fn self_ready_init(
+    mut items: Vec<SettingItem>,
+    max_visible: usize,
+    theme: SettingsListTheme,
+    options: SettingsListOptions,
+) -> SettingsList {
     let search_enabled = options.enable_search;
-    let search_input = if search_enabled { Some(Input::new("")) } else { None };
+    let search_input = if search_enabled {
+        Some(Input::new(""))
+    } else {
+        None
+    };
     let filtered_items: Vec<usize> = (0..items.len()).collect();
     items.shrink_to_fit();
     SettingsList {
@@ -312,18 +390,34 @@ impl Component for SettingsList {
 
         match key.base.as_str() {
             "up" => {
-                let display_len = if self.search_enabled { self.filtered_items.len() } else { self.items.len() };
+                let display_len = if self.search_enabled {
+                    self.filtered_items.len()
+                } else {
+                    self.items.len()
+                };
                 if display_len == 0 {
                     return;
                 }
-                self.selected_index = if self.selected_index == 0 { display_len - 1 } else { self.selected_index - 1 };
+                self.selected_index = if self.selected_index == 0 {
+                    display_len - 1
+                } else {
+                    self.selected_index - 1
+                };
             }
             "down" => {
-                let display_len = if self.search_enabled { self.filtered_items.len() } else { self.items.len() };
+                let display_len = if self.search_enabled {
+                    self.filtered_items.len()
+                } else {
+                    self.items.len()
+                };
                 if display_len == 0 {
                     return;
                 }
-                self.selected_index = if self.selected_index == display_len - 1 { 0 } else { self.selected_index + 1 };
+                self.selected_index = if self.selected_index == display_len - 1 {
+                    0
+                } else {
+                    self.selected_index + 1
+                };
             }
             "enter" => {
                 if key.ctrl {

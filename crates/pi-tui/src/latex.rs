@@ -10,7 +10,6 @@ mod latex_tables;
 
 use crate::utils::visible_width;
 
-
 // Private-use markers used by the upstream renderer.
 const NAMED_OPERATOR_START: &str = "\u{f0004}";
 const NAMED_OPERATOR_END: &str = "\u{f0005}";
@@ -33,7 +32,10 @@ fn is_ascii_letter(c: char) -> bool {
 }
 
 /// Replace every char through a replacements table; None when unmapped.
-fn replace_characters(value: &str, replacements: &[(&'static str, &'static str)]) -> Option<String> {
+fn replace_characters(
+    value: &str,
+    replacements: &[(&'static str, &'static str)],
+) -> Option<String> {
     let mut result = String::new();
     for character in value.chars() {
         let ch = character.to_string();
@@ -46,7 +48,11 @@ fn replace_characters(value: &str, replacements: &[(&'static str, &'static str)]
 /// Upstream `formatScript`: try Unicode sub/superscripts, else fall back.
 fn format_script(value: &str, kind: ScriptKind) -> String {
     let value = value.trim();
-    let replacements = if kind == ScriptKind::Sub { subscripts() } else { superscripts() };
+    let replacements = if kind == ScriptKind::Sub {
+        subscripts()
+    } else {
+        superscripts()
+    };
     // value.replace(/\s*([=+-])\s*/g, "$1")
     let mut normalized = String::new();
     for c in value.chars() {
@@ -78,7 +84,9 @@ fn format_script(value: &str, kind: ScriptKind) -> String {
 
     let prefix = if kind == ScriptKind::Sub { "_" } else { "^" };
     let char_count = value.chars().count();
-    if char_count == 1 || (kind == ScriptKind::Sub && value.chars().all(|c| c.is_ascii_alphabetic())) {
+    if char_count == 1
+        || (kind == ScriptKind::Sub && value.chars().all(|c| c.is_ascii_alphabetic()))
+    {
         return format!("{prefix}{value}");
     }
     format!("{prefix}({value})")
@@ -96,11 +104,19 @@ fn format_fraction(numerator: &str, denominator: &str) -> String {
     let denominator = denominator.trim();
     let simple_numerator = simple_term(numerator);
     // Upstream: denominator is simple when all digits/dots OR a single char.
-    let simple_denominator =
-        (!denominator.is_empty() && denominator.chars().all(|c| c.is_numeric() || c == '.'))
-            || denominator.chars().count() == 1;
-    let num = if simple_numerator { numerator.to_string() } else { format!("({numerator})") };
-    let den = if simple_denominator { denominator.to_string() } else { format!("({denominator})") };
+    let simple_denominator = (!denominator.is_empty()
+        && denominator.chars().all(|c| c.is_numeric() || c == '.'))
+        || denominator.chars().count() == 1;
+    let num = if simple_numerator {
+        numerator.to_string()
+    } else {
+        format!("({numerator})")
+    };
+    let den = if simple_denominator {
+        denominator.to_string()
+    } else {
+        format!("({denominator})")
+    };
     format!("{num}/{den}")
 }
 
@@ -129,9 +145,19 @@ fn superscripts() -> &'static [(&'static str, &'static str)] {
 /// A layout node produced while parsing (fractions/operators/matrices).
 #[derive(Debug, Clone)]
 enum LayoutNode {
-    Fraction { numerator: String, denominator: String },
-    Operator { operator: String, lower: Option<String>, upper: Option<String> },
-    Matrix { lines: Vec<String>, baseline: usize },
+    Fraction {
+        numerator: String,
+        denominator: String,
+    },
+    Operator {
+        operator: String,
+        lower: Option<String>,
+        upper: Option<String>,
+    },
+    Matrix {
+        lines: Vec<String>,
+        baseline: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -149,7 +175,11 @@ fn pad_layout_line(line: &str, width: usize, centered: bool) -> String {
 
 fn join_layouts(layouts: &[Layout]) -> Layout {
     if layouts.is_empty() {
-        return Layout { lines: vec![String::new()], width: 0, baseline: 0 };
+        return Layout {
+            lines: vec![String::new()],
+            width: 0,
+            baseline: 0,
+        };
     }
     let baseline = layouts.iter().map(|l| l.baseline).max().unwrap_or(0);
     let below = layouts
@@ -165,7 +195,11 @@ fn join_layouts(layouts: &[Layout]) -> Layout {
             let source_row = row as isize - baseline as isize + layout.baseline as isize;
             if source_row >= 0 && (source_row as usize) < layout.lines.len() {
                 line.push_str(&pad_layout_line(
-                    layout.lines.get(source_row as usize).map(|s| s.as_str()).unwrap_or(""),
+                    layout
+                        .lines
+                        .get(source_row as usize)
+                        .map(|s| s.as_str())
+                        .unwrap_or(""),
                     layout.width,
                     false,
                 ));
@@ -175,7 +209,11 @@ fn join_layouts(layouts: &[Layout]) -> Layout {
         }
         lines.push(line.trim_end().to_string());
     }
-    Layout { lines, width: total_width, baseline }
+    Layout {
+        lines,
+        width: total_width,
+        baseline,
+    }
 }
 
 /// Render layout markers in a source line into a fully laid-out block.
@@ -189,7 +227,7 @@ fn render_layout(source: &str, nodes: &[LayoutNode]) -> Layout {
         let mut previous_node: Option<&LayoutNode> = None;
 
         // Find all \u{f0000}<digits>\u{f0001} markers.
-                let s = source_line;
+        let s = source_line;
         let mut search_from = 0usize;
         loop {
             let marker = s[search_from..].find(LAYOUT_MARKER_START);
@@ -197,14 +235,20 @@ fn render_layout(source: &str, nodes: &[LayoutNode]) -> Layout {
             let mstart = search_from + rel;
             // Read digits until LAYOUT_MARKER_END.
             let digits_start = mstart + LAYOUT_MARKER_START.len();
-            let Some(digits_end_rel) = s[digits_start..].find(LAYOUT_MARKER_END) else { break };
+            let Some(digits_end_rel) = s[digits_start..].find(LAYOUT_MARKER_END) else {
+                break;
+            };
             let digits_end = digits_start + digits_end_rel;
             let digits = &s[digits_start..digits_end];
-            let Some(index) = digits.parse::<usize>().ok() else { break };
+            let Some(index) = digits.parse::<usize>().ok() else {
+                break;
+            };
             let marker_len = digits_end + LAYOUT_MARKER_END.len() - mstart;
             search_from = digits_end + LAYOUT_MARKER_END.len();
 
-            let Some(node) = nodes.get(index) else { continue };
+            let Some(node) = nodes.get(index) else {
+                continue;
+            };
 
             if mstart > position {
                 let sliced = &s[position..mstart];
@@ -213,8 +257,10 @@ fn render_layout(source: &str, nodes: &[LayoutNode]) -> Layout {
                 } else {
                     sliced.trim_end()
                 };
-                let preserve_leading = matches!(previous_node, Some(LayoutNode::Matrix { .. })) && sliced.starts_with(' ');
-                let preserve_trailing = matches!(node, LayoutNode::Matrix { .. }) && sliced.ends_with(' ');
+                let preserve_leading = matches!(previous_node, Some(LayoutNode::Matrix { .. }))
+                    && sliced.starts_with(' ');
+                let preserve_trailing =
+                    matches!(node, LayoutNode::Matrix { .. }) && sliced.ends_with(' ');
                 let text = if !trimmed.is_empty() {
                     format!(
                         "{}{}{}",
@@ -227,11 +273,18 @@ fn render_layout(source: &str, nodes: &[LayoutNode]) -> Layout {
                 } else {
                     String::new()
                 };
-                layouts.push(Layout { lines: vec![text.clone()], width: visible_width(&text), baseline: 0 });
+                layouts.push(Layout {
+                    lines: vec![text.clone()],
+                    width: visible_width(&text),
+                    baseline: 0,
+                });
             }
 
             match node {
-                LayoutNode::Fraction { numerator, denominator } => {
+                LayoutNode::Fraction {
+                    numerator,
+                    denominator,
+                } => {
                     let numerator_layout = render_layout(numerator, nodes);
                     let denominator_layout = render_layout(denominator, nodes);
                     let content_width = numerator_layout.width.max(denominator_layout.width).max(1);
@@ -244,9 +297,17 @@ fn render_layout(source: &str, nodes: &[LayoutNode]) -> Layout {
                     for line in &denominator_layout.lines {
                         lines.push(pad_layout_line(line, width, true));
                     }
-                    layouts.push(Layout { lines, width, baseline: numerator_layout.lines.len() });
+                    layouts.push(Layout {
+                        lines,
+                        width,
+                        baseline: numerator_layout.lines.len(),
+                    });
                 }
-                LayoutNode::Operator { operator, lower, upper } => {
+                LayoutNode::Operator {
+                    operator,
+                    lower,
+                    upper,
+                } => {
                     let content_width = visible_width(operator)
                         .max(lower.as_ref().map(|s| visible_width(s)).unwrap_or(0))
                         .max(upper.as_ref().map(|s| visible_width(s)).unwrap_or(0));
@@ -254,7 +315,10 @@ fn render_layout(source: &str, nodes: &[LayoutNode]) -> Layout {
                     if let Some(upper) = upper {
                         lines.push(format!("{} ", pad_layout_line(upper, content_width, true)));
                     }
-                    lines.push(format!("{} ", pad_layout_line(operator, content_width, true)));
+                    lines.push(format!(
+                        "{} ",
+                        pad_layout_line(operator, content_width, true)
+                    ));
                     if let Some(lower) = lower {
                         lines.push(format!("{} ", pad_layout_line(lower, content_width, true)));
                     }
@@ -264,10 +328,24 @@ fn render_layout(source: &str, nodes: &[LayoutNode]) -> Layout {
                         baseline: if upper.is_some() { 1 } else { 0 },
                     });
                 }
-                LayoutNode::Matrix { lines: node_lines, baseline } => {
-                    let width = node_lines.iter().map(|l| visible_width(l)).max().unwrap_or(0);
-                    let laid: Vec<String> = node_lines.iter().map(|l| pad_layout_line(l, width, false)).collect();
-                    layouts.push(Layout { lines: laid, width, baseline: *baseline });
+                LayoutNode::Matrix {
+                    lines: node_lines,
+                    baseline,
+                } => {
+                    let width = node_lines
+                        .iter()
+                        .map(|l| visible_width(l))
+                        .max()
+                        .unwrap_or(0);
+                    let laid: Vec<String> = node_lines
+                        .iter()
+                        .map(|l| pad_layout_line(l, width, false))
+                        .collect();
+                    layouts.push(Layout {
+                        lines: laid,
+                        width,
+                        baseline: *baseline,
+                    });
                 }
             }
             position = mstart + marker_len;
@@ -276,13 +354,23 @@ fn render_layout(source: &str, nodes: &[LayoutNode]) -> Layout {
 
         if position < s.len() {
             let sliced = &s[position..];
-            let trimmed = if previous_node.is_some() { sliced.trim_start() } else { sliced };
-            let text = if matches!(previous_node, Some(LayoutNode::Matrix { .. })) && sliced.starts_with(' ') {
+            let trimmed = if previous_node.is_some() {
+                sliced.trim_start()
+            } else {
+                sliced
+            };
+            let text = if matches!(previous_node, Some(LayoutNode::Matrix { .. }))
+                && sliced.starts_with(' ')
+            {
                 format!(" {trimmed}")
             } else {
                 trimmed.to_string()
             };
-            layouts.push(Layout { lines: vec![text.clone()], width: visible_width(&text), baseline: 0 });
+            layouts.push(Layout {
+                lines: vec![text.clone()],
+                width: visible_width(&text),
+                baseline: 0,
+            });
         }
 
         let line_layout = join_layouts(&layouts);
@@ -292,7 +380,11 @@ fn render_layout(source: &str, nodes: &[LayoutNode]) -> Layout {
         rendered_lines.extend(line_layout.lines);
     }
 
-    let width = rendered_lines.iter().map(|l| visible_width(l)).max().unwrap_or(0);
+    let width = rendered_lines
+        .iter()
+        .map(|l| visible_width(l))
+        .max()
+        .unwrap_or(0);
     Layout {
         lines: rendered_lines,
         width,
@@ -311,7 +403,14 @@ struct LatexParser<'a> {
 
 impl<'a> LatexParser<'a> {
     fn new(source: &'a str, layout_nodes: &'a mut Vec<LayoutNode>, display: bool) -> Self {
-        Self { source, layout_nodes, display, position: 0, supported: true, stack_fractions: true }
+        Self {
+            source,
+            layout_nodes,
+            display,
+            position: 0,
+            supported: true,
+            stack_fractions: true,
+        }
     }
 
     fn render(&mut self) -> Option<String> {
@@ -367,7 +466,11 @@ impl<'a> LatexParser<'a> {
                 }
                 let script = format_script(
                     &self.parse_required_argument(false),
-                    if character == '_' { ScriptKind::Sub } else { ScriptKind::Sup },
+                    if character == '_' {
+                        ScriptKind::Sub
+                    } else {
+                        ScriptKind::Sup
+                    },
                 );
                 if result.ends_with(NAMED_OPERATOR_END) {
                     let end_len = NAMED_OPERATOR_END.len();
@@ -409,11 +512,15 @@ impl<'a> LatexParser<'a> {
                 // Trailing layout marker handling (matrix '.' mutation).
                 if let Some(rel) = result.rfind(TRAILING_LAYOUT_MARKER) {
                     let marker_start = rel;
-                    let digits_end = result[marker_start + LAYOUT_MARKER_START.len()..].find(LAYOUT_MARKER_END);
-                    let node_idx: usize = result[marker_start + LAYOUT_MARKER_START.len()..][..(digits_end.unwrap_or(0))]
+                    let digits_end =
+                        result[marker_start + LAYOUT_MARKER_START.len()..].find(LAYOUT_MARKER_END);
+                    let node_idx: usize = result[marker_start + LAYOUT_MARKER_START.len()..]
+                        [..(digits_end.unwrap_or(0))]
                         .parse()
                         .unwrap_or(usize::MAX);
-                    if let Some(LayoutNode::Matrix { lines, .. }) = self.layout_nodes.get_mut(node_idx) {
+                    if let Some(LayoutNode::Matrix { lines, .. }) =
+                        self.layout_nodes.get_mut(node_idx)
+                    {
                         if let Some(last_line) = lines.last_mut() {
                             last_line.push(character);
                             self.position += 1;
@@ -435,7 +542,11 @@ impl<'a> LatexParser<'a> {
 
     fn parse_whitespace(&mut self) -> String {
         while self.position < self.source.len()
-            && self.source[self.position..].chars().next().map(|c| c.is_whitespace()).unwrap_or(false)
+            && self.source[self.position..]
+                .chars()
+                .next()
+                .map(|c| c.is_whitespace())
+                .unwrap_or(false)
         {
             self.position += 1;
         }
@@ -509,7 +620,9 @@ impl<'a> LatexParser<'a> {
             if set_contains(latex_tables::DISPLAY_LIMIT_SYMBOLS, &command) {
                 return self.parse_operator(symbol, InlineLowerStyle::Script, true, false);
             }
-            return if matches!(command.as_str(), "cdot" | "times") || set_contains(latex_tables::RELATION_COMMANDS, &command) {
+            return if matches!(command.as_str(), "cdot" | "times")
+                || set_contains(latex_tables::RELATION_COMMANDS, &command)
+            {
                 format!(" {symbol} ")
             } else {
                 symbol.to_string()
@@ -536,7 +649,10 @@ impl<'a> LatexParser<'a> {
                     numerator: normalize_output(&numerator),
                     denominator: normalize_output(&denominator),
                 });
-                return format!("{LAYOUT_MARKER_START}{}{LAYOUT_MARKER_END}", self.layout_nodes.len() - 1);
+                return format!(
+                    "{LAYOUT_MARKER_START}{}{LAYOUT_MARKER_END}",
+                    self.layout_nodes.len() - 1
+                );
             }
             return format_fraction(&numerator, &denominator);
         }
@@ -573,17 +689,24 @@ impl<'a> LatexParser<'a> {
         }
         if command == "mathbb" {
             let value = self.parse_required_argument(true);
-            return value.chars().map(|c| {
-                let ch = c.to_string();
-                table_lookup(latex_tables::BLACKBOARD, &ch).unwrap_or(&ch).to_string()
-            }).collect();
+            return value
+                .chars()
+                .map(|c| {
+                    let ch = c.to_string();
+                    table_lookup(latex_tables::BLACKBOARD, &ch)
+                        .unwrap_or(&ch)
+                        .to_string()
+                })
+                .collect();
         }
         if command == "operatorname" {
             let starred = self.source[self.position..].starts_with('*');
             if starred {
                 self.position += 1;
             }
-            let operator = normalize_output(&self.parse_required_argument(true)).trim().to_string();
+            let operator = normalize_output(&self.parse_required_argument(true))
+                .trim()
+                .to_string();
             return self.parse_operator(&operator, InlineLowerStyle::Bracket, starred, true);
         }
         if command == "mod" || command == "bmod" {
@@ -638,17 +761,33 @@ impl<'a> LatexParser<'a> {
         // Optional \limits / \nolimits modifier.
         let mut check_pos = self.position;
         while check_pos < self.source.len()
-            && self.source[check_pos..].chars().next().map(|c| c == ' ' || c == '\t').unwrap_or(false)
+            && self.source[check_pos..]
+                .chars()
+                .next()
+                .map(|c| c == ' ' || c == '\t')
+                .unwrap_or(false)
         {
             check_pos += 1;
         }
         let rest = &self.source[check_pos..];
         if let Some(rel) = rest.find('\\') {
             let after = &rest[rel + 1..];
-            if after.starts_with("limits") && !after[6..].chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
+            if after.starts_with("limits")
+                && !after[6..]
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_alphabetic())
+                    .unwrap_or(false)
+            {
                 use_display_limits = true;
                 self.position = check_pos + rel + 1 + 6;
-            } else if after.starts_with("nolimits") && !after[8..].chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false) {
+            } else if after.starts_with("nolimits")
+                && !after[8..]
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_alphabetic())
+                    .unwrap_or(false)
+            {
                 use_display_limits = false;
                 self.position = check_pos + rel + 1 + 8;
             }
@@ -659,7 +798,11 @@ impl<'a> LatexParser<'a> {
         loop {
             let mut script_pos = self.position;
             while script_pos < self.source.len()
-                && self.source[script_pos..].chars().next().map(|c| c == ' ' || c == '\t').unwrap_or(false)
+                && self.source[script_pos..]
+                    .chars()
+                    .next()
+                    .map(|c| c == ' ' || c == '\t')
+                    .unwrap_or(false)
             {
                 script_pos += 1;
             }
@@ -692,7 +835,10 @@ impl<'a> LatexParser<'a> {
                 lower,
                 upper,
             });
-            return format!("{LAYOUT_MARKER_START}{}{LAYOUT_MARKER_END}", self.layout_nodes.len() - 1);
+            return format!(
+                "{LAYOUT_MARKER_START}{}{LAYOUT_MARKER_END}",
+                self.layout_nodes.len() - 1
+            );
         }
 
         let mut rendered = operator.to_string();
@@ -722,7 +868,11 @@ impl<'a> LatexParser<'a> {
 
     fn parse_required_argument_value(&mut self) -> String {
         while self.position < self.source.len()
-            && self.source[self.position..].chars().next().map(|c| c.is_whitespace()).unwrap_or(false)
+            && self.source[self.position..]
+                .chars()
+                .next()
+                .map(|c| c.is_whitespace())
+                .unwrap_or(false)
         {
             self.position += 1;
         }
@@ -744,7 +894,11 @@ impl<'a> LatexParser<'a> {
 
     fn parse_optional_argument(&mut self) -> Option<String> {
         while self.position < self.source.len()
-            && self.source[self.position..].chars().next().map(|c| c == ' ' || c == '\t').unwrap_or(false)
+            && self.source[self.position..]
+                .chars()
+                .next()
+                .map(|c| c == ' ' || c == '\t')
+                .unwrap_or(false)
         {
             self.position += 1;
         }
@@ -763,7 +917,11 @@ impl<'a> LatexParser<'a> {
 
     fn read_raw_group(&mut self) -> Option<String> {
         while self.position < self.source.len()
-            && self.source[self.position..].chars().next().map(|c| c == ' ' || c == '\t').unwrap_or(false)
+            && self.source[self.position..]
+                .chars()
+                .next()
+                .map(|c| c == ' ' || c == '\t')
+                .unwrap_or(false)
         {
             self.position += 1;
         }
@@ -846,13 +1004,25 @@ impl<'a> LatexParser<'a> {
 
         if matches!(
             environment.as_str(),
-            "aligned" | "align" | "align*" | "alignedat" | "alignat" | "alignat*"
-                | "gather" | "gathered" | "multline" | "multline*" | "split"
+            "aligned"
+                | "align"
+                | "align*"
+                | "alignedat"
+                | "alignat"
+                | "alignat*"
+                | "gather"
+                | "gathered"
+                | "multline"
+                | "multline*"
+                | "split"
         ) {
             let aligned_at = matches!(environment.as_str(), "alignedat" | "alignat" | "alignat*");
             let aligned_body = if aligned_at {
                 let trimmed = body.trim_start();
-                let after = trimmed.strip_prefix('{').and_then(|t| t.find('}').map(|i| &t[i + 1..])).unwrap_or(&body);
+                let after = trimmed
+                    .strip_prefix('{')
+                    .and_then(|t| t.find('}').map(|i| &t[i + 1..]))
+                    .unwrap_or(&body);
                 after.to_string()
             } else {
                 body.clone()
@@ -918,7 +1088,11 @@ impl<'a> LatexParser<'a> {
                 let condition_prefix = if is_condition_word { " " } else { " if " };
                 out.push(format!(
                     "{delimiter} {value}{}{condition}",
-                    if condition.is_empty() { "" } else { condition_prefix }
+                    if condition.is_empty() {
+                        ""
+                    } else {
+                        condition_prefix
+                    }
                 ));
             }
             return out.join("\n");
@@ -926,11 +1100,22 @@ impl<'a> LatexParser<'a> {
 
         if matches!(
             environment.as_str(),
-            "array" | "matrix" | "smallmatrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix"
+            "array"
+                | "matrix"
+                | "smallmatrix"
+                | "pmatrix"
+                | "bmatrix"
+                | "Bmatrix"
+                | "vmatrix"
+                | "Vmatrix"
         ) {
             let matrix_body = if environment == "array" {
                 let trimmed = body.trim_start();
-                trimmed.strip_prefix('{').and_then(|t| t.find('}').map(|i| &t[i + 1..])).unwrap_or(&body).to_string()
+                trimmed
+                    .strip_prefix('{')
+                    .and_then(|t| t.find('}').map(|i| &t[i + 1..]))
+                    .unwrap_or(&body)
+                    .to_string()
             } else {
                 body.clone()
             };
@@ -978,53 +1163,56 @@ impl<'a> LatexParser<'a> {
             })
             .collect();
 
-        let lines: Vec<String> = if environment == "array" || environment == "matrix" || environment == "smallmatrix" {
-            rendered_rows
-        } else {
-            let delimiters: &[&str] = match environment {
-                "pmatrix" => &["⎛", "⎞", "⎜", "⎟", "⎝", "⎠"],
-                "bmatrix" => &["⎡", "⎤", "⎢", "⎥", "⎣", "⎦"],
-                "Bmatrix" => &["⎧", "⎫", "⎨", "⎬", "⎩", "⎭"],
-                "vmatrix" => &["│", "│", "│", "│", "│", "│"],
-                "Vmatrix" => &["║", "║", "║", "║", "║", "║"],
-                _ => {
-                    self.supported = false;
-                    return rendered_rows.join("\n");
-                }
+        let lines: Vec<String> =
+            if environment == "array" || environment == "matrix" || environment == "smallmatrix" {
+                rendered_rows
+            } else {
+                let delimiters: &[&str] = match environment {
+                    "pmatrix" => &["⎛", "⎞", "⎜", "⎟", "⎝", "⎠"],
+                    "bmatrix" => &["⎡", "⎤", "⎢", "⎥", "⎣", "⎦"],
+                    "Bmatrix" => &["⎧", "⎫", "⎨", "⎬", "⎩", "⎭"],
+                    "vmatrix" => &["│", "│", "│", "│", "│", "│"],
+                    "Vmatrix" => &["║", "║", "║", "║", "║", "║"],
+                    _ => {
+                        self.supported = false;
+                        return rendered_rows.join("\n");
+                    }
+                };
+                rendered_rows
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| {
+                        let left = if index == 0 {
+                            delimiters[0]
+                        } else if index == rendered_rows.len() - 1 {
+                            delimiters[4]
+                        } else {
+                            delimiters[2]
+                        };
+                        let right = if index == 0 {
+                            delimiters[1]
+                        } else if index == rendered_rows.len() - 1 {
+                            delimiters[5]
+                        } else {
+                            delimiters[3]
+                        };
+                        format!("{left} {row} {right}")
+                    })
+                    .collect()
             };
-            rendered_rows
-                .iter()
-                .enumerate()
-                .map(|(index, row)| {
-                    let left = if index == 0 {
-                        delimiters[0]
-                    } else if index == rendered_rows.len() - 1 {
-                        delimiters[4]
-                    } else {
-                        delimiters[2]
-                    };
-                    let right = if index == 0 {
-                        delimiters[1]
-                    } else if index == rendered_rows.len() - 1 {
-                        delimiters[5]
-                    } else {
-                        delimiters[3]
-                    };
-                    format!("{left} {row} {right}")
-                })
-                .collect()
-        };
 
         if lines.len() <= 1 {
             return lines.first().cloned().unwrap_or_default();
         }
         let index = self.layout_nodes.len();
-        self.layout_nodes.push(LayoutNode::Matrix { lines, baseline: 0 });
+        self.layout_nodes
+            .push(LayoutNode::Matrix { lines, baseline: 0 });
         format!("{LAYOUT_MARKER_START}{index}{LAYOUT_MARKER_END}")
     }
 
     fn render_nested(&mut self, source: &str, stack_fractions: bool) -> String {
-        let mut nested = LatexParser::new(source, self.layout_nodes, self.display && stack_fractions);
+        let mut nested =
+            LatexParser::new(source, self.layout_nodes, self.display && stack_fractions);
         let rendered = nested.render();
         if rendered.is_none() {
             self.supported = false;

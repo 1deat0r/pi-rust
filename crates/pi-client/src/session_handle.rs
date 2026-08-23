@@ -27,7 +27,9 @@ pub struct AcquireSessionOptions {
 
 impl Default for AcquireSessionOptions {
     fn default() -> Self {
-        Self { mode: SessionLeaseMode::Shared }
+        Self {
+            mode: SessionLeaseMode::Shared,
+        }
     }
 }
 
@@ -69,7 +71,10 @@ impl SessionHandle {
     }
 
     /// Subscribe to session snapshots. Returns an `Unsubscribe`.
-    pub fn subscribe(&self, listener: impl Fn(&pi_protocol::SessionSnapshot) + Send + Sync + 'static) -> Unsubscribe {
+    pub fn subscribe(
+        &self,
+        listener: impl Fn(&pi_protocol::SessionSnapshot) + Send + Sync + 'static,
+    ) -> Unsubscribe {
         self.subscribe_boxed(Box::new(listener))
     }
 
@@ -98,7 +103,10 @@ impl SessionHandle {
         })
     }
 
-    async fn request(&self, command: Command) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
+    async fn request(
+        &self,
+        command: Command,
+    ) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
         let result = self.client.request(command).await?;
         match result {
             CommandResult::Prompt { session }
@@ -107,38 +115,67 @@ impl SessionHandle {
             | CommandResult::SetModel { session }
             | CommandResult::SetThinking { session }
             | CommandResult::Attach { session } => Ok(session),
-            CommandResult::Detach { .. } | CommandResult::Create { .. } | CommandResult::List { .. } => {
-                Err(PiClientError { message: "unexpected command result for session command".into() })
-            }
+            CommandResult::Detach { .. }
+            | CommandResult::Create { .. }
+            | CommandResult::List { .. } => Err(PiClientError {
+                message: "unexpected command result for session command".into(),
+            }),
         }
     }
 
     /// Send a prompt and return the resulting session snapshot.
     pub async fn prompt(&self, text: &str) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
-        self.request(Command::Prompt { session_id: self.id.clone(), text: text.to_string() }).await
+        self.request(Command::Prompt {
+            session_id: self.id.clone(),
+            text: text.to_string(),
+        })
+        .await
     }
 
     pub async fn steer(&self, text: &str) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
-        self.request(Command::Steer { session_id: self.id.clone(), text: text.to_string() }).await
+        self.request(Command::Steer {
+            session_id: self.id.clone(),
+            text: text.to_string(),
+        })
+        .await
     }
 
     pub async fn abort(&self) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
-        self.request(Command::Abort { session_id: self.id.clone() }).await
+        self.request(Command::Abort {
+            session_id: self.id.clone(),
+        })
+        .await
     }
 
-    pub async fn set_model(&self, model: ModelRef) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
-        self.request(Command::SetModel { session_id: self.id.clone(), model }).await
+    pub async fn set_model(
+        &self,
+        model: ModelRef,
+    ) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
+        self.request(Command::SetModel {
+            session_id: self.id.clone(),
+            model,
+        })
+        .await
     }
 
-    pub async fn set_thinking(&self, thinking_level: ThinkingLevel) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
-        self.request(Command::SetThinking { session_id: self.id.clone(), thinking_level }).await
+    pub async fn set_thinking(
+        &self,
+        thinking_level: ThinkingLevel,
+    ) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
+        self.request(Command::SetThinking {
+            session_id: self.id.clone(),
+            thinking_level,
+        })
+        .await
     }
 
     /// Detach from the session (upstream `detach`).
     pub async fn detach(&self) -> Result<(), PiClientError> {
         let result = self
             .client
-            .request(Command::Detach { session_id: self.id.clone() })
+            .request(Command::Detach {
+                session_id: self.id.clone(),
+            })
             .await?;
         match result {
             CommandResult::Detach { session_id } => {
@@ -146,10 +183,14 @@ impl SessionHandle {
                     self.attached.store(false, Ordering::SeqCst);
                     Ok(())
                 } else {
-                    Err(PiClientError { message: format!("detach returned wrong session {session_id}") })
+                    Err(PiClientError {
+                        message: format!("detach returned wrong session {session_id}"),
+                    })
                 }
             }
-            _ => Err(PiClientError { message: "unexpected command result for detach".into() }),
+            _ => Err(PiClientError {
+                message: "unexpected command result for detach".into(),
+            }),
         }
     }
 
@@ -200,7 +241,11 @@ impl PiClient {
             .await?;
         let session = match result {
             CommandResult::Create { session } => session,
-            _ => return Err(PiClientError { message: "unexpected command result for create".into() }),
+            _ => {
+                return Err(PiClientError {
+                    message: "unexpected command result for create".into(),
+                })
+            }
         };
         self.attach_session(&session.id, options).await
     }
@@ -219,18 +264,30 @@ impl PiClient {
         session_id: &str,
         _options: AcquireSessionOptions,
     ) -> Result<SessionHandle, PiClientError> {
-        let result = self.request(Command::Attach { session_id: session_id.to_string() }).await?;
+        let result = self
+            .request(Command::Attach {
+                session_id: session_id.to_string(),
+            })
+            .await?;
         let session = match result {
             CommandResult::Attach { session } if session.id == session_id => session,
             CommandResult::Attach { session } => {
-                return Err(PiClientError { message: format!("attach returned session {}", session.id) })
+                return Err(PiClientError {
+                    message: format!("attach returned session {}", session.id),
+                })
             }
-            _ => return Err(PiClientError { message: "unexpected command result for attach".into() }),
+            _ => {
+                return Err(PiClientError {
+                    message: "unexpected command result for attach".into(),
+                })
+            }
         };
         self.note_session_snapshot(session.clone());
         let attached = Arc::new(AtomicBool::new(true));
-        let snapshot_listeners: Arc<Mutex<Vec<Option<SnapshotListener>>>> = Arc::new(Mutex::new(Vec::new()));
-        let event_listeners: Arc<Mutex<Vec<Option<ServerEventListener>>>> = Arc::new(Mutex::new(Vec::new()));
+        let snapshot_listeners: Arc<Mutex<Vec<Option<SnapshotListener>>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let event_listeners: Arc<Mutex<Vec<Option<ServerEventListener>>>> =
+            Arc::new(Mutex::new(Vec::new()));
         let live = Arc::new(AtomicBool::new(true));
         let sid = session_id.to_string();
 
@@ -251,8 +308,12 @@ impl PiClient {
                         some(snapshot);
                     }
                 }
-                ServerEvent::SessionProgress { session_id: eid, .. }
-                | ServerEvent::SessionRemoved { session_id: eid } if *eid == sid => {
+                ServerEvent::SessionProgress {
+                    session_id: eid, ..
+                }
+                | ServerEvent::SessionRemoved { session_id: eid }
+                    if *eid == sid =>
+                {
                     let listeners = evt.lock().unwrap();
                     for some in listeners.iter().flatten() {
                         some(event);

@@ -1,8 +1,10 @@
 //! Settings panel — a SettingsList-backed modal for interactive mode.
 
-use pi_tui::components::settings_list::{SettingItem, SettingsList, SettingsListOptions, SettingsListTheme};
-use pi_tui::tui::Component;
+use pi_tui::components::settings_list::{
+    SettingItem, SettingsList, SettingsListOptions, SettingsListTheme,
+};
 use pi_tui::keys::TuiKey;
+use pi_tui::tui::Component;
 
 use crate::interactive::tui_theme as t;
 
@@ -18,10 +20,22 @@ pub struct SettingEntry {
 
 impl SettingEntry {
     pub fn cycle(id: &str, label: &str, current_value: String, values: Vec<String>) -> Self {
-        Self { id: id.to_string(), label: label.to_string(), current_value, values: Some(values), description: None }
+        Self {
+            id: id.to_string(),
+            label: label.to_string(),
+            current_value,
+            values: Some(values),
+            description: None,
+        }
     }
     pub fn info(id: &str, label: &str, current_value: String) -> Self {
-        Self { id: id.to_string(), label: label.to_string(), current_value, values: None, description: None }
+        Self {
+            id: id.to_string(),
+            label: label.to_string(),
+            current_value,
+            values: None,
+            description: None,
+        }
     }
     pub fn describe(mut self, description: &str) -> Self {
         self.description = Some(description.to_string());
@@ -63,15 +77,30 @@ impl SettingsPanel {
         let items: Vec<SettingItem> = entries
             .iter()
             .map(|e| {
-                let mut item = SettingItem::new(&e.id, &e.label, &e.current_value, e.values.clone().unwrap_or_default());
+                let mut item = SettingItem::new(
+                    &e.id,
+                    &e.label,
+                    &e.current_value,
+                    e.values.clone().unwrap_or_default(),
+                );
                 if let Some(desc) = &e.description {
                     item.description = Some(desc.clone());
                 }
                 item
             })
             .collect();
-        let list = SettingsList::new(items, 12, settings_theme(), SettingsListOptions { enable_search: true });
-        Self { list, changes: Vec::new() }
+        let list = SettingsList::new(
+            items,
+            12,
+            settings_theme(),
+            SettingsListOptions {
+                enable_search: true,
+            },
+        );
+        Self {
+            list,
+            changes: Vec::new(),
+        }
     }
 
     /// Drain pending value changes to flush back into the settings store.

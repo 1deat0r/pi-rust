@@ -9,12 +9,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::event_stream::{AssistantMessageEventStream, StreamSink};
-use futures_util::FutureExt;
 use crate::model::Model;
 use crate::types::{
-    now_ms, AssistantMessage, AssistantMessageEvent, ContentBlock, Context,
-    DeferredHandle, DoneReason, ErrorReason, JsonValue, SimpleStreamOptions, StopReason, Usage,
+    now_ms, AssistantMessage, AssistantMessageEvent, ContentBlock, Context, DeferredHandle,
+    DoneReason, ErrorReason, JsonValue, SimpleStreamOptions, StopReason, Usage,
 };
+use futures_util::FutureExt;
 
 pub const DEFAULT_API: &str = "faux";
 pub const DEFAULT_PROVIDER: &str = "faux";
@@ -49,7 +49,10 @@ pub fn faux_tool_call(name: impl Into<String>, arguments: JsonValue) -> ContentB
     ContentBlock::tool_call(random_id("tool"), name, arguments)
 }
 
-pub fn faux_assistant_message(content: Vec<ContentBlock>, options: FauxAssistantOptions) -> AssistantMessage {
+pub fn faux_assistant_message(
+    content: Vec<ContentBlock>,
+    options: FauxAssistantOptions,
+) -> AssistantMessage {
     let mut m = AssistantMessage::new();
     m.set_api_provider_model(DEFAULT_API, DEFAULT_PROVIDER, DEFAULT_MODEL_ID);
     *m.content_mut() = content;
@@ -69,7 +72,10 @@ pub struct FauxAssistantOptions {
 
 impl Default for FauxAssistantOptions {
     fn default() -> Self {
-        Self { stop_reason: None, error_message: None }
+        Self {
+            stop_reason: None,
+            error_message: None,
+        }
     }
 }
 
@@ -84,7 +90,16 @@ pub struct FauxProviderState {
 pub enum FauxResponseStep {
     Message(AssistantMessage),
     Factory(
-        Box<dyn Fn(&Context, Option<&SimpleStreamOptions>, &FauxProviderState, &Model) -> AssistantMessage + Send + Sync>,
+        Box<
+            dyn Fn(
+                    &Context,
+                    Option<&SimpleStreamOptions>,
+                    &FauxProviderState,
+                    &Model,
+                ) -> AssistantMessage
+                + Send
+                + Sync,
+        >,
     ),
 }
 
@@ -165,14 +180,27 @@ struct DeferredEntry {
 
 impl FauxProviderCore {
     pub fn new(options: &RegisterFauxProviderOptions) -> Self {
-        let api = options.api.clone().unwrap_or_else(|| random_id(DEFAULT_API));
-        let provider = options.provider.clone().unwrap_or_else(|| DEFAULT_PROVIDER.to_string());
+        let api = options
+            .api
+            .clone()
+            .unwrap_or_else(|| random_id(DEFAULT_API));
+        let provider = options
+            .provider
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PROVIDER.to_string());
         let min_token_size = options
             .token_size
             .as_ref()
             .and_then(|t| t.min)
             .unwrap_or(DEFAULT_MIN_TOKEN_SIZE)
-            .clamp(1, options.token_size.as_ref().and_then(|t| t.max).unwrap_or(DEFAULT_MAX_TOKEN_SIZE));
+            .clamp(
+                1,
+                options
+                    .token_size
+                    .as_ref()
+                    .and_then(|t| t.max)
+                    .unwrap_or(DEFAULT_MAX_TOKEN_SIZE),
+            );
         let max_token_size = options
             .token_size
             .as_ref()
@@ -183,10 +211,19 @@ impl FauxProviderCore {
             Some(defs) if !defs.is_empty() => defs
                 .iter()
                 .map(|d| {
-                    let mut m = Model::new(&d.id, d.name.clone().unwrap_or_else(|| d.id.clone()), &api, &provider);
+                    let mut m = Model::new(
+                        &d.id,
+                        d.name.clone().unwrap_or_else(|| d.id.clone()),
+                        &api,
+                        &provider,
+                    );
                     m.base_url = DEFAULT_BASE_URL.to_string();
                     m.reasoning = d.reasoning.unwrap_or(false);
-                    m.cost = d.cost.clone().map(crate::types::Cost::into_tiered).unwrap_or_default();
+                    m.cost = d
+                        .cost
+                        .clone()
+                        .map(crate::types::Cost::into_tiered)
+                        .unwrap_or_default();
                     m.context_window = d.context_window.unwrap_or(128_000);
                     m.max_tokens = d.max_tokens.unwrap_or(16_384);
                     m
@@ -236,7 +273,12 @@ impl FauxProviderCore {
         self.pending_responses.lock().unwrap().len()
     }
 
-    pub fn stream(&self, request_model: &Model, context: &Context, options: Option<&SimpleStreamOptions>) -> AssistantMessageEventStream {
+    pub fn stream(
+        &self,
+        request_model: &Model,
+        context: &Context,
+        options: Option<&SimpleStreamOptions>,
+    ) -> AssistantMessageEventStream {
         let api = self.api.clone();
         let provider = self.provider.clone();
         let model_id = request_model.id.clone();
@@ -264,13 +306,13 @@ impl FauxProviderCore {
 
         let panic_tx = event_tx.clone();
         let body = async move {
-            let mut outer = StreamPusher { tx: event_tx, finished: false };
+            let mut outer = StreamPusher {
+                tx: event_tx,
+                finished: false,
+            };
             // Upstream awaits streamOptions?.onResponse?.({status:200,headers:{}}, model)
             // before servicing the queued step.
-            if let Some(on_response) = options
-                .as_ref()
-                .and_then(|o| o.base.on_response.clone())
-            {
+            if let Some(on_response) = options.as_ref().and_then(|o| o.base.on_response.clone()) {
                 on_response(
                     &crate::types::ProviderResponse {
                         status: 200,
@@ -288,8 +330,12 @@ impl FauxProviderCore {
                         &provider,
                         &model_id,
                     );
-                    message = with_usage_estimate(message, &context, options.as_ref(), &prompt_cache);
-                    outer.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error_message: message.clone() });
+                    message =
+                        with_usage_estimate(message, &context, options.as_ref(), &prompt_cache);
+                    outer.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Error,
+                        error_message: message.clone(),
+                    });
                 }
                 Some(step) => {
                     if let Some(_deferred) = &options.as_ref().and_then(|o| o.deferred.clone()) {
@@ -302,49 +348,84 @@ impl FauxProviderCore {
                             poll_after_ms: deferred_options.poll_after_ms,
                             data: None,
                         };
-                        deferred_responses.lock().unwrap().insert(handle_obj.id.clone(), DeferredEntry {
-                            handle: handle_obj.clone(),
-                            step,
-                            context: context.clone(),
-                            options: options.clone().unwrap_or_default(),
-                            model: request_model.clone(),
-                            pending_fetches: deferred_options.pending_fetches.unwrap_or(0),
-                            cancelled: false,
-                            final_: None,
-                        });
+                        deferred_responses.lock().unwrap().insert(
+                            handle_obj.id.clone(),
+                            DeferredEntry {
+                                handle: handle_obj.clone(),
+                                step,
+                                context: context.clone(),
+                                options: options.clone().unwrap_or_default(),
+                                model: request_model.clone(),
+                                pending_fetches: deferred_options.pending_fetches.unwrap_or(0),
+                                cancelled: false,
+                                final_: None,
+                            },
+                        );
                         let deferred_message = create_deferred_message(&request_model, &handle_obj);
-                        stream_with_deltas(&mut outer, deferred_message, min_token_size, max_token_size, tokens_per_second, &rng, None).await;
+                        stream_with_deltas(
+                            &mut outer,
+                            deferred_message,
+                            min_token_size,
+                            max_token_size,
+                            tokens_per_second,
+                            &rng,
+                            None,
+                        )
+                        .await;
                         return;
                     }
                     let message = match step {
                         FauxResponseStep::Message(m) => m,
-                        FauxResponseStep::Factory(f) => {
-                            f(&context, options.as_ref(), &state.lock().unwrap(), &request_model)
-                        }
+                        FauxResponseStep::Factory(f) => f(
+                            &context,
+                            options.as_ref(),
+                            &state.lock().unwrap(),
+                            &request_model,
+                        ),
                     };
-                    let message = with_usage_estimate(message, &context, options.as_ref(), &prompt_cache);
-                    stream_with_deltas(&mut outer, message, min_token_size, max_token_size, tokens_per_second, &rng, None).await;
+                    let message =
+                        with_usage_estimate(message, &context, options.as_ref(), &prompt_cache);
+                    stream_with_deltas(
+                        &mut outer,
+                        message,
+                        min_token_size,
+                        max_token_size,
+                        tokens_per_second,
+                        &rng,
+                        None,
+                    )
+                    .await;
                 }
             }
         };
-        let handle = tokio::spawn(std::panic::AssertUnwindSafe(body).catch_unwind().then(async move |result| {
-            if let Err(panic) = result {
-                // Guarantee stream termination on producer panic (P2-D):
-                // merely dropping the sender would hang consumers because the
-                // returned stream holds its own live sender.
-                let detail = panic
-                    .downcast_ref::<&str>()
-                    .copied()
-                    .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-                    .unwrap_or("unknown panic payload");
-                let message = create_error_message(
-                    &format!("faux provider panicked while streaming: {detail}"),
-                    &panic_api, &panic_provider, &panic_model_id,
-                );
-                let mut sink = StreamPusher { tx: panic_tx, finished: false };
-                sink.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error_message: message });
-            }
-        }));
+        let handle = tokio::spawn(std::panic::AssertUnwindSafe(body).catch_unwind().then(
+            async move |result| {
+                if let Err(panic) = result {
+                    // Guarantee stream termination on producer panic (P2-D):
+                    // merely dropping the sender would hang consumers because the
+                    // returned stream holds its own live sender.
+                    let detail = panic
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("unknown panic payload");
+                    let message = create_error_message(
+                        &format!("faux provider panicked while streaming: {detail}"),
+                        &panic_api,
+                        &panic_provider,
+                        &panic_model_id,
+                    );
+                    let mut sink = StreamPusher {
+                        tx: panic_tx,
+                        finished: false,
+                    };
+                    sink.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Error,
+                        error_message: message,
+                    });
+                }
+            },
+        ));
         // Keep the JoinHandle alive for the lifetime of the stream. The task
         // is detached; push events flow through the unbounded channel.
         std::mem::forget(handle);
@@ -380,8 +461,13 @@ impl FauxProviderCore {
         tokio::spawn(Box::pin(async move {
             let mut pusher = crate::event_stream::StreamSinkAdapter::new(tx.clone());
             state.lock().unwrap().deferred_fetch_count += 1;
-            let resolution =
-                resolve_deferred_entry(&deferred_responses, &handle, &request_model, &state, &prompt_cache);
+            let resolution = resolve_deferred_entry(
+                &deferred_responses,
+                &handle,
+                &request_model,
+                &state,
+                &prompt_cache,
+            );
             match resolution {
                 Ok(message) => {
                     stream_with_deltas(
@@ -411,7 +497,11 @@ impl FauxProviderCore {
     /// Cancel a deferred response (upstream faux `cancelDeferred`).
     pub async fn cancel_deferred(&self, handle: &DeferredHandle) -> Result<(), String> {
         let handle = handle.clone();
-        self.state.lock().unwrap().cancelled_deferred.push(handle.clone());
+        self.state
+            .lock()
+            .unwrap()
+            .cancelled_deferred
+            .push(handle.clone());
         if let Some(entry) = self.deferred_responses.lock().unwrap().get_mut(&handle.id) {
             entry.cancelled = true;
         }
@@ -440,7 +530,10 @@ fn resolve_deferred_entry(
         return Err(format!("Unknown faux deferred response: {}", handle.id));
     }
     if entry.cancelled {
-        return Err(format!("Faux deferred response was cancelled: {}", handle.id));
+        return Err(format!(
+            "Faux deferred response was cancelled: {}",
+            handle.id
+        ));
     }
     if entry.pending_fetches > 0 {
         entry.pending_fetches -= 1;
@@ -479,7 +572,10 @@ impl StreamPusher {
         if self.finished {
             return;
         }
-        if matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }) {
+        if matches!(
+            event,
+            AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+        ) {
             self.finished = true;
         }
         let _ = self.tx.send(event);
@@ -508,7 +604,9 @@ fn content_to_text(content: &[ContentBlock]) -> String {
         .iter()
         .map(|block| match block {
             ContentBlock::Text { text, .. } => text.clone(),
-            ContentBlock::Image { data, mime_type, .. } => format!("[image:{mime_type}:{}]", data.len()),
+            ContentBlock::Image {
+                data, mime_type, ..
+            } => format!("[image:{mime_type}:{}]", data.len()),
             _ => String::new(),
         })
         .collect::<Vec<_>>()
@@ -521,8 +619,13 @@ fn assistant_content_to_text(content: &[ContentBlock]) -> String {
         .map(|block| match block {
             ContentBlock::Text { text, .. } => text.clone(),
             ContentBlock::Thinking { thinking, .. } => thinking.clone(),
-            ContentBlock::ToolCall { name, arguments, .. } => {
-                format!("{name}:{}", serde_json::to_string(arguments).unwrap_or_default())
+            ContentBlock::ToolCall {
+                name, arguments, ..
+            } => {
+                format!(
+                    "{name}:{}",
+                    serde_json::to_string(arguments).unwrap_or_default()
+                )
             }
             _ => String::new(),
         })
@@ -584,20 +687,20 @@ fn with_usage_estimate(
     let session_id = options.and_then(|o| o.base.session_id.clone());
     let cache_retention = options.and_then(|o| o.base.cache_retention.clone());
 
-    let mut input = prompt_tokens;
-    let mut cache_read = 0;
-    let mut cache_write = 0;
+    let mut input = prompt_tokens as i64;
+    let mut cache_read = 0i64;
+    let mut cache_write = 0i64;
 
     if let Some(session_id) = session_id {
         if cache_retention.as_deref() != Some("none") {
             let mut cache = prompt_cache.lock().unwrap();
             if let Some(previous) = cache.get(&session_id) {
                 let cached_chars = common_prefix_length(previous, &prompt_text);
-                cache_read = estimate_tokens(&previous[..cached_chars]);
-                cache_write = estimate_tokens(&prompt_text[cached_chars..]);
-                input = prompt_tokens.saturating_sub(cache_read);
+                cache_read = estimate_tokens(&previous[..cached_chars]) as i64;
+                cache_write = estimate_tokens(&prompt_text[cached_chars..]) as i64;
+                input = (prompt_tokens as i64).saturating_sub(cache_read);
             } else {
-                cache_write = prompt_tokens;
+                cache_write = prompt_tokens as i64;
             }
             cache.insert(session_id, prompt_text);
         }
@@ -605,12 +708,12 @@ fn with_usage_estimate(
 
     let usage = Usage {
         input,
-        output: output_tokens,
+        output: output_tokens as i64,
         cache_read,
         cache_write,
         cache_write_1h: None,
         reasoning: None,
-        total_tokens: input + output_tokens + cache_read + cache_write,
+        total_tokens: input + output_tokens as i64 + cache_read + cache_write,
         cost: Default::default(),
     };
     message.set_usage(usage);
@@ -630,7 +733,9 @@ async fn stream_with_deltas(
     *partial.content_mut() = Vec::new();
     partial.set_stop_reason(StopReason::Pending);
 
-    stream.push(AssistantMessageEvent::Start { partial: partial.clone() });
+    stream.push(AssistantMessageEvent::Start {
+        partial: partial.clone(),
+    });
 
     for (index, block) in message.content().iter().enumerate() {
         match block {
@@ -640,13 +745,22 @@ async fn stream_with_deltas(
                     thinking_signature: None,
                     redacted: None,
                 });
-                stream.push(AssistantMessageEvent::ThinkingStart { content_index: index, partial: partial.clone() });
+                stream.push(AssistantMessageEvent::ThinkingStart {
+                    content_index: index,
+                    partial: partial.clone(),
+                });
                 for chunk in split_by_token_size(rng, thinking, min_token_size, max_token_size) {
                     let _ = delay_by_tokens(&chunk, tokens_per_second).await;
-                    if let ContentBlock::Thinking { thinking, .. } = &mut partial.content_mut()[index] {
+                    if let ContentBlock::Thinking { thinking, .. } =
+                        &mut partial.content_mut()[index]
+                    {
                         thinking.push_str(&chunk);
                     }
-                    stream.push(AssistantMessageEvent::ThinkingDelta { content_index: index, delta: chunk, partial: partial.clone() });
+                    stream.push(AssistantMessageEvent::ThinkingDelta {
+                        content_index: index,
+                        delta: chunk,
+                        partial: partial.clone(),
+                    });
                 }
                 stream.push(AssistantMessageEvent::ThinkingEnd {
                     content_index: index,
@@ -655,14 +769,25 @@ async fn stream_with_deltas(
                 });
             }
             ContentBlock::Text { text, .. } => {
-                partial.content_mut().push(ContentBlock::Text { text: String::new(), text_signature: None });
-                stream.push(AssistantMessageEvent::TextStart { content_index: index, partial: partial.clone() });
+                partial.content_mut().push(ContentBlock::Text {
+                    text: String::new(),
+                    text_signature: None,
+                });
+                stream.push(AssistantMessageEvent::TextStart {
+                    content_index: index,
+                    partial: partial.clone(),
+                });
                 for chunk in split_by_token_size(rng, text, min_token_size, max_token_size) {
                     let _ = delay_by_tokens(&chunk, tokens_per_second).await;
-                    if let ContentBlock::Text { text: slot, .. } = &mut partial.content_mut()[index] {
+                    if let ContentBlock::Text { text: slot, .. } = &mut partial.content_mut()[index]
+                    {
                         slot.push_str(&chunk);
                     }
-                    stream.push(AssistantMessageEvent::TextDelta { content_index: index, delta: chunk, partial: partial.clone() });
+                    stream.push(AssistantMessageEvent::TextDelta {
+                        content_index: index,
+                        delta: chunk,
+                        partial: partial.clone(),
+                    });
                 }
                 stream.push(AssistantMessageEvent::TextEnd {
                     content_index: index,
@@ -670,7 +795,12 @@ async fn stream_with_deltas(
                     partial: partial.clone(),
                 });
             }
-            ContentBlock::ToolCall { id, name, arguments, .. } => {
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } => {
                 partial.content_mut().push(ContentBlock::ToolCall {
                     id: id.clone(),
                     name: name.clone(),
@@ -678,14 +808,25 @@ async fn stream_with_deltas(
                     thought_signature: None,
                     namespace: None,
                 });
-                stream.push(AssistantMessageEvent::ToolCallStart { content_index: index, partial: partial.clone() });
-                let args_json = serde_json::to_string(arguments).unwrap_or_else(|_| "{}".to_string());
+                stream.push(AssistantMessageEvent::ToolCallStart {
+                    content_index: index,
+                    partial: partial.clone(),
+                });
+                let args_json =
+                    serde_json::to_string(arguments).unwrap_or_else(|_| "{}".to_string());
                 for chunk in split_by_token_size(rng, &args_json, min_token_size, max_token_size) {
                     let _ = delay_by_tokens(&chunk, tokens_per_second).await;
-                    stream.push(AssistantMessageEvent::ToolCallDelta { content_index: index, delta: chunk, partial: partial.clone() });
+                    stream.push(AssistantMessageEvent::ToolCallDelta {
+                        content_index: index,
+                        delta: chunk,
+                        partial: partial.clone(),
+                    });
                 }
                 // Final arguments assembled from delta accumulation.
-                if let ContentBlock::ToolCall { arguments: slot, .. } = &mut partial.content_mut()[index] {
+                if let ContentBlock::ToolCall {
+                    arguments: slot, ..
+                } = &mut partial.content_mut()[index]
+                {
                     *slot = arguments.clone();
                 }
                 stream.push(AssistantMessageEvent::ToolCallEnd {
@@ -700,8 +841,15 @@ async fn stream_with_deltas(
 
     match message.stop_reason() {
         Some(StopReason::Error) | Some(StopReason::Aborted) => {
-            let reason = if message.stop_reason() == Some(StopReason::Aborted) { ErrorReason::Aborted } else { ErrorReason::Error };
-            stream.push(AssistantMessageEvent::Error { reason, error_message: message.clone() });
+            let reason = if message.stop_reason() == Some(StopReason::Aborted) {
+                ErrorReason::Aborted
+            } else {
+                ErrorReason::Error
+            };
+            stream.push(AssistantMessageEvent::Error {
+                reason,
+                error_message: message.clone(),
+            });
             stream.end(Some(message));
         }
         Some(reason) => {
@@ -712,12 +860,23 @@ async fn stream_with_deltas(
                 StopReason::Deferred => DoneReason::Deferred,
                 _ => DoneReason::Stop,
             };
-            stream.push(AssistantMessageEvent::Done { reason: done_reason, message: message.clone() });
+            stream.push(AssistantMessageEvent::Done {
+                reason: done_reason,
+                message: message.clone(),
+            });
             stream.end(Some(message));
         }
         None => {
-            let error_message = create_error_message("Faux response ended without a stop reason", &message.api().unwrap_or(DEFAULT_API), &message.provider().unwrap_or(DEFAULT_PROVIDER), &message.model().unwrap_or(DEFAULT_MODEL_ID));
-            stream.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error_message: error_message.clone() });
+            let error_message = create_error_message(
+                "Faux response ended without a stop reason",
+                &message.api().unwrap_or(DEFAULT_API),
+                &message.provider().unwrap_or(DEFAULT_PROVIDER),
+                &message.model().unwrap_or(DEFAULT_MODEL_ID),
+            );
+            stream.push(AssistantMessageEvent::Error {
+                reason: ErrorReason::Error,
+                error_message: error_message.clone(),
+            });
             stream.end(Some(error_message));
         }
     }
@@ -729,7 +888,12 @@ async fn stream_with_deltas(
 // arithmetic wraps explicitly: non-wrapping u64 overflow PANICS under debug
 // overflow checks, and a panic inside the spawned producer used to hang the
 // consumer (P2-D) before the catch_unwind guard landed.
-fn split_by_token_size(rng: &AtomicU64, text: &str, min_token_size: usize, max_token_size: usize) -> Vec<String> {
+fn split_by_token_size(
+    rng: &AtomicU64,
+    text: &str,
+    min_token_size: usize,
+    max_token_size: usize,
+) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut index = 0;
     while index < text.len() {
@@ -739,7 +903,8 @@ fn split_by_token_size(rng: &AtomicU64, text: &str, min_token_size: usize, max_t
             .wrapping_add(1442695040888963407);
         let rnd = (combined >> 11) as f64 / (1u64 << 53) as f64;
         let rnd = rnd.min(1.0 - f64::EPSILON).max(0.0);
-        let token_size = min_token_size + (rnd * (max_token_size - min_token_size + 1) as f64) as usize;
+        let token_size =
+            min_token_size + (rnd * (max_token_size - min_token_size + 1) as f64) as usize;
         let char_size = (token_size * 4).max(1);
         let end = (index + char_size).min(text.len());
         chunks.push(text[index..end].to_string());
@@ -801,7 +966,9 @@ mod deferred_fetch_tests {
         let msg2 = poll2.for_each(|_| {}).await;
         assert_eq!(msg2.stop_reason(), Some(StopReason::Stop));
         assert!(
-            msg2.content().iter().any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "deferred done")),
+            msg2.content()
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "deferred done")),
             "final message should carry the resolved content"
         );
         assert_eq!(core.state.lock().unwrap().deferred_fetch_count, 2);
@@ -825,14 +992,28 @@ mod deferred_fetch_tests {
         unknown.id = "nope".to_string();
         let err_stream = core.fetch_deferred(&model, &unknown, None).await;
         let err_msg = err_stream.for_each(|_| {}).await;
-        assert!(err_msg.error_message().unwrap_or("").contains("Unknown faux deferred response"), "{:?}", err_msg.error_message());
+        assert!(
+            err_msg
+                .error_message()
+                .unwrap_or("")
+                .contains("Unknown faux deferred response"),
+            "{:?}",
+            err_msg.error_message()
+        );
 
         // Cancel then fetch -> cancelled error.
         core.cancel_deferred(&handle).await.unwrap();
         assert_eq!(core.state.lock().unwrap().cancelled_deferred.len(), 1);
         let cancelled_stream = core.fetch_deferred(&model, &handle, None).await;
         let cancelled_msg = cancelled_stream.for_each(|_| {}).await;
-        assert!(cancelled_msg.error_message().unwrap_or("").contains("cancelled"), "{:?}", cancelled_msg.error_message());
+        assert!(
+            cancelled_msg
+                .error_message()
+                .unwrap_or("")
+                .contains("cancelled"),
+            "{:?}",
+            cancelled_msg.error_message()
+        );
     }
 }
 
@@ -862,7 +1043,10 @@ mod tests {
     use crate::types::Message;
 
     fn rt() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
     }
 
     #[test]
@@ -879,10 +1063,17 @@ mod tests {
             let stream = core.stream(&model, &context, None);
             let (events, final_message) = stream.collect().await;
             assert!(matches!(events[0], AssistantMessageEvent::Start { .. }));
-            assert!(events.iter().any(|e| matches!(e, AssistantMessageEvent::TextStart { .. })));
-            assert!(events.iter().any(|e| matches!(e, AssistantMessageEvent::TextDelta { .. })));
+            assert!(events
+                .iter()
+                .any(|e| matches!(e, AssistantMessageEvent::TextStart { .. })));
+            assert!(events
+                .iter()
+                .any(|e| matches!(e, AssistantMessageEvent::TextDelta { .. })));
             assert_eq!(final_message.stop_reason(), Some(StopReason::Stop));
-            assert!(final_message.content().iter().any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "Hello, world!")));
+            assert!(final_message
+                .content()
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "Hello, world!")));
         });
     }
 
@@ -892,14 +1083,25 @@ mod tests {
         rt.block_on(async {
             let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
             core.set_responses(vec![
-                FauxResponseStep::Message(faux_assistant_message(vec![ContentBlock::text("hi")], FauxAssistantOptions::default())),
-                FauxResponseStep::Message(faux_assistant_message(vec![ContentBlock::text("hi")], FauxAssistantOptions::default())),
+                FauxResponseStep::Message(faux_assistant_message(
+                    vec![ContentBlock::text("hi")],
+                    FauxAssistantOptions::default(),
+                )),
+                FauxResponseStep::Message(faux_assistant_message(
+                    vec![ContentBlock::text("hi")],
+                    FauxAssistantOptions::default(),
+                )),
             ]);
             let model = core.get_model(None).unwrap().clone();
             let mut context = Context::default();
-            context.messages.push(Message::User(crate::types::UserContent::string("hello", 1)));
+            context
+                .messages
+                .push(Message::User(crate::types::UserContent::string("hello", 1)));
             let opts = SimpleStreamOptions {
-                base: crate::types::StreamOptions { session_id: Some("s1".into()), ..Default::default() },
+                base: crate::types::StreamOptions {
+                    session_id: Some("s1".into()),
+                    ..Default::default()
+                },
                 ..Default::default()
             };
             let (_, m1) = core.stream(&model, &context, Some(&opts)).collect().await;
@@ -916,9 +1118,15 @@ mod tests {
             assert_eq!(u2.input, 0);
             assert!(u2.cache_read > 0);
             assert_eq!(u2.cache_read, u1.cache_write); // full prefix cached
-            // total always decomposes (upstream contract).
-            assert_eq!(u1.total_tokens, u1.input + u1.output + u1.cache_read + u1.cache_write);
-            assert_eq!(u2.total_tokens, u2.input + u2.output + u2.cache_read + u2.cache_write);
+                                                       // total always decomposes (upstream contract).
+            assert_eq!(
+                u1.total_tokens,
+                u1.input + u1.output + u1.cache_read + u1.cache_write
+            );
+            assert_eq!(
+                u2.total_tokens,
+                u2.input + u2.output + u2.cache_read + u2.cache_write
+            );
         });
     }
 
@@ -946,7 +1154,10 @@ mod tests {
                 },
                 ..Default::default()
             };
-            let (_, m) = core.stream(&model, &Context::default(), Some(&opts)).collect().await;
+            let (_, m) = core
+                .stream(&model, &Context::default(), Some(&opts))
+                .collect()
+                .await;
             assert_eq!(m.stop_reason(), Some(StopReason::Stop));
             assert_eq!(invoked.load(std::sync::atomic::Ordering::SeqCst), 1);
             assert_eq!(seen_status.load(std::sync::atomic::Ordering::SeqCst), 200);
@@ -959,7 +1170,10 @@ mod tests {
         rt.block_on(async {
             let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
             let model = core.get_model(None).unwrap().clone();
-            let (_, m) = core.stream(&model, &Context::default(), None).collect().await;
+            let (_, m) = core
+                .stream(&model, &Context::default(), None)
+                .collect()
+                .await;
             assert_eq!(m.stop_reason(), Some(StopReason::Error));
             assert_eq!(m.error_message(), Some("No more faux responses queued"));
         });
@@ -972,17 +1186,33 @@ mod tests {
             let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
             core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
                 vec![faux_tool_call("bash", serde_json::json!({"command": "ls"}))],
-                FauxAssistantOptions { stop_reason: Some(StopReason::ToolUse), ..Default::default() },
+                FauxAssistantOptions {
+                    stop_reason: Some(StopReason::ToolUse),
+                    ..Default::default()
+                },
             ))]);
             let model = core.get_model(None).unwrap().clone();
-            let (events, m) = core.stream(&model, &Context::default(), None).collect().await;
-            assert!(events.iter().any(|e| matches!(e, AssistantMessageEvent::ToolCallStart { .. })));
-            assert!(events.iter().any(|e| matches!(e, AssistantMessageEvent::ToolCallDelta { .. })));
+            let (events, m) = core
+                .stream(&model, &Context::default(), None)
+                .collect()
+                .await;
+            assert!(events
+                .iter()
+                .any(|e| matches!(e, AssistantMessageEvent::ToolCallStart { .. })));
+            assert!(events
+                .iter()
+                .any(|e| matches!(e, AssistantMessageEvent::ToolCallDelta { .. })));
             assert_eq!(m.stop_reason(), Some(StopReason::ToolUse));
-            let calls: Vec<_> = m.content().iter().filter_map(|b| match b {
-                ContentBlock::ToolCall { name, arguments, .. } => Some((name.as_str(), arguments.clone())),
-                _ => None,
-            }).collect();
+            let calls: Vec<_> = m
+                .content()
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ToolCall {
+                        name, arguments, ..
+                    } => Some((name.as_str(), arguments.clone())),
+                    _ => None,
+                })
+                .collect();
             assert_eq!(calls.len(), 1);
             assert_eq!(calls[0].0, "bash");
             assert_eq!(calls[0].1, serde_json::json!({"command": "ls"}));
@@ -1002,6 +1232,9 @@ mod tests {
                 parsed = v;
             }
         }
-        assert_eq!(parsed, serde_json::json!({"command": "ls -la", "cwd": "/tmp"}));
+        assert_eq!(
+            parsed,
+            serde_json::json!({"command": "ls -la", "cwd": "/tmp"})
+        );
     }
 }

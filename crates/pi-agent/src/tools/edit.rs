@@ -36,7 +36,8 @@ pub async fn execute_edit(
     std::fs::write(&absolute, final_content)
         .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
 
-    let (diff, first_changed_line) = generate_diff_string(&result.base_content, &result.new_content, 4);
+    let (diff, first_changed_line) =
+        generate_diff_string(&result.base_content, &result.new_content, 4);
     let patch = generate_unified_patch(path, &result.base_content, &result.new_content, 4);
 
     let details = serde_json::json!({
@@ -62,7 +63,10 @@ pub fn extract_edits(args: &serde_json::Value) -> Result<Vec<Edit>, String> {
     let push_from_value = |edits: &mut Vec<Edit>, v: &serde_json::Value| {
         if let Some(old) = v.get("oldText").and_then(|x| x.as_str()) {
             if let Some(new) = v.get("newText").and_then(|x| x.as_str()) {
-                edits.push(Edit { old_text: old.to_string(), new_text: new.to_string() });
+                edits.push(Edit {
+                    old_text: old.to_string(),
+                    new_text: new.to_string(),
+                });
             }
         }
     };
@@ -91,10 +95,15 @@ pub fn extract_edits(args: &serde_json::Value) -> Result<Vec<Edit>, String> {
         args.get("oldText").and_then(|v| v.as_str()),
         args.get("newText").and_then(|v| v.as_str()),
     ) {
-        edits.push(Edit { old_text: old.to_string(), new_text: new.to_string() });
+        edits.push(Edit {
+            old_text: old.to_string(),
+            new_text: new.to_string(),
+        });
     }
     if edits.is_empty() {
-        return Err("Edit tool input is invalid. edits must contain at least one replacement.".to_string());
+        return Err(
+            "Edit tool input is invalid. edits must contain at least one replacement.".to_string(),
+        );
     }
     Ok(edits)
 }
@@ -104,7 +113,10 @@ mod tests {
     use super::*;
 
     fn edit(old: &str, new: &str) -> Edit {
-        Edit { old_text: old.to_string(), new_text: new.to_string() }
+        Edit {
+            old_text: old.to_string(),
+            new_text: new.to_string(),
+        }
     }
 
     fn tool_text(msg: &ToolResultMessage) -> String {
@@ -145,8 +157,16 @@ mod tests {
             "Successfully replaced 2 block(s) in edit.txt."
         );
         let details = msg.details().unwrap();
-        assert!(details.get("diff").and_then(|v| v.as_str()).unwrap().contains("ALPHA"));
-        assert!(details.get("diff").and_then(|v| v.as_str()).unwrap().contains("GAMMA"));
+        assert!(details
+            .get("diff")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .contains("ALPHA"));
+        assert!(details
+            .get("diff")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .contains("GAMMA"));
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
             "ALPHA\nbeta\nGAMMA\ndelta\n"
@@ -161,7 +181,10 @@ mod tests {
         let err = execute_edit(
             "e",
             &file.display().to_string(),
-            vec![edit("one\ntwo\n", "ONE\nTWO\n"), edit("two\nthree\n", "TWO\nTHREE\n")],
+            vec![
+                edit("one\ntwo\n", "ONE\nTWO\n"),
+                edit("two\nthree\n", "TWO\nTHREE\n"),
+            ],
             &dir.display().to_string(),
         )
         .await
@@ -209,7 +232,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "\u{FEFF}one\r\nTWO\r\n");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "\u{FEFF}one\r\nTWO\r\n"
+        );
     }
 
     #[tokio::test]
@@ -236,7 +262,11 @@ mod tests {
     async fn fuzzy_matches_smart_quote() {
         let (dir, _) = tmpdir("fuzzy");
         let file = dir.join("f.rs");
-        std::fs::write(&file, "fn main() {\n    println!(\"it\u{2019}s fine\");\n}\n").unwrap();
+        std::fs::write(
+            &file,
+            "fn main() {\n    println!(\"it\u{2019}s fine\");\n}\n",
+        )
+        .unwrap();
         execute_edit(
             "e",
             &file.display().to_string(),
@@ -261,7 +291,8 @@ mod tests {
         assert_eq!(extract_edits(&args).unwrap().len(), 1);
 
         // single edit object
-        let args = serde_json::json!({ "path": "x.ts", "edits": { "oldText": "a", "newText": "b" } });
+        let args =
+            serde_json::json!({ "path": "x.ts", "edits": { "oldText": "a", "newText": "b" } });
         assert_eq!(extract_edits(&args).unwrap().len(), 1);
 
         // legacy top-level oldText/newText appended to edits array
@@ -277,5 +308,4 @@ mod tests {
         let args = serde_json::json!({ "path": "x.ts" });
         assert!(extract_edits(&args).is_err());
     }
-
 }

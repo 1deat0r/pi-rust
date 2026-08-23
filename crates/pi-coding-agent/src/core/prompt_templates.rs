@@ -115,7 +115,8 @@ fn find_brace_close(s: &str) -> Option<usize> {
 fn substitute_bracket(inner: &str, args: &[String], all_args: &str) -> String {
     // `${@:-default}` / `${ARGUMENTS:-default}` — all-args with default when empty.
     if let Some(default) = inner
-        .strip_prefix("@:-").or_else(|| inner.strip_prefix("ARGUMENTS:-"))
+        .strip_prefix("@:-")
+        .or_else(|| inner.strip_prefix("ARGUMENTS:-"))
     {
         if all_args.is_empty() {
             return default.to_string();
@@ -182,7 +183,14 @@ fn load_template_from_file(file_path: &Path) -> Option<PromptTemplate> {
     if description.is_empty() {
         if let Some(first_line) = body.lines().find(|l| !l.trim().is_empty()) {
             description = if first_line.chars().count() > 60 {
-                format!("{}...", &first_line[..first_line.char_indices().nth(60).map(|(i, _)| i).unwrap_or(first_line.len())])
+                format!(
+                    "{}...",
+                    &first_line[..first_line
+                        .char_indices()
+                        .nth(60)
+                        .map(|(i, _)| i)
+                        .unwrap_or(first_line.len())]
+                )
             } else {
                 first_line.to_string()
             };
@@ -301,7 +309,10 @@ mod tests {
 
     #[test]
     fn parse_command_args_respects_quotes() {
-        assert_eq!(parse_command_args("a b \"c d\" 'e f'"), vec!["a", "b", "c d", "e f"]);
+        assert_eq!(
+            parse_command_args("a b \"c d\" 'e f'"),
+            vec!["a", "b", "c d", "e f"]
+        );
         assert_eq!(parse_command_args(""), Vec::<String>::new());
         assert_eq!(parse_command_args("  spaced  out  "), vec!["spaced", "out"]);
     }
@@ -336,7 +347,10 @@ mod tests {
             file_path: "/t/summarize.md".into(),
         }];
         assert_eq!(expand_prompt_template("hello", &templates), "hello");
-        assert_eq!(expand_prompt_template("/unknown x", &templates), "/unknown x");
+        assert_eq!(
+            expand_prompt_template("/unknown x", &templates),
+            "/unknown x"
+        );
         assert_eq!(
             expand_prompt_template("/summarize the docs", &templates),
             "Summarize: the docs"
@@ -354,7 +368,11 @@ mod tests {
             "---\ndescription: Greet\nargument-hint: name\n---\nHello, $1!",
         )
         .unwrap();
-        std::fs::write(prompts_dir.join("README.md"), "no frontmatter but still loaded\n").unwrap();
+        std::fs::write(
+            prompts_dir.join("README.md"),
+            "no frontmatter but still loaded\n",
+        )
+        .unwrap();
         let (templates, diag) = load_prompt_templates(
             &dir.to_string_lossy(),
             &dir.join("agent").to_string_lossy(),
@@ -363,7 +381,9 @@ mod tests {
             false,
         );
         assert!(diag.is_empty());
-        assert!(templates.iter().any(|t| t.name == "hello" && t.content.contains("Hello, $1")));
+        assert!(templates
+            .iter()
+            .any(|t| t.name == "hello" && t.content.contains("Hello, $1")));
         assert!(templates.iter().any(|t| t.name == "README"));
         std::fs::remove_dir_all(&dir).ok();
     }

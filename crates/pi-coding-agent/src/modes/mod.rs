@@ -4,7 +4,7 @@
 //! lands with pi-tui.
 
 pub mod interactive;
-pub mod jsonl;
 pub mod json_event;
+pub mod jsonl;
 pub mod rpc;
 pub mod rpc_types;

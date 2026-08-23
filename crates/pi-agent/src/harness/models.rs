@@ -17,8 +17,11 @@ use pi_ai::types::{AssistantMessage, Context, SimpleStreamOptions};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-pub type CompleteSimpleFn =
-    Arc<dyn Fn(&Model, &Context, &SimpleStreamOptions) -> BoxFuture<'static, AssistantMessage> + Send + Sync>;
+pub type CompleteSimpleFn = Arc<
+    dyn Fn(&Model, &Context, &SimpleStreamOptions) -> BoxFuture<'static, AssistantMessage>
+        + Send
+        + Sync,
+>;
 
 /// `Models.completeSimple(model, context, options)` bound to an injected
 /// async function.
@@ -40,7 +43,9 @@ impl SimpleModels {
             + Sync
             + 'static,
     ) -> Self {
-        Self { complete_simple_fn: Arc::new(complete_simple_fn) }
+        Self {
+            complete_simple_fn: Arc::new(complete_simple_fn),
+        }
     }
 
     pub fn complete_simple(

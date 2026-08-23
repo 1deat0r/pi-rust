@@ -8,19 +8,24 @@
 
 use serde_json::{json, Value};
 
-use crate::model::{clamp_thinking_level, Model};
-use crate::types::{
-    AssistantMessage, AssistantMessageEvent, Context, DoneReason, ErrorReason,
-    ModelThinkingLevel, SimpleStreamOptions, StopReason, StreamOptions, ToolChoice, Usage,
-};
 use crate::event_stream::{AssistantMessageEventStream, StreamSink};
+use crate::model::{clamp_thinking_level, Model};
 use crate::sse::SseParser;
+use crate::types::{
+    AssistantMessage, AssistantMessageEvent, Context, DoneReason, ErrorReason, ModelThinkingLevel,
+    SimpleStreamOptions, StopReason, StreamOptions, ToolChoice, Usage,
+};
 
 use super::openai_responses_shared::*;
 
 const DEFAULT_AZURE_API_VERSION: &str = "v1";
 const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS: u64 = 16;
-const AZURE_TOOL_CALL_PROVIDERS: [&str; 4] = ["openai", "openai-codex", "opencode", "azure-openai-responses"];
+const AZURE_TOOL_CALL_PROVIDERS: [&str; 4] = [
+    "openai",
+    "openai-codex",
+    "opencode",
+    "azure-openai-responses",
+];
 
 #[derive(Clone)]
 pub struct AzureOpenAIResponsesOptions {
@@ -85,7 +90,8 @@ fn resolve_deployment_name(model: &Model, options: &AzureOpenAIResponsesOptions)
 
 fn normalize_azure_base_url(base_url: &str) -> Result<String, String> {
     let trimmed = base_url.trim().trim_end_matches('/');
-    let parsed = url::Url::parse(trimmed).map_err(|_| format!("Invalid Azure OpenAI base URL: {base_url}"))?;
+    let parsed = url::Url::parse(trimmed)
+        .map_err(|_| format!("Invalid Azure OpenAI base URL: {base_url}"))?;
     let is_azure_host = parsed.host_str().is_some_and(|h| {
         h.ends_with(".openai.azure.com")
             || h.ends_with(".cognitiveservices.azure.com")
@@ -94,7 +100,10 @@ fn normalize_azure_base_url(base_url: &str) -> Result<String, String> {
     let normalized_path = parsed.path().trim_end_matches('/').to_string();
     let mut url = parsed;
     if is_azure_host
-        && matches!(normalized_path.as_str(), "" | "/" | "/openai" | "/openai/v1/responses")
+        && matches!(
+            normalized_path.as_str(),
+            "" | "/" | "/openai" | "/openai/v1/responses"
+        )
     {
         url.set_path("/openai/v1");
         url.set_query(None);
@@ -110,7 +119,10 @@ fn build_default_base_url(resource_name: &str) -> String {
     format!("https://{resource_name}.openai.azure.com/openai/v1")
 }
 
-fn resolve_azure_config(model: &Model, options: &AzureOpenAIResponsesOptions) -> Result<(String, String), String> {
+fn resolve_azure_config(
+    model: &Model,
+    options: &AzureOpenAIResponsesOptions,
+) -> Result<(String, String), String> {
     let api_version = options
         .azure_api_version
         .clone()
@@ -203,7 +215,11 @@ fn build_params(
             let effort = model
                 .thinking_level_map
                 .as_ref()
-                .and_then(|m| m.get(&ModelThinkingLevel::from_effort_str(effort.as_deref().unwrap_or("medium"))))
+                .and_then(|m| {
+                    m.get(&ModelThinkingLevel::from_effort_str(
+                        effort.as_deref().unwrap_or("medium"),
+                    ))
+                })
                 .cloned()
                 .flatten()
                 .unwrap_or_else(|| effort.unwrap_or_else(|| "medium".to_string()));
@@ -257,14 +273,22 @@ pub fn stream(
     options: &AzureOpenAIResponsesOptions,
 ) -> AssistantMessageEventStream {
     let stream = AssistantMessageEventStream::new();
-    let Some(sender) = stream.sender() else { return stream };
+    let Some(sender) = stream.sender() else {
+        return stream;
+    };
     let model = model.clone();
     let context = context.clone();
     let options = options.clone();
-    let Some(api_key) = api_key.map(|s| s.to_string()).or_else(|| env_value("AZURE_OPENAI_API_KEY")) else {
+    let Some(api_key) = api_key
+        .map(|s| s.to_string())
+        .or_else(|| env_value("AZURE_OPENAI_API_KEY"))
+    else {
         let mut message = new_output(&model);
         message.set_stop_reason(StopReason::Error);
-        super::anthropic_messages::set_error_message(&mut message, format!("No API key for provider: {}", model.provider));
+        super::anthropic_messages::set_error_message(
+            &mut message,
+            format!("No API key for provider: {}", model.provider),
+        );
         return crate::event_stream::create_error_stream(
             &model.api,
             &model.provider,
@@ -291,7 +315,8 @@ pub fn stream(
             }
         };
         let params = build_params(&model, &context, &options, &deployment_name);
-        let endpoint = format!("{base_url}/deployments/{deployment_name}/responses?api-version={api_version}");
+        let endpoint =
+            format!("{base_url}/deployments/{deployment_name}/responses?api-version={api_version}");
         let mut request = client
             .post(&endpoint)
             .header("content-type", "application/json")
@@ -316,7 +341,10 @@ pub fn stream(
             Err(err) => {
                 let mut message = new_output(&model);
                 message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(&mut message, format!("Request failed: {err}"));
+                super::anthropic_messages::set_error_message(
+                    &mut message,
+                    format!("Request failed: {err}"),
+                );
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -326,7 +354,10 @@ pub fn stream(
             }
         };
         let status = response.status();
-        let provider_response = crate::types::ProviderResponse { status: status.as_u16(), headers: Default::default() };
+        let provider_response = crate::types::ProviderResponse {
+            status: status.as_u16(),
+            headers: Default::default(),
+        };
         if let Some(on_response) = &options.base.on_response {
             on_response(&provider_response, &model);
         }
@@ -335,7 +366,10 @@ pub fn stream(
             Err(err) => {
                 let mut message = new_output(&model);
                 message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(&mut message, format!("Request body failed: {err}"));
+                super::anthropic_messages::set_error_message(
+                    &mut message,
+                    format!("Request body failed: {err}"),
+                );
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -363,7 +397,9 @@ pub fn stream(
         let body_text = String::from_utf8_lossy(&body).to_string();
         let events = SseParser::parse_text(&body_text);
 
-        pusher.push(AssistantMessageEvent::Start { partial: new_output(&model) });
+        pusher.push(AssistantMessageEvent::Start {
+            partial: new_output(&model),
+        });
         let mut output = new_output(&model);
         match process_responses_stream(
             &events,
@@ -380,7 +416,10 @@ pub fn stream(
                     StopReason::Deferred => DoneReason::Deferred,
                     _ => DoneReason::Stop,
                 };
-                pusher.push(AssistantMessageEvent::Done { reason, message: output.clone() });
+                pusher.push(AssistantMessageEvent::Done {
+                    reason,
+                    message: output.clone(),
+                });
                 pusher.end(Some(output));
             }
             Err(err) => {
@@ -448,24 +487,37 @@ mod tests {
         Context {
             system_prompt: Some("You are helpful.".to_string()),
             messages: vec![Message::User(UserContent::string("hello", 1))],
-            tools: vec![json_tool("bash", "run a command", &json!({"type":"object","properties":{}}))],
+            tools: vec![json_tool(
+                "bash",
+                "run a command",
+                &json!({"type":"object","properties":{}}),
+            )],
         }
     }
 
     #[test]
     fn deployment_name_from_map_env() {
         let _guard = crate::utils::env_lock();
-        unsafe { std::env::set_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP", "gpt-5=my-deploy-1, gpt-5-mini = my-mini"); }
+        unsafe {
+            std::env::set_var(
+                "AZURE_OPENAI_DEPLOYMENT_NAME_MAP",
+                "gpt-5=my-deploy-1, gpt-5-mini = my-mini",
+            );
+        }
         let m = model("gpt-5");
         let name = resolve_deployment_name(&m, &AzureOpenAIResponsesOptions::default());
         assert_eq!(name, "my-deploy-1");
-        unsafe { std::env::remove_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP"); }
+        unsafe {
+            std::env::remove_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP");
+        }
     }
 
     #[test]
     fn deployment_name_defaults_to_model_id() {
         let _guard = crate::utils::env_lock();
-        unsafe { std::env::remove_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP"); }
+        unsafe {
+            std::env::remove_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP");
+        }
         let m = model("gpt-5");
         let name = resolve_deployment_name(&m, &AzureOpenAIResponsesOptions::default());
         assert_eq!(name, "gpt-5");
@@ -492,7 +544,9 @@ mod tests {
     fn params_shape_uses_deployment() {
         let _guard = crate::utils::env_lock();
         let m = model("gpt-5");
-        unsafe { std::env::remove_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP"); }
+        unsafe {
+            std::env::remove_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP");
+        }
         let params = build_params(&m, &ctx(), &AzureOpenAIResponsesOptions::default(), "gpt-5");
         assert_eq!(params["model"], "gpt-5");
         assert_eq!(params["stream"], true);
@@ -504,12 +558,26 @@ mod tests {
     fn stream_missing_key_is_terminal_error() {
         let _guard = crate::utils::env_lock();
         let m = model("gpt-5");
-        unsafe { std::env::remove_var("AZURE_OPENAI_API_KEY"); }
-        let s = stream(&m, &Context::default(), reqwest::Client::new(), None, &AzureOpenAIResponsesOptions::default());
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        unsafe {
+            std::env::remove_var("AZURE_OPENAI_API_KEY");
+        }
+        let s = stream(
+            &m,
+            &Context::default(),
+            reqwest::Client::new(),
+            None,
+            &AzureOpenAIResponsesOptions::default(),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let (events, msg) = rt.block_on(s.collect());
         assert!(matches!(&events[0], AssistantMessageEvent::Error { .. }));
         let err = msg.error_message().unwrap_or("").to_string();
-        assert!(err.contains("No API key for provider: azure-openai-responses"), "{err}");
+        assert!(
+            err.contains("No API key for provider: azure-openai-responses"),
+            "{err}"
+        );
     }
 }

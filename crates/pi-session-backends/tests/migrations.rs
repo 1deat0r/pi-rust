@@ -24,10 +24,23 @@ fn applies_the_current_schema_once_and_records_its_migration() {
         .all_rows(&db, |row| row.get::<_, String>(0))
         .unwrap();
     for expected in [
-        "migrations", "sessions", "entries", "session_sequences", "session_stats", "branch_entries",
-        "branch_tips", "lanes", "records", "lane_moves", "facts", "writer_leases",
+        "migrations",
+        "sessions",
+        "entries",
+        "session_sequences",
+        "session_stats",
+        "branch_entries",
+        "branch_tips",
+        "lanes",
+        "records",
+        "lane_moves",
+        "facts",
+        "writer_leases",
     ] {
-        assert!(tables.iter().any(|t| t == expected), "missing table {expected}: {tables:?}");
+        assert!(
+            tables.iter().any(|t| t == expected),
+            "missing table {expected}: {tables:?}"
+        );
     }
 
     let session_columns = db
@@ -88,7 +101,10 @@ fn applies_the_current_schema_once_and_records_its_migration() {
         "idx_records_session_type_seq",
         "idx_records_session_type_op_kind_seq",
     ] {
-        assert!(record_indexes.contains(&expected.to_string()), "missing index {expected}: {record_indexes:?}");
+        assert!(
+            record_indexes.contains(&expected.to_string()),
+            "missing index {expected}: {record_indexes:?}"
+        );
     }
     assert!(!record_indexes.contains(&"idx_records_session_seq".to_string()));
 

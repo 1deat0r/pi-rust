@@ -25,7 +25,10 @@ fn matches_host(base_url: &str, expected_host: &str) -> bool {
     let Some(after_scheme) = base_url.split_once("://").map(|(_, rest)| rest) else {
         return false;
     };
-    let hostport = after_scheme.split(['/', '?', '#']).next().unwrap_or_default();
+    let hostport = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
     // Strip userinfo.
     let hostport = hostport.rsplit('@').next().unwrap_or(hostport);
     // Strip port.
@@ -60,7 +63,10 @@ fn get_default_attribution_headers(
         let mut headers = BTreeMap::new();
         headers.insert("HTTP-Referer".to_string(), "https://pi.dev".to_string());
         headers.insert("X-OpenRouter-Title".to_string(), "pi".to_string());
-        headers.insert("X-OpenRouter-Categories".to_string(), "cli-agent".to_string());
+        headers.insert(
+            "X-OpenRouter-Categories".to_string(),
+            "cli-agent".to_string(),
+        );
         return Some(headers);
     }
     if is_nvidia_nim_model(model) {
@@ -76,7 +82,10 @@ fn get_default_attribution_headers(
     None
 }
 
-fn get_session_headers(model: &Model, session_id: Option<&str>) -> Option<BTreeMap<String, String>> {
+fn get_session_headers(
+    model: &Model,
+    session_id: Option<&str>,
+) -> Option<BTreeMap<String, String>> {
     let session_id = session_id?;
     if model.provider != "opencode"
         && model.provider != "opencode-go"
@@ -117,7 +126,11 @@ pub fn merge_provider_attribution_headers(
             merged.insert(name.clone(), value.clone());
         }
     }
-    if merged.is_empty() { None } else { Some(merged) }
+    if merged.is_empty() {
+        None
+    } else {
+        Some(merged)
+    }
 }
 
 #[cfg(test)]
@@ -126,9 +139,12 @@ mod tests {
     use serde_json::json;
 
     fn settings(telemetry: bool) -> SettingsManager {
-        SettingsManager::in_memory(serde_json::from_value(json!({
-            "enableInstallTelemetry": telemetry
-        })).unwrap())
+        SettingsManager::in_memory(
+            serde_json::from_value(json!({
+                "enableInstallTelemetry": telemetry
+            }))
+            .unwrap(),
+        )
     }
 
     fn model(provider: &str, base_url: &str) -> Model {
@@ -150,9 +166,18 @@ mod tests {
         let settings = settings(true);
         let m = model("openrouter", "https://openrouter.ai/api/v1");
         let merged = merge_provider_attribution_headers(&m, &settings, None, &[], None).unwrap();
-        assert_eq!(merged.get("HTTP-Referer").unwrap().as_deref(), Some("https://pi.dev"));
-        assert_eq!(merged.get("X-OpenRouter-Title").unwrap().as_deref(), Some("pi"));
-        assert_eq!(merged.get("X-OpenRouter-Categories").unwrap().as_deref(), Some("cli-agent"));
+        assert_eq!(
+            merged.get("HTTP-Referer").unwrap().as_deref(),
+            Some("https://pi.dev")
+        );
+        assert_eq!(
+            merged.get("X-OpenRouter-Title").unwrap().as_deref(),
+            Some("pi")
+        );
+        assert_eq!(
+            merged.get("X-OpenRouter-Categories").unwrap().as_deref(),
+            Some("cli-agent")
+        );
     }
 
     #[test]
@@ -168,7 +193,10 @@ mod tests {
         let settings = settings(true);
         let m = model("nvidia", "https://integrate.api.nvidia.com/v1");
         let merged = merge_provider_attribution_headers(&m, &settings, None, &[], None).unwrap();
-        assert_eq!(merged.get("X-BILLING-INVOKE-ORIGIN").unwrap().as_deref(), Some("Pi"));
+        assert_eq!(
+            merged.get("X-BILLING-INVOKE-ORIGIN").unwrap().as_deref(),
+            Some("Pi")
+        );
     }
 
     #[test]
@@ -176,22 +204,38 @@ mod tests {
         let settings = settings(true);
         let m = model("cloudflare-workers-ai", "https://api.cloudflare.com");
         let merged = merge_provider_attribution_headers(&m, &settings, None, &[], None).unwrap();
-        assert_eq!(merged.get("User-Agent").unwrap().as_deref(), Some("pi-coding-agent"));
+        assert_eq!(
+            merged.get("User-Agent").unwrap().as_deref(),
+            Some("pi-coding-agent")
+        );
     }
 
     #[test]
     fn session_headers_only_for_opencode() {
         let settings = settings(false);
         let opencode = model("opencode", "https://opencode.ai");
-        let merged = merge_provider_attribution_headers(&opencode, &settings, Some("sess-1"), &[], None).unwrap();
-        assert_eq!(merged.get("x-opencode-session").unwrap().as_deref(), Some("sess-1"));
-        assert_eq!(merged.get("x-opencode-client").unwrap().as_deref(), Some("pi"));
+        let merged =
+            merge_provider_attribution_headers(&opencode, &settings, Some("sess-1"), &[], None)
+                .unwrap();
+        assert_eq!(
+            merged.get("x-opencode-session").unwrap().as_deref(),
+            Some("sess-1")
+        );
+        assert_eq!(
+            merged.get("x-opencode-client").unwrap().as_deref(),
+            Some("pi")
+        );
 
         let generic = model("google", "https://generativelanguage.googleapis.com");
-        assert!(merge_provider_attribution_headers(&generic, &settings, Some("sess-1"), &[], None).is_none());
+        assert!(
+            merge_provider_attribution_headers(&generic, &settings, Some("sess-1"), &[], None)
+                .is_none()
+        );
 
         // No session id → no session headers.
-        assert!(merge_provider_attribution_headers(&opencode, &settings, None, &[], None).is_none());
+        assert!(
+            merge_provider_attribution_headers(&opencode, &settings, None, &[], None).is_none()
+        );
     }
 
     #[test]
@@ -200,9 +244,22 @@ mod tests {
         let m = model("openrouter", "https://openrouter.ai");
         let mut override_headers = ProviderHeaders::new();
         override_headers.insert("X-OpenRouter-Title".to_string(), Some("custom".to_string()));
-        let merged = merge_provider_attribution_headers(&m, &settings, None, &[Some(&override_headers)], None).unwrap();
-        assert_eq!(merged.get("X-OpenRouter-Title").unwrap().as_deref(), Some("custom"));
-        assert_eq!(merged.get("HTTP-Referer").unwrap().as_deref(), Some("https://pi.dev"));
+        let merged = merge_provider_attribution_headers(
+            &m,
+            &settings,
+            None,
+            &[Some(&override_headers)],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            merged.get("X-OpenRouter-Title").unwrap().as_deref(),
+            Some("custom")
+        );
+        assert_eq!(
+            merged.get("HTTP-Referer").unwrap().as_deref(),
+            Some("https://pi.dev")
+        );
     }
 
     #[test]
@@ -210,15 +267,26 @@ mod tests {
         // Setting disabled but PI_TELEMETRY=1 (truthy) → headers present.
         let settings_disabled = settings(false);
         let m = model("openrouter", "https://openrouter.ai/api/v1");
-        let merged = merge_provider_attribution_headers(&m, &settings_disabled, None, &[], Some("true"));
-        assert!(merged.is_some(), "truthy env should force attribution despite disabled setting");
+        let merged =
+            merge_provider_attribution_headers(&m, &settings_disabled, None, &[], Some("true"));
+        assert!(
+            merged.is_some(),
+            "truthy env should force attribution despite disabled setting"
+        );
 
         // Setting enabled but PI_TELEMETRY=0 (falsy) → headers absent.
         let settings_enabled = settings(true);
-        assert!(merge_provider_attribution_headers(&m, &settings_enabled, None, &[], Some("0")).is_none());
+        assert!(
+            merge_provider_attribution_headers(&m, &settings_enabled, None, &[], Some("0"))
+                .is_none()
+        );
 
         // Env unset → defers to the setting (no override).
-        assert!(merge_provider_attribution_headers(&m, &settings_disabled, None, &[], None).is_none());
-        assert!(merge_provider_attribution_headers(&m, &settings_enabled, None, &[], None).is_some());
+        assert!(
+            merge_provider_attribution_headers(&m, &settings_disabled, None, &[], None).is_none()
+        );
+        assert!(
+            merge_provider_attribution_headers(&m, &settings_enabled, None, &[], None).is_some()
+        );
     }
 }

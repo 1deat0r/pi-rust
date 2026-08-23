@@ -6,8 +6,8 @@
 use pi_tui::autocomplete::AutocompleteItem;
 use pi_tui::components::select_list::{SelectItem, SelectList, SelectListLayoutOptions};
 use pi_tui::fuzzy::fuzzy_filter;
-use pi_tui::tui::Component;
 use pi_tui::keys::TuiKey;
+use pi_tui::tui::Component;
 
 use crate::core::settings::SettingsManager;
 use crate::interactive::tui_theme as t;
@@ -40,7 +40,12 @@ pub struct ListSelector {
 impl ListSelector {
     pub fn new(items: Vec<SelectItem>, max_visible: usize) -> Self {
         Self {
-            list: SelectList::new(items, max_visible, select_theme(), SelectListLayoutOptions::default()),
+            list: SelectList::new(
+                items,
+                max_visible,
+                select_theme(),
+                SelectListLayoutOptions::default(),
+            ),
         }
     }
 
@@ -107,7 +112,10 @@ impl Component for ListSelector {
 // ---------------------------------------------------------------------------
 
 /// Model list for the model selector (fuzzy-matched against provider/model).
-pub fn model_selector_items(models: &pi_ai::models::Models, provider_filter: Option<&str>) -> Vec<SelectItem> {
+pub fn model_selector_items(
+    models: &pi_ai::models::Models,
+    provider_filter: Option<&str>,
+) -> Vec<SelectItem> {
     let providers = models.get_providers();
     let mut items = Vec::new();
     for provider in providers {
@@ -165,8 +173,16 @@ pub fn thinking_selector_items() -> Vec<SelectItem> {
 /// Theme selector: builtin dark + light, then custom themes from disk.
 pub fn theme_selector_items() -> Vec<SelectItem> {
     let mut items = vec![
-        SelectItem::new("dark".to_string(), "dark".to_string(), Some("Dark theme".to_string())),
-        SelectItem::new("light".to_string(), "light".to_string(), Some("Light theme".to_string())),
+        SelectItem::new(
+            "dark".to_string(),
+            "dark".to_string(),
+            Some("Dark theme".to_string()),
+        ),
+        SelectItem::new(
+            "light".to_string(),
+            "light".to_string(),
+            Some("Light theme".to_string()),
+        ),
     ];
     let themes_dir = crate::theme::custom_themes_dir();
     if let Ok(entries) = std::fs::read_dir(&themes_dir) {
@@ -179,26 +195,60 @@ pub fn theme_selector_items() -> Vec<SelectItem> {
             .collect();
         names.sort();
         for name in names {
-            items.push(SelectItem::new(name.clone(), name, Some("Custom theme".to_string())));
+            items.push(SelectItem::new(
+                name.clone(),
+                name,
+                Some("Custom theme".to_string()),
+            ));
         }
     }
     items
 }
 
 /// Settings items for the settings selector.
-pub fn settings_selector_items(settings: &SettingsManager) -> Vec<crate::interactive::settings_panel::SettingEntry> {
+pub fn settings_selector_items(
+    settings: &SettingsManager,
+) -> Vec<crate::interactive::settings_panel::SettingEntry> {
     use crate::interactive::settings_panel::SettingEntry;
-    let theme = settings.get_theme_setting().unwrap_or(crate::theme::DEFAULT_THEME).to_string();
+    let theme = settings
+        .get_theme_setting()
+        .unwrap_or(crate::theme::DEFAULT_THEME)
+        .to_string();
     let model_id = settings.get_default_model().unwrap_or("").to_string();
     let thinking = settings
         .get_default_thinking_level()
         .unwrap_or("off")
         .to_string();
-    let images = if settings.get_show_images() { "on" } else { "off" };
+    let images = if settings.get_show_images() {
+        "on"
+    } else {
+        "off"
+    };
     vec![
-        SettingEntry::cycle("theme", "Theme", theme, vec!["dark".to_string(), "light".to_string()]),
-        SettingEntry::cycle("thinking", "Default thinking level", thinking, vec!["off".to_string(), "low".to_string(), "medium".to_string(), "high".to_string(), "xhigh".to_string()]),
-        SettingEntry::cycle("images", "Show images", images.to_string(), vec!["on".to_string(), "off".to_string()]),
+        SettingEntry::cycle(
+            "theme",
+            "Theme",
+            theme,
+            vec!["dark".to_string(), "light".to_string()],
+        ),
+        SettingEntry::cycle(
+            "thinking",
+            "Default thinking level",
+            thinking,
+            vec![
+                "off".to_string(),
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "xhigh".to_string(),
+            ],
+        ),
+        SettingEntry::cycle(
+            "images",
+            "Show images",
+            images.to_string(),
+            vec!["on".to_string(), "off".to_string()],
+        ),
         SettingEntry::info("model", "Default model", model_id),
     ]
 }

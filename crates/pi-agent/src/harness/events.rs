@@ -170,7 +170,10 @@ impl HarnessEventBus {
     pub fn on(&mut self, event_type: &'static str, listener: HarnessEventListener) -> usize {
         let id = self.next_id;
         self.next_id += 1;
-        self.listeners.entry(event_type).or_default().push((id, listener));
+        self.listeners
+            .entry(event_type)
+            .or_default()
+            .push((id, listener));
         id
     }
 
@@ -217,7 +220,10 @@ impl HarnessEventBus {
     /// Number of live watch handles (stale handles are pruned lazily on emit;
     /// this helper also prunes so the number is accurate).
     pub fn watch_count(&self) -> usize {
-        self.watches.values().filter(|w| w.strong_count() > 0).count()
+        self.watches
+            .values()
+            .filter(|w| w.strong_count() > 0)
+            .count()
     }
 }
 
@@ -226,7 +232,10 @@ mod tests {
     use super::*;
 
     fn run_start(lane: &str, run_id: &str) -> HarnessEvent {
-        HarnessEvent::RunStart(RunStartEvent { lane: lane.into(), run_id: run_id.into() })
+        HarnessEvent::RunStart(RunStartEvent {
+            lane: lane.into(),
+            run_id: run_id.into(),
+        })
     }
 
     fn run_end(lane: &str, run_id: &str, outcome: RunOutcome, leaf_id: &str) -> HarnessEvent {
@@ -241,11 +250,17 @@ mod tests {
     #[test]
     fn event_types_and_outcome_strings() {
         assert_eq!(run_start("l", "r").event_type(), "run_start");
-        assert_eq!(run_end("l", "r", RunOutcome::Completed, "e").event_type(), "run_end");
+        assert_eq!(
+            run_end("l", "r", RunOutcome::Completed, "e").event_type(),
+            "run_end"
+        );
         assert_eq!(RunOutcome::Completed.as_str(), "completed");
         assert_eq!(RunOutcome::Aborted.as_str(), "aborted");
         assert_eq!(RunOutcome::Failed.as_str(), "failed");
-        assert_eq!("completed".parse::<RunOutcome>().unwrap(), RunOutcome::Completed);
+        assert_eq!(
+            "completed".parse::<RunOutcome>().unwrap(),
+            RunOutcome::Completed
+        );
         assert!("bogus".parse::<RunOutcome>().is_err());
     }
 
@@ -254,9 +269,12 @@ mod tests {
         let mut bus = HarnessEventBus::new();
         let received = Arc::new(Mutex::new(Vec::<String>::new()));
         let rx = received.clone();
-        let sub = bus.on("run_start", Box::new(move |e| {
-            rx.lock().unwrap().push(e.event_type().to_string());
-        }));
+        let sub = bus.on(
+            "run_start",
+            Box::new(move |e| {
+                rx.lock().unwrap().push(e.event_type().to_string());
+            }),
+        );
         bus.emit(&run_start("l", "r"));
         bus.emit(&run_end("l", "r", RunOutcome::Completed, "e"));
         assert_eq!(*received.lock().unwrap(), vec!["run_start".to_string()]);
@@ -280,15 +298,26 @@ mod tests {
         handle.start(Box::new(move |e| {
             sx.lock().unwrap().push(e.event_type().to_string());
         }));
-        assert_eq!(*seen.lock().unwrap(), vec!["run_start".to_string()], "buffered run_start delivered after start");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["run_start".to_string()],
+            "buffered run_start delivered after start"
+        );
 
         bus.emit(&run_end("l", "r2", RunOutcome::Completed, "e"));
-        assert_eq!(*seen.lock().unwrap(), vec!["run_start".to_string(), "run_end".to_string()]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["run_start".to_string(), "run_end".to_string()]
+        );
         assert!(handle.is_listening());
 
         handle.unsubscribe();
         bus.emit(&run_start("l", "r3"));
-        assert_eq!(seen.lock().unwrap().len(), 2, "no delivery after unsubscribe");
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            2,
+            "no delivery after unsubscribe"
+        );
     }
 
     #[test]

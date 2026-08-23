@@ -124,7 +124,11 @@ pub struct FileError {
 
 impl FileError {
     pub fn new(code: FileErrorCode, message: impl Into<String>, path: Option<&str>) -> Self {
-        Self { code, message: message.into(), path: path.map(|s| s.to_string()) }
+        Self {
+            code,
+            message: message.into(),
+            path: path.map(|s| s.to_string()),
+        }
     }
 
     pub fn to_json(&self) -> serde_json::Value {
@@ -179,7 +183,10 @@ pub struct ExecutionError {
 
 impl ExecutionError {
     pub fn new(code: ExecutionErrorCode, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self {
+            code,
+            message: message.into(),
+        }
     }
 
     pub fn to_json(&self) -> serde_json::Value {
@@ -193,7 +200,12 @@ impl ExecutionError {
 
 impl std::fmt::Display for ExecutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ExecutionError({}): {}", self.code.as_str(), self.message)
+        write!(
+            f,
+            "ExecutionError({}): {}",
+            self.code.as_str(),
+            self.message
+        )
     }
 }
 
@@ -288,7 +300,10 @@ pub struct RemoveOptions {
 
 impl Default for RemoveOptions {
     fn default() -> Self {
-        Self { recursive: false, force: false }
+        Self {
+            recursive: false,
+            force: false,
+        }
     }
 }
 
@@ -380,32 +395,70 @@ pub trait FileSystem: Send + Sync {
 
     /// Return an absolute addressed path without requiring it to exist and
     /// without resolving symlinks.
-    async fn absolute_path(&self, path: &str, abort: Option<&AbortFlag>) -> Result<String, FileError>;
+    async fn absolute_path(
+        &self,
+        path: &str,
+        abort: Option<&AbortFlag>,
+    ) -> Result<String, FileError>;
     /// Join path segments in the filesystem namespace without requiring the
     /// result to exist.
-    async fn join_path(&self, parts: &[String], abort: Option<&AbortFlag>) -> Result<String, FileError>;
+    async fn join_path(
+        &self,
+        parts: &[String],
+        abort: Option<&AbortFlag>,
+    ) -> Result<String, FileError>;
     /// Read a UTF-8 text file.
-    async fn read_text_file(&self, path: &str, abort: Option<&AbortFlag>) -> Result<String, FileError>;
+    async fn read_text_file(
+        &self,
+        path: &str,
+        abort: Option<&AbortFlag>,
+    ) -> Result<String, FileError>;
     /// Read UTF-8 text lines. Stops once `max_lines` lines have been read.
-    async fn read_text_lines(&self, path: &str, options: ReadTextLinesOptions<'_>) -> Result<Vec<String>, FileError>;
+    async fn read_text_lines(
+        &self,
+        path: &str,
+        options: ReadTextLinesOptions<'_>,
+    ) -> Result<Vec<String>, FileError>;
     /// Read a binary file.
-    async fn read_binary_file(&self, path: &str, abort: Option<&AbortFlag>) -> Result<Vec<u8>, FileError>;
+    async fn read_binary_file(
+        &self,
+        path: &str,
+        abort: Option<&AbortFlag>,
+    ) -> Result<Vec<u8>, FileError>;
     /// Create or overwrite a file, creating parent directories when
     /// supported.
-    async fn write_file(&self, path: &str, content: FileContent, abort: Option<&AbortFlag>)
-        -> Result<(), FileError>;
+    async fn write_file(
+        &self,
+        path: &str,
+        content: FileContent,
+        abort: Option<&AbortFlag>,
+    ) -> Result<(), FileError>;
     /// Create or append to a file, creating parent directories when
     /// supported.
     async fn append_file(&self, path: &str, content: FileContent) -> Result<(), FileError>;
     /// Atomically rename a file, replacing the destination when it exists.
-    async fn rename_file(&self, source: &str, dest: &str, abort: Option<&AbortFlag>) -> Result<(), FileError>;
+    async fn rename_file(
+        &self,
+        source: &str,
+        dest: &str,
+        abort: Option<&AbortFlag>,
+    ) -> Result<(), FileError>;
     /// Return metadata for the addressed path without following symlinks.
-    async fn file_info(&self, path: &str, abort: Option<&AbortFlag>) -> Result<FileInfo, FileError>;
+    async fn file_info(&self, path: &str, abort: Option<&AbortFlag>)
+        -> Result<FileInfo, FileError>;
     /// List direct children of a directory without following symlinks.
-    async fn list_dir(&self, path: &str, abort: Option<&AbortFlag>) -> Result<Vec<FileInfo>, FileError>;
+    async fn list_dir(
+        &self,
+        path: &str,
+        abort: Option<&AbortFlag>,
+    ) -> Result<Vec<FileInfo>, FileError>;
     /// Return the canonical path for an existing path, resolving symlinks
     /// where supported.
-    async fn canonical_path(&self, path: &str, abort: Option<&AbortFlag>) -> Result<String, FileError>;
+    async fn canonical_path(
+        &self,
+        path: &str,
+        abort: Option<&AbortFlag>,
+    ) -> Result<String, FileError>;
     /// Return false for missing paths; other errors return a `FileError`.
     async fn exists(&self, path: &str, abort: Option<&AbortFlag>) -> Result<bool, FileError>;
     /// Create a directory. Defaults to `recursive: true`.
@@ -415,10 +468,17 @@ pub trait FileSystem: Send + Sync {
     async fn remove(&self, path: &str, options: RemoveOptions) -> Result<(), FileError>;
     /// Create a temporary directory and return its absolute path. Defaults to
     /// prefix `"tmp-"`.
-    async fn create_temp_dir(&self, prefix: &str, abort: Option<&AbortFlag>) -> Result<String, FileError>;
+    async fn create_temp_dir(
+        &self,
+        prefix: &str,
+        abort: Option<&AbortFlag>,
+    ) -> Result<String, FileError>;
     /// Create a temporary file and return its absolute path. Defaults to
     /// prefix `""`, suffix `""`.
-    async fn create_temp_file(&self, options: CreateTempFileOptions<'_>) -> Result<String, FileError>;
+    async fn create_temp_file(
+        &self,
+        options: CreateTempFileOptions<'_>,
+    ) -> Result<String, FileError>;
 
     /// Release filesystem resources. Best-effort; must not panic.
     async fn cleanup(&self);
@@ -428,7 +488,11 @@ pub trait FileSystem: Send + Sync {
 #[async_trait]
 pub trait Shell: Send + Sync {
     /// Execute a shell command in `cwd` unless `options.cwd` is provided.
-    async fn exec(&self, command: &str, options: &ShellExecOptions) -> Result<ExecResult, ExecutionError>;
+    async fn exec(
+        &self,
+        command: &str,
+        options: &ShellExecOptions,
+    ) -> Result<ExecResult, ExecutionError>;
     /// Release shell resources. Best-effort; must not panic.
     async fn cleanup(&self);
 }
@@ -511,7 +575,11 @@ fn file_info_from_metadata(path: &str, meta: &std::fs::Metadata) -> Result<FileI
     } else if ft.is_file() {
         FileKind::File
     } else {
-        return Err(FileError::new(FileErrorCode::Invalid, "Unsupported file type", Some(path)));
+        return Err(FileError::new(
+            FileErrorCode::Invalid,
+            "Unsupported file type",
+            Some(path),
+        ));
     };
     let name = Path::new(path)
         .file_name()
@@ -523,7 +591,13 @@ fn file_info_from_metadata(path: &str, meta: &std::fs::Metadata) -> Result<FileI
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    Ok(FileInfo { name, path: path.to_string(), kind, size: meta.len(), mtime_ms })
+    Ok(FileInfo {
+        name,
+        path: path.to_string(),
+        kind,
+        size: meta.len(),
+        mtime_ms,
+    })
 }
 
 fn to_file_error(error: &std::io::Error, fallback_path: Option<&str>) -> FileError {
@@ -533,11 +607,17 @@ fn to_file_error(error: &std::io::Error, fallback_path: Option<&str>) -> FileErr
         std::io::ErrorKind::PermissionDenied => FileErrorCode::PermissionDenied,
         std::io::ErrorKind::NotADirectory => FileErrorCode::NotDirectory,
         std::io::ErrorKind::IsADirectory => FileErrorCode::IsDirectory,
-        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => FileErrorCode::Invalid,
+        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
+            FileErrorCode::Invalid
+        }
         std::io::ErrorKind::Unsupported => FileErrorCode::NotSupported,
         _ => FileErrorCode::Unknown,
     };
-    FileError { code, message: error.to_string(), path }
+    FileError {
+        code,
+        message: error.to_string(),
+        path,
+    }
 }
 
 /// Timeout validation (upstream `resolveTimeoutMs`).
@@ -545,13 +625,19 @@ fn resolve_timeout_ms(timeout: Option<f64>) -> Result<Option<u64>, ExecutionErro
     const MAX_TIMEOUT_MS: f64 = 2_147_483_647.0;
     let Some(v) = timeout else { return Ok(None) };
     if !v.is_finite() || v <= 0.0 {
-        return Err(ExecutionError::new(ExecutionErrorCode::Timeout, "Invalid timeout: must be a finite number of seconds"));
+        return Err(ExecutionError::new(
+            ExecutionErrorCode::Timeout,
+            "Invalid timeout: must be a finite number of seconds",
+        ));
     }
     let ms = v * 1000.0;
     if ms > MAX_TIMEOUT_MS {
         return Err(ExecutionError::new(
             ExecutionErrorCode::Timeout,
-            format!("Invalid timeout: maximum is {} seconds", MAX_TIMEOUT_MS / 1000.0),
+            format!(
+                "Invalid timeout: maximum is {} seconds",
+                MAX_TIMEOUT_MS / 1000.0
+            ),
         ));
     }
     Ok(Some(ms as u64))
@@ -573,18 +659,37 @@ pub struct StdExecutionEnv {
 
 impl StdExecutionEnv {
     pub fn new(cwd: impl Into<String>) -> Self {
-        Self { cwd: cwd.into(), shell_path: None, shell_env: None, active_child_pids: Arc::new(Mutex::new(HashSet::new())) }
+        Self {
+            cwd: cwd.into(),
+            shell_path: None,
+            shell_env: None,
+            active_child_pids: Arc::new(Mutex::new(HashSet::new())),
+        }
     }
 
     pub fn with_shell_path(cwd: impl Into<String>, shell_path: impl Into<String>) -> Self {
-        Self { cwd: cwd.into(), shell_path: Some(shell_path.into()), shell_env: None, active_child_pids: Arc::new(Mutex::new(HashSet::new())) }
+        Self {
+            cwd: cwd.into(),
+            shell_path: Some(shell_path.into()),
+            shell_env: None,
+            active_child_pids: Arc::new(Mutex::new(HashSet::new())),
+        }
     }
 
     pub fn with_shell_env(cwd: impl Into<String>, shell_env: BTreeMap<String, String>) -> Self {
-        Self { cwd: cwd.into(), shell_path: None, shell_env: Some(shell_env), active_child_pids: Arc::new(Mutex::new(HashSet::new())) }
+        Self {
+            cwd: cwd.into(),
+            shell_path: None,
+            shell_env: Some(shell_env),
+            active_child_pids: Arc::new(Mutex::new(HashSet::new())),
+        }
     }
 
-    fn build_env(&self, extra: Option<&BTreeMap<String, String>>, inherit: bool) -> BTreeMap<String, String> {
+    fn build_env(
+        &self,
+        extra: Option<&BTreeMap<String, String>>,
+        inherit: bool,
+    ) -> BTreeMap<String, String> {
         if !inherit {
             return extra.cloned().unwrap_or_default();
         }
@@ -636,7 +741,10 @@ struct PipeDrain {
     callback_error: Option<ExecutionError>,
 }
 
-async fn drain_pipe<R: tokio::io::AsyncRead + Unpin>(mut reader: R, callback: Option<ChunkHandler>) -> PipeDrain {
+async fn drain_pipe<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    callback: Option<ChunkHandler>,
+) -> PipeDrain {
     use tokio::io::AsyncReadExt;
     let mut buf = [0u8; 8192];
     let mut raw: Vec<u8> = Vec::new();
@@ -650,7 +758,10 @@ async fn drain_pipe<R: tokio::io::AsyncRead + Unpin>(mut reader: R, callback: Op
                     if let Err(message) = cb(&text) {
                         return PipeDrain {
                             text: String::from_utf8_lossy(&raw).into_owned(),
-                            callback_error: Some(ExecutionError::new(ExecutionErrorCode::CallbackError, message)),
+                            callback_error: Some(ExecutionError::new(
+                                ExecutionErrorCode::CallbackError,
+                                message,
+                            )),
                         };
                     }
                 }
@@ -658,7 +769,10 @@ async fn drain_pipe<R: tokio::io::AsyncRead + Unpin>(mut reader: R, callback: Op
             Err(_) => break,
         }
     }
-    PipeDrain { text: String::from_utf8_lossy(&raw).into_owned(), callback_error: None }
+    PipeDrain {
+        text: String::from_utf8_lossy(&raw).into_owned(),
+        callback_error: None,
+    }
 }
 
 async fn wait_for_abort(flag: Option<&AbortFlag>) {
@@ -686,11 +800,19 @@ impl FileSystem for StdExecutionEnv {
         &self.cwd
     }
 
-    async fn absolute_path(&self, path: &str, _abort: Option<&AbortFlag>) -> Result<String, FileError> {
+    async fn absolute_path(
+        &self,
+        path: &str,
+        _abort: Option<&AbortFlag>,
+    ) -> Result<String, FileError> {
         Ok(resolve_path(&self.cwd, path))
     }
 
-    async fn join_path(&self, parts: &[String], _abort: Option<&AbortFlag>) -> Result<String, FileError> {
+    async fn join_path(
+        &self,
+        parts: &[String],
+        _abort: Option<&AbortFlag>,
+    ) -> Result<String, FileError> {
         let mut joined = PathBuf::new();
         match parts.split_first() {
             None => return Ok(String::new()),
@@ -704,23 +826,40 @@ impl FileSystem for StdExecutionEnv {
         Ok(joined.to_string_lossy().into_owned())
     }
 
-    async fn read_text_file(&self, path: &str, abort: Option<&AbortFlag>) -> Result<String, FileError> {
+    async fn read_text_file(
+        &self,
+        path: &str,
+        abort: Option<&AbortFlag>,
+    ) -> Result<String, FileError> {
         let resolved = resolve_path(&self.cwd, path);
         if is_aborted(abort) {
-            return Err(FileError::new(FileErrorCode::Aborted, "aborted", Some(&resolved)));
+            return Err(FileError::new(
+                FileErrorCode::Aborted,
+                "aborted",
+                Some(&resolved),
+            ));
         }
         std::fs::read_to_string(&resolved).map_err(|e| to_file_error(&e, Some(&resolved)))
     }
 
-    async fn read_text_lines(&self, path: &str, options: ReadTextLinesOptions<'_>) -> Result<Vec<String>, FileError> {
+    async fn read_text_lines(
+        &self,
+        path: &str,
+        options: ReadTextLinesOptions<'_>,
+    ) -> Result<Vec<String>, FileError> {
         let resolved = resolve_path(&self.cwd, path);
         if is_aborted(options.abort) {
-            return Err(FileError::new(FileErrorCode::Aborted, "aborted", Some(&resolved)));
+            return Err(FileError::new(
+                FileErrorCode::Aborted,
+                "aborted",
+                Some(&resolved),
+            ));
         }
         if options.max_lines.is_some_and(|m| m == 0) {
             return Ok(Vec::new());
         }
-        let content = std::fs::read_to_string(&resolved).map_err(|e| to_file_error(&e, Some(&resolved)))?;
+        let content =
+            std::fs::read_to_string(&resolved).map_err(|e| to_file_error(&e, Some(&resolved)))?;
         let mut lines: Vec<String> = Vec::new();
         for (idx, line) in content.split('\n').enumerate() {
             if let Some(max) = options.max_lines {
@@ -735,10 +874,18 @@ impl FileSystem for StdExecutionEnv {
         Ok(lines)
     }
 
-    async fn read_binary_file(&self, path: &str, abort: Option<&AbortFlag>) -> Result<Vec<u8>, FileError> {
+    async fn read_binary_file(
+        &self,
+        path: &str,
+        abort: Option<&AbortFlag>,
+    ) -> Result<Vec<u8>, FileError> {
         let resolved = resolve_path(&self.cwd, path);
         if is_aborted(abort) {
-            return Err(FileError::new(FileErrorCode::Aborted, "aborted", Some(&resolved)));
+            return Err(FileError::new(
+                FileErrorCode::Aborted,
+                "aborted",
+                Some(&resolved),
+            ));
         }
         std::fs::read(&resolved).map_err(|e| to_file_error(&e, Some(&resolved)))
     }
@@ -751,15 +898,24 @@ impl FileSystem for StdExecutionEnv {
     ) -> Result<(), FileError> {
         let resolved = resolve_path(&self.cwd, path);
         if is_aborted(abort) {
-            return Err(FileError::new(FileErrorCode::Aborted, "aborted", Some(&resolved)));
+            return Err(FileError::new(
+                FileErrorCode::Aborted,
+                "aborted",
+                Some(&resolved),
+            ));
         }
         if let Some(parent) = Path::new(&resolved).parent() {
             std::fs::create_dir_all(parent).map_err(|e| to_file_error(&e, Some(&resolved)))?;
         }
         if is_aborted(abort) {
-            return Err(FileError::new(FileErrorCode::Aborted, "aborted", Some(&resolved)));
+            return Err(FileError::new(
+                FileErrorCode::Aborted,
+                "aborted",
+                Some(&resolved),
+            ));
         }
-        std::fs::write(&resolved, content.as_bytes()).map_err(|e| to_file_error(&e, Some(&resolved)))
+        std::fs::write(&resolved, content.as_bytes())
+            .map_err(|e| to_file_error(&e, Some(&resolved)))
     }
 
     async fn append_file(&self, path: &str, content: FileContent) -> Result<(), FileError> {
@@ -773,35 +929,63 @@ impl FileSystem for StdExecutionEnv {
             .append(true)
             .open(&resolved)
             .map_err(|e| to_file_error(&e, Some(&resolved)))?;
-        file.write_all(content.as_bytes()).map_err(|e| to_file_error(&e, Some(&resolved)))
+        file.write_all(content.as_bytes())
+            .map_err(|e| to_file_error(&e, Some(&resolved)))
     }
 
-    async fn rename_file(&self, source: &str, dest: &str, abort: Option<&AbortFlag>) -> Result<(), FileError> {
+    async fn rename_file(
+        &self,
+        source: &str,
+        dest: &str,
+        abort: Option<&AbortFlag>,
+    ) -> Result<(), FileError> {
         let source = resolve_path(&self.cwd, source);
         let dest = resolve_path(&self.cwd, dest);
         if is_aborted(abort) {
-            return Err(FileError::new(FileErrorCode::Aborted, "aborted", Some(&dest)));
+            return Err(FileError::new(
+                FileErrorCode::Aborted,
+                "aborted",
+                Some(&dest),
+            ));
         }
         std::fs::rename(&source, &dest).map_err(|e| to_file_error(&e, Some(&source)))
     }
 
-    async fn file_info(&self, path: &str, _abort: Option<&AbortFlag>) -> Result<FileInfo, FileError> {
+    async fn file_info(
+        &self,
+        path: &str,
+        _abort: Option<&AbortFlag>,
+    ) -> Result<FileInfo, FileError> {
         let resolved = resolve_path(&self.cwd, path);
-        let meta = std::fs::symlink_metadata(&resolved).map_err(|e| to_file_error(&e, Some(&resolved)))?;
+        let meta =
+            std::fs::symlink_metadata(&resolved).map_err(|e| to_file_error(&e, Some(&resolved)))?;
         file_info_from_metadata(&resolved, &meta)
     }
 
-    async fn list_dir(&self, path: &str, abort: Option<&AbortFlag>) -> Result<Vec<FileInfo>, FileError> {
+    async fn list_dir(
+        &self,
+        path: &str,
+        abort: Option<&AbortFlag>,
+    ) -> Result<Vec<FileInfo>, FileError> {
         let resolved = resolve_path(&self.cwd, path);
         if is_aborted(abort) {
-            return Err(FileError::new(FileErrorCode::Aborted, "aborted", Some(&resolved)));
+            return Err(FileError::new(
+                FileErrorCode::Aborted,
+                "aborted",
+                Some(&resolved),
+            ));
         }
-        let read_dir = std::fs::read_dir(&resolved).map_err(|e| to_file_error(&e, Some(&resolved)))?;
+        let read_dir =
+            std::fs::read_dir(&resolved).map_err(|e| to_file_error(&e, Some(&resolved)))?;
         let mut infos: Vec<FileInfo> = Vec::new();
         for entry in read_dir {
             let entry = entry.map_err(|e| to_file_error(&e, Some(&resolved)))?;
             if is_aborted(abort) {
-                return Err(FileError::new(FileErrorCode::Aborted, "aborted", Some(&resolved)));
+                return Err(FileError::new(
+                    FileErrorCode::Aborted,
+                    "aborted",
+                    Some(&resolved),
+                ));
             }
             let entry_path = entry.path();
             match std::fs::symlink_metadata(&entry_path) {
@@ -821,7 +1005,11 @@ impl FileSystem for StdExecutionEnv {
         Ok(infos)
     }
 
-    async fn canonical_path(&self, path: &str, _abort: Option<&AbortFlag>) -> Result<String, FileError> {
+    async fn canonical_path(
+        &self,
+        path: &str,
+        _abort: Option<&AbortFlag>,
+    ) -> Result<String, FileError> {
         let resolved = resolve_path(&self.cwd, path);
         std::fs::canonicalize(&resolved)
             .map(|p| p.to_string_lossy().into_owned())
@@ -861,15 +1049,23 @@ impl FileSystem for StdExecutionEnv {
         }
     }
 
-    async fn create_temp_dir(&self, prefix: &str, _abort: Option<&AbortFlag>) -> Result<String, FileError> {
+    async fn create_temp_dir(
+        &self,
+        prefix: &str,
+        _abort: Option<&AbortFlag>,
+    ) -> Result<String, FileError> {
         let base = std::env::temp_dir();
         let name = format!("{prefix}{}", uuid::Uuid::new_v4().simple());
         let dir = base.join(name);
-        std::fs::create_dir(&dir).map_err(|e| to_file_error(&e, Some(dir.to_string_lossy().as_ref())))?;
+        std::fs::create_dir(&dir)
+            .map_err(|e| to_file_error(&e, Some(dir.to_string_lossy().as_ref())))?;
         Ok(dir.to_string_lossy().into_owned())
     }
 
-    async fn create_temp_file(&self, options: CreateTempFileOptions<'_>) -> Result<String, FileError> {
+    async fn create_temp_file(
+        &self,
+        options: CreateTempFileOptions<'_>,
+    ) -> Result<String, FileError> {
         let dir = self.create_temp_dir("tmp-", None).await?;
         let dir = PathBuf::from(dir);
         let file_path = dir.join(format!(
@@ -884,7 +1080,13 @@ impl FileSystem for StdExecutionEnv {
     }
 
     async fn cleanup(&self) {
-        let pids: Vec<u32> = self.active_child_pids.lock().unwrap().iter().copied().collect();
+        let pids: Vec<u32> = self
+            .active_child_pids
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect();
         for pid in pids {
             kill_process_group(pid);
         }
@@ -894,7 +1096,11 @@ impl FileSystem for StdExecutionEnv {
 
 #[async_trait]
 impl Shell for StdExecutionEnv {
-    async fn exec(&self, command: &str, options: &ShellExecOptions) -> Result<ExecResult, ExecutionError> {
+    async fn exec(
+        &self,
+        command: &str,
+        options: &ShellExecOptions,
+    ) -> Result<ExecResult, ExecutionError> {
         if is_aborted(options.abort.as_deref()) {
             return Err(ExecutionError::new(ExecutionErrorCode::Aborted, "aborted"));
         }
@@ -915,8 +1121,12 @@ impl Shell for StdExecutionEnv {
 
         let mut child = {
             let mut cmd = tokio::process::Command::new(&shell);
-            cmd.arg("-c").arg(command).current_dir(&cwd).stdin(std::process::Stdio::null());
-            cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            cmd.arg("-c")
+                .arg(command)
+                .current_dir(&cwd)
+                .stdin(std::process::Stdio::null());
+            cmd.stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
             if !options.inherit_env {
                 // Replace rather than inherit (upstream `{...extraEnv}`).
                 cmd.env_clear();
@@ -980,8 +1190,14 @@ impl Shell for StdExecutionEnv {
             }
         }
 
-        let so = so_handle.await.unwrap_or_else(|_| PipeDrain { text: String::new(), callback_error: None });
-        let se = se_handle.await.unwrap_or_else(|_| PipeDrain { text: String::new(), callback_error: None });
+        let so = so_handle.await.unwrap_or_else(|_| PipeDrain {
+            text: String::new(),
+            callback_error: None,
+        });
+        let se = se_handle.await.unwrap_or_else(|_| PipeDrain {
+            text: String::new(),
+            callback_error: None,
+        });
         self.active_child_pids.lock().unwrap().remove(&pid);
 
         if let Some(err) = so.callback_error.or(se.callback_error) {
@@ -989,7 +1205,10 @@ impl Shell for StdExecutionEnv {
         }
         if timed_out {
             let secs = options.timeout.unwrap_or_default();
-            return Err(ExecutionError::new(ExecutionErrorCode::Timeout, format!("timeout:{secs}")));
+            return Err(ExecutionError::new(
+                ExecutionErrorCode::Timeout,
+                format!("timeout:{secs}"),
+            ));
         }
         if aborted {
             return Err(ExecutionError::new(ExecutionErrorCode::Aborted, "aborted"));
@@ -1018,14 +1237,23 @@ mod tests {
         let env = StdExecutionEnv::with_shell_env(
             ".".to_string(),
             BTreeMap::from([
-                ("PI_SESSION_FILE".to_string(), "/stale/parent.jsonl".to_string()),
+                (
+                    "PI_SESSION_FILE".to_string(),
+                    "/stale/parent.jsonl".to_string(),
+                ),
                 ("PI_CODING_AGENT".to_string(), "true".to_string()),
-                ("PI_NODE_ENV_PRESERVED_TEST".to_string(), "preserved".to_string()),
+                (
+                    "PI_NODE_ENV_PRESERVED_TEST".to_string(),
+                    "preserved".to_string(),
+                ),
             ]),
         );
         let m = env.build_env(None, true);
         eprintln!("DIRECT BUILD_ENV keys: {:?}", m.keys().collect::<Vec<_>>());
-        assert_eq!(m.get("PI_NODE_ENV_PRESERVED_TEST").map(|s| s.as_str()), Some("preserved"));
+        assert_eq!(
+            m.get("PI_NODE_ENV_PRESERVED_TEST").map(|s| s.as_str()),
+            Some("preserved")
+        );
     }
 
     fn temp_root() -> String {
@@ -1036,7 +1264,10 @@ mod tests {
     }
 
     fn rt() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
     }
 
     #[test]
@@ -1044,21 +1275,48 @@ mod tests {
         rt().block_on(async {
             let root = temp_root();
             let env = StdExecutionEnv::new(root.clone());
-            assert_eq!(get_or_throw(env.absolute_path("nested/child", None).await), format!("{root}/nested/child"));
             assert_eq!(
-                get_or_throw(env.join_path(&[root.clone(), "nested".into(), "child".into()], None).await),
+                get_or_throw(env.absolute_path("nested/child", None).await),
                 format!("{root}/nested/child")
             );
-            get_or_throw(env.create_dir("nested/child", CreateDirOptions::default()).await);
-            get_or_throw(env.write_file("nested/child/file.txt", "hel".into(), None).await);
-            get_or_throw(env.append_file("nested/child/file.txt", "lo".into()).await);
-            assert_eq!(get_or_throw(env.read_text_file("nested/child/file.txt", None).await), "hello");
             assert_eq!(
-                get_or_throw(env.read_text_lines("nested/child/file.txt", ReadTextLinesOptions { max_lines: Some(1), abort: None }).await),
+                get_or_throw(
+                    env.join_path(&[root.clone(), "nested".into(), "child".into()], None)
+                        .await
+                ),
+                format!("{root}/nested/child")
+            );
+            get_or_throw(
+                env.create_dir("nested/child", CreateDirOptions::default())
+                    .await,
+            );
+            get_or_throw(
+                env.write_file("nested/child/file.txt", "hel".into(), None)
+                    .await,
+            );
+            get_or_throw(env.append_file("nested/child/file.txt", "lo".into()).await);
+            assert_eq!(
+                get_or_throw(env.read_text_file("nested/child/file.txt", None).await),
+                "hello"
+            );
+            assert_eq!(
+                get_or_throw(
+                    env.read_text_lines(
+                        "nested/child/file.txt",
+                        ReadTextLinesOptions {
+                            max_lines: Some(1),
+                            abort: None
+                        }
+                    )
+                    .await
+                ),
                 vec!["hello"]
             );
             assert_eq!(
-                String::from_utf8(get_or_throw(env.read_binary_file("nested/child/file.txt", None).await)).unwrap(),
+                String::from_utf8(get_or_throw(
+                    env.read_binary_file("nested/child/file.txt", None).await
+                ))
+                .unwrap(),
                 "hello"
             );
 
@@ -1071,9 +1329,18 @@ mod tests {
             assert_eq!(entry.size, 5);
             assert!(entry.mtime_ms > 0);
 
-            assert_eq!(get_or_throw(env.exists("nested/child/file.txt", None).await), true);
-            get_or_throw(env.remove("nested/child/file.txt", RemoveOptions::default()).await);
-            assert_eq!(get_or_throw(env.exists("nested/child/file.txt", None).await), false);
+            assert_eq!(
+                get_or_throw(env.exists("nested/child/file.txt", None).await),
+                true
+            );
+            get_or_throw(
+                env.remove("nested/child/file.txt", RemoveOptions::default())
+                    .await,
+            );
+            assert_eq!(
+                get_or_throw(env.exists("nested/child/file.txt", None).await),
+                false
+            );
         });
     }
 
@@ -1083,7 +1350,10 @@ mod tests {
             let root = temp_root();
             let env = StdExecutionEnv::new(root.clone());
             let home = home_dir();
-            assert_eq!(get_or_throw(env.absolute_path("~/pi-env-test", None).await), format!("{home}/pi-env-test"));
+            assert_eq!(
+                get_or_throw(env.absolute_path("~/pi-env-test", None).await),
+                format!("{home}/pi-env-test")
+            );
             let file_path = format!("{root}/file with spaces.txt");
             let url = format!("file://{file_path}");
             assert_eq!(get_or_throw(env.absolute_path(&url, None).await), file_path);
@@ -1095,9 +1365,13 @@ mod tests {
         rt().block_on(async {
             let root = temp_root();
             let env = StdExecutionEnv::new(root.clone());
-            get_or_throw(env.create_dir("dir", CreateDirOptions { recursive: true }).await);
+            get_or_throw(
+                env.create_dir("dir", CreateDirOptions { recursive: true })
+                    .await,
+            );
             get_or_throw(env.write_file("dir/file.txt", "hello".into(), None).await);
-            std::os::unix::fs::symlink(format!("{root}/dir/file.txt"), format!("{root}/file-link")).unwrap();
+            std::os::unix::fs::symlink(format!("{root}/dir/file.txt"), format!("{root}/file-link"))
+                .unwrap();
             std::os::unix::fs::symlink(format!("{root}/dir"), format!("{root}/dir-link")).unwrap();
 
             let dir_info = get_or_throw(env.file_info("dir", None).await);
@@ -1117,7 +1391,12 @@ mod tests {
             assert_eq!(dir_link_info.kind, FileKind::Symlink);
 
             let canonical = get_or_throw(env.canonical_path("file-link", None).await);
-            assert_eq!(canonical, std::fs::canonicalize(format!("{root}/dir/file.txt")).unwrap().to_string_lossy());
+            assert_eq!(
+                canonical,
+                std::fs::canonicalize(format!("{root}/dir/file.txt"))
+                    .unwrap()
+                    .to_string_lossy()
+            );
         });
     }
 
@@ -1127,13 +1406,18 @@ mod tests {
             let root = temp_root();
             let env = StdExecutionEnv::new(root.clone());
             get_or_throw(env.write_file("target.txt", "hello".into(), None).await);
-            std::os::unix::fs::symlink(format!("{root}/target.txt"), format!("{root}/link.txt")).unwrap();
+            std::os::unix::fs::symlink(format!("{root}/target.txt"), format!("{root}/link.txt"))
+                .unwrap();
             let entries = get_or_throw(env.list_dir(".", None).await);
-            let mut pairs: Vec<(String, FileKind)> = entries.iter().map(|e| (e.name.clone(), e.kind)).collect();
+            let mut pairs: Vec<(String, FileKind)> =
+                entries.iter().map(|e| (e.name.clone(), e.kind)).collect();
             pairs.sort();
             assert_eq!(
                 pairs,
-                vec![("link.txt".to_string(), FileKind::Symlink), ("target.txt".to_string(), FileKind::File)]
+                vec![
+                    ("link.txt".to_string(), FileKind::Symlink),
+                    ("target.txt".to_string(), FileKind::File)
+                ]
             );
         });
     }
@@ -1143,8 +1427,20 @@ mod tests {
         rt().block_on(async {
             let root = temp_root();
             let env = StdExecutionEnv::new(root.clone());
-            get_or_throw(env.write_file("file.txt", "one\ntwo\nthree".into(), None).await);
-            let lines = get_or_throw(env.read_text_lines("file.txt", ReadTextLinesOptions { max_lines: Some(1), abort: None }).await);
+            get_or_throw(
+                env.write_file("file.txt", "one\ntwo\nthree".into(), None)
+                    .await,
+            );
+            let lines = get_or_throw(
+                env.read_text_lines(
+                    "file.txt",
+                    ReadTextLinesOptions {
+                        max_lines: Some(1),
+                        abort: None,
+                    },
+                )
+                .await,
+            );
             assert_eq!(lines, vec!["one"]);
         });
     }
@@ -1182,7 +1478,10 @@ mod tests {
             let env = StdExecutionEnv::new(root.clone());
             get_or_throw(env.append_file("new/nested/file.txt", "a".into()).await);
             get_or_throw(env.append_file("new/nested/file.txt", "b".into()).await);
-            assert_eq!(get_or_throw(env.read_text_file("new/nested/file.txt", None).await), "ab");
+            assert_eq!(
+                get_or_throw(env.read_text_file("new/nested/file.txt", None).await),
+                "ab"
+            );
         });
     }
 
@@ -1195,7 +1494,10 @@ mod tests {
             get_or_throw(env.write_file("destination.txt", "old".into(), None).await);
             get_or_throw(env.rename_file("source.txt", "destination.txt", None).await);
             assert_eq!(get_or_throw(env.exists("source.txt", None).await), false);
-            assert_eq!(get_or_throw(env.read_text_file("destination.txt", None).await), "new");
+            assert_eq!(
+                get_or_throw(env.read_text_file("destination.txt", None).await),
+                "new"
+            );
         });
     }
 
@@ -1204,12 +1506,20 @@ mod tests {
         rt().block_on(async {
             let root = temp_root();
             let env = StdExecutionEnv::new(root.clone());
-            get_or_throw(env.write_file("destination.txt", "unchanged".into(), None).await);
-            let result = env.rename_file("missing-source.txt", "destination.txt", None).await;
+            get_or_throw(
+                env.write_file("destination.txt", "unchanged".into(), None)
+                    .await,
+            );
+            let result = env
+                .rename_file("missing-source.txt", "destination.txt", None)
+                .await;
             let err = result.unwrap_err();
             assert_eq!(err.code, FileErrorCode::NotFound);
             assert_eq!(err.path, Some(format!("{root}/missing-source.txt")));
-            assert_eq!(get_or_throw(env.read_text_file("destination.txt", None).await), "unchanged");
+            assert_eq!(
+                get_or_throw(env.read_text_file("destination.txt", None).await),
+                "unchanged"
+            );
         });
     }
 
@@ -1220,7 +1530,13 @@ mod tests {
             let env = StdExecutionEnv::new(root.clone());
             let temp_dir = get_or_throw(env.create_temp_dir("prefix-", None).await);
             assert!(Path::new(&temp_dir).is_dir());
-            let temp_file = get_or_throw(env.create_temp_file(CreateTempFileOptions { prefix: Some("p-"), suffix: Some(".txt") }).await);
+            let temp_file = get_or_throw(
+                env.create_temp_file(CreateTempFileOptions {
+                    prefix: Some("p-"),
+                    suffix: Some(".txt"),
+                })
+                .await,
+            );
             assert!(Path::new(&temp_file).is_file());
             assert!(temp_file.ends_with(".txt"));
         });
@@ -1231,19 +1547,58 @@ mod tests {
         rt().block_on(async {
             let root = temp_root();
             let env = StdExecutionEnv::new(root.clone());
-            let create_result = env.create_dir("missing/child", CreateDirOptions { recursive: false }).await;
+            let create_result = env
+                .create_dir("missing/child", CreateDirOptions { recursive: false })
+                .await;
             assert!(create_result.is_err());
             assert_eq!(create_result.unwrap_err().code, FileErrorCode::NotFound);
 
-            get_or_throw(env.write_file("dir/child/file.txt", "hello".into(), None).await);
-            let remove_dir = env.remove("dir", RemoveOptions { recursive: false, force: false }).await;
+            get_or_throw(
+                env.write_file("dir/child/file.txt", "hello".into(), None)
+                    .await,
+            );
+            let remove_dir = env
+                .remove(
+                    "dir",
+                    RemoveOptions {
+                        recursive: false,
+                        force: false,
+                    },
+                )
+                .await;
             assert!(remove_dir.is_err());
-            get_or_throw(env.remove("dir", RemoveOptions { recursive: true, force: false }).await);
+            get_or_throw(
+                env.remove(
+                    "dir",
+                    RemoveOptions {
+                        recursive: true,
+                        force: false,
+                    },
+                )
+                .await,
+            );
             assert_eq!(get_or_throw(env.exists("dir", None).await), false);
 
-            let remove_missing = env.remove("missing", RemoveOptions { recursive: false, force: false }).await;
+            let remove_missing = env
+                .remove(
+                    "missing",
+                    RemoveOptions {
+                        recursive: false,
+                        force: false,
+                    },
+                )
+                .await;
             assert!(remove_missing.is_err());
-            get_or_throw(env.remove("missing", RemoveOptions { recursive: false, force: true }).await);
+            get_or_throw(
+                env.remove(
+                    "missing",
+                    RemoveOptions {
+                        recursive: false,
+                        force: true,
+                    },
+                )
+                .await,
+            );
         });
     }
 
@@ -1255,11 +1610,25 @@ mod tests {
             get_or_throw(env.write_file("file.txt", "hello".into(), None).await);
             let flag = Arc::new(AtomicBool::new(true));
             let cases: Vec<Result<(), FileError>> = vec![
-                env.read_text_file("file.txt", Some(&flag)).await.map(|_| ()),
-                env.read_text_lines("file.txt", ReadTextLinesOptions { max_lines: None, abort: Some(&flag) }).await.map(|_| ()),
-                env.read_binary_file("file.txt", Some(&flag)).await.map(|_| ()),
-                env.write_file("other.txt", "hello".into(), Some(&flag)).await,
-                env.rename_file("file.txt", "renamed.txt", Some(&flag)).await,
+                env.read_text_file("file.txt", Some(&flag))
+                    .await
+                    .map(|_| ()),
+                env.read_text_lines(
+                    "file.txt",
+                    ReadTextLinesOptions {
+                        max_lines: None,
+                        abort: Some(&flag),
+                    },
+                )
+                .await
+                .map(|_| ()),
+                env.read_binary_file("file.txt", Some(&flag))
+                    .await
+                    .map(|_| ()),
+                env.write_file("other.txt", "hello".into(), Some(&flag))
+                    .await,
+                env.rename_file("file.txt", "renamed.txt", Some(&flag))
+                    .await,
                 env.list_dir(".", Some(&flag)).await.map(|_| ()),
             ];
             for result in cases {
@@ -1281,12 +1650,28 @@ mod tests {
     #[test]
     fn executes_commands_in_cwd_with_env_overrides() {
         rt().block_on(async {
-            let root = std::fs::canonicalize(temp_root()).unwrap().to_string_lossy().into_owned();
+            let root = std::fs::canonicalize(temp_root())
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
             let env = StdExecutionEnv::new(root.clone());
             let mut opts = ShellExecOptions::default();
-            opts.env = Some(BTreeMap::from([("NODE_ENV_TEST".to_string(), "ok".to_string())]));
-            let result = get_or_throw(env.exec("printf '%s:%s' \"$PWD\" \"$NODE_ENV_TEST\"", &opts).await);
-            assert_eq!(result, ExecResult { stdout: format!("{root}:ok"), stderr: String::new(), exit_code: 0 });
+            opts.env = Some(BTreeMap::from([(
+                "NODE_ENV_TEST".to_string(),
+                "ok".to_string(),
+            )]));
+            let result = get_or_throw(
+                env.exec("printf '%s:%s' \"$PWD\" \"$NODE_ENV_TEST\"", &opts)
+                    .await,
+            );
+            assert_eq!(
+                result,
+                ExecResult {
+                    stdout: format!("{root}:ok"),
+                    stderr: String::new(),
+                    exit_code: 0
+                }
+            );
         });
     }
 
@@ -1357,10 +1742,23 @@ mod tests {
             let mut opts = ShellExecOptions::default();
             let so_sink = stdout.clone();
             let se_sink = stderr.clone();
-            opts.on_stdout = Some(Arc::new(move |chunk| { so_sink.lock().unwrap().push_str(chunk); Ok(()) }));
-            opts.on_stderr = Some(Arc::new(move |chunk| { se_sink.lock().unwrap().push_str(chunk); Ok(()) }));
+            opts.on_stdout = Some(Arc::new(move |chunk| {
+                so_sink.lock().unwrap().push_str(chunk);
+                Ok(())
+            }));
+            opts.on_stderr = Some(Arc::new(move |chunk| {
+                se_sink.lock().unwrap().push_str(chunk);
+                Ok(())
+            }));
             let result = get_or_throw(env.exec("printf out; printf err >&2", &opts).await);
-            assert_eq!(result, ExecResult { stdout: "out".into(), stderr: "err".into(), exit_code: 0 });
+            assert_eq!(
+                result,
+                ExecResult {
+                    stdout: "out".into(),
+                    stderr: "err".into(),
+                    exit_code: 0
+                }
+            );
             assert_eq!(*stdout.lock().unwrap(), "out");
             assert_eq!(*stderr.lock().unwrap(), "err");
         });
@@ -1384,7 +1782,14 @@ mod tests {
             let root = temp_root();
             let env = StdExecutionEnv::new(root.clone());
             let result = get_or_throw(env.exec("exit 7", &ShellExecOptions::default()).await);
-            assert_eq!(result, ExecResult { stdout: String::new(), stderr: String::new(), exit_code: 7 });
+            assert_eq!(
+                result,
+                ExecResult {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: 7
+                }
+            );
         });
     }
 
@@ -1419,10 +1824,16 @@ mod tests {
     fn returns_shell_unavailable_and_spawn_errors() {
         rt().block_on(async {
             let root = temp_root();
-            let missing = StdExecutionEnv::with_shell_path(root.clone(), format!("{root}/missing-shell"));
-            let result = missing.exec("printf ok", &ShellExecOptions::default()).await;
+            let missing =
+                StdExecutionEnv::with_shell_path(root.clone(), format!("{root}/missing-shell"));
+            let result = missing
+                .exec("printf ok", &ShellExecOptions::default())
+                .await;
             assert!(result.is_err());
-            assert_eq!(result.unwrap_err().code, ExecutionErrorCode::ShellUnavailable);
+            assert_eq!(
+                result.unwrap_err().code,
+                ExecutionErrorCode::ShellUnavailable
+            );
 
             let bad_shell_path = format!("{root}/not-executable");
             std::fs::write(&bad_shell_path, "not executable").unwrap();
@@ -1460,7 +1871,9 @@ mod tests {
             let env = StdExecutionEnv::new(root.clone());
             let env_for_task = env.clone();
             let handle = tokio::spawn(async move {
-                env_for_task.exec("touch started; sleep 30", &ShellExecOptions::default()).await
+                env_for_task
+                    .exec("touch started; sleep 30", &ShellExecOptions::default())
+                    .await
             });
             for _ in 0..100 {
                 if get_or_throw(env.exists("started", None).await) {
@@ -1470,7 +1883,10 @@ mod tests {
             }
             assert_eq!(get_or_throw(env.exists("started", None).await), true);
             FileSystem::cleanup(&env).await;
-            let result = tokio::time::timeout(Duration::from_secs(3), handle).await.unwrap().unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(3), handle)
+                .await
+                .unwrap()
+                .unwrap();
             assert!(result.is_ok());
         });
     }

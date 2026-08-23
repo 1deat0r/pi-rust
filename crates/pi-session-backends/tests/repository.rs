@@ -9,18 +9,28 @@ use pi_session_backends::types::{
 
 mod test_utils;
 use test_utils::{
-    append_sqlite_compaction, assistant_message, create_temp_dir, get_sqlite_entries, move_sqlite_main_lane,
-    user_message,
+    append_sqlite_compaction, assistant_message, create_temp_dir, get_sqlite_entries,
+    move_sqlite_main_lane, user_message,
 };
 
 fn repo_for(root: &std::path::Path) -> SqliteSessionRepository {
     SqliteSessionRepository::new(
         root.join("sessions.sqlite").to_string_lossy().into_owned(),
-        Some(SqliteWriterLeaseOptions { ttl_ms: 5000, heartbeat_interval_ms: 1000 }),
+        Some(SqliteWriterLeaseOptions {
+            ttl_ms: 5000,
+            heartbeat_interval_ms: 1000,
+        }),
     )
 }
 
-fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64, total: u64, cost: f64) -> Usage {
+fn usage(
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_write: i64,
+    total: i64,
+    cost: f64,
+) -> Usage {
     Usage {
         input,
         output,
@@ -29,7 +39,13 @@ fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64, total: u64,
         cache_write_1h: None,
         reasoning: None,
         total_tokens: total,
-        cost: Cost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, total: cost },
+        cost: Cost {
+            input: 0.0,
+            output: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            total: cost,
+        },
     }
 }
 
@@ -47,18 +63,40 @@ async fn persists_session_metadata_through_create_list_open_and_fork() {
         .await
         .unwrap();
     let source_metadata = source.get_sqlite_metadata().await.unwrap();
-    assert_eq!(source_metadata.metadata, Some(serde_json::json!({ "profile": "reviewer" })));
-    let listed = repo.list(&SqliteSessionListOptions::default()).await.unwrap();
-    assert_eq!(listed[0].metadata, Some(serde_json::json!({ "profile": "reviewer" })));
-
-    let reopened = repo.open(&source_metadata).await.unwrap();
-    assert_eq!(reopened.get_sqlite_metadata().await.unwrap().metadata, Some(serde_json::json!({ "profile": "reviewer" })));
-
-    let fork = repo
-        .fork(&source_metadata, &ForkCreateOptions { id: Some("session-2".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+    assert_eq!(
+        source_metadata.metadata,
+        Some(serde_json::json!({ "profile": "reviewer" }))
+    );
+    let listed = repo
+        .list(&SqliteSessionListOptions::default())
         .await
         .unwrap();
-    assert_eq!(fork.get_sqlite_metadata().await.unwrap().metadata, Some(serde_json::json!({ "profile": "reviewer" })));
+    assert_eq!(
+        listed[0].metadata,
+        Some(serde_json::json!({ "profile": "reviewer" }))
+    );
+
+    let reopened = repo.open(&source_metadata).await.unwrap();
+    assert_eq!(
+        reopened.get_sqlite_metadata().await.unwrap().metadata,
+        Some(serde_json::json!({ "profile": "reviewer" }))
+    );
+
+    let fork = repo
+        .fork(
+            &source_metadata,
+            &ForkCreateOptions {
+                id: Some("session-2".into()),
+                cwd: root.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fork.get_sqlite_metadata().await.unwrap().metadata,
+        Some(serde_json::json!({ "profile": "reviewer" }))
+    );
 
     let overridden = repo
         .fork(
@@ -72,7 +110,10 @@ async fn persists_session_metadata_through_create_list_open_and_fork() {
         )
         .await
         .unwrap();
-    assert_eq!(overridden.get_sqlite_metadata().await.unwrap().metadata, Some(serde_json::json!({ "profile": "writer" })));
+    assert_eq!(
+        overridden.get_sqlite_metadata().await.unwrap().metadata,
+        Some(serde_json::json!({ "profile": "writer" }))
+    );
 }
 
 #[tokio::test]
@@ -81,11 +122,18 @@ async fn rolls_back_the_entire_fork_when_copying_an_entry_fails() {
     let database_path = root.join("sessions.sqlite");
     let repo = repo_for(&root);
     let mut source = repo
-        .create(&SqliteSessionCreateOptions { id: Some("source".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("source".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     source.append_message(user_message("one")).await.unwrap();
-    source.append_message(assistant_message("two")).await.unwrap();
+    source
+        .append_message(assistant_message("two"))
+        .await
+        .unwrap();
     let source_metadata = source.get_sqlite_metadata().await.unwrap();
 
     {
@@ -105,7 +153,11 @@ END;
     let err = repo
         .fork(
             &source_metadata,
-            &ForkCreateOptions { id: Some("fork".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() },
+            &ForkCreateOptions {
+                id: Some("fork".into()),
+                cwd: root.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
         )
         .await
         .unwrap_err();
@@ -113,15 +165,17 @@ END;
 
     {
         let inspection = rusqlite::Connection::open(&database_path).unwrap();
-        let session_row = pi_session_backends::sql::SqlQuery::new("SELECT id FROM sessions WHERE id = ?")
-            .bind("fork")
-            .get_row(&inspection, |row| row.get::<_, String>(0))
-            .unwrap();
+        let session_row =
+            pi_session_backends::sql::SqlQuery::new("SELECT id FROM sessions WHERE id = ?")
+                .bind("fork")
+                .get_row(&inspection, |row| row.get::<_, String>(0))
+                .unwrap();
         assert!(session_row.is_none());
-        let entries = pi_session_backends::sql::SqlQuery::new("SELECT id FROM entries WHERE session_id = ?")
-            .bind("fork")
-            .all_rows(&inspection, |row| row.get::<_, String>(0))
-            .unwrap();
+        let entries =
+            pi_session_backends::sql::SqlQuery::new("SELECT id FROM entries WHERE session_id = ?")
+                .bind("fork")
+                .all_rows(&inspection, |row| row.get::<_, String>(0))
+                .unwrap();
         assert!(entries.is_empty());
     }
 }
@@ -136,7 +190,11 @@ async fn retains_an_opened_database_after_a_failed_operation_until_disposal() {
     {
         // Pre-create the db + trigger by creating a scratch session first.
         let _scratch = repo
-            .create(&SqliteSessionCreateOptions { id: Some("scratch".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+            .create(&SqliteSessionCreateOptions {
+                id: Some("scratch".into()),
+                cwd: root.to_string_lossy().into_owned(),
+                ..Default::default()
+            })
             .await
             .unwrap();
         let db = rusqlite::Connection::open(&database_path).unwrap();
@@ -152,23 +210,35 @@ END;
     }
 
     let err = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap_err();
     assert!(err.message.contains("insert failed"), "got: {err}");
 
     // The database stays available after the failed operation (no close and
     // no shared-state reset), so the repo can still list the scratch session.
-    let listed = repo.list(&SqliteSessionListOptions::default()).await.unwrap();
+    let listed = repo
+        .list(&SqliteSessionListOptions::default())
+        .await
+        .unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, "scratch");
 
     {
         let db = rusqlite::Connection::open(&database_path).unwrap();
-        db.execute_batch("DROP TRIGGER fail_session_insert").unwrap();
+        db.execute_batch("DROP TRIGGER fail_session_insert")
+            .unwrap();
     }
     let created = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(created.get_metadata().await.unwrap().id, "session-1");
@@ -189,11 +259,18 @@ async fn fails_when_the_database_cannot_be_opened() {
     let repo = SqliteSessionRepository::new(database_path.to_string_lossy().into_owned(), None);
 
     let err = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap_err();
     assert_eq!(err.kind, SessionErrorKind::Storage, "got: {err}");
-    let err2 = repo.list(&SqliteSessionListOptions::default()).await.unwrap_err();
+    let err2 = repo
+        .list(&SqliteSessionListOptions::default())
+        .await
+        .unwrap_err();
     assert_eq!(err2.kind, SessionErrorKind::Storage, "got: {err2}");
 }
 
@@ -202,15 +279,25 @@ async fn closes_active_sessions_when_the_repository_is_disposed() {
     let root = create_temp_dir();
     let repo = repo_for(&root);
     let mut session = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
 
     repo.close().await;
 
-    let err = session.append_message(user_message("late")).await.unwrap_err();
+    let err = session
+        .append_message(user_message("late"))
+        .await
+        .unwrap_err();
     assert_eq!(err.kind, SessionErrorKind::Storage);
-    assert!(err.message.contains("SQLite session session-1 is closed"), "got: {err}");
+    assert!(
+        err.message.contains("SQLite session session-1 is closed"),
+        "got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -218,11 +305,18 @@ async fn supports_repeated_session_operations_on_one_connection() {
     let root = create_temp_dir();
     let repo = repo_for(&root);
     let mut session = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     for i in 0..10 {
-        session.append_message(user_message(&format!("message {i}"))).await.unwrap();
+        session
+            .append_message(user_message(&format!("message {i}")))
+            .await
+            .unwrap();
     }
     let entries = get_sqlite_entries(&session, None, None).await.unwrap();
     assert_eq!(entries.len(), 10);
@@ -237,7 +331,11 @@ async fn rejects_a_missing_lane_leaf_when_listing_lanes_and_opening() {
     let database_path = root.join("sessions.sqlite");
     let repo = repo_for(&root);
     let session = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     let metadata = session.get_sqlite_metadata().await.unwrap();
@@ -253,11 +351,19 @@ async fn rejects_a_missing_lane_leaf_when_listing_lanes_and_opening() {
 
     let err = session.get_lanes().await.unwrap_err();
     assert_eq!(err.kind, SessionErrorKind::Storage);
-    assert!(err.message.contains("Lane main points at missing entry missing"), "got: {err}");
+    assert!(
+        err.message
+            .contains("Lane main points at missing entry missing"),
+        "got: {err}"
+    );
 
     let err = repo.open(&metadata).await.unwrap_err();
     assert_eq!(err.kind, SessionErrorKind::Storage);
-    assert!(err.message.contains("Lane main points at missing entry missing"), "got: {err}");
+    assert!(
+        err.message
+            .contains("Lane main points at missing entry missing"),
+        "got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -265,15 +371,31 @@ async fn rejects_stored_session_metadata_containing_invalid_json() {
     let root = create_temp_dir();
     let database_path = root.join("sessions.sqlite");
     let repo = repo_for(&root);
-    repo.create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() }).await.unwrap();
+    repo.create(&SqliteSessionCreateOptions {
+        id: Some("session-1".into()),
+        cwd: root.to_string_lossy().into_owned(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
 
     {
         let db = rusqlite::Connection::open(&database_path).unwrap();
-        db.execute("UPDATE sessions SET metadata = ? WHERE id = ?", rusqlite::params!["not json", "session-1"]).unwrap();
+        db.execute(
+            "UPDATE sessions SET metadata = ? WHERE id = ?",
+            rusqlite::params!["not json", "session-1"],
+        )
+        .unwrap();
     }
-    let err = repo.list(&SqliteSessionListOptions::default()).await.unwrap_err();
+    let err = repo
+        .list(&SqliteSessionListOptions::default())
+        .await
+        .unwrap_err();
     assert_eq!(err.kind, SessionErrorKind::Storage);
-    assert!(err.message.contains("metadata is not valid JSON"), "got: {err}");
+    assert!(
+        err.message.contains("metadata is not valid JSON"),
+        "got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -281,15 +403,31 @@ async fn rejects_stored_session_metadata_containing_a_non_object_value() {
     let root = create_temp_dir();
     let database_path = root.join("sessions.sqlite");
     let repo = repo_for(&root);
-    repo.create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() }).await.unwrap();
+    repo.create(&SqliteSessionCreateOptions {
+        id: Some("session-1".into()),
+        cwd: root.to_string_lossy().into_owned(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
 
     {
         let db = rusqlite::Connection::open(&database_path).unwrap();
-        db.execute("UPDATE sessions SET metadata = ? WHERE id = ?", rusqlite::params!["[]", "session-1"]).unwrap();
+        db.execute(
+            "UPDATE sessions SET metadata = ? WHERE id = ?",
+            rusqlite::params!["[]", "session-1"],
+        )
+        .unwrap();
     }
-    let err = repo.list(&SqliteSessionListOptions::default()).await.unwrap_err();
+    let err = repo
+        .list(&SqliteSessionListOptions::default())
+        .await
+        .unwrap_err();
     assert_eq!(err.kind, SessionErrorKind::Storage);
-    assert!(err.message.contains("metadata must be an object"), "got: {err}");
+    assert!(
+        err.message.contains("metadata must be an object"),
+        "got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -298,7 +436,11 @@ async fn rejects_stored_session_names_containing_invalid_json() {
     let database_path = root.join("sessions.sqlite");
     let repo = repo_for(&root);
     let mut session = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     session.set_name(Some("valid name")).await.unwrap();
@@ -312,7 +454,10 @@ async fn rejects_stored_session_names_containing_invalid_json() {
         .unwrap();
     }
 
-    let err = repo.list(&SqliteSessionListOptions::default()).await.unwrap_err();
+    let err = repo
+        .list(&SqliteSessionListOptions::default())
+        .await
+        .unwrap_err();
     assert_eq!(err.kind, SessionErrorKind::Storage);
     assert!(err.message.contains("name is not valid JSON"), "got: {err}");
 
@@ -327,7 +472,11 @@ async fn rejects_stored_session_names_containing_a_non_string_value() {
     let database_path = root.join("sessions.sqlite");
     let repo = repo_for(&root);
     let mut session = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     session.set_name(Some("valid name")).await.unwrap();
@@ -341,7 +490,10 @@ async fn rejects_stored_session_names_containing_a_non_string_value() {
         .unwrap();
     }
 
-    let err = repo.list(&SqliteSessionListOptions::default()).await.unwrap_err();
+    let err = repo
+        .list(&SqliteSessionListOptions::default())
+        .await
+        .unwrap_err();
     assert!(err.message.contains("name must be a string"), "got: {err}");
 
     let err = session.get_metadata().await.unwrap_err();
@@ -353,7 +505,11 @@ async fn omits_a_cleared_session_name_from_metadata() {
     let root = create_temp_dir();
     let repo = repo_for(&root);
     let mut session = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     session.set_name(Some("Temporary")).await.unwrap();
@@ -364,7 +520,10 @@ async fn omits_a_cleared_session_name_from_metadata() {
     assert_eq!(session.get_name().await, None);
     let metadata = session.get_sqlite_metadata().await.unwrap();
     assert!(metadata.name.is_none());
-    let listed = repo.list(&SqliteSessionListOptions::default()).await.unwrap();
+    let listed = repo
+        .list(&SqliteSessionListOptions::default())
+        .await
+        .unwrap();
     assert!(listed[0].name.is_none());
 }
 
@@ -374,10 +533,17 @@ async fn fails_loudly_when_a_stored_entry_is_read_and_cannot_be_decoded() {
     let database_path = root.join("sessions.sqlite");
     let repo = repo_for(&root);
     let mut session = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
-    let entry_id = session.append_message(user_message("message")).await.unwrap();
+    let entry_id = session
+        .append_message(user_message("message"))
+        .await
+        .unwrap();
     let metadata = session.get_sqlite_metadata().await.unwrap();
 
     {
@@ -400,7 +566,11 @@ async fn fails_loudly_when_a_stored_record_cannot_be_decoded() {
     let database_path = root.join("sessions.sqlite");
     let repo = repo_for(&root);
     let mut session = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     session
@@ -425,7 +595,10 @@ async fn fails_loudly_when_a_stored_record_cannot_be_decoded() {
 
     let err = session.find_records(&Default::default()).await.unwrap_err();
     assert_eq!(err.kind, SessionErrorKind::Storage);
-    assert!(err.message.contains("failed to decode payload"), "got: {err}");
+    assert!(
+        err.message.contains("failed to decode payload"),
+        "got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -434,7 +607,11 @@ async fn does_not_publish_connection_state_when_an_append_transaction_fails() {
     let database_path = root.join("sessions.sqlite");
     let repo = repo_for(&root);
     let mut session = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     {
@@ -449,23 +626,30 @@ END;
 ",
         )
         .unwrap();
-        let err = session.append_message(user_message("root")).await.unwrap_err();
+        let err = session
+            .append_message(user_message("root"))
+            .await
+            .unwrap_err();
         assert!(err.message.contains("branch insert failed"), "got: {err}");
 
-        let lane = pi_session_backends::sql::SqlQuery::new("SELECT leaf_id FROM lanes WHERE session_id = ? AND lane = ?")
-            .bind("session-1")
-            .bind("main")
-            .get_row(&db, |row| row.get::<_, Option<String>>(0))
-            .unwrap()
-            .flatten();
+        let lane = pi_session_backends::sql::SqlQuery::new(
+            "SELECT leaf_id FROM lanes WHERE session_id = ? AND lane = ?",
+        )
+        .bind("session-1")
+        .bind("main")
+        .get_row(&db, |row| row.get::<_, Option<String>>(0))
+        .unwrap()
+        .flatten();
         assert_eq!(lane, None);
-        let entries = pi_session_backends::sql::SqlQuery::new("SELECT id FROM entries WHERE session_id = ?")
-            .bind("session-1")
-            .all_rows(&db, |row| row.get::<_, String>(0))
-            .unwrap();
+        let entries =
+            pi_session_backends::sql::SqlQuery::new("SELECT id FROM entries WHERE session_id = ?")
+                .bind("session-1")
+                .all_rows(&db, |row| row.get::<_, String>(0))
+                .unwrap();
         assert!(entries.is_empty());
         assert_eq!(session.get_stats().await.message_count, 0);
-        db.execute_batch("DROP TRIGGER fail_branch_tip_insert").unwrap();
+        db.execute_batch("DROP TRIGGER fail_branch_tip_insert")
+            .unwrap();
     }
 
     let entry_id = session.append_message(user_message("root")).await.unwrap();
@@ -479,7 +663,11 @@ async fn accounts_for_assistant_compaction_and_branch_summary_usage() {
     let root = create_temp_dir();
     let repo = repo_for(&root);
     let mut session = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     let _user_id = session.append_message(user_message("one")).await.unwrap();
@@ -519,9 +707,16 @@ async fn accounts_for_assistant_compaction_and_branch_summary_usage() {
         .unwrap();
 
     let compaction_usage = usage(1, 2, 3, 4, 10, 0.1);
-    let compaction_id = append_sqlite_compaction(&mut session, "summary", 200, None, Some(compaction_usage.clone()), vec![])
-        .await
-        .unwrap();
+    let compaction_id = append_sqlite_compaction(
+        &mut session,
+        "summary",
+        200,
+        None,
+        Some(compaction_usage.clone()),
+        vec![],
+    )
+    .await
+    .unwrap();
     session
         .append_record(NewRecord::Usage {
             id: "compaction-usage".into(),
@@ -542,7 +737,11 @@ async fn accounts_for_assistant_compaction_and_branch_summary_usage() {
     let branch_summary_id = move_sqlite_main_lane(
         &mut session,
         Some(&assistant_id),
-        Some(("branch summary".to_string(), None, Some(branch_usage.clone()))),
+        Some((
+            "branch summary".to_string(),
+            None,
+            Some(branch_usage.clone()),
+        )),
     )
     .await
     .unwrap()
@@ -568,7 +767,11 @@ async fn accounts_for_assistant_compaction_and_branch_summary_usage() {
     assert_eq!(stats.cached_tokens, 50);
     assert_eq!(stats.uncached_tokens, 128);
     assert_eq!(stats.total_tokens, 211);
-    assert!((stats.cost_total - 0.73).abs() < 1e-9, "cost: {}", stats.cost_total);
+    assert!(
+        (stats.cost_total - 0.73).abs() < 1e-9,
+        "cost: {}",
+        stats.cost_total
+    );
 }
 
 #[tokio::test]
@@ -576,13 +779,25 @@ async fn compactions_and_branch_summaries_do_not_count_as_messages() {
     let root = create_temp_dir();
     let repo = repo_for(&root);
     let mut session = repo
-        .create(&SqliteSessionCreateOptions { id: Some("session-1".into()), cwd: root.to_string_lossy().into_owned(), ..Default::default() })
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
         .await
         .unwrap();
     session.append_message(user_message("one")).await.unwrap();
-    append_sqlite_compaction(&mut session, "summary", 100, None, None, vec![]).await.unwrap();
+    append_sqlite_compaction(&mut session, "summary", 100, None, None, vec![])
+        .await
+        .unwrap();
     session.append_message(user_message("two")).await.unwrap();
-    move_sqlite_main_lane(&mut session, None, Some(("summary".to_string(), None, None))).await.unwrap();
+    move_sqlite_main_lane(
+        &mut session,
+        None,
+        Some(("summary".to_string(), None, None)),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(session.get_stats().await.message_count, 2);
 }

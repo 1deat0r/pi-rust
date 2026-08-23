@@ -26,7 +26,8 @@ pub type ContextEntryTransform = Box<dyn Fn(&[Entry]) -> Vec<Entry>>;
 
 /// `CustomEntryContextMessageProjector` — projects a custom entry into
 /// messages (None = no projection).
-pub type CustomEntryContextMessageProjector = Box<dyn Fn(&Entry, usize, &[Entry]) -> Option<Vec<AgentMessage>>>;
+pub type CustomEntryContextMessageProjector =
+    Box<dyn Fn(&Entry, usize, &[Entry]) -> Option<Vec<AgentMessage>>>;
 
 /// `SessionContextBuildOptions`.
 #[derive(Default)]
@@ -43,10 +44,15 @@ fn derive_session_context_state(path_entries: &[Entry]) -> SessionContextState {
 
     for entry in path_entries {
         match entry {
-            Entry::ThinkingLevel { thinking_level: level, .. } => {
+            Entry::ThinkingLevel {
+                thinking_level: level,
+                ..
+            } => {
                 thinking_level = level.clone();
             }
-            Entry::ModelChange { provider, model_id, .. } => {
+            Entry::ModelChange {
+                provider, model_id, ..
+            } => {
                 model = Some((provider.to_string(), model_id.to_string()));
             }
             Entry::Message {
@@ -57,14 +63,21 @@ fn derive_session_context_state(path_entries: &[Entry]) -> SessionContextState {
                     model = Some((provider.to_string(), model_id.to_string()));
                 }
             }
-            Entry::ActiveTools { active_tool_names: names, .. } => {
+            Entry::ActiveTools {
+                active_tool_names: names,
+                ..
+            } => {
                 active_tool_names = Some(names.clone());
             }
             _ => {}
         }
     }
 
-    SessionContextState { thinking_level, model, active_tool_names }
+    SessionContextState {
+        thinking_level,
+        model,
+        active_tool_names,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,25 +137,42 @@ pub fn session_entry_to_context_messages(
             }
             vec![message.clone()]
         }
-        Entry::Compaction { summary, tokens_before, timestamp, retained_tail, .. } => {
+        Entry::Compaction {
+            summary,
+            tokens_before,
+            timestamp,
+            retained_tail,
+            ..
+        } => {
             let mut out = Vec::with_capacity(1 + retained_tail.len());
-            out.push(create_compaction_summary_message(summary.clone(), *tokens_before, *timestamp));
+            out.push(create_compaction_summary_message(
+                summary.clone(),
+                *tokens_before,
+                *timestamp,
+            ));
             out.extend(retained_tail.clone());
             out
         }
-        Entry::BranchSummary { summary, from_id, timestamp, .. } => {
+        Entry::BranchSummary {
+            summary,
+            from_id,
+            timestamp,
+            ..
+        } => {
             if summary.is_empty() {
                 Vec::new()
             } else {
-                vec![create_branch_summary_message(summary.clone(), from_id.clone(), *timestamp)]
+                vec![create_branch_summary_message(
+                    summary.clone(),
+                    from_id.clone(),
+                    *timestamp,
+                )]
             }
         }
-        Entry::Custom { custom_type, .. } => {
-            match options.entry_projectors.get(custom_type) {
-                Some(projector) => projector(entry, index, entries).unwrap_or_default(),
-                None => Vec::new(),
-            }
-        }
+        Entry::Custom { custom_type, .. } => match options.entry_projectors.get(custom_type) {
+            Some(projector) => projector(entry, index, entries).unwrap_or_default(),
+            None => Vec::new(),
+        },
         _ => Vec::new(),
     }
 }
@@ -156,7 +186,12 @@ pub fn build_session_context(
     let context_entries = build_context_entries(path_entries, options);
     let mut messages = Vec::new();
     for (index, entry) in context_entries.iter().enumerate() {
-        messages.extend(session_entry_to_context_messages(entry, index, &context_entries, options));
+        messages.extend(session_entry_to_context_messages(
+            entry,
+            index,
+            &context_entries,
+            options,
+        ));
     }
     SessionContext {
         messages,

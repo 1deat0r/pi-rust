@@ -95,10 +95,10 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
     let mut word_width = 0usize;
 
     let flush_word = |current: &mut String,
-                          current_width: &mut usize,
-                          word: &mut Vec<(String, usize)>,
-                          word_width: &mut usize,
-                          lines: &mut Vec<String>| {
+                      current_width: &mut usize,
+                      word: &mut Vec<(String, usize)>,
+                      word_width: &mut usize,
+                      lines: &mut Vec<String>| {
         if word.is_empty() {
             return;
         }
@@ -148,7 +148,13 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
         }
         let c = tok.chars().next().unwrap();
         if c == ' ' || c == '\n' {
-            flush_word(&mut current, &mut current_width, &mut word, &mut word_width, &mut lines);
+            flush_word(
+                &mut current,
+                &mut current_width,
+                &mut word,
+                &mut word_width,
+                &mut lines,
+            );
             if c == '\n' {
                 lines.push(std::mem::take(&mut current));
                 current_width = 0;
@@ -162,7 +168,13 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
         word.push((tok, w));
         word_width += w;
     }
-    flush_word(&mut current, &mut current_width, &mut word, &mut word_width, &mut lines);
+    flush_word(
+        &mut current,
+        &mut current_width,
+        &mut word,
+        &mut word_width,
+        &mut lines,
+    );
     if !current.is_empty() || lines.is_empty() {
         lines.push(current);
     }
@@ -216,7 +228,6 @@ pub fn slice_with_width(text: &str, width: usize) -> String {
     }
     out
 }
-
 
 /// Truncate text to a visible width with an optional ellipsis (upstream
 /// `truncateToWidth`, ASCII/plain-text subset with ANSI-aware widths).
@@ -342,7 +353,10 @@ mod tests {
 
     #[test]
     fn slice_keeps_ansi() {
-        assert_eq!(slice_with_width("\x1b[31mred\x1b[0m", 3), "\x1b[31mred\x1b[0m");
+        assert_eq!(
+            slice_with_width("\x1b[31mred\x1b[0m", 3),
+            "\x1b[31mred\x1b[0m"
+        );
     }
 
     #[test]

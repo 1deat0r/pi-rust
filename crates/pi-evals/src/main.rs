@@ -7,10 +7,14 @@ use std::path::PathBuf;
 use pi_evals::artifacts::{record_eval_session_artifact, EvalArtifact, TestRecord};
 use pi_evals::evals::extensions;
 use pi_evals::evals::{observation_from_run, EvalSet};
-use pi_evals::harness::{create_eval_root, resolve_model_selection, HarnessContext, ModelSelection, PiCliRunnerOptions};
+use pi_evals::harness::{
+    create_eval_root, resolve_model_selection, HarnessContext, ModelSelection, PiCliRunnerOptions,
+};
 use pi_evals::harness_table::eval_harness_table;
 use pi_evals::reporter::{append_harness_run_report, ReporterOptions};
-use pi_evals::summary::{format_harness_comparison_report, summarize_harness_comparisons, HarnessObservation, Outcome};
+use pi_evals::summary::{
+    format_harness_comparison_report, summarize_harness_comparisons, HarnessObservation, Outcome,
+};
 
 struct CliOptions {
     runner: PiCliRunnerOptions,
@@ -36,13 +40,17 @@ fn parse_args() -> Result<CliOptions, String> {
     let mut provider: Option<String> = None;
     let mut model: Option<String> = None;
     let mut binary = "pi".to_string();
-    let mut artifact_dir = std::env::var("PI_EVAL_ARTIFACT_DIR").ok().map(PathBuf::from);
+    let mut artifact_dir = std::env::var("PI_EVAL_ARTIFACT_DIR")
+        .ok()
+        .map(PathBuf::from);
     let mut evals = Vec::new();
     let mut faux = false;
     let mut index = 0;
 
     let take_value = |args: &[String], index: &mut usize, flag: &str| -> Result<String, String> {
-        let value = args.get(*index + 1).ok_or_else(|| format!("Missing value for {flag}"))?;
+        let value = args
+            .get(*index + 1)
+            .ok_or_else(|| format!("Missing value for {flag}"))?;
         if value.starts_with('-') {
             return Err(format!("Missing value for {flag}"));
         }
@@ -60,10 +68,14 @@ fn parse_args() -> Result<CliOptions, String> {
             "--provider" => provider = Some(take_value(&args, &mut index, arg)?),
             "--model" => model = Some(take_value(&args, &mut index, arg)?),
             "--binary" => binary = take_value(&args, &mut index, arg)?,
-            "--artifact-dir" => artifact_dir = Some(PathBuf::from(take_value(&args, &mut index, arg)?)),
+            "--artifact-dir" => {
+                artifact_dir = Some(PathBuf::from(take_value(&args, &mut index, arg)?))
+            }
             "--faux" => faux = true,
             "--eval" => evals.push(take_value(&args, &mut index, arg)?),
-            _ if arg.starts_with("--provider=") => provider = Some(arg["--provider=".len()..].to_string()),
+            _ if arg.starts_with("--provider=") => {
+                provider = Some(arg["--provider=".len()..].to_string())
+            }
             _ if arg.starts_with("--model=") => model = Some(arg["--model=".len()..].to_string()),
             else_value => evals.push(else_value.to_string()),
         }
@@ -83,8 +95,13 @@ fn parse_args() -> Result<CliOptions, String> {
             return Err("CLI model selection requires both --provider and --model.".to_string());
         }
     };
-    let env_pair = std::env::var("PI_PROVIDER").ok().zip(std::env::var("PI_MODEL").ok());
-    let selection = resolve_model_selection(explicit.as_ref(), env_pair.as_ref().map(|(p, m)| (p.as_str(), m.as_str())))?;
+    let env_pair = std::env::var("PI_PROVIDER")
+        .ok()
+        .zip(std::env::var("PI_MODEL").ok());
+    let selection = resolve_model_selection(
+        explicit.as_ref(),
+        env_pair.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
+    )?;
 
     // Resolve a relative binary path against the current directory so the
     // subprocess (which runs in a fresh temp workspace) can find it.
@@ -104,8 +121,16 @@ fn parse_args() -> Result<CliOptions, String> {
         extra_args: Vec::new(),
         timeout_secs: 300,
     };
-    let evals = if evals.is_empty() { vec!["all".to_string()] } else { evals };
-    Ok(CliOptions { runner, artifact_dir, evals })
+    let evals = if evals.is_empty() {
+        vec!["all".to_string()]
+    } else {
+        evals
+    };
+    Ok(CliOptions {
+        runner,
+        artifact_dir,
+        evals,
+    })
 }
 
 fn main() {
@@ -117,7 +142,10 @@ fn main() {
             std::process::exit(1);
         }
     };
-    eprintln!("[eval] default-model={}/{}", options.runner.provider, options.runner.model);
+    eprintln!(
+        "[eval] default-model={}/{}",
+        options.runner.provider, options.runner.model
+    );
     if let Some(dir) = &options.artifact_dir {
         eprintln!("[eval] artifacts={}", dir.display());
     }
@@ -164,7 +192,10 @@ fn run_smoke_eval(options: &CliOptions) {
     std::fs::create_dir_all(&cwd).expect("create smoke workspace");
 
     let prompt = pi_evals::evals::smoke::smoke_input();
-    let prompt_text = prompt.get("prompt").and_then(|v| v.as_str()).unwrap_or_default();
+    let prompt_text = prompt
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     let outcome = pi_evals::evals::smoke::run_smoke(&options.runner, &cwd, prompt_text);
     let result = pi_evals::evals::smoke::assert_smoke_result(&options.runner, &outcome);
 
@@ -212,8 +243,11 @@ fn run_extensions_eval(options: &CliOptions) -> Vec<HarnessObservation> {
 
     let baseline = extension_harness(extensions::BASELINE_NAME, runner, false);
     let candidate = extension_harness(extensions::CANDIDATE_NAME, runner, true);
-    let rows = eval_harness_table(eval_set, &pi_evals::harness_table::EvalHarnessTableOptions::pair(baseline, candidate))
-        .expect("extension harness table");
+    let rows = eval_harness_table(
+        eval_set,
+        &pi_evals::harness_table::EvalHarnessTableOptions::pair(baseline, candidate),
+    )
+    .expect("extension harness table");
 
     let mut observations = Vec::new();
     for row in &rows {
@@ -252,11 +286,20 @@ fn extension_harness(
 ) -> pi_evals::harness::Harness<serde_json::Value> {
     let runner = runner.clone();
     pi_evals::harness::Harness::new(name, move |input, _context| {
-        let create_prompt = input.get("prompt").and_then(|v| v.as_str()).unwrap_or_default();
-        let use_prompt = input.get("usePrompt").and_then(|v| v.as_str()).unwrap_or_default();
+        let create_prompt = input
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let use_prompt = input
+            .get("usePrompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         let cwd = create_eval_root().join("workspace");
         std::fs::create_dir_all(&cwd).ok();
-        let steps = extensions::ExtensionSteps { create_prompt: create_prompt.to_string(), use_prompt: use_prompt.to_string() };
+        let steps = extensions::ExtensionSteps {
+            create_prompt: create_prompt.to_string(),
+            use_prompt: use_prompt.to_string(),
+        };
         let outcome = extensions::run_extension_scenario(&runner, &cwd, &steps);
         let assertion = extensions::assert_extension_result(&runner, &outcome);
         let mut errors = outcome.errors.clone();
@@ -294,7 +337,8 @@ fn skipped_extension_observations(options: &CliOptions) -> Vec<HarnessObservatio
         for repetition in 1..=1u32 {
             observations.push(pi_evals::summary::HarnessObservation {
                 eval_set: extensions::EVAL_SET.to_string(),
-                group_key: pi_evals::harness_table::derive_eval_group_key(&input, repetition).unwrap_or_default(),
+                group_key: pi_evals::harness_table::derive_eval_group_key(&input, repetition)
+                    .unwrap_or_default(),
                 test_name: extensions::TEST_NAME.to_string(),
                 file: extensions::FILE.to_string(),
                 harness: harness.to_string(),
@@ -340,7 +384,9 @@ fn record_run(
             return;
         }
     };
-    let report_options = ReporterOptions { artifact_directory: Some(artifact_dir.clone()) };
+    let report_options = ReporterOptions {
+        artifact_directory: Some(artifact_dir.clone()),
+    };
     let _ = append_harness_run_report(
         &report_options,
         &run_id,

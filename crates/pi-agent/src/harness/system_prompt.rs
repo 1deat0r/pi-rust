@@ -37,8 +37,14 @@ pub fn format_skills_for_system_prompt(skills: &[Skill]) -> String {
     for skill in &visible {
         lines.push("  <skill>".to_string());
         lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
-        lines.push(format!("    <description>{}</description>", escape_xml(&skill.description)));
-        lines.push(format!("    <location>{}</location>", escape_xml(&skill.file_path)));
+        lines.push(format!(
+            "    <description>{}</description>",
+            escape_xml(&skill.description)
+        ));
+        lines.push(format!(
+            "    <location>{}</location>",
+            escape_xml(&skill.file_path)
+        ));
         lines.push("  </skill>".to_string());
     }
     lines.push("</available_skills>".to_string());
@@ -89,6 +95,9 @@ mod tests {
 
     #[test]
     fn escape_xml_covers_special_chars() {
-        assert_eq!(escape_xml(r#"<a href="x">it's & more</a>"#), "&lt;a href=&quot;x&quot;&gt;it&apos;s &amp; more&lt;/a&gt;");
+        assert_eq!(
+            escape_xml(r#"<a href="x">it's & more</a>"#),
+            "&lt;a href=&quot;x&quot;&gt;it&apos;s &amp; more&lt;/a&gt;"
+        );
     }
 }

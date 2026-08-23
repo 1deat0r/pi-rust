@@ -1,7 +1,10 @@
 //! Terminal image capabilities — port of `packages/tui/src/terminal-image.ts`
 //! (the parts the markdown renderer and Image component use).
 
+use std::process::{Command, Stdio};
 use std::sync::RwLock;
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Image protocol support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,11 +22,18 @@ pub struct TerminalCapabilities {
 }
 
 static CAPS: RwLock<Option<TerminalCapabilities>> = RwLock::new(None);
+static CELL_DIMENSIONS: RwLock<(u32, u32)> = RwLock::new((9, 18));
 
-/// Detect capabilities from the environment (documented divergence: upstream
-/// additionally probes tmux client_termfeatures for OSC 8 forwarding; the
-/// port keys off the same env vars with conservative fallbacks).
+/// Detect capabilities from the environment.
 pub fn detect_capabilities() -> TerminalCapabilities {
+    detect_capabilities_with_tmux_probe(probe_tmux_hyperlinks)
+}
+
+/// Detect capabilities while allowing callers/tests to supply the tmux probe.
+pub fn detect_capabilities_with_tmux_probe<F>(tmux_forwards_hyperlink: F) -> TerminalCapabilities
+where
+    F: FnOnce() -> bool,
+{
     fn get(name: &str) -> Option<String> {
         std::env::var(name).ok().map(|v| v.to_lowercase())
     }
@@ -35,28 +45,115 @@ pub fn detect_capabilities() -> TerminalCapabilities {
 
     let tmux = std::env::var("TMUX").is_ok() || term.starts_with("tmux");
     if tmux {
-        return TerminalCapabilities { images: None, true_color: has_true_color, hyperlinks: false };
+        return TerminalCapabilities {
+            images: None,
+            true_color: has_true_color,
+            hyperlinks: tmux_forwards_hyperlink(),
+        };
     }
     if term.starts_with("screen") {
-        return TerminalCapabilities { images: None, true_color: has_true_color, hyperlinks: false };
+        return TerminalCapabilities {
+            images: None,
+            true_color: has_true_color,
+            hyperlinks: false,
+        };
     }
     let in_env = |names: &[&str]| names.iter().any(|n| std::env::var(n).is_ok());
-    if in_env(&["KITTY_WINDOW_ID"]) || term_program == "kitty" || term_program == "ghostty" || term.contains("ghostty")
-        || in_env(&["WEZTERM_PANE"]) || term_program == "wezterm"
-        || term_program == "warpterminal" || in_env(&["WARP_SESSION_ID", "WARP_TERMINAL_SESSION_UUID"])
+    if in_env(&["KITTY_WINDOW_ID"])
+        || term_program == "kitty"
+        || term_program == "ghostty"
+        || term.contains("ghostty")
+        || in_env(&["GHOSTTY_RESOURCES_DIR"])
+        || in_env(&["WEZTERM_PANE"])
+        || term_program == "wezterm"
+        || term_program == "warpterminal"
+        || in_env(&["WARP_SESSION_ID", "WARP_TERMINAL_SESSION_UUID"])
     {
-        return TerminalCapabilities { images: Some(ImageProtocol::Kitty), true_color: true, hyperlinks: true };
+        return TerminalCapabilities {
+            images: Some(ImageProtocol::Kitty),
+            true_color: true,
+            hyperlinks: true,
+        };
     }
     if in_env(&["ITERM_SESSION_ID"]) || term_program == "iterm.app" {
-        return TerminalCapabilities { images: Some(ImageProtocol::ITerm2), true_color: true, hyperlinks: true };
+        return TerminalCapabilities {
+            images: Some(ImageProtocol::ITerm2),
+            true_color: true,
+            hyperlinks: true,
+        };
     }
     if in_env(&["WT_SESSION"]) || term_program == "vscode" || term_program == "alacritty" {
-        return TerminalCapabilities { images: None, true_color: true, hyperlinks: true };
+        return TerminalCapabilities {
+            images: None,
+            true_color: true,
+            hyperlinks: true,
+        };
     }
-    if term_emulator.contains("jetbrains") {
-        return TerminalCapabilities { images: None, true_color: true, hyperlinks: false };
+    if term_emulator == "jetbrains-jediterm" {
+        return TerminalCapabilities {
+            images: None,
+            true_color: true,
+            hyperlinks: false,
+        };
     }
-    TerminalCapabilities { images: None, true_color: has_true_color, hyperlinks: false }
+    if cfg!(windows) {
+        return TerminalCapabilities {
+            images: None,
+            true_color: true,
+            hyperlinks: false,
+        };
+    }
+    TerminalCapabilities {
+        images: None,
+        true_color: has_true_color,
+        hyperlinks: false,
+    }
+}
+
+/// Check whether the attached tmux client advertises OSC 8 hyperlink
+/// forwarding. tmux strips hyperlinks unless `client_termfeatures` includes
+/// `hyperlinks`; failures and timeouts conservatively return `false`.
+pub fn probe_tmux_hyperlinks() -> bool {
+    let mut child = match Command::new("tmux")
+        .args(["display-message", "-p", "#{client_termfeatures}"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+
+    let deadline = Instant::now() + Duration::from_millis(250);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = match child.wait_with_output() {
+                    Ok(output) => output,
+                    Err(_) => return false,
+                };
+                return status.success()
+                    && parse_tmux_client_termfeatures(&String::from_utf8_lossy(&output.stdout));
+            }
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+/// Parse the comma-separated `client_termfeatures` value returned by tmux.
+pub fn parse_tmux_client_termfeatures(termfeatures: &str) -> bool {
+    termfeatures
+        .split(',')
+        .map(str::trim)
+        .any(|feature| feature == "hyperlinks")
 }
 
 pub fn get_capabilities() -> TerminalCapabilities {
@@ -81,12 +178,44 @@ pub fn hyperlink(text: &str, url: &str) -> String {
 
 /// Whether a rendered line contains a kitty/iTerm2 inline image sequence.
 pub fn is_image_line(line: &str) -> bool {
-    line.starts_with("\x1b_G") || line.starts_with("\x1b]1337;File=") || line.contains("\x1b_G") || line.contains("\x1b]1337;File=")
+    line.starts_with("\x1b_G")
+        || line.starts_with("\x1b]1337;File=")
+        || line.contains("\x1b_G")
+        || line.contains("\x1b]1337;File=")
 }
 
 /// Default cell dimensions (used by image sizing).
 pub fn get_cell_dimensions() -> (u32, u32) {
-    (9, 18)
+    *CELL_DIMENSIONS
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+/// Update measured terminal cell dimensions in pixels. The TUI calls this
+/// when it receives the terminal's `CSI 6;height;width t` response.
+pub fn set_cell_dimensions(width_px: u32, height_px: u32) {
+    if width_px == 0 || height_px == 0 {
+        return;
+    }
+    *CELL_DIMENSIONS
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = (width_px, height_px);
+}
+
+/// Parse the terminal response to a `CSI 16 t` cell-size query.
+///
+/// Terminals report this as `CSI 6 ; height ; width t`. Keep the parser
+/// deliberately strict: a malformed response must remain available to the
+/// normal key/input path rather than changing image sizing unexpectedly.
+pub fn parse_cell_size_response(data: &str) -> Option<(u32, u32)> {
+    let body = data.strip_prefix("\x1b[6;")?.strip_suffix('t')?;
+    let mut fields = body.split(';');
+    let height = fields.next()?.parse::<u32>().ok()?;
+    let width = fields.next()?.parse::<u32>().ok()?;
+    if fields.next().is_some() || height == 0 || width == 0 {
+        return None;
+    }
+    Some((width, height))
 }
 
 /// Decode base64 into bytes (used by image dimension parsing).
@@ -205,8 +334,10 @@ pub fn get_webp_dimensions(base64_data: &str) -> Option<(u32, u32)> {
             if bytes.len() < 30 {
                 return None;
             }
-            let width = ((bytes[24] as u32) | ((bytes[25] as u32) << 8) | ((bytes[26] as u32) << 16)) + 1;
-            let height = ((bytes[27] as u32) | ((bytes[28] as u32) << 8) | ((bytes[29] as u32) << 16)) + 1;
+            let width =
+                ((bytes[24] as u32) | ((bytes[25] as u32) << 8) | ((bytes[26] as u32) << 16)) + 1;
+            let height =
+                ((bytes[27] as u32) | ((bytes[28] as u32) << 8) | ((bytes[29] as u32) << 16)) + 1;
             Some((width, height))
         }
         _ => None,
@@ -225,11 +356,17 @@ pub fn get_image_dimensions(base64_data: &str, mime_type: &str) -> Option<(u32, 
 }
 
 /// Text fallback when the terminal cannot render inline images.
-pub fn image_fallback(mime_type: &str, dimensions: Option<(u32, u32)>, filename: Option<&str>) -> String {
+pub fn image_fallback(
+    mime_type: &str,
+    dimensions: Option<(u32, u32)>,
+    filename: Option<&str>,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(filename) = filename {
         let home = std::env::var("HOME").unwrap_or_default();
-        let display = if !home.is_empty() && (filename == home || filename.starts_with(&format!("{home}/"))) {
+        let display = if !home.is_empty()
+            && (filename == home || filename.starts_with(&format!("{home}/")))
+        {
             format!("~{}", filename.trim_start_matches(&home))
         } else {
             filename.to_string()
@@ -243,7 +380,13 @@ pub fn image_fallback(mime_type: &str, dimensions: Option<(u32, u32)>, filename:
     format!("[Image: {}]", parts.join(" "))
 }
 
-pub fn encode_kitty(base64_data: &str, columns: usize, rows: usize, image_id: Option<u32>, move_cursor: bool) -> String {
+pub fn encode_kitty(
+    base64_data: &str,
+    columns: usize,
+    rows: usize,
+    image_id: Option<u32>,
+    move_cursor: bool,
+) -> String {
     const CHUNK_SIZE: usize = 4096;
     let mut params = vec!["a=T".to_string(), "f=100".to_string(), "q=2".to_string()];
     if !move_cursor {
@@ -292,4 +435,35 @@ pub fn encode_iterm2(base64_data: &str, columns: usize, preserve_aspect_ratio: b
         params.push("preserveAspectRatio=0".to_string());
     }
     format!("\x1b]1337;File={};{base64_data}\x07", params.join(";"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_tmux_client_termfeatures() {
+        assert!(parse_tmux_client_termfeatures("hyperlinks,RGB,usstyle"));
+        assert!(parse_tmux_client_termfeatures(" RGB , hyperlinks "));
+        assert!(!parse_tmux_client_termfeatures("RGB,usstyle"));
+        assert!(!parse_tmux_client_termfeatures(""));
+    }
+
+    #[test]
+    fn parses_cell_size_response_height_then_width() {
+        assert_eq!(parse_cell_size_response("\x1b[6;18;9t"), Some((9, 18)));
+        assert_eq!(parse_cell_size_response("\x1b[6;18;9"), None);
+        assert_eq!(parse_cell_size_response("\x1b[6;0;9t"), None);
+        assert_eq!(parse_cell_size_response("\x1b[6;18;9;1t"), None);
+    }
+
+    #[test]
+    fn cell_dimensions_are_updated_only_with_positive_values() {
+        let original = get_cell_dimensions();
+        set_cell_dimensions(11, 22);
+        assert_eq!(get_cell_dimensions(), (11, 22));
+        set_cell_dimensions(0, 0);
+        assert_eq!(get_cell_dimensions(), (11, 22));
+        set_cell_dimensions(original.0, original.1);
+    }
 }

@@ -16,7 +16,11 @@ pub struct CancellableLoader {
 
 impl CancellableLoader {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), aborted: false, on_abort: None }
+        Self {
+            text: text.into(),
+            aborted: false,
+            on_abort: None,
+        }
     }
 
     pub fn cancel(&mut self) {

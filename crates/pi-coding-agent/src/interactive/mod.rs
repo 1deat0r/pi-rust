@@ -9,7 +9,7 @@
 pub mod config_selector;
 pub mod footer;
 pub mod session_meta;
-pub use session_meta::{SessionMetaForPicker, session_picker_items, picker_select_items};
+pub use session_meta::{picker_select_items, session_picker_items, SessionMetaForPicker};
 pub mod messages;
 pub mod selectors;
 pub mod settings_panel;
@@ -37,7 +37,10 @@ pub enum Modal {
     Theme(Arc<Mutex<selectors::ListSelector>>),
     Settings(Arc<Mutex<SettingsPanel>>),
     /// Session picker: selector + the metadata list it was built from.
-    Resume(Arc<Mutex<selectors::ListSelector>>, Vec<session_meta::SessionMetaForPicker>),
+    Resume(
+        Arc<Mutex<selectors::ListSelector>>,
+        Vec<session_meta::SessionMetaForPicker>,
+    ),
 }
 
 /// Runtime state for the interactive loop.
@@ -63,20 +66,34 @@ pub struct InteractiveState {
 pub fn build_autocomplete_provider(cwd: String) -> CombinedAutocompleteProvider {
     let commands: Vec<SlashCommand> = slash::BUILTIN_SLASH_COMMANDS
         .iter()
-        .map(|c| SlashCommand::new(c.name, Some(c.description.to_string()), c.argument_hint.map(|s| s.to_string())))
+        .map(|c| {
+            SlashCommand::new(
+                c.name,
+                Some(c.description.to_string()),
+                c.argument_hint.map(|s| s.to_string()),
+            )
+        })
         .collect();
     let fd_path = std::env::var("PI_FD_PATH").ok().or_else(|| {
-        std::process::Command::new("which").arg("fd").output().ok().filter(|o| o.status.success()).map(|o| {
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
-        })
+        std::process::Command::new("which")
+            .arg("fd")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     });
     CombinedAutocompleteProvider::new(commands, cwd, fd_path)
 }
 
 /// Create the editor with a keybinding-aware surface.
 pub fn create_editor(cwd: String) -> Editor {
-    let theme = EditorTheme { border_color: t::editor_border() };
-    let options = EditorOptions { padding_x: 1, autocomplete_max_visible: 6 };
+    let theme = EditorTheme {
+        border_color: t::editor_border(),
+    };
+    let options = EditorOptions {
+        padding_x: 1,
+        autocomplete_max_visible: 6,
+    };
     let mut editor = Editor::new(24, theme, options);
     let provider = build_autocomplete_provider(cwd);
     editor.set_autocomplete_provider(Box::new(provider));
@@ -104,7 +121,9 @@ pub fn build_scene(
     }
     children.push(Arc::new(Mutex::new(pi_tui::components::Spacer::new(1))));
     if !pending.is_empty() {
-        children.push(Arc::new(Mutex::new(pi_tui::components::Loader::new(pending))));
+        children.push(Arc::new(Mutex::new(pi_tui::components::Loader::new(
+            pending,
+        ))));
     }
     children.push(Arc::new(Mutex::new(pi_tui::components::BoxComponent::new(
         editor.clone() as SharedComponent,
@@ -127,7 +146,10 @@ pub fn parse_submit(text: &str) -> SubmitAction {
         let (name, argument) = slash::parse_invocation(trimmed);
         if let Some(name) = name {
             if let Some(command) = slash::find_command(name) {
-                return SubmitAction::Command(command, (!argument.is_empty()).then(|| argument.to_string()));
+                return SubmitAction::Command(
+                    command,
+                    (!argument.is_empty()).then(|| argument.to_string()),
+                );
             }
         }
         SubmitAction::Prompt(trimmed.to_string())
@@ -141,7 +163,11 @@ fn slashtext(text: &str) -> bool {
 }
 
 /// Compose the current transcript markdown from messages + stream buffer.
-pub fn compose_transcript(messages: &[AgentMessage], hide_thinking: bool, stream_text: &str) -> String {
+pub fn compose_transcript(
+    messages: &[AgentMessage],
+    hide_thinking: bool,
+    stream_text: &str,
+) -> String {
     let mut text = messages::build_transcript(messages, hide_thinking);
     if !stream_text.trim().is_empty() {
         if !text.is_empty() {
@@ -179,10 +205,10 @@ pub fn version_label() -> String {
 
 #[cfg(test)]
 mod interactive_tests {
-    use crate::interactive::{parse_submit, SubmitAction};
-    use crate::interactive::slash::{find_command, parse_invocation, BUILTIN_SLASH_COMMANDS};
     use crate::interactive::footer::format_cwd_for_footer;
-    use crate::interactive::messages::{format_tokens, build_transcript};
+    use crate::interactive::messages::{build_transcript, format_tokens};
+    use crate::interactive::slash::{find_command, parse_invocation, BUILTIN_SLASH_COMMANDS};
+    use crate::interactive::{parse_submit, SubmitAction};
 
     #[test]
     fn parse_submit_detects_commands() {
@@ -205,7 +231,10 @@ mod interactive_tests {
 
     #[test]
     fn slash_registry_covers_builtins() {
-        for name in ["settings", "model", "thinking", "theme", "session", "compact", "clear", "hotkeys", "help", "quit"] {
+        for name in [
+            "settings", "model", "thinking", "theme", "session", "compact", "clear", "hotkeys",
+            "help", "quit",
+        ] {
             assert!(find_command(name).is_some(), "missing {name}");
         }
         let names: Vec<&str> = BUILTIN_SLASH_COMMANDS.iter().map(|c| c.name).collect();
@@ -225,8 +254,14 @@ mod interactive_tests {
     #[test]
     fn footer_formats_home_relative_paths() {
         assert_eq!(format_cwd_for_footer("/home/user", Some("/home/user")), "~");
-        assert_eq!(format_cwd_for_footer("/home/user/projects", Some("/home/user")), "~/projects");
-        assert_eq!(format_cwd_for_footer("/opt/elsewhere", Some("/home/user")), "/opt/elsewhere");
+        assert_eq!(
+            format_cwd_for_footer("/home/user/projects", Some("/home/user")),
+            "~/projects"
+        );
+        assert_eq!(
+            format_cwd_for_footer("/opt/elsewhere", Some("/home/user")),
+            "/opt/elsewhere"
+        );
         assert_eq!(format_cwd_for_footer("/srv", None), "/srv");
     }
 

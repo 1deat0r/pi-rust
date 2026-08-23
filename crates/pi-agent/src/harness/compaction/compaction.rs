@@ -15,7 +15,9 @@ use pi_ai::types::{
 };
 use pi_ai::utils::{retry_assistant_call, RetryCallbacks, RetryPolicy};
 
-use crate::messages::{convert_to_llm, create_branch_summary_message, create_compaction_summary_message};
+use crate::messages::{
+    convert_to_llm, create_branch_summary_message, create_compaction_summary_message,
+};
 use crate::session::context::{build_session_context, SessionContextBuildOptions};
 use crate::session::new_id;
 use crate::session::types::Entry;
@@ -48,23 +50,32 @@ pub struct CompactionSettings {
 }
 
 /// Default compaction settings used by the harness.
-pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings =
-    CompactionSettings { enabled: true, reserve_tokens: 16384, keep_recent_tokens: 20000 };
+pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = CompactionSettings {
+    enabled: true,
+    reserve_tokens: 16384,
+    keep_recent_tokens: 20000,
+};
 
 /// Calculate total context tokens from provider usage.
 pub fn calculate_context_tokens(usage: &Usage) -> u64 {
-    if usage.total_tokens != 0 {
+    let tokens = if usage.total_tokens != 0 {
         usage.total_tokens
     } else {
         usage.input + usage.output + usage.cache_read + usage.cache_write
-    }
+    };
+    // Negative usage is a ledger adjustment and cannot represent live context
+    // size. Keep the derived estimate suitable for window arithmetic.
+    tokens.max(0) as u64
 }
 
 fn get_assistant_usage(msg: &AgentMessage) -> Option<&Usage> {
     let AgentMessage::Core(Message::Assistant(assistant)) = msg else {
         return None;
     };
-    if matches!(assistant.stop_reason(), Some(pi_ai::types::StopReason::Aborted) | Some(pi_ai::types::StopReason::Error)) {
+    if matches!(
+        assistant.stop_reason(),
+        Some(pi_ai::types::StopReason::Aborted) | Some(pi_ai::types::StopReason::Error)
+    ) {
         return None;
     }
     let usage = assistant.usage()?;
@@ -141,7 +152,11 @@ pub fn estimate_context_tokens(messages: &[AgentMessage]) -> ContextUsageEstimat
 }
 
 /// Return whether context usage exceeds the configured compaction threshold.
-pub fn should_compact(context_tokens: u64, context_window: u64, settings: &CompactionSettings) -> bool {
+pub fn should_compact(
+    context_tokens: u64,
+    context_window: u64,
+    settings: &CompactionSettings,
+) -> bool {
     if !settings.enabled {
         return false;
     }
@@ -200,7 +215,9 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
                     ContentBlock::Thinking { thinking, .. } => {
                         chars += thinking.len() as u64;
                     }
-                    ContentBlock::ToolCall { name, arguments, .. } => {
+                    ContentBlock::ToolCall {
+                        name, arguments, ..
+                    } => {
                         chars += name.len() as u64;
                         chars += safe_json_stringify(arguments).len() as u64;
                     }
@@ -209,13 +226,13 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
             }
             chars
         }
-        AgentMessage::Core(Message::ToolResult(result)) => {
-            estimate_text_and_image_content_chars(&UserContentBody::Blocks(result.content().to_vec()))
-        }
+        AgentMessage::Core(Message::ToolResult(result)) => estimate_text_and_image_content_chars(
+            &UserContentBody::Blocks(result.content().to_vec()),
+        ),
         AgentMessage::Custom(custom) => match custom {
-            crate::types::CustomAgentMessage::BashExecution { command, output, .. } => {
-                (command.len() + output.len()) as u64
-            }
+            crate::types::CustomAgentMessage::BashExecution {
+                command, output, ..
+            } => (command.len() + output.len()) as u64,
             crate::types::CustomAgentMessage::Custom { content, .. } => match content {
                 crate::types::CustomContent::String(s) => s.len() as u64,
                 crate::types::CustomContent::Blocks(blocks) => blocks
@@ -227,7 +244,9 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
                     .sum(),
             },
             crate::types::CustomAgentMessage::BranchSummary { summary, .. }
-            | crate::types::CustomAgentMessage::CompactionSummary { summary, .. } => summary.len() as u64,
+            | crate::types::CustomAgentMessage::CompactionSummary { summary, .. } => {
+                summary.len() as u64
+            }
         },
     };
     chars.div_ceil(4)
@@ -238,7 +257,8 @@ fn find_valid_cut_points(entries: &[Entry], start: usize, end: usize) -> Vec<usi
     for (index, entry) in entries.iter().enumerate().take(end).skip(start) {
         match entry {
             Entry::Message { message, .. } => match message.role() {
-                "bashExecution" | "custom" | "branchSummary" | "compactionSummary" | "user" | "assistant" => {
+                "bashExecution" | "custom" | "branchSummary" | "compactionSummary" | "user"
+                | "assistant" => {
                     cut_points.push(index);
                 }
                 _ => {}
@@ -293,7 +313,11 @@ pub fn find_cut_point(
     let cut_points = find_valid_cut_points(entries, start_index, end_index);
 
     if cut_points.is_empty() {
-        return CutPointResult { first_kept_entry_index: start_index, turn_start_index: -1, is_split_turn: false };
+        return CutPointResult {
+            first_kept_entry_index: start_index,
+            turn_start_index: -1,
+            is_split_turn: false,
+        };
     }
     let mut accumulated_tokens = 0u64;
     let mut cut_index = cut_points[0];
@@ -304,7 +328,9 @@ pub fn find_cut_point(
         if !matches!(entry, Entry::Message { .. }) {
             continue;
         }
-        let Entry::Message { message, .. } = entry else { unreachable!() };
+        let Entry::Message { message, .. } = entry else {
+            unreachable!()
+        };
         accumulated_tokens += estimate_tokens(message);
         if accumulated_tokens >= keep_recent_tokens {
             for (c, cut) in cut_points.iter().enumerate() {
@@ -323,7 +349,9 @@ pub fn find_cut_point(
 
     while cut_index > start_index {
         let prev_entry = &entries[cut_index - 1];
-        if matches!(prev_entry, Entry::Compaction { .. }) || matches!(prev_entry, Entry::Message { .. }) {
+        if matches!(prev_entry, Entry::Compaction { .. })
+            || matches!(prev_entry, Entry::Message { .. })
+        {
             break;
         }
         cut_index -= 1;
@@ -331,7 +359,11 @@ pub fn find_cut_point(
     let cut_entry = &entries[cut_index];
     let is_user_message =
         matches!(cut_entry, Entry::Message { message, .. } if message.role() == "user");
-    let turn_start_index = if is_user_message { -1 } else { find_turn_start_index(entries, cut_index, start_index) };
+    let turn_start_index = if is_user_message {
+        -1
+    } else {
+        find_turn_start_index(entries, cut_index, start_index)
+    };
 
     CutPointResult {
         first_kept_entry_index: cut_index,
@@ -495,7 +527,11 @@ fn extract_file_operations(
 ) -> FileOperations {
     let mut file_ops = create_file_ops();
     if let Some(idx) = prev_compaction_index {
-        if let Some(Entry::Compaction { details: Some(details), .. }) = entries.get(idx) {
+        if let Some(Entry::Compaction {
+            details: Some(details),
+            ..
+        }) = entries.get(idx)
+        {
             if let Some(read) = details.get("readFiles").and_then(JsonValue::as_array) {
                 for f in read {
                     if let Some(s) = f.as_str() {
@@ -521,12 +557,26 @@ fn extract_file_operations(
 fn get_message_from_entry(entry: &Entry) -> Option<AgentMessage> {
     match entry {
         Entry::Message { message, .. } => Some(message.clone()),
-        Entry::BranchSummary { summary, from_id, timestamp, .. } => {
-            Some(create_branch_summary_message(summary.clone(), from_id.clone(), *timestamp))
-        }
-        Entry::Compaction { summary, tokens_before, timestamp, .. } => {
-            Some(create_compaction_summary_message(summary.clone(), *tokens_before, *timestamp))
-        }
+        Entry::BranchSummary {
+            summary,
+            from_id,
+            timestamp,
+            ..
+        } => Some(create_branch_summary_message(
+            summary.clone(),
+            from_id.clone(),
+            *timestamp,
+        )),
+        Entry::Compaction {
+            summary,
+            tokens_before,
+            timestamp,
+            ..
+        } => Some(create_compaction_summary_message(
+            summary.clone(),
+            *tokens_before,
+            *timestamp,
+        )),
         Entry::ThinkingLevel { .. }
         | Entry::ModelChange { .. }
         | Entry::ActiveTools { .. }
@@ -573,7 +623,11 @@ pub async fn generate_summary_with_usage(
 ) -> Result<(String, Usage), CompactionError> {
     let max_tokens = std::cmp::min(
         (reserve_tokens as f64 * 0.8).floor() as u64,
-        if model.max_tokens > 0 { model.max_tokens } else { u64::MAX },
+        if model.max_tokens > 0 {
+            model.max_tokens
+        } else {
+            u64::MAX
+        },
     );
     let mut base_prompt = if previous_summary.is_some() {
         UPDATE_SUMMARIZATION_PROMPT.to_string()
@@ -605,9 +659,14 @@ pub async fn generate_summary_with_usage(
     let option = SummarizationOptions {
         max_tokens: Some(max_tokens),
         signal,
-        reasoning: if uses_reasoning { thinking_level.and_then(thinking_level_from_str) } else { None },
+        reasoning: if uses_reasoning {
+            thinking_level.and_then(thinking_level_from_str)
+        } else {
+            None
+        },
     };
-    let response = complete_simple_with_retries(models, model, &context, option, retry, callbacks).await;
+    let response =
+        complete_simple_with_retries(models, model, &context, option, retry, callbacks).await;
     if response.stop_reason() == Some(pi_ai::types::StopReason::Aborted) {
         return Err(CompactionError::new(
             "aborted",
@@ -617,7 +676,10 @@ pub async fn generate_summary_with_usage(
     if response.stop_reason() == Some(pi_ai::types::StopReason::Error) {
         return Err(CompactionError::new(
             "summarization_failed",
-            format!("Summarization failed: {}", response.error_message().unwrap_or("Unknown error")),
+            format!(
+                "Summarization failed: {}",
+                response.error_message().unwrap_or("Unknown error")
+            ),
         ));
     }
 
@@ -706,7 +768,14 @@ pub fn prepare_compaction(
     let compactable_entries: Vec<Entry>;
     if prev_compaction_index >= 0 {
         let prev_index = prev_compaction_index as usize;
-        if let Entry::Compaction { summary, retained_tail, seq, id, .. } = &path_entries[prev_index] {
+        if let Entry::Compaction {
+            summary,
+            retained_tail,
+            seq,
+            id,
+            ..
+        } = &path_entries[prev_index]
+        {
             previous_summary = Some(summary.clone());
             let mut virtual_entries: Vec<Entry> = Vec::new();
             let mut prev_id = id.clone();
@@ -723,8 +792,10 @@ pub fn prepare_compaction(
                 prev_id = vid;
                 virtual_entries.push(entry);
             }
-            compactable_entries =
-                virtual_entries.into_iter().chain(path_entries[prev_index + 1..].iter().cloned()).collect();
+            compactable_entries = virtual_entries
+                .into_iter()
+                .chain(path_entries[prev_index + 1..].iter().cloned())
+                .collect();
         } else {
             unreachable!("prev_compaction_index points at a compaction entry");
         }
@@ -733,12 +804,21 @@ pub fn prepare_compaction(
     }
     let boundary_end = compactable_entries.len();
 
-    let context_messages = build_session_context(path_entries, &SessionContextBuildOptions::default()).messages;
+    let context_messages =
+        build_session_context(path_entries, &SessionContextBuildOptions::default()).messages;
     let tokens_before = estimate_context_tokens(&context_messages).tokens;
 
-    let cut_point = find_cut_point(&compactable_entries, 0, boundary_end, settings.keep_recent_tokens);
-    let history_end =
-        if cut_point.is_split_turn { cut_point.turn_start_index as usize } else { cut_point.first_kept_entry_index };
+    let cut_point = find_cut_point(
+        &compactable_entries,
+        0,
+        boundary_end,
+        settings.keep_recent_tokens,
+    );
+    let history_end = if cut_point.is_split_turn {
+        cut_point.turn_start_index as usize
+    } else {
+        cut_point.first_kept_entry_index
+    };
 
     let mut messages_to_summarize: Vec<AgentMessage> = Vec::new();
     for entry in compactable_entries.iter().take(history_end) {
@@ -748,7 +828,9 @@ pub fn prepare_compaction(
     }
     let mut turn_prefix_messages: Vec<AgentMessage> = Vec::new();
     if cut_point.is_split_turn {
-        for entry in &compactable_entries[cut_point.turn_start_index as usize..cut_point.first_kept_entry_index] {
+        for entry in &compactable_entries
+            [cut_point.turn_start_index as usize..cut_point.first_kept_entry_index]
+        {
             if let Some(msg) = get_message_from_entry_for_compaction(entry) {
                 turn_prefix_messages.push(msg);
             }
@@ -760,7 +842,11 @@ pub fn prepare_compaction(
             retained_tail.push(msg);
         }
     }
-    let prev_index = if prev_compaction_index >= 0 { Some(prev_compaction_index as usize) } else { None };
+    let prev_index = if prev_compaction_index >= 0 {
+        Some(prev_compaction_index as usize)
+    } else {
+        None
+    };
     let mut file_ops = extract_file_operations(&messages_to_summarize, path_entries, prev_index);
     if cut_point.is_split_turn {
         for msg in &turn_prefix_messages {
@@ -780,7 +866,8 @@ pub fn prepare_compaction(
     }))
 }
 
-const TURN_PREFIX_SUMMARIZATION_PROMPT: &str = "This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+const TURN_PREFIX_SUMMARIZATION_PROMPT: &str =
+    "This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 
 Summarize the prefix to provide context for the retained suffix:
 
@@ -808,7 +895,11 @@ async fn generate_turn_prefix_summary(
 ) -> Result<(String, Usage), CompactionError> {
     let max_tokens = std::cmp::min(
         (reserve_tokens as f64 * 0.5).floor() as u64,
-        if model.max_tokens > 0 { model.max_tokens } else { u64::MAX },
+        if model.max_tokens > 0 {
+            model.max_tokens
+        } else {
+            u64::MAX
+        },
     );
     let llm_messages = convert_to_llm(messages);
     let conversation_text = serialize_conversation(&llm_messages);
@@ -826,19 +917,29 @@ async fn generate_turn_prefix_summary(
     let option = SummarizationOptions {
         max_tokens: Some(max_tokens),
         signal,
-        reasoning: if uses_reasoning { thinking_level.and_then(thinking_level_from_str) } else { None },
+        reasoning: if uses_reasoning {
+            thinking_level.and_then(thinking_level_from_str)
+        } else {
+            None
+        },
     };
-    let response = complete_simple_with_retries(models, model, &context, option, retry, callbacks).await;
+    let response =
+        complete_simple_with_retries(models, model, &context, option, retry, callbacks).await;
     if response.stop_reason() == Some(pi_ai::types::StopReason::Aborted) {
         return Err(CompactionError::new(
             "aborted",
-            response.error_message().unwrap_or("Turn prefix summarization aborted"),
+            response
+                .error_message()
+                .unwrap_or("Turn prefix summarization aborted"),
         ));
     }
     if response.stop_reason() == Some(pi_ai::types::StopReason::Error) {
         return Err(CompactionError::new(
             "summarization_failed",
-            format!("Turn prefix summarization failed: {}", response.error_message().unwrap_or("Unknown error")),
+            format!(
+                "Turn prefix summarization failed: {}",
+                response.error_message().unwrap_or("Unknown error")
+            ),
         ));
     }
     let text_content: String = response
@@ -932,7 +1033,10 @@ pub async fn compact(
         tokens_before: preparation.tokens_before,
         usage: Some(summary_usage),
         retained_tail: preparation.retained_tail.clone(),
-        details: Some(CompactionDetails { read_files, modified_files }),
+        details: Some(CompactionDetails {
+            read_files,
+            modified_files,
+        }),
     })
 }
 
@@ -955,7 +1059,10 @@ mod tests {
 
     fn user_text(text: &str, index: usize) -> Entry {
         msg_entry(
-            AgentMessage::Core(Message::User(pi_ai::types::UserContent::string(text, index as u64))),
+            AgentMessage::Core(Message::User(pi_ai::types::UserContent::string(
+                text,
+                index as u64,
+            ))),
             index,
         )
     }
@@ -963,14 +1070,17 @@ mod tests {
     fn assistant_text(text: &str, index: usize) -> Entry {
         msg_entry(
             AgentMessage::Core(Message::Assistant(
-                faux_assistant_message(vec![ContentBlock::text(text)], FauxAssistantOptions::default())
-                    .with_timestamp(index as u64),
+                faux_assistant_message(
+                    vec![ContentBlock::text(text)],
+                    FauxAssistantOptions::default(),
+                )
+                .with_timestamp(index as u64),
             )),
             index,
         )
     }
 
-    fn default_usage(input: u64, output: u64) -> Usage {
+    fn default_usage(input: i64, output: i64) -> Usage {
         Usage {
             input,
             output,
@@ -1002,9 +1112,14 @@ mod tests {
 
     #[test]
     fn estimate_tokens_rounds_up_per_4_chars() {
-        let msg = AgentMessage::Core(Message::User(pi_ai::types::UserContent::string("abcdefgh", 1)));
+        let msg = AgentMessage::Core(Message::User(pi_ai::types::UserContent::string(
+            "abcdefgh", 1,
+        )));
         assert_eq!(estimate_tokens(&msg), 2);
-        let msg = AgentMessage::Core(Message::User(pi_ai::types::UserContent::string("abcdefghi", 1)));
+        let msg = AgentMessage::Core(Message::User(pi_ai::types::UserContent::string(
+            "abcdefghi",
+            1,
+        )));
         assert_eq!(estimate_tokens(&msg), 3);
     }
 
@@ -1041,7 +1156,9 @@ mod tests {
     fn find_cut_point_keeps_approx_recent_token_budget() {
         // Each message is 20 chars => 5 tokens. Budget 10 keeps ~2 recent
         // messages; the cut lands on a user boundary (index 6).
-        let entries: Vec<Entry> = (0..8).map(|i| user_text(&format!("message number {i} padded"), i)).collect();
+        let entries: Vec<Entry> = (0..8)
+            .map(|i| user_text(&format!("message number {i} padded"), i))
+            .collect();
         let cut = find_cut_point(&entries, 0, entries.len(), 10);
         assert_eq!(cut.first_kept_entry_index, 6);
         assert!(!cut.is_split_turn);
@@ -1072,19 +1189,26 @@ mod tests {
 
     #[test]
     fn prepare_compaction_none_on_empty_or_trailing_compaction() {
-        assert!(prepare_compaction(&[], &DEFAULT_COMPACTION_SETTINGS).unwrap().is_none());
-        let entries = vec![user_text("u", 0), Entry::Compaction {
-            id: "c".into(),
-            seq: 1,
-            parent_id: None,
-            timestamp: 1,
-            summary: "s".into(),
-            retained_tail: vec![],
-            tokens_before: 10,
-            details: None,
-            usage: None,
-        }];
-        assert!(prepare_compaction(&entries, &DEFAULT_COMPACTION_SETTINGS).unwrap().is_none());
+        assert!(prepare_compaction(&[], &DEFAULT_COMPACTION_SETTINGS)
+            .unwrap()
+            .is_none());
+        let entries = vec![
+            user_text("u", 0),
+            Entry::Compaction {
+                id: "c".into(),
+                seq: 1,
+                parent_id: None,
+                timestamp: 1,
+                summary: "s".into(),
+                retained_tail: vec![],
+                tokens_before: 10,
+                details: None,
+                usage: None,
+            },
+        ];
+        assert!(prepare_compaction(&entries, &DEFAULT_COMPACTION_SETTINGS)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1104,11 +1228,14 @@ mod tests {
         };
         let mut entries = vec![previous, user_text("new user", 3)];
         entries.push(assistant_text("new assistant", 4));
-        let prep = prepare_compaction(&entries, &CompactionSettings {
-            enabled: true,
-            reserve_tokens: 16384,
-            keep_recent_tokens: 1,
-        })
+        let prep = prepare_compaction(
+            &entries,
+            &CompactionSettings {
+                enabled: true,
+                reserve_tokens: 16384,
+                keep_recent_tokens: 1,
+            },
+        )
         .unwrap()
         .unwrap();
         assert_eq!(prep.previous_summary.as_deref(), Some("prev summary"));

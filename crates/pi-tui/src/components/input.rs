@@ -12,7 +12,11 @@ pub struct Input {
 
 impl Input {
     pub fn new(prompt: impl Into<String>) -> Self {
-        Self { value: String::new(), cursor: 0, prompt: prompt.into() }
+        Self {
+            value: String::new(),
+            cursor: 0,
+            prompt: prompt.into(),
+        }
     }
     pub fn set_value(&mut self, value: impl Into<String>) {
         self.value = value.into();
@@ -81,7 +85,11 @@ impl Component for Input {
             "left" => {
                 if self.cursor > 0 {
                     let prefix = &self.value[..self.cursor];
-                    self.cursor = prefix.char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
+                    self.cursor = prefix
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
                 }
             }
             "right" => {

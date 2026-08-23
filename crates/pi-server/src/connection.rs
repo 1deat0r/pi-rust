@@ -14,7 +14,10 @@ pub type UnixWriteHalf = tokio::net::unix::OwnedWriteHalf;
 pub trait ByteConnection: Send + Sync {
     fn closed(&self) -> bool;
     fn send(&self, chunk: &[u8]) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
-    fn close(&self, final_chunk: Option<Vec<u8>>) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
+    fn close(
+        &self,
+        final_chunk: Option<Vec<u8>>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
     /// Transport-owned read half for the accept loop's read task (default: none).
     fn take_reader(&self) -> Option<UnixReadHalf> {
         None
@@ -53,7 +56,11 @@ pub struct ConnectionState {
 }
 
 impl ConnectionState {
-    pub fn new(id: String, connection: Arc<dyn ByteConnection>, decoder: pi_protocol::ClientMessageDecoder) -> Self {
+    pub fn new(
+        id: String,
+        connection: Arc<dyn ByteConnection>,
+        decoder: pi_protocol::ClientMessageDecoder,
+    ) -> Self {
         Self {
             id,
             connection,
@@ -79,10 +86,7 @@ pub struct UnixByteConnection {
 }
 
 impl UnixByteConnection {
-    pub fn from_parts(
-        read_half: UnixReadHalf,
-        write_half: UnixWriteHalf,
-    ) -> Arc<Self> {
+    pub fn from_parts(read_half: UnixReadHalf, write_half: UnixWriteHalf) -> Arc<Self> {
         Arc::new(Self {
             read_half: std::sync::Mutex::new(Some(read_half)),
             writer: tokio::sync::Mutex::new(write_half),
@@ -102,15 +106,14 @@ impl ByteConnection for UnixByteConnection {
 
     fn send(&self, chunk: &[u8]) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
         let owned = chunk.to_vec();
-        Box::pin(async move {
-            self.send_inner(&owned).await
-        })
+        Box::pin(async move { self.send_inner(&owned).await })
     }
 
-    fn close(&self, final_chunk: Option<Vec<u8>>) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
-        Box::pin(async move {
-            self.close_inner(final_chunk).await
-        })
+    fn close(
+        &self,
+        final_chunk: Option<Vec<u8>>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async move { self.close_inner(final_chunk).await })
     }
 }
 

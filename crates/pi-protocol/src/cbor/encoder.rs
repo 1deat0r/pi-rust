@@ -1,7 +1,7 @@
 //! Strict, definite-length RFC 8949 subset encoder.
 //! Direct port of `packages/protocol/src/cbor/encoder.ts`.
 
-use super::options::{resolve_options, ResolvedCborOptions, CborOptions, MAX_UINT32, UINT32_BASE};
+use super::options::{resolve_options, CborOptions, ResolvedCborOptions, MAX_UINT32, UINT32_BASE};
 use super::value::{Value, MAX_SAFE_INTEGER};
 use crate::error::CborError;
 
@@ -27,7 +27,8 @@ impl CborWriter {
                 self.max_byte_length
             )));
         }
-        self.buffer.reserve(required.saturating_sub(self.buffer.len()));
+        self.buffer
+            .reserve(required.saturating_sub(self.buffer.len()));
         Ok(())
     }
 
@@ -94,7 +95,11 @@ fn write_argument(writer: &mut CborWriter, major_type: u8, value: u64) -> Result
     }
 }
 
-fn encode_text(writer: &mut CborWriter, value: &str, options: &ResolvedCborOptions) -> Result<(), CborError> {
+fn encode_text(
+    writer: &mut CborWriter,
+    value: &str,
+    options: &ResolvedCborOptions,
+) -> Result<(), CborError> {
     let bytes = value.as_bytes();
     if bytes.len() > options.max_byte_length {
         return Err(CborError::new(format!(
@@ -125,7 +130,9 @@ fn encode_value(
         Value::Bool(false) => writer.write_byte(0xf4)?,
         Value::Int(v) => {
             if *v < -MAX_SAFE_INTEGER || *v > MAX_SAFE_INTEGER {
-                return Err(CborError::new("CBOR integers must be safe JavaScript integers".to_string()));
+                return Err(CborError::new(
+                    "CBOR integers must be safe JavaScript integers".to_string(),
+                ));
             }
             if *v >= 0 {
                 write_argument(writer, 0, *v as u64)?;
@@ -265,7 +272,10 @@ mod tests {
             (Value::Text("水".into()), "63e6b0b4"),
             (Value::Text("𐅑".into()), "64f0908591"),
             (Value::Array(vec![]), "80"),
-            (Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]), "83010203"),
+            (
+                Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+                "83010203",
+            ),
             (
                 Value::Array(vec![
                     Value::Int(1),
@@ -277,22 +287,23 @@ mod tests {
             (
                 Value::Map(vec![
                     ("a".into(), Value::Int(1)),
-                    (
-                        "b".into(),
-                        Value::Array(vec![Value::Int(2), Value::Int(3)]),
-                    ),
+                    ("b".into(), Value::Array(vec![Value::Int(2), Value::Int(3)])),
                 ]),
                 "a26161016162820203",
             ),
         ];
         for (value, expected) in cases {
-            assert_eq!(hex(&encode_cbor(&value, &CborOptions::default()).unwrap()), expected);
+            assert_eq!(
+                hex(&encode_cbor(&value, &CborOptions::default()).unwrap()),
+                expected
+            );
         }
     }
 
     #[test]
     fn rejects_unsafe_integer() {
-        let err = encode_cbor(&Value::Int(MAX_SAFE_INTEGER + 1), &CborOptions::default()).unwrap_err();
+        let err =
+            encode_cbor(&Value::Int(MAX_SAFE_INTEGER + 1), &CborOptions::default()).unwrap_err();
         assert!(err.0.contains("safe JavaScript integers"));
     }
 
@@ -310,7 +321,10 @@ mod tests {
             ("b".into(), Value::Undefined),
             ("c".into(), Value::Text("x".into())),
         ]);
-        assert_eq!(hex(&encode_cbor(&value, &CborOptions::default()).unwrap()), "a261610161636178");
+        assert_eq!(
+            hex(&encode_cbor(&value, &CborOptions::default()).unwrap()),
+            "a261610161636178"
+        );
     }
 
     #[test]
@@ -322,7 +336,10 @@ mod tests {
 
     #[test]
     fn float_zero_encodes_as_integer_but_negative_zero_as_float() {
-        assert_eq!(hex(&encode_cbor(&Value::Float(0.0), &CborOptions::default()).unwrap()), "00");
+        assert_eq!(
+            hex(&encode_cbor(&Value::Float(0.0), &CborOptions::default()).unwrap()),
+            "00"
+        );
         assert_eq!(
             hex(&encode_cbor(&Value::Float(-0.0), &CborOptions::default()).unwrap()),
             "fb8000000000000000"

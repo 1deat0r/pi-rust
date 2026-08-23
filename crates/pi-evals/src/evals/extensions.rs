@@ -22,7 +22,8 @@ pub const CANDIDATE_NAME: &str = "default-system-prompt";
 
 const CREATE_PROMPT: &str =
     "Create a Pi extension with a hello tool that takes a name and returns a greeting. For example, passing Bob should return `Hello, Bob!`.";
-const USE_PROMPT: &str = "Use the hello tool to greet Bob. Respond with exactly the tool's greeting and nothing else.";
+const USE_PROMPT: &str =
+    "Use the hello tool to greet Bob. Respond with exactly the tool's greeting and nothing else.";
 
 pub struct ExtensionSteps {
     pub create_prompt: String,
@@ -58,10 +59,18 @@ pub fn run_extension_scenario(
 
     let run = |prompt: &str| crate::harness::run_pi_binary(runner, cwd, prompt);
     match run(&steps.create_prompt) {
-        Ok(PiRunOutput { stdout: _stdout, stderr, exit_code }) if exit_code == 0 => {
+        Ok(PiRunOutput {
+            stdout: _stdout,
+            stderr,
+            exit_code,
+        }) if exit_code == 0 => {
             // reload step: a second invocation picks up any authored files
             match run(&steps.use_prompt) {
-                Ok(PiRunOutput { stdout: second_stdout, stderr: second_stderr, exit_code: 0 }) => {
+                Ok(PiRunOutput {
+                    stdout: second_stdout,
+                    stderr: second_stderr,
+                    exit_code: 0,
+                }) => {
                     final_response = crate::harness::extract_response_text(&second_stdout);
                     let _ = second_stderr;
                 }
@@ -95,7 +104,11 @@ pub fn run_extension_scenario(
         None
     };
 
-    ExtensionOutcome { final_response, extension_source, errors }
+    ExtensionOutcome {
+        final_response,
+        extension_source,
+        errors,
+    }
 }
 
 /// Applies the extension-authoring judge assertions (port of
@@ -112,22 +125,43 @@ pub fn assert_extension_result(
         None => failures.push("generated extension source is unavailable".to_string()),
         Some(source) => {
             let mut imports = Vec::new();
-            for captures in source.match_indices("from").map(|(idx, _)| &source[idx..]).take(100) {
+            for captures in source
+                .match_indices("from")
+                .map(|(idx, _)| &source[idx..])
+                .take(100)
+            {
                 let rest = captures.trim_start_matches("from").trim();
-                if let Some(spec) = rest.strip_prefix('"').and_then(|rest| rest.split('"').next())
-                    .or_else(|| rest.strip_prefix('\'').and_then(|rest| rest.split('\'').next()))
+                if let Some(spec) = rest
+                    .strip_prefix('"')
+                    .and_then(|rest| rest.split('"').next())
+                    .or_else(|| {
+                        rest.strip_prefix('\'')
+                            .and_then(|rest| rest.split('\'').next())
+                    })
                 {
                     imports.push(spec.to_string());
                 }
             }
-            if !imports.iter().any(|spec| spec == "@earendil-works/pi-coding-agent") {
+            if !imports
+                .iter()
+                .any(|spec| spec == "@earendil-works/pi-coding-agent")
+            {
                 failures.push("extension does not import the canonical @earendil-works/pi-coding-agent package".to_string());
             }
-            if imports.iter().any(|spec| spec.starts_with("@mariozechner/")) {
+            if imports
+                .iter()
+                .any(|spec| spec.starts_with("@mariozechner/"))
+            {
                 failures.push("extension imports a legacy @mariozechner package".to_string());
             }
-            if imports.iter().any(|spec| spec.starts_with("@sinclair/typebox")) {
-                failures.push("extension imports legacy \"@sinclair/typebox\" instead of \"typebox\"".to_string());
+            if imports
+                .iter()
+                .any(|spec| spec.starts_with("@sinclair/typebox"))
+            {
+                failures.push(
+                    "extension imports legacy \"@sinclair/typebox\" instead of \"typebox\""
+                        .to_string(),
+                );
             }
         }
     }

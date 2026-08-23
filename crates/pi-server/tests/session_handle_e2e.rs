@@ -15,7 +15,10 @@ fn test_models() -> Vec<pi_protocol::ModelMetadata> {
         name: "Faux Model".into(),
         api: "faux".into(),
         reasoning: false,
-        input: vec![pi_protocol::ModelInput::Text, pi_protocol::ModelInput::Image],
+        input: vec![
+            pi_protocol::ModelInput::Text,
+            pi_protocol::ModelInput::Image,
+        ],
         context_window: 128_000,
         max_tokens: 16_384,
         cost: pi_protocol::ModelCost {
@@ -34,13 +37,18 @@ async fn spawn_server(dir_name: &str) -> String {
     tokio::fs::create_dir_all(&dir).await.unwrap();
     let socket_path = dir.join("pi.sock").to_string_lossy().into_owned();
     let service = Box::new(pi_server::service::InMemoryService::new(test_models()));
-    let mut server = pi_server::server::PiServer::new(service, pi_server::types::PiServerOptions {
-        listeners: vec![Box::new(pi_server::UnixListener::new(socket_path.clone()).unwrap())],
-        max_frame_length: None,
-        handshake_timeout_ms: None,
-        server_id: Some("e2e-server".into()),
-        on_error: None,
-    })
+    let mut server = pi_server::server::PiServer::new(
+        service,
+        pi_server::types::PiServerOptions {
+            listeners: vec![Box::new(
+                pi_server::UnixListener::new(socket_path.clone()).unwrap(),
+            )],
+            max_frame_length: None,
+            handshake_timeout_ms: None,
+            server_id: Some("e2e-server".into()),
+            on_error: None,
+        },
+    )
     .unwrap();
     server.start().await.unwrap();
     socket_path
@@ -57,9 +65,14 @@ async fn session_handle_start_prompt_and_commands() {
         .start_session(
             Some(cwd.clone()),
             Some("handle e2e".into()),
-            Some(ModelRef { provider: "faux".into(), id: "faux-1".into() }),
+            Some(ModelRef {
+                provider: "faux".into(),
+                id: "faux-1".into(),
+            }),
             None,
-            AcquireSessionOptions { mode: SessionLeaseMode::Shared },
+            AcquireSessionOptions {
+                mode: SessionLeaseMode::Shared,
+            },
         )
         .await
         .unwrap();
@@ -81,7 +94,13 @@ async fn session_handle_start_prompt_and_commands() {
     assert_eq!(snap.queued_steer_count, 1);
 
     // set_model / set_thinking return updated snapshots.
-    let snap = handle.set_model(ModelRef { provider: "faux".into(), id: "faux-1".into() }).await.unwrap();
+    let snap = handle
+        .set_model(ModelRef {
+            provider: "faux".into(),
+            id: "faux-1".into(),
+        })
+        .await
+        .unwrap();
     assert_eq!(snap.model.id, "faux-1");
     let snap = handle.set_thinking(ThinkingLevel::Off).await.unwrap();
     assert_eq!(snap.thinking_level, ThinkingLevel::Off);
@@ -135,7 +154,10 @@ async fn session_handle_subscribe_gets_snapshot_events() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert_eq!(received.lock().unwrap().first().cloned(), Some(handle.id().to_string()));
+    assert_eq!(
+        received.lock().unwrap().first().cloned(),
+        Some(handle.id().to_string())
+    );
 
     client.close().await.unwrap();
 }

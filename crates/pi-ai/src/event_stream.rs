@@ -27,7 +27,10 @@ impl StreamSink for AssistantMessageEventStream {
         if self.finished {
             return;
         }
-        if matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }) {
+        if matches!(
+            event,
+            AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+        ) {
             self.finished = true;
             let message = match &event {
                 AssistantMessageEvent::Done { message, .. } => message.clone(),
@@ -63,7 +66,12 @@ impl AssistantMessageEventStream {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (result_tx, _) = tokio::sync::oneshot::channel();
-        Self { tx: Some(tx), rx, result: Some(result_tx), finished: false }
+        Self {
+            tx: Some(tx),
+            rx,
+            result: Some(result_tx),
+            finished: false,
+        }
     }
 
     /// Clone access to the underlying event channel, for background producers.
@@ -82,13 +90,20 @@ impl AssistantMessageEventStream {
         let mut final_message: Option<AssistantMessage> = None;
         while let Some(event) = self.rx.recv().await {
             match &event {
-                AssistantMessageEvent::Done { message, .. } | AssistantMessageEvent::Error { error_message: message, .. } => {
+                AssistantMessageEvent::Done { message, .. }
+                | AssistantMessageEvent::Error {
+                    error_message: message,
+                    ..
+                } => {
                     final_message = Some(message.clone());
                 }
                 _ => {}
             }
             observer(&event);
-            if matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }) {
+            if matches!(
+                event,
+                AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+            ) {
                 break;
             }
         }
@@ -100,7 +115,10 @@ impl AssistantMessageEventStream {
         if self.finished {
             return;
         }
-        if matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }) {
+        if matches!(
+            event,
+            AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+        ) {
             self.finished = true;
             let message = match &event {
                 AssistantMessageEvent::Done { message, .. } => message.clone(),
@@ -137,7 +155,10 @@ impl AssistantMessageEventStream {
     pub async fn collect(mut self) -> (Vec<AssistantMessageEvent>, AssistantMessage) {
         let mut events = Vec::new();
         while let Some(event) = self.rx.recv().await {
-            let is_final = matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. });
+            let is_final = matches!(
+                event,
+                AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+            );
             events.push(event);
             if is_final {
                 break;
@@ -162,7 +183,10 @@ impl AssistantMessageEventStream {
     {
         let mut final_message = AssistantMessage::new();
         while let Some(event) = self.rx.recv().await {
-            let terminal = matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. });
+            let terminal = matches!(
+                event,
+                AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+            );
             if let AssistantMessageEvent::Done { message, .. } = &event {
                 final_message = message.clone();
             } else if let AssistantMessageEvent::Error { error_message, .. } = &event {
@@ -201,36 +225,52 @@ pub fn create_error_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::DoneReason;
     use crate::types::ContentBlock;
+    use crate::types::DoneReason;
 
     #[test]
     fn push_and_collect() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let mut stream = AssistantMessageEventStream::new();
             let mut partial = AssistantMessage::new();
-            stream.push(AssistantMessageEvent::Start { partial: partial.clone() });
+            stream.push(AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            });
             let block = ContentBlock::text("hi");
             partial.content_mut().push(block);
             let mut done = AssistantMessage::new();
             done.content_mut().push(ContentBlock::text("hi"));
             done.set_stop_reason(crate::types::StopReason::Stop);
-            stream.push(AssistantMessageEvent::Done { reason: DoneReason::Stop, message: done.clone() });
+            stream.push(AssistantMessageEvent::Done {
+                reason: DoneReason::Stop,
+                message: done.clone(),
+            });
             let (events, final_msg) = stream.collect().await;
             assert_eq!(events.len(), 2);
             assert!(matches!(events[0], AssistantMessageEvent::Start { .. }));
             assert!(matches!(events[1], AssistantMessageEvent::Done { .. }));
-            assert_eq!(final_msg.stop_reason(), Some(crate::types::StopReason::Stop));
+            assert_eq!(
+                final_msg.stop_reason(),
+                Some(crate::types::StopReason::Stop)
+            );
         });
     }
 
     #[test]
     fn end_without_terminal_event_terminates_consumers() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let mut stream = AssistantMessageEventStream::new();
-            stream.push(AssistantMessageEvent::Start { partial: AssistantMessage::new() });
+            stream.push(AssistantMessageEvent::Start {
+                partial: AssistantMessage::new(),
+            });
             stream.end(None);
             let (events, msg) = stream.collect().await;
             assert_eq!(events.len(), 1);
@@ -249,19 +289,26 @@ mod tests {
 
     #[test]
     fn ignores_push_after_done() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let mut stream = AssistantMessageEventStream::new();
             let mut done = AssistantMessage::new();
             done.set_stop_reason(crate::types::StopReason::Stop);
-            stream.push(AssistantMessageEvent::Done { reason: DoneReason::Stop, message: done });
-            stream.push(AssistantMessageEvent::Start { partial: AssistantMessage::new() });
+            stream.push(AssistantMessageEvent::Done {
+                reason: DoneReason::Stop,
+                message: done,
+            });
+            stream.push(AssistantMessageEvent::Start {
+                partial: AssistantMessage::new(),
+            });
             let (events, _) = stream.collect().await;
             assert_eq!(events.len(), 1);
         });
     }
 }
-
 
 /// Adapter that wraps a raw `UnboundedSender` clone in the `StreamSink`
 /// surface (used by providers that push from spawned tasks).
@@ -272,7 +319,10 @@ pub struct StreamSinkAdapter {
 
 impl StreamSinkAdapter {
     pub fn new(tx: mpsc::UnboundedSender<AssistantMessageEvent>) -> Self {
-        Self { tx, finished: false }
+        Self {
+            tx,
+            finished: false,
+        }
     }
 }
 
@@ -281,7 +331,10 @@ impl StreamSink for StreamSinkAdapter {
         if self.finished {
             return;
         }
-        if matches!(event, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }) {
+        if matches!(
+            event,
+            AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+        ) {
             self.finished = true;
         }
         let _ = self.tx.send(event);

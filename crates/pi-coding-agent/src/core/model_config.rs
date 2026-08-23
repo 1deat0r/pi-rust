@@ -282,18 +282,27 @@ impl ModelConfig {
     /// captured in `error()`.
     pub fn load(models_json_path: Option<&Path>) -> ModelConfig {
         let Some(models_json_path) = models_json_path else {
-            return ModelConfig { providers: BTreeMap::new(), error: None };
+            return ModelConfig {
+                providers: BTreeMap::new(),
+                error: None,
+            };
         };
         let path = models_json_path.to_path_buf();
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return ModelConfig { providers: BTreeMap::new(), error: None }
+                return ModelConfig {
+                    providers: BTreeMap::new(),
+                    error: None,
+                }
             }
             Err(e) => {
                 return ModelConfig {
                     providers: BTreeMap::new(),
-                    error: Some(format!("Failed to load models.json: {e}\n\nFile: {}", path.display())),
+                    error: Some(format!(
+                        "Failed to load models.json: {e}\n\nFile: {}",
+                        path.display()
+                    )),
                 }
             }
         };
@@ -304,7 +313,10 @@ impl ModelConfig {
             Err(e) => {
                 return ModelConfig {
                     providers: BTreeMap::new(),
-                    error: Some(format!("Failed to parse models.json: {e}\n\nFile: {}", path.display())),
+                    error: Some(format!(
+                        "Failed to parse models.json: {e}\n\nFile: {}",
+                        path.display()
+                    )),
                 }
             }
         };
@@ -335,16 +347,25 @@ impl ModelConfig {
         let object = match value.as_object() {
             Some(object) => object,
             None => {
-                return Err(vec![("root".to_string(), "Expected an object with \"providers\".".to_string())]);
+                return Err(vec![(
+                    "root".to_string(),
+                    "Expected an object with \"providers\".".to_string(),
+                )]);
             }
         };
         let Some(providers_value) = object.get("providers") else {
-            return Err(vec![("providers".to_string(), "Expected required property \"providers\".".to_string())]);
+            return Err(vec![(
+                "providers".to_string(),
+                "Expected required property \"providers\".".to_string(),
+            )]);
         };
         let providers_object = match providers_value.as_object() {
             Some(map) => map,
             None => {
-                return Err(vec![("providers".to_string(), "Expected an object.".to_string())]);
+                return Err(vec![(
+                    "providers".to_string(),
+                    "Expected an object.".to_string(),
+                )]);
             }
         };
         for (provider_id, provider_value) in providers_object {
@@ -360,7 +381,10 @@ impl ModelConfig {
             }
             if let Some(overrides) = provider_value.get("modelOverrides") {
                 if !overrides.is_object() {
-                    errors.push((format!("{path}.modelOverrides"), "Expected an object.".to_string()));
+                    errors.push((
+                        format!("{path}.modelOverrides"),
+                        "Expected an object.".to_string(),
+                    ));
                 }
             }
         }
@@ -369,8 +393,13 @@ impl ModelConfig {
         }
         // Full typed parse. A failure here means a field-level schema error;
         // report the first offending path with serde's message.
-        match serde_json::from_value::<BTreeMap<String, ModelsJsonProvider>>(providers_value.clone()) {
-            Ok(map) => Ok(ModelConfig { providers: map, error: None }),
+        match serde_json::from_value::<BTreeMap<String, ModelsJsonProvider>>(
+            providers_value.clone(),
+        ) {
+            Ok(map) => Ok(ModelConfig {
+                providers: map,
+                error: None,
+            }),
             Err(e) => {
                 let message = e.to_string();
                 // serde_json errors carry a path like `providers.demo.models[0].id`.
@@ -404,7 +433,8 @@ mod tests {
     use std::fs;
 
     fn write_tmp(name: &str, content: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pi-model-config-{name}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("pi-model-config-{name}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("models.json");
         fs::write(&path, content).unwrap();
@@ -426,7 +456,9 @@ mod tests {
 
     #[test]
     fn loads_providers_with_models() {
-        let path = write_tmp("valid", r#"{
+        let path = write_tmp(
+            "valid",
+            r#"{
   "providers": {
     "demo": {
       "name": "Demo",
@@ -440,9 +472,14 @@ mod tests {
       ]
     }
   }
-}"#);
+}"#,
+        );
         let cfg = ModelConfig::load(Some(&path));
-        assert!(cfg.get_error().is_none(), "unexpected error: {:?}", cfg.get_error());
+        assert!(
+            cfg.get_error().is_none(),
+            "unexpected error: {:?}",
+            cfg.get_error()
+        );
         let provider = cfg.get_provider("demo").unwrap();
         assert_eq!(provider.name.as_deref(), Some("Demo"));
         let model = &provider.models.as_ref().unwrap()[0];
@@ -452,7 +489,9 @@ mod tests {
 
     #[test]
     fn strips_comments_and_trailing_commas() {
-        let path = write_tmp("comments", r#"{
+        let path = write_tmp(
+            "comments",
+            r#"{
   // pi models overlay
   "providers": {
     "demo": {
@@ -463,16 +502,22 @@ mod tests {
       ],
     },
   },
-}"#);
+}"#,
+        );
         let cfg = ModelConfig::load(Some(&path));
-        assert!(cfg.get_error().is_none(), "unexpected error: {:?}", cfg.get_error());
+        assert!(
+            cfg.get_error().is_none(),
+            "unexpected error: {:?}",
+            cfg.get_error()
+        );
         assert!(cfg.get_provider("demo").is_some());
     }
 
     #[test]
     fn comment_lookalikes_inside_strings_survive() {
         let source = r#"{ "providers": { "demo": { "apiKey": "http://x/not-a-comment", "baseUrl": "https://y" } } }"#;
-        let cfg = ModelConfig::from_value(serde_json::from_str(&strip_json_comments(source)).unwrap());
+        let cfg =
+            ModelConfig::from_value(serde_json::from_str(&strip_json_comments(source)).unwrap());
         assert!(cfg.is_ok());
     }
 
@@ -487,7 +532,10 @@ mod tests {
 
     #[test]
     fn schema_error_captured() {
-        let path = write_tmp("schemas", r#"{ "providers": { "demo": { "models": "not-an-array" } } }"#);
+        let path = write_tmp(
+            "schemas",
+            r#"{ "providers": { "demo": { "models": "not-an-array" } } }"#,
+        );
         let cfg = ModelConfig::load(Some(&path));
         let err = cfg.get_error().unwrap();
         assert!(err.contains("Invalid models.json schema"), "{err}");
@@ -495,7 +543,10 @@ mod tests {
 
     #[test]
     fn strips_bom_before_parse() {
-        let path = write_tmp("bom", format!("\u{feff}{}", r#"{ "providers": {} }"#).as_str());
+        let path = write_tmp(
+            "bom",
+            format!("\u{feff}{}", r#"{ "providers": {} }"#).as_str(),
+        );
         let cfg = ModelConfig::load(Some(&path));
         assert!(cfg.get_error().is_none());
     }
@@ -513,7 +564,13 @@ mod tests {
         assert_eq!(strip_json_comments("{\"a\": 1,}"), "{\"a\": 1}");
         assert_eq!(strip_json_comments("{\"a\": [1, 2,],}"), "{\"a\": [1, 2]}");
         assert_eq!(strip_json_comments("// hi\n{\"a\": 1}"), "\n{\"a\": 1}");
-        assert_eq!(strip_json_comments("{\"s\": \"a,b,\"}"), "{\"s\": \"a,b,\"}");
-        assert_eq!(strip_json_comments("{\"s\": \"// not comment\", \"a\": 1}"), "{\"s\": \"// not comment\", \"a\": 1}");
+        assert_eq!(
+            strip_json_comments("{\"s\": \"a,b,\"}"),
+            "{\"s\": \"a,b,\"}"
+        );
+        assert_eq!(
+            strip_json_comments("{\"s\": \"// not comment\", \"a\": 1}"),
+            "{\"s\": \"// not comment\", \"a\": 1}"
+        );
     }
 }

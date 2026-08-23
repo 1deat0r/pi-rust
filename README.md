@@ -17,16 +17,15 @@ RPC/json/jsonl modes, `pi config`, `pi auth`, `pi list-models`, `pi /share`,
 `pi --export`, the full flag and env surface, project trust, skills /
 prompt-templates / context-files loaders, tools (bash/read/write/edit/
 edit-diff/ls/find/grep/image), compaction, and session storage — is ported and
-working. The workspace test suite is **1415 tests, 0 failures**, with the
+working. The workspace test suite is **1418 tests, 0 failures**, with the
 new-code surface held to a 0-warning / clippy-clean bar.
 
-The remaining work is tracked in [`NEXT-100.md`](NEXT-100.md) and concerns
-mostly interactive TUI render surfaces that require a real terminal to verify
-(component-level config selector, alt-screen swap, terminal-feature probes,
-editor IME edge cases, interactive E2E), edge-case parity (negative usage
-adjustments, `pi update` fetch seams, export_html fixture expansion), and the
-final packaging/parity/verification passes (T8/T9). None of these block the
-existing CLI surface.
+The remaining work and its progress are tracked in the exhaustive
+[`CONVERSION-LEDGER.md`](CONVERSION-LEDGER.md). The percentage in `PLAN.md` is
+derived from every checked/unchecked ledger task, including source-audit,
+provider edge cases, TUI, RPC, auxiliary client/server, evaluation, and final
+verification work; the original 100-item queue is only the historical core of
+that ledger.
 
 ## Workspace
 
@@ -55,8 +54,9 @@ without advancing CLI parity (see `PLAN.md §Recut`).
   roadmap, and a **session ledger**. Every phase is reassessed on completion,
   reviewed line-by-line against upstream, and gated by an independent reviewer
   sign-off before continuation.
-- [`NEXT-100.md`](NEXT-100.md) — the micro-task tracker for the full 1:1
-  conversion, with evidence tiers (`unit` | `mock` | `live`) on every criterion.
+- [`CONVERSION-LEDGER.md`](CONVERSION-LEDGER.md) — the exhaustive task tracker
+  for the full 1:1 conversion, with evidence tiers (`unit` | `mock` | `live`)
+  on every criterion.
 - Per-crate `TODO.md` files shadow the upstream module maps.
 
 ## Parity oracle
@@ -69,7 +69,7 @@ table. The pinned upstream clone is **excluded from this repo** (gitignored).
 ## Build & test
 
 ```bash
-cargo test --workspace       # 1415 tests, 0 failures
+cargo test --workspace       # 1418 tests, 0 failures
 cargo check --workspace
 ```
 

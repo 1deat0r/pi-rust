@@ -3,8 +3,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::types::ProviderResponse;
 use crate::types::{Api, Cost, JsonValue, ModelThinkingLevel, ProviderId, ThinkingLevelMap};
-use crate::types::{ProviderResponse};
 
 /// `onResponse` callback type: invoked after an HTTP response is received and
 /// before its body stream is consumed (mirrors upstream
@@ -45,7 +45,12 @@ pub enum ModelInput {
 }
 
 impl Model {
-    pub fn new(id: impl Into<String>, name: impl Into<String>, api: impl Into<String>, provider: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        api: impl Into<String>,
+        provider: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
@@ -90,37 +95,40 @@ struct RateRates {
 /// - cache write cost splits `cacheWrite1h` (long 1h-retention writes charged
 ///   at `2 * rates.input`) from short writes charged at `rates.cacheWrite`.
 pub fn calculate_cost(model: &Model, usage: &crate::types::Usage) -> Cost {
-    let input_tokens = usage.input + usage.cache_read + usage.cache_write;
+    let input_tokens =
+        i128::from(usage.input) + i128::from(usage.cache_read) + i128::from(usage.cache_write);
     let mut rates = RateRates {
         input: model.cost.input,
         output: model.cost.output,
         cache_read: model.cost.cache_read,
         cache_write: model.cost.cache_write,
     };
-    let mut matched_threshold = -1i64;
+    let mut matched_threshold = -1i128;
     if let Some(tiers) = &model.cost.tiers {
         for tier in tiers {
-            if input_tokens > tier.input_tokens_above && (tier.input_tokens_above as i64) > matched_threshold {
+            let threshold = i128::from(tier.input_tokens_above);
+            if input_tokens > threshold && threshold > matched_threshold {
                 rates = RateRates {
                     input: tier.input,
                     output: tier.output,
                     cache_read: tier.cache_read,
                     cache_write: tier.cache_write,
                 };
-                matched_threshold = tier.input_tokens_above as i64;
+                matched_threshold = threshold;
             }
         }
     }
 
     // Anthropic charges 2x base input for 1h cache writes.
     let long_write = usage.cache_write_1h.unwrap_or(0);
-    let short_write = usage.cache_write.saturating_sub(long_write);
+    let short_write = usage.cache_write - long_write;
 
     let input_cost = (usage.input as f64 * rates.input) / 1_000_000.0;
     let output_cost = (usage.output as f64 * rates.output) / 1_000_000.0;
     let cache_read_cost = (usage.cache_read as f64 * rates.cache_read) / 1_000_000.0;
-    let cache_write_cost =
-        (rates.cache_write * short_write as f64 + rates.input * 2.0 * long_write as f64) / 1_000_000.0;
+    let cache_write_cost = (rates.cache_write * short_write as f64
+        + rates.input * 2.0 * long_write as f64)
+        / 1_000_000.0;
     Cost {
         input: input_cost,
         output: output_cost,
@@ -145,7 +153,13 @@ pub struct ModelCost {
 
 impl Default for ModelCost {
     fn default() -> Self {
-        Self { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, tiers: None }
+        Self {
+            input: 0.0,
+            output: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            tiers: None,
+        }
     }
 }
 
@@ -196,10 +210,7 @@ pub fn get_supported_thinking_levels(model: &Model) -> Vec<ModelThinkingLevel> {
         .iter()
         .copied()
         .filter(|level| {
-            let mapped = model
-                .thinking_level_map
-                .as_ref()
-                .and_then(|m| m.get(level));
+            let mapped = model.thinking_level_map.as_ref().and_then(|m| m.get(level));
             if mapped == Some(&None) {
                 return false; // map entry is literally null -> disabled
             }
@@ -237,7 +248,10 @@ pub fn clamp_thinking_level(model: &Model, level: ModelThinkingLevel) -> ModelTh
             return *candidate;
         }
     }
-    available.first().copied().unwrap_or(ModelThinkingLevel::Off)
+    available
+        .first()
+        .copied()
+        .unwrap_or(ModelThinkingLevel::Off)
 }
 
 pub fn models_are_equal(a: &Model, b: &Model) -> bool {
@@ -260,7 +274,13 @@ mod tests {
     #[test]
     fn calc_cost_flat_rates() {
         let mut model = Model::new("m", "M", "faux", "faux");
-        model.cost = ModelCost { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75, tiers: None };
+        model.cost = ModelCost {
+            input: 3.0,
+            output: 15.0,
+            cache_read: 0.3,
+            cache_write: 3.75,
+            tiers: None,
+        };
         let usage = Usage {
             input: 1_000_000,
             output: 200_000,
@@ -323,7 +343,12 @@ mod tests {
     fn calc_cost_prices_1h_cache_write_at_2x_input_rate() {
         // Mirrors upstream anthropic-cache-write-1h-cost.test.ts:
         // claude-opus-4-8: input 5, cacheWrite (5m) 6.25 per Mtok; 1h write = 2x input = 10.
-        let mut model = Model::new("claude-opus-4-8", "Claude Opus 4.8", "anthropic-messages", "anthropic");
+        let mut model = Model::new(
+            "claude-opus-4-8",
+            "Claude Opus 4.8",
+            "anthropic-messages",
+            "anthropic",
+        );
         model.cost = ModelCost {
             input: 5.0,
             output: 15.0,
@@ -342,12 +367,21 @@ mod tests {
         };
         let cost = calculate_cost(&model, &usage);
         // 600k * 6.25/Mtok + 400k * 10/Mtok = 3.75 + 4.0 = 7.75
-        assert!((cost.cache_write - 7.75).abs() < 1e-9, "got {}", cost.cache_write);
+        assert!(
+            (cost.cache_write - 7.75).abs() < 1e-9,
+            "got {}",
+            cost.cache_write
+        );
     }
 
     #[test]
     fn calc_cost_falls_back_to_5m_rate_without_1h_breakdown() {
-        let mut model = Model::new("claude-opus-4-8", "Claude Opus 4.8", "anthropic-messages", "anthropic");
+        let mut model = Model::new(
+            "claude-opus-4-8",
+            "Claude Opus 4.8",
+            "anthropic-messages",
+            "anthropic",
+        );
         model.cost = ModelCost {
             input: 5.0,
             output: 15.0,
@@ -363,6 +397,30 @@ mod tests {
         let cost = calculate_cost(&model, &usage);
         // 1M * 6.25/Mtok = 6.25
         assert!((cost.cache_write - 6.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn signed_usage_round_trips_adjustment() {
+        let usage = Usage {
+            input: -2,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            cache_write_1h: None,
+            reasoning: None,
+            total_tokens: -2,
+            cost: Cost {
+                input: -0.5,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                total: -0.5,
+            },
+        };
+        let encoded = serde_json::to_value(&usage).unwrap();
+        assert_eq!(encoded["input"], -2);
+        assert_eq!(encoded["totalTokens"], -2);
+        assert_eq!(serde_json::from_value::<Usage>(encoded).unwrap(), usage);
     }
 
     #[test]
@@ -389,16 +447,37 @@ mod tests {
                 ModelThinkingLevel::High,
             ]
         );
-        assert_eq!(clamp_thinking_level(&model, ModelThinkingLevel::Low), ModelThinkingLevel::Low);
-        assert_eq!(clamp_thinking_level(&model, ModelThinkingLevel::Medium), ModelThinkingLevel::Medium);
-        assert_eq!(clamp_thinking_level(&model, ModelThinkingLevel::Xhigh), ModelThinkingLevel::High); // up fails -> down to high
-        assert_eq!(clamp_thinking_level(&model, ModelThinkingLevel::Max), ModelThinkingLevel::High);
+        assert_eq!(
+            clamp_thinking_level(&model, ModelThinkingLevel::Low),
+            ModelThinkingLevel::Low
+        );
+        assert_eq!(
+            clamp_thinking_level(&model, ModelThinkingLevel::Medium),
+            ModelThinkingLevel::Medium
+        );
+        assert_eq!(
+            clamp_thinking_level(&model, ModelThinkingLevel::Xhigh),
+            ModelThinkingLevel::High
+        ); // up fails -> down to high
+        assert_eq!(
+            clamp_thinking_level(&model, ModelThinkingLevel::Max),
+            ModelThinkingLevel::High
+        );
 
         // Reasoning off => only "off" is supported (upstream gate).
         model.reasoning = false;
-        assert_eq!(get_supported_thinking_levels(&model), vec![ModelThinkingLevel::Off]);
-        assert_eq!(clamp_thinking_level(&model, ModelThinkingLevel::Low), ModelThinkingLevel::Off);
-        assert_eq!(clamp_thinking_level(&model, ModelThinkingLevel::Off), ModelThinkingLevel::Off);
+        assert_eq!(
+            get_supported_thinking_levels(&model),
+            vec![ModelThinkingLevel::Off]
+        );
+        assert_eq!(
+            clamp_thinking_level(&model, ModelThinkingLevel::Low),
+            ModelThinkingLevel::Off
+        );
+        assert_eq!(
+            clamp_thinking_level(&model, ModelThinkingLevel::Off),
+            ModelThinkingLevel::Off
+        );
 
         // Reasoning on, "off" explicit-nulled in the map => off unsupported;
         // clamping toward off rounds UP to the lowest supported level
@@ -408,6 +487,9 @@ mod tests {
             (ModelThinkingLevel::Off, None),
             (ModelThinkingLevel::Low, Some("low".into())),
         ]));
-        assert_eq!(clamp_thinking_level(&model, ModelThinkingLevel::Off), ModelThinkingLevel::Minimal);
+        assert_eq!(
+            clamp_thinking_level(&model, ModelThinkingLevel::Off),
+            ModelThinkingLevel::Minimal
+        );
     }
 }

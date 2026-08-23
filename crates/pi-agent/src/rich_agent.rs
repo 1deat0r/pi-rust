@@ -17,8 +17,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::FutureExt;
@@ -54,13 +54,19 @@ pub struct PendingMessageQueue {
 
 impl PendingMessageQueue {
     pub fn new(mode: QueueMode) -> Self {
-        Self { messages: Vec::new(), mode }
+        Self {
+            messages: Vec::new(),
+            mode,
+        }
     }
     pub fn enqueue(&mut self, message: AgentMessage) {
         self.messages.push(message);
     }
     pub fn has_items(&self) -> bool {
         !self.messages.is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.messages.len()
     }
     pub fn drain(&mut self) -> Vec<AgentMessage> {
         if self.mode == QueueMode::All {
@@ -94,15 +100,52 @@ impl Default for ToolExecutionMode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RichAgentEvent {
     AgentStart,
-    AgentEnd { messages: Vec<AgentMessage> },
+    AgentEnd {
+        messages: Vec<AgentMessage>,
+    },
+    AutoRetryStart {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        error_message: String,
+    },
+    AutoRetryEnd {
+        success: bool,
+        attempt: u32,
+        final_error: Option<String>,
+    },
     TurnStart,
-    TurnEnd { message: AgentMessage, tool_results: Vec<ToolResultMessage> },
-    MessageStart { message: AgentMessage },
-    MessageUpdate { message: AgentMessage, assistant_message_event: AssistantMessageEvent },
-    MessageEnd { message: AgentMessage },
-    ToolExecutionStart { tool_call_id: String, tool_name: String, args: serde_json::Value },
-    ToolExecutionUpdate { tool_call_id: String, tool_name: String, args: serde_json::Value, partial_result: serde_json::Value },
-    ToolExecutionEnd { tool_call_id: String, tool_name: String, result: ToolResultMessage, is_error: bool },
+    TurnEnd {
+        message: AgentMessage,
+        tool_results: Vec<ToolResultMessage>,
+    },
+    MessageStart {
+        message: AgentMessage,
+    },
+    MessageUpdate {
+        message: AgentMessage,
+        assistant_message_event: AssistantMessageEvent,
+    },
+    MessageEnd {
+        message: AgentMessage,
+    },
+    ToolExecutionStart {
+        tool_call_id: String,
+        tool_name: String,
+        args: serde_json::Value,
+    },
+    ToolExecutionUpdate {
+        tool_call_id: String,
+        tool_name: String,
+        args: serde_json::Value,
+        partial_result: serde_json::Value,
+    },
+    ToolExecutionEnd {
+        tool_call_id: String,
+        tool_name: String,
+        result: ToolResultMessage,
+        is_error: bool,
+    },
 }
 
 /// `beforeToolCall` hook result (upstream `BeforeToolCallResult`).
@@ -142,18 +185,34 @@ pub struct AfterToolCallContext {
 }
 
 /// Async hook that returns a future.
-pub type AsyncHook<Args, Out> = Arc<dyn Fn(Args) -> Pin<Box<dyn Future<Output = Out> + Send>> + Send + Sync>;
+pub type AsyncHook<Args, Out> =
+    Arc<dyn Fn(Args) -> Pin<Box<dyn Future<Output = Out> + Send>> + Send + Sync>;
 
 pub type ConvertToLlmFn = Arc<dyn Fn(&[AgentMessage]) -> Vec<Message> + Send + Sync>;
 
-pub type BeforeToolCallHook =
-    Arc<dyn Fn(BeforeToolCallContext, Option<Arc<AtomicBool>>) -> Pin<Box<dyn Future<Output = Option<BeforeToolCallResult>> + Send>> + Send + Sync>;
+pub type BeforeToolCallHook = Arc<
+    dyn Fn(
+            BeforeToolCallContext,
+            Option<Arc<AtomicBool>>,
+        ) -> Pin<Box<dyn Future<Output = Option<BeforeToolCallResult>> + Send>>
+        + Send
+        + Sync,
+>;
 
-pub type AfterToolCallHook =
-    Arc<dyn Fn(AfterToolCallContext, Option<Arc<AtomicBool>>) -> Pin<Box<dyn Future<Output = Option<AfterToolCallResult>> + Send>> + Send + Sync>;
+pub type AfterToolCallHook = Arc<
+    dyn Fn(
+            AfterToolCallContext,
+            Option<Arc<AtomicBool>>,
+        ) -> Pin<Box<dyn Future<Output = Option<AfterToolCallResult>> + Send>>
+        + Send
+        + Sync,
+>;
 
-pub type ShouldStopAfterTurnHook =
-    Arc<dyn Fn(AssistantMessage, Vec<ToolResultMessage>) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
+pub type ShouldStopAfterTurnHook = Arc<
+    dyn Fn(AssistantMessage, Vec<ToolResultMessage>) -> Pin<Box<dyn Future<Output = bool> + Send>>
+        + Send
+        + Sync,
+>;
 
 fn none_hook<Out: Default>() -> AsyncHook<(), Out> {
     Arc::new(|()| async { Out::default() }.boxed())
@@ -170,7 +229,8 @@ pub struct RichAgentLoopConfig {
     /// to the harness converter (custom messages rendered for the provider).
     pub convert_to_llm: Option<ConvertToLlmFn>,
     /// Optional transform applied at the AgentMessage level before conversion.
-    pub transform_context: Option<AsyncHook<(Vec<AgentMessage>, Option<Arc<AtomicBool>>), Vec<AgentMessage>>>,
+    pub transform_context:
+        Option<AsyncHook<(Vec<AgentMessage>, Option<Arc<AtomicBool>>), Vec<AgentMessage>>>,
     /// Dynamic API key resolver for each LLM call.
     pub get_api_key: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
     /// Reasoning level forwarded to the stream function.
@@ -193,11 +253,19 @@ pub struct RichAgentLoopConfig {
     pub get_follow_up_messages: AsyncHook<(), Vec<AgentMessage>>,
     /// Explicit API key (applied when `get_api_key` returns none).
     pub api_key: Option<String>,
+    /// Optional retry policy for transient assistant errors.
+    pub retry_policy: Option<pi_ai::utils::retry::RetryPolicy>,
+    /// Separate cancellation flag for a pending retry backoff.
+    pub retry_signal: Option<Arc<AtomicBool>>,
 }
 
 impl RichAgentLoopConfig {
     /// Build a config with upstream field defaults (no-op hooks).
-    pub fn new(model: pi_ai::model::Model, stream_fn: StreamFn, signal: Option<Arc<AtomicBool>>) -> Self {
+    pub fn new(
+        model: pi_ai::model::Model,
+        stream_fn: StreamFn,
+        signal: Option<Arc<AtomicBool>>,
+    ) -> Self {
         Self {
             model,
             stream_fn,
@@ -215,6 +283,8 @@ impl RichAgentLoopConfig {
             get_steering_messages: none_hook(),
             get_follow_up_messages: none_hook(),
             api_key: None,
+            retry_policy: None,
+            retry_signal: None,
         }
     }
 }
@@ -224,9 +294,16 @@ fn tool_calls_of(message: &AssistantMessage) -> Vec<ToolCallRef<'_>> {
         .content()
         .iter()
         .filter_map(|c| match c {
-            pi_ai::types::ContentBlock::ToolCall { id, name, arguments, .. } => {
-                Some(ToolCallRef { id: id.as_str(), name: name.as_str(), arguments })
-            }
+            pi_ai::types::ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } => Some(ToolCallRef {
+                id: id.as_str(),
+                name: name.as_str(),
+                arguments,
+            }),
             _ => None,
         })
         .collect()
@@ -246,7 +323,11 @@ pub struct ExecutedToolBatch {
     pub terminate: bool,
 }
 
-fn create_error_tool_result(tool_call_id: &str, tool_name: &str, message: &str) -> ToolResultMessage {
+fn create_error_tool_result(
+    tool_call_id: &str,
+    tool_name: &str,
+    message: &str,
+) -> ToolResultMessage {
     ToolResultMessage::text(tool_call_id, tool_name, message, true)
 }
 
@@ -284,9 +365,12 @@ async fn drain_follow_up(config: &RichAgentLoopConfig) -> Vec<AgentMessage> {
 
 /// Fail all tool calls from an assistant message truncated by the output
 /// token limit (upstream `failToolCallsFromTruncatedMessage`).
-async fn fail_tool_calls_from_truncated_message<F>(message: &AssistantMessage, emit: &mut F) -> ExecutedToolBatch
+async fn fail_tool_calls_from_truncated_message<F>(
+    message: &AssistantMessage,
+    emit: &mut F,
+) -> ExecutedToolBatch
 where
-    F: FnMut(RichAgentEvent),
+    F: FnMut(RichAgentEvent) + Send,
 {
     let mut messages: Vec<ToolResultMessage> = Vec::new();
     for tc in tool_calls_of(message) {
@@ -311,12 +395,18 @@ where
         });
         emit_tool_result_messages(&mut messages, result, emit);
     }
-    ExecutedToolBatch { messages, terminate: false }
+    ExecutedToolBatch {
+        messages,
+        terminate: false,
+    }
 }
 
-fn emit_tool_result_messages<F>(messages: &mut Vec<ToolResultMessage>, result: ToolResultMessage, emit: &mut F)
-where
-    F: FnMut(RichAgentEvent),
+fn emit_tool_result_messages<F>(
+    messages: &mut Vec<ToolResultMessage>,
+    result: ToolResultMessage,
+    emit: &mut F,
+) where
+    F: FnMut(RichAgentEvent) + Send,
 {
     let m = AgentMessage::Core(Message::ToolResult(result.clone()));
     emit(RichAgentEvent::MessageStart { message: m.clone() });
@@ -333,7 +423,7 @@ async fn execute_tool_batch<F>(
     emit: &mut F,
 ) -> ExecutedToolBatch
 where
-    F: FnMut(RichAgentEvent),
+    F: FnMut(RichAgentEvent) + Send,
 {
     let tool_calls = tool_calls_of(message);
     if config.tool_execution == ToolExecutionMode::Sequential || tool_calls.len() <= 1 {
@@ -349,7 +439,7 @@ async fn execute_tool_calls_sequential<F>(
     emit: &mut F,
 ) -> ExecutedToolBatch
 where
-    F: FnMut(RichAgentEvent),
+    F: FnMut(RichAgentEvent) + Send,
 {
     let mut messages: Vec<ToolResultMessage> = Vec::new();
     let mut terminate_flags: Vec<bool> = Vec::new();
@@ -371,10 +461,13 @@ where
                 terminate_flags.push(false);
             }
             PreparedToolCall::Prepared { tool, args } => {
-                let (result, is_error) = execute_tool_once(&tc, &tool, args.clone(), config.signal.as_ref()).await;
+                let (result, is_error) =
+                    execute_tool_once(&tc, &tool, args.clone(), config.signal.as_ref()).await;
                 let terminate = result.terminate;
-                let (result, is_error) = finalize_tool_call(message, &tc, args, result, is_error, config, emit).await;
-                let message_result = agent_tool_result_to_message(&tc.id, &tc.name, &result, is_error);
+                let (result, is_error) =
+                    finalize_tool_call(message, &tc, args, result, is_error, config, emit).await;
+                let message_result =
+                    agent_tool_result_to_message(&tc.id, &tc.name, &result, is_error);
                 emit(RichAgentEvent::ToolExecutionEnd {
                     tool_call_id: tc.id.to_string(),
                     tool_name: tc.name.to_string(),
@@ -390,7 +483,10 @@ where
         }
     }
     let terminate = !terminate_flags.is_empty() && terminate_flags.iter().all(|t| *t);
-    ExecutedToolBatch { messages, terminate }
+    ExecutedToolBatch {
+        messages,
+        terminate,
+    }
 }
 
 async fn execute_tool_calls_parallel<F>(
@@ -400,7 +496,7 @@ async fn execute_tool_calls_parallel<F>(
     emit: &mut F,
 ) -> ExecutedToolBatch
 where
-    F: FnMut(RichAgentEvent),
+    F: FnMut(RichAgentEvent) + Send,
 {
     // Phase 1: prepare each call sequentially (upstream preflights).
     let mut prepared: Vec<Option<PreparedToolCall>> = Vec::new();
@@ -421,9 +517,12 @@ where
         .into_iter()
         .enumerate()
         .filter_map(|(i, tc)| match &prepared.get(i) {
-            Some(Some(PreparedToolCall::Prepared { .. })) => {
-                Some((tc.id.to_string(), tc.name.to_string(), tc.arguments.clone(), i))
-            }
+            Some(Some(PreparedToolCall::Prepared { .. })) => Some((
+                tc.id.to_string(),
+                tc.name.to_string(),
+                tc.arguments.clone(),
+                i,
+            )),
             _ => None,
         })
         .collect();
@@ -444,10 +543,17 @@ where
                     let tool = tools.iter().find(|t| t.tool.name == name).cloned();
                     let (result, is_error) = match tool {
                         Some(tool) => {
-                            let tc = ToolCallRef { id: &id, name: &name, arguments: &args };
+                            let tc = ToolCallRef {
+                                id: &id,
+                                name: &name,
+                                arguments: &args,
+                            };
                             execute_tool_once(&tc, &tool, args.clone(), None).await
                         }
-                        None => (crate::tools::AgentToolResult::text(format!("Tool {name} not found")), true),
+                        None => (
+                            crate::tools::AgentToolResult::text(format!("Tool {name} not found")),
+                            true,
+                        ),
                     };
                     (i, (result, is_error))
                 }
@@ -463,14 +569,22 @@ where
     let mut emitted: Vec<(String, String)> = Vec::new();
     let mut terminate_flags: Vec<bool> = Vec::new();
     for (i, (result, is_error)) in finalized {
-        let (id, name) = calls.get(i).map(|c| (c.0.clone(), c.1.clone())).unwrap_or_default();
+        let (id, name) = calls
+            .get(i)
+            .map(|c| (c.0.clone(), c.1.clone()))
+            .unwrap_or_default();
         if emitted.iter().any(|(eid, _)| eid == &id) {
             continue;
         }
         emitted.push((id.clone(), name.clone()));
         terminate_flags.push(result.terminate);
         let message_result = agent_tool_result_to_message(&id, &name, &result, is_error);
-        emit(RichAgentEvent::ToolExecutionEnd { tool_call_id: id, tool_name: name, result: message_result.clone(), is_error });
+        emit(RichAgentEvent::ToolExecutionEnd {
+            tool_call_id: id,
+            tool_name: name,
+            result: message_result.clone(),
+            is_error,
+        });
         emit_tool_result_messages(&mut messages, message_result, emit);
     }
     // Immediate (error) preparations in source order too.
@@ -484,17 +598,31 @@ where
                 continue;
             }
             emitted.push((id.clone(), name.clone()));
-            emit(RichAgentEvent::ToolExecutionEnd { tool_call_id: id.clone(), tool_name: name.clone(), result: result.clone(), is_error: *is_error });
+            emit(RichAgentEvent::ToolExecutionEnd {
+                tool_call_id: id.clone(),
+                tool_name: name.clone(),
+                result: result.clone(),
+                is_error: *is_error,
+            });
             emit_tool_result_messages(&mut messages, result.clone(), emit);
         }
     }
     let terminate = !terminate_flags.is_empty() && terminate_flags.iter().all(|t| *t);
-    ExecutedToolBatch { messages, terminate }
+    ExecutedToolBatch {
+        messages,
+        terminate,
+    }
 }
 
 enum PreparedToolCall {
-    Prepared { tool: AgentTool, args: serde_json::Value },
-    Immediate { result: ToolResultMessage, is_error: bool },
+    Prepared {
+        tool: AgentTool,
+        args: serde_json::Value,
+    },
+    Immediate {
+        result: ToolResultMessage,
+        is_error: bool,
+    },
 }
 
 /// Resolve + validate + beforeToolCall for one tool call (upstream
@@ -507,7 +635,11 @@ async fn prepare_tool_call(
 ) -> PreparedToolCall {
     let Some(tool) = context.tools.iter().find(|t| t.tool.name == tc.name) else {
         return PreparedToolCall::Immediate {
-            result: create_error_tool_result(tc.id, tc.name, &format!("Tool {} not found", tc.name)),
+            result: create_error_tool_result(
+                tc.id,
+                tc.name,
+                &format!("Tool {} not found", tc.name),
+            ),
             is_error: true,
         };
     };
@@ -553,7 +685,9 @@ async fn prepare_tool_call(
         }
         if let Some(before) = before {
             if before.block {
-                let reason = before.reason.unwrap_or_else(|| "Tool execution was blocked".to_string());
+                let reason = before
+                    .reason
+                    .unwrap_or_else(|| "Tool execution was blocked".to_string());
                 return PreparedToolCall::Immediate {
                     result: create_error_tool_result(tc.id, tc.name, &reason),
                     is_error: true,
@@ -567,7 +701,10 @@ async fn prepare_tool_call(
             is_error: true,
         };
     }
-    PreparedToolCall::Prepared { tool: tool.clone(), args: validated }
+    PreparedToolCall::Prepared {
+        tool: tool.clone(),
+        args: validated,
+    }
 }
 
 async fn execute_tool_once(
@@ -577,7 +714,10 @@ async fn execute_tool_once(
     signal: Option<&Arc<AtomicBool>>,
 ) -> (crate::tools::AgentToolResult, bool) {
     if is_aborted(signal) {
-        return (crate::tools::AgentToolResult::text("Operation aborted"), true);
+        return (
+            crate::tools::AgentToolResult::text("Operation aborted"),
+            true,
+        );
     }
     match (tool.execute)(tc.id.to_string(), args, signal.cloned(), None).await {
         Ok(result) => {
@@ -599,7 +739,7 @@ async fn finalize_tool_call<F>(
     emit: &mut F,
 ) -> (crate::tools::AgentToolResult, bool)
 where
-    F: FnMut(RichAgentEvent),
+    F: FnMut(RichAgentEvent) + Send,
 {
     let _ = emit;
     let Some(hook) = &config.after_tool_call else {
@@ -636,17 +776,25 @@ pub async fn run_rich_agent_loop<F>(
     emit: &mut F,
 ) -> Vec<AgentMessage>
 where
-    F: FnMut(RichAgentEvent),
+    F: FnMut(RichAgentEvent) + Send,
 {
     let mut new_messages: Vec<AgentMessage> = prompts.clone();
-    let mut current_messages: Vec<AgentMessage> =
-        context.messages.iter().cloned().chain(prompts.clone()).collect();
+    let mut current_messages: Vec<AgentMessage> = context
+        .messages
+        .iter()
+        .cloned()
+        .chain(prompts.clone())
+        .collect();
 
     emit(RichAgentEvent::AgentStart);
     emit(RichAgentEvent::TurnStart);
     for prompt in &prompts {
-        emit(RichAgentEvent::MessageStart { message: prompt.clone() });
-        emit(RichAgentEvent::MessageEnd { message: prompt.clone() });
+        emit(RichAgentEvent::MessageStart {
+            message: prompt.clone(),
+        });
+        emit(RichAgentEvent::MessageEnd {
+            message: prompt.clone(),
+        });
     }
 
     let mut first_turn = false;
@@ -663,8 +811,12 @@ where
 
             if !pending_messages.is_empty() {
                 for message in pending_messages.drain(..) {
-                    emit(RichAgentEvent::MessageStart { message: message.clone() });
-                    emit(RichAgentEvent::MessageEnd { message: message.clone() });
+                    emit(RichAgentEvent::MessageStart {
+                        message: message.clone(),
+                    });
+                    emit(RichAgentEvent::MessageEnd {
+                        message: message.clone(),
+                    });
                     current_messages.push(message.clone());
                     new_messages.push(message);
                 }
@@ -672,12 +824,22 @@ where
 
             let message = stream_assistant_response(&current_messages, context, config, emit).await;
             current_messages.push(AgentMessage::Core(Message::Assistant(message.clone())));
-            context.messages.push(AgentMessage::Core(Message::Assistant(message.clone())));
+            context
+                .messages
+                .push(AgentMessage::Core(Message::Assistant(message.clone())));
             new_messages.push(AgentMessage::Core(Message::Assistant(message.clone())));
 
-            if matches!(message.stop_reason(), Some(StopReason::Error) | Some(StopReason::Aborted)) {
-                emit(RichAgentEvent::TurnEnd { message: AgentMessage::Core(Message::Assistant(message)), tool_results: vec![] });
-                emit(RichAgentEvent::AgentEnd { messages: new_messages.clone() });
+            if matches!(
+                message.stop_reason(),
+                Some(StopReason::Error) | Some(StopReason::Aborted)
+            ) {
+                emit(RichAgentEvent::TurnEnd {
+                    message: AgentMessage::Core(Message::Assistant(message)),
+                    tool_results: vec![],
+                });
+                emit(RichAgentEvent::AgentEnd {
+                    messages: new_messages.clone(),
+                });
                 return new_messages;
             }
 
@@ -703,20 +865,30 @@ where
                     new_messages.push(AgentMessage::Core(Message::ToolResult(result.clone())));
                 }
                 if batch.terminate {
-                    emit(RichAgentEvent::TurnEnd { message: AgentMessage::Core(Message::Assistant(message.clone())), tool_results: tool_results.clone() });
-                    emit(RichAgentEvent::AgentEnd { messages: new_messages.clone() });
+                    emit(RichAgentEvent::TurnEnd {
+                        message: AgentMessage::Core(Message::Assistant(message.clone())),
+                        tool_results: tool_results.clone(),
+                    });
+                    emit(RichAgentEvent::AgentEnd {
+                        messages: new_messages.clone(),
+                    });
                     return new_messages;
                 }
             }
 
-            emit(RichAgentEvent::TurnEnd { message: AgentMessage::Core(Message::Assistant(message.clone())), tool_results: tool_results.clone() });
+            emit(RichAgentEvent::TurnEnd {
+                message: AgentMessage::Core(Message::Assistant(message.clone())),
+                tool_results: tool_results.clone(),
+            });
 
             let should_stop = match &config.should_stop_after_turn {
                 Some(hook) => hook(message, tool_results.clone()).await,
                 None => false,
             };
             if should_stop {
-                emit(RichAgentEvent::AgentEnd { messages: new_messages.clone() });
+                emit(RichAgentEvent::AgentEnd {
+                    messages: new_messages.clone(),
+                });
                 return new_messages;
             }
 
@@ -732,7 +904,9 @@ where
         break;
     }
 
-    emit(RichAgentEvent::AgentEnd { messages: new_messages.clone() });
+    emit(RichAgentEvent::AgentEnd {
+        messages: new_messages.clone(),
+    });
     new_messages
 }
 
@@ -745,8 +919,14 @@ async fn stream_assistant_response<F>(
     emit: &mut F,
 ) -> AssistantMessage
 where
-    F: FnMut(RichAgentEvent),
+    F: FnMut(RichAgentEvent) + Send,
 {
+    if is_aborted(config.signal.as_ref()) {
+        let mut aborted = AssistantMessage::new();
+        aborted.set_stop_reason(StopReason::Aborted);
+        return aborted;
+    }
+
     // Apply context transform if configured (AgentMessage[] -> AgentMessage[]).
     let mut messages = current_messages.to_vec();
     if let Some(transform) = &config.transform_context {
@@ -772,40 +952,219 @@ where
         .and_then(|f| f(&config.model.provider))
         .or_else(|| config.api_key.clone());
 
+    if let Some(policy) = &config.retry_policy {
+        // Retry is implemented at the assistant-call boundary, but every
+        // attempt still follows the normal rich message lifecycle. Keep the
+        // events in a shared ordered buffer while the retry helper sleeps and
+        // invokes later attempts; the caller can then emit the complete
+        // attempt history in the same order it was observed.
+        let retry_events = Arc::new(Mutex::new(Vec::<RichAgentEvent>::new()));
+        let stream_fn = config.stream_fn.clone();
+        let model = config.model.clone();
+        let retry_context = llm_context.clone();
+        let retry_signal = config
+            .retry_signal
+            .clone()
+            .or_else(|| config.signal.clone());
+        let scheduled_events = retry_events.clone();
+        let finished_events = retry_events.clone();
+        let callback_signal = retry_signal.clone();
+        let callback_run_signal = config.signal.clone();
+        let callbacks = pi_ai::utils::retry::RetryCallbacks {
+            on_retry_scheduled: Some(Box::new(move |attempt, max_attempts, delay_ms, error| {
+                scheduled_events
+                    .lock()
+                    .unwrap()
+                    .push(RichAgentEvent::AutoRetryStart {
+                        attempt,
+                        max_attempts,
+                        delay_ms,
+                        error_message: error,
+                    });
+            })),
+            on_retry_finished: Some(Box::new(move |success, attempt, final_error| {
+                let final_error = if !success
+                    && callback_signal
+                        .as_ref()
+                        .is_some_and(|signal| signal.load(Ordering::SeqCst))
+                    && !callback_run_signal
+                        .as_ref()
+                        .is_some_and(|signal| signal.load(Ordering::SeqCst))
+                {
+                    Some("Retry cancelled".to_string())
+                } else {
+                    final_error
+                };
+                finished_events
+                    .lock()
+                    .unwrap()
+                    .push(RichAgentEvent::AutoRetryEnd {
+                        success,
+                        attempt,
+                        final_error,
+                    });
+            })),
+            ..Default::default()
+        };
+        let producer_events = retry_events.clone();
+        let mut final_message = pi_ai::utils::retry::retry_assistant_call(
+            move || {
+                let stream = stream_fn(&model, &retry_context);
+                let signal = config.signal.clone();
+                let producer_events = producer_events.clone();
+                async move { stream_assistant_attempt(stream, signal, producer_events).await }
+            },
+            Some(policy),
+            retry_signal.as_ref(),
+            Some(&callbacks),
+        )
+        .await;
+
+        // Cancelling only the retry backoff leaves the original provider
+        // error as the authoritative final response. A normal run abort (or
+        // a provider abort on a later attempt) remains an aborted response.
+        let retry_was_cancelled = final_message.stop_reason() == Some(StopReason::Aborted)
+            && !is_aborted(config.signal.as_ref())
+            && retry_signal
+                .as_ref()
+                .is_some_and(|signal| signal.load(Ordering::SeqCst));
+        if retry_was_cancelled {
+            if let Some(error) = retry_events.lock().unwrap().iter().rev().find_map(|event| {
+                let RichAgentEvent::MessageEnd { message } = event else {
+                    return None;
+                };
+                let AgentMessage::Core(Message::Assistant(message)) = message else {
+                    return None;
+                };
+                (message.stop_reason() == Some(StopReason::Error)).then(|| message.clone())
+            }) {
+                final_message = error;
+            }
+        } else if is_aborted(config.signal.as_ref())
+            && !retry_events.lock().unwrap().iter().any(|event| {
+                matches!(
+                    event,
+                    RichAgentEvent::MessageEnd {
+                        message: AgentMessage::Core(Message::Assistant(message))
+                    } if message.stop_reason() == Some(StopReason::Aborted)
+                )
+            })
+        {
+            // The retry helper can abort while sleeping, before it has a
+            // provider stream to observe. Preserve an explicit aborted
+            // terminal message for a user abort in that case.
+            retry_events
+                .lock()
+                .unwrap()
+                .push(RichAgentEvent::MessageEnd {
+                    message: AgentMessage::Core(Message::Assistant(final_message.clone())),
+                });
+        }
+
+        let buffered = std::mem::take(&mut *retry_events.lock().unwrap());
+        for event in buffered {
+            emit(event);
+        }
+        if is_aborted(config.signal.as_ref()) {
+            final_message.set_stop_reason(StopReason::Aborted);
+        }
+        return final_message;
+    }
+
     let stream = (config.stream_fn)(&config.model, &llm_context);
 
-    let emit_ref: &mut dyn FnMut(RichAgentEvent) = emit;
-    let final_message = stream
-        .for_each(|event| {
-            match &event {
-                AssistantMessageEvent::Start { partial } => {
-                    emit_ref(RichAgentEvent::MessageStart {
+    let emit_ref: &mut (dyn FnMut(RichAgentEvent) + Send) = emit;
+    let mut final_message = stream
+        .for_each(|event| match &event {
+            AssistantMessageEvent::Start { partial } => {
+                emit_ref(RichAgentEvent::MessageStart {
+                    message: AgentMessage::Core(Message::Assistant(partial.clone())),
+                });
+            }
+            AssistantMessageEvent::TextStart { .. }
+            | AssistantMessageEvent::TextDelta { .. }
+            | AssistantMessageEvent::TextEnd { .. }
+            | AssistantMessageEvent::ThinkingStart { .. }
+            | AssistantMessageEvent::ThinkingDelta { .. }
+            | AssistantMessageEvent::ThinkingEnd { .. }
+            | AssistantMessageEvent::ToolCallStart { .. }
+            | AssistantMessageEvent::ToolCallDelta { .. }
+            | AssistantMessageEvent::ToolCallEnd { .. } => {
+                if let Some(partial) = event.partial() {
+                    emit_ref(RichAgentEvent::MessageUpdate {
                         message: AgentMessage::Core(Message::Assistant(partial.clone())),
+                        assistant_message_event: event.clone(),
                     });
                 }
-                AssistantMessageEvent::TextStart { .. }
-                | AssistantMessageEvent::TextDelta { .. }
-                | AssistantMessageEvent::TextEnd { .. }
-                | AssistantMessageEvent::ThinkingStart { .. }
-                | AssistantMessageEvent::ThinkingDelta { .. }
-                | AssistantMessageEvent::ThinkingEnd { .. }
-                | AssistantMessageEvent::ToolCallStart { .. }
-                | AssistantMessageEvent::ToolCallDelta { .. }
-                | AssistantMessageEvent::ToolCallEnd { .. } => {
-                    if let Some(partial) = event.partial() {
-                        emit_ref(RichAgentEvent::MessageUpdate {
-                            message: AgentMessage::Core(Message::Assistant(partial.clone())),
-                            assistant_message_event: event.clone(),
-                        });
-                    }
-                }
-                AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
             }
+            AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
         })
         .await;
+    if is_aborted(config.signal.as_ref()) {
+        final_message.set_stop_reason(StopReason::Aborted);
+    }
 
     emit(RichAgentEvent::MessageEnd {
         message: AgentMessage::Core(Message::Assistant(final_message.clone())),
+    });
+    final_message
+}
+
+/// Consume one provider stream while recording the same rich events as the
+/// non-retry path. The retry helper owns only attempt selection/backoff; this
+/// function owns stream observation and the attempt's final message lifecycle.
+async fn stream_assistant_attempt(
+    stream: pi_ai::AssistantMessageEventStream,
+    signal: Option<Arc<AtomicBool>>,
+    events: Arc<Mutex<Vec<RichAgentEvent>>>,
+) -> AssistantMessage {
+    let mut added_partial = false;
+    let events_for_stream = events.clone();
+    let mut final_message = stream
+        .for_each(|event| match &event {
+            AssistantMessageEvent::Start { partial } => {
+                added_partial = true;
+                events_for_stream
+                    .lock()
+                    .unwrap()
+                    .push(RichAgentEvent::MessageStart {
+                        message: AgentMessage::Core(Message::Assistant(partial.clone())),
+                    });
+            }
+            AssistantMessageEvent::TextStart { .. }
+            | AssistantMessageEvent::TextDelta { .. }
+            | AssistantMessageEvent::TextEnd { .. }
+            | AssistantMessageEvent::ThinkingStart { .. }
+            | AssistantMessageEvent::ThinkingDelta { .. }
+            | AssistantMessageEvent::ThinkingEnd { .. }
+            | AssistantMessageEvent::ToolCallStart { .. }
+            | AssistantMessageEvent::ToolCallDelta { .. }
+            | AssistantMessageEvent::ToolCallEnd { .. } => {
+                if let Some(partial) = event.partial() {
+                    events_for_stream
+                        .lock()
+                        .unwrap()
+                        .push(RichAgentEvent::MessageUpdate {
+                            message: AgentMessage::Core(Message::Assistant(partial.clone())),
+                            assistant_message_event: event.clone(),
+                        });
+                }
+            }
+            AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
+        })
+        .await;
+
+    if is_aborted(signal.as_ref()) {
+        final_message.set_stop_reason(StopReason::Aborted);
+    }
+    let final_agent_message = AgentMessage::Core(Message::Assistant(final_message.clone()));
+    if !added_partial {
+        events.lock().unwrap().push(RichAgentEvent::MessageStart {
+            message: final_agent_message.clone(),
+        });
+    }
+    events.lock().unwrap().push(RichAgentEvent::MessageEnd {
+        message: final_agent_message,
     });
     final_message
 }
@@ -874,7 +1233,18 @@ fn default_model() -> pi_ai::model::Model {
 /// Stateful wrapper around the low-level agent loop (upstream `Agent`).
 pub struct Agent {
     state: Mutex<AgentState>,
-    listeners: Mutex<Vec<Arc<dyn Fn(RichAgentEvent, Option<Arc<AtomicBool>>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>>>,
+    listeners: Mutex<
+        Vec<
+            Arc<
+                dyn Fn(
+                        RichAgentEvent,
+                        Option<Arc<AtomicBool>>,
+                    ) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                    + Send
+                    + Sync,
+            >,
+        >,
+    >,
     steering_queue: Mutex<PendingMessageQueue>,
     follow_up_queue: Mutex<PendingMessageQueue>,
     active_run: Mutex<Option<ActiveRun>>,
@@ -940,7 +1310,10 @@ impl Agent {
     /// Subscribe to lifecycle events (upstream `Agent.subscribe`).
     pub fn subscribe<F>(&self, listener: F)
     where
-        F: Fn(RichAgentEvent, Option<Arc<AtomicBool>>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static,
+        F: Fn(RichAgentEvent, Option<Arc<AtomicBool>>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+            + Send
+            + Sync
+            + 'static,
     {
         self.listeners.lock().unwrap().push(Arc::new(listener));
     }
@@ -981,7 +1354,8 @@ impl Agent {
         self.clear_follow_up_queue();
     }
     pub fn has_queued_messages(&self) -> bool {
-        self.steering_queue.lock().unwrap().has_items() || self.follow_up_queue.lock().unwrap().has_items()
+        self.steering_queue.lock().unwrap().has_items()
+            || self.follow_up_queue.lock().unwrap().has_items()
     }
 
     /// Abort the current run, if one is active (upstream `Agent.abort`).
@@ -1030,7 +1404,11 @@ impl Agent {
         let mut skip = skip_initial_steering;
         let (model, system_prompt, tools) = {
             let state = self.state.lock().unwrap();
-            (state.model.clone(), state.system_prompt.clone(), state.tools.clone())
+            (
+                state.model.clone(),
+                state.system_prompt.clone(),
+                state.tools.clone(),
+            )
         };
         let mut context = AgentContext::new(Some(system_prompt), tools);
         {
@@ -1039,7 +1417,10 @@ impl Agent {
         }
         let config = self.build_config(model, &mut skip);
         let mut events: Vec<RichAgentEvent> = Vec::new();
-        let new_messages = run_rich_agent_loop(messages, &mut context, &config, &mut |e| events.push(e.clone())).await;
+        let new_messages = run_rich_agent_loop(messages, &mut context, &config, &mut |e| {
+            events.push(e.clone())
+        })
+        .await;
         self.record_events(&events).await;
         {
             let mut state = self.state.lock().unwrap();
@@ -1051,7 +1432,11 @@ impl Agent {
     async fn run_continuation(&self) {
         let (model, system_prompt, tools) = {
             let state = self.state.lock().unwrap();
-            (state.model.clone(), state.system_prompt.clone(), state.tools.clone())
+            (
+                state.model.clone(),
+                state.system_prompt.clone(),
+                state.tools.clone(),
+            )
         };
         let mut context = AgentContext::new(Some(system_prompt), tools);
         {
@@ -1060,7 +1445,10 @@ impl Agent {
         }
         let config = self.build_config(model, &mut false);
         let mut events: Vec<RichAgentEvent> = Vec::new();
-        let _new_messages = run_rich_agent_loop(Vec::new(), &mut context, &config, &mut |e| events.push(e.clone())).await;
+        let _new_messages = run_rich_agent_loop(Vec::new(), &mut context, &config, &mut |e| {
+            events.push(e.clone())
+        })
+        .await;
         self.record_events(&events).await;
         {
             let mut state = self.state.lock().unwrap();
@@ -1068,7 +1456,11 @@ impl Agent {
         }
     }
 
-    fn build_config(&self, model: pi_ai::model::Model, skip_initial_steering: &mut bool) -> RichAgentLoopConfig {
+    fn build_config(
+        &self,
+        model: pi_ai::model::Model,
+        skip_initial_steering: &mut bool,
+    ) -> RichAgentLoopConfig {
         let mut config = RichAgentLoopConfig::new(model, self.stream_fn.clone(), None);
         config.convert_to_llm = self.convert_to_llm.clone();
         config.before_tool_call = self.before_tool_call.clone();
@@ -1122,11 +1514,17 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pi_ai::providers::{faux_assistant_message, FauxAssistantOptions, FauxProviderCore, FauxResponseStep, RegisterFauxProviderOptions};
+    use pi_ai::providers::{
+        faux_assistant_message, FauxAssistantOptions, FauxProviderCore, FauxResponseStep,
+        RegisterFauxProviderOptions,
+    };
     use pi_ai::types::ContentBlock;
 
     fn rt() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
     }
 
     fn scripted_stream(core: FauxProviderCore) -> StreamFn {
@@ -1219,6 +1617,143 @@ mod tests {
     }
 
     #[test]
+    fn rich_loop_retry_preserves_attempt_events_and_final_message() {
+        let rt = rt();
+        rt.block_on(async {
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            core.set_responses(vec![
+                FauxResponseStep::Message(faux_assistant_message(
+                    Vec::new(),
+                    FauxAssistantOptions {
+                        stop_reason: Some(pi_ai::types::StopReason::Error),
+                        error_message: Some("overloaded_error".to_string()),
+                        ..Default::default()
+                    },
+                )),
+                FauxResponseStep::Message(faux_assistant_message(
+                    vec![ContentBlock::text("recovered")],
+                    FauxAssistantOptions::default(),
+                )),
+            ]);
+            let model = core.get_model(None).unwrap().clone();
+            let stream_fn = scripted_stream(core);
+            let mut context = AgentContext::new(Some("test".into()), Vec::new());
+            let mut config = RichAgentLoopConfig::new(model, stream_fn, None);
+            config.retry_policy = Some(pi_ai::utils::retry::RetryPolicy {
+                enabled: true,
+                max_retries: 2,
+                base_delay_ms: 0,
+            });
+            config.retry_signal = Some(Arc::new(AtomicBool::new(false)));
+            let mut events = Vec::new();
+            let new_messages = run_rich_agent_loop(
+                vec![steer_msg("retry me")],
+                &mut context,
+                &config,
+                &mut |event| events.push(event),
+            )
+            .await;
+
+            let assistant_ends: Vec<&AssistantMessage> = events
+                .iter()
+                .filter_map(|event| match event {
+                    RichAgentEvent::MessageEnd {
+                        message: AgentMessage::Core(Message::Assistant(message)),
+                    } => Some(message),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(assistant_ends.len(), 2);
+            assert_eq!(assistant_ends[0].stop_reason(), Some(StopReason::Error));
+            assert_eq!(assistant_ends[1].stop_reason(), Some(StopReason::Stop));
+            assert!(events.iter().any(|event| {
+                matches!(
+                    event,
+                    RichAgentEvent::AutoRetryStart {
+                        attempt: 1,
+                        max_attempts: 2,
+                        error_message,
+                        ..
+                    } if error_message == "overloaded_error"
+                )
+            }));
+            assert!(events.iter().any(|event| {
+                matches!(
+                    event,
+                    RichAgentEvent::AutoRetryEnd {
+                        success: true,
+                        attempt: 1,
+                        final_error: None,
+                    }
+                )
+            }));
+            assert_eq!(
+                new_messages
+                    .iter()
+                    .filter(|message| matches!(message, AgentMessage::Core(Message::Assistant(_))))
+                    .count(),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn rich_loop_abort_retry_keeps_the_failed_attempt_as_final() {
+        let rt = rt();
+        rt.block_on(async {
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
+                Vec::new(),
+                FauxAssistantOptions {
+                    stop_reason: Some(pi_ai::types::StopReason::Error),
+                    error_message: Some("overloaded_error".to_string()),
+                    ..Default::default()
+                },
+            ))]);
+            let model = core.get_model(None).unwrap().clone();
+            let stream_fn = scripted_stream(core);
+            let retry_signal = Arc::new(AtomicBool::new(true));
+            let mut config = RichAgentLoopConfig::new(model, stream_fn, None);
+            config.retry_policy = Some(pi_ai::utils::retry::RetryPolicy {
+                enabled: true,
+                max_retries: 2,
+                base_delay_ms: 10_000,
+            });
+            config.retry_signal = Some(retry_signal);
+            let mut context = AgentContext::new(Some("test".into()), Vec::new());
+            let mut events = Vec::new();
+            let new_messages = run_rich_agent_loop(
+                vec![steer_msg("abort retry")],
+                &mut context,
+                &config,
+                &mut |event| events.push(event),
+            )
+            .await;
+
+            assert!(events.iter().any(|event| {
+                matches!(
+                    event,
+                    RichAgentEvent::AutoRetryEnd {
+                        success: false,
+                        attempt: 1,
+                        final_error: Some(error),
+                    } if error == "Retry cancelled"
+                )
+            }));
+            assert!(new_messages.iter().any(|message| matches!(
+                message,
+                AgentMessage::Core(Message::Assistant(assistant))
+                    if assistant.stop_reason() == Some(StopReason::Error)
+            )));
+            assert!(!new_messages.iter().any(|message| matches!(
+                message,
+                AgentMessage::Core(Message::Assistant(assistant))
+                    if assistant.stop_reason() == Some(StopReason::Aborted)
+            )));
+        });
+    }
+
+    #[test]
     fn rich_loop_drains_steering_and_follow_up_messages() {
         let rt = rt();
         rt.block_on(async {
@@ -1250,8 +1785,14 @@ mod tests {
 
             let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
             core.set_responses(vec![
-                FauxResponseStep::Message(faux_assistant_message(vec![ContentBlock::text("first")], FauxAssistantOptions::default())),
-                FauxResponseStep::Message(faux_assistant_message(vec![ContentBlock::text("second")], FauxAssistantOptions::default())),
+                FauxResponseStep::Message(faux_assistant_message(
+                    vec![ContentBlock::text("first")],
+                    FauxAssistantOptions::default(),
+                )),
+                FauxResponseStep::Message(faux_assistant_message(
+                    vec![ContentBlock::text("second")],
+                    FauxAssistantOptions::default(),
+                )),
             ]);
             let model = core.get_model(None).unwrap().clone();
             let stream_fn = scripted_stream(core);
@@ -1260,13 +1801,11 @@ mod tests {
             cfg.get_steering_messages = steering;
             cfg.get_follow_up_messages = follow_up;
             let mut events: Vec<RichAgentEvent> = Vec::new();
-            let new_messages = run_rich_agent_loop(
-                vec![steer_msg("hello")],
-                &mut context,
-                &cfg,
-                &mut |e| events.push(e),
-            )
-            .await;
+            let new_messages =
+                run_rich_agent_loop(vec![steer_msg("hello")], &mut context, &cfg, &mut |e| {
+                    events.push(e)
+                })
+                .await;
             let assistant_count = new_messages
                 .iter()
                 .filter(|m| matches!(m, AgentMessage::Core(Message::Assistant(_))))
@@ -1277,7 +1816,10 @@ mod tests {
                 .filter(|m| matches!(m, AgentMessage::Core(Message::User(_))))
                 .count();
             assert_eq!(user_count, 3, "prompt + steering + follow-up");
-            let turn_starts = events.iter().filter(|e| matches!(e, RichAgentEvent::TurnStart)).count();
+            let turn_starts = events
+                .iter()
+                .filter(|e| matches!(e, RichAgentEvent::TurnStart))
+                .count();
             assert_eq!(turn_starts, 2);
         });
     }
@@ -1299,8 +1841,13 @@ mod tests {
                 state.model = model;
             }
             agent.prompt(steer_msg("hello")).await;
-            let msgs = { let s = agent.state(); s.messages().to_vec() };
-            assert!(msgs.iter().any(|m| matches!(m, AgentMessage::Core(Message::Assistant(a)) if a.content().len() > 0)));
+            let msgs = {
+                let s = agent.state();
+                s.messages().to_vec()
+            };
+            assert!(msgs.iter().any(
+                |m| matches!(m, AgentMessage::Core(Message::Assistant(a)) if a.content().len() > 0)
+            ));
         });
     }
 }

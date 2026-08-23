@@ -17,7 +17,7 @@ use pi_ai::model::Model;
 use pi_ai::models::Models;
 
 use crate::core::model_config::ModelConfig;
-use crate::core::provider_composer::{apply_models_json, apply_model_overrides};
+use crate::core::provider_composer::{apply_model_overrides, apply_models_json};
 
 /// A view of one provider's configured auth (upstream `AuthStatus`).
 pub use crate::core::provider_composer::AuthStatus;
@@ -38,7 +38,12 @@ pub struct ModelRegistry {
 impl ModelRegistry {
     pub fn new(models: Models, config: ModelConfig) -> Self {
         // Validate eagerly: a broken provider config must surface immediately.
-        for provider_id in models.get_providers().iter().map(|p| p.id.clone()).collect::<Vec<_>>() {
+        for provider_id in models
+            .get_providers()
+            .iter()
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>()
+        {
             if let Some(config) = config.get_provider(&provider_id) {
                 let base: Vec<Model> = models.get_models(Some(&provider_id));
                 if let Err(message) = apply_models_json(&provider_id, &base, Some(config)) {
@@ -50,7 +55,10 @@ impl ModelRegistry {
                 }
             }
         }
-        Self { models, config: Arc::new(config) }
+        Self {
+            models,
+            config: Arc::new(config),
+        }
     }
 
     /// Get the underlying ModelConfig (its error, if any).
@@ -73,7 +81,9 @@ impl ModelRegistry {
         for provider in self.models.get_providers() {
             merged.extend(self.get_merged_models(&provider.id));
         }
-        merged.sort_by(|a, b| format!("{}/{}", a.provider, a.id).cmp(&format!("{}/{}", b.provider, b.id)));
+        merged.sort_by(|a, b| {
+            format!("{}/{}", a.provider, a.id).cmp(&format!("{}/{}", b.provider, b.id))
+        });
         merged
     }
 
@@ -144,7 +154,12 @@ impl ModelRegistry {
     /// Registered provider ids, including models.json-only providers
     /// (upstream `getRegisteredProviderIds`).
     pub fn get_registered_provider_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.models.get_providers().iter().map(|p| p.id.clone()).collect();
+        let mut ids: Vec<String> = self
+            .models
+            .get_providers()
+            .iter()
+            .map(|p| p.id.clone())
+            .collect();
         for provider_id in self.config.get_provider_ids() {
             if !ids.iter().any(|id| id == provider_id) {
                 ids.push(provider_id.to_string());
@@ -160,6 +175,20 @@ impl ModelRegistry {
     }
 }
 
+/// Construct the coding-agent model facade with the persisted dynamic
+/// provider catalog overlay enabled. The low-level pi-ai registry remains
+/// credential/source agnostic; this helper supplies the coding-agent store
+/// that backs `models-store.json`.
+pub fn builtin_models() -> Models {
+    let store = Arc::new(crate::core::models_store::FileModelsStore::new(
+        crate::core::models_store::FileModelsStore::default_path(),
+    ));
+    pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions {
+        models_store: Some(store),
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,7 +196,8 @@ mod tests {
 
     #[test]
     fn merged_models_include_catalog_and_overlay() {
-        let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+        let models =
+            pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
         let config = ModelConfig::from_value(json!({
             "providers": {
                 "google": {
@@ -182,19 +212,29 @@ mod tests {
         })).unwrap();
         let registry = ModelRegistry::new(models, config);
         let google_models = registry.get_merged_models("google");
-        assert!(google_models.len() >= 2, "overlay must be upserted onto catalog");
-        let custom = google_models.iter().find(|m| m.id == "custom-gemini").unwrap();
+        assert!(
+            google_models.len() >= 2,
+            "overlay must be upserted onto catalog"
+        );
+        let custom = google_models
+            .iter()
+            .find(|m| m.id == "custom-gemini")
+            .unwrap();
         assert_eq!(custom.provider, "google");
         assert_eq!(custom.base_url, "https://overridden.example.com/v1");
         assert!(custom.reasoning);
         // Catalog models get remapped to the overlay base url.
-        let catalog = google_models.iter().find(|m| m.id == "gemini-3.1-pro-preview").unwrap();
+        let catalog = google_models
+            .iter()
+            .find(|m| m.id == "gemini-3.1-pro-preview")
+            .unwrap();
         assert_eq!(catalog.base_url, "https://overridden.example.com/v1");
     }
 
     #[test]
     fn registered_provider_ids_include_models_json_only() {
-        let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+        let models =
+            pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
         let config = ModelConfig::from_value(json!({
             "providers": { "custom-provider": { "baseUrl": "https://x", "api": "openai-responses", "models": [] } }
         })).unwrap();
@@ -206,7 +246,8 @@ mod tests {
 
     #[test]
     fn find_resolves_overlay_model() {
-        let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+        let models =
+            pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
         let config = ModelConfig::from_value(json!({
             "providers": {
                 "google": { "models": [
@@ -214,7 +255,8 @@ mod tests {
                       "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } }
                 ] }
             }
-        })).unwrap();
+        }))
+        .unwrap();
         let registry = ModelRegistry::new(models, config);
         assert!(registry.find("google", "overlay-model").is_some());
         assert!(registry.find("google", "does-not-exist").is_none());
@@ -222,17 +264,23 @@ mod tests {
 
     #[test]
     fn display_name_prefers_models_json() {
-        let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+        let models =
+            pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
         let config = ModelConfig::from_value(json!({
             "providers": { "google": { "name": "Google Overlay" } }
-        })).unwrap();
+        }))
+        .unwrap();
         let registry = ModelRegistry::new(models, config);
-        assert_eq!(registry.get_provider_display_name("google"), "Google Overlay");
+        assert_eq!(
+            registry.get_provider_display_name("google"),
+            "Google Overlay"
+        );
     }
 
     #[test]
     fn unregister_removes_provider() {
-        let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+        let models =
+            pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
         let registry = ModelRegistry::new(models, ModelConfig::default());
         assert!(registry.get_provider("google").is_some());
         registry.unregister_provider("google");
@@ -247,7 +295,8 @@ mod run_path_merge_tests {
 
     #[test]
     fn into_models_carries_overlay_into_facade() {
-        let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+        let models =
+            pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
         let config = ModelConfig::from_value(json!({
             "providers": {
                 "google": {
@@ -263,10 +312,14 @@ mod run_path_merge_tests {
         let registry = ModelRegistry::new(models, config);
         let facade = registry.into_models();
         // The facade resolves the overridden model.
-        let custom = facade.get_model("google", "custom-gemini").expect("overlay model in facade");
+        let custom = facade
+            .get_model("google", "custom-gemini")
+            .expect("overlay model in facade");
         assert_eq!(custom.base_url, "https://overridden.example.com/v1");
         // Catalog models are remapped to the overlay base url too.
-        let catalog = facade.get_model("google", "gemini-3.1-pro-preview").expect("catalog model in facade");
+        let catalog = facade
+            .get_model("google", "gemini-3.1-pro-preview")
+            .expect("catalog model in facade");
         assert_eq!(catalog.base_url, "https://overridden.example.com/v1");
     }
 

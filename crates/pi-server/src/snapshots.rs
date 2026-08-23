@@ -75,7 +75,8 @@ impl ServerSnapshotPublisher {
             let message = ServerMessage::Event {
                 event: ServerEvent::SessionSnapshot { snapshot: session },
             };
-            let Ok(frame) = pi_protocol::encode_server_message(&message, &Default::default()) else {
+            let Ok(frame) = pi_protocol::encode_server_message(&message, &Default::default())
+            else {
                 return;
             };
             (frame, conns)
@@ -92,9 +93,12 @@ impl ServerSnapshotPublisher {
                 return;
             }
             let message = ServerMessage::Event {
-                event: ServerEvent::ServerSnapshot { snapshot: self.get() },
+                event: ServerEvent::ServerSnapshot {
+                    snapshot: self.get(),
+                },
             };
-            let Ok(frame) = pi_protocol::encode_server_message(&message, &Default::default()) else {
+            let Ok(frame) = pi_protocol::encode_server_message(&message, &Default::default())
+            else {
                 return;
             };
             // Return the frame plus the connection clones without holding

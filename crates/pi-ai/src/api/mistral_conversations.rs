@@ -26,13 +26,14 @@ use serde_json::{json, Value};
 
 use futures_util::StreamExt;
 
-use crate::model::{clamp_thinking_level, calculate_cost, Model};
+use crate::event_stream::{AssistantMessageEventStream, StreamSink};
+use crate::model::{calculate_cost, clamp_thinking_level, Model};
+use crate::sse::{SseEvent, SseParser};
 use crate::types::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, Context, DoneReason, ErrorReason,
-    Message, ModelThinkingLevel, SimpleStreamOptions, StopReason, StreamOptions, Tool, ToolChoice, Usage,
+    Message, ModelThinkingLevel, SimpleStreamOptions, StopReason, StreamOptions, Tool, ToolChoice,
+    Usage,
 };
-use crate::event_stream::{AssistantMessageEventStream, StreamSink};
-use crate::sse::{SseEvent, SseParser};
 
 use super::openai_completions::short_hash;
 use super::transform_messages::transform_messages;
@@ -62,7 +63,8 @@ pub(crate) fn pi_user_agent() -> String {
 /// `new URL("v1/chat/completions", baseUrl)` with a trailing slash guaranteed
 /// on the base path).
 fn mistral_chat_url(base_url: &str) -> Result<String, String> {
-    let mut url = url::Url::parse(base_url).map_err(|e| format!("Invalid Mistral base URL: {e}"))?;
+    let mut url =
+        url::Url::parse(base_url).map_err(|e| format!("Invalid Mistral base URL: {e}"))?;
     let path = url.path().trim_end_matches('/');
     url.set_path(&format!("{path}/v1/chat/completions"));
     Ok(url.to_string())
@@ -108,8 +110,16 @@ fn derive_mistral_tool_call_id(id: &str, attempt: usize) -> String {
     if attempt == 0 && normalized.len() == MISTRAL_TOOL_CALL_ID_LENGTH {
         return normalized;
     }
-    let seed_base = if normalized.is_empty() { id.to_string() } else { normalized };
-    let seed = if attempt == 0 { seed_base.clone() } else { format!("{seed_base}:{attempt}") };
+    let seed_base = if normalized.is_empty() {
+        id.to_string()
+    } else {
+        normalized
+    };
+    let seed = if attempt == 0 {
+        seed_base.clone()
+    } else {
+        format!("{seed_base}:{attempt}")
+    };
     short_hash(&seed)
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -159,12 +169,18 @@ const UNSUPPORTED_STRICT_SCHEMA_KEYS: &[&str] = &[
 fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStrictJsonSchema> {
     let obj = match schema.as_object_mut() {
         Some(obj) => obj,
-        None => return Err(UnsupportedStrictJsonSchema("boolean schemas are unsupported".to_string())),
+        None => {
+            return Err(UnsupportedStrictJsonSchema(
+                "boolean schemas are unsupported".to_string(),
+            ))
+        }
     };
 
     for key in UNSUPPORTED_STRICT_SCHEMA_KEYS {
         if obj.contains_key(*key) {
-            return Err(UnsupportedStrictJsonSchema(format!("{key} schemas are unsupported")));
+            return Err(UnsupportedStrictJsonSchema(format!(
+                "{key} schemas are unsupported"
+            )));
         }
     }
 
@@ -174,11 +190,17 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStr
             Some(variants) if !variants.is_empty() => {
                 for variant in variants {
                     if is_structured_schema(variant) {
-                        return Err(UnsupportedStrictJsonSchema("object and array unions are unsupported".to_string()));
+                        return Err(UnsupportedStrictJsonSchema(
+                            "object and array unions are unsupported".to_string(),
+                        ));
                     }
                 }
             }
-            _ => return Err(UnsupportedStrictJsonSchema("anyOf must contain at least one schema".to_string())),
+            _ => {
+                return Err(UnsupportedStrictJsonSchema(
+                    "anyOf must contain at least one schema".to_string(),
+                ))
+            }
         }
         // Recursively strictify each variant.
         let variants = obj.get_mut("anyOf").unwrap().as_array_mut().unwrap();
@@ -190,14 +212,18 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStr
     if obj.get("items").is_some() {
         let items = obj.get_mut("items").unwrap();
         if items.is_array() {
-            return Err(UnsupportedStrictJsonSchema("tuple schemas are unsupported".to_string()));
+            return Err(UnsupportedStrictJsonSchema(
+                "tuple schemas are unsupported".to_string(),
+            ));
         }
         make_json_schema_node_strict(items)?;
     }
 
     let is_object_schema = obj.get("type").and_then(|t| t.as_str()) == Some("object");
     if obj.contains_key("properties") && !is_object_schema {
-        return Err(UnsupportedStrictJsonSchema("properties require type object".to_string()));
+        return Err(UnsupportedStrictJsonSchema(
+            "properties require type object".to_string(),
+        ));
     }
     if !is_object_schema {
         return Ok(());
@@ -211,12 +237,19 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStr
     }
     if let Some(properties) = obj.get("properties") {
         if !properties.is_object() {
-            return Err(UnsupportedStrictJsonSchema("object properties must be a schema map".to_string()));
+            return Err(UnsupportedStrictJsonSchema(
+                "object properties must be a schema map".to_string(),
+            ));
         }
     }
     if let Some(required) = obj.get("required") {
-        if !required.as_array().is_some_and(|arr| arr.iter().all(|k| k.is_string())) {
-            return Err(UnsupportedStrictJsonSchema("object required must be a string array".to_string()));
+        if !required
+            .as_array()
+            .is_some_and(|arr| arr.iter().all(|k| k.is_string()))
+        {
+            return Err(UnsupportedStrictJsonSchema(
+                "object required must be a string array".to_string(),
+            ));
         }
     }
     let property_names: Vec<String> = obj
@@ -228,10 +261,16 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStr
     let required: std::collections::BTreeSet<String> = obj
         .get("required")
         .and_then(|r| r.as_array())
-        .map(|arr| arr.iter().filter_map(|k| k.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|k| k.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
     if required.iter().any(|key| !property_names.contains(key)) {
-        return Err(UnsupportedStrictJsonSchema("required contains an unknown property".to_string()));
+        return Err(UnsupportedStrictJsonSchema(
+            "required contains an unknown property".to_string(),
+        ));
     }
     for key in &property_names {
         let mut property = obj
@@ -243,7 +282,11 @@ fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), UnsupportedStr
         if !required.contains(key) && !schema_allows_null(&property) {
             property = json!({ "anyOf": [property, { "type": "null" }] });
         }
-        obj.get_mut("properties").unwrap().as_object_mut().unwrap().insert(key.clone(), property);
+        obj.get_mut("properties")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(key.clone(), property);
     }
     obj.insert("required".to_string(), json!(property_names));
     obj.insert("additionalProperties".to_string(), Value::Bool(false));
@@ -378,14 +421,18 @@ fn to_chat_messages(messages: &[Message], supports_images: bool) -> Vec<Value> {
                     result.push(json!({ "role": "user", "content": s }));
                 }
                 crate::types::UserContentBody::Blocks(blocks) => {
-                    let had_images = blocks.iter().any(|item| matches!(item, ContentBlock::Image { .. }));
+                    let had_images = blocks
+                        .iter()
+                        .any(|item| matches!(item, ContentBlock::Image { .. }));
                     let mut content: Vec<Value> = Vec::new();
                     for item in blocks {
                         match item {
                             ContentBlock::Text { text, .. } => {
                                 content.push(json!({ "type": "text", "text": text }));
                             }
-                            ContentBlock::Image { data, mime_type, .. } if supports_images => {
+                            ContentBlock::Image {
+                                data, mime_type, ..
+                            } if supports_images => {
                                 content.push(json!({
                                     "type": "image_url",
                                     "imageUrl": format!("data:{mime_type};base64,{data}"),
@@ -424,8 +471,14 @@ fn to_chat_messages(messages: &[Message], supports_images: bool) -> Vec<Value> {
                                 }));
                             }
                         }
-                        ContentBlock::ToolCall { id, name, arguments, .. } => {
-                            let args = serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".to_string());
+                        ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } => {
+                            let args = serde_json::to_string(&arguments)
+                                .unwrap_or_else(|_| "{}".to_string());
                             tool_calls.push(json!({
                                 "id": id,
                                 "type": "function",
@@ -457,11 +510,23 @@ fn to_chat_messages(messages: &[Message], supports_images: bool) -> Vec<Value> {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                let has_images = tool_result.content().iter().any(|part| matches!(part, ContentBlock::Image { .. }));
-                let tool_text = build_tool_result_text(&text_result, has_images, supports_images, tool_result.is_error());
-                let mut tool_content: Vec<Value> = vec![json!({ "type": "text", "text": tool_text })];
+                let has_images = tool_result
+                    .content()
+                    .iter()
+                    .any(|part| matches!(part, ContentBlock::Image { .. }));
+                let tool_text = build_tool_result_text(
+                    &text_result,
+                    has_images,
+                    supports_images,
+                    tool_result.is_error(),
+                );
+                let mut tool_content: Vec<Value> =
+                    vec![json!({ "type": "text", "text": tool_text })];
                 for part in tool_result.content() {
-                    if let ContentBlock::Image { data, mime_type, .. } = part {
+                    if let ContentBlock::Image {
+                        data, mime_type, ..
+                    } = part
+                    {
                         if supports_images {
                             tool_content.push(json!({
                                 "type": "image_url",
@@ -482,7 +547,12 @@ fn to_chat_messages(messages: &[Message], supports_images: bool) -> Vec<Value> {
     result
 }
 
-fn build_tool_result_text(text: &str, has_images: bool, supports_images: bool, is_error: bool) -> String {
+fn build_tool_result_text(
+    text: &str,
+    has_images: bool,
+    supports_images: bool,
+    is_error: bool,
+) -> String {
     let trimmed = text.trim();
     let error_prefix = if is_error { "[tool error] " } else { "" };
     if !trimmed.is_empty() {
@@ -495,7 +565,11 @@ fn build_tool_result_text(text: &str, has_images: bool, supports_images: bool, i
     }
     if has_images {
         if supports_images {
-            return if is_error { "[tool error] (see attached image)".to_string() } else { "(see attached image)".to_string() };
+            return if is_error {
+                "[tool error] (see attached image)".to_string()
+            } else {
+                "(see attached image)".to_string()
+            };
         }
         return if is_error {
             "[tool error] (image omitted: model does not support images)".to_string()
@@ -562,7 +636,9 @@ fn build_chat_payload(
 fn map_tool_choice(choice: &Value) -> Value {
     // Pass through the accepted string union or the object form unchanged.
     match choice {
-        Value::String(s) if s == "auto" || s == "none" || s == "any" || s == "required" => choice.clone(),
+        Value::String(s) if s == "auto" || s == "none" || s == "any" || s == "required" => {
+            choice.clone()
+        }
         Value::Object(_) => choice.clone(),
         _ => Value::Null,
     }
@@ -680,12 +756,20 @@ async fn read_mistral_events(response: reqwest::Response) -> Result<Vec<SseEvent
 
 /// Extract the cached-token count from a Mistral usage object, checking every
 /// casing/placement the API has sent (upstream `getMistralCachedPromptTokens`).
-fn get_mistral_cached_prompt_tokens(usage: &Value, prompt_tokens: u64) -> u64 {
+fn get_mistral_cached_prompt_tokens(usage: &Value, prompt_tokens: i64) -> i64 {
     let candidates: Vec<Value> = [
-        usage.get("promptTokensDetails").and_then(|v| v.get("cachedTokens")),
-        usage.get("prompt_tokens_details").and_then(|v| v.get("cached_tokens")),
-        usage.get("promptTokenDetails").and_then(|v| v.get("cachedTokens")),
-        usage.get("prompt_token_details").and_then(|v| v.get("cached_tokens")),
+        usage
+            .get("promptTokensDetails")
+            .and_then(|v| v.get("cachedTokens")),
+        usage
+            .get("prompt_tokens_details")
+            .and_then(|v| v.get("cached_tokens")),
+        usage
+            .get("promptTokenDetails")
+            .and_then(|v| v.get("cachedTokens")),
+        usage
+            .get("prompt_token_details")
+            .and_then(|v| v.get("cached_tokens")),
         usage.get("numCachedTokens"),
         usage.get("num_cached_tokens"),
     ]
@@ -698,7 +782,7 @@ fn get_mistral_cached_prompt_tokens(usage: &Value, prompt_tokens: u64) -> u64 {
         .find(|v| v.is_number())
         .and_then(|v| v.as_f64())
         .filter(|f| f.is_finite() && *f >= 0.0)
-        .map(|f| f as u64)
+        .map(|f| f as i64)
         .unwrap_or(0);
     prompt_tokens.min(cached)
 }
@@ -708,8 +792,14 @@ fn map_chat_stop_reason(reason: &str) -> (StopReason, Option<String>) {
         "stop" => (StopReason::Stop, None),
         "length" | "model_length" => (StopReason::Length, None),
         "tool_calls" => (StopReason::ToolUse, None),
-        "error" => (StopReason::Error, Some("Provider stopped with: error".to_string())),
-        other => (StopReason::Error, Some(format!("Provider stopped with: {other}"))),
+        "error" => (
+            StopReason::Error,
+            Some("Provider stopped with: error".to_string()),
+        ),
+        other => (
+            StopReason::Error,
+            Some(format!("Provider stopped with: {other}")),
+        ),
     }
 }
 
@@ -733,7 +823,9 @@ fn finish_current_block(
     output: &AssistantMessage,
     push: &mut dyn FnMut(AssistantMessageEvent),
 ) {
-    let Some((idx, kind)) = current_block else { return };
+    let Some((idx, kind)) = current_block else {
+        return;
+    };
     match (kind, &output.content()[idx]) {
         (MistralBlockKind::Text, ContentBlock::Text { text, .. }) => {
             push(AssistantMessageEvent::TextEnd {
@@ -781,16 +873,29 @@ fn consume_chat_stream(
         // The streamed CompletionChunk carries an id field; keep the first
         // non-empty one (upstream `output.responseId ||= chunk.id`).
         if output.response_id().is_none() {
-            if let Some(id) = chunk.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            if let Some(id) = chunk
+                .get("id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
                 output.set_response_id(id.to_string());
             }
         }
 
         if let Some(usage) = chunk.get("usage") {
-            let prompt_tokens = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let prompt_tokens = usage
+                .get("prompt_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             let cached_prompt_tokens = get_mistral_cached_prompt_tokens(usage, prompt_tokens);
-            let completion_tokens = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            let total_tokens = usage.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let completion_tokens = usage
+                .get("completion_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let total_tokens = usage
+                .get("total_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             let mut u = Usage {
                 input: prompt_tokens.saturating_sub(cached_prompt_tokens),
                 output: completion_tokens,
@@ -846,7 +951,9 @@ fn consume_chat_stream(
                             });
                         }
                         let idx = current_block.unwrap().0;
-                        if let Some(ContentBlock::Text { text, .. }) = output.content_mut().get_mut(idx) {
+                        if let Some(ContentBlock::Text { text, .. }) =
+                            output.content_mut().get_mut(idx)
+                        {
                             *text += text_delta;
                         }
                         push(AssistantMessageEvent::TextDelta {
@@ -885,7 +992,9 @@ fn consume_chat_stream(
                             });
                         }
                         let idx = current_block.unwrap().0;
-                        if let Some(ContentBlock::Thinking { thinking, .. }) = output.content_mut().get_mut(idx) {
+                        if let Some(ContentBlock::Thinking { thinking, .. }) =
+                            output.content_mut().get_mut(idx)
+                        {
                             *thinking += &delta_text;
                         }
                         push(AssistantMessageEvent::ThinkingDelta {
@@ -896,7 +1005,11 @@ fn consume_chat_stream(
                         continue;
                     }
                     if item_type == "text" {
-                        let text_delta = item.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let text_delta = item
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         if !text_delta.is_empty() {
                             if !matches!(current_block, Some((_, MistralBlockKind::Text))) {
                                 finish_current_block(current_block, output, push);
@@ -909,7 +1022,9 @@ fn consume_chat_stream(
                                 });
                             }
                             let idx = current_block.unwrap().0;
-                            if let Some(ContentBlock::Text { text, .. }) = output.content_mut().get_mut(idx) {
+                            if let Some(ContentBlock::Text { text, .. }) =
+                                output.content_mut().get_mut(idx)
+                            {
                                 *text += &text_delta;
                             }
                             push(AssistantMessageEvent::TextDelta {
@@ -923,7 +1038,11 @@ fn consume_chat_stream(
             }
         }
 
-        let tool_calls = delta.get("tool_calls").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let tool_calls = delta
+            .get("tool_calls")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         for tool_call in tool_calls {
             if current_block.is_some() {
                 finish_current_block(current_block, output, push);
@@ -947,7 +1066,11 @@ fn consume_chat_stream(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    output.content_mut().push(ContentBlock::tool_call(call_id.clone(), name, json!({})));
+                    output.content_mut().push(ContentBlock::tool_call(
+                        call_id.clone(),
+                        name,
+                        json!({}),
+                    ));
                     let idx = output.content_len() - 1;
                     tool_blocks_by_key.insert(key.clone(), idx);
                     push(AssistantMessageEvent::ToolCallStart {
@@ -966,7 +1089,9 @@ fn consume_chat_stream(
             let accumulated = partial_args.entry(key.clone()).or_default();
             accumulated.push_str(&args_delta);
             let parsed = crate::partial_json::parse_streaming_json(accumulated);
-            if let Some(ContentBlock::ToolCall { arguments, .. }) = output.content_mut().get_mut(block_index) {
+            if let Some(ContentBlock::ToolCall { arguments, .. }) =
+                output.content_mut().get_mut(block_index)
+            {
                 *arguments = parsed;
             }
             push(AssistantMessageEvent::ToolCallDelta {
@@ -984,7 +1109,8 @@ fn consume_chat_stream(
         let index = tool_blocks_by_key[&key];
         let final_args = partial_args.get(&key).cloned().unwrap_or_default();
         let parsed = crate::partial_json::parse_streaming_json(&final_args);
-        if let Some(ContentBlock::ToolCall { arguments, .. }) = output.content_mut().get_mut(index) {
+        if let Some(ContentBlock::ToolCall { arguments, .. }) = output.content_mut().get_mut(index)
+        {
             *arguments = parsed;
         }
         let tool_call = output.content()[index].clone();
@@ -1006,7 +1132,10 @@ fn truncate_error_text(text: &str, max_chars: usize) -> String {
         return text.to_string();
     }
     let truncated: String = text.chars().take(max_chars).collect();
-    format!("{truncated}... [truncated {} chars]", text.chars().count() - max_chars)
+    format!(
+        "{truncated}... [truncated {} chars]",
+        text.chars().count() - max_chars
+    )
 }
 
 /// Port of `formatMistralError` for the transport surfaces that carry
@@ -1026,7 +1155,10 @@ fn format_transport_error(error: &reqwest::Error) -> String {
 fn format_mistral_error(error: &str, status_code: Option<u16>, body: Option<&str>) -> String {
     if let Some(status_code) = status_code {
         if let Some(body_text) = body.map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            return format!("Mistral API error ({status_code}): {}", truncate_error_text(body_text, MAX_MISTRAL_ERROR_BODY_CHARS));
+            return format!(
+                "Mistral API error ({status_code}): {}",
+                truncate_error_text(body_text, MAX_MISTRAL_ERROR_BODY_CHARS)
+            );
         }
         return format!("Mistral API error ({status_code}): {error}");
     }
@@ -1073,7 +1205,10 @@ fn build_mistral_headers(
     headers
 }
 
-fn apply_header_overrides(headers: &mut BTreeMap<String, String>, overrides: Option<&crate::types::ProviderHeaders>) {
+fn apply_header_overrides(
+    headers: &mut BTreeMap<String, String>,
+    overrides: Option<&crate::types::ProviderHeaders>,
+) {
     let Some(overrides) = overrides else { return };
     for (name, value) in overrides {
         let lower = name.to_lowercase();
@@ -1100,7 +1235,8 @@ fn has_model_header_override(model: &Model, target: &str) -> bool {
 }
 
 fn should_use_prompt_cache(base: &StreamOptions) -> bool {
-    base.cache_retention.as_deref() != Some(crate::types::CACHE_RETENTION_NONE) && base.session_id.is_some()
+    base.cache_retention.as_deref() != Some(crate::types::CACHE_RETENTION_NONE)
+        && base.session_id.is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -1135,15 +1271,20 @@ fn map_reasoning_effort(model: &Model, level: ModelThinkingLevel) -> String {
 
 /// Resolve the reasoning controls for `streamSimple` (upstream
 /// `streamSimple`) into `(prompt_mode, reasoning_effort)`.
-fn resolve_reasoning_controls(model: &Model, options: &SimpleStreamOptions) -> (Option<String>, Option<String>) {
+fn resolve_reasoning_controls(
+    model: &Model,
+    options: &SimpleStreamOptions,
+) -> (Option<String>, Option<String>) {
     let reasoning = options
         .reasoning
         .map(|r| clamp_thinking_level(model, ModelThinkingLevel::from(r)));
-    let should_use_reasoning = model.reasoning
-        && reasoning.is_some()
-        && reasoning != Some(ModelThinkingLevel::Off);
-    let prompt_mode =
-        if should_use_reasoning && uses_prompt_mode_reasoning(model) { Some("reasoning".to_string()) } else { None };
+    let should_use_reasoning =
+        model.reasoning && reasoning.is_some() && reasoning != Some(ModelThinkingLevel::Off);
+    let prompt_mode = if should_use_reasoning && uses_prompt_mode_reasoning(model) {
+        Some("reasoning".to_string())
+    } else {
+        None
+    };
     let reasoning_effort = if should_use_reasoning && uses_reasoning_effort(model) {
         Some(map_reasoning_effort(model, reasoning.unwrap()))
     } else {
@@ -1207,14 +1348,23 @@ async fn run_stream(
         Ok(response) => response,
         Err(err) => {
             // Fetch-level failure (DNS, timeout, connection reset, ...).
-            return Err(format_mistral_error(&format_transport_error(&err), None, None));
+            return Err(format_mistral_error(
+                &format_transport_error(&err),
+                None,
+                None,
+            ));
         }
     };
     let status = response.status();
     let provider_headers: BTreeMap<String, String> = response
         .headers()
         .iter()
-        .map(|(name, value)| (name.as_str().to_lowercase(), value.to_str().unwrap_or("").to_string()))
+        .map(|(name, value)| {
+            (
+                name.as_str().to_lowercase(),
+                value.to_str().unwrap_or("").to_string(),
+            )
+        })
         .collect();
     let provider_response = crate::types::ProviderResponse {
         status: status.as_u16(),
@@ -1228,13 +1378,19 @@ async fn run_stream(
         let body = response.text().await.unwrap_or_default();
         let status_text = status.canonical_reason().unwrap_or("").to_string();
         return Err(format_mistral_error(
-            if status_text.is_empty() { "Request failed" } else { status_text.as_str() },
+            if status_text.is_empty() {
+                "Request failed"
+            } else {
+                status_text.as_str()
+            },
             Some(status.as_u16()),
             Some(&body),
         ));
     }
 
-    push(AssistantMessageEvent::Start { partial: new_output(model) });
+    push(AssistantMessageEvent::Start {
+        partial: new_output(model),
+    });
 
     let events = read_mistral_events(response).await?;
     consume_chat_stream(&events, &mut output, push, model)?;
@@ -1242,9 +1398,15 @@ async fn run_stream(
     if output.stop_reason() == Some(StopReason::Pending) {
         return Err("Mistral stream ended without a finish reason".to_string());
     }
-    if output.stop_reason() == Some(StopReason::Aborted) || output.stop_reason() == Some(StopReason::Error) {
+    if output.stop_reason() == Some(StopReason::Aborted)
+        || output.stop_reason() == Some(StopReason::Error)
+    {
         let known = output.error_message().unwrap_or("").to_string();
-        return Err(if known.is_empty() { "An unknown error occurred".to_string() } else { known });
+        return Err(if known.is_empty() {
+            "An unknown error occurred".to_string()
+        } else {
+            known
+        });
     }
     Ok(output)
 }
@@ -1259,7 +1421,9 @@ pub fn stream(
     options: &MistralOptions,
 ) -> AssistantMessageEventStream {
     let stream = AssistantMessageEventStream::new();
-    let Some(sender) = stream.sender() else { return stream };
+    let Some(sender) = stream.sender() else {
+        return stream;
+    };
     let model = model.clone();
     let context = context.clone();
     let options = options.clone();
@@ -1287,7 +1451,10 @@ pub fn stream(
                     StopReason::Deferred => DoneReason::Deferred,
                     _ => DoneReason::Stop,
                 };
-                pusher.push(AssistantMessageEvent::Done { reason, message: output.clone() });
+                pusher.push(AssistantMessageEvent::Done {
+                    reason,
+                    message: output.clone(),
+                });
                 pusher.end(Some(output));
             }
             Err(error_message) => {
@@ -1332,7 +1499,7 @@ pub fn stream_simple(
 mod tests {
     use super::*;
     use crate::model::ModelInput;
-    use crate::types::{ContentBlock, Message, ToolResultMessage, UserContent, json_tool};
+    use crate::types::{json_tool, ContentBlock, Message, ToolResultMessage, UserContent};
 
     fn mistral_model(id: &str) -> Model {
         let models = crate::providers::catalog_models("mistral");
@@ -1346,7 +1513,11 @@ mod tests {
     }
 
     fn sse(data: &str) -> SseEvent {
-        SseEvent { data: data.to_string(), event: None, id: None }
+        SseEvent {
+            data: data.to_string(),
+            event: None,
+            id: None,
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1355,8 +1526,14 @@ mod tests {
 
     #[test]
     fn chat_url_joins_v1_chat_completions() {
-        assert_eq!(mistral_chat_url("https://api.mistral.ai").unwrap(), "https://api.mistral.ai/v1/chat/completions");
-        assert_eq!(mistral_chat_url("https://api.mistral.ai/").unwrap(), "https://api.mistral.ai/v1/chat/completions");
+        assert_eq!(
+            mistral_chat_url("https://api.mistral.ai").unwrap(),
+            "https://api.mistral.ai/v1/chat/completions"
+        );
+        assert_eq!(
+            mistral_chat_url("https://api.mistral.ai/").unwrap(),
+            "https://api.mistral.ai/v1/chat/completions"
+        );
         assert!(mistral_chat_url("not a url").is_err());
     }
 
@@ -1399,7 +1576,10 @@ mod tests {
         assert_eq!(obj["max_tokens"], 123);
         assert_eq!(obj["prompt_mode"], "reasoning");
         assert_eq!(obj["reasoning_effort"], "high");
-        assert_eq!(obj["tool_choice"], json!({ "type": "function", "function": { "name": "lookup" } }));
+        assert_eq!(
+            obj["tool_choice"],
+            json!({ "type": "function", "function": { "name": "lookup" } })
+        );
         assert_eq!(obj["prompt_cache_key"], "session-1");
         assert_eq!(obj["top_p"], 0.9);
         assert_eq!(obj["random_seed"], 42);
@@ -1442,7 +1622,10 @@ mod tests {
             Message::ToolResult(ToolResultMessage::new(
                 "abc123456",
                 "lookup",
-                vec![ContentBlock::text("found"), ContentBlock::image("aGVsbG8=", "image/png")],
+                vec![
+                    ContentBlock::text("found"),
+                    ContentBlock::image("aGVsbG8=", "image/png"),
+                ],
                 false,
             )),
         ];
@@ -1475,7 +1658,11 @@ mod tests {
     #[test]
     fn to_function_tools_sets_strict() {
         let tools = vec![
-            json_tool("plain", "Plain tool", &json!({ "type": "object", "properties": {} })),
+            json_tool(
+                "plain",
+                "Plain tool",
+                &json!({ "type": "object", "properties": {} }),
+            ),
             crate::types::Tool {
                 name: "strict".to_string(),
                 description: "Strict tool".to_string(),
@@ -1488,8 +1675,14 @@ mod tests {
         let out = to_function_tools(&tools).unwrap();
         assert_eq!(out[0]["function"]["strict"], false);
         assert_eq!(out[1]["function"]["strict"], true);
-        assert_eq!(out[1]["function"]["parameters"]["additionalProperties"], false);
-        assert_eq!(out[1]["function"]["parameters"]["required"], json!(["value"]));
+        assert_eq!(
+            out[1]["function"]["parameters"]["additionalProperties"],
+            false
+        );
+        assert_eq!(
+            out[1]["function"]["parameters"]["required"],
+            json!(["value"])
+        );
         // Prefer-strict with a convertible schema resolves to true as well.
         let prefer = crate::types::Tool {
             name: "prefer".to_string(),
@@ -1503,8 +1696,14 @@ mod tests {
         assert_eq!(out[0]["function"]["strict"], true);
         // Non-required property is null-wrapped in an anyOf union.
         let params = &out[0]["function"]["parameters"];
-        assert_eq!(params["properties"]["a"], json!({ "anyOf": [{ "type": "string" }, { "type": "null" }] }));
-        assert_eq!(params["properties"]["b"], json!({ "anyOf": [{ "type": "string" }, { "type": "null" }] }));
+        assert_eq!(
+            params["properties"]["a"],
+            json!({ "anyOf": [{ "type": "string" }, { "type": "null" }] })
+        );
+        assert_eq!(
+            params["properties"]["b"],
+            json!({ "anyOf": [{ "type": "string" }, { "type": "null" }] })
+        );
         assert_eq!(params["required"], json!(["a", "b"]));
     }
 
@@ -1513,12 +1712,13 @@ mod tests {
         let model = mistral_model("mistral-large-latest");
         let context = Context {
             system_prompt: Some("Be precise".to_string()),
-            messages: vec![
-                Message::User(UserContent::blocks(
-                    vec![ContentBlock::text("describe"), ContentBlock::image("aGVsbG8=", "image/png")],
-                    1,
-                )),
-            ],
+            messages: vec![Message::User(UserContent::blocks(
+                vec![
+                    ContentBlock::text("describe"),
+                    ContentBlock::image("aGVsbG8=", "image/png"),
+                ],
+                1,
+            ))],
             ..Default::default()
         };
         let options = MistralOptions {
@@ -1536,19 +1736,30 @@ mod tests {
         assert_eq!(payload["messages"][0]["role"], "system");
         assert_eq!(payload["messages"][0]["content"], "Be precise");
         assert_eq!(payload["messages"][1]["content"][1]["type"], "image_url");
-        assert_eq!(payload["messages"][1]["content"][1]["imageUrl"], "data:image/png;base64,aGVsbG8=");
+        assert_eq!(
+            payload["messages"][1]["content"][1]["imageUrl"],
+            "data:image/png;base64,aGVsbG8="
+        );
         assert_eq!(payload["maxTokens"], 123);
         assert_eq!(payload["promptMode"], "reasoning");
         assert_eq!(payload["reasoningEffort"], "high");
         assert_eq!(payload["promptCacheKey"], "session-1");
-        assert_eq!(payload["toolChoice"], json!({ "type": "function", "function": { "name": "lookup" } }));
+        assert_eq!(
+            payload["toolChoice"],
+            json!({ "type": "function", "function": { "name": "lookup" } })
+        );
 
         // cacheRetention none omits the prompt cache key.
         let options_none = MistralOptions {
-            base: StreamOptions { session_id: Some("session-1".to_string()), cache_retention: Some("none".to_string()), ..Default::default() },
+            base: StreamOptions {
+                session_id: Some("session-1".to_string()),
+                cache_retention: Some("none".to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        let payload = build_chat_payload(&model, &context, &context.messages, &options_none).unwrap();
+        let payload =
+            build_chat_payload(&model, &context, &context.messages, &options_none).unwrap();
         assert!(!payload.as_object().unwrap().contains_key("promptCacheKey"));
     }
 
@@ -1556,7 +1767,10 @@ mod tests {
     // Stream consumption
     // ------------------------------------------------------------------
 
-    fn run_consume(events: &[SseEvent], model: &Model) -> (AssistantMessage, Vec<AssistantMessageEvent>) {
+    fn run_consume(
+        events: &[SseEvent],
+        model: &Model,
+    ) -> (AssistantMessage, Vec<AssistantMessageEvent>) {
         let mut output = new_output(model);
         let mut pushed = Vec::new();
         consume_chat_stream(events, &mut output, &mut |e| pushed.push(e), model).unwrap();
@@ -1569,10 +1783,18 @@ mod tests {
         // tool calls, and cached-token usage".
         let model = mistral_model("mistral-large-latest");
         let events = vec![
-            sse(r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"reason"}]}]}}]}"#),
-            sse(r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":null,"delta":{"content":[{"type":"text","text":"answer"}]}}]}"#),
-            sse(r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":null,"delta":{"tool_calls":[{"id":"abc123456","index":0,"function":{"name":"lookup","arguments":"{\"query\":"}}]}}]}"#),
-            sse(r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":"tool_calls","delta":{"tool_calls":[{"id":"abc123456","index":0,"function":{"name":"lookup","arguments":"\"pi\"}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":3}}}"#),
+            sse(
+                r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":null,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"reason"}]}]}}]}"#,
+            ),
+            sse(
+                r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":null,"delta":{"content":[{"type":"text","text":"answer"}]}}]}"#,
+            ),
+            sse(
+                r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":null,"delta":{"tool_calls":[{"id":"abc123456","index":0,"function":{"name":"lookup","arguments":"{\"query\":"}}]}}]}"#,
+            ),
+            sse(
+                r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":"tool_calls","delta":{"tool_calls":[{"id":"abc123456","index":0,"function":{"name":"lookup","arguments":"\"pi\"}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":3}}}"#,
+            ),
         ];
         let (message, _) = run_consume(&events, &model);
         assert_eq!(message.stop_reason(), Some(StopReason::ToolUse));
@@ -1588,7 +1810,12 @@ mod tests {
             b => panic!("expected text: {b:?}"),
         }
         match &message.content()[2] {
-            ContentBlock::ToolCall { id, name, arguments, .. } => {
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } => {
                 assert_eq!(id, "abc123456");
                 assert_eq!(name, "lookup");
                 assert_eq!(arguments["query"], "pi");
@@ -1607,8 +1834,12 @@ mod tests {
     fn consumes_plain_string_content_as_text() {
         let model = mistral_model("mistral-large-latest");
         let events = vec![
-            sse(r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":null,"delta":{"content":"hel"}}]}"#),
-            sse(r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":"stop","delta":{"content":"lo 🌍"}}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}"#),
+            sse(
+                r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":null,"delta":{"content":"hel"}}]}"#,
+            ),
+            sse(
+                r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":"stop","delta":{"content":"lo 🌍"}}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}"#,
+            ),
         ];
         let (message, pushed) = run_consume(&events, &model);
         assert_eq!(message.stop_reason(), Some(StopReason::Stop));
@@ -1621,9 +1852,15 @@ mod tests {
             })
             .collect();
         assert_eq!(text, "hello 🌍");
-        assert!(pushed.iter().any(|e| matches!(e, AssistantMessageEvent::TextStart { .. })));
-        assert!(pushed.iter().any(|e| matches!(e, AssistantMessageEvent::TextDelta { .. })));
-        assert!(pushed.iter().any(|e| matches!(e, AssistantMessageEvent::TextEnd { .. })));
+        assert!(pushed
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::TextStart { .. })));
+        assert!(pushed
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::TextDelta { .. })));
+        assert!(pushed
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::TextEnd { .. })));
     }
 
     #[test]
@@ -1631,8 +1868,16 @@ mod tests {
         // Port of mistral-raw-stop-reason.test.ts.
         for (finish_reason, expected_stop, expected_error) in [
             ("stop", StopReason::Stop, None),
-            ("error", StopReason::Error, Some("Provider stopped with: error".to_string())),
-            ("unmapped_error", StopReason::Error, Some("Provider stopped with: unmapped_error".to_string())),
+            (
+                "error",
+                StopReason::Error,
+                Some("Provider stopped with: error".to_string()),
+            ),
+            (
+                "unmapped_error",
+                StopReason::Error,
+                Some("Provider stopped with: unmapped_error".to_string()),
+            ),
         ] {
             let event = json!({
                 "id": "mistral-response-id",
@@ -1642,16 +1887,26 @@ mod tests {
             });
             let model = mistral_model("devstral-medium-latest");
             let (message, _) = run_consume(&[sse(&event.to_string())], &model);
-            assert_eq!(message.stop_reason(), Some(expected_stop), "{finish_reason}");
+            assert_eq!(
+                message.stop_reason(),
+                Some(expected_stop),
+                "{finish_reason}"
+            );
             assert_eq!(message.raw_stop_reason().unwrap(), finish_reason);
-            assert_eq!(message.error_message().map(|s| s.to_string()), expected_error, "{finish_reason}");
+            assert_eq!(
+                message.error_message().map(|s| s.to_string()),
+                expected_error,
+                "{finish_reason}"
+            );
         }
     }
 
     #[test]
     fn missing_finish_reason_is_pending_error() {
         let model = mistral_model("mistral-large-latest");
-        let events = vec![sse(r#"{"id":"x","choices":[{"index":0,"finish_reason":null,"delta":{"content":"hi"}}]}"#)];
+        let events = vec![sse(
+            r#"{"id":"x","choices":[{"index":0,"finish_reason":null,"delta":{"content":"hi"}}]}"#,
+        )];
         let mut output = new_output(&model);
         let mut pushed = Vec::new();
         consume_chat_stream(&events, &mut output, &mut |e| pushed.push(e), &model).unwrap();
@@ -1674,7 +1929,10 @@ mod tests {
     #[test]
     fn headers_defaults_and_affinity() {
         let mut model = mistral_model("mistral-large-latest");
-        let base = StreamOptions { session_id: Some("session-1".to_string()), ..Default::default() };
+        let base = StreamOptions {
+            session_id: Some("session-1".to_string()),
+            ..Default::default()
+        };
         let headers = build_mistral_headers(&model, "secret", &base);
         assert_eq!(headers.get("authorization").unwrap(), "Bearer secret");
         assert_eq!(headers.get("accept").unwrap(), "text/event-stream");
@@ -1695,7 +1953,10 @@ mod tests {
             ("Authorization".to_string(), "Bearer model-key".to_string()),
             ("X-Affinity".to_string(), "model-affinity".to_string()),
         ]));
-        let base = StreamOptions { session_id: Some("automatic-affinity".to_string()), ..Default::default() };
+        let base = StreamOptions {
+            session_id: Some("automatic-affinity".to_string()),
+            ..Default::default()
+        };
         let headers = build_mistral_headers(&model, "secret", &base);
         assert_eq!(headers.get("authorization").unwrap(), "Bearer model-key");
         assert_eq!(headers.get("x-affinity").unwrap(), "model-affinity");
@@ -1709,7 +1970,10 @@ mod tests {
         request_headers.insert("User-Agent".to_string(), Some("custom-agent".to_string()));
         let base = StreamOptions {
             session_id: Some("automatic-affinity".to_string()),
-            base: crate::types::ProviderRequestOptions { headers: Some(request_headers.clone()), ..Default::default() },
+            base: crate::types::ProviderRequestOptions {
+                headers: Some(request_headers.clone()),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let headers = build_mistral_headers(&model, "request-key", &base);
@@ -1724,7 +1988,10 @@ mod tests {
         let mut request_headers = crate::types::ProviderHeaders::new();
         request_headers.insert("User-Agent".to_string(), Some("custom-agent".to_string()));
         let base = StreamOptions {
-            base: crate::types::ProviderRequestOptions { headers: Some(request_headers), ..Default::default() },
+            base: crate::types::ProviderRequestOptions {
+                headers: Some(request_headers),
+                ..Default::default()
+            },
             session_id: Some("automatic-affinity".to_string()),
             ..Default::default()
         };
@@ -1732,7 +1999,10 @@ mod tests {
         assert_eq!(headers.get("x-affinity").unwrap(), "automatic-affinity");
         // And a model-level affinity suppresses the automatic header too.
         let mut model_affinity = mistral_model("mistral-large-latest");
-        model_affinity.headers = Some(BTreeMap::from([("X-Affinity".to_string(), "model-affinity".to_string())]));
+        model_affinity.headers = Some(BTreeMap::from([(
+            "X-Affinity".to_string(),
+            "model-affinity".to_string(),
+        )]));
         let base = StreamOptions {
             session_id: Some("automatic-affinity".to_string()),
             ..Default::default()
@@ -1744,7 +2014,11 @@ mod tests {
     #[test]
     fn formats_http_errors_with_truncated_bodies() {
         assert_eq!(
-            format_mistral_error("Forbidden", Some(403), Some("{\"message\":\"blocked by gateway\"}")),
+            format_mistral_error(
+                "Forbidden",
+                Some(403),
+                Some("{\"message\":\"blocked by gateway\"}")
+            ),
             "Mistral API error (403): {\"message\":\"blocked by gateway\"}"
         );
         assert_eq!(
@@ -1778,7 +2052,11 @@ mod tests {
     // Reasoning controls (port of mistral-reasoning-mode.test.ts)
     // ------------------------------------------------------------------
 
-    fn simple_opts(reasoning: Option<crate::types::ThinkingLevel>, session_id: Option<&str>, cache_retention: Option<&str>) -> SimpleStreamOptions {
+    fn simple_opts(
+        reasoning: Option<crate::types::ThinkingLevel>,
+        session_id: Option<&str>,
+        cache_retention: Option<&str>,
+    ) -> SimpleStreamOptions {
         SimpleStreamOptions {
             base: StreamOptions {
                 session_id: session_id.map(|s| s.to_string()),
@@ -1793,25 +2071,36 @@ mod tests {
     #[test]
     fn reasoning_controls_select_effort_vs_prompt_mode() {
         let small = mistral_model("mistral-small-2603");
-        let (prompt_mode, effort) = resolve_reasoning_controls(&small, &simple_opts(Some(crate::types::ThinkingLevel::Medium), None, None));
+        let (prompt_mode, effort) = resolve_reasoning_controls(
+            &small,
+            &simple_opts(Some(crate::types::ThinkingLevel::Medium), None, None),
+        );
         assert_eq!(effort.as_deref(), Some("high"));
         assert_eq!(prompt_mode, None);
 
-        let (prompt_mode, effort) = resolve_reasoning_controls(&small, &simple_opts(None, None, None));
+        let (prompt_mode, effort) =
+            resolve_reasoning_controls(&small, &simple_opts(None, None, None));
         assert_eq!(effort, None);
         assert_eq!(prompt_mode, None);
 
         let magistral = mistral_model("magistral-medium-latest");
-        let (prompt_mode, effort) = resolve_reasoning_controls(&magistral, &simple_opts(Some(crate::types::ThinkingLevel::Medium), None, None));
+        let (prompt_mode, effort) = resolve_reasoning_controls(
+            &magistral,
+            &simple_opts(Some(crate::types::ThinkingLevel::Medium), None, None),
+        );
         assert_eq!(prompt_mode.as_deref(), Some("reasoning"));
         assert_eq!(effort, None);
 
         let medium35 = mistral_model("mistral-medium-3.5");
-        let (prompt_mode, effort) = resolve_reasoning_controls(&medium35, &simple_opts(Some(crate::types::ThinkingLevel::Medium), None, None));
+        let (prompt_mode, effort) = resolve_reasoning_controls(
+            &medium35,
+            &simple_opts(Some(crate::types::ThinkingLevel::Medium), None, None),
+        );
         assert_eq!(effort.as_deref(), Some("high"));
         assert_eq!(prompt_mode, None);
 
-        let (prompt_mode, effort) = resolve_reasoning_controls(&medium35, &simple_opts(None, None, None));
+        let (prompt_mode, effort) =
+            resolve_reasoning_controls(&medium35, &simple_opts(None, None, None));
         assert_eq!(effort, None);
         assert_eq!(prompt_mode, None);
     }
@@ -1878,8 +2167,17 @@ mod tests {
     #[test]
     fn stream_without_key_is_terminal_error() {
         let model = mistral_model("mistral-large-latest");
-        let s = stream(&model, &Context::default(), reqwest::Client::new(), None, &MistralOptions::default());
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let s = stream(
+            &model,
+            &Context::default(),
+            reqwest::Client::new(),
+            None,
+            &MistralOptions::default(),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let (events, msg) = rt.block_on(s.collect());
         assert!(matches!(&events[0], AssistantMessageEvent::Error { .. }));
         let err = msg.error_message().unwrap_or("").to_string();

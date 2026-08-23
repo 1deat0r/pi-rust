@@ -121,21 +121,40 @@ pub enum Inline {
     Strong(Vec<Inline>),
     Em(Vec<Inline>),
     Codespan(String),
-    Link { text: Vec<Inline>, href: String, raw_text: String },
+    Link {
+        text: Vec<Inline>,
+        href: String,
+        raw_text: String,
+    },
     Br,
     Del(Vec<Inline>),
     Html(String),
-    Latex { text: String, raw: String, pending: bool },
+    Latex {
+        text: String,
+        raw: String,
+        pending: bool,
+    },
 }
 
 /// Block token.
 #[derive(Debug, Clone)]
 pub enum Block {
-    Heading { level: usize, tokens: Vec<Inline> },
+    Heading {
+        level: usize,
+        tokens: Vec<Inline>,
+    },
     Paragraph(Vec<Inline>),
     Text(Vec<Inline>),
-    LatexBlock { text: String, raw: String, pending: bool },
-    Code { lang: String, text: String, raw: String },
+    LatexBlock {
+        text: String,
+        raw: String,
+        pending: bool,
+    },
+    Code {
+        lang: String,
+        text: String,
+        raw: String,
+    },
     List(ListBlock),
     Table(TableBlock),
     Blockquote(Vec<Block>),
@@ -195,7 +214,11 @@ pub fn parse_markdown(source: &str) -> Vec<Block> {
             let mut closed = false;
             while i < lines.len() {
                 let l = lines[i];
-                if l.trim().starts_with(&marker_len) && l.trim().chars().all(|c| c == marker_len.chars().next().unwrap()) {
+                if l.trim().starts_with(&marker_len)
+                    && l.trim()
+                        .chars()
+                        .all(|c| c == marker_len.chars().next().unwrap())
+                {
                     closed = true;
                     i += 1;
                     break;
@@ -215,7 +238,10 @@ pub fn parse_markdown(source: &str) -> Vec<Block> {
 
         // ATX heading.
         if let Some(h) = atx_heading(line) {
-            tokens.push(Block::Heading { level: h.0, tokens: parse_inlines(&h.1) });
+            tokens.push(Block::Heading {
+                level: h.0,
+                tokens: parse_inlines(&h.1),
+            });
             i += 1;
             continue;
         }
@@ -288,10 +314,18 @@ pub fn parse_markdown(source: &str) -> Vec<Block> {
     }
 
     // Trim leading/trailing space tokens.
-    while tokens.first().map(|t| matches!(t, Block::Space)).unwrap_or(false) {
+    while tokens
+        .first()
+        .map(|t| matches!(t, Block::Space))
+        .unwrap_or(false)
+    {
         tokens.remove(0);
     }
-    while tokens.last().map(|t| matches!(t, Block::Space)).unwrap_or(false) {
+    while tokens
+        .last()
+        .map(|t| matches!(t, Block::Space))
+        .unwrap_or(false)
+    {
         tokens.pop();
     }
     tokens
@@ -374,10 +408,11 @@ fn looks_like_table(lines: &[&str]) -> bool {
         return false;
     }
     let cells: Vec<&str> = sep.trim_matches('|').split('|').map(|s| s.trim()).collect();
-    !cells.is_empty() && cells.iter().all(|c| {
-        let c = c.trim_matches(':');
-        !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':')
-    })
+    !cells.is_empty()
+        && cells.iter().all(|c| {
+            let c = c.trim_matches(':');
+            !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':')
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -421,7 +456,12 @@ fn list_marker(line: &str) -> Option<(String, bool, Option<usize>, usize)> {
     if j < chars.len() && (chars[j] == '.' || chars[j] == ')') {
         let start: usize = rest[..j].parse().unwrap_or(1);
         if j + 1 < chars.len() && (chars[j + 1] == ' ' || chars[j + 1] == '\t') {
-            return Some((rest[..=j + 1].to_string(), true, Some(start), indent + j + 2));
+            return Some((
+                rest[..=j + 1].to_string(),
+                true,
+                Some(start),
+                indent + j + 2,
+            ));
         }
         if j + 1 == chars.len() {
             return Some((rest[..=j].to_string(), true, Some(start), indent + j + 1));
@@ -455,7 +495,9 @@ fn try_parse_list(lines: &[&str]) -> Option<ParsedList> {
             break;
         }
 
-        let Some(marker_info) = list_marker(line) else { break };
+        let Some(marker_info) = list_marker(line) else {
+            break;
+        };
         if marker_info.1 != ordered {
             break;
         }
@@ -517,7 +559,11 @@ fn try_parse_list(lines: &[&str]) -> Option<ParsedList> {
 
         let raw = item_lines.join("\n");
         let mut item_tokens = parse_markdown(&raw);
-        while item_tokens.first().map(|t| matches!(t, Block::Space)).unwrap_or(false) {
+        while item_tokens
+            .first()
+            .map(|t| matches!(t, Block::Space))
+            .unwrap_or(false)
+        {
             item_tokens.remove(0);
         }
         let mut task = false;
@@ -536,11 +582,22 @@ fn try_parse_list(lines: &[&str]) -> Option<ParsedList> {
             }
         }
 
-        items.push(ListItem { task, checked, tokens: item_tokens, raw, source_marker: Some(marker_text.clone()) });
+        items.push(ListItem {
+            task,
+            checked,
+            tokens: item_tokens,
+            raw,
+            source_marker: Some(marker_text.clone()),
+        });
     }
 
     Some(ParsedList {
-        block: ListBlock { ordered, start, loose, items },
+        block: ListBlock {
+            ordered,
+            start,
+            loose,
+            items,
+        },
         line_count: consumed,
     })
 }
@@ -672,7 +729,11 @@ fn parse_inline_range(source: &str, start: usize, end: usize) -> Vec<Inline> {
         if rest.starts_with("**") && !rest[2..].starts_with(' ') && !rest[2..].starts_with('*') {
             if let Some(close) = find_matching_inline_marker(&rest[2..], "**") {
                 flush(&mut tokens, &mut text_buf);
-                tokens.push(Inline::Strong(parse_inline_range(source, i + 2, i + 2 + close)));
+                tokens.push(Inline::Strong(parse_inline_range(
+                    source,
+                    i + 2,
+                    i + 2 + close,
+                )));
                 i += 2 + close + 2;
                 continue;
             }
@@ -692,7 +753,11 @@ fn parse_inline_range(source: &str, start: usize, end: usize) -> Vec<Inline> {
         if let Some(rest_after) = rest.strip_prefix("__") {
             if let Some(close) = find_matching_inline_marker(rest_after, "__") {
                 flush(&mut tokens, &mut text_buf);
-                tokens.push(Inline::Strong(parse_inline_range(source, i + 2, i + 2 + close)));
+                tokens.push(Inline::Strong(parse_inline_range(
+                    source,
+                    i + 2,
+                    i + 2 + close,
+                )));
                 i += 2 + close + 2;
                 continue;
             }
@@ -808,7 +873,13 @@ fn try_inline_latex(s: &str) -> Option<(String, String, bool, usize)> {
                 if body.ends_with(' ') || body.starts_with(' ') {
                     return None;
                 }
-                if idx + 1 < s.len() && s[idx + 1..].chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                if idx + 1 < s.len()
+                    && s[idx + 1..]
+                        .chars()
+                        .next()
+                        .map(|c| c.is_ascii_digit())
+                        .unwrap_or(false)
+                {
                     return None;
                 }
                 if is_identifier_like(body) && idx + 1 < s.len() {
@@ -872,8 +943,35 @@ fn looks_like_pending_math(s: &str) -> bool {
         return true;
     }
     s.chars().any(|c| {
-        matches!(c, '\\' | '_' | '^' | '=' | '+' | '*' | '/' | '<' | '>' | '(' | ')' | '[' | ']' | '|'
-            | '±' | '≤' | '≥' | '≠' | '≈' | '∈' | '→' | '⇒' | '∞' | '∫' | '∑' | '√' | '-')
+        matches!(
+            c,
+            '\\' | '_'
+                | '^'
+                | '='
+                | '+'
+                | '*'
+                | '/'
+                | '<'
+                | '>'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '|'
+                | '±'
+                | '≤'
+                | '≥'
+                | '≠'
+                | '≈'
+                | '∈'
+                | '→'
+                | '⇒'
+                | '∞'
+                | '∫'
+                | '∑'
+                | '√'
+                | '-'
+        )
     })
 }
 
@@ -928,7 +1026,9 @@ pub struct Markdown {
 
 impl std::fmt::Debug for Markdown {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Markdown").field("text.len", &self.text.len()).finish()
+        f.debug_struct("Markdown")
+            .field("text.len", &self.text.len())
+            .finish()
     }
 }
 
@@ -1001,7 +1101,10 @@ impl Markdown {
         let left_margin = " ".repeat(self.padding_x);
         let right_margin = " ".repeat(self.padding_x);
         let mut content_lines: Vec<String> = Vec::new();
-        let bg_fn = self.default_text_style.as_ref().and_then(|s| s.bg_color.as_ref());
+        let bg_fn = self
+            .default_text_style
+            .as_ref()
+            .and_then(|s| s.bg_color.as_ref());
         for line in wrapped_lines {
             if is_image_line(&line) {
                 content_lines.push(line);
@@ -1009,10 +1112,15 @@ impl Markdown {
             }
             let line_with_margins = format!("{left_margin}{line}{right_margin}");
             match bg_fn {
-                Some(bg) => content_lines.push(apply_background_to_line(&line_with_margins, width, &**bg)),
+                Some(bg) => {
+                    content_lines.push(apply_background_to_line(&line_with_margins, width, &**bg))
+                }
                 None => {
                     let visible_len = visible_width(&line_with_margins);
-                    content_lines.push(format!("{line_with_margins}{}", " ".repeat(width.saturating_sub(visible_len))));
+                    content_lines.push(format!(
+                        "{line_with_margins}{}",
+                        " ".repeat(width.saturating_sub(visible_len))
+                    ));
                 }
             }
         }
@@ -1041,7 +1149,9 @@ impl Markdown {
     }
 
     fn apply_default_style(&self, text: &str) -> String {
-        let Some(style) = &self.default_text_style else { return text.to_string() };
+        let Some(style) = &self.default_text_style else {
+            return text.to_string();
+        };
         let mut styled = text.to_string();
         if let Some(color) = &style.color {
             styled = color(&styled);
@@ -1062,7 +1172,9 @@ impl Markdown {
     }
 
     fn get_default_style_prefix(&self) -> String {
-        let Some(style) = &self.default_text_style else { return String::new() };
+        let Some(style) = &self.default_text_style else {
+            return String::new();
+        };
         let sentinel = "\u{0}";
         let mut styled = sentinel.to_string();
         if let Some(color) = &style.color {
@@ -1095,7 +1207,6 @@ impl Markdown {
     }
 }
 
-
 /// A style context carries the ANSI prefix used to restore surrounding style
 /// after inline element styling.
 #[derive(Clone, Default)]
@@ -1121,7 +1232,9 @@ impl Markdown {
                 }
                 Inline::Escape(text) => {
                     if self.options.preserve_backslash_escapes {
-                        result.push_str(&self.apply_text_with_newlines(&format!("\\{text}"), context));
+                        result.push_str(
+                            &self.apply_text_with_newlines(&format!("\\{text}"), context),
+                        );
                     } else {
                         result.push_str(&self.apply_text_with_newlines(text, context));
                     }
@@ -1148,7 +1261,11 @@ impl Markdown {
                     result.push_str(&(self.theme.code)(text));
                     result.push_str(&style_prefix);
                 }
-                Inline::Link { text: inner, href, raw_text } => {
+                Inline::Link {
+                    text: inner,
+                    href,
+                    raw_text,
+                } => {
                     let link_text = self.render_inline_tokens(inner, context);
                     let styled = (self.theme.link)(&(self.theme.underline)(&link_text));
                     if get_capabilities().hyperlinks {
@@ -1206,12 +1323,16 @@ impl Markdown {
             Block::Heading { level, tokens } => {
                 let heading_prefix = format!("{} ", "#".repeat(*level));
                 let style_fn: Box<dyn Fn(&str) -> String> = if *level == 1 {
-                    Box::new(|t: &str| (self.theme.heading)(&(self.theme.bold)(&(self.theme.underline)(t))))
+                    Box::new(|t: &str| {
+                        (self.theme.heading)(&(self.theme.bold)(&(self.theme.underline)(t)))
+                    })
                 } else {
                     Box::new(|t: &str| (self.theme.heading)(&(self.theme.bold)(t)))
                 };
                 let prefix = self.get_style_prefix(&style_fn);
-                let heading_ctx = InlineStyleContext { style_prefix: prefix.clone() };
+                let heading_ctx = InlineStyleContext {
+                    style_prefix: prefix.clone(),
+                };
                 let heading_text = self.render_inline_tokens(tokens, &heading_ctx);
                 let styled_heading = if *level >= 3 {
                     style_fn(&heading_prefix) + &heading_text
@@ -1238,7 +1359,11 @@ impl Markdown {
                 }
             }
             Block::Code { lang, text, raw } => {
-                let indent = self.theme.code_block_indent.clone().unwrap_or_else(|| "  ".to_string());
+                let indent = self
+                    .theme
+                    .code_block_indent
+                    .clone()
+                    .unwrap_or_else(|| "  ".to_string());
                 lines.push((self.theme.code_block_border)(&format!("```{lang}")));
                 match &self.theme.highlight_code {
                     Some(highlight) => {
@@ -1274,10 +1399,16 @@ impl Markdown {
                         qt,
                         quote_content_width,
                         next,
-                        Some(&InlineStyleContext { style_prefix: quote_style_prefix.clone() }),
+                        Some(&InlineStyleContext {
+                            style_prefix: quote_style_prefix.clone(),
+                        }),
                     ));
                 }
-                while rendered_quote_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+                while rendered_quote_lines
+                    .last()
+                    .map(|l| l.is_empty())
+                    .unwrap_or(false)
+                {
                     rendered_quote_lines.pop();
                 }
 
@@ -1285,7 +1416,8 @@ impl Markdown {
                     let styled_line = if quote_style_prefix.is_empty() {
                         quote_style(&quote_line)
                     } else {
-                        let reapply = quote_line.replace("\x1b[0m", &format!("\x1b[0m{quote_style_prefix}"));
+                        let reapply =
+                            quote_line.replace("\x1b[0m", &format!("\x1b[0m{quote_style_prefix}"));
                         quote_style(&reapply)
                     };
                     for wrapped in wrap_text_with_ansi(&styled_line, quote_content_width) {
@@ -1307,7 +1439,13 @@ impl Markdown {
         lines
     }
 
-    fn render_list(&self, token: &ListBlock, depth: usize, width: usize, context: &InlineStyleContext) -> Vec<String> {
+    fn render_list(
+        &self,
+        token: &ListBlock,
+        depth: usize,
+        width: usize,
+        context: &InlineStyleContext,
+    ) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
         let indent = "    ".repeat(depth);
         let start_number = token.start.max(1);
@@ -1323,7 +1461,9 @@ impl Markdown {
                     format!("{}. ", start_number + i)
                 }
             } else if self.options.preserve_ordered_list_markers {
-                item.source_marker.clone().unwrap_or_else(|| "- ".to_string())
+                item.source_marker
+                    .clone()
+                    .unwrap_or_else(|| "- ".to_string())
             } else {
                 "- ".to_string()
             };
@@ -1360,7 +1500,11 @@ impl Markdown {
                 };
                 for line in item_lines {
                     for wrapped in wrap_text_with_ansi(&line, item_width) {
-                        let line_prefix = if rendered_any_line { continuation_prefix.clone() } else { first_prefix.clone() };
+                        let line_prefix = if rendered_any_line {
+                            continuation_prefix.clone()
+                        } else {
+                            first_prefix.clone()
+                        };
                         lines.push(format!("{line_prefix}{wrapped}"));
                         rendered_any_line = true;
                     }
@@ -1398,13 +1542,22 @@ impl Markdown {
             .iter()
             .enumerate()
             .map(|(index, line)| {
-                let style_reset = if index < lines.len() - 1 { "\x1b[22;23;24;25;27;28;29;39m" } else { "" };
+                let style_reset = if index < lines.len() - 1 {
+                    "\x1b[22;23;24;25;27;28;29;39m"
+                } else {
+                    ""
+                };
                 format!("{line}{style_reset}{style_prefix}")
             })
             .collect()
     }
 
-    fn render_table(&self, token: &TableBlock, available_width: usize, context: &InlineStyleContext) -> Vec<String> {
+    fn render_table(
+        &self,
+        token: &TableBlock,
+        available_width: usize,
+        context: &InlineStyleContext,
+    ) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
         let num_cols = token.header.len();
         if num_cols == 0 {
@@ -1425,13 +1578,19 @@ impl Markdown {
         for h in &token.header {
             let header_text = self.render_inline_tokens(h, context);
             natural_widths.push(visible_width(&header_text));
-            min_word_widths.push(std::cmp::max(1, self.get_longest_word_width(&header_text, Some(MAX_UNBROKEN_WORD_WIDTH))));
+            min_word_widths.push(std::cmp::max(
+                1,
+                self.get_longest_word_width(&header_text, Some(MAX_UNBROKEN_WORD_WIDTH)),
+            ));
         }
         for row in &token.rows {
             for i in 0..row.len() {
                 let cell_text = self.render_inline_tokens(&row[i], context);
                 natural_widths[i] = std::cmp::max(natural_widths[i], visible_width(&cell_text));
-                min_word_widths[i] = std::cmp::max(min_word_widths[i], self.get_longest_word_width(&cell_text, Some(MAX_UNBROKEN_WORD_WIDTH)));
+                min_word_widths[i] = std::cmp::max(
+                    min_word_widths[i],
+                    self.get_longest_word_width(&cell_text, Some(MAX_UNBROKEN_WORD_WIDTH)),
+                );
             }
         }
 
@@ -1444,7 +1603,7 @@ impl Markdown {
                 let total_weight: usize = min_word_widths.iter().map(|w| w.saturating_sub(1)).sum();
                 let mut growth: Vec<usize> = min_word_widths
                     .iter()
-                                        .map(|w| checked_div(w.saturating_sub(1), remaining, total_weight))
+                    .map(|w| checked_div(w.saturating_sub(1), remaining, total_weight))
                     .collect();
                 let allocated: usize = growth.iter().sum();
                 let mut leftover = remaining.saturating_sub(allocated);
@@ -1510,7 +1669,14 @@ impl Markdown {
         };
 
         // Top border.
-        lines.push(format!("┌─{}─┐", column_widths.iter().map(|w| "─".repeat(*w)).collect::<Vec<_>>().join("─┬─")));
+        lines.push(format!(
+            "┌─{}─┐",
+            column_widths
+                .iter()
+                .map(|w| "─".repeat(*w))
+                .collect::<Vec<_>>()
+                .join("─┬─")
+        ));
 
         // Header.
         let header_cell_lines: Vec<Vec<String>> = token
@@ -1529,7 +1695,10 @@ impl Markdown {
                 .enumerate()
                 .map(|(col_idx, cell_lines)| {
                     let text = cell_lines.get(line_idx).cloned().unwrap_or_default();
-                    let padded = format!("{text}{}", " ".repeat(column_widths[col_idx].saturating_sub(visible_width(&text))));
+                    let padded = format!(
+                        "{text}{}",
+                        " ".repeat(column_widths[col_idx].saturating_sub(visible_width(&text)))
+                    );
                     (self.theme.bold)(&padded)
                 })
                 .collect();
@@ -1537,7 +1706,14 @@ impl Markdown {
         }
 
         // Separator.
-        lines.push(format!("├─{}─┤", column_widths.iter().map(|w| "─".repeat(*w)).collect::<Vec<_>>().join("─┼─")));
+        lines.push(format!(
+            "├─{}─┤",
+            column_widths
+                .iter()
+                .map(|w| "─".repeat(*w))
+                .collect::<Vec<_>>()
+                .join("─┼─")
+        ));
 
         // Rows.
         for (row_index, row) in token.rows.iter().enumerate() {
@@ -1556,18 +1732,35 @@ impl Markdown {
                     .enumerate()
                     .map(|(col_idx, cell_lines)| {
                         let text = cell_lines.get(line_idx).cloned().unwrap_or_default();
-                        format!("{text}{}", " ".repeat(column_widths[col_idx].saturating_sub(visible_width(&text))))
+                        format!(
+                            "{text}{}",
+                            " ".repeat(column_widths[col_idx].saturating_sub(visible_width(&text)))
+                        )
                     })
                     .collect();
                 lines.push(format!("│ {} │", row_parts.join(" │ ")));
             }
             if row_index < token.rows.len() - 1 {
-                lines.push(format!("├─{}─┤", column_widths.iter().map(|w| "─".repeat(*w)).collect::<Vec<_>>().join("─┼─")));
+                lines.push(format!(
+                    "├─{}─┤",
+                    column_widths
+                        .iter()
+                        .map(|w| "─".repeat(*w))
+                        .collect::<Vec<_>>()
+                        .join("─┼─")
+                ));
             }
         }
 
         // Bottom border.
-        lines.push(format!("└─{}─┘", column_widths.iter().map(|w| "─".repeat(*w)).collect::<Vec<_>>().join("─┴─")));
+        lines.push(format!(
+            "└─{}─┘",
+            column_widths
+                .iter()
+                .map(|w| "─".repeat(*w))
+                .collect::<Vec<_>>()
+                .join("─┴─")
+        ));
 
         let _ = available_for_cells;
         lines
@@ -1620,4 +1813,3 @@ impl Component for Markdown {
 #[path = "markdown_tests.rs"]
 #[cfg(test)]
 mod markdown_tests;
-

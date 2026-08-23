@@ -7,13 +7,21 @@ use crate::types::{AgentMessage, CustomAgentMessage};
 
 pub const COMPACTION_SUMMARY_PREFIX: &str = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 pub const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>";
-pub const BRANCH_SUMMARY_PREFIX: &str = "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n";
+pub const BRANCH_SUMMARY_PREFIX: &str =
+    "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n";
 pub const BRANCH_SUMMARY_SUFFIX: &str = "</summary>";
 
 /// `bashExecutionToText` — renders a bash execution message as model text.
 pub fn bash_execution_to_text(msg: &CustomAgentMessage) -> String {
-    let CustomAgentMessage::BashExecution { command, output, exit_code, cancelled, truncated, full_output_path, .. } =
-        msg
+    let CustomAgentMessage::BashExecution {
+        command,
+        output,
+        exit_code,
+        cancelled,
+        truncated,
+        full_output_path,
+        ..
+    } = msg
     else {
         return String::new();
     };
@@ -39,7 +47,11 @@ pub fn bash_execution_to_text(msg: &CustomAgentMessage) -> String {
 }
 
 /// `createBranchSummaryMessage(summary, fromId, timestamp)`.
-pub fn create_branch_summary_message(summary: impl Into<String>, from_id: impl Into<String>, timestamp: u64) -> AgentMessage {
+pub fn create_branch_summary_message(
+    summary: impl Into<String>,
+    from_id: impl Into<String>,
+    timestamp: u64,
+) -> AgentMessage {
     AgentMessage::Custom(CustomAgentMessage::BranchSummary {
         summary: summary.into(),
         from_id: from_id.into(),
@@ -105,20 +117,40 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
                         custom.timestamp(),
                     )))
                 }
-                CustomAgentMessage::Custom { content, timestamp, .. } => {
+                CustomAgentMessage::Custom {
+                    content, timestamp, ..
+                } => {
                     let blocks = match content {
-                        crate::types::CustomContent::String(s) => vec![ContentBlock::text(s.clone())],
+                        crate::types::CustomContent::String(s) => {
+                            vec![ContentBlock::text(s.clone())]
+                        }
                         crate::types::CustomContent::Blocks(blocks) => blocks.clone(),
                     };
                     Some(Message::User(UserContent::blocks(blocks, *timestamp)))
                 }
-                CustomAgentMessage::BranchSummary { summary, timestamp, .. } => {
-                    let text = format!("{}{}{}", BRANCH_SUMMARY_PREFIX, summary, BRANCH_SUMMARY_SUFFIX);
-                    Some(Message::User(UserContent::blocks(vec![ContentBlock::text(text)], *timestamp)))
+                CustomAgentMessage::BranchSummary {
+                    summary, timestamp, ..
+                } => {
+                    let text = format!(
+                        "{}{}{}",
+                        BRANCH_SUMMARY_PREFIX, summary, BRANCH_SUMMARY_SUFFIX
+                    );
+                    Some(Message::User(UserContent::blocks(
+                        vec![ContentBlock::text(text)],
+                        *timestamp,
+                    )))
                 }
-                CustomAgentMessage::CompactionSummary { summary, timestamp, .. } => {
-                    let text = format!("{}{}{}", COMPACTION_SUMMARY_PREFIX, summary, COMPACTION_SUMMARY_SUFFIX);
-                    Some(Message::User(UserContent::blocks(vec![ContentBlock::text(text)], *timestamp)))
+                CustomAgentMessage::CompactionSummary {
+                    summary, timestamp, ..
+                } => {
+                    let text = format!(
+                        "{}{}{}",
+                        COMPACTION_SUMMARY_PREFIX, summary, COMPACTION_SUMMARY_SUFFIX
+                    );
+                    Some(Message::User(UserContent::blocks(
+                        vec![ContentBlock::text(text)],
+                        *timestamp,
+                    )))
                 }
             },
         })
@@ -129,7 +161,10 @@ impl CustomAgentMessage {
     /// `excludeFromContext` getter for bash execution messages.
     pub fn exclude_from_context(&self) -> Option<bool> {
         match self {
-            CustomAgentMessage::BashExecution { exclude_from_context, .. } => *exclude_from_context,
+            CustomAgentMessage::BashExecution {
+                exclude_from_context,
+                ..
+            } => *exclude_from_context,
             _ => None,
         }
     }

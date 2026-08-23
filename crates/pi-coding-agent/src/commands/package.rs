@@ -9,12 +9,11 @@
 //! - help text and usage/unknown-option/conflicting-option error messages.
 //!
 //! Divergence: `pi update --self` cannot self-update a compiled Rust binary;
-//! the port prints the upstream-style "cannot self-update" instruction
-//! (documented in the handler). `pi update --models` (pi.dev catalog refresh)
-//! is likewise a TODO at the remote-catalog seam.
+//! the port prints the upstream-style "cannot self-update" instruction.
 
 use crate::config::{self, APP_NAME, CONFIG_DIR_NAME};
 use crate::core::package_manager::PackageManager;
+use crate::core::remote_catalog_provider::refresh_catalogs;
 use crate::core::settings::SettingsManager;
 
 /// Package command kind (upstream `PackageCommand`).
@@ -72,7 +71,10 @@ pub fn parse_package_command(args: &[String]) -> Option<PackageCommandOptions> {
     let raw_command = &args[0];
     let command = if raw_command == "uninstall" {
         Some(PackageCommandKind::Remove)
-    } else if matches!(raw_command.as_str(), "install" | "remove" | "update" | "list") {
+    } else if matches!(
+        raw_command.as_str(),
+        "install" | "remove" | "update" | "list"
+    ) {
         match raw_command.as_str() {
             "install" => Some(PackageCommandKind::Install),
             "remove" => Some(PackageCommandKind::Remove),
@@ -84,7 +86,10 @@ pub fn parse_package_command(args: &[String]) -> Option<PackageCommandOptions> {
     };
     let command = command?;
 
-    let mut options = PackageCommandOptions { command: Some(command), ..Default::default() };
+    let mut options = PackageCommandOptions {
+        command: Some(command),
+        ..Default::default()
+    };
     let mut self_flag = false;
     let mut extensions_flag = false;
     let mut models_flag = false;
@@ -100,7 +105,10 @@ pub fn parse_package_command(args: &[String]) -> Option<PackageCommandOptions> {
             continue;
         }
         if arg == "-l" || arg == "--local" {
-            if matches!(command, PackageCommandKind::Install | PackageCommandKind::Remove) {
+            if matches!(
+                command,
+                PackageCommandKind::Install | PackageCommandKind::Remove
+            ) {
                 options.local = true;
             } else {
                 options.invalid_option.get_or_insert_with(|| arg.clone());
@@ -173,14 +181,18 @@ pub fn parse_package_command(args: &[String]) -> Option<PackageCommandOptions> {
             match value {
                 Some(value) if !value.starts_with('-') => {
                     if extension_flag_source.is_some() {
-                        options.conflicting_options.get_or_insert_with(|| "--extension can only be provided once".to_string());
+                        options.conflicting_options.get_or_insert_with(|| {
+                            "--extension can only be provided once".to_string()
+                        });
                     } else {
                         extension_flag_source = Some(value);
                     }
                     index += 2;
                 }
                 _ => {
-                    options.missing_option_value.get_or_insert_with(|| arg.clone());
+                    options
+                        .missing_option_value
+                        .get_or_insert_with(|| arg.clone());
                     index += 1;
                 }
             }
@@ -204,12 +216,15 @@ pub fn parse_package_command(args: &[String]) -> Option<PackageCommandOptions> {
         let extension_source = extension_flag_source;
 
         if all_flag && (self_flag || extensions_flag || models_flag || extension_source.is_some()) {
-            options
-                .conflicting_options
-                .get_or_insert_with(|| "--all cannot be combined with --self, --extensions, --models, or --extension".to_string());
+            options.conflicting_options.get_or_insert_with(|| {
+                "--all cannot be combined with --self, --extensions, --models, or --extension"
+                    .to_string()
+            });
         }
         if all_flag && options.source.is_some() {
-            options.conflicting_options.get_or_insert_with(|| "--all cannot be combined with a positional source".to_string());
+            options.conflicting_options.get_or_insert_with(|| {
+                "--all cannot be combined with a positional source".to_string()
+            });
         }
 
         let update_target: Option<UpdateTarget> = if models_flag {
@@ -219,19 +234,25 @@ pub fn parse_package_command(args: &[String]) -> Option<PackageCommandOptions> {
                     .get_or_insert_with(|| "--models cannot be combined with --self, --extensions, --all, or --extension".to_string());
             }
             if options.source.is_some() {
-                options.conflicting_options.get_or_insert_with(|| "--models cannot be combined with a positional source".to_string());
+                options.conflicting_options.get_or_insert_with(|| {
+                    "--models cannot be combined with a positional source".to_string()
+                });
             }
             Some(UpdateTarget::Models)
         } else if let Some(source) = extension_source {
             if self_flag || extensions_flag || all_flag {
-                options
-                    .conflicting_options
-                    .get_or_insert_with(|| "--extension cannot be combined with --self, --extensions, or --all".to_string());
+                options.conflicting_options.get_or_insert_with(|| {
+                    "--extension cannot be combined with --self, --extensions, or --all".to_string()
+                });
             }
             if options.source.is_some() {
-                options.conflicting_options.get_or_insert_with(|| "--extension cannot be combined with a positional source".to_string());
+                options.conflicting_options.get_or_insert_with(|| {
+                    "--extension cannot be combined with a positional source".to_string()
+                });
             }
-            Some(UpdateTarget::Extensions { source: Some(source) })
+            Some(UpdateTarget::Extensions {
+                source: Some(source),
+            })
         } else if let Some(source) = options.source.clone() {
             let source_is_self = source == "self" || source == "pi";
             if source_is_self {
@@ -246,7 +267,9 @@ pub fn parse_package_command(args: &[String]) -> Option<PackageCommandOptions> {
                         .conflicting_options
                         .get_or_insert_with(|| "positional update targets cannot be combined with --self, --extensions, or --all".to_string());
                 }
-                options.update_target = Some(UpdateTarget::Extensions { source: Some(source) });
+                options.update_target = Some(UpdateTarget::Extensions {
+                    source: Some(source),
+                });
             }
             None
         } else {
@@ -279,7 +302,9 @@ fn print_package_command_help(command: PackageCommandKind) {
             println!("Install a package and add it to settings.");
             println!();
             println!("Options:");
-            println!("  -l, --local       Install project-locally ({CONFIG_DIR_NAME}/settings.json)");
+            println!(
+                "  -l, --local       Install project-locally ({CONFIG_DIR_NAME}/settings.json)"
+            );
             println!("  -a, --approve     Trust project-local files for this command");
             println!("  -na, --no-approve Ignore project-local files for this command");
             println!();
@@ -321,14 +346,18 @@ fn print_package_command_help(command: PackageCommandKind) {
             println!("  --extension <source>    Update one package only");
             println!("  -a, --approve           Trust project-local files for this command");
             println!("  -na, --no-approve       Ignore project-local files for this command");
-            println!("  --force                 Reinstall pi even if the current version is latest");
+            println!(
+                "  --force                 Reinstall pi even if the current version is latest"
+            );
             println!();
             println!("Short forms:");
             println!("  {APP_NAME} update                Update pi only");
             println!("  {APP_NAME} update --all          Update pi and all extensions");
             println!("  {APP_NAME} update --models       Refresh model catalogs only");
             println!("  {APP_NAME} update <source>       Update one package");
-            println!("  {APP_NAME} update pi             Update pi only (self works as alias to pi)");
+            println!(
+                "  {APP_NAME} update pi             Update pi only (self works as alias to pi)"
+            );
         }
         PackageCommandKind::List => {
             println!("Usage:");
@@ -355,7 +384,7 @@ fn report_settings_errors(settings_manager: &mut SettingsManager, context: &str)
 
 /// Port of `handlePackageCommand(args)` + the error/help branches. Returns
 /// true when the args were a package command (handled).
-pub fn handle_package_command(args: &[String]) -> bool {
+pub async fn handle_package_command(args: &[String]) -> bool {
     let Some(options) = parse_package_command(args) else {
         return false;
     };
@@ -367,7 +396,10 @@ pub fn handle_package_command(args: &[String]) -> bool {
     }
     if let Some(option) = &options.invalid_option {
         eprintln!("Unknown option {option} for \"{}\".", command_name(command));
-        eprintln!("Use \"{APP_NAME} --help\" or \"{}\".", get_package_command_usage(command));
+        eprintln!(
+            "Use \"{APP_NAME} --help\" or \"{}\".",
+            get_package_command_usage(command)
+        );
         std::process::exit(1);
     }
     if let Some(option) = &options.missing_option_value {
@@ -387,43 +419,61 @@ pub fn handle_package_command(args: &[String]) -> bool {
     }
 
     let source = options.source.clone();
-    if matches!(command, PackageCommandKind::Install | PackageCommandKind::Remove) && source.is_none() {
+    if matches!(
+        command,
+        PackageCommandKind::Install | PackageCommandKind::Remove
+    ) && source.is_none()
+    {
         eprintln!("Missing {} source.", command_name(command));
         eprintln!("Usage: {}", get_package_command_usage(command));
         std::process::exit(1);
     }
 
-    if command == PackageCommandKind::Update && matches!(options.update_target, Some(UpdateTarget::Models)) {
-        // TODO(remote-catalog): full pi.dev catalog refresh is not ported;
-        // the pure-data surface lives in core::remote_catalog_provider and the
-        // network fetch is a documented divergence.
-        eprintln!("Error: model catalog refresh is not supported by this build.");
-        std::process::exit(1);
+    if command == PackageCommandKind::Update
+        && matches!(options.update_target, Some(UpdateTarget::Models))
+    {
+        match refresh_catalogs(&agent_dir_for_catalog(), true).await {
+            Ok(updated) => {
+                println!("Model catalogs refreshed ({updated} providers)");
+                return true;
+            }
+            Err(error) => {
+                eprintln!("Error: {error}");
+                std::process::exit(1);
+            }
+        }
     }
 
     let cwd = config::cwd();
     let agent_dir = config::get_agent_dir();
-    let writes_project_package_config =
-        matches!(command, PackageCommandKind::Install | PackageCommandKind::Remove) && options.local;
+    let writes_project_package_config = matches!(
+        command,
+        PackageCommandKind::Install | PackageCommandKind::Remove
+    ) && options.local;
 
     // Package commands use saved project trust only (upstream
     // `useSavedProjectTrustOnly` for update; interactive prompt for
     // install/remove — the port defaults to untrusted without a prompt).
     let settings_trusted = options.project_trust_override.unwrap_or(false);
-    let mut settings = SettingsManager::create(&cwd, &agent_dir.display().to_string(), crate::core::settings::SettingsManagerCreateOptions {
-        project_trusted: settings_trusted,
-    });
+    let mut settings = SettingsManager::create(
+        &cwd,
+        &agent_dir.display().to_string(),
+        crate::core::settings::SettingsManagerCreateOptions {
+            project_trusted: settings_trusted,
+        },
+    );
     if writes_project_package_config && !settings.is_project_trusted() {
         eprintln!("Project is not trusted. Use --approve to modify local package config.");
         std::process::exit(1);
     }
     report_settings_errors(&mut settings, "package command");
 
-    let mut package_manager = PackageManager::new(crate::core::package_manager::PackageManagerOptions {
-        cwd: cwd.clone(),
-        agent_dir: agent_dir.display().to_string(),
-        settings_manager: settings,
-    });
+    let mut package_manager =
+        PackageManager::new(crate::core::package_manager::PackageManagerOptions {
+            cwd: cwd.clone(),
+            agent_dir: agent_dir.display().to_string(),
+            settings_manager: settings,
+        });
 
     package_manager.set_progress_callback(Some(Box::new(|event| {
         // Upstream streams the dimmed progress line to stdout.
@@ -436,14 +486,18 @@ pub fn handle_package_command(args: &[String]) -> bool {
 
     match command {
         PackageCommandKind::Install => {
-            if let Err(error) = package_manager.install_and_persist(source.as_deref().unwrap_or(""), options.local) {
+            if let Err(error) =
+                package_manager.install_and_persist(source.as_deref().unwrap_or(""), options.local)
+            {
                 eprintln!("Error: {error}");
                 std::process::exit(1);
             }
             println!("Installed {}", source.unwrap_or_default());
         }
         PackageCommandKind::Remove => {
-            let removed = match package_manager.remove_and_persist(source.as_deref().unwrap_or(""), options.local) {
+            let removed = match package_manager
+                .remove_and_persist(source.as_deref().unwrap_or(""), options.local)
+            {
                 Ok(removed) => removed,
                 Err(error) => {
                     eprintln!("Error: {error}");
@@ -451,7 +505,10 @@ pub fn handle_package_command(args: &[String]) -> bool {
                 }
             };
             if !removed {
-                eprintln!("No matching package found for {}", source.unwrap_or_default());
+                eprintln!(
+                    "No matching package found for {}",
+                    source.unwrap_or_default()
+                );
                 std::process::exit(1);
             }
             println!("Removed {}", source.unwrap_or_default());
@@ -459,7 +516,8 @@ pub fn handle_package_command(args: &[String]) -> bool {
         PackageCommandKind::List => {
             let configured = package_manager.list_configured_packages();
             let user_packages: Vec<_> = configured.iter().filter(|p| p.scope == "user").collect();
-            let project_packages: Vec<_> = configured.iter().filter(|p| p.scope == "project").collect();
+            let project_packages: Vec<_> =
+                configured.iter().filter(|p| p.scope == "project").collect();
             if configured.is_empty() {
                 println!("No packages installed.");
                 return true;
@@ -501,7 +559,8 @@ pub fn handle_package_command(args: &[String]) -> bool {
             if options.show_extensions_skipped_note {
                 println!("Extensions are skipped. Run {APP_NAME} update --extensions to update extensions.");
             }
-            let includes_extensions = matches!(target, UpdateTarget::All | UpdateTarget::Extensions { .. });
+            let includes_extensions =
+                matches!(target, UpdateTarget::All | UpdateTarget::Extensions { .. });
             let includes_self = matches!(target, UpdateTarget::All | UpdateTarget::Self_);
             if includes_extensions {
                 let update_source = match &target {
@@ -537,6 +596,10 @@ pub fn handle_package_command(args: &[String]) -> bool {
     // handles cannot keep the process alive; the Rust port has no such
     // handles but keeps the exit-code semantics for callers.
     true
+}
+
+fn agent_dir_for_catalog() -> std::path::PathBuf {
+    config::get_agent_dir()
 }
 
 /// The subcommand name without the `uninstall` alias.
@@ -602,7 +665,12 @@ mod tests {
     #[test]
     fn update_source_resolves_to_extension_update() {
         let options = parse(&["update", "npm:a"]);
-        assert_eq!(options.update_target, Some(UpdateTarget::Extensions { source: Some("npm:a".into()) }));
+        assert_eq!(
+            options.update_target,
+            Some(UpdateTarget::Extensions {
+                source: Some("npm:a".into())
+            })
+        );
         assert!(!options.show_extensions_skipped_note);
     }
 
@@ -627,7 +695,12 @@ mod tests {
     #[test]
     fn update_extension_flag() {
         let options = parse(&["update", "--extension", "npm:x"]);
-        assert_eq!(options.update_target, Some(UpdateTarget::Extensions { source: Some("npm:x".into()) }));
+        assert_eq!(
+            options.update_target,
+            Some(UpdateTarget::Extensions {
+                source: Some("npm:x".into())
+            })
+        );
     }
 
     #[test]

@@ -1,6 +1,5 @@
 //! Codec options, mirroring `packages/protocol/src/cbor/options.ts`.
 
-
 pub const UINT32_BASE: u64 = 0x1_0000_0000;
 pub const MAX_UINT32: u64 = 0xffff_ffff;
 
@@ -37,7 +36,9 @@ pub struct ResolvedCborOptions {
 
 pub fn resolve_options(options: &CborOptions) -> ResolvedCborOptions {
     ResolvedCborOptions {
-        max_byte_length: options.max_byte_length.unwrap_or(DEFAULT_MAX_CBOR_BYTE_LENGTH),
+        max_byte_length: options
+            .max_byte_length
+            .unwrap_or(DEFAULT_MAX_CBOR_BYTE_LENGTH),
         max_container_length: options
             .max_container_length
             .unwrap_or(DEFAULT_MAX_CBOR_CONTAINER_LENGTH),

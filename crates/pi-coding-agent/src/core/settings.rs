@@ -29,8 +29,10 @@ pub fn deep_merge(base: &mut SettingsMap, overrides: &SettingsMap) {
     for (key, override_value) in overrides {
         match (base.get(key), override_value) {
             (Some(Value::Object(base_obj)), Value::Object(override_obj)) => {
-                let mut base_map: SettingsMap =
-                    base_obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let mut base_map: SettingsMap = base_obj
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
                 let override_map: SettingsMap = override_obj
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
@@ -68,14 +70,18 @@ pub fn migrate_settings(settings: &mut SettingsMap) {
 
     // Migrate old skills object format to new array format
     if let Some(Value::Object(skills_obj)) = settings.get("skills") {
-        let skills_map: SettingsMap =
-            skills_obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let skills_map: SettingsMap = skills_obj
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         if let Some(Value::Bool(enable)) = skills_map.get("enableSkillCommands") {
             if !settings.contains_key("enableSkillCommands") {
                 settings.insert("enableSkillCommands".to_string(), Value::Bool(*enable));
             }
         }
-        let dirs = skills_map.get("customDirectories").and_then(|v| v.as_array());
+        let dirs = skills_map
+            .get("customDirectories")
+            .and_then(|v| v.as_array());
         match dirs {
             Some(dirs) if !dirs.is_empty() => {
                 settings.insert("skills".to_string(), Value::Array(dirs.clone()));
@@ -88,12 +94,18 @@ pub fn migrate_settings(settings: &mut SettingsMap) {
 
     // Migrate retry.maxDelayMs -> retry.provider.maxRetryDelayMs
     if let Some(Value::Object(retry_obj)) = settings.get("retry") {
-        let mut retry_map: SettingsMap =
-            retry_obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut retry_map: SettingsMap = retry_obj
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         let provider_settings = retry_map
             .get("provider")
             .and_then(|v| v.as_object())
-            .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<SettingsMap>());
+            .map(|o| {
+                o.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<SettingsMap>()
+            });
         if let Some(Value::Number(max_delay)) = retry_map.get("maxDelayMs") {
             let provider_max = provider_settings
                 .as_ref()
@@ -101,12 +113,21 @@ pub fn migrate_settings(settings: &mut SettingsMap) {
             let provider_max_missing = matches!(provider_max, None | Some(Value::Null));
             if provider_max_missing {
                 let mut provider = provider_settings.clone().unwrap_or_default();
-                provider.insert("maxRetryDelayMs".to_string(), Value::Number(max_delay.clone()));
-                retry_map.insert("provider".to_string(), Value::Object(provider.into_iter().collect()));
+                provider.insert(
+                    "maxRetryDelayMs".to_string(),
+                    Value::Number(max_delay.clone()),
+                );
+                retry_map.insert(
+                    "provider".to_string(),
+                    Value::Object(provider.into_iter().collect()),
+                );
             }
         }
         retry_map.shift_remove("maxDelayMs");
-        settings.insert("retry".to_string(), Value::Object(retry_map.into_iter().collect()));
+        settings.insert(
+            "retry".to_string(),
+            Value::Object(retry_map.into_iter().collect()),
+        );
     }
 }
 
@@ -142,7 +163,6 @@ pub fn strip_bom(content: &str) -> &str {
     content.strip_prefix('\u{FEFF}').unwrap_or(content)
 }
 
-
 // ---------------------------------------------------------------------------
 // Settings storage layer (ported from settings-manager.ts)
 // ---------------------------------------------------------------------------
@@ -163,7 +183,11 @@ pub struct SettingsError {
 
 impl SettingsError {
     pub fn new(scope: SettingsScope, error: impl Into<String>, path: Option<String>) -> Self {
-        Self { scope, path, error: error.into() }
+        Self {
+            scope,
+            path,
+            error: error.into(),
+        }
     }
 }
 
@@ -171,11 +195,7 @@ impl SettingsError {
 pub trait SettingsStorage: Send + Sync {
     /// Runs `f` with the current content (None when the file does not exist).
     /// Write back when `f` returns `Some(next)`.
-    fn with_lock(
-        &self,
-        scope: SettingsScope,
-        f: &mut dyn FnMut(Option<&str>) -> Option<String>,
-    );
+    fn with_lock(&self, scope: SettingsScope, f: &mut dyn FnMut(Option<&str>) -> Option<String>);
 }
 
 /// In-memory backend (used by `SettingsManager::in_memory` and tests).
@@ -186,7 +206,10 @@ pub struct InMemorySettingsStorage {
 
 impl InMemorySettingsStorage {
     pub fn new() -> Self {
-        Self { global: Mutex::new(None), project: Mutex::new(None) }
+        Self {
+            global: Mutex::new(None),
+            project: Mutex::new(None),
+        }
     }
 }
 
@@ -197,11 +220,7 @@ impl Default for InMemorySettingsStorage {
 }
 
 impl SettingsStorage for InMemorySettingsStorage {
-    fn with_lock(
-        &self,
-        scope: SettingsScope,
-        f: &mut dyn FnMut(Option<&str>) -> Option<String>,
-    ) {
+    fn with_lock(&self, scope: SettingsScope, f: &mut dyn FnMut(Option<&str>) -> Option<String>) {
         let slot = match scope {
             SettingsScope::Global => &self.global,
             SettingsScope::Project => &self.project,
@@ -237,7 +256,9 @@ impl FileSettingsStorage {
     pub fn new(cwd: &str, agent_dir: &str) -> Self {
         Self {
             global_settings_path: PathBuf::from(agent_dir).join("settings.json"),
-            project_settings_path: PathBuf::from(cwd).join(CONFIG_DIR_NAME).join("settings.json"),
+            project_settings_path: PathBuf::from(cwd)
+                .join(CONFIG_DIR_NAME)
+                .join("settings.json"),
         }
     }
 
@@ -256,8 +277,17 @@ impl FileSettingsStorage {
         const DELAY_MS: u64 = 20;
         let mut last_error: Option<std::io::Error> = None;
         for attempt in 1..=MAX_ATTEMPTS {
-            match fs::OpenOptions::new().write(true).create_new(true).open(&lock_path) {
-                Ok(file) => return LockGuard { _file: file, path: lock_path },
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(file) => {
+                    return LockGuard {
+                        _file: file,
+                        path: lock_path,
+                    }
+                }
                 Err(e) if e.kind() == ErrorKind::AlreadyExists && attempt < MAX_ATTEMPTS => {
                     last_error = Some(e);
                     thread::sleep(Duration::from_millis(DELAY_MS));
@@ -279,11 +309,7 @@ impl FileSettingsStorage {
 }
 
 impl SettingsStorage for FileSettingsStorage {
-    fn with_lock(
-        &self,
-        scope: SettingsScope,
-        f: &mut dyn FnMut(Option<&str>) -> Option<String>,
-    ) {
+    fn with_lock(&self, scope: SettingsScope, f: &mut dyn FnMut(Option<&str>) -> Option<String>) {
         let path = self.path_for(scope);
         let file_exists = path.exists();
         let mut _lock_guard = if file_exists {
@@ -291,13 +317,14 @@ impl SettingsStorage for FileSettingsStorage {
         } else {
             None
         };
-        let current = if file_exists {
-            Some(fs::read_to_string(&path).unwrap_or_else(|e| {
-                panic!("Failed to read settings file {}: {e}", path.display())
-            }))
-        } else {
-            None
-        };
+        let current =
+            if file_exists {
+                Some(fs::read_to_string(&path).unwrap_or_else(|e| {
+                    panic!("Failed to read settings file {}: {e}", path.display())
+                }))
+            } else {
+                None
+            };
         let next = f(current.as_deref());
         if let Some(next) = next {
             if let Some(dir) = path.parent() {
@@ -309,8 +336,9 @@ impl SettingsStorage for FileSettingsStorage {
             if _lock_guard.is_none() {
                 _lock_guard = Some(Self::acquire_lock_with_retry(&path));
             }
-            fs::write(&path, next)
-                .unwrap_or_else(|e| panic!("Failed to write settings file {}: {e}", path.display()));
+            fs::write(&path, next).unwrap_or_else(|e| {
+                panic!("Failed to write settings file {}: {e}", path.display())
+            });
         }
     }
 }
@@ -354,7 +382,9 @@ pub struct SettingsManagerCreateOptions {
 
 impl Default for SettingsManagerCreateOptions {
     fn default() -> Self {
-        Self { project_trusted: true }
+        Self {
+            project_trusted: true,
+        }
     }
 }
 
@@ -389,12 +419,10 @@ impl SettingsManager {
         global_path: Option<String>,
         project_path: Option<String>,
     ) -> Self {
-        let global_load_error = global_load_error.map(|e| {
-            SettingsError::new(SettingsScope::Global, e.clone(), global_path.clone())
-        });
-        let project_load_error = project_load_error.map(|e| {
-            SettingsError::new(SettingsScope::Project, e.clone(), project_path.clone())
-        });
+        let global_load_error = global_load_error
+            .map(|e| SettingsError::new(SettingsScope::Global, e.clone(), global_path.clone()));
+        let project_load_error = project_load_error
+            .map(|e| SettingsError::new(SettingsScope::Project, e.clone(), project_path.clone()));
         let mut settings = initial_global.clone();
         deep_merge(&mut settings, &initial_project);
         Self {
@@ -419,12 +447,22 @@ impl SettingsManager {
     /// Load from files at `<agent_dir>/settings.json` and `<cwd>/.pi/settings.json`.
     pub fn create(cwd: &str, agent_dir: &str, options: SettingsManagerCreateOptions) -> Self {
         let storage = Arc::new(FileSettingsStorage::new(cwd, agent_dir));
-        Self::from_storage_with_paths(storage, options, Some(agent_dir.to_string()), Some(cwd.to_string()))
+        Self::from_storage_with_paths(
+            storage,
+            options,
+            Some(agent_dir.to_string()),
+            Some(cwd.to_string()),
+        )
     }
 
     /// Load from an arbitrary storage backend.
     pub fn from_storage(storage: Box<dyn SettingsStorage>) -> Self {
-        Self::from_storage_with_paths(Arc::from(storage), SettingsManagerCreateOptions::default(), None, None)
+        Self::from_storage_with_paths(
+            Arc::from(storage),
+            SettingsManagerCreateOptions::default(),
+            None,
+            None,
+        )
     }
 
     /// In-memory manager; `settings` are migrated and seeded as the global scope.
@@ -463,10 +501,18 @@ impl SettingsManager {
         let project_path = cwd.map(|d| format!("{d}/{CONFIG_DIR_NAME}/settings.json"));
         let mut initial_errors = Vec::new();
         if let Some(e) = &global_err {
-            initial_errors.push(SettingsError::new(SettingsScope::Global, e.clone(), global_path.clone()));
+            initial_errors.push(SettingsError::new(
+                SettingsScope::Global,
+                e.clone(),
+                global_path.clone(),
+            ));
         }
         if let Some(e) = &project_err {
-            initial_errors.push(SettingsError::new(SettingsScope::Project, e.clone(), project_path.clone()));
+            initial_errors.push(SettingsError::new(
+                SettingsScope::Project,
+                e.clone(),
+                project_path.clone(),
+            ));
         }
         Self::new(
             storage,
@@ -497,7 +543,9 @@ impl SettingsManager {
             };
             storage.with_lock(scope, &mut capture);
         }
-        let Some(content) = content else { return Ok(SettingsMap::new()) };
+        let Some(content) = content else {
+            return Ok(SettingsMap::new());
+        };
         let content = strip_bom(&content);
         Self::parse_settings_map(content)
     }
@@ -630,8 +678,10 @@ impl SettingsManager {
                                     .unwrap_or(Value::Null),
                             );
                         }
-                        merged_settings
-                            .insert(field.clone(), Value::Object(merged_nested.into_iter().collect()));
+                        merged_settings.insert(
+                            field.clone(),
+                            Value::Object(merged_nested.into_iter().collect()),
+                        );
                     } else {
                         merged_settings.insert(field.clone(), value.clone());
                     }
@@ -655,15 +705,18 @@ impl SettingsManager {
         let fields = self.modified_fields.clone();
         let nested = self.modified_nested.clone();
         let storage = Arc::clone(&self.storage);
-        self.enqueue_write(SettingsScope::Global, Box::new(move || {
-            Self::persist_scoped(
-                storage.as_ref(),
-                SettingsScope::Global,
-                &snapshot,
-                &fields,
-                &nested,
-            );
-        }));
+        self.enqueue_write(
+            SettingsScope::Global,
+            Box::new(move || {
+                Self::persist_scoped(
+                    storage.as_ref(),
+                    SettingsScope::Global,
+                    &snapshot,
+                    &fields,
+                    &nested,
+                );
+            }),
+        );
     }
 
     fn save_project(&mut self) {
@@ -678,15 +731,18 @@ impl SettingsManager {
         let fields = self.modified_project_fields.clone();
         let nested = self.modified_project_nested.clone();
         let storage = Arc::clone(&self.storage);
-        self.enqueue_write(SettingsScope::Project, Box::new(move || {
-            Self::persist_scoped(
-                storage.as_ref(),
-                SettingsScope::Project,
-                &snapshot,
-                &fields,
-                &nested,
-            );
-        }));
+        self.enqueue_write(
+            SettingsScope::Project,
+            Box::new(move || {
+                Self::persist_scoped(
+                    storage.as_ref(),
+                    SettingsScope::Project,
+                    &snapshot,
+                    &fields,
+                    &nested,
+                );
+            }),
+        );
     }
 
     fn update_project_settings(&mut self, field: &str, update: impl FnOnce(&mut SettingsMap)) {
@@ -795,9 +851,9 @@ impl SettingsManager {
         let (settings, err) =
             Self::try_load_from_storage(self.storage.as_ref(), SettingsScope::Project, true);
         self.project_settings = settings;
-        self.project_load_error = err.clone().map(|e| {
-            SettingsError::new(SettingsScope::Project, e, self.project_path.clone())
-        });
+        self.project_load_error = err
+            .clone()
+            .map(|e| SettingsError::new(SettingsScope::Project, e, self.project_path.clone()));
         if let Some(e) = err {
             self.record_error(SettingsScope::Project, e);
         }
@@ -814,8 +870,11 @@ impl SettingsManager {
                 self.global_load_error = None;
             }
             Some(e) => {
-                self.global_load_error =
-                    Some(SettingsError::new(SettingsScope::Global, e.clone(), self.global_path.clone()));
+                self.global_load_error = Some(SettingsError::new(
+                    SettingsScope::Global,
+                    e.clone(),
+                    self.global_path.clone(),
+                ));
                 self.record_error(SettingsScope::Global, e);
             }
         }
@@ -835,8 +894,11 @@ impl SettingsManager {
                 self.project_load_error = None;
             }
             Some(e) => {
-                self.project_load_error =
-                    Some(SettingsError::new(SettingsScope::Project, e.clone(), self.project_path.clone()));
+                self.project_load_error = Some(SettingsError::new(
+                    SettingsScope::Project,
+                    e.clone(),
+                    self.project_path.clone(),
+                ));
                 self.record_error(SettingsScope::Project, e);
             }
         }
@@ -998,19 +1060,28 @@ impl SettingsManager {
 
     pub fn set_model_thinking_level(&mut self, provider: &str, model_id: &str, level: &str) {
         if !self.global_settings.contains_key("modelThinkingLevels") {
-            self.global_settings
-                .insert("modelThinkingLevels".to_string(), Value::Object(serde_json::Map::new()));
+            self.global_settings.insert(
+                "modelThinkingLevels".to_string(),
+                Value::Object(serde_json::Map::new()),
+            );
         }
         self.global_settings["modelThinkingLevels"]
             .as_object_mut()
             .expect("object just ensured")
-            .insert(format!("{provider}/{model_id}"), Value::String(level.to_string()));
+            .insert(
+                format!("{provider}/{model_id}"),
+                Value::String(level.to_string()),
+            );
         self.mark_modified("modelThinkingLevels", None);
         self.save();
     }
 
     pub fn remove_model_thinking_level(&mut self, provider: &str, model_id: &str) {
-        let Some(obj) = self.global_settings.get_mut("modelThinkingLevels").and_then(|v| v.as_object_mut()) else {
+        let Some(obj) = self
+            .global_settings
+            .get_mut("modelThinkingLevels")
+            .and_then(|v| v.as_object_mut())
+        else {
             return;
         };
         obj.shift_remove(&format!("{provider}/{model_id}"));
@@ -1038,11 +1109,13 @@ impl SettingsManager {
     }
 
     pub fn get_compaction_reserve_tokens(&self) -> u64 {
-        self.g_nested_u64("compaction", "reserveTokens").unwrap_or(16384)
+        self.g_nested_u64("compaction", "reserveTokens")
+            .unwrap_or(16384)
     }
 
     pub fn get_compaction_keep_recent_tokens(&self) -> u64 {
-        self.g_nested_u64("compaction", "keepRecentTokens").unwrap_or(20000)
+        self.g_nested_u64("compaction", "keepRecentTokens")
+            .unwrap_or(20000)
     }
 
     pub fn get_compaction_settings(&self) -> (bool, u64, u64) {
@@ -1055,13 +1128,16 @@ impl SettingsManager {
 
     pub fn get_branch_summary_settings(&self) -> (u64, bool) {
         (
-            self.g_nested_u64("branchSummary", "reserveTokens").unwrap_or(16384),
-            self.g_nested_bool("branchSummary", "skipPrompt").unwrap_or(false),
+            self.g_nested_u64("branchSummary", "reserveTokens")
+                .unwrap_or(16384),
+            self.g_nested_bool("branchSummary", "skipPrompt")
+                .unwrap_or(false),
         )
     }
 
     pub fn get_branch_summary_skip_prompt(&self) -> bool {
-        self.g_nested_bool("branchSummary", "skipPrompt").unwrap_or(false)
+        self.g_nested_bool("branchSummary", "skipPrompt")
+            .unwrap_or(false)
     }
 
     pub fn get_retry_enabled(&self) -> bool {
@@ -1105,7 +1181,9 @@ impl SettingsManager {
     }
 
     pub fn get_provider_retry_settings(&self) -> (Option<u64>, Option<u64>, u64) {
-        let provider = self.g_nested("retry", "provider").and_then(|v| v.as_object());
+        let provider = self
+            .g_nested("retry", "provider")
+            .and_then(|v| v.as_object());
         (
             provider.and_then(|p| p.get("timeoutMs").and_then(|v| v.as_u64())),
             provider.and_then(|p| p.get("maxRetries").and_then(|v| v.as_u64())),
@@ -1183,7 +1261,11 @@ impl SettingsManager {
 
     /// Read from *global* scope only; anything other than always/never is ask.
     pub fn get_default_project_trust(&self) -> &str {
-        match self.global_settings.get("defaultProjectTrust").and_then(|v| v.as_str()) {
+        match self
+            .global_settings
+            .get("defaultProjectTrust")
+            .and_then(|v| v.as_str())
+        {
             Some("always") => "always",
             Some("never") => "never",
             _ => "ask",
@@ -1257,7 +1339,8 @@ impl SettingsManager {
         self.mark_modified("enableAnalytics", None);
         if enabled && self.global_settings.get("trackingId").is_none() {
             let id = uuid::Uuid::new_v4().to_string();
-            self.global_settings.insert("trackingId".to_string(), Value::String(id));
+            self.global_settings
+                .insert("trackingId".to_string(), Value::String(id));
             self.mark_modified("trackingId", None);
         }
         self.save();
@@ -1370,9 +1453,9 @@ impl SettingsManager {
     }
 
     pub fn get_thinking_budgets(&self) -> Option<SettingsMap> {
-        self.g("thinkingBudgets").and_then(|v| v.as_object()).map(|o| {
-            o.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-        })
+        self.g("thinkingBudgets")
+            .and_then(|v| v.as_object())
+            .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
     }
 
     pub fn get_show_images(&self) -> bool {
@@ -1384,7 +1467,10 @@ impl SettingsManager {
     }
 
     pub fn get_image_width_cells(&self) -> u64 {
-        match self.g_nested("terminal", "imageWidthCells").and_then(|v| v.as_u64()) {
+        match self
+            .g_nested("terminal", "imageWidthCells")
+            .and_then(|v| v.as_u64())
+        {
             Some(width) => width.max(1),
             None => 60,
         }
@@ -1407,7 +1493,8 @@ impl SettingsManager {
     }
 
     pub fn get_show_terminal_progress(&self) -> bool {
-        self.g_nested_bool("terminal", "showTerminalProgress").unwrap_or(false)
+        self.g_nested_bool("terminal", "showTerminalProgress")
+            .unwrap_or(false)
     }
 
     pub fn set_show_terminal_progress(&mut self, enabled: bool) {
@@ -1498,7 +1585,14 @@ impl SettingsManager {
 
     pub fn get_tree_filter_mode(&self) -> &str {
         match self.g_str("treeFilterMode") {
-            Some(m) if matches!(m, "default" | "no-tools" | "user-only" | "labeled-only" | "all") => m,
+            Some(m)
+                if matches!(
+                    m,
+                    "default" | "no-tools" | "user-only" | "labeled-only" | "all"
+                ) =>
+            {
+                m
+            }
             _ => "default",
         }
     }
@@ -1556,7 +1650,10 @@ impl SettingsManager {
     }
 
     pub fn get_mermaid_rendering_mode(&self) -> &str {
-        match self.g_nested("markdown", "mermaid").and_then(|v| v.as_str()) {
+        match self
+            .g_nested("markdown", "mermaid")
+            .and_then(|v| v.as_str())
+        {
             Some("off") => "off",
             Some("final") => "final",
             _ => "streaming",
@@ -1601,8 +1698,7 @@ mod tests {
     #[test]
     fn deep_merge_nested_objects_merge_recursively() {
         let mut base = m(json!({ "compaction": { "enabled": true } }));
-        let overrides =
-            m(json!({ "compaction": { "reserveTokens": 10 } }));
+        let overrides = m(json!({ "compaction": { "reserveTokens": 10 } }));
         deep_merge(&mut base, &overrides);
         assert_eq!(
             base,
@@ -1623,10 +1719,7 @@ mod tests {
         let mut base = m(json!({ "extensions": ["/one.ts"] }));
         let overrides = m(json!({ "extensions": ["/two.ts", "/three.ts"] }));
         deep_merge(&mut base, &overrides);
-        assert_eq!(
-            base,
-            m(json!({ "extensions": ["/two.ts", "/three.ts"] }))
-        );
+        assert_eq!(base, m(json!({ "extensions": ["/two.ts", "/three.ts"] })));
     }
 
     // ---- migrate_settings ------------------------------------------------
@@ -1635,18 +1728,14 @@ mod tests {
     fn migrate_queue_mode_to_steering_mode() {
         let mut settings = m(json!({ "queueMode": "one-at-a-time" }));
         migrate_settings(&mut settings);
-        assert_eq!(
-            settings,
-            m(json!({ "steeringMode": "one-at-a-time" }))
-        );
+        assert_eq!(settings, m(json!({ "steeringMode": "one-at-a-time" })));
     }
 
     #[test]
     fn migrate_queue_mode_keeps_existing_steering_mode() {
         // Upstream: the migration only fires when the target key is absent;
         // otherwise the legacy key stays untouched.
-        let mut settings =
-            m(json!({ "steeringMode": "all", "queueMode": "one-at-a-time" }));
+        let mut settings = m(json!({ "steeringMode": "all", "queueMode": "one-at-a-time" }));
         migrate_settings(&mut settings);
         assert_eq!(
             settings,
@@ -1658,27 +1747,20 @@ mod tests {
     fn migrate_websockets_true_to_transport_websocket() {
         let mut settings = m(json!({ "websockets": true }));
         migrate_settings(&mut settings);
-        assert_eq!(
-            settings,
-            m(json!({ "transport": "websocket" }))
-        );
+        assert_eq!(settings, m(json!({ "transport": "websocket" })));
     }
 
     #[test]
     fn migrate_websockets_false_to_transport_sse() {
         let mut settings = m(json!({ "websockets": false }));
         migrate_settings(&mut settings);
-        assert_eq!(
-            settings,
-            m(json!({ "transport": "sse" }))
-        );
+        assert_eq!(settings, m(json!({ "transport": "sse" })));
     }
 
     #[test]
     fn migrate_websockets_keeps_existing_transport() {
         // Upstream: same guard — legacy key stays when transport exists.
-        let mut settings =
-            m(json!({ "transport": "auto", "websockets": true }));
+        let mut settings = m(json!({ "transport": "auto", "websockets": true }));
         migrate_settings(&mut settings);
         assert_eq!(
             settings,
@@ -1703,13 +1785,9 @@ mod tests {
 
     #[test]
     fn migrate_skills_object_without_custom_directories_deletes_skills() {
-        let mut settings =
-            m(json!({ "skills": { "enableSkillCommands": false } }));
+        let mut settings = m(json!({ "skills": { "enableSkillCommands": false } }));
         migrate_settings(&mut settings);
-        assert_eq!(
-            settings,
-            m(json!({ "enableSkillCommands": false }))
-        );
+        assert_eq!(settings, m(json!({ "enableSkillCommands": false })));
     }
 
     #[test]

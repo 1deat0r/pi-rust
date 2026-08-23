@@ -109,10 +109,15 @@ impl ProjectTrustStore {
         loop {
             if let Some(value) = data.get(&current) {
                 if let Some(decision) = value {
-                    return Some(ProjectTrustStoreEntry { path: current.clone(), decision: *decision });
+                    return Some(ProjectTrustStoreEntry {
+                        path: current.clone(),
+                        decision: *decision,
+                    });
                 }
             }
-            let parent = Path::new(&current).parent().map(|p| p.to_string_lossy().into_owned());
+            let parent = Path::new(&current)
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned());
             match parent {
                 Some(parent) if parent != current => current = parent,
                 _ => return None,
@@ -121,7 +126,10 @@ impl ProjectTrustStore {
     }
 
     pub fn set(&self, cwd: &str, decision: Option<bool>) {
-        self.set_many(&[ProjectTrustUpdate { path: cwd.to_string(), decision }]);
+        self.set_many(&[ProjectTrustUpdate {
+            path: cwd.to_string(),
+            decision,
+        }]);
     }
 
     pub fn set_many(&self, updates: &[ProjectTrustUpdate]) {
@@ -147,18 +155,29 @@ pub fn get_project_trust_options(cwd: &str, include_session_only: bool) -> Vec<P
     let mut options = vec![ProjectTrustOption {
         label: "Trust".to_string(),
         trusted: true,
-        updates: vec![ProjectTrustUpdate { path: trust_path.clone(), decision: Some(true) }],
+        updates: vec![ProjectTrustUpdate {
+            path: trust_path.clone(),
+            decision: Some(true),
+        }],
         saved_path: Some(trust_path.clone()),
     }];
-    let parent = Path::new(&trust_path).parent().map(|p| p.to_string_lossy().into_owned());
+    let parent = Path::new(&trust_path)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned());
     if let Some(parent) = parent {
         if parent != trust_path {
             options.push(ProjectTrustOption {
                 label: format!("Trust parent folder ({parent})"),
                 trusted: true,
                 updates: vec![
-                    ProjectTrustUpdate { path: parent.clone(), decision: Some(true) },
-                    ProjectTrustUpdate { path: trust_path.clone(), decision: None },
+                    ProjectTrustUpdate {
+                        path: parent.clone(),
+                        decision: Some(true),
+                    },
+                    ProjectTrustUpdate {
+                        path: trust_path.clone(),
+                        decision: None,
+                    },
                 ],
                 saved_path: Some(parent),
             });
@@ -175,7 +194,10 @@ pub fn get_project_trust_options(cwd: &str, include_session_only: bool) -> Vec<P
     options.push(ProjectTrustOption {
         label: "Do not trust".to_string(),
         trusted: false,
-        updates: vec![ProjectTrustUpdate { path: trust_path.clone(), decision: Some(false) }],
+        updates: vec![ProjectTrustUpdate {
+            path: trust_path.clone(),
+            decision: Some(false),
+        }],
         saved_path: Some(trust_path),
     });
     if include_session_only {
@@ -217,10 +239,11 @@ fn read_trust_file(path: &Path) -> Result<BTreeMap<String, Option<bool>>, String
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
-    let content = std::fs::read_to_string(path).map_err(|e| format!("Failed to read trust store {path:?}: {e}"))?;
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read trust store {path:?}: {e}"))?;
     let content = crate::core::settings::strip_bom(&content);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| format!("Failed to read trust store {path:?}: {e}"))?;
+    let parsed: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to read trust store {path:?}: {e}"))?;
     let obj = parsed
         .as_object()
         .ok_or_else(|| format!("Invalid trust store {path:?}: expected an object"))?;
@@ -256,7 +279,10 @@ fn write_trust_file(path: &Path, data: &BTreeMap<String, Option<bool>>) {
             None => (k.to_string(), serde_json::Value::Null),
         })
         .collect();
-    let content = format!("{}\n", serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap_or_default());
+    let content = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap_or_default()
+    );
     let _ = std::fs::write(path, content);
 }
 
@@ -280,7 +306,11 @@ mod tests {
         store.set(&cwd, Some(true));
         assert_eq!(store.get(&cwd), Some(true));
         // Nearest-ancestor lookup from a subdirectory.
-        let sub = root.join("project").join("sub").to_string_lossy().into_owned();
+        let sub = root
+            .join("project")
+            .join("sub")
+            .to_string_lossy()
+            .into_owned();
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(store.get(&sub), Some(true));
         // Clearing removes the entry.

@@ -66,7 +66,10 @@ impl Default for AnthropicOptions {
 
 /// Maps an Anthropic stop reason to the unified `StopReason` (port of
 /// `mapStopReason`).
-pub fn map_stop_reason(reason: &str, stop_details: Option<&Value>) -> Result<(StopReason, Option<String>), String> {
+pub fn map_stop_reason(
+    reason: &str,
+    stop_details: Option<&Value>,
+) -> Result<(StopReason, Option<String>), String> {
     Ok(match reason {
         "end_turn" => (StopReason::Stop, None),
         "max_tokens" => (StopReason::Length, None),
@@ -78,7 +81,10 @@ pub fn map_stop_reason(reason: &str, stop_details: Option<&Value>) -> Result<(St
                 .map(|s| s.to_string());
             (
                 StopReason::Error,
-                Some(explanation.unwrap_or_else(|| "The model refused to complete the request".to_string())),
+                Some(
+                    explanation
+                        .unwrap_or_else(|| "The model refused to complete the request".to_string()),
+                ),
             )
         }
         "pause_turn" => (StopReason::Stop, None),
@@ -93,7 +99,10 @@ pub fn map_stop_reason(reason: &str, stop_details: Option<&Value>) -> Result<(St
 
 /// Converts unified messages to Anthropic `MessageParam`s (port of
 /// `convertMessages`, minus the deferred-tool and OAuth-name layers).
-pub fn convert_messages(messages: &[crate::types::Message], allow_empty_signature: bool) -> Vec<Value> {
+pub fn convert_messages(
+    messages: &[crate::types::Message],
+    allow_empty_signature: bool,
+) -> Vec<Value> {
     let mut params: Vec<Value> = Vec::new();
     for msg in messages {
         match msg {
@@ -112,7 +121,9 @@ pub fn convert_messages(messages: &[crate::types::Message], allow_empty_signatur
                                     content.push(json!({"type": "text", "text": text}));
                                 }
                             }
-                            ContentBlock::Image { data, mime_type, .. } => {
+                            ContentBlock::Image {
+                                data, mime_type, ..
+                            } => {
                                 content.push(json!({
                                     "type": "image",
                                     "source": {"type": "base64", "media_type": mime_type, "data": data},
@@ -135,7 +146,12 @@ pub fn convert_messages(messages: &[crate::types::Message], allow_empty_signatur
                                 blocks.push(json!({"type": "text", "text": text}));
                             }
                         }
-                        ContentBlock::Thinking { thinking, thinking_signature, redacted, .. } => {
+                        ContentBlock::Thinking {
+                            thinking,
+                            thinking_signature,
+                            redacted,
+                            ..
+                        } => {
                             if *redacted == Some(true) {
                                 blocks.push(json!({
                                     "type": "redacted_thinking",
@@ -161,7 +177,12 @@ pub fn convert_messages(messages: &[crate::types::Message], allow_empty_signatur
                                 blocks.push(json!({"type": "text", "text": thinking}));
                             }
                         }
-                        ContentBlock::ToolCall { id, name, arguments, .. } => {
+                        ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } => {
                             blocks.push(json!({"type": "tool_use", "id": id, "name": name, "input": arguments}));
                         }
                         _ => {}
@@ -196,7 +217,9 @@ pub fn convert_messages(messages: &[crate::types::Message], allow_empty_signatur
 fn tool_result_content(block: &ContentBlock) -> Value {
     match block {
         ContentBlock::Text { text, .. } => json!({"type": "text", "text": text}),
-        ContentBlock::Image { data, mime_type, .. } => json!({
+        ContentBlock::Image {
+            data, mime_type, ..
+        } => json!({
             "type": "image", "source": {"type": "base64", "media_type": mime_type, "data": data},
         }),
         _ => json!({"type": "text", "text": ""}),
@@ -222,7 +245,10 @@ pub fn convert_tools(tools: &[crate::types::Tool], cache_control: bool) -> Vec<V
         .collect()
 }
 
-fn resolve_cache_retention(cache_retention: Option<&String>, _env: Option<&BTreeMap<String, String>>) -> String {
+fn resolve_cache_retention(
+    cache_retention: Option<&String>,
+    _env: Option<&BTreeMap<String, String>>,
+) -> String {
     // Mirrors upstream resolveCacheRetention: PI_CACHE_RETENTION overrides
     // option, defaulting to "short".
     match cache_retention {
@@ -233,12 +259,11 @@ fn resolve_cache_retention(cache_retention: Option<&String>, _env: Option<&BTree
 
 /// Assembles a request-body value (port of `buildParams`, subset without
 /// deferred tools / fallbacks / OAuth).
-pub fn build_params(
-    model: &Model,
-    context: &Context,
-    options: &AnthropicOptions,
-) -> Value {
-    let cache_retention = resolve_cache_retention(options.base.cache_retention.as_ref(), options.base.base.env.as_ref());
+pub fn build_params(model: &Model, context: &Context, options: &AnthropicOptions) -> Value {
+    let cache_retention = resolve_cache_retention(
+        options.base.cache_retention.as_ref(),
+        options.base.base.env.as_ref(),
+    );
     let cache_control = if cache_retention != "none" {
         Some(json!({"type": "ephemeral"}))
     } else {
@@ -279,12 +304,20 @@ pub fn build_params(
     if model.reasoning {
         match options.thinking_enabled {
             Some(false) => {
-                if model.thinking_level_map.as_ref().map(|m| m.get(&crate::types::ModelThinkingLevel::Off)).flatten().is_some() {
+                if model
+                    .thinking_level_map
+                    .as_ref()
+                    .map(|m| m.get(&crate::types::ModelThinkingLevel::Off))
+                    .flatten()
+                    .is_some()
+                {
                     params["thinking"] = json!({"type": "disabled"});
                 }
             }
             _ => {
-                let display = options.thinking_display.unwrap_or(AnthropicThinkingDisplay::Summarized);
+                let display = options
+                    .thinking_display
+                    .unwrap_or(AnthropicThinkingDisplay::Summarized);
                 if options.effort.is_some() {
                     params["thinking"] = json!({"type": "adaptive", "display": display.as_str()});
                     if let Some(effort) = &options.effort {
@@ -375,7 +408,10 @@ pub fn process_anthropic_events(
             Err(_) => continue, // ping or empty data
         };
         let event_type = event.event.as_deref().unwrap_or("");
-        let t = data.get("type").and_then(|v| v.as_str()).unwrap_or(event_type);
+        let t = data
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or(event_type);
         match t {
             "message_start" => {
                 let message = &data["message"];
@@ -387,14 +423,26 @@ pub fn process_anthropic_events(
                     let _ = m;
                 }
                 let usage = &message["usage"];
-                let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                let output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                let cache_write = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let input = usage
+                    .get("input_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let output_tokens = usage
+                    .get("output_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let cache_read = usage
+                    .get("cache_read_input_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let cache_write = usage
+                    .get("cache_creation_input_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 let cache_write_1h = usage
                     .get("cache_creation")
                     .and_then(|c| c.get("ephemeral_1h_input_tokens"))
-                    .and_then(|v| v.as_u64());
+                    .and_then(|v| v.as_i64());
                 let mut usage = empty_usage();
                 usage.input = input;
                 usage.output = output_tokens;
@@ -411,7 +459,11 @@ pub fn process_anthropic_events(
                 let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match block_type {
                     "text" => {
-                        let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let text = block
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let content_index = output.content().len();
                         while live.len() <= content_index {
                             live.push(None);
@@ -429,7 +481,11 @@ pub fn process_anthropic_events(
                         let _ = text;
                     }
                     "thinking" => {
-                        let signature = block.get("signature").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let signature = block
+                            .get("signature")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let content_index = output.content().len();
                         while live.len() <= content_index {
                             live.push(None);
@@ -441,7 +497,11 @@ pub fn process_anthropic_events(
                         });
                         output.content_mut().push(ContentBlock::Thinking {
                             thinking: String::new(),
-                            thinking_signature: if signature.is_empty() { None } else { Some(signature) },
+                            thinking_signature: if signature.is_empty() {
+                                None
+                            } else {
+                                Some(signature)
+                            },
                             redacted: None,
                         });
                         push(AssistantMessageEvent::ThinkingStart {
@@ -450,7 +510,11 @@ pub fn process_anthropic_events(
                         });
                     }
                     "redacted_thinking" => {
-                        let data_hex = block.get("data").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let data_hex = block
+                            .get("data")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let content_index = output.content().len();
                         while live.len() <= content_index {
                             live.push(None);
@@ -471,8 +535,16 @@ pub fn process_anthropic_events(
                         });
                     }
                     "tool_use" => {
-                        let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let id = block
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = block
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let _input = block.get("input").cloned().unwrap_or(Value::Null);
                         let content_index = output.content().len();
                         while live.len() <= content_index {
@@ -483,7 +555,9 @@ pub fn process_anthropic_events(
                             kind: BlockKind::ToolCall,
                             partial_json: String::new(),
                         });
-                        output.content_mut().push(ContentBlock::tool_call(id, name, Value::Null));
+                        output
+                            .content_mut()
+                            .push(ContentBlock::tool_call(id, name, Value::Null));
                         push(AssistantMessageEvent::ToolCallStart {
                             content_index,
                             partial: output.clone(),
@@ -496,11 +570,15 @@ pub fn process_anthropic_events(
                 let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let delta = &data["delta"];
                 let delta_type = delta.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                let content_index = live.iter().position(|b| b.as_ref().map(|b| b.index) == Some(index));
+                let content_index = live
+                    .iter()
+                    .position(|b| b.as_ref().map(|b| b.index) == Some(index));
                 match (delta_type, content_index) {
                     ("text_delta", Some(ci)) => {
                         let text = delta.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                        if let Some(ContentBlock::Text { text: slot, .. }) = output.content_mut().get_mut(ci) {
+                        if let Some(ContentBlock::Text { text: slot, .. }) =
+                            output.content_mut().get_mut(ci)
+                        {
                             slot.push_str(text);
                         }
                         push(AssistantMessageEvent::TextDelta {
@@ -511,7 +589,9 @@ pub fn process_anthropic_events(
                     }
                     ("thinking_delta", Some(ci)) => {
                         let thinking = delta.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
-                        if let Some(ContentBlock::Thinking { thinking: slot, .. }) = output.content_mut().get_mut(ci) {
+                        if let Some(ContentBlock::Thinking { thinking: slot, .. }) =
+                            output.content_mut().get_mut(ci)
+                        {
                             slot.push_str(thinking);
                         }
                         push(AssistantMessageEvent::ThinkingDelta {
@@ -521,12 +601,16 @@ pub fn process_anthropic_events(
                         });
                     }
                     ("input_json_delta", Some(ci)) => {
-                        let partial = delta.get("partial_json").and_then(|v| v.as_str()).unwrap_or("");
+                        let partial = delta
+                            .get("partial_json")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         if let Some(acc) = live.get_mut(ci).and_then(|b| b.as_mut()) {
                             if acc.kind == BlockKind::ToolCall {
                                 acc.partial_json.push_str(partial);
-                                let parsed = crate::partial_json::parse_partial_json(&acc.partial_json)
-                                    .unwrap_or(Value::Null);
+                                let parsed =
+                                    crate::partial_json::parse_partial_json(&acc.partial_json)
+                                        .unwrap_or(Value::Null);
                                 if let Some(ContentBlock::ToolCall { arguments, .. }) =
                                     output.content_mut().get_mut(ci)
                                 {
@@ -541,9 +625,13 @@ pub fn process_anthropic_events(
                         });
                     }
                     ("signature_delta", Some(ci)) => {
-                        let signature = delta.get("signature").and_then(|v| v.as_str()).unwrap_or("");
-                        if let Some(ContentBlock::Thinking { thinking_signature, .. }) =
-                            output.content_mut().get_mut(ci)
+                        let signature = delta
+                            .get("signature")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if let Some(ContentBlock::Thinking {
+                            thinking_signature, ..
+                        }) = output.content_mut().get_mut(ci)
                         {
                             let existing = thinking_signature.take().unwrap_or_default();
                             *thinking_signature = Some(format!("{existing}{signature}"));
@@ -554,7 +642,9 @@ pub fn process_anthropic_events(
             }
             "content_block_stop" => {
                 let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let content_index = live.iter().position(|b| b.as_ref().map(|b| b.index) == Some(index));
+                let content_index = live
+                    .iter()
+                    .position(|b| b.as_ref().map(|b| b.index) == Some(index));
                 if let Some(ci) = content_index {
                     if let Some(acc) = live.get_mut(ci).and_then(|b| b.take()) {
                         match acc.kind {
@@ -571,7 +661,9 @@ pub fn process_anthropic_events(
                             }
                             BlockKind::Thinking => {
                                 let thinking = match output.content().get(ci) {
-                                    Some(ContentBlock::Thinking { thinking, .. }) => thinking.clone(),
+                                    Some(ContentBlock::Thinking { thinking, .. }) => {
+                                        thinking.clone()
+                                    }
                                     _ => String::new(),
                                 };
                                 push(AssistantMessageEvent::ThinkingEnd {
@@ -581,9 +673,10 @@ pub fn process_anthropic_events(
                                 });
                             }
                             BlockKind::ToolCall => {
-                                let final_block = output.content().get(ci).cloned().unwrap_or_else(|| {
-                                    ContentBlock::tool_call("", "", Value::Null)
-                                });
+                                let final_block =
+                                    output.content().get(ci).cloned().unwrap_or_else(|| {
+                                        ContentBlock::tool_call("", "", Value::Null)
+                                    });
                                 push(AssistantMessageEvent::ToolCallEnd {
                                     content_index: ci,
                                     tool_call: final_block,
@@ -595,12 +688,11 @@ pub fn process_anthropic_events(
                 }
             }
             "message_delta" => {
-                if let Some(stop_reason) = data["delta"].get("stop_reason").and_then(|v| v.as_str()) {
+                if let Some(stop_reason) = data["delta"].get("stop_reason").and_then(|v| v.as_str())
+                {
                     output.set_raw_stop_reason(stop_reason.to_string());
-                    let (reason, error_message) = map_stop_reason(
-                        stop_reason,
-                        data["delta"].get("stop_details"),
-                    )?;
+                    let (reason, error_message) =
+                        map_stop_reason(stop_reason, data["delta"].get("stop_details"))?;
                     output.set_stop_reason(reason);
                     if let Some(msg) = error_message {
                         set_error_message(&mut output, msg);
@@ -608,33 +700,43 @@ pub fn process_anthropic_events(
                 }
                 if let Some(usage) = data.get("usage") {
                     let mut current = output.usage().cloned().unwrap_or_else(empty_usage);
-                    if let Some(v) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                    if let Some(v) = usage.get("input_tokens").and_then(|v| v.as_i64()) {
                         current.input = v;
                     }
-                    if let Some(v) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+                    if let Some(v) = usage.get("output_tokens").and_then(|v| v.as_i64()) {
                         current.output = v;
                     }
-                    if let Some(v) = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()) {
+                    if let Some(v) = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_i64())
+                    {
                         current.cache_read = v;
                     }
-                    if let Some(v) = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()) {
+                    if let Some(v) = usage
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_i64())
+                    {
                         current.cache_write = v;
                     }
                     if let Some(v) = usage
                         .get("output_tokens_details")
                         .and_then(|d| d.get("thinking_tokens"))
-                        .and_then(|v| v.as_u64())
+                        .and_then(|v| v.as_i64())
                     {
                         current.reasoning = Some(v);
                     }
-                    current.total_tokens = current.input + current.output + current.cache_read + current.cache_write;
+                    current.total_tokens =
+                        current.input + current.output + current.cache_read + current.cache_write;
                     current.cost = calculate_cost(model, &current);
                     output.set_usage(current);
                 }
             }
             "error" => {
                 let error = &data["error"];
-                let message = error.get("message").and_then(|v| v.as_str()).unwrap_or("unknown error");
+                let message = error
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown error");
                 return Err(message.to_string());
             }
             _ => {}
@@ -644,7 +746,10 @@ pub fn process_anthropic_events(
     if output.stop_reason() == Some(StopReason::Pending) {
         return Err("Anthropic stream ended without a stop reason".to_string());
     }
-    if matches!(output.stop_reason(), Some(StopReason::Error) | Some(StopReason::Aborted)) {
+    if matches!(
+        output.stop_reason(),
+        Some(StopReason::Error) | Some(StopReason::Aborted)
+    ) {
         let message = output
             .error_message()
             .map(|s| s.to_string())
@@ -689,7 +794,8 @@ pub fn stream(
         // GitHub Copilot proxy: dynamic headers (X-Initiator / Openai-Intent /
         // Copilot-Vision-Request) from upstream github-copilot-headers.ts.
         if model.provider == "github-copilot" {
-            let has_images = super::github_copilot_headers::has_copilot_vision_input(&context.messages);
+            let has_images =
+                super::github_copilot_headers::has_copilot_vision_input(&context.messages);
             for (name, value) in super::github_copilot_headers::build_copilot_dynamic_headers(
                 &context.messages,
                 has_images,
@@ -747,7 +853,10 @@ pub fn stream(
             let detail = extract_anthropic_error(&body_text);
             let mut message = new_output(&model);
             message.set_stop_reason(StopReason::Error);
-            set_error_message(&mut message, format!("Anthropic API error ({}): {}", status.as_u16(), detail));
+            set_error_message(
+                &mut message,
+                format!("Anthropic API error ({}): {}", status.as_u16(), detail),
+            );
             pusher.push(AssistantMessageEvent::Error {
                 reason: ErrorReason::Error,
                 error_message: message.clone(),
@@ -774,7 +883,10 @@ pub fn stream(
                     StopReason::Deferred => DoneReason::Deferred,
                     _ => DoneReason::Stop,
                 };
-                pusher.push(AssistantMessageEvent::Done { reason, message: message.clone() });
+                pusher.push(AssistantMessageEvent::Done {
+                    reason,
+                    message: message.clone(),
+                });
                 pusher.end(Some(message));
             }
             Err(err) => {
@@ -815,7 +927,6 @@ pub fn extract_anthropic_error(body: &str) -> String {
 pub fn default_base_url() -> String {
     std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
 }
-
 
 /// Sets the error message field on an assistant message.
 pub(crate) fn set_error_message(message: &mut AssistantMessage, text: String) {

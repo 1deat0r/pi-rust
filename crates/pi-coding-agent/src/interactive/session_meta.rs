@@ -22,13 +22,19 @@ pub fn session_picker_items(sessions: Vec<SessionMetadata>) -> Vec<SessionMetaFo
                 .file_name()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| metadata.id.clone());
-            SessionMetaForPicker { id: metadata.id.clone(), label, metadata }
+            SessionMetaForPicker {
+                id: metadata.id.clone(),
+                label,
+                metadata,
+            }
         })
         .collect()
 }
 
 /// Build SelectItems for the picker UI.
-pub fn picker_select_items(items: &[SessionMetaForPicker]) -> Vec<pi_tui::components::select_list::SelectItem> {
+pub fn picker_select_items(
+    items: &[SessionMetaForPicker],
+) -> Vec<pi_tui::components::select_list::SelectItem> {
     items
         .iter()
         .map(|item| {
@@ -40,7 +46,6 @@ pub fn picker_select_items(items: &[SessionMetaForPicker]) -> Vec<pi_tui::compon
         })
         .collect()
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -25,7 +25,10 @@ pub struct Scene {
 
 impl Scene {
     pub fn new(children: Vec<SharedComponent>, grow_index: Option<usize>) -> Self {
-        Self { children, grow_index }
+        Self {
+            children,
+            grow_index,
+        }
     }
     fn render(self: &Scene, width: usize, height: usize) -> Vec<String> {
         let _ = height;
@@ -56,12 +59,37 @@ pub struct Tree {
 
 impl Tree {
     pub fn new(terminal: Arc<Mutex<TerminalBackend>>) -> Self {
-        Self { terminal, last_lines: Vec::new(), focused: None }
+        Self {
+            terminal,
+            last_lines: Vec::new(),
+            focused: None,
+        }
     }
 
     /// Access to the terminal backend (for raw event reads).
     pub fn terminal_handle(&self) -> Arc<Mutex<TerminalBackend>> {
         self.terminal.clone()
+    }
+
+    /// Query the cell dimensions used by image components. This is a no-op
+    /// for terminals without Kitty/iTerm2 image support.
+    pub fn query_cell_size(&mut self) -> bool {
+        self.terminal.lock().unwrap().query_cell_size()
+    }
+
+    /// Feed a terminal response to the cell-size parser. A successful update
+    /// invalidates the previous frame so image components recompute their
+    /// row/column allocation on the next render.
+    pub fn consume_cell_size_response(&mut self, data: &str) -> bool {
+        let consumed = self
+            .terminal
+            .lock()
+            .unwrap()
+            .consume_cell_size_response(data);
+        if consumed {
+            self.last_lines.clear();
+        }
+        consumed
     }
 
     pub fn leave_alt_screen(&mut self) {
@@ -105,7 +133,10 @@ impl Tree {
                 t.write_raw(&format!("\x1b[{};1H", i + 1));
             }
             let term_width = t.width();
-            t.write_raw(&format!("\x1b[2K{}", truncate_for_terminal(line, term_width)));
+            t.write_raw(&format!(
+                "\x1b[2K{}",
+                truncate_for_terminal(line, term_width)
+            ));
         }
         // Clear remaining old lines if the frame shrank.
         if lines.len() < self.last_lines.len() {

@@ -25,8 +25,6 @@ pub struct SourceInfo {
     pub base_dir: Option<String>,
 }
 
-
-
 impl SourceInfo {
     pub fn synthetic(path: &str, source: &str, base_dir: Option<String>) -> Self {
         Self {
@@ -42,9 +40,8 @@ impl SourceInfo {
 /// Event handler closure: receives the extension context and the event
 /// payload, returns an optional result. The payload/result are opaque JSON so
 /// handler dispatch stays generic (upstream `ExtensionHandler`).
-pub type HandlerFn = Arc<
-    dyn Fn(&ExtensionContext, &Value) -> Result<Option<Value>, String> + Send + Sync,
->;
+pub type HandlerFn =
+    Arc<dyn Fn(&ExtensionContext, &Value) -> Result<Option<Value>, String> + Send + Sync>;
 
 /// A registered extension tool (upstream `RegisteredTool`).
 #[derive(Debug, Clone)]
@@ -239,20 +236,30 @@ mod tests {
     #[test]
     fn runtime_flag_values_default_and_override() {
         let mut runtime = ExtensionRuntime::new();
-        runtime.flag_values.insert("no-tools".to_string(), Value::Bool(true));
-        assert_eq!(runtime.flag_values.get("no-tools"), Some(&Value::Bool(true)));
+        runtime
+            .flag_values
+            .insert("no-tools".to_string(), Value::Bool(true));
+        assert_eq!(
+            runtime.flag_values.get("no-tools"),
+            Some(&Value::Bool(true))
+        );
         runtime.set_flag_value("no-tools", Value::Bool(false));
-        assert_eq!(runtime.flag_values.get("no-tools"), Some(&Value::Bool(false)));
+        assert_eq!(
+            runtime.flag_values.get("no-tools"),
+            Some(&Value::Bool(false))
+        );
     }
 
     #[test]
     fn invalidate_marks_stale_and_clears_queued() {
         let mut runtime = ExtensionRuntime::new();
-        runtime.pending_provider_registrations.push(PendingProviderRegistration {
-            name: "demo".into(),
-            config: Value::Null,
-            extension_path: "ext".into(),
-        });
+        runtime
+            .pending_provider_registrations
+            .push(PendingProviderRegistration {
+                name: "demo".into(),
+                config: Value::Null,
+                extension_path: "ext".into(),
+            });
         runtime.invalidate(None);
         assert!(runtime.is_stale());
         assert!(runtime.pending_provider_registrations.is_empty());

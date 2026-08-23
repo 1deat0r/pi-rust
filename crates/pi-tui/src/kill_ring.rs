@@ -32,7 +32,11 @@ impl KillRing {
         }
         if opts.accumulate && !self.ring.is_empty() {
             let last = self.ring.pop().unwrap_or_default();
-            self.ring.push(if opts.prepend { format!("{text}{last}") } else { format!("{last}{text}") });
+            self.ring.push(if opts.prepend {
+                format!("{text}{last}")
+            } else {
+                format!("{last}{text}")
+            });
         } else {
             self.ring.push(text.to_string());
         }
@@ -67,8 +71,20 @@ mod tests {
     #[test]
     fn push_creates_entries() {
         let mut ring = KillRing::new();
-        ring.push("hello", KillRingPushOptions { prepend: false, accumulate: false });
-        ring.push("world", KillRingPushOptions { prepend: false, accumulate: false });
+        ring.push(
+            "hello",
+            KillRingPushOptions {
+                prepend: false,
+                accumulate: false,
+            },
+        );
+        ring.push(
+            "world",
+            KillRingPushOptions {
+                prepend: false,
+                accumulate: false,
+            },
+        );
         assert_eq!(ring.len(), 2);
         assert_eq!(ring.peek(), Some("world"));
     }
@@ -76,8 +92,20 @@ mod tests {
     #[test]
     fn accumulate_appends_forward_deletions() {
         let mut ring = KillRing::new();
-        ring.push("ab", KillRingPushOptions { prepend: false, accumulate: false });
-        ring.push("cd", KillRingPushOptions { prepend: false, accumulate: true });
+        ring.push(
+            "ab",
+            KillRingPushOptions {
+                prepend: false,
+                accumulate: false,
+            },
+        );
+        ring.push(
+            "cd",
+            KillRingPushOptions {
+                prepend: false,
+                accumulate: true,
+            },
+        );
         assert_eq!(ring.len(), 1);
         assert_eq!(ring.peek(), Some("abcd"));
     }
@@ -85,8 +113,20 @@ mod tests {
     #[test]
     fn accumulate_prepends_backward_deletions() {
         let mut ring = KillRing::new();
-        ring.push("cd", KillRingPushOptions { prepend: false, accumulate: false });
-        ring.push("ab", KillRingPushOptions { prepend: true, accumulate: true });
+        ring.push(
+            "cd",
+            KillRingPushOptions {
+                prepend: false,
+                accumulate: false,
+            },
+        );
+        ring.push(
+            "ab",
+            KillRingPushOptions {
+                prepend: true,
+                accumulate: true,
+            },
+        );
         assert_eq!(ring.len(), 1);
         assert_eq!(ring.peek(), Some("abcd"));
     }
@@ -94,16 +134,40 @@ mod tests {
     #[test]
     fn empty_text_is_ignored() {
         let mut ring = KillRing::new();
-        ring.push("", KillRingPushOptions { prepend: false, accumulate: false });
+        ring.push(
+            "",
+            KillRingPushOptions {
+                prepend: false,
+                accumulate: false,
+            },
+        );
         assert_eq!(ring.len(), 0);
     }
 
     #[test]
     fn rotate_cycles_entries() {
         let mut ring = KillRing::new();
-        ring.push("a", KillRingPushOptions { prepend: false, accumulate: false });
-        ring.push("b", KillRingPushOptions { prepend: false, accumulate: false });
-        ring.push("c", KillRingPushOptions { prepend: false, accumulate: false });
+        ring.push(
+            "a",
+            KillRingPushOptions {
+                prepend: false,
+                accumulate: false,
+            },
+        );
+        ring.push(
+            "b",
+            KillRingPushOptions {
+                prepend: false,
+                accumulate: false,
+            },
+        );
+        ring.push(
+            "c",
+            KillRingPushOptions {
+                prepend: false,
+                accumulate: false,
+            },
+        );
         ring.rotate();
         assert_eq!(ring.peek(), Some("b"));
         ring.rotate();

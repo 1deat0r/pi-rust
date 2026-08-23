@@ -3,6 +3,13 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
+**Conversion progress: 41.57% (69/166 exhaustive ledger tasks complete).** The
+percentage is `checked / (checked + open)` over the full
+[CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
+source-audit tasks. It is not capped at the original 100-item work queue;
+update it whenever the ledger changes. The denominator remains provisional
+until the ledger-freezing audit task is complete.
+
 ## 0. Governance — standing process rules (operator directive 2026-08-21)
 
 1. **Reassess the plan after every phase.** No phase is "done" until this file
@@ -604,15 +611,13 @@ decision, TUI alt-screen full swap + ICU word segmentation.
   interactive slash commands are functional (no remaining "not wired" banners).
 - Editor autocomplete fix: Enter applies the completion and closes the popup so the
   line submits instead of re-applying the same item.
-- DECISION on the pi-ai Usage negative-adjustment question: token counts REMAIN u64.
-  Negative upstream adjustment records are rare correction true-ups; widening to i64
-  would ripple across all adaptors/images/RPC. u64 addition stays correct for all
-  non-negative real usage; negative records are dropped from totals (safe
-  degradation). Documented at the state.rs stats-accumulation seam.
+- Superseded decision: the earlier choice to keep pi-ai Usage token counts as
+  u64 was reversed in Session 16. The upstream negative-adjustment case is now
+  represented with signed i64 counts and preserved in ledger totals.
 - Remaining documented gaps: provider OAuth device-code flows (openai-codex/
   github-copilot/radius), codex WebSocket transport (SSE fallback), ConfigSelector
   full TUI component, `update --models` pi.dev fetch seam (domain not in egress
-  allowlist), TUI alt-screen full swap + ICU word segmentation.
+  allowlist), and TUI alt-screen full swap.
 
 ### Session 13 (planning) — 2026-08-23 — NEXT-100 tracker authored
 Agent: pi (Claude)   HEAD: 83e55cb (planning only, no code)
@@ -772,6 +777,47 @@ executed from the NEXT-100 tracker against the T6 verify-then-port recut.
   entry; goldens regenerated (still byte-identical) + a coverage test. 1 new
   test; workspace green at 1416. Recorded in NEXT-100 #85/#86.
 
+### Session 16 — 2026-08-23 — signed usage and negative-adjustment conformance
+Scope: NEXT-100 #81/#82, closing the remaining data-model divergence after the
+T7 export fixture work.
+
+- Widened pi-ai `Usage` token fields (`input`, `output`, `cacheRead`,
+  `cacheWrite`, `cacheWrite1h`, `reasoning`, `totalTokens`) to signed `i64`.
+  Provider usage parsers now preserve signed JSON integers; model cost
+  accounting no longer saturates cache-write subtraction, so correction rows
+  retain their negative cost deltas.
+- Widened `SessionStats` and coding-agent `UsageTotals` token counters to
+  signed values. JSONL, in-memory, and SQLite stats accumulation now preserves
+  negative adjustment records; context/cache-window derived estimates clamp
+  correction-only values to zero because they are not live prompt context.
+- Re-enabled the upstream C-neg conformance row in both agent backends:
+  input/total `-2`, cost `-0.5`, yielding cached `3`, uncached `10`, total `18`,
+  cost `9.5`. Added signed `Usage` JSON round-trip coverage.
+- Evidence: `cargo test --workspace` — 1417 tests, 0 failures; `cargo check
+  --workspace` — clean. The repository-wide `cargo clippy --workspace
+  --all-targets -- -D warnings` remains blocked by pre-existing lint debt in
+  pi-ai/pi-protocol/pi-tui outside this change.
+- NEXT-100 #81/#82 marked done. The remaining T7 edge work is `pi update` and
+  the RPC shape/runtime audits.
+
+### Session 17 — 2026-08-23 — RPC session-query audit
+Scope: NEXT-100 #87, the remaining RPC read/query shapes after the tree parity
+fixes.
+
+- Audited `get_entries`, `get_tree`, `get_messages`, and
+  `get_last_assistant_text` against the upstream RPC mode. RPC session loads
+  now read the supplied path directly, restore the active branch context, and
+  preserve the loaded session id/name; forked sessions likewise restore their
+  context and use the actual new id.
+- `get_last_assistant_text` now skips empty aborted messages and trims text;
+  `get_fork_messages` reads persisted user entries and returns their real
+  entry ids. Added command-level coverage for entries/since/leaf, tree/leaf,
+  reloaded messages, last-assistant text, and fork-message ids.
+- Evidence: `cargo test -p pi-coding-agent --lib
+  modes::rpc::tests::session_queries_use_reloaded_branch_context` — passed;
+  workspace test inventory — 1418 tests; `cargo check --workspace` — clean.
+- NEXT-100 #87 marked done. RPC mutation/runtime behavior remains #88.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration
@@ -787,8 +833,9 @@ executed from the NEXT-100 tracker against the T6 verify-then-port recut.
   landed; the TUI surface is PTY-bound and deferred), alt-screen full
   swap (#61/62), terminal feature probes (#65/66), editor IME edge (#69),
   interactive E2E tmux script (#70).
-- Known documented divergence: usage records cannot carry negative token
-  adjustments (pi-ai Usage counts are u64); decide whether to widen to i64.
+- Signed usage adjustments are closed in Session 16: pi-ai `Usage` and session
+  ledger stats preserve negative token/cost corrections, with C-neg conformance
+  coverage in both backends.
 - Governance §0(3): before the next MAJOR phase, a fresh independent
   reviewer session must sign off on this increment.
 
@@ -918,4 +965,3 @@ Agent: pi (Claude) + 6 RLM subagents (A1/A2/B/C/D/E) in isolated worktrees; each
 - Divergences carried as TODO comments: codex WS transport, OAuth device-code flows, DeferredHandles,
   images retries, ConfigSelector TUI full port, several interactive slash commands pending core plumbing,
   models.json runtime merge seam, AWS profile-file chain, vertex ADC scope.
-

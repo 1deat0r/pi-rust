@@ -17,7 +17,7 @@ fn user_message(text: &str) -> pi_agent::types::AgentMessage {
     )))
 }
 
-fn create_usage(multiplier: u64) -> Usage {
+fn create_usage(multiplier: i64) -> Usage {
     Usage {
         input: multiplier,
         output: multiplier * 2,
@@ -59,35 +59,49 @@ fn enter_message(text: &str, id: &str, _timestamp: u64) -> EntryNoStats {
 
 #[test]
 fn round_trips_every_entry_type_and_bounded_branch_queries() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
-        let mut session = JsonlSessionStorage::create(fs.clone(), "/sessions/entries.jsonl", header("entries", "/work"))
-            .await
-            .unwrap();
+        let mut session = JsonlSessionStorage::create(
+            fs.clone(),
+            "/sessions/entries.jsonl",
+            header("entries", "/work"),
+        )
+        .await
+        .unwrap();
 
         let mut committed: Vec<Entry> = Vec::new();
-        committed.push(session.append_entry(enter_message("question", "message", 1), "main").await.unwrap());
+        committed.push(
+            session
+                .append_entry(enter_message("question", "message", 1), "main")
+                .await
+                .unwrap(),
+        );
         committed.push(
             session
                 .append_entry(
                     EntryNoStats::Message {
                         id: "assistant-tool-call".into(),
-                        message: pi_agent::types::AgentMessage::Core(Message::Assistant(
-                            {
-                                let mut m = pi_ai::types::AssistantMessage::new();
-                                m.set_api_provider_model("anthropic-messages", "anthropic", "claude-sonnet-4-5");
-                                m.content_mut().push(ContentBlock::text("I'll inspect it."));
-                                m.content_mut().push(ContentBlock::tool_call(
-                                    "call-1",
-                                    "read",
-                                    serde_json::json!({"path": "README.md"}),
-                                ));
-                                m.set_usage(create_usage(1));
-                                m.set_stop_reason(pi_ai::types::StopReason::ToolUse);
-                                m.with_timestamp(2)
-                            }
-                        )),
+                        message: pi_agent::types::AgentMessage::Core(Message::Assistant({
+                            let mut m = pi_ai::types::AssistantMessage::new();
+                            m.set_api_provider_model(
+                                "anthropic-messages",
+                                "anthropic",
+                                "claude-sonnet-4-5",
+                            );
+                            m.content_mut().push(ContentBlock::text("I'll inspect it."));
+                            m.content_mut().push(ContentBlock::tool_call(
+                                "call-1",
+                                "read",
+                                serde_json::json!({"path": "README.md"}),
+                            ));
+                            m.set_usage(create_usage(1));
+                            m.set_stop_reason(pi_ai::types::StopReason::ToolUse);
+                            m.with_timestamp(2)
+                        })),
                         terminate: None,
                     },
                     "main",
@@ -101,8 +115,17 @@ fn round_trips_every_entry_type_and_bounded_branch_queries() {
                     EntryNoStats::Message {
                         id: "tool-result".into(),
                         message: pi_agent::types::AgentMessage::Core(Message::ToolResult(
-                            pi_ai::types::ToolResultMessage::new("call-1", "read", vec![ContentBlock::text("contents")], false)
-                                .with_details_usage_timestamp(Some(create_usage(2)), Some(serde_json::json!({"path": "README.md"})), 3),
+                            pi_ai::types::ToolResultMessage::new(
+                                "call-1",
+                                "read",
+                                vec![ContentBlock::text("contents")],
+                                false,
+                            )
+                            .with_details_usage_timestamp(
+                                Some(create_usage(2)),
+                                Some(serde_json::json!({"path": "README.md"})),
+                                3,
+                            ),
                         )),
                         terminate: Some(true),
                     },
@@ -194,21 +217,35 @@ fn round_trips_every_entry_type_and_bounded_branch_queries() {
         );
 
         // Reopen from the persisted file.
-        let restored = JsonlSessionStorage::load(fs.clone(), "/sessions/entries.jsonl").await.unwrap();
+        let restored = JsonlSessionStorage::load(fs.clone(), "/sessions/entries.jsonl")
+            .await
+            .unwrap();
         assert_eq!(
-            restored.find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() }).await.unwrap(),
+            restored
+                .find_entries(&EntryQuery {
+                    order: Some(EntryOrder::OldestFirst),
+                    ..Default::default()
+                })
+                .await
+                .unwrap(),
             committed
         );
         let on_branch = restored
             .find_entries_on_branch(
                 &EntryQuery::default(),
                 "custom",
-                &pi_agent::session::state::BranchBounds { stop_at_type: Some("compaction".into()), ..Default::default() },
+                &pi_agent::session::state::BranchBounds {
+                    stop_at_type: Some("compaction".into()),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
         assert_eq!(
-            on_branch.iter().map(|e| e.id().to_string()).collect::<Vec<_>>(),
+            on_branch
+                .iter()
+                .map(|e| e.id().to_string())
+                .collect::<Vec<_>>(),
             vec!["custom", "branch-summary", "compaction"]
         );
 
@@ -230,10 +267,19 @@ fn round_trips_every_entry_type_and_bounded_branch_queries() {
 
         // customType filter
         let custom = restored
-            .find_entries(&EntryQuery { custom_type: Some("note".into()), ..Default::default() })
+            .find_entries(&EntryQuery {
+                custom_type: Some("note".into()),
+                ..Default::default()
+            })
             .await
             .unwrap();
-        assert_eq!(custom.iter().map(|e| e.id().to_string()).collect::<Vec<_>>(), vec!["custom"]);
+        assert_eq!(
+            custom
+                .iter()
+                .map(|e| e.id().to_string())
+                .collect::<Vec<_>>(),
+            vec!["custom"]
+        );
 
         // Stats: 3 message entries.
         assert_eq!(
@@ -265,7 +311,10 @@ fn round_trips_every_entry_type_and_bounded_branch_queries() {
 
 #[test]
 fn round_trips_records_facts_and_recovery() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let mut session = JsonlSessionStorage::create(fs.clone(), "/sessions/records.jsonl", header("records", "/work"))
@@ -423,7 +472,10 @@ fn round_trips_records_facts_and_recovery() {
 
 #[test]
 fn load_repairs_torn_tail() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let content = format!(
@@ -445,10 +497,15 @@ fn load_repairs_torn_tail() {
         );
         fs.write_file("/sessions/torn.jsonl", &content).unwrap();
 
-        let restored = JsonlSessionStorage::load(fs.clone(), "/sessions/torn.jsonl").await.unwrap();
+        let restored = JsonlSessionStorage::load(fs.clone(), "/sessions/torn.jsonl")
+            .await
+            .unwrap();
         assert_eq!(
             restored
-                .find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() })
+                .find_entries(&EntryQuery {
+                    order: Some(EntryOrder::OldestFirst),
+                    ..Default::default()
+                })
                 .await
                 .unwrap()
                 .len(),
@@ -461,14 +518,22 @@ fn load_repairs_torn_tail() {
 
 #[test]
 fn load_repairs_unterminated_tail() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let header = serde_json::to_string(&header("unterm", "/work")).unwrap();
         fs.write_file("/sessions/unterm.jsonl", &header).unwrap(); // no trailing newline
 
-        let restored = JsonlSessionStorage::load(fs.clone(), "/sessions/unterm.jsonl").await.unwrap();
-        assert!(fs.content("/sessions/unterm.jsonl").unwrap().ends_with('\n'));
+        let restored = JsonlSessionStorage::load(fs.clone(), "/sessions/unterm.jsonl")
+            .await
+            .unwrap();
+        assert!(fs
+            .content("/sessions/unterm.jsonl")
+            .unwrap()
+            .ends_with('\n'));
         assert_eq!(restored.get_name().await, None);
     });
 }

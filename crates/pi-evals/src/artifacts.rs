@@ -31,26 +31,38 @@ pub struct Attachment {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EvalArtifact {
     #[serde(rename = "@earendil-works/pi-evals:session")]
-    Session { run_id: String, attachments: Vec<Attachment> },
+    Session {
+        run_id: String,
+        attachments: Vec<Attachment>,
+    },
     #[serde(rename = "@earendil-works/pi-evals:source")]
-    Source { run_id: String, attachments: Vec<Attachment> },
+    Source {
+        run_id: String,
+        attachments: Vec<Attachment>,
+    },
     #[serde(other)]
     Other,
 }
 
 impl EvalArtifact {
     pub fn is_session_or_source(&self) -> bool {
-        matches!(self, EvalArtifact::Session { .. } | EvalArtifact::Source { .. })
+        matches!(
+            self,
+            EvalArtifact::Session { .. } | EvalArtifact::Source { .. }
+        )
     }
     pub fn run_id(&self) -> Option<&str> {
         match self {
-            EvalArtifact::Session { run_id, .. } | EvalArtifact::Source { run_id, .. } => Some(run_id),
+            EvalArtifact::Session { run_id, .. } | EvalArtifact::Source { run_id, .. } => {
+                Some(run_id)
+            }
             _ => None,
         }
     }
     pub fn attachments(&self) -> &[Attachment] {
         match self {
-            EvalArtifact::Session { attachments, .. } | EvalArtifact::Source { attachments, .. } => attachments,
+            EvalArtifact::Session { attachments, .. }
+            | EvalArtifact::Source { attachments, .. } => attachments,
             _ => &[],
         }
     }
@@ -104,7 +116,10 @@ pub fn record_eval_session_artifact(
 
 /// Records a generated source artifact (port of `recordEvalSourceArtifact`).
 pub fn record_eval_source_artifact(run_id: &str, attachment: Attachment) -> EvalArtifact {
-    EvalArtifact::Source { run_id: run_id.to_string(), attachments: vec![attachment] }
+    EvalArtifact::Source {
+        run_id: run_id.to_string(),
+        attachments: vec![attachment],
+    }
 }
 
 /// A persisted artifact reference relative to the artifact directory.
@@ -132,13 +147,18 @@ pub fn persist_eval_artifact_references(
             _ => unreachable!(),
         };
         for attachment in artifact.attachments() {
-            let name = attachment.name.rsplit(['/', '\\']).next().unwrap_or(&attachment.name);
+            let name = attachment
+                .name
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(&attachment.name);
             if name != attachment.name || name.is_empty() {
                 return Err(format!("Invalid eval artifact name: {}", attachment.name));
             }
             let hash = sha256_hex(run_id.as_bytes());
             let directory = artifact_directory.join(category).join(hash);
-            std::fs::create_dir_all(&directory).map_err(|error| format!("Failed to create artifact dir: {error}"))?;
+            std::fs::create_dir_all(&directory)
+                .map_err(|error| format!("Failed to create artifact dir: {error}"))?;
             let path = directory.join(name);
             std::fs::write(&path, attachment.body.as_bytes())
                 .map_err(|error| format!("Failed to write artifact: {error}"))?;
@@ -147,7 +167,10 @@ pub fn persist_eval_artifact_references(
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .into_owned();
-            references.push(ArtifactReference { name: name.to_string(), path: relative });
+            references.push(ArtifactReference {
+                name: name.to_string(),
+                path: relative,
+            });
         }
     }
     Ok(references)

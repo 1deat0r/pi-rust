@@ -1,7 +1,7 @@
 //! Text component — port of `packages/tui/src/components/text.ts`.
 
-use crate::utils::{apply_background_to_line, visible_width, wrap_text_with_ansi};
 use crate::tui::Component;
+use crate::utils::{apply_background_to_line, visible_width, wrap_text_with_ansi};
 
 pub struct Text {
     text: String,
@@ -18,7 +18,13 @@ impl Text {
         padding_y: usize,
         bg: Option<Box<dyn Fn(&str) -> String + Send + Sync>>,
     ) -> Self {
-        Self { text: text.into(), padding_x, padding_y, bg, cache: std::sync::Mutex::new(None) }
+        Self {
+            text: text.into(),
+            padding_x,
+            padding_y,
+            bg,
+            cache: std::sync::Mutex::new(None),
+        }
     }
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
@@ -40,17 +46,24 @@ impl Component for Text {
             return Vec::new();
         }
         let normalized = self.text.replace('\t', "   ");
-        let padding_x = self.padding_x.min(if width > 1 { (width - 1) / 2 } else { 0 });
+        let padding_x = self
+            .padding_x
+            .min(if width > 1 { (width - 1) / 2 } else { 0 });
         let content_width = (width as isize - (padding_x as isize) * 2).max(1) as usize;
         let wrapped = wrap_text_with_ansi(&normalized, content_width);
         let mut lines: Vec<String> = Vec::new();
         for line in wrapped {
-            let line_with_margins = format!("{}{}{}", " ".repeat(padding_x), line, " ".repeat(padding_x));
+            let line_with_margins =
+                format!("{}{}{}", " ".repeat(padding_x), line, " ".repeat(padding_x));
             match &self.bg {
                 Some(bg) => lines.push(apply_background_to_line(&line_with_margins, width, &**bg)),
                 None => {
                     let visible = visible_width(&line_with_margins);
-                    lines.push(format!("{}{}", line_with_margins, " ".repeat(width.saturating_sub(visible))));
+                    lines.push(format!(
+                        "{}{}",
+                        line_with_margins,
+                        " ".repeat(width.saturating_sub(visible))
+                    ));
                 }
             }
         }

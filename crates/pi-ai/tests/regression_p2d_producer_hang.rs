@@ -13,7 +13,10 @@ use pi_ai::types::{AssistantMessageEvent, ContentBlock, Context};
 use std::time::Duration;
 
 fn rt() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
 }
 
 #[test]
@@ -35,9 +38,11 @@ fn long_text_stream_terminates_in_bounded_time() {
             (events, msg)
         })
         .await;
-        let (events, msg) =
-            res.expect("stream must terminate; a producer panic must emit a terminal event, not hang");
-        assert!(events.iter().any(|e| matches!(e, AssistantMessageEvent::Done { .. })));
+        let (events, msg) = res
+            .expect("stream must terminate; a producer panic must emit a terminal event, not hang");
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::Done { .. })));
         assert_eq!(msg.stop_reason(), Some(pi_ai::types::StopReason::Stop));
         // The content must arrive complete: this is the corruption check too.
         let text: String = msg
@@ -68,14 +73,15 @@ fn producer_panic_surfaces_as_terminal_error_not_hang() {
             (events, msg)
         })
         .await;
-        let (events, msg) =
-            res.expect("panic must produce a terminal Error event, never a hang");
-        assert!(events.iter().any(|e| matches!(e, AssistantMessageEvent::Error { .. })));
+        let (events, msg) = res.expect("panic must produce a terminal Error event, never a hang");
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::Error { .. })));
         assert_eq!(msg.stop_reason(), Some(pi_ai::types::StopReason::Error));
-        let err = msg
-            .error_message()
-            .map(str::to_owned)
-            .unwrap_or_default();
-        assert!(err.contains("synthetic producer panic"), "unexpected error message: {err}");
+        let err = msg.error_message().map(str::to_owned).unwrap_or_default();
+        assert!(
+            err.contains("synthetic producer panic"),
+            "unexpected error message: {err}"
+        );
     });
 }

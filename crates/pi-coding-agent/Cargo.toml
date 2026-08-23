@@ -26,3 +26,4 @@ base64 = { workspace = true }
 regex = { workspace = true }
 pi-tui = { path = "../pi-tui" }
 crossterm = "0.28"
+reqwest = { workspace = true }

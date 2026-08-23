@@ -67,44 +67,70 @@ pub fn render_message(message: &AgentMessage, hide_thinking: bool) -> Option<(St
                 }
             }
             let status = if result.is_error() { "✗" } else { "✓" };
-            Some(("tool".to_string(), format!("{status} **{name}**\n{}", text.trim())))
+            Some((
+                "tool".to_string(),
+                format!("{status} **{name}**\n{}", text.trim()),
+            ))
         }
-        AgentMessage::Custom(custom) => {
-            match custom {
-                pi_agent::types::CustomAgentMessage::BashExecution { command, output, exit_code, cancelled, .. } => {
-                    let status = if *cancelled {
-                        "(cancelled)".to_string()
-                    } else if let Some(code) = exit_code {
-                        if *code != 0 { format!("(exit {code})") } else { String::new() }
+        AgentMessage::Custom(custom) => match custom {
+            pi_agent::types::CustomAgentMessage::BashExecution {
+                command,
+                output,
+                exit_code,
+                cancelled,
+                ..
+            } => {
+                let status = if *cancelled {
+                    "(cancelled)".to_string()
+                } else if let Some(code) = exit_code {
+                    if *code != 0 {
+                        format!("(exit {code})")
                     } else {
                         String::new()
-                    };
-                    let text = format!("$ `{command}`\n\n{}\n\n{}", output.trim(), status);
-                    Some(("tool".to_string(), text))
-                }
-                pi_agent::types::CustomAgentMessage::CompactionSummary { summary, tokens_before, .. } => {
-                    let tokens = format_tokens(*tokens_before);
-                    Some(("banner".to_string(), format!("**[compaction]** Compacted from {tokens} tokens\n\n{summary}")))
-                }
-                pi_agent::types::CustomAgentMessage::BranchSummary { summary, .. } => {
-                    Some(("banner".to_string(), format!("**[branch]** Branch summary\n\n{summary}")))
-                }
-                pi_agent::types::CustomAgentMessage::Custom { custom_type, content, .. } => {
-                    let text = match content {
-                        pi_agent::types::CustomContent::String(s) => s.clone(),
-                        pi_agent::types::CustomContent::Blocks(blocks) => blocks
-                            .iter()
-                            .filter_map(|b| match b {
-                                ContentBlock::Text { text, .. } => Some(text.clone()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    };
-                    Some(("banner".to_string(), format!("**[{custom_type}]**\n\n{}", text.trim())))
-                }
+                    }
+                } else {
+                    String::new()
+                };
+                let text = format!("$ `{command}`\n\n{}\n\n{}", output.trim(), status);
+                Some(("tool".to_string(), text))
             }
-        }
+            pi_agent::types::CustomAgentMessage::CompactionSummary {
+                summary,
+                tokens_before,
+                ..
+            } => {
+                let tokens = format_tokens(*tokens_before);
+                Some((
+                    "banner".to_string(),
+                    format!("**[compaction]** Compacted from {tokens} tokens\n\n{summary}"),
+                ))
+            }
+            pi_agent::types::CustomAgentMessage::BranchSummary { summary, .. } => Some((
+                "banner".to_string(),
+                format!("**[branch]** Branch summary\n\n{summary}"),
+            )),
+            pi_agent::types::CustomAgentMessage::Custom {
+                custom_type,
+                content,
+                ..
+            } => {
+                let text = match content {
+                    pi_agent::types::CustomContent::String(s) => s.clone(),
+                    pi_agent::types::CustomContent::Blocks(blocks) => blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text { text, .. } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                };
+                Some((
+                    "banner".to_string(),
+                    format!("**[{custom_type}]**\n\n{}", text.trim()),
+                ))
+            }
+        },
     }
 }
 
@@ -148,6 +174,10 @@ pub fn format_tokens(count: u64) -> String {
 }
 
 /// Get the thinking level for the active model from settings.
-pub fn current_thinking_level(settings: &SettingsManager, _provider: &str, _model_id: &str) -> Option<String> {
+pub fn current_thinking_level(
+    settings: &SettingsManager,
+    _provider: &str,
+    _model_id: &str,
+) -> Option<String> {
     settings.get_default_thinking_level().map(|s| s.to_string())
 }

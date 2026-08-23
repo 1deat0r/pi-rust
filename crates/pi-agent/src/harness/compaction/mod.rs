@@ -14,8 +14,8 @@ pub use branch_summarization::{
 pub use compaction::{
     calculate_context_tokens, compact, estimate_context_tokens, estimate_tokens, find_cut_point,
     find_turn_start_index, generate_summary, generate_summary_with_usage, get_last_assistant_usage,
-    prepare_compaction, should_compact, CompactionDetails, CompactionPreparation, CompactionSettings,
-    CompactResult, ContextUsageEstimate, CutPointResult, DEFAULT_COMPACTION_SETTINGS,
+    prepare_compaction, should_compact, CompactResult, CompactionDetails, CompactionPreparation,
+    CompactionSettings, ContextUsageEstimate, CutPointResult, DEFAULT_COMPACTION_SETTINGS,
 };
 pub use utils::{
     compute_file_lists, create_file_ops, extract_file_ops_from_message, format_file_operations,

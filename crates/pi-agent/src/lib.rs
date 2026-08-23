@@ -11,11 +11,11 @@ pub mod agent;
 pub mod fs;
 pub mod harness;
 pub mod messages;
-pub mod search;
-pub mod stream_fn;
 pub mod proxy;
 pub mod rich_agent;
+pub mod search;
 pub mod session;
+pub mod stream_fn;
 pub mod tools;
 pub mod types;
 

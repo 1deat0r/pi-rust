@@ -14,12 +14,17 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("pi-print-parity-{tag}-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("pi-print-parity-{tag}-{}", uuid::Uuid::new_v4()));
         let home = root.join("home");
         let sessions = root.join("sessions");
         fs::create_dir_all(home.join(".pi").join("agent")).unwrap();
         fs::create_dir_all(&sessions).unwrap();
-        Self { root, home, sessions }
+        Self {
+            root,
+            home,
+            sessions,
+        }
     }
 
     fn pi(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
@@ -88,16 +93,30 @@ fn multiple_messages_are_prompted_as_sequential_turns() {
     let cwd = sandbox.root.clone();
     let out = sandbox.pi(
         &cwd,
-        &["-p", "--provider", "faux", "--model", "faux-1", "first", "second"],
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "first",
+            "second",
+        ],
     );
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
     // The visible final output is the last assistant turn.
-    assert!(sandbox.stdout(&out).contains("faux response to: second"), "no final reply");
+    assert!(
+        sandbox.stdout(&out).contains("faux response to: second"),
+        "no final reply"
+    );
 
     let assistant_entries = sandbox.count_assistant_entries();
     // Sequential turns ⇒ two assistant entries persisted (a batched run would
     // persist a single assistant turn).
-    assert_eq!(assistant_entries, 2, "expected two assistant turns, got {assistant_entries}");
+    assert_eq!(
+        assistant_entries, 2,
+        "expected two assistant turns, got {assistant_entries}"
+    );
 }
 
 #[test]
@@ -106,7 +125,10 @@ fn terminal_provider_error_exits_nonzero_with_raw_message() {
     let cwd = sandbox.root.clone();
     // A real provider with no key terminates in an error; print mode must
     // surface it on stderr and exit nonzero (upstream exitCode = 1).
-    let out = sandbox.pi(&cwd, &["-p", "--provider", "openai", "--model", "gpt-5.4", "hi"]);
+    let out = sandbox.pi(
+        &cwd,
+        &["-p", "--provider", "openai", "--model", "gpt-5.4", "hi"],
+    );
     assert!(!out.status.success(), "expected nonzero exit");
     let stderr = sandbox.stderr(&out);
     assert!(
@@ -115,5 +137,8 @@ fn terminal_provider_error_exits_nonzero_with_raw_message() {
     );
     // Upstream prints the raw error message (not wrapped).
     assert!(!stderr.is_empty(), "expected an error message on stderr");
-    assert!(!sandbox.stdout(&out).contains("faux"), "no reply expected on stdout");
+    assert!(
+        !sandbox.stdout(&out).contains("faux"),
+        "no reply expected on stdout"
+    );
 }

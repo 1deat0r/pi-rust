@@ -11,6 +11,8 @@
 use crate::config::{self, APP_NAME, CONFIG_DIR_NAME};
 use crate::core::package_manager::PackageManager;
 use crate::core::settings::{SettingsManager, SettingsManagerCreateOptions};
+use pi_tui::{parse_key, SharedComponent, TerminalBackend, TerminalEvent, Tree};
+use std::sync::{Arc, Mutex};
 
 pub const CONFIG_COMMAND_USAGE: &str = "pi config [-l] [--approve|--no-approve]";
 
@@ -69,7 +71,9 @@ pub fn handle_config_command(args: &[String]) -> bool {
     let mut settings = SettingsManager::create(
         &cwd,
         &agent_dir.display().to_string(),
-        SettingsManagerCreateOptions { project_trusted: trusted },
+        SettingsManagerCreateOptions {
+            project_trusted: trusted,
+        },
     );
     if local && !settings.is_project_trusted() {
         eprintln!("Project is not trusted. Use --approve to modify local resource config.");
@@ -80,7 +84,10 @@ pub fn handle_config_command(args: &[String]) -> bool {
             crate::core::settings::SettingsScope::Global => "global",
             crate::core::settings::SettingsScope::Project => "project",
         };
-        eprintln!("Warning (config command, {scope} settings): {}", error.error);
+        eprintln!(
+            "Warning (config command, {scope} settings): {}",
+            error.error
+        );
     }
 
     // Resolve the resource lists the selector would show (upstream builds
@@ -88,7 +95,9 @@ pub fn handle_config_command(args: &[String]) -> bool {
     let global_settings = SettingsManager::create(
         &cwd,
         &agent_dir.display().to_string(),
-        SettingsManagerCreateOptions { project_trusted: false },
+        SettingsManagerCreateOptions {
+            project_trusted: false,
+        },
     );
     let global_manager = PackageManager::new(crate::core::package_manager::PackageManagerOptions {
         cwd: cwd.clone(),
@@ -96,27 +105,69 @@ pub fn handle_config_command(args: &[String]) -> bool {
         settings_manager: global_settings,
     });
     let global_resources = summarize_resources(&global_manager, &agent_dir.display().to_string());
+    let global_paths = global_manager.resolve(None).unwrap_or_default();
     let project_resources = if settings.is_project_trusted() {
         let project_settings = SettingsManager::create(
             &cwd,
             &agent_dir.display().to_string(),
-            SettingsManagerCreateOptions { project_trusted: true },
+            SettingsManagerCreateOptions {
+                project_trusted: true,
+            },
         );
-        let project_manager = PackageManager::new(crate::core::package_manager::PackageManagerOptions {
-            cwd: cwd.clone(),
-            agent_dir: agent_dir.display().to_string(),
-            settings_manager: project_settings,
-        });
-        Some(summarize_resources(&project_manager, &agent_dir.display().to_string()))
+        let project_manager =
+            PackageManager::new(crate::core::package_manager::PackageManagerOptions {
+                cwd: cwd.clone(),
+                agent_dir: agent_dir.display().to_string(),
+                settings_manager: project_settings,
+            });
+        Some(summarize_resources(
+            &project_manager,
+            &agent_dir.display().to_string(),
+        ))
     } else {
         None
     };
+    let project_paths = if settings.is_project_trusted() {
+        let project_settings = SettingsManager::create(
+            &cwd,
+            &agent_dir.display().to_string(),
+            SettingsManagerCreateOptions {
+                project_trusted: true,
+            },
+        );
+        let project_manager =
+            PackageManager::new(crate::core::package_manager::PackageManagerOptions {
+                cwd: cwd.clone(),
+                agent_dir: agent_dir.display().to_string(),
+                settings_manager: project_settings,
+            });
+        project_manager.resolve(None).unwrap_or_default()
+    } else {
+        Default::default()
+    };
 
-    // TODO(pi-tui): the full ConfigSelectorComponent TUI is ported in a
-    // parallel worktree; this seam should open the selector with
-    // { global: global_resolved, project: project_resolved },
-    // writeScope = local ? "project" : "global" and exit after it closes.
-    // The port renders the same data surface in a minimal non-TUI form.
+    if std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stdout())
+    {
+        let component = Arc::new(Mutex::new(
+            crate::interactive::config_selector::ConfigSelectorComponent::new(
+                global_paths,
+                project_paths,
+                settings,
+                cwd,
+                agent_dir.display().to_string(),
+                if local { "project" } else { "global" },
+            ),
+        ));
+        if let Err(error) = run_config_selector(component) {
+            eprintln!("config selector error: {error}");
+            std::process::exit(1);
+        }
+        return true;
+    }
+
+    // Non-TTY callers get the deterministic summary used by scripts and
+    // tests; attached terminals use the selector above.
     let write_scope = if local { "project" } else { "global" };
     println!("pi config (write scope: {write_scope})");
     println!();
@@ -152,6 +203,45 @@ pub fn handle_config_command(args: &[String]) -> bool {
     std::process::exit(0);
 }
 
+fn run_config_selector(
+    component: Arc<Mutex<crate::interactive::config_selector::ConfigSelectorComponent>>,
+) -> Result<(), String> {
+    let terminal = Arc::new(Mutex::new(TerminalBackend::new()));
+    terminal
+        .lock()
+        .unwrap()
+        .enter_raw()
+        .map_err(|e| format!("enter raw: {e}"))?;
+    let mut tree = Tree::new(terminal.clone());
+    let shared: SharedComponent = component.clone();
+    tree.focus(shared.clone());
+    loop {
+        let scene = Arc::new(Mutex::new(pi_tui::Scene::new(
+            vec![shared.clone()],
+            Some(0),
+        )));
+        tree.render(Some(&scene));
+        let event = terminal
+            .lock()
+            .unwrap()
+            .next_event()
+            .map_err(|e| format!("read terminal: {e}"))?;
+        if let TerminalEvent::Key(raw) = event {
+            if !raw.is_empty() {
+                if tree.consume_cell_size_response(&raw) {
+                    continue;
+                }
+                tree.dispatch(&parse_key(&raw));
+            }
+        }
+        if component.lock().unwrap().is_closed() {
+            break;
+        }
+    }
+    tree.leave_alt_screen();
+    Ok(())
+}
+
 fn summarize_resources(manager: &PackageManager, agent_dir: &str) -> Vec<(String, Vec<String>)> {
     let mut sections: Vec<(String, Vec<String>)> = Vec::new();
     let packages: Vec<String> = manager
@@ -177,14 +267,20 @@ fn summarize_resources(manager: &PackageManager, agent_dir: &str) -> Vec<(String
             &resolved,
             agent_dir,
             CONFIG_DIR_NAME,
-            dirs::home_dir().as_deref().map(|h| h.to_string_lossy().into_owned()).as_deref(),
+            dirs::home_dir()
+                .as_deref()
+                .map(|h| h.to_string_lossy().into_owned())
+                .as_deref(),
         );
         for group in &groups {
             let mut lines = Vec::new();
             for subgroup in &group.subgroups {
                 for item in &subgroup.items {
                     let state = if item.enabled { "" } else { " (disabled)" };
-                    lines.push(format!("    {} [{}{state}]", item.display_name, subgroup.label));
+                    lines.push(format!(
+                        "    {} [{}{state}]",
+                        item.display_name, subgroup.label
+                    ));
                 }
             }
             if !lines.is_empty() {

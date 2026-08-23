@@ -37,7 +37,10 @@ pub fn read_pi_manifest(package_json_path: &Path) -> Option<PiManifest> {
         if let Some(entries) = pi.get(field) {
             if let Some(list) = entries.as_array() {
                 if list.iter().all(|entry| entry.is_string()) {
-                    *target = list.iter().filter_map(|entry| entry.as_str().map(|s| s.to_string())).collect();
+                    *target = list
+                        .iter()
+                        .filter_map(|entry| entry.as_str().map(|s| s.to_string()))
+                        .collect();
                 }
             }
         }
@@ -81,10 +84,7 @@ mod tests {
     #[test]
     fn non_string_entries_ignored() {
         let dir = std::env::temp_dir().join(format!("pi-manifest-{}", uuid::Uuid::new_v4()));
-        let path = write_pkg(
-            &dir,
-            r#"{ "pi": { "extensions": ["ok.ts", 42] } }"#,
-        );
+        let path = write_pkg(&dir, r#"{ "pi": { "extensions": ["ok.ts", 42] } }"#);
         // Upstream requires every entry to be a string; a mixed array is
         // rejected wholesale for that field.
         let manifest = read_pi_manifest(&path).unwrap();

@@ -14,12 +14,17 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("pi-resources-{tag}-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("pi-resources-{tag}-{}", uuid::Uuid::new_v4()));
         let home = root.join("home");
         let sessions = root.join("sessions");
         fs::create_dir_all(home.join(".pi").join("agent")).unwrap();
         fs::create_dir_all(&sessions).unwrap();
-        Self { root, home, sessions }
+        Self {
+            root,
+            home,
+            sessions,
+        }
     }
 
     fn pi(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
@@ -88,7 +93,14 @@ fn prompt_template_is_expanded_in_run_path() {
 
     let out = sandbox.pi(
         &cwd,
-        &["-p", "--provider", "faux", "--model", "faux-1", "/summarize the docs"],
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "/summarize the docs",
+        ],
     );
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
     // The expanded text (not the literal `/template`) is what reaches the

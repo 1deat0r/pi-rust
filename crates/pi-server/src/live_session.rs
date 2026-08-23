@@ -147,20 +147,29 @@ impl LiveSessionManager {
         command: Command,
     ) -> Result<CommandResult, PiServerError> {
         match command {
-            Command::List => Ok(CommandResult::List { sessions: self.list_metadata()? }),
+            Command::List => Ok(CommandResult::List {
+                sessions: self.list_metadata()?,
+            }),
 
-            Command::Create { cwd, name, model, thinking_level } => {
+            Command::Create {
+                cwd,
+                name,
+                model,
+                thinking_level,
+            } => {
                 let id = uuid::Uuid::new_v4().to_string();
                 let runtime = self.acquire(&id, {
                     let id = id.clone();
                     move || {
-                        self.service.lock().unwrap().create_session(crate::types::CreateSessionOptions {
-                            id,
-                            cwd,
-                            name,
-                            model,
-                            thinking_level,
-                        })
+                        self.service.lock().unwrap().create_session(
+                            crate::types::CreateSessionOptions {
+                                id,
+                                cwd,
+                                name,
+                                model,
+                                thinking_level,
+                            },
+                        )
                     }
                 })?;
                 self.attach(conn, &runtime)?;
@@ -170,7 +179,10 @@ impl LiveSessionManager {
 
             Command::Attach { session_id } => {
                 let runtime = self.acquire(&session_id, || {
-                    self.service.lock().unwrap().open_session(session_id.clone())
+                    self.service
+                        .lock()
+                        .unwrap()
+                        .open_session(session_id.clone())
                 })?;
                 self.attach(conn, &runtime)?;
                 let session = self.broadcast_snapshot(&runtime, conn)?;
@@ -194,15 +206,17 @@ impl LiveSessionManager {
                 }
             }
 
-            Command::Prompt { session_id, text } => self.run_operation(conn, &session_id, |r| {
-                r.prompt(crate::types::PromptInput { text })
-            })
-            .map(|session| CommandResult::Prompt { session }),
+            Command::Prompt { session_id, text } => self
+                .run_operation(conn, &session_id, |r| {
+                    r.prompt(crate::types::PromptInput { text })
+                })
+                .map(|session| CommandResult::Prompt { session }),
 
-            Command::Steer { session_id, text } => self.run_operation(conn, &session_id, |r| {
-                r.steer(crate::types::SteerInput { text })
-            })
-            .map(|session| CommandResult::Steer { session }),
+            Command::Steer { session_id, text } => self
+                .run_operation(conn, &session_id, |r| {
+                    r.steer(crate::types::SteerInput { text })
+                })
+                .map(|session| CommandResult::Steer { session }),
 
             Command::Abort { session_id } => self
                 .run_operation(conn, &session_id, |r| r.abort())
@@ -212,7 +226,10 @@ impl LiveSessionManager {
                 .run_operation(conn, &session_id, |r| r.set_model(model))
                 .map(|session| CommandResult::SetModel { session }),
 
-            Command::SetThinking { session_id, thinking_level } => self
+            Command::SetThinking {
+                session_id,
+                thinking_level,
+            } => self
                 .run_operation(conn, &session_id, |r| r.set_thinking(thinking_level))
                 .map(|session| CommandResult::SetThinking { session }),
         }
@@ -233,7 +250,10 @@ impl LiveSessionManager {
         }
         let guard = self.live.lock().unwrap();
         let live = guard.get(session_id).ok_or_else(|| {
-            PiServerError::new(ProtocolErrorCode::NotFound, format!("Session is not live: {session_id}"))
+            PiServerError::new(
+                ProtocolErrorCode::NotFound,
+                format!("Session is not live: {session_id}"),
+            )
         })?;
         if live.terminal || live.disposing {
             return Err(PiServerError::new(
@@ -281,7 +301,10 @@ impl LiveSessionManager {
                 let _ = runtime.lock().unwrap().dispose();
                 return Err(PiServerError::new(
                     ProtocolErrorCode::InvalidRequest,
-                    format!("Service returned session {} for server-assigned session {id}", snap.id),
+                    format!(
+                        "Service returned session {} for server-assigned session {id}",
+                        snap.id
+                    ),
                 ));
             }
         }
@@ -508,13 +531,18 @@ fn maybe_dispose_event(
 ) {
     let should_dispose = {
         let mut guard = live.lock().unwrap();
-        let Some(sess) = guard.get_mut(id) else { return };
-        if !sess.ready || sess.disposing || !sess.connections.is_empty() || sess.operation_count > 0 {
+        let Some(sess) = guard.get_mut(id) else {
+            return;
+        };
+        if !sess.ready || sess.disposing || !sess.connections.is_empty() || sess.operation_count > 0
+        {
             return;
         }
         // If the runtime guard is held on this thread (the very event tripping
         // us mid-op), skip; an idle session's disposal retries on a later event.
-        let Ok(rg) = sess.runtime.try_lock() else { return };
+        let Ok(rg) = sess.runtime.try_lock() else {
+            return;
+        };
         if sess.terminal || rg.get_phase() == SessionPhase::Idle {
             sess.disposing = true;
             true
@@ -529,7 +557,9 @@ fn maybe_dispose_event(
     // or recomputing metadata (compute_metadata_event re-locks `live`).
     let runtime = {
         let mut guard = live.lock().unwrap();
-        let Some(mut sess) = guard.remove(id) else { return };
+        let Some(mut sess) = guard.remove(id) else {
+            return;
+        };
         if let Some(unsub) = sess.unsubscribe.take() {
             unsub();
         }
@@ -693,7 +723,9 @@ fn compute_metadata_event(
             if sess.disposing {
                 continue;
             }
-            let Ok(mut rg) = sess.runtime.try_lock() else { continue };
+            let Ok(mut rg) = sess.runtime.try_lock() else {
+                continue;
+            };
             let Ok(mut s) = rg.snapshot() else { continue };
             s.phase = rg.get_phase();
             s.locked = true;
@@ -719,7 +751,9 @@ fn compute_metadata_event(
 mod tests {
     use super::*;
     use crate::service::InMemoryService;
-    use pi_protocol::{ModelMetadata, ModelRef, ServerSnapshot, ThinkingLevel, TranscriptDeltaKind};
+    use pi_protocol::{
+        ModelMetadata, ModelRef, ServerSnapshot, ThinkingLevel, TranscriptDeltaKind,
+    };
 
     fn service() -> Arc<Mutex<dyn PiServerService>> {
         let svc = InMemoryService::new(Vec::new());
@@ -735,13 +769,22 @@ mod tests {
     }
 
     fn manager() -> LiveSessionManager {
-        let _snap = ServerSnapshot { server_id: String::new(), protocol_version: 1, revision: 0, sessions: vec![], models: vec![] };
+        let _snap = ServerSnapshot {
+            server_id: String::new(),
+            protocol_version: 1,
+            revision: 0,
+            sessions: vec![],
+            models: vec![],
+        };
         let _ = _snap;
         LiveSessionManager::new(service(), publisher())
     }
 
     fn model_ref() -> ModelRef {
-        ModelRef { provider: "faux".to_string(), id: "faux-1".to_string() }
+        ModelRef {
+            provider: "faux".to_string(),
+            id: "faux-1".to_string(),
+        }
     }
 
     #[test]
@@ -749,14 +792,19 @@ mod tests {
         let m = manager();
         let mut conn = ConnectionHandle::new("c1".to_string());
         let result = m
-            .execute_command(&mut conn, Command::Create {
-                cwd: Some(".".to_string()),
-                name: Some("demo".to_string()),
-                model: Some(model_ref()),
-                thinking_level: Some(ThinkingLevel::Off),
-            })
+            .execute_command(
+                &mut conn,
+                Command::Create {
+                    cwd: Some(".".to_string()),
+                    name: Some("demo".to_string()),
+                    model: Some(model_ref()),
+                    thinking_level: Some(ThinkingLevel::Off),
+                },
+            )
             .unwrap();
-        let CommandResult::Create { session } = result else { panic!("expected Create") };
+        let CommandResult::Create { session } = result else {
+            panic!("expected Create")
+        };
         assert!(session.locked, "live sessions are locked");
         assert!(session.attached, "creating connection is attached");
         assert_eq!(session.name.as_deref(), Some("demo"));
@@ -768,26 +816,47 @@ mod tests {
         let m = manager();
         let mut conn = ConnectionHandle::new("c1".to_string());
         let CommandResult::Create { session } = m
-            .execute_command(&mut conn, Command::Create {
-                cwd: None, name: None, model: Some(model_ref()), thinking_level: None,
-            })
+            .execute_command(
+                &mut conn,
+                Command::Create {
+                    cwd: None,
+                    name: None,
+                    model: Some(model_ref()),
+                    thinking_level: None,
+                },
+            )
             .unwrap()
-        else { panic!("expected Create") };
+        else {
+            panic!("expected Create")
+        };
         let id = session.id;
 
         // A second connection can attach to the same live session.
         let mut conn2 = ConnectionHandle::new("c2".to_string());
         let CommandResult::Attach { session: snap2 } = m
-            .execute_command(&mut conn2, Command::Attach { session_id: id.clone() })
+            .execute_command(
+                &mut conn2,
+                Command::Attach {
+                    session_id: id.clone(),
+                },
+            )
             .unwrap()
-        else { panic!("expected Attach") };
+        else {
+            panic!("expected Attach")
+        };
         assert_eq!(snap2.id, id);
         assert!(conn2.session_ids.contains(&id));
 
         // Command on an unattached connection must be rejected.
         let mut conn3 = ConnectionHandle::new("c3".to_string());
         let err = m
-            .execute_command(&mut conn3, Command::Prompt { session_id: id.clone(), text: "hi".to_string() })
+            .execute_command(
+                &mut conn3,
+                Command::Prompt {
+                    session_id: id.clone(),
+                    text: "hi".to_string(),
+                },
+            )
             .unwrap_err();
         assert_eq!(err.code, ProtocolErrorCode::InvalidRequest);
     }
@@ -797,23 +866,55 @@ mod tests {
         let m = manager();
         let mut conn = ConnectionHandle::new("c1".to_string());
         let CommandResult::Create { session } = m
-            .execute_command(&mut conn, Command::Create { cwd: None, name: None, model: Some(model_ref()), thinking_level: None })
+            .execute_command(
+                &mut conn,
+                Command::Create {
+                    cwd: None,
+                    name: None,
+                    model: Some(model_ref()),
+                    thinking_level: None,
+                },
+            )
             .unwrap()
-        else { panic!("expected Create") };
+        else {
+            panic!("expected Create")
+        };
         let id = session.id;
 
         // A second attachment keeps the session alive after c1 detaches.
         let mut conn2 = ConnectionHandle::new("c2".to_string());
-        let _ = m.execute_command(&mut conn2, Command::Attach { session_id: id.clone() }).unwrap();
+        let _ = m
+            .execute_command(
+                &mut conn2,
+                Command::Attach {
+                    session_id: id.clone(),
+                },
+            )
+            .unwrap();
 
-        m.execute_command(&mut conn, Command::Detach { session_id: id.clone() }).unwrap();
+        m.execute_command(
+            &mut conn,
+            Command::Detach {
+                session_id: id.clone(),
+            },
+        )
+        .unwrap();
         assert!(!conn.session_ids.contains(&id));
         // The session still has c2 attached → not disposed.
         assert!(m.live.lock().unwrap().contains_key(&id));
 
         // Detach c2 → now idle → disposed.
-        m.execute_command(&mut conn2, Command::Detach { session_id: id.clone() }).unwrap();
-        assert!(!m.live.lock().unwrap().contains_key(&id), "idle session should be disposed");
+        m.execute_command(
+            &mut conn2,
+            Command::Detach {
+                session_id: id.clone(),
+            },
+        )
+        .unwrap();
+        assert!(
+            !m.live.lock().unwrap().contains_key(&id),
+            "idle session should be disposed"
+        );
     }
 
     #[test]
@@ -821,15 +922,33 @@ mod tests {
         let m = manager();
         let mut conn = ConnectionHandle::new("c1".to_string());
         let CommandResult::Create { session } = m
-            .execute_command(&mut conn, Command::Create { cwd: None, name: None, model: Some(model_ref()), thinking_level: None })
+            .execute_command(
+                &mut conn,
+                Command::Create {
+                    cwd: None,
+                    name: None,
+                    model: Some(model_ref()),
+                    thinking_level: None,
+                },
+            )
             .unwrap()
-        else { panic!("expected Create") };
+        else {
+            panic!("expected Create")
+        };
         let id = session.id;
         // prompt moves the session to Turn (InMemory service) → not disposed.
         let CommandResult::Prompt { session: after } = m
-            .execute_command(&mut conn, Command::Prompt { session_id: id.clone(), text: "hello".to_string() })
+            .execute_command(
+                &mut conn,
+                Command::Prompt {
+                    session_id: id.clone(),
+                    text: "hello".to_string(),
+                },
+            )
             .unwrap()
-        else { panic!("expected Prompt") };
+        else {
+            panic!("expected Prompt")
+        };
         assert_eq!(after.phase, SessionPhase::Turn);
         assert!(m.live.lock().unwrap().contains_key(&id));
     }
@@ -843,10 +962,22 @@ mod tests {
         let mut closed_conn = ConnectionHandle::new("cX".to_string());
         closed_conn.closed = true;
         let err = m
-            .execute_command(&mut closed_conn, Command::Create { cwd: None, name: None, model: Some(model_ref()), thinking_level: None })
+            .execute_command(
+                &mut closed_conn,
+                Command::Create {
+                    cwd: None,
+                    name: None,
+                    model: Some(model_ref()),
+                    thinking_level: None,
+                },
+            )
             .unwrap_err();
         assert_eq!(err.code, ProtocolErrorCode::InvalidRequest);
-        assert!(err.message.contains("Connection closed"), "got: {}", err.message);
+        assert!(
+            err.message.contains("Connection closed"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[test]
@@ -854,14 +985,27 @@ mod tests {
         let m = manager();
         let mut conn = ConnectionHandle::new("c1".to_string());
         let CommandResult::Create { session } = m
-            .execute_command(&mut conn, Command::Create { cwd: None, name: None, model: Some(model_ref()), thinking_level: None })
+            .execute_command(
+                &mut conn,
+                Command::Create {
+                    cwd: None,
+                    name: None,
+                    model: Some(model_ref()),
+                    thinking_level: None,
+                },
+            )
             .unwrap()
-        else { panic!("expected Create") };
+        else {
+            panic!("expected Create")
+        };
         let id = session.id;
         assert!(m.live.lock().unwrap().contains_key(&id));
         m.disconnect(&mut conn);
         assert!(conn.session_ids.is_empty());
-        assert!(!m.live.lock().unwrap().contains_key(&id), "idle session disposed on disconnect");
+        assert!(
+            !m.live.lock().unwrap().contains_key(&id),
+            "idle session disposed on disconnect"
+        );
     }
 
     #[test]
@@ -869,12 +1013,23 @@ mod tests {
         let m = manager();
         let mut conn = ConnectionHandle::new("c1".to_string());
         let CommandResult::Create { session } = m
-            .execute_command(&mut conn, Command::Create { cwd: None, name: Some("live".to_string()), model: Some(model_ref()), thinking_level: None })
+            .execute_command(
+                &mut conn,
+                Command::Create {
+                    cwd: None,
+                    name: Some("live".to_string()),
+                    model: Some(model_ref()),
+                    thinking_level: None,
+                },
+            )
             .unwrap()
-        else { panic!("expected Create") };
+        else {
+            panic!("expected Create")
+        };
         let meta = m.list_metadata().unwrap();
         assert!(
-            meta.iter().any(|s| s.id == session.id && s.session_name.as_deref() == Some("live")),
+            meta.iter()
+                .any(|s| s.id == session.id && s.session_name.as_deref() == Some("live")),
             "live snapshot should override stored metadata"
         );
     }
@@ -890,11 +1045,19 @@ mod tests {
 
     fn create_live(m: &LiveSessionManager, conn: &mut ConnectionHandle) -> String {
         let CommandResult::Create { session } = m
-            .execute_command(conn, Command::Create {
-                cwd: None, name: None, model: Some(model_ref()), thinking_level: None,
-            })
+            .execute_command(
+                conn,
+                Command::Create {
+                    cwd: None,
+                    name: None,
+                    model: Some(model_ref()),
+                    thinking_level: None,
+                },
+            )
             .unwrap()
-        else { panic!("expected Create") };
+        else {
+            panic!("expected Create")
+        };
         session.id
     }
 
@@ -914,14 +1077,15 @@ mod tests {
         conn.progress = Some(sink);
         let id = create_live(&m, &mut conn);
 
-        service.emit(&id, crate::service::PiSessionRuntimeEvent::Progress(
-            TranscriptProgress::AssistantDelta {
+        service.emit(
+            &id,
+            crate::service::PiSessionRuntimeEvent::Progress(TranscriptProgress::AssistantDelta {
                 message_id: "m1".to_string(),
                 content_index: 0,
                 kind: TranscriptDeltaKind::Text,
                 delta: "hello".to_string(),
-            },
-        ));
+            }),
+        );
 
         assert_eq!(*received.lock().unwrap(), vec!["hello".to_string()]);
     }
@@ -932,14 +1096,15 @@ mod tests {
         let mut conn = ConnectionHandle::new("c1".to_string());
         // No progress sink on the connection.
         let id = create_live(&m, &mut conn);
-        service.emit(&id, crate::service::PiSessionRuntimeEvent::Progress(
-            TranscriptProgress::AssistantDelta {
+        service.emit(
+            &id,
+            crate::service::PiSessionRuntimeEvent::Progress(TranscriptProgress::AssistantDelta {
                 message_id: "m1".to_string(),
                 content_index: 0,
                 kind: TranscriptDeltaKind::Text,
                 delta: "hello".to_string(),
-            },
-        ));
+            }),
+        );
         // No panic; sink-less connections are simply skipped.
         assert!(m.live.lock().unwrap().contains_key(&id));
     }
@@ -951,9 +1116,13 @@ mod tests {
         let id = create_live(&m, &mut conn);
         assert!(m.live.lock().unwrap().contains_key(&id));
 
-        service.emit(&id, crate::service::PiSessionRuntimeEvent::Error(
-            PiServerError::new(ProtocolErrorCode::InternalError, "boom"),
-        ));
+        service.emit(
+            &id,
+            crate::service::PiSessionRuntimeEvent::Error(PiServerError::new(
+                ProtocolErrorCode::InternalError,
+                "boom",
+            )),
+        );
 
         // The terminal-close disposal runs on a background thread; poll briefly.
         let mut dropped = false;
@@ -964,7 +1133,10 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(dropped, "terminal session should be disposed out of the live set");
+        assert!(
+            dropped,
+            "terminal session should be disposed out of the live set"
+        );
         assert!(
             !m.list_metadata().unwrap().iter().any(|s| s.id == id),
             "terminal session should be removed from metadata"
@@ -976,16 +1148,30 @@ mod tests {
         let (m, service) = manager_with_service();
         let mut conn = ConnectionHandle::new("c1".to_string());
         let id = create_live(&m, &mut conn);
-        service.emit(&id, crate::service::PiSessionRuntimeEvent::Error(
-            PiServerError::new(ProtocolErrorCode::InternalError, "boom"),
-        ));
+        service.emit(
+            &id,
+            crate::service::PiSessionRuntimeEvent::Error(PiServerError::new(
+                ProtocolErrorCode::InternalError,
+                "boom",
+            )),
+        );
 
         // A subsequent create/attach for a live session must not resurrect it.
         let mut second = ConnectionHandle::new("c2".to_string());
         let err = m
-            .execute_command(&mut second, Command::Prompt { session_id: id.clone(), text: "x".to_string() })
+            .execute_command(
+                &mut second,
+                Command::Prompt {
+                    session_id: id.clone(),
+                    text: "x".to_string(),
+                },
+            )
             .unwrap_err();
-        assert_eq!(err.code, ProtocolErrorCode::InvalidRequest, "unattached connection");
+        assert_eq!(
+            err.code,
+            ProtocolErrorCode::InvalidRequest,
+            "unattached connection"
+        );
     }
 
     #[test]
@@ -995,7 +1181,10 @@ mod tests {
         let id = create_live(&m, &mut conn);
         assert!(m.live.lock().unwrap().contains_key(&id));
         m.close();
-        assert!(m.live.lock().unwrap().is_empty(), "close should dispose every live session");
+        assert!(
+            m.live.lock().unwrap().is_empty(),
+            "close should dispose every live session"
+        );
     }
 
     fn progress_delta(delta: &str) -> TranscriptProgress {
@@ -1040,9 +1229,15 @@ mod tests {
         assert_ne!(a_id, b_id);
 
         // Only session A emits; B's segment (session B) receives nothing.
-        service.emit(&a_id, crate::service::PiSessionRuntimeEvent::Progress(progress_delta("alpha")));
+        service.emit(
+            &a_id,
+            crate::service::PiSessionRuntimeEvent::Progress(progress_delta("alpha")),
+        );
         assert_eq!(*a_received.lock().unwrap(), vec!["alpha".to_string()]);
-        assert!(b_received.lock().unwrap().is_empty(), "cross-session segment leakage");
+        assert!(
+            b_received.lock().unwrap().is_empty(),
+            "cross-session segment leakage"
+        );
     }
 
     /// Detaching mid-turn unsubscribes the connection's progress segment: no
@@ -1064,13 +1259,29 @@ mod tests {
         conn.progress = Some(sink);
         let id = create_live(&m, &mut conn);
 
-        service.emit(&id, crate::service::PiSessionRuntimeEvent::Progress(progress_delta("pre")));
+        service.emit(
+            &id,
+            crate::service::PiSessionRuntimeEvent::Progress(progress_delta("pre")),
+        );
         assert_eq!(*received.lock().unwrap(), vec!["pre".to_string()]);
 
         // Detach: the connection's progress segment is removed.
-        m.execute_command(&mut conn, Command::Detach { session_id: id.clone() }).unwrap();
-        service.emit(&id, crate::service::PiSessionRuntimeEvent::Progress(progress_delta("post")));
-        assert_eq!(*received.lock().unwrap(), vec!["pre".to_string()], "post-detach progress leaked");
+        m.execute_command(
+            &mut conn,
+            Command::Detach {
+                session_id: id.clone(),
+            },
+        )
+        .unwrap();
+        service.emit(
+            &id,
+            crate::service::PiSessionRuntimeEvent::Progress(progress_delta("post")),
+        );
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec!["pre".to_string()],
+            "post-detach progress leaked"
+        );
     }
 
     /// A session left idle + unattached after a concurrent turn must be disposed
@@ -1084,10 +1295,24 @@ mod tests {
 
         // Start a turn (phase -> Turn) then drop the only attachment.
         let CommandResult::Prompt { .. } = m
-            .execute_command(&mut conn, Command::Prompt { session_id: id.clone(), text: "go".to_string() })
+            .execute_command(
+                &mut conn,
+                Command::Prompt {
+                    session_id: id.clone(),
+                    text: "go".to_string(),
+                },
+            )
             .unwrap()
-        else { panic!("expected Prompt") };
-        m.execute_command(&mut conn, Command::Detach { session_id: id.clone() }).unwrap();
+        else {
+            panic!("expected Prompt")
+        };
+        m.execute_command(
+            &mut conn,
+            Command::Detach {
+                session_id: id.clone(),
+            },
+        )
+        .unwrap();
         // Still live: phase is Turn, not idle.
         assert!(m.live.lock().unwrap().contains_key(&id));
 

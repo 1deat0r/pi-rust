@@ -18,7 +18,9 @@ use std::time::Duration;
 /// the canonicalized path when they have one, otherwise the absolute path is
 /// used.
 pub fn mutation_queue_key(absolute_path: &str, canonical_path: Option<&str>) -> String {
-    canonical_path.map(|s| s.to_string()).unwrap_or_else(|| absolute_path.to_string())
+    canonical_path
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| absolute_path.to_string())
 }
 
 /// Resolve a path to its canonical form where possible (stdlib realpath),
@@ -73,7 +75,9 @@ where
     let (previous_reg, reg_link) = {
         let mut reg = state.registration.lock().unwrap();
         let previous_reg = reg.take();
-        let link = Arc::new(RegistrationLink { notified: tokio::sync::Notify::new() });
+        let link = Arc::new(RegistrationLink {
+            notified: tokio::sync::Notify::new(),
+        });
         *reg = Some(link.clone());
         (previous_reg, link)
     };
@@ -105,7 +109,8 @@ where
     reg_link.notified.notify_one();
 
     let result = f.await;
-    link.finished.store(true, std::sync::atomic::Ordering::SeqCst);
+    link.finished
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     link.ready.notify_waiters();
 
     // Clean up the map entry if we are still the tail.
@@ -168,7 +173,11 @@ mod tests {
             h.await.unwrap();
         }
         assert_eq!(*counter.lock().unwrap(), 0);
-        assert_eq!(*max.lock().unwrap(), 1, "never more than one mutation runs at a time");
+        assert_eq!(
+            *max.lock().unwrap(),
+            1,
+            "never more than one mutation runs at a time"
+        );
     }
 
     #[tokio::test]

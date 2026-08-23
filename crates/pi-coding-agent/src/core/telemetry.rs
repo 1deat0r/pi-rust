@@ -38,10 +38,12 @@ mod tests {
     use serde_json::json;
 
     fn settings(telemetry: bool) -> SettingsManager {
-        SettingsManager::in_memory(serde_json::from_value(json!({
-            "enableInstallTelemetry": telemetry
-        }))
-        .unwrap())
+        SettingsManager::in_memory(
+            serde_json::from_value(json!({
+                "enableInstallTelemetry": telemetry
+            }))
+            .unwrap(),
+        )
     }
 
     #[test]

@@ -73,19 +73,31 @@ impl SseParser {
                     }
                     e.data.push_str(&value);
                 }
-                None => self.pending.push(SseEvent { data: value, event: None, id: None }),
+                None => self.pending.push(SseEvent {
+                    data: value,
+                    event: None,
+                    id: None,
+                }),
             }
         } else if let Some(field) = line.strip_prefix("event:") {
             let value = field.strip_prefix(' ').unwrap_or(field).to_string();
             match self.pending.last_mut() {
                 Some(e) => e.event = Some(value),
-                None => self.pending.push(SseEvent { data: String::new(), event: Some(value), id: None }),
+                None => self.pending.push(SseEvent {
+                    data: String::new(),
+                    event: Some(value),
+                    id: None,
+                }),
             }
         } else if let Some(field) = line.strip_prefix("id:") {
             let value = field.strip_prefix(' ').unwrap_or(field).to_string();
             match self.pending.last_mut() {
                 Some(e) => e.id = Some(value),
-                None => self.pending.push(SseEvent { data: String::new(), event: None, id: Some(value) }),
+                None => self.pending.push(SseEvent {
+                    data: String::new(),
+                    event: None,
+                    id: Some(value),
+                }),
             }
         }
         // "retry:" lines and unknown fields are ignored.
@@ -209,8 +221,8 @@ mod tests {
         // order with the wrong payload. The corrected finish must fold the
         // buffered data line into the pending event and return one event.
         let mut parser = SseParser::new();
-        parser.push_bytes(b"data: line1\n");     // pending: [{data:"line1"}]
-        parser.push_bytes(b"data: partial");      // EOF leaves "data: partial" buffered
+        parser.push_bytes(b"data: line1\n"); // pending: [{data:"line1"}]
+        parser.push_bytes(b"data: partial"); // EOF leaves "data: partial" buffered
         let events = parser.finish();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data, "line1\npartial");

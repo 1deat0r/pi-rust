@@ -67,7 +67,10 @@ pub struct RecordLogCorruption {
 
 impl RecordLogCorruption {
     pub fn new(reason: CorruptionReason, message: impl Into<String>) -> Self {
-        Self { reason, message: message.into() }
+        Self {
+            reason,
+            message: message.into(),
+        }
     }
 }
 
@@ -279,7 +282,9 @@ pub fn as_assistant(message: &crate::types::AgentMessage) -> Option<&AssistantMe
 }
 
 /// Extract the inner `ToolResultMessage` from an `AgentMessage`.
-pub fn as_tool_result(message: &crate::types::AgentMessage) -> Option<&pi_ai::types::ToolResultMessage> {
+pub fn as_tool_result(
+    message: &crate::types::AgentMessage,
+) -> Option<&pi_ai::types::ToolResultMessage> {
     match message {
         crate::types::AgentMessage::Core(pi_ai::types::Message::ToolResult(tr)) => Some(tr),
         _ => None,
@@ -320,7 +325,9 @@ fn matches_provisioned_entry(entry: &Entry, target: &serde_json::Value) -> bool 
 
 /// Provisioned-entry target from an `OperationIntent::Run.initialMessages`
 /// entry (already in the provisioned shape — without seq/parentId/timestamp).
-fn provisioned_value_from_entry_no_stats(entry: &crate::session::types::EntryNoStats) -> serde_json::Value {
+fn provisioned_value_from_entry_no_stats(
+    entry: &crate::session::types::EntryNoStats,
+) -> serde_json::Value {
     serde_json::to_value(entry).unwrap_or(serde_json::Value::Null)
 }
 
@@ -362,12 +369,21 @@ fn validate_result_entry(
 }
 
 fn validate_attempt_reason(record: &LaneRecord) -> Result<(), RecordLogCorruption> {
-    let LaneRecord::StepAttempt { step, compaction_reason, id, .. } = record else {
+    let LaneRecord::StepAttempt {
+        step,
+        compaction_reason,
+        id,
+        ..
+    } = record
+    else {
         return Ok(());
     };
     let reason = compaction_reason.as_deref();
     if step == "compaction" {
-        if !matches!(reason, Some("manual") | Some("threshold") | Some("overflow")) {
+        if !matches!(
+            reason,
+            Some("manual") | Some("threshold") | Some("overflow")
+        ) {
             return Err(RecordLogCorruption::new(
                 CorruptionReason::InvalidCompactionReason,
                 format!("Compaction attempt {id} has no valid compaction reason"),
@@ -391,18 +407,33 @@ fn validate_attempt_sequence(
     previous: Option<&AttemptSeries>,
     entries_by_id: &HashMap<&str, &Entry>,
 ) -> Result<(), RecordLogCorruption> {
-    let LaneRecord::StepAttempt { step, attempt, result_entry_id, compaction_reason, id, seq, .. } = record else {
+    let LaneRecord::StepAttempt {
+        step,
+        attempt,
+        result_entry_id,
+        compaction_reason,
+        id,
+        seq,
+        ..
+    } = record
+    else {
         return Ok(());
     };
     let previous_record = previous.map(|p| &p.record);
     let previous_result = previous_record.and_then(|pr| match pr {
-        LaneRecord::StepAttempt { result_entry_id, .. } => entries_by_id.get(result_entry_id.as_str()).copied(),
+        LaneRecord::StepAttempt {
+            result_entry_id, ..
+        } => entries_by_id.get(result_entry_id.as_str()).copied(),
         _ => None,
     });
     let continues_series = match previous_record {
-        Some(LaneRecord::StepAttempt { step: prev_step, .. }) => {
+        Some(LaneRecord::StepAttempt {
+            step: prev_step, ..
+        }) => {
             prev_step == step
-                && previous_result.map(|e| entry_seq(e) >= *seq).unwrap_or(true)
+                && previous_result
+                    .map(|e| entry_seq(e) >= *seq)
+                    .unwrap_or(true)
         }
         _ => false,
     };
@@ -410,7 +441,11 @@ fn validate_attempt_sequence(
         Some(LaneRecord::StepAttempt { attempt, .. }) => *attempt,
         _ => 0,
     };
-    let expected_attempt = if continues_series { previous_attempt + 1 } else { 1 };
+    let expected_attempt = if continues_series {
+        previous_attempt + 1
+    } else {
+        1
+    };
     if *attempt != expected_attempt {
         return Err(RecordLogCorruption::new(
             CorruptionReason::NonConsecutiveAttempt,
@@ -420,8 +455,11 @@ fn validate_attempt_sequence(
     if !continues_series || step == "assistant" || previous_record.is_none() {
         return Ok(());
     }
-    if let Some(LaneRecord::StepAttempt { result_entry_id: prev_result, compaction_reason: prev_reason, .. }) =
-        previous_record
+    if let Some(LaneRecord::StepAttempt {
+        result_entry_id: prev_result,
+        compaction_reason: prev_reason,
+        ..
+    }) = previous_record
     {
         if result_entry_id != prev_result {
             return Err(RecordLogCorruption::new(
@@ -443,13 +481,18 @@ fn validate_attempt_result(
     entries_by_id: &HashMap<&str, &Entry>,
     record: &LaneRecord,
 ) -> Result<(), RecordLogCorruption> {
-    let LaneRecord::StepAttempt { step, result_entry_id, .. } = record else {
+    let LaneRecord::StepAttempt {
+        step,
+        result_entry_id,
+        ..
+    } = record
+    else {
         return Ok(());
     };
     let matches: &dyn Fn(&Entry) -> bool = match step.as_str() {
-        "assistant" => &(|entry: &Entry| {
-            matches!(entry, Entry::Message { message, .. } if as_assistant(message).is_some())
-        }),
+        "assistant" => {
+            &(|entry: &Entry| matches!(entry, Entry::Message { message, .. } if as_assistant(message).is_some()))
+        }
         "compaction" => &(|entry: &Entry| matches!(entry, Entry::Compaction { .. })),
         "branch_summary" => &(|entry: &Entry| matches!(entry, Entry::BranchSummary { .. })),
         _ => return Ok(()),
@@ -502,7 +545,11 @@ fn validate_tool_start(
         .collect();
     let tool_index_usize = *tool_index as usize;
     match tool_calls.get(tool_index_usize) {
-        Some(ContentBlock::ToolCall { id: tc_id, name: tc_name, .. }) if tc_id == tool_call_id && tc_name == tool_name => {}
+        Some(ContentBlock::ToolCall {
+            id: tc_id,
+            name: tc_name,
+            ..
+        }) if tc_id == tool_call_id && tc_name == tool_name => {}
         _ => {
             return Err(RecordLogCorruption::new(
                 CorruptionReason::ToolCallMismatch,
@@ -527,11 +574,16 @@ fn validate_tool_start(
     )
 }
 
-fn validate_deferred_handles<'a>(entries: impl Iterator<Item = &'a Entry>) -> Result<(), RecordLogCorruption> {
+fn validate_deferred_handles<'a>(
+    entries: impl Iterator<Item = &'a Entry>,
+) -> Result<(), RecordLogCorruption> {
     for entry in entries {
         if let Entry::Message { id, message, .. } = entry {
             if message.role() == "assistant"
-                && as_assistant(message).map(|a| a.stop_reason()).unwrap_or(None) == Some(StopReason::Deferred)
+                && as_assistant(message)
+                    .map(|a| a.stop_reason())
+                    .unwrap_or(None)
+                    == Some(StopReason::Deferred)
                 && as_assistant(message).and_then(|a| a.deferred()).is_none()
             {
                 return Err(RecordLogCorruption::new(
@@ -552,13 +604,17 @@ fn validate_operation_result(
         return Ok(());
     };
     match intent {
-        OperationIntent::Run { initial_messages, .. } => {
+        OperationIntent::Run {
+            initial_messages, ..
+        } => {
             for target in initial_messages {
                 let target_value = provisioned_value_from_entry_no_stats(target);
                 validate_exact_provisioned_entry(entries_by_id, &target_value)?;
             }
         }
-        OperationIntent::Compaction { result_entry_id, .. } => {
+        OperationIntent::Compaction {
+            result_entry_id, ..
+        } => {
             validate_result_entry(
                 entries_by_id,
                 result_entry_id,
@@ -566,7 +622,9 @@ fn validate_operation_result(
                 "manual compaction",
             )?;
         }
-        OperationIntent::Navigation { summary_entry_id, .. } => {
+        OperationIntent::Navigation {
+            summary_entry_id, ..
+        } => {
             if let Some(summary_id) = summary_entry_id {
                 validate_result_entry(
                     entries_by_id,
@@ -590,7 +648,8 @@ pub fn validate_record_log(input: &RecordLogSlice) -> Result<(), RecordLogCorrup
         ));
     }
 
-    let entries_by_id: HashMap<&str, &Entry> = input.entries.iter().map(|e| (entry_id(e), e)).collect();
+    let entries_by_id: HashMap<&str, &Entry> =
+        input.entries.iter().map(|e| (entry_id(e), e)).collect();
     validate_deferred_handles(input.entries.iter())?;
     let mut starts: HashMap<String, &LaneRecord> = HashMap::new();
     let mut finished_at: HashMap<String, u64> = HashMap::new();
@@ -613,7 +672,10 @@ pub fn validate_record_log(input: &RecordLogSlice) -> Result<(), RecordLogCorrup
             if !starts.contains_key(run_id) {
                 return Err(RecordLogCorruption::new(
                     CorruptionReason::UnknownOperation,
-                    format!("Record {} references unknown operation {run_id}", record_id(record)),
+                    format!(
+                        "Record {} references unknown operation {run_id}",
+                        record_id(record)
+                    ),
                 ));
             }
             let finish_seq = finished_at.get(run_id).copied();
@@ -621,7 +683,10 @@ pub fn validate_record_log(input: &RecordLogSlice) -> Result<(), RecordLogCorrup
                 if record_seq(record) > finish_seq {
                     return Err(RecordLogCorruption::new(
                         CorruptionReason::RecordAfterFinish,
-                        format!("Record {} follows the finish of operation {run_id}", record_id(record)),
+                        format!(
+                            "Record {} follows the finish of operation {run_id}",
+                            record_id(record)
+                        ),
                     ));
                 }
             }
@@ -637,14 +702,29 @@ pub fn validate_record_log(input: &RecordLogSlice) -> Result<(), RecordLogCorrup
             LaneRecord::StepAttempt { .. } => {
                 let run_of_record = record_run_id(record).unwrap_or("").to_string();
                 validate_attempt_reason(record)?;
-                validate_attempt_sequence(record, latest_attempt.get(&run_of_record), &entries_by_id)?;
+                validate_attempt_sequence(
+                    record,
+                    latest_attempt.get(&run_of_record),
+                    &entries_by_id,
+                )?;
                 validate_attempt_result(&entries_by_id, record)?;
-                latest_attempt.insert(run_of_record, AttemptSeries { record: record.clone() });
+                latest_attempt.insert(
+                    run_of_record,
+                    AttemptSeries {
+                        record: record.clone(),
+                    },
+                );
             }
             LaneRecord::ToolStarted { .. } => {
                 validate_tool_start(record, &entries_by_id, &mut tool_invocations)?;
             }
-            LaneRecord::QueueEnqueued { queue, run_id, target, seq, .. } => {
+            LaneRecord::QueueEnqueued {
+                queue,
+                run_id,
+                target,
+                seq,
+                ..
+            } => {
                 if queue != "nextRun" {
                     if let Some(abort_seq) = aborted_at.get(run_id) {
                         if *seq > *abort_seq {
@@ -658,17 +738,30 @@ pub fn validate_record_log(input: &RecordLogSlice) -> Result<(), RecordLogCorrup
                         }
                     }
                 }
-                let target_id = target.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let target_id = target
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 queue_enqueues.insert(target_id, record);
                 validate_exact_provisioned_entry(&entries_by_id, target)?;
             }
-            LaneRecord::QueueCancelled { entry_id, seq, run_id, .. } => {
+            LaneRecord::QueueCancelled {
+                entry_id,
+                seq,
+                run_id,
+                ..
+            } => {
                 let enqueue = queue_enqueues.get(entry_id.as_str()).copied();
                 // Upstream: corrupt unless a pending matching enqueue exists
                 // (runId equality; an undefined cancel runId matches nothing
                 // carrying a runId) and no entry was materialized.
                 let enqueue_ok = match enqueue {
-                    Some(LaneRecord::QueueEnqueued { seq: enq_seq, run_id: enq_run, .. }) => {
+                    Some(LaneRecord::QueueEnqueued {
+                        seq: enq_seq,
+                        run_id: enq_run,
+                        ..
+                    }) => {
                         enq_run == run_id.as_deref().unwrap_or("")
                             && *enq_seq < *seq
                             && !entries_by_id.contains_key(entry_id.as_str())
@@ -678,7 +771,10 @@ pub fn validate_record_log(input: &RecordLogSlice) -> Result<(), RecordLogCorrup
                 if !enqueue_ok {
                     return Err(RecordLogCorruption::new(
                         CorruptionReason::InvalidQueueCancellation,
-                        format!("Queue cancellation {} has no pending matching enqueue", record_id(record)),
+                        format!(
+                            "Queue cancellation {} has no pending matching enqueue",
+                            record_id(record)
+                        ),
                     ));
                 }
             }
@@ -708,14 +804,18 @@ fn derive_effective_configuration(input: &LaneReductionInput) -> EffectiveLaneCo
     ordered.sort_by_key(|e| entry_seq(e));
     for entry in ordered {
         match entry {
-            Entry::ModelChange { provider, model_id, .. } => {
+            Entry::ModelChange {
+                provider, model_id, ..
+            } => {
                 configuration.provider = provider.clone();
                 configuration.model_id = model_id.clone();
             }
             Entry::ThinkingLevel { thinking_level, .. } => {
                 configuration.thinking_level = thinking_level.clone();
             }
-            Entry::ActiveTools { active_tool_names, .. } => {
+            Entry::ActiveTools {
+                active_tool_names, ..
+            } => {
                 configuration.active_tool_names = active_tool_names.clone();
             }
             Entry::Message { message, .. } => {
@@ -751,7 +851,11 @@ fn derive_newest_own(entry: Option<&Entry>) -> Option<NewestOwn> {
         entry_id: entry_id(entry).to_string(),
         entry_type: entry_type_name(entry).to_string(),
         role: Some(message.role().to_string()),
-        stop_reason: if let Some(assistant) = as_assistant(message) { assistant.stop_reason() } else { None },
+        stop_reason: if let Some(assistant) = as_assistant(message) {
+            assistant.stop_reason()
+        } else {
+            None
+        },
     })
 }
 
@@ -823,9 +927,9 @@ fn derive_tool_batch(
         };
         let started = starts.get(&(tool_index as u64)).copied();
         let started_result = started.and_then(|s| match s {
-            LaneRecord::ToolStarted { result_entry_id, .. } => {
-                entries_by_id.get(result_entry_id.as_str()).copied()
-            }
+            LaneRecord::ToolStarted {
+                result_entry_id, ..
+            } => entries_by_id.get(result_entry_id.as_str()).copied(),
             _ => None,
         });
         let blocked_result = own_entries.iter().find(|entry| {
@@ -845,7 +949,13 @@ fn derive_tool_batch(
         });
         let result = started_result.or(blocked_result.map(|r| *r));
         let result_exists = result.is_some();
-        let terminate = matches!(result, Some(Entry::Message { terminate: Some(true), .. }));
+        let terminate = matches!(
+            result,
+            Some(Entry::Message {
+                terminate: Some(true),
+                ..
+            })
+        );
         if !result_exists {
             any_unresolved = true;
         }
@@ -867,7 +977,9 @@ fn derive_tool_batch(
 
 /// Purely reconstructs one lane's orchestration state from its bounded
 /// recovery inputs (upstream `reduceLaneState`).
-pub fn reduce_lane_state(input: &LaneReductionInput) -> Result<LaneReductionResult, RecordLogCorruption> {
+pub fn reduce_lane_state(
+    input: &LaneReductionInput,
+) -> Result<LaneReductionResult, RecordLogCorruption> {
     validate_record_log(&RecordLogSlice {
         lane: input.lane,
         open_operations: input.open_operations,
@@ -898,12 +1010,15 @@ pub fn reduce_lane_state(input: &LaneReductionInput) -> Result<LaneReductionResu
         .collect();
     let started = input.open_operations.first();
     let captured_initial_message_ids: HashSet<String> = match started {
-        Some(LaneRecord::OperationStarted { intent: OperationIntent::Run { initial_messages, .. }, .. }) => {
-            initial_messages
-                .iter()
-                .map(|e| entry_id_of_no_stats(e).to_string())
-                .collect()
-        }
+        Some(LaneRecord::OperationStarted {
+            intent: OperationIntent::Run {
+                initial_messages, ..
+            },
+            ..
+        }) => initial_messages
+            .iter()
+            .map(|e| entry_id_of_no_stats(e).to_string())
+            .collect(),
         _ => HashSet::new(),
     };
     let pending_next_run: Vec<serde_json::Value> = pending_queue_records
@@ -943,7 +1058,9 @@ pub fn reduce_lane_state(input: &LaneReductionInput) -> Result<LaneReductionResu
             }
         })
         .collect();
-    let aborting = operation_records.iter().any(|r| matches!(r, LaneRecord::AbortRequested { .. }));
+    let aborting = operation_records
+        .iter()
+        .any(|r| matches!(r, LaneRecord::AbortRequested { .. }));
     let pending_steer: Vec<serde_json::Value> = if aborting {
         Vec::new()
     } else {
@@ -972,7 +1089,12 @@ pub fn reduce_lane_state(input: &LaneReductionInput) -> Result<LaneReductionResu
         .map(|r| target_of(r).cloned().unwrap_or(serde_json::Value::Null))
         .collect();
     let missing_initial_messages: Vec<serde_json::Value> = match &started {
-        LaneRecord::OperationStarted { intent: OperationIntent::Run { initial_messages, .. }, .. } => initial_messages
+        LaneRecord::OperationStarted {
+            intent: OperationIntent::Run {
+                initial_messages, ..
+            },
+            ..
+        } => initial_messages
             .iter()
             .filter(|e| !entries_by_id.contains_key(entry_id_of_no_stats(e)))
             .map(provisioned_value_from_entry_no_stats)
@@ -986,21 +1108,29 @@ pub fn reduce_lane_state(input: &LaneReductionInput) -> Result<LaneReductionResu
         .last()
         .copied();
     let step = match newest_attempt {
-        Some(LaneRecord::StepAttempt { step, attempt, result_entry_id, compaction_reason, .. })
-            if !entries_by_id.contains_key(result_entry_id.as_str()) =>
-        {
-            Some(StepState {
-                kind: step.clone(),
-                attempts: *attempt,
-                result_entry_id: result_entry_id.clone(),
-                compaction_reason: compaction_reason.clone(),
-            })
-        }
+        Some(LaneRecord::StepAttempt {
+            step,
+            attempt,
+            result_entry_id,
+            compaction_reason,
+            ..
+        }) if !entries_by_id.contains_key(result_entry_id.as_str()) => Some(StepState {
+            kind: step.clone(),
+            attempts: *attempt,
+            result_entry_id: result_entry_id.clone(),
+            compaction_reason: compaction_reason.clone(),
+        }),
         _ => None,
     };
 
     let mut consumed_input_ids: HashSet<String> = HashSet::new();
-    if let LaneRecord::OperationStarted { intent: OperationIntent::Run { initial_messages, .. }, .. } = started {
+    if let LaneRecord::OperationStarted {
+        intent: OperationIntent::Run {
+            initial_messages, ..
+        },
+        ..
+    } = started
+    {
         for target in initial_messages {
             consumed_input_ids.insert(entry_id_of_no_stats(target).to_string());
         }
@@ -1018,7 +1148,8 @@ pub fn reduce_lane_state(input: &LaneReductionInput) -> Result<LaneReductionResu
     for id in &consumed_input_ids {
         if let Some(entry) = entries_by_id.get(id.as_str()) {
             if matches!(entry, Entry::Message { .. }) {
-                newest_consumed_input_sequence = newest_consumed_input_sequence.max(entry_seq(entry) as i64);
+                newest_consumed_input_sequence =
+                    newest_consumed_input_sequence.max(entry_seq(entry) as i64);
             }
         }
     }
@@ -1032,7 +1163,9 @@ pub fn reduce_lane_state(input: &LaneReductionInput) -> Result<LaneReductionResu
     let newest_own = derive_newest_own(newest_own_entry);
     let deferred = match newest_own_entry {
         Some(Entry::Message { message, .. })
-            if as_assistant(message).map(|a| a.stop_reason() == Some(StopReason::Deferred)).unwrap_or(false) =>
+            if as_assistant(message)
+                .map(|a| a.stop_reason() == Some(StopReason::Deferred))
+                .unwrap_or(false) =>
         {
             as_assistant(message).and_then(|a| a.deferred().cloned())
         }
@@ -1040,10 +1173,20 @@ pub fn reduce_lane_state(input: &LaneReductionInput) -> Result<LaneReductionResu
     };
     let mut targets = OperationTargets::default();
     match &started {
-        LaneRecord::OperationStarted { intent: OperationIntent::Compaction { result_entry_id, .. }, .. } => {
+        LaneRecord::OperationStarted {
+            intent: OperationIntent::Compaction {
+                result_entry_id, ..
+            },
+            ..
+        } => {
             targets.result = entries_by_id.contains_key(result_entry_id.as_str());
         }
-        LaneRecord::OperationStarted { intent: OperationIntent::Navigation { summary_entry_id, .. }, .. } => {
+        LaneRecord::OperationStarted {
+            intent: OperationIntent::Navigation {
+                summary_entry_id, ..
+            },
+            ..
+        } => {
             if let Some(summary_id) = summary_entry_id {
                 targets.summary = entries_by_id.contains_key(summary_id.as_str());
             }
@@ -1094,7 +1237,13 @@ pub fn reduce_lane_state(input: &LaneReductionInput) -> Result<LaneReductionResu
         }
     }
 
-    let tool_batch = derive_tool_batch(started_id, &operation_records, &own_entries, &entries_by_id, &deferred_write_ids);
+    let tool_batch = derive_tool_batch(
+        started_id,
+        &operation_records,
+        &own_entries,
+        &entries_by_id,
+        &deferred_write_ids,
+    );
 
     Ok(LaneReductionResult {
         lane_state: LaneState {
@@ -1124,16 +1273,27 @@ pub fn reduce_lane_state(input: &LaneReductionInput) -> Result<LaneReductionResu
 
 fn intent_kind(record: &LaneRecord) -> &'static str {
     match record {
-        LaneRecord::OperationStarted { intent: OperationIntent::Run { .. }, .. } => "run",
-        LaneRecord::OperationStarted { intent: OperationIntent::Compaction { .. }, .. } => "compaction",
-        LaneRecord::OperationStarted { intent: OperationIntent::Navigation { .. }, .. } => "navigation",
+        LaneRecord::OperationStarted {
+            intent: OperationIntent::Run { .. },
+            ..
+        } => "run",
+        LaneRecord::OperationStarted {
+            intent: OperationIntent::Compaction { .. },
+            ..
+        } => "compaction",
+        LaneRecord::OperationStarted {
+            intent: OperationIntent::Navigation { .. },
+            ..
+        } => "navigation",
         _ => "unknown",
     }
 }
 
 fn target_of(record: &LaneRecord) -> Option<&serde_json::Value> {
     match record {
-        LaneRecord::QueueEnqueued { target, .. } | LaneRecord::WriteDeferred { target, .. } => Some(target),
+        LaneRecord::QueueEnqueued { target, .. } | LaneRecord::WriteDeferred { target, .. } => {
+            Some(target)
+        }
         _ => None,
     }
 }
@@ -1171,11 +1331,19 @@ mod tests {
         let mut a = pi_ai::types::AssistantMessage::new();
         a.set_content(content);
         a.set_stop_reason(StopReason::Stop);
-        msg_entry(id, seq, crate::types::AgentMessage::Core(Message::Assistant(a)))
+        msg_entry(
+            id,
+            seq,
+            crate::types::AgentMessage::Core(Message::Assistant(a)),
+        )
     }
 
     fn user(id: &str, seq: u64) -> Entry {
-        msg_entry(id, seq, crate::types::AgentMessage::Core(Message::User(UserContent::blocks(vec![], seq))))
+        msg_entry(
+            id,
+            seq,
+            crate::types::AgentMessage::Core(Message::User(UserContent::blocks(vec![], seq))),
+        )
     }
 
     fn started(id: &str, seq: u64) -> LaneRecord {
@@ -1187,7 +1355,14 @@ mod tests {
             source_leaf_id: Some("u1".into()),
             intent: OperationIntent::Run {
                 original_prompt: vec![],
-                initial_messages: vec![EntryNoStats::Message { id: "u1".into(), message: crate::types::AgentMessage::Core(Message::User(UserContent::blocks(vec![], 2))), terminate: None }],
+                initial_messages: vec![EntryNoStats::Message {
+                    id: "u1".into(),
+                    message: crate::types::AgentMessage::Core(Message::User(UserContent::blocks(
+                        vec![],
+                        2,
+                    ))),
+                    terminate: None,
+                }],
                 system_prompt_override: None,
                 resume_data: None,
             },
@@ -1230,9 +1405,15 @@ mod tests {
     fn run_operation_with_inflight_step_reconstructs_step() {
         let start = started("op1", 1);
         let attempt = LaneRecord::StepAttempt {
-            id: "a1".into(), seq: 3, lane: "l".into(), timestamp: 1,
-            run_id: "op1".into(), step: "assistant".into(), attempt: 1,
-            result_entry_id: "r1".into(), compaction_reason: None,
+            id: "a1".into(),
+            seq: 3,
+            lane: "l".into(),
+            timestamp: 1,
+            run_id: "op1".into(),
+            step: "assistant".into(),
+            attempt: 1,
+            result_entry_id: "r1".into(),
+            compaction_reason: None,
         };
         // Not yet materialized result -> step still open; the initial message
         // is not among the fetched entries -> captured as missing.
@@ -1257,14 +1438,22 @@ mod tests {
         let mut err_assistant = assistant("r1", 3, vec![ContentBlock::text("boom")]);
         if let Entry::Message { message, .. } = &mut err_assistant {
             match message {
-                crate::types::AgentMessage::Core(Message::Assistant(a)) => a.set_stop_reason(StopReason::Error),
+                crate::types::AgentMessage::Core(Message::Assistant(a)) => {
+                    a.set_stop_reason(StopReason::Error)
+                }
                 _ => unreachable!(),
             }
         }
         let attempt = LaneRecord::StepAttempt {
-            id: "a1".into(), seq: 3, lane: "l".into(), timestamp: 1,
-            run_id: "op1".into(), step: "assistant".into(), attempt: 1,
-            result_entry_id: "r1".into(), compaction_reason: None,
+            id: "a1".into(),
+            seq: 3,
+            lane: "l".into(),
+            timestamp: 1,
+            run_id: "op1".into(),
+            step: "assistant".into(),
+            attempt: 1,
+            result_entry_id: "r1".into(),
+            compaction_reason: None,
         };
         let records = vec![start.clone(), attempt];
         let entries = vec![user1];
@@ -1272,30 +1461,55 @@ mod tests {
         let result = reduce_lane_state(&input(&records, &entries, &own)).unwrap();
         let op = result.lane_state.operation.expect("operation open");
         assert!(op.step.is_none(), "result materialized -> step closed");
-        let tf = result.terminal_failure.expect("step-attributed error is terminal");
+        let tf = result
+            .terminal_failure
+            .expect("step-attributed error is terminal");
         assert_eq!(tf.entry_id, "r1");
         assert_eq!(tf.source, TerminalFailureSource::Step);
         assert_eq!(tf.message.stop_reason(), Some(StopReason::Error));
         // order check: assistant entry emitted as newest own
-        assert_eq!(op.newest_own.as_ref().map(|n| n.entry_id.as_str()), Some("r1"));
+        assert_eq!(
+            op.newest_own.as_ref().map(|n| n.entry_id.as_str()),
+            Some("r1")
+        );
     }
 
     #[test]
     fn duplicate_tool_invocation_is_corrupt() {
         let start = started("op1", 1);
         let user1 = user("u1", 2);
-        let asst = assistant("a1", 3, vec![ContentBlock::tool_call("c1", "bash", serde_json::json!({}))]);
+        let asst = assistant(
+            "a1",
+            3,
+            vec![ContentBlock::tool_call("c1", "bash", serde_json::json!({}))],
+        );
         let tool_start = LaneRecord::ToolStarted {
-            id: "t1".into(), seq: 4, lane: "l".into(), timestamp: 1,
-            run_id: "op1".into(), assistant_entry_id: "a1".into(),
-            tool_index: 0, tool_call_id: "c1".into(), tool_name: "bash".into(),
-            effective_args: serde_json::json!({}), result_entry_id: "tr1".into(), replay: "never".into(),
+            id: "t1".into(),
+            seq: 4,
+            lane: "l".into(),
+            timestamp: 1,
+            run_id: "op1".into(),
+            assistant_entry_id: "a1".into(),
+            tool_index: 0,
+            tool_call_id: "c1".into(),
+            tool_name: "bash".into(),
+            effective_args: serde_json::json!({}),
+            result_entry_id: "tr1".into(),
+            replay: "never".into(),
         };
         let tool_start2 = LaneRecord::ToolStarted {
-            id: "t2".into(), seq: 5, lane: "l".into(), timestamp: 1,
-            run_id: "op1".into(), assistant_entry_id: "a1".into(),
-            tool_index: 0, tool_call_id: "c1".into(), tool_name: "bash".into(),
-            effective_args: serde_json::json!({}), result_entry_id: "tr1".into(), replay: "never".into(),
+            id: "t2".into(),
+            seq: 5,
+            lane: "l".into(),
+            timestamp: 1,
+            run_id: "op1".into(),
+            assistant_entry_id: "a1".into(),
+            tool_index: 0,
+            tool_call_id: "c1".into(),
+            tool_name: "bash".into(),
+            effective_args: serde_json::json!({}),
+            result_entry_id: "tr1".into(),
+            replay: "never".into(),
         };
         let records = vec![start, tool_start, tool_start2];
         let entries = vec![user1, asst];
@@ -1306,9 +1520,19 @@ mod tests {
     #[test]
     fn unknown_operation_reference_is_corrupt() {
         let record = LaneRecord::AbortRequested {
-            id: "x".into(), seq: 1, lane: "l".into(), timestamp: 1, run_id: "nope".into(),
+            id: "x".into(),
+            seq: 1,
+            lane: "l".into(),
+            timestamp: 1,
+            run_id: "nope".into(),
         };
-        let err = validate_record_log(&RecordLogSlice { lane: "l", open_operations: &[], records: &[record], entries: &[] }).unwrap_err();
+        let err = validate_record_log(&RecordLogSlice {
+            lane: "l",
+            open_operations: &[],
+            records: &[record],
+            entries: &[],
+        })
+        .unwrap_err();
         assert_eq!(err.reason, CorruptionReason::UnknownOperation);
     }
 
@@ -1316,21 +1540,44 @@ mod tests {
     fn multiple_open_operations_is_corrupt() {
         let a = started("op1", 1);
         let b = started("op2", 2);
-        let err = validate_record_log(&RecordLogSlice { lane: "l", open_operations: &[a, b], records: &[], entries: &[] }).unwrap_err();
+        let err = validate_record_log(&RecordLogSlice {
+            lane: "l",
+            open_operations: &[a, b],
+            records: &[],
+            entries: &[],
+        })
+        .unwrap_err();
         assert_eq!(err.reason, CorruptionReason::MultipleOpenOperations);
     }
 
     #[test]
     fn queue_after_abort_is_corrupt() {
         let start = started("op1", 1);
-        let abort = LaneRecord::AbortRequested { id: "ab".into(), seq: 2, lane: "l".into(), timestamp: 1, run_id: "op1".into() };
+        let abort = LaneRecord::AbortRequested {
+            id: "ab".into(),
+            seq: 2,
+            lane: "l".into(),
+            timestamp: 1,
+            run_id: "op1".into(),
+        };
         let target = serde_json::json!({"id": "s1", "type": "message", "message": {"role": "user", "content": "x"}, "timestamp": 1});
         let enqueue = LaneRecord::QueueEnqueued {
-            id: "qe".into(), seq: 3, lane: "l".into(), timestamp: 1,
-            queue: "steer".into(), run_id: "op1".into(), target: target.clone(),
+            id: "qe".into(),
+            seq: 3,
+            lane: "l".into(),
+            timestamp: 1,
+            queue: "steer".into(),
+            run_id: "op1".into(),
+            target: target.clone(),
         };
         let records = vec![start, abort, enqueue];
-        let err = validate_record_log(&RecordLogSlice { lane: "l", open_operations: &[], records: &records, entries: &[] }).unwrap_err();
+        let err = validate_record_log(&RecordLogSlice {
+            lane: "l",
+            open_operations: &[],
+            records: &records,
+            entries: &[],
+        })
+        .unwrap_err();
         assert_eq!(err.reason, CorruptionReason::QueueAfterAbort);
     }
 }

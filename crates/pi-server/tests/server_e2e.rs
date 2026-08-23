@@ -4,8 +4,8 @@
 use std::sync::{Arc, Mutex};
 
 use pi_protocol::{Command, CommandResult};
-use pi_server::service::InMemoryService;
 use pi_server::server::PiServer;
+use pi_server::service::InMemoryService;
 use pi_server::UnixListener;
 
 fn test_models() -> Vec<pi_protocol::ModelMetadata> {
@@ -15,7 +15,10 @@ fn test_models() -> Vec<pi_protocol::ModelMetadata> {
         name: "Faux Model".into(),
         api: "faux".into(),
         reasoning: false,
-        input: vec![pi_protocol::ModelInput::Text, pi_protocol::ModelInput::Image],
+        input: vec![
+            pi_protocol::ModelInput::Text,
+            pi_protocol::ModelInput::Image,
+        ],
         context_window: 128_000,
         max_tokens: 16_384,
         cost: pi_protocol::ModelCost {
@@ -36,13 +39,16 @@ async fn client_server_roundtrip() {
     let socket_path = dir.join("pi.sock").to_string_lossy().into_owned();
 
     let service = Box::new(InMemoryService::new(test_models()));
-    let mut server = PiServer::new(service, pi_server::types::PiServerOptions {
-        listeners: vec![Box::new(UnixListener::new(socket_path.clone()).unwrap())],
-        max_frame_length: None,
-        handshake_timeout_ms: None,
-        server_id: Some("e2e-server".into()),
-        on_error: None,
-    })
+    let mut server = PiServer::new(
+        service,
+        pi_server::types::PiServerOptions {
+            listeners: vec![Box::new(UnixListener::new(socket_path.clone()).unwrap())],
+            max_frame_length: None,
+            handshake_timeout_ms: None,
+            server_id: Some("e2e-server".into()),
+            on_error: None,
+        },
+    )
     .unwrap();
     server.start().await.unwrap();
 
@@ -54,10 +60,7 @@ async fn client_server_roundtrip() {
     assert_eq!(snapshot.models.len(), 1);
 
     // List sessions.
-    let result = client
-        .request(Command::List)
-        .await
-        .unwrap();
+    let result = client.request(Command::List).await.unwrap();
     if let CommandResult::List { sessions } = result {
         assert!(sessions.is_empty());
     } else {
@@ -114,7 +117,10 @@ async fn client_server_roundtrip() {
     let result = client
         .request(Command::SetModel {
             session_id: session_id.clone(),
-            model: pi_protocol::ModelRef { provider: "faux".into(), id: "faux-1".into() },
+            model: pi_protocol::ModelRef {
+                provider: "faux".into(),
+                id: "faux-1".into(),
+            },
         })
         .await
         .unwrap();
@@ -130,10 +136,7 @@ async fn client_server_roundtrip() {
     assert!(matches!(result, CommandResult::SetThinking { .. }));
 
     // Abort is accepted.
-    let result = client
-        .request(Command::Abort { session_id })
-        .await
-        .unwrap();
+    let result = client.request(Command::Abort { session_id }).await.unwrap();
     assert!(matches!(result, CommandResult::Abort { .. }));
 
     // Snapshot events: subscribe before a detach, then observe.
@@ -148,7 +151,10 @@ async fn client_server_roundtrip() {
     }
     let _ = client.request(Command::List).await.unwrap(); // triggers broadcast after response
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    assert!(!events.lock().unwrap().is_empty(), "expected snapshot broadcast events");
+    assert!(
+        !events.lock().unwrap().is_empty(),
+        "expected snapshot broadcast events"
+    );
 
     let _ = (&mut client).close().await;
     drop(client);
@@ -163,13 +169,16 @@ async fn bad_protocol_version_gets_hello_error() {
     let socket_path = dir.join("pi.sock").to_string_lossy().into_owned();
 
     let service = Box::new(InMemoryService::new(test_models()));
-    let mut server = PiServer::new(service, pi_server::types::PiServerOptions {
-        listeners: vec![Box::new(UnixListener::new(socket_path.clone()).unwrap())],
-        max_frame_length: None,
-        handshake_timeout_ms: None,
-        server_id: Some("e2e-server".into()),
-        on_error: None,
-    })
+    let mut server = PiServer::new(
+        service,
+        pi_server::types::PiServerOptions {
+            listeners: vec![Box::new(UnixListener::new(socket_path.clone()).unwrap())],
+            max_frame_length: None,
+            handshake_timeout_ms: None,
+            server_id: Some("e2e-server".into()),
+            on_error: None,
+        },
+    )
     .unwrap();
     server.start().await.unwrap();
 
@@ -197,7 +206,10 @@ async fn bad_protocol_version_gets_hello_error() {
         .unwrap()
         .push(&frame)
         .unwrap();
-    assert!(matches!(messages[0], pi_protocol::ServerMessage::HelloError { .. }));
+    assert!(matches!(
+        messages[0],
+        pi_protocol::ServerMessage::HelloError { .. }
+    ));
 
     let _ = read;
     let _ = writer_shutdown(write).await;

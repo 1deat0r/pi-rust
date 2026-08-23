@@ -13,7 +13,8 @@ use crate::types::{
 };
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER: &str = "(image omitted: model does not support images)";
-const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str = "(tool image omitted: model does not support images)";
+const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str =
+    "(tool image omitted: model does not support images)";
 
 /// Replace image blocks with a placeholder, collapsing consecutive
 /// placeholders (upstream `replaceImagesWithPlaceholder`).
@@ -51,15 +52,16 @@ fn downgrade_unsupported_images(model: &Model, messages: Vec<Message>) -> Vec<Me
     messages
         .into_iter()
         .map(|msg| match msg {
-            Message::User(UserContent::RoleUser { content: UserContentBody::Blocks(blocks), timestamp }) => {
-                Message::User(UserContent::RoleUser {
-                    content: UserContentBody::Blocks(replace_images_with_placeholder(
-                        &blocks,
-                        NON_VISION_USER_IMAGE_PLACEHOLDER,
-                    )),
-                    timestamp,
-                })
-            }
+            Message::User(UserContent::RoleUser {
+                content: UserContentBody::Blocks(blocks),
+                timestamp,
+            }) => Message::User(UserContent::RoleUser {
+                content: UserContentBody::Blocks(replace_images_with_placeholder(
+                    &blocks,
+                    NON_VISION_USER_IMAGE_PLACEHOLDER,
+                )),
+                timestamp,
+            }),
             Message::ToolResult(r) => Message::ToolResult(replace_tool_result_images(
                 r,
                 NON_VISION_TOOL_IMAGE_PLACEHOLDER,
@@ -205,9 +207,37 @@ where
                     }
                 }
 
-                let AssistantMessage::Assistant { api, provider, model: m, response_model, response_id, usage, stop_reason, deferred, error_message, raw_stop_reason, end_turn, timestamp, .. } = &assistant;
+                let AssistantMessage::Assistant {
+                    api,
+                    provider,
+                    model: m,
+                    response_model,
+                    response_id,
+                    usage,
+                    stop_reason,
+                    deferred,
+                    error_message,
+                    raw_stop_reason,
+                    end_turn,
+                    timestamp,
+                    ..
+                } = &assistant;
                 let mut rebuilt = AssistantMessage::new();
-                let AssistantMessage::Assistant { api: rapi, provider: rprovider, model: rmodel, response_model: rrm, response_id: rrid, usage: rusage, stop_reason: rstop, deferred: rdeferred, error_message: rerr, raw_stop_reason: rraw, end_turn: rend, timestamp: rts, content: rcontent } = &mut rebuilt;
+                let AssistantMessage::Assistant {
+                    api: rapi,
+                    provider: rprovider,
+                    model: rmodel,
+                    response_model: rrm,
+                    response_id: rrid,
+                    usage: rusage,
+                    stop_reason: rstop,
+                    deferred: rdeferred,
+                    error_message: rerr,
+                    raw_stop_reason: rraw,
+                    end_turn: rend,
+                    timestamp: rts,
+                    content: rcontent,
+                } = &mut rebuilt;
                 *rapi = api.clone();
                 *rprovider = provider.clone();
                 *rmodel = m.clone();
@@ -259,7 +289,11 @@ mod tests {
     fn user_messages_pass_through() {
         let model = model_with(true);
         let msgs = vec![text_msg("hi"), text_msg("there")];
-        let out = transform_messages(&msgs, &model, None::<&fn(&str, &Model, &AssistantMessage) -> String>);
+        let out = transform_messages(
+            &msgs,
+            &model,
+            None::<&fn(&str, &Model, &AssistantMessage) -> String>,
+        );
         assert_eq!(out.len(), 2);
     }
 
@@ -274,9 +308,16 @@ mod tests {
                 ContentBlock::text("after"),
             ]),
         ];
-        let out = transform_messages(&msgs, &model, None::<&fn(&str, &Model, &AssistantMessage) -> String>);
+        let out = transform_messages(
+            &msgs,
+            &model,
+            None::<&fn(&str, &Model, &AssistantMessage) -> String>,
+        );
         match &out[1] {
-            Message::User(UserContent::RoleUser { content: UserContentBody::Blocks(b), .. }) => {
+            Message::User(UserContent::RoleUser {
+                content: UserContentBody::Blocks(b),
+                ..
+            }) => {
                 assert_eq!(b.len(), 2);
                 match &b[0] {
                     ContentBlock::Text { text, .. } => {
@@ -299,7 +340,11 @@ mod tests {
         let mut a = assistant_msg(vec![ContentBlock::thinking("reasoning here")]);
         a.set_api_provider_model("google-generative-ai", "google", "other-model");
         let msgs = vec![Message::Assistant(a.clone())];
-        let out = transform_messages(&msgs, &model, None::<&fn(&str, &Model, &AssistantMessage) -> String>);
+        let out = transform_messages(
+            &msgs,
+            &model,
+            None::<&fn(&str, &Model, &AssistantMessage) -> String>,
+        );
         match &out[0] {
             Message::Assistant(x) => match &x.content()[0] {
                 ContentBlock::Text { text, .. } => assert_eq!(text, "reasoning here"),
@@ -320,7 +365,10 @@ mod tests {
         a.set_api_provider_model("openai-responses", "openai", "gpt-5");
 
         let normalize = |id: &str, _m: &Model, _s: &AssistantMessage| {
-            id.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-', "_")
+            id.replace(
+                |c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-',
+                "_",
+            )
         };
         let msgs = vec![
             Message::Assistant(a.clone()),
@@ -360,7 +408,11 @@ mod tests {
             redacted: Some(true),
         }]);
         a.set_api_provider_model("google-generative-ai", "google", "other-model");
-        let out = transform_messages(&[Message::Assistant(a)], &model, None::<&fn(&str, &Model, &AssistantMessage) -> String>);
+        let out = transform_messages(
+            &[Message::Assistant(a)],
+            &model,
+            None::<&fn(&str, &Model, &AssistantMessage) -> String>,
+        );
         match &out[0] {
             Message::Assistant(x) => assert!(x.content().is_empty()),
             _ => panic!(),
@@ -372,7 +424,11 @@ mod tests {
             redacted: Some(true),
         }]);
         a.set_api_provider_model("google-generative-ai", "google", "gemini-3-pro");
-        let out = transform_messages(&[Message::Assistant(a)], &model, None::<&fn(&str, &Model, &AssistantMessage) -> String>);
+        let out = transform_messages(
+            &[Message::Assistant(a)],
+            &model,
+            None::<&fn(&str, &Model, &AssistantMessage) -> String>,
+        );
         match &out[0] {
             Message::Assistant(x) => assert_eq!(x.content().len(), 1),
             _ => panic!(),

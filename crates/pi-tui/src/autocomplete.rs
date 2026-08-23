@@ -18,7 +18,10 @@ fn to_display_path(value: &str) -> String {
 fn escape_regex(value: &str) -> String {
     let mut out = String::with_capacity(value.len() * 2);
     for c in value.chars() {
-        if matches!(c, '.' | '*' | '+' | '?' | '^' | '$' | '{' | '}' | '(' | ')' | '|' | '[' | ']' | '\\') {
+        if matches!(
+            c,
+            '.' | '*' | '+' | '?' | '^' | '$' | '{' | '}' | '(' | ')' | '|' | '[' | ']' | '\\'
+        ) {
             out.push('\\');
         }
         out.push(c);
@@ -116,15 +119,31 @@ pub struct PathPrefix {
 
 fn parse_path_prefix(prefix: &str) -> PathPrefix {
     if let Some(rest) = prefix.strip_prefix("@\"") {
-        return PathPrefix { raw_prefix: rest.to_string(), is_at_prefix: true, is_quoted_prefix: true };
+        return PathPrefix {
+            raw_prefix: rest.to_string(),
+            is_at_prefix: true,
+            is_quoted_prefix: true,
+        };
     }
     if let Some(rest) = prefix.strip_prefix('"') {
-        return PathPrefix { raw_prefix: rest.to_string(), is_at_prefix: false, is_quoted_prefix: true };
+        return PathPrefix {
+            raw_prefix: rest.to_string(),
+            is_at_prefix: false,
+            is_quoted_prefix: true,
+        };
     }
     if let Some(rest) = prefix.strip_prefix('@') {
-        return PathPrefix { raw_prefix: rest.to_string(), is_at_prefix: true, is_quoted_prefix: false };
+        return PathPrefix {
+            raw_prefix: rest.to_string(),
+            is_at_prefix: true,
+            is_quoted_prefix: false,
+        };
     }
-    PathPrefix { raw_prefix: prefix.to_string(), is_at_prefix: false, is_quoted_prefix: false }
+    PathPrefix {
+        raw_prefix: prefix.to_string(),
+        is_at_prefix: false,
+        is_quoted_prefix: false,
+    }
 }
 
 fn build_completion_value(path: &str, options: &PathPrefix) -> String {
@@ -158,8 +177,17 @@ pub struct SlashCommand {
 }
 
 impl SlashCommand {
-    pub fn new(name: impl Into<String>, description: Option<String>, argument_hint: Option<String>) -> Self {
-        Self { name: name.into(), description, argument_hint, get_argument_completions: None }
+    pub fn new(
+        name: impl Into<String>,
+        description: Option<String>,
+        argument_hint: Option<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description,
+            argument_hint,
+            get_argument_completions: None,
+        }
     }
 
     pub fn with_argument_completions(
@@ -168,13 +196,20 @@ impl SlashCommand {
         argument_hint: Option<String>,
         f: impl Fn(&str) -> Option<Vec<AutocompleteItem>> + Send + Sync + 'static,
     ) -> Self {
-        Self { name: name.into(), description, argument_hint, get_argument_completions: Some(Box::new(f)) }
+        Self {
+            name: name.into(),
+            description,
+            argument_hint,
+            get_argument_completions: Some(Box::new(f)),
+        }
     }
 }
 
 impl std::fmt::Debug for SlashCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SlashCommand").field("name", &self.name).finish()
+        f.debug_struct("SlashCommand")
+            .field("name", &self.name)
+            .finish()
     }
 }
 
@@ -208,7 +243,12 @@ pub trait AutocompleteProvider {
         prefix: &str,
     ) -> CompletionResult;
     /// Whether explicit Tab completion should trigger file completion.
-    fn should_trigger_file_completion(&self, _lines: &[String], _cursor_line: usize, _cursor_col: usize) -> bool {
+    fn should_trigger_file_completion(
+        &self,
+        _lines: &[String],
+        _cursor_line: usize,
+        _cursor_col: usize,
+    ) -> bool {
         true
     }
 }
@@ -290,7 +330,10 @@ fn walk_directory_with_fd(
         {
             continue;
         }
-        results.push(FdEntry { path: display_line, is_directory: has_trailing_separator });
+        results.push(FdEntry {
+            path: display_line,
+            is_directory: has_trailing_separator,
+        });
     }
     results
 }
@@ -303,8 +346,16 @@ pub struct CombinedAutocompleteProvider {
 }
 
 impl CombinedAutocompleteProvider {
-    pub fn new(commands: Vec<SlashCommand>, base_path: impl Into<String>, fd_path: Option<String>) -> Self {
-        Self { commands, base_path: base_path.into(), fd_path }
+    pub fn new(
+        commands: Vec<SlashCommand>,
+        base_path: impl Into<String>,
+        fd_path: Option<String>,
+    ) -> Self {
+        Self {
+            commands,
+            base_path: base_path.into(),
+            fd_path,
+        }
     }
 
     fn extract_at_prefix(&self, text: &str) -> Option<String> {
@@ -314,7 +365,11 @@ impl CombinedAutocompleteProvider {
             }
         }
         let last_delimiter_index = find_last_delimiter(text);
-        let token_start = if last_delimiter_index == -1 { 0 } else { last_delimiter_index as usize + 1 };
+        let token_start = if last_delimiter_index == -1 {
+            0
+        } else {
+            last_delimiter_index as usize + 1
+        };
         if text[token_start..].starts_with('@') {
             return Some(text[token_start..].to_string());
         }
@@ -336,7 +391,10 @@ impl CombinedAutocompleteProvider {
             return Some(path_prefix);
         }
 
-        if path_prefix.contains('/') || path_prefix.starts_with('.') || path_prefix.starts_with("~/") {
+        if path_prefix.contains('/')
+            || path_prefix.starts_with('.')
+            || path_prefix.starts_with("~/")
+        {
             return Some(path_prefix);
         }
         if path_prefix.is_empty() && text.ends_with(' ') {
@@ -372,7 +430,10 @@ impl CombinedAutocompleteProvider {
         } else if display_base.starts_with('/') {
             display_base.clone()
         } else {
-            Path::new(&self.base_path).join(&display_base).to_string_lossy().into_owned()
+            Path::new(&self.base_path)
+                .join(&display_base)
+                .to_string_lossy()
+                .into_owned()
         };
 
         let meta = std::fs::metadata(&base_dir).ok()?;
@@ -388,7 +449,11 @@ impl CombinedAutocompleteProvider {
         if display_base == "/" {
             return format!("/{normalized_relative_path}");
         }
-        format!("{}{}", to_display_path(display_base), normalized_relative_path)
+        format!(
+            "{}{}",
+            to_display_path(display_base),
+            normalized_relative_path
+        )
     }
 
     /// Get file/directory suggestions for a given path prefix.
@@ -429,18 +494,19 @@ impl CombinedAutocompleteProvider {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let search_dir = if parsed.raw_prefix.starts_with('~') || expanded_prefix.starts_with('/') {
-                if dir.is_empty() {
-                    "/".to_string()
+            let search_dir =
+                if parsed.raw_prefix.starts_with('~') || expanded_prefix.starts_with('/') {
+                    if dir.is_empty() {
+                        "/".to_string()
+                    } else {
+                        dir
+                    }
                 } else {
-                    dir
-                }
-            } else {
-                Path::new(&self.base_path)
-                    .join(&dir)
-                    .to_string_lossy()
-                    .into_owned()
-            };
+                    Path::new(&self.base_path)
+                        .join(&dir)
+                        .to_string_lossy()
+                        .into_owned()
+                };
             (search_dir, file)
         };
 
@@ -452,14 +518,17 @@ impl CombinedAutocompleteProvider {
         let mut suggestions = Vec::new();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.to_lowercase().starts_with(&search_prefix.to_lowercase()) {
+            if !name
+                .to_lowercase()
+                .starts_with(&search_prefix.to_lowercase())
+            {
                 continue;
             }
             let is_directory = match entry.file_type() {
                 Ok(ft) if ft.is_dir() => true,
-                Ok(ft) if ft.is_symlink() => {
-                    std::fs::metadata(entry.path()).map(|m| m.is_dir()).unwrap_or(false)
-                }
+                Ok(ft) if ft.is_symlink() => std::fs::metadata(entry.path())
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false),
                 _ => false,
             };
 
@@ -476,7 +545,9 @@ impl CombinedAutocompleteProvider {
                         format!("~/{}/{name}", dir_s.trim_end_matches('/'))
                     }
                 } else if display_prefix.starts_with('/') {
-                    let dir = Path::new(&display_prefix).parent().unwrap_or_else(|| Path::new("/"));
+                    let dir = Path::new(&display_prefix)
+                        .parent()
+                        .unwrap_or_else(|| Path::new("/"));
                     let dir_s = dir.to_string_lossy().into_owned();
                     if dir_s == "/" {
                         format!("/{name}")
@@ -484,7 +555,9 @@ impl CombinedAutocompleteProvider {
                         format!("{dir_s}/{name}")
                     }
                 } else {
-                    let dir = Path::new(&display_prefix).parent().unwrap_or_else(|| Path::new(""));
+                    let dir = Path::new(&display_prefix)
+                        .parent()
+                        .unwrap_or_else(|| Path::new(""));
                     let relative = dir.join(&name).to_string_lossy().into_owned();
                     if display_prefix.starts_with("./") && !relative.starts_with("./") {
                         format!("./{relative}")
@@ -499,11 +572,19 @@ impl CombinedAutocompleteProvider {
             };
 
             let relative_path = to_display_path(&relative_path);
-            let path_value = if is_directory { format!("{relative_path}/") } else { relative_path.clone() };
+            let path_value = if is_directory {
+                format!("{relative_path}/")
+            } else {
+                relative_path.clone()
+            };
             let value = build_completion_value(&path_value, &parsed);
             suggestions.push(AutocompleteItem {
                 value,
-                label: if is_directory { format!("{name}/") } else { name },
+                label: if is_directory {
+                    format!("{name}/")
+                } else {
+                    name
+                },
                 description: None,
             });
         }
@@ -560,8 +641,14 @@ impl CombinedAutocompleteProvider {
         }
 
         let scoped = self.resolve_scoped_fuzzy_query(query);
-        let fd_base_dir = scoped.as_ref().map(|s| s.0.clone()).unwrap_or_else(|| self.base_path.clone());
-        let fd_query = scoped.as_ref().map(|s| s.1.clone()).unwrap_or_else(|| query.to_string());
+        let fd_base_dir = scoped
+            .as_ref()
+            .map(|s| s.0.clone())
+            .unwrap_or_else(|| self.base_path.clone());
+        let fd_query = scoped
+            .as_ref()
+            .map(|s| s.1.clone())
+            .unwrap_or_else(|| query.to_string());
         let entries = walk_directory_with_fd(&fd_base_dir, fd_path, &fd_query, 100, aborted);
         if aborted.load(Ordering::SeqCst) {
             return Vec::new();
@@ -590,7 +677,9 @@ impl CombinedAutocompleteProvider {
                 entry.path.clone()
             };
             let display_path = match &scoped {
-                Some((_, _, display_base)) => self.scoped_path_for_display(display_base, &path_without_slash),
+                Some((_, _, display_base)) => {
+                    self.scoped_path_for_display(display_base, &path_without_slash)
+                }
                 None => path_without_slash.clone(),
             };
             let entry_name = Path::new(&path_without_slash)
@@ -604,11 +693,19 @@ impl CombinedAutocompleteProvider {
             };
             let value = build_completion_value(
                 &completion_path,
-                &PathPrefix { raw_prefix: String::new(), is_at_prefix: true, is_quoted_prefix },
+                &PathPrefix {
+                    raw_prefix: String::new(),
+                    is_at_prefix: true,
+                    is_quoted_prefix,
+                },
             );
             suggestions.push(AutocompleteItem {
                 value,
-                label: if entry.is_directory { format!("{entry_name}/") } else { entry_name },
+                label: if entry.is_directory {
+                    format!("{entry_name}/")
+                } else {
+                    entry_name
+                },
                 description: Some(display_path),
             });
         }
@@ -635,11 +732,18 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         // @ attachment prefix.
         if let Some(at_prefix) = self.extract_at_prefix(&text_before_cursor) {
             let parsed = parse_path_prefix(&at_prefix);
-            let suggestions = self.get_fuzzy_file_suggestions(&parsed.raw_prefix, parsed.is_quoted_prefix, aborted);
+            let suggestions = self.get_fuzzy_file_suggestions(
+                &parsed.raw_prefix,
+                parsed.is_quoted_prefix,
+                aborted,
+            );
             if suggestions.is_empty() {
                 return None;
             }
-            return Some(AutocompleteSuggestions { items: suggestions, prefix: at_prefix });
+            return Some(AutocompleteSuggestions {
+                items: suggestions,
+                prefix: at_prefix,
+            });
         }
 
         if !force && text_before_cursor.starts_with('/') {
@@ -653,7 +757,10 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
                 if argument_suggestions.is_empty() {
                     return None;
                 }
-                return Some(AutocompleteSuggestions { items: argument_suggestions, prefix: argument_text });
+                return Some(AutocompleteSuggestions {
+                    items: argument_suggestions,
+                    prefix: argument_text,
+                });
             }
 
             // Command-name completion at line start.
@@ -673,7 +780,11 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
                     AutocompleteItem {
                         value: cmd.name.clone(),
                         label: cmd.name.clone(),
-                        description: if full_desc.is_empty() { None } else { Some(full_desc) },
+                        description: if full_desc.is_empty() {
+                            None
+                        } else {
+                            Some(full_desc)
+                        },
                     }
                 })
                 .collect();
@@ -688,7 +799,10 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
             if filtered.is_empty() {
                 return None;
             }
-            return Some(AutocompleteSuggestions { items: filtered, prefix: text_before_cursor });
+            return Some(AutocompleteSuggestions {
+                items: filtered,
+                prefix: text_before_cursor,
+            });
         }
 
         let path_match = self.extract_path_prefix(&text_before_cursor, force)?;
@@ -696,7 +810,10 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         if suggestions.is_empty() {
             return None;
         }
-        Some(AutocompleteSuggestions { items: suggestions, prefix: path_match })
+        Some(AutocompleteSuggestions {
+            items: suggestions,
+            prefix: path_match,
+        })
     }
 
     fn apply_completion(
@@ -714,23 +831,30 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         // text-before-cursor region.
         let prefix_chars = prefix.chars().count();
         let before_prefix = text[..cursor_col].to_string();
-        let before_prefix_char: String = before_prefix.chars().take(before_prefix.chars().count().saturating_sub(prefix_chars)).collect();
+        let before_prefix_char: String = before_prefix
+            .chars()
+            .take(before_prefix.chars().count().saturating_sub(prefix_chars))
+            .collect();
         let after_cursor = text[cursor_col..].to_string();
         let is_quoted_prefix = prefix.starts_with('"') || prefix.starts_with("@\"");
         let has_leading_quote_after_cursor = after_cursor.starts_with('"');
         let has_trailing_quote_in_item = item.value.ends_with('"');
-        let adjusted_after_cursor = if is_quoted_prefix && has_trailing_quote_in_item && has_leading_quote_after_cursor {
-            after_cursor[1..].to_string()
-        } else {
-            after_cursor
-        };
+        let adjusted_after_cursor =
+            if is_quoted_prefix && has_trailing_quote_in_item && has_leading_quote_after_cursor {
+                after_cursor[1..].to_string()
+            } else {
+                after_cursor
+            };
 
         // Slash command completion (at line start, no path separator after /).
         let is_slash_command = prefix.starts_with('/')
             && before_prefix_char.trim().is_empty()
             && !prefix[1..].contains('/');
         if is_slash_command {
-            let new_line = format!("{before_prefix_char}/{value} {adjusted_after_cursor}", value = item.value);
+            let new_line = format!(
+                "{before_prefix_char}/{value} {adjusted_after_cursor}",
+                value = item.value
+            );
             let mut new_lines = lines.to_vec();
             new_lines[cursor_line] = new_line.clone();
             // beforePrefix.length + item.value.length + 2  ("/" + " ")
@@ -745,7 +869,10 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         if prefix.starts_with('@') {
             let is_directory = item.label.ends_with('/');
             let suffix = if is_directory { "" } else { " " };
-            let new_line = format!("{before_prefix_char}{}{suffix}{adjusted_after_cursor}", item.value);
+            let new_line = format!(
+                "{before_prefix_char}{}{suffix}{adjusted_after_cursor}",
+                item.value
+            );
             let mut new_lines = lines.to_vec();
             new_lines[cursor_line] = new_line;
             let has_trailing_quote = item.value.ends_with('"');
@@ -798,7 +925,12 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         }
     }
 
-    fn should_trigger_file_completion(&self, lines: &[String], cursor_line: usize, cursor_col: usize) -> bool {
+    fn should_trigger_file_completion(
+        &self,
+        lines: &[String],
+        cursor_line: usize,
+        cursor_col: usize,
+    ) -> bool {
         let current_line = lines.get(cursor_line).cloned().unwrap_or_default();
         let text_before_cursor = current_line[..cursor_col.min(current_line.len())].to_string();
         let trimmed = text_before_cursor.trim_start();
@@ -818,7 +950,6 @@ impl std::fmt::Debug for CombinedAutocompleteProvider {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -830,12 +961,19 @@ mod tests {
     }
 
     fn fd_provider(base_path: &str) -> Option<CombinedAutocompleteProvider> {
-        let out = std::process::Command::new("which").arg("fd").output().ok()?;
+        let out = std::process::Command::new("which")
+            .arg("fd")
+            .output()
+            .ok()?;
         if !out.status.success() {
             return None;
         }
         let fd_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        Some(CombinedAutocompleteProvider::new(Vec::new(), base_path.to_string(), Some(fd_path)))
+        Some(CombinedAutocompleteProvider::new(
+            Vec::new(),
+            base_path.to_string(),
+            Some(fd_path),
+        ))
     }
 
     struct TempDir(PathBuf);
@@ -844,10 +982,8 @@ mod tests {
             use std::sync::atomic::{AtomicUsize, Ordering};
             static COUNTER: AtomicUsize = AtomicUsize::new(0);
             let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "pi-autocomplete-{}-{n}",
-                std::process::id()
-            ));
+            let path =
+                std::env::temp_dir().join(format!("pi-autocomplete-{}-{n}", std::process::id()));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).unwrap();
             TempDir(path)
@@ -873,7 +1009,13 @@ mod tests {
         }
     }
 
-    fn get_suggestions(p: &CombinedAutocompleteProvider, lines: &[&str], line: usize, col: usize, force: bool) -> Option<AutocompleteSuggestions> {
+    fn get_suggestions(
+        p: &CombinedAutocompleteProvider,
+        lines: &[&str],
+        line: usize,
+        col: usize,
+        force: bool,
+    ) -> Option<AutocompleteSuggestions> {
         let lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
         p.get_suggestions(&lines, line, col, force, &AtomicBool::new(false))
     }
@@ -996,15 +1138,23 @@ mod tests {
             let (tmp, base, p) = provider_with_fd();
             let Some(p) = p else { return };
             let _ = &tmp;
-            setup_folder(&base, &[], &[
-                ("packages/tui/src/autocomplete.ts", "export {};"),
-                ("packages/ai/src/autocomplete.ts", "export {};"),
-            ]);
+            setup_folder(
+                &base,
+                &[],
+                &[
+                    ("packages/tui/src/autocomplete.ts", "export {};"),
+                    ("packages/ai/src/autocomplete.ts", "export {};"),
+                ],
+            );
             let line = "@tui/src/auto";
             let result = get_suggestions(&p, &[line], 0, line.len(), false).expect("suggestions");
             let values: Vec<String> = result.items.iter().map(|i| i.value.clone()).collect();
-            assert!(values.iter().any(|v| v == "@packages/tui/src/autocomplete.ts"));
-            assert!(!values.iter().any(|v| v == "@packages/ai/src/autocomplete.ts"));
+            assert!(values
+                .iter()
+                .any(|v| v == "@packages/tui/src/autocomplete.ts"));
+            assert!(!values
+                .iter()
+                .any(|v| v == "@packages/ai/src/autocomplete.ts"));
         }
 
         #[test]
@@ -1028,7 +1178,11 @@ mod tests {
             let tmp = TempDir::new();
             let base = tmp.path();
             let p = provider(base.to_str().unwrap(), Vec::new());
-            setup_folder(base, &[], &[("update.sh", "#!/bin/bash"), ("utils.ts", "export {};")]);
+            setup_folder(
+                base,
+                &[],
+                &[("update.sh", "#!/bin/bash"), ("utils.ts", "export {};")],
+            );
             let line = "./up";
             let result = get_suggestions(&p, &[line], 0, line.len(), true).expect("suggestions");
             let values: Vec<String> = result.items.iter().map(|i| i.value.clone()).collect();
@@ -1068,9 +1222,17 @@ mod tests {
             let tmp = TempDir::new();
             let base = tmp.path();
             let p = provider(base.to_str().unwrap(), Vec::new());
-            setup_folder(base, &[], &[("my folder/test.txt", "content"), ("my folder/other.txt", "content")]);
+            setup_folder(
+                base,
+                &[],
+                &[
+                    ("my folder/test.txt", "content"),
+                    ("my folder/other.txt", "content"),
+                ],
+            );
             let line = "\"my folder/\"";
-            let result = get_suggestions(&p, &[line], 0, line.len() - 1, true).expect("suggestions");
+            let result =
+                get_suggestions(&p, &[line], 0, line.len() - 1, true).expect("suggestions");
             let values: Vec<String> = result.items.iter().map(|i| i.value.clone()).collect();
             assert!(values.iter().any(|v| v == "\"my folder/test.txt\""));
             assert!(values.iter().any(|v| v == "\"my folder/other.txt\""));
@@ -1085,8 +1247,13 @@ mod tests {
             let line = "\"my folder/te\"";
             let cursor_col = line.len() - 1;
             let result = get_suggestions(&p, &[line], 0, cursor_col, true).expect("suggestions");
-            let item = result.items.iter().find(|i| i.value == "\"my folder/test.txt\"").expect("item");
-            let applied = p.apply_completion(&[line.to_string()], 0, cursor_col, item, &result.prefix);
+            let item = result
+                .items
+                .iter()
+                .find(|i| i.value == "\"my folder/test.txt\"")
+                .expect("item");
+            let applied =
+                p.apply_completion(&[line.to_string()], 0, cursor_col, item, &result.prefix);
             assert_eq!(applied.lines[0], "\"my folder/test.txt\"");
         }
     }
@@ -1097,8 +1264,16 @@ mod tests {
         fn command_provider() -> CombinedAutocompleteProvider {
             let commands = vec![
                 SlashCommand::new("settings", Some("Open settings menu".into()), None),
-                SlashCommand::new("model", Some("Select model (opens selector UI)".into()), Some("<provider/model>".into())),
-                SlashCommand::new("thinking", Some("Set thinking level".into()), Some("<level>".into())),
+                SlashCommand::new(
+                    "model",
+                    Some("Select model (opens selector UI)".into()),
+                    Some("<provider/model>".into()),
+                ),
+                SlashCommand::new(
+                    "thinking",
+                    Some("Set thinking level".into()),
+                    Some("<level>".into()),
+                ),
             ];
             CombinedAutocompleteProvider::new(commands, "/tmp".to_string(), None)
         }
@@ -1119,7 +1294,8 @@ mod tests {
             let line = "/mod";
             let result = get_suggestions(&p, &[line], 0, line.len(), false).expect("suggestions");
             let item = result.items[0].clone();
-            let applied = p.apply_completion(&[line.to_string()], 0, line.len(), &item, &result.prefix);
+            let applied =
+                p.apply_completion(&[line.to_string()], 0, line.len(), &item, &result.prefix);
             assert_eq!(applied.lines[0], "/model ");
             assert_eq!(applied.cursor_col, 7);
         }
@@ -1133,8 +1309,16 @@ mod tests {
                 |argument: &str| {
                     let _ = argument;
                     Some(vec![
-                        AutocompleteItem { value: "anthropic/claude-opus".into(), label: "claude-opus".into(), description: Some("anthropic".into()) },
-                        AutocompleteItem { value: "google/gemini".into(), label: "gemini".into(), description: Some("google".into()) },
+                        AutocompleteItem {
+                            value: "anthropic/claude-opus".into(),
+                            label: "claude-opus".into(),
+                            description: Some("anthropic".into()),
+                        },
+                        AutocompleteItem {
+                            value: "google/gemini".into(),
+                            label: "gemini".into(),
+                            description: Some("google".into()),
+                        },
                     ])
                 },
             )];

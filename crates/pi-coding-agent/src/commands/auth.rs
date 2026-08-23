@@ -18,8 +18,8 @@ use serde_json::json;
 use crate::args::{parse_args, ParseOutcome};
 use crate::config::{self, APP_NAME};
 use crate::core::auth_storage::{read_stored_credential, Credential};
-use crate::core::model_resolver::{resolve_cli_model, RegistryView};
 use crate::core::model_registry::ModelRegistry;
+use crate::core::model_resolver::{resolve_cli_model, RegistryView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthCommandKind {
@@ -165,12 +165,26 @@ pub struct ValidatedAuthArgs {
     pub model: Option<String>,
 }
 
-pub fn validate_auth_command_args(args: &crate::args::Args, kind: AuthCommandKind) -> Result<ValidatedAuthArgs, String> {
-    let provider = args.provider.as_deref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let model = args.model.as_deref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+pub fn validate_auth_command_args(
+    args: &crate::args::Args,
+    kind: AuthCommandKind,
+) -> Result<ValidatedAuthArgs, String> {
+    let provider = args
+        .provider
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let model = args
+        .model
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     if !args.unknown_flags.is_empty() {
         let option = &args.unknown_flags[0];
-        return Err(format!("Unknown option {option} for \"{}\".", get_auth_command_name(kind)));
+        return Err(format!(
+            "Unknown option {option} for \"{}\".",
+            get_auth_command_name(kind)
+        ));
     }
     if args.api_key.is_some() || !args.messages.is_empty() || !args.file_args.is_empty() {
         return Err("Auth commands only accept --provider and --model".to_string());
@@ -225,7 +239,10 @@ pub fn resolve_auth_provider(
 ) -> Result<String, String> {
     if let Some(model) = cli_model {
         let all = registry.get_all();
-        let view = RegistryViewAdapter { registry, all: all.clone() };
+        let view = RegistryViewAdapter {
+            registry,
+            all: all.clone(),
+        };
         let resolved = resolve_cli_model(cli_provider, Some(model), None, &view);
         if let (None, Some(error)) = (&resolved.model, &resolved.error) {
             return Err(error.clone());
@@ -273,7 +290,14 @@ pub fn check_provider_auth(
         status: "ready".to_string(),
         provider: provider.to_string(),
         reason: None,
-        auth_type: Some(if credential.credential_type() == "oauth" { "oauth" } else { "api_key" }.to_string()),
+        auth_type: Some(
+            if credential.credential_type() == "oauth" {
+                "oauth"
+            } else {
+                "api_key"
+            }
+            .to_string(),
+        ),
     }
 }
 
@@ -288,7 +312,7 @@ pub struct AuthCheckResult {
 /// Build the model registry facade used by auth commands (upstream
 /// `createAuthCheckModelRuntime`: no network, no refresh on create).
 pub fn create_auth_check_model_registry() -> ModelRegistry {
-    let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+    let models = crate::core::model_registry::builtin_models();
     let models_path = config::get_agent_dir().join("models.json");
     let config = crate::core::model_config::ModelConfig::load(Some(&models_path));
     crate::core::model_registry::ModelRegistry::new(models, config)
@@ -305,7 +329,11 @@ pub fn handle_auth_command(args: &[String]) -> bool {
         Ok(None) => return false,
         Err(message) => {
             eprintln!("Error: {message}");
-            auth_exit(if args.len() > 1 && args[1] == "print-api-key" { 1 } else { 2 });
+            auth_exit(if args.len() > 1 && args[1] == "print-api-key" {
+                1
+            } else {
+                2
+            });
         }
     };
 
@@ -320,15 +348,25 @@ pub fn handle_auth_command(args: &[String]) -> bool {
     };
     if !parsed.unknown_flags.is_empty() {
         let option = &parsed.unknown_flags[0];
-        eprintln!("Unknown option {option} for \"{}\".", get_auth_command_name(command.kind));
-        eprintln!("Use \"{APP_NAME} --help\" or \"{}\".", get_auth_command_usage(command.kind));
+        eprintln!(
+            "Unknown option {option} for \"{}\".",
+            get_auth_command_name(command.kind)
+        );
+        eprintln!(
+            "Use \"{APP_NAME} --help\" or \"{}\".",
+            get_auth_command_usage(command.kind)
+        );
         std::process::exit(1);
     }
     let validated = match validate_auth_command_args(&parsed, command.kind) {
         Ok(validated) => validated,
         Err(message) => {
             eprintln!("Error: {message}");
-            std::process::exit(if command.kind == AuthCommandKind::Check { 2 } else { 1 });
+            std::process::exit(if command.kind == AuthCommandKind::Check {
+                2
+            } else {
+                1
+            });
         }
     };
 
@@ -337,7 +375,11 @@ pub fn handle_auth_command(args: &[String]) -> bool {
 
     if command.kind != AuthCommandKind::Check {
         // print-api-key / print-bearer-token.
-        let provider = match resolve_auth_provider(validated.provider.as_deref(), validated.model.as_deref(), &registry) {
+        let provider = match resolve_auth_provider(
+            validated.provider.as_deref(),
+            validated.model.as_deref(),
+            &registry,
+        ) {
             Ok(provider) => provider,
             Err(message) => {
                 eprintln!("Error: {message}");
@@ -363,11 +405,20 @@ pub fn handle_auth_command(args: &[String]) -> bool {
             std::process::exit(1);
         }
         if command.kind == AuthCommandKind::BearerToken && credential_type != "oauth" {
-            eprintln!("Error: Provider \"{provider}\" is not configured with an OAuth bearer token");
+            eprintln!(
+                "Error: Provider \"{provider}\" is not configured with an OAuth bearer token"
+            );
             std::process::exit(1);
         }
         let Some(value) = auth_credential_value(&credential) else {
-            eprintln!("Error: No usable {} is configured", if command.kind == AuthCommandKind::ApiKey { "API key" } else { "OAuth bearer token" });
+            eprintln!(
+                "Error: No usable {} is configured",
+                if command.kind == AuthCommandKind::ApiKey {
+                    "API key"
+                } else {
+                    "OAuth bearer token"
+                }
+            );
             std::process::exit(1);
         };
         println!("{value}");
@@ -376,10 +427,15 @@ pub fn handle_auth_command(args: &[String]) -> bool {
 
     // auth check.
     {
-        let result = check_provider_auth(validated.provider.as_deref().unwrap_or(""), &registry, &auth_path);
+        let result = check_provider_auth(
+            validated.provider.as_deref().unwrap_or(""),
+            &registry,
+            &auth_path,
+        );
         let mut credential_value: Option<String> = None;
         if command.credentials && result.status == "ready" {
-            credential_value = read_stored_credential(&result.provider, &auth_path).and_then(|c| auth_credential_value(&c));
+            credential_value = read_stored_credential(&result.provider, &auth_path)
+                .and_then(|c| auth_credential_value(&c));
             if credential_value.is_none() {
                 let result = AuthCheckResult {
                     status: "not_ready".to_string(),
@@ -430,7 +486,12 @@ mod tests {
 
     #[test]
     fn parses_check_command() {
-        let args = vec!["auth".to_string(), "check".to_string(), "--provider".to_string(), "google".to_string()];
+        let args = vec![
+            "auth".to_string(),
+            "check".to_string(),
+            "--provider".to_string(),
+            "google".to_string(),
+        ];
         let command = parse_auth_command(&args).unwrap().unwrap();
         assert_eq!(command.kind, AuthCommandKind::Check);
         assert_eq!(command.args, vec!["--provider", "google"]);
@@ -438,7 +499,15 @@ mod tests {
 
     #[test]
     fn parses_check_json_credentials() {
-        let args = vec!["auth".to_string(), "check".to_string(), "--json".to_string(), "--credentials".to_string(), "--no-refresh".to_string(), "--provider".to_string(), "x".to_string()];
+        let args = vec![
+            "auth".to_string(),
+            "check".to_string(),
+            "--json".to_string(),
+            "--credentials".to_string(),
+            "--no-refresh".to_string(),
+            "--provider".to_string(),
+            "x".to_string(),
+        ];
         let command = parse_auth_command(&args).unwrap().unwrap();
         assert!(command.json);
         assert!(command.credentials);
@@ -447,7 +516,12 @@ mod tests {
 
     #[test]
     fn parses_print_api_key() {
-        let args = vec!["auth".to_string(), "print-api-key".to_string(), "--provider".to_string(), "google".to_string()];
+        let args = vec![
+            "auth".to_string(),
+            "print-api-key".to_string(),
+            "--provider".to_string(),
+            "google".to_string(),
+        ];
         let command = parse_auth_command(&args).unwrap().unwrap();
         assert_eq!(command.kind, AuthCommandKind::ApiKey);
         assert_eq!(command.args, vec!["--provider", "google"]);
@@ -464,14 +538,23 @@ mod tests {
 
     #[test]
     fn min_expiry_only_for_bearer() {
-        let args = vec!["auth".to_string(), "print-api-key".to_string(), "--min-expiry".to_string(), "30m".to_string()];
+        let args = vec![
+            "auth".to_string(),
+            "print-api-key".to_string(),
+            "--min-expiry".to_string(),
+            "30m".to_string(),
+        ];
         let err = parse_auth_command(&args).unwrap_err();
         assert!(err.contains("--min-expiry"));
     }
 
     #[test]
     fn json_flag_only_for_check() {
-        let args = vec!["auth".to_string(), "print-api-key".to_string(), "--json".to_string()];
+        let args = vec![
+            "auth".to_string(),
+            "print-api-key".to_string(),
+            "--json".to_string(),
+        ];
         let err = parse_auth_command(&args).unwrap_err();
         assert!(err.contains("only supported by auth check"));
     }
@@ -492,9 +575,18 @@ mod tests {
     #[test]
     fn is_help_detection() {
         assert!(is_auth_command_help(&["auth".to_string()]));
-        assert!(is_auth_command_help(&["auth".to_string(), "help".to_string()]));
-        assert!(is_auth_command_help(&["auth".to_string(), "--help".to_string()]));
-        assert!(!is_auth_command_help(&["auth".to_string(), "check".to_string()]));
+        assert!(is_auth_command_help(&[
+            "auth".to_string(),
+            "help".to_string()
+        ]));
+        assert!(is_auth_command_help(&[
+            "auth".to_string(),
+            "--help".to_string()
+        ]));
+        assert!(!is_auth_command_help(&[
+            "auth".to_string(),
+            "check".to_string()
+        ]));
     }
 
     #[test]
@@ -513,7 +605,10 @@ mod tests {
 
     #[test]
     fn credential_value_extraction() {
-        let api = crate::core::auth_storage::Credential::ApiKey { key: Some("k".into()), env: None };
+        let api = crate::core::auth_storage::Credential::ApiKey {
+            key: Some("k".into()),
+            env: None,
+        };
         assert_eq!(auth_credential_value(&api).as_deref(), Some("k"));
         let oauth = crate::core::auth_storage::Credential::OAuth {
             access: "access-token".into(),
@@ -521,7 +616,10 @@ mod tests {
             expires: 1,
             extra: Default::default(),
         };
-        assert_eq!(auth_credential_value(&oauth).as_deref(), Some("access-token"));
+        assert_eq!(
+            auth_credential_value(&oauth).as_deref(),
+            Some("access-token")
+        );
     }
 
     #[test]

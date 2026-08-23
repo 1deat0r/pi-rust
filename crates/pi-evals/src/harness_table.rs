@@ -19,7 +19,9 @@ pub struct EvalHarnessIterationArtifact {
     pub repetition: u32,
 }
 
-pub fn parse_eval_harness_iteration_artifact(value: Option<&JsonValue>) -> Option<EvalHarnessIterationArtifact> {
+pub fn parse_eval_harness_iteration_artifact(
+    value: Option<&JsonValue>,
+) -> Option<EvalHarnessIterationArtifact> {
     let value = value?;
     if !value.is_object() {
         return None;
@@ -126,14 +128,22 @@ pub struct EvalHarnessTableOptions {
 
 impl EvalHarnessTableOptions {
     pub fn pair(baseline: Harness<JsonValue>, candidate: Harness<JsonValue>) -> Self {
-        Self { baseline, candidates: vec![candidate], repetitions: 1 }
+        Self {
+            baseline,
+            candidates: vec![candidate],
+            repetitions: 1,
+        }
     }
     pub fn candidates_list(
         baseline: Harness<JsonValue>,
         candidates: Vec<Harness<JsonValue>>,
         repetitions: u32,
     ) -> Self {
-        Self { baseline, candidates, repetitions }
+        Self {
+            baseline,
+            candidates,
+            repetitions,
+        }
     }
 }
 
@@ -174,7 +184,10 @@ fn with_iteration_artifact(
         let repetition = plan.repetition;
         let group_key = derive_eval_group_key(input, repetition).unwrap_or_default();
         let artifact = plan.with_group_key(group_key.clone());
-        context.set_artifact(EVAL_HARNESS_ITERATION_ARTIFACT, serde_json::to_value(&artifact).unwrap_or_default());
+        context.set_artifact(
+            EVAL_HARNESS_ITERATION_ARTIFACT,
+            serde_json::to_value(&artifact).unwrap_or_default(),
+        );
         let mut result: HarnessResult<JsonValue> = base_run(input, context);
         result.artifacts.insert(
             EVAL_HARNESS_ITERATION_ARTIFACT.to_string(),
@@ -215,10 +228,17 @@ pub fn eval_harness_table(
     eval_set: &str,
     options: &EvalHarnessTableOptions,
 ) -> Result<Vec<EvalHarnessTableRow>, String> {
-    validate_options(eval_set, &options.baseline, &options.candidates, options.repetitions)?;
+    validate_options(
+        eval_set,
+        &options.baseline,
+        &options.candidates,
+        options.repetitions,
+    )?;
 
     let mut rows = Vec::new();
-    let harnesses = std::iter::once(options.baseline.clone()).chain(options.candidates.clone()).collect::<Vec<_>>();
+    let harnesses = std::iter::once(options.baseline.clone())
+        .chain(options.candidates.clone())
+        .collect::<Vec<_>>();
     for repetition in 1..=options.repetitions {
         for harness in &harnesses {
             let plan = EvalHarnessIterationPlan {
@@ -247,13 +267,23 @@ mod tests {
     fn fake_harness(name: &str) -> Harness<JsonValue> {
         let name = name.to_string();
         Harness::new(name.clone(), move |input, _context| {
-            let input_id = input.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let input_id = input
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             HarnessResult {
                 output: serde_json::json!({ "harness": name, "inputId": input_id }),
                 errors: Vec::new(),
                 events: vec![
-                    crate::harness::TranscriptEvent::Message { role: "user".into(), content: input_id.clone() },
-                    crate::harness::TranscriptEvent::Message { role: "assistant".into(), content: name.clone() },
+                    crate::harness::TranscriptEvent::Message {
+                        role: "user".into(),
+                        content: input_id.clone(),
+                    },
+                    crate::harness::TranscriptEvent::Message {
+                        role: "assistant".into(),
+                        content: name.clone(),
+                    },
                 ],
                 usage: crate::harness::HarnessUsage::default(),
                 artifacts: std::collections::BTreeMap::new(),
@@ -265,7 +295,11 @@ mod tests {
     #[test]
     fn combines_a_trimmed_string_input_id_with_repetition() {
         assert_eq!(
-            derive_eval_group_key(&serde_json::json!({ "id": " input-1 ", "prompt": "hello" }), 2).unwrap(),
+            derive_eval_group_key(
+                &serde_json::json!({ "id": " input-1 ", "prompt": "hello" }),
+                2
+            )
+            .unwrap(),
             r#"["input-1",2]"#
         );
     }
@@ -273,8 +307,16 @@ mod tests {
     #[test]
     fn hashes_canonical_json_independently_of_object_key_order() {
         assert_eq!(
-            derive_eval_group_key(&serde_json::json!({ "first": 1, "second": [true, "value"] }), 1).unwrap(),
-            derive_eval_group_key(&serde_json::json!({ "second": [true, "value"], "first": 1 }), 1).unwrap()
+            derive_eval_group_key(
+                &serde_json::json!({ "first": 1, "second": [true, "value"] }),
+                1
+            )
+            .unwrap(),
+            derive_eval_group_key(
+                &serde_json::json!({ "second": [true, "value"], "first": 1 }),
+                1
+            )
+            .unwrap()
         );
         assert_ne!(
             derive_eval_group_key(&serde_json::json!({ "first": 1 }), 1).unwrap(),
@@ -311,7 +353,10 @@ mod tests {
             ),
         )
         .unwrap();
-        let rows: Vec<(String, u32)> = table.iter().map(|row| (row.name.clone(), row.repetition)).collect();
+        let rows: Vec<(String, u32)> = table
+            .iter()
+            .map(|row| (row.name.clone(), row.repetition))
+            .collect();
         assert_eq!(
             rows,
             vec![
@@ -330,7 +375,10 @@ mod tests {
             &EvalHarnessTableOptions::pair(fake_harness("baseline"), fake_harness("candidate")),
         )
         .unwrap();
-        assert_eq!(rows.iter().map(|row| row.name.clone()).collect::<Vec<_>>(), vec!["baseline", "candidate"]);
+        assert_eq!(
+            rows.iter().map(|row| row.name.clone()).collect::<Vec<_>>(),
+            vec!["baseline", "candidate"]
+        );
     }
 
     #[test]
@@ -346,8 +394,13 @@ mod tests {
         .unwrap();
         for row in &table {
             let mut context = HarnessContext::default();
-            let result = row.harness.run(&serde_json::json!({ "id": "first" }), &mut context);
-            assert_eq!(result.output, serde_json::json!({ "harness": row.name, "inputId": "first" }));
+            let result = row
+                .harness
+                .run(&serde_json::json!({ "id": "first" }), &mut context);
+            assert_eq!(
+                result.output,
+                serde_json::json!({ "harness": row.name, "inputId": "first" })
+            );
             let parsed = parse_eval_harness_iteration_artifact(
                 result.artifacts.get(EVAL_HARNESS_ITERATION_ARTIFACT),
             )
@@ -357,7 +410,11 @@ mod tests {
                 EvalHarnessIterationArtifact {
                     schema_version: 1,
                     eval_set: "local multi-harness eval".to_string(),
-                    group_key: derive_eval_group_key(&serde_json::json!({ "id": "first" }), row.repetition).unwrap(),
+                    group_key: derive_eval_group_key(
+                        &serde_json::json!({ "id": "first" }),
+                        row.repetition
+                    )
+                    .unwrap(),
                     harness: row.name.clone(),
                     baseline: "withoutSkill".to_string(),
                     candidates: vec!["withSkill".to_string()],

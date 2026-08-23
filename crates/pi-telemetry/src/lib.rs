@@ -105,7 +105,9 @@ impl TelemetryContext for SpanHandle {
 
 impl SpanHandle {
     pub fn noop() -> Self {
-        Self { inner: SpanInner::Noop }
+        Self {
+            inner: SpanInner::Noop,
+        }
     }
 }
 
@@ -449,7 +451,10 @@ mod tests {
     fn noop_runs_callback() {
         let mut called = false;
         NOOP_TELEMETRY_CONTEXT.start_span(
-            SpanOptions { name: "n".into(), attributes: None },
+            SpanOptions {
+                name: "n".into(),
+                attributes: None,
+            },
             |span| {
                 span.add_event("ev", None);
                 called = true;
@@ -463,7 +468,10 @@ mod tests {
     fn memory_records_spans() {
         let ctx = InMemoryTelemetryContext::new();
         ctx.start_span(
-            SpanOptions { name: "root".into(), attributes: None },
+            SpanOptions {
+                name: "root".into(),
+                attributes: None,
+            },
             |root| {
                 root.add_event("start", None);
             },
@@ -481,13 +489,22 @@ mod tests {
     fn memory_records_nested_spans_with_parent_id() {
         let ctx = InMemoryTelemetryContext::new();
         ctx.start_span(
-            SpanOptions { name: "root".into(), attributes: None },
+            SpanOptions {
+                name: "root".into(),
+                attributes: None,
+            },
             |root| {
                 root.start_span(
-                    SpanOptions { name: "child".into(), attributes: None },
+                    SpanOptions {
+                        name: "child".into(),
+                        attributes: None,
+                    },
                     |child| {
                         child.start_span(
-                            SpanOptions { name: "grandchild".into(), attributes: None },
+                            SpanOptions {
+                                name: "grandchild".into(),
+                                attributes: None,
+                            },
                             |_gc| {},
                         );
                     },
@@ -506,7 +523,10 @@ mod tests {
         // Settle order is innermost-first: root picks up the highest sequence.
         assert!(spans[2].end_sequence.unwrap() < spans[1].end_sequence.unwrap());
         assert!(spans[1].end_sequence.unwrap() < spans[0].end_sequence.unwrap());
-        assert_eq!(spans[2].end_sequence.unwrap() + 2, spans[0].end_sequence.unwrap());
+        assert_eq!(
+            spans[2].end_sequence.unwrap() + 2,
+            spans[0].end_sequence.unwrap()
+        );
     }
 
     #[test]

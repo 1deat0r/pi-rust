@@ -97,13 +97,18 @@ impl InMemoryService {
         }
     }
 
-    fn snapshot_for(&self, session_id: &str, revision: i64) -> Result<SessionSnapshot, PiServerError> {
+    fn snapshot_for(
+        &self,
+        session_id: &str,
+        revision: i64,
+    ) -> Result<SessionSnapshot, PiServerError> {
         let inner = self.inner.lock().unwrap();
-        let snap = inner
-            .sessions
-            .get(session_id)
-            .cloned()
-            .ok_or_else(|| PiServerError::new(pi_protocol::ProtocolErrorCode::NotFound, format!("Session not found: {session_id}")))?;
+        let snap = inner.sessions.get(session_id).cloned().ok_or_else(|| {
+            PiServerError::new(
+                pi_protocol::ProtocolErrorCode::NotFound,
+                format!("Session not found: {session_id}"),
+            )
+        })?;
         let mut snap = snap;
         snap.revision = revision;
         Ok(snap)
@@ -127,10 +132,12 @@ impl InMemoryService {
     /// dispose-on-idle logic can be exercised).
     pub fn settle_idle(&self, session_id: &str) -> Result<(), PiServerError> {
         let mut inner = self.inner.lock().unwrap();
-        let snap = inner
-            .sessions
-            .get_mut(session_id)
-            .ok_or_else(|| PiServerError::new(pi_protocol::ProtocolErrorCode::NotFound, "Session not found".to_string()))?;
+        let snap = inner.sessions.get_mut(session_id).ok_or_else(|| {
+            PiServerError::new(
+                pi_protocol::ProtocolErrorCode::NotFound,
+                "Session not found".to_string(),
+            )
+        })?;
         snap.phase = SessionPhase::Idle;
         Ok(())
     }
@@ -151,10 +158,16 @@ impl PiServerService for InMemoryService {
     ) -> Result<Arc<Mutex<dyn PiSessionRuntime>>, PiServerError> {
         let mut inner = self.inner.lock().unwrap();
         if inner.sessions.contains_key(&options.id) {
-            return Err(PiServerError::new(pi_protocol::ProtocolErrorCode::InvalidRequest, format!("Session already exists: {}", options.id)));
+            return Err(PiServerError::new(
+                pi_protocol::ProtocolErrorCode::InvalidRequest,
+                format!("Session already exists: {}", options.id),
+            ));
         }
         let now = pi_ai::types::now_ms() as i64;
-        let model = options.model.clone().unwrap_or(ModelRef { provider: "faux".into(), id: "faux-1".into() });
+        let model = options.model.clone().unwrap_or(ModelRef {
+            provider: "faux".into(),
+            id: "faux-1".into(),
+        });
         let snapshot = SessionSnapshot {
             id: options.id.clone(),
             name: options.name.clone(),
@@ -182,7 +195,10 @@ impl PiServerService for InMemoryService {
         {
             let inner = self.inner.lock().unwrap();
             if !inner.sessions.contains_key(&session_id) {
-                return Err(PiServerError::new(pi_protocol::ProtocolErrorCode::NotFound, format!("Session not found: {session_id}")));
+                return Err(PiServerError::new(
+                    pi_protocol::ProtocolErrorCode::NotFound,
+                    format!("Session not found: {session_id}"),
+                ));
             }
         }
         let runtime = TestSession::new(self.clone(), session_id);
@@ -209,7 +225,10 @@ struct TestSession {
 
 impl TestSession {
     fn new(service: InMemoryService, session_id: String) -> Arc<Mutex<dyn PiSessionRuntime>> {
-        Arc::new(Mutex::new(Self { service, session_id }))
+        Arc::new(Mutex::new(Self {
+            service,
+            session_id,
+        }))
     }
 }
 
@@ -230,7 +249,9 @@ impl PiSessionRuntime for TestSession {
         let item = UserTranscriptItem {
             id,
             role: "user".to_string(),
-            content: vec![UserContent::Text(pi_protocol::TextContent::Text { text: _input.text.clone() })],
+            content: vec![UserContent::Text(pi_protocol::TextContent::Text {
+                text: _input.text.clone(),
+            })],
             timestamp: pi_ai::types::now_ms() as i64,
         };
         self.update(|snap| {
@@ -243,7 +264,9 @@ impl PiSessionRuntime for TestSession {
         let item = UserTranscriptItem {
             id: uuid::Uuid::new_v4().to_string(),
             role: "user".to_string(),
-            content: vec![UserContent::Text(pi_protocol::TextContent::Text { text: _input.text.clone() })],
+            content: vec![UserContent::Text(pi_protocol::TextContent::Text {
+                text: _input.text.clone(),
+            })],
             timestamp: pi_ai::types::now_ms() as i64,
         };
         self.update(|snap| {
@@ -271,7 +294,11 @@ impl PiSessionRuntime for TestSession {
     }
     fn subscribe(&mut self, listener: EventListener) -> Result<Unsubscribe, PiServerError> {
         let mut inner = self.service.inner.lock().unwrap();
-        inner.listeners.entry(self.session_id.clone()).or_default().push(listener);
+        inner
+            .listeners
+            .entry(self.session_id.clone())
+            .or_default()
+            .push(listener);
         let _session_id = self.session_id.clone();
         Ok(Box::new(move || {
             // Listener removal is a no-op for the in-memory service (the
@@ -282,7 +309,12 @@ impl PiSessionRuntime for TestSession {
     fn dispose(&mut self) -> Result<(), PiServerError> {
         // Disposal removes the session from the store so it drops out of
         // `listSessions`/server metadata (upstream dispose semantics).
-        self.service.inner.lock().unwrap().sessions.remove(&self.session_id);
+        self.service
+            .inner
+            .lock()
+            .unwrap()
+            .sessions
+            .remove(&self.session_id);
         Ok(())
     }
 }
@@ -290,14 +322,20 @@ impl PiSessionRuntime for TestSession {
 impl TestSession {
     fn update(&self, f: impl FnOnce(&mut SessionSnapshot)) -> Result<(), PiServerError> {
         let mut inner = self.service.inner.lock().unwrap();
-        let snap = inner
-            .sessions
-            .get_mut(&self.session_id)
-            .ok_or_else(|| PiServerError::new(pi_protocol::ProtocolErrorCode::NotFound, "Session not found".to_string()))?;
+        let snap = inner.sessions.get_mut(&self.session_id).ok_or_else(|| {
+            PiServerError::new(
+                pi_protocol::ProtocolErrorCode::NotFound,
+                "Session not found".to_string(),
+            )
+        })?;
         f(snap);
         snap.updated_at = pi_ai::types::now_ms() as i64;
         snap.revision += 1;
-        let listeners = inner.listeners.get(&self.session_id).cloned().unwrap_or_default();
+        let listeners = inner
+            .listeners
+            .get(&self.session_id)
+            .cloned()
+            .unwrap_or_default();
         drop(inner);
         for listener in listeners {
             listener(PiSessionRuntimeEvent::Snapshot);
@@ -313,7 +351,13 @@ impl TestSession {
 /// Execute a command against the service and produce the protocol result.
 pub fn session_snapshot_for_create(result: &CommandResult) -> Option<SessionSnapshot> {
     match result {
-        CommandResult::Create { session } | CommandResult::Attach { session } | CommandResult::Prompt { session } | CommandResult::Steer { session } | CommandResult::Abort { session } | CommandResult::SetModel { session } | CommandResult::SetThinking { session } => Some(session.clone()),
+        CommandResult::Create { session }
+        | CommandResult::Attach { session }
+        | CommandResult::Prompt { session }
+        | CommandResult::Steer { session }
+        | CommandResult::Abort { session }
+        | CommandResult::SetModel { session }
+        | CommandResult::SetThinking { session } => Some(session.clone()),
         _ => None,
     }
 }

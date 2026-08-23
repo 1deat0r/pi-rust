@@ -10,13 +10,13 @@
 
 use serde_json::{json, Value};
 
-use crate::model::{clamp_thinking_level, Model};
-use crate::types::{
-    AssistantMessage, AssistantMessageEvent, Context, DoneReason, ErrorReason,
-    ModelThinkingLevel, SimpleStreamOptions, StopReason, StreamOptions, ToolChoice, Usage,
-};
 use crate::event_stream::{AssistantMessageEventStream, StreamSink};
+use crate::model::{clamp_thinking_level, Model};
 use crate::sse::SseParser;
+use crate::types::{
+    AssistantMessage, AssistantMessageEvent, Context, DoneReason, ErrorReason, ModelThinkingLevel,
+    SimpleStreamOptions, StopReason, StreamOptions, ToolChoice, Usage,
+};
 
 use super::openai_responses_shared::*;
 
@@ -32,12 +32,15 @@ fn has_header(headers: Option<&crate::types::ProviderHeaders>, name: &str) -> bo
     let Some(headers) = headers else { return false };
     let expected = name.to_lowercase();
     headers.iter().any(|(key, value)| {
-        key.to_lowercase() == expected
-            && value.as_ref().is_some_and(|v| !v.trim().is_empty())
+        key.to_lowercase() == expected && value.as_ref().is_some_and(|v| !v.trim().is_empty())
     })
 }
 
-fn get_client_api_key(provider: &str, api_key: Option<&str>, headers: Option<&crate::types::ProviderHeaders>) -> Result<String, String> {
+fn get_client_api_key(
+    provider: &str,
+    api_key: Option<&str>,
+    headers: Option<&crate::types::ProviderHeaders>,
+) -> Result<String, String> {
     if let Some(key) = api_key {
         if !key.is_empty() {
             return Ok(key.to_string());
@@ -83,7 +86,9 @@ impl OpenAIResponsesCompat {
                 .and_then(|c| c.get("sessionAffinityFormat"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| detect_session_affinity_format(&model.provider, &model.base_url).to_string()),
+                .unwrap_or_else(|| {
+                    detect_session_affinity_format(&model.provider, &model.base_url).to_string()
+                }),
             supports_long_cache_retention: get_bool("supportsLongCacheRetention", true),
             supports_strict_mode: get_bool("supportsStrictMode", false),
             supports_openai_grammar_tools: get_bool("supportsOpenAIGrammarTools", false),
@@ -104,7 +109,10 @@ fn resolve_cache_retention(cache_retention: Option<&str>) -> String {
     }
 }
 
-fn get_prompt_cache_retention(compat: &OpenAIResponsesCompat, cache_retention: &str) -> Option<&'static str> {
+fn get_prompt_cache_retention(
+    compat: &OpenAIResponsesCompat,
+    cache_retention: &str,
+) -> Option<&'static str> {
     if cache_retention == "long" && compat.supports_long_cache_retention {
         Some("24h")
     } else {
@@ -125,22 +133,27 @@ pub struct OpenAIResponsesOptions {
 
 impl Default for OpenAIResponsesOptions {
     fn default() -> Self {
-        Self { base: StreamOptions::default(), reasoning_effort: None, reasoning_summary: None, service_tier: None, tool_choice: None }
+        Self {
+            base: StreamOptions::default(),
+            reasoning_effort: None,
+            reasoning_summary: None,
+            service_tier: None,
+            tool_choice: None,
+        }
     }
 }
 
 impl OpenAIResponsesOptions {
     pub fn from_stream_options(base: StreamOptions) -> Self {
-        Self { base, ..Default::default() }
+        Self {
+            base,
+            ..Default::default()
+        }
     }
 }
 
 /// Assemble the Responses request body (port of `buildParams`).
-pub fn build_params(
-    model: &Model,
-    context: &Context,
-    options: &OpenAIResponsesOptions,
-) -> Value {
+pub fn build_params(model: &Model, context: &Context, options: &OpenAIResponsesOptions) -> Value {
     let compat = OpenAIResponsesCompat::get(model);
     let messages = convert_responses_messages(
         model,
@@ -150,7 +163,8 @@ pub fn build_params(
     );
 
     let cache_retention = resolve_cache_retention(options.base.cache_retention.as_deref());
-    let disable_implicit_cache = cache_retention == "none" && compat.supports_explicit_prompt_cache_mode;
+    let disable_implicit_cache =
+        cache_retention == "none" && compat.supports_explicit_prompt_cache_mode;
 
     let mut params = json!({
         "model": model.id,
@@ -204,7 +218,11 @@ pub fn build_params(
             let effort = model
                 .thinking_level_map
                 .as_ref()
-                .and_then(|m| m.get(&ModelThinkingLevel::from_effort_str(effort.as_deref().unwrap_or("medium"))))
+                .and_then(|m| {
+                    m.get(&ModelThinkingLevel::from_effort_str(
+                        effort.as_deref().unwrap_or("medium"),
+                    ))
+                })
                 .cloned()
                 .flatten()
                 .unwrap_or_else(|| effort.unwrap_or_else(|| "medium".to_string()));
@@ -265,24 +283,27 @@ pub fn stream(
     options: &OpenAIResponsesOptions,
 ) -> AssistantMessageEventStream {
     let stream = AssistantMessageEventStream::new();
-    let Some(sender) = stream.sender() else { return stream };
+    let Some(sender) = stream.sender() else {
+        return stream;
+    };
     let model = model.clone();
     let context = context.clone();
     let options = options.clone();
-    let api_key = match get_client_api_key(&model.provider, api_key, options.base.base.headers.as_ref()) {
-        Ok(k) => k,
-        Err(err) => {
-            let mut message = new_output(&model);
-            message.set_stop_reason(StopReason::Error);
-            super::anthropic_messages::set_error_message(&mut message, err);
-            return crate::event_stream::create_error_stream(
-                &model.api,
-                &model.provider,
-                &model.id,
-                message.error_message().unwrap_or("").to_string(),
-            );
-        }
-    };
+    let api_key =
+        match get_client_api_key(&model.provider, api_key, options.base.base.headers.as_ref()) {
+            Ok(k) => k,
+            Err(err) => {
+                let mut message = new_output(&model);
+                message.set_stop_reason(StopReason::Error);
+                super::anthropic_messages::set_error_message(&mut message, err);
+                return crate::event_stream::create_error_stream(
+                    &model.api,
+                    &model.provider,
+                    &model.id,
+                    message.error_message().unwrap_or("").to_string(),
+                );
+            }
+        };
     let base_url = base_url.to_string();
 
     let handle = tokio::spawn(async move {
@@ -302,7 +323,8 @@ pub fn stream(
         }
         // GitHub Copilot proxy dynamic headers (upstream github-copilot-headers.ts).
         if model.provider == "github-copilot" {
-            let has_images = super::github_copilot_headers::has_copilot_vision_input(&context.messages);
+            let has_images =
+                super::github_copilot_headers::has_copilot_vision_input(&context.messages);
             for (name, value) in super::github_copilot_headers::build_copilot_dynamic_headers(
                 &context.messages,
                 has_images,
@@ -324,7 +346,10 @@ pub fn stream(
             Err(err) => {
                 let mut message = new_output(&model);
                 message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(&mut message, format!("Request failed: {err}"));
+                super::anthropic_messages::set_error_message(
+                    &mut message,
+                    format!("Request failed: {err}"),
+                );
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -346,7 +371,10 @@ pub fn stream(
             Err(err) => {
                 let mut message = new_output(&model);
                 message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(&mut message, format!("Request body failed: {err}"));
+                super::anthropic_messages::set_error_message(
+                    &mut message,
+                    format!("Request body failed: {err}"),
+                );
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -374,10 +402,20 @@ pub fn stream(
         let body_text = String::from_utf8_lossy(&body).to_string();
         let events = SseParser::parse_text(&body_text);
 
-        pusher.push(AssistantMessageEvent::Start { partial: new_output(&model) });
+        pusher.push(AssistantMessageEvent::Start {
+            partial: new_output(&model),
+        });
         let mut output = new_output(&model);
-        let proc_options = ProcessResponsesOptions { service_tier: options.service_tier.clone() };
-        match process_responses_stream(&events, &mut output, &mut |event| pusher.push(event), &model, &proc_options) {
+        let proc_options = ProcessResponsesOptions {
+            service_tier: options.service_tier.clone(),
+        };
+        match process_responses_stream(
+            &events,
+            &mut output,
+            &mut |event| pusher.push(event),
+            &model,
+            &proc_options,
+        ) {
             Ok(()) => {
                 let reason = match output.stop_reason().unwrap_or(StopReason::Stop) {
                     StopReason::Stop => DoneReason::Stop,
@@ -386,7 +424,10 @@ pub fn stream(
                     StopReason::Deferred => DoneReason::Deferred,
                     _ => DoneReason::Stop,
                 };
-                pusher.push(AssistantMessageEvent::Done { reason, message: output.clone() });
+                pusher.push(AssistantMessageEvent::Done {
+                    reason,
+                    message: output.clone(),
+                });
                 pusher.end(Some(output));
             }
             Err(err) => {
@@ -408,10 +449,18 @@ pub fn stream(
 /// Pull the OpenAI error message from an error response body.
 pub fn extract_openai_responses_error(body: &str) -> String {
     if let Ok(value) = serde_json::from_str::<Value>(body) {
-        if let Some(msg) = value.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+        if let Some(msg) = value
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
             return msg.to_string();
         }
-        if let Some(msg) = value.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+        if let Some(msg) = value
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
             return msg.to_string();
         }
         if let Some(detail) = value.get("detail").and_then(|d| d.as_str()) {
@@ -475,7 +524,11 @@ mod tests {
         Context {
             system_prompt: Some("You are helpful.".to_string()),
             messages: vec![Message::User(UserContent::string("hello", 1))],
-            tools: vec![json_tool("bash", "run a command", &json!({"type":"object","properties":{}}))],
+            tools: vec![json_tool(
+                "bash",
+                "run a command",
+                &json!({"type":"object","properties":{}}),
+            )],
         }
     }
 
@@ -514,14 +567,20 @@ mod tests {
     fn build_params_max_tokens_floored() {
         let m = model("gpt-5");
         let opts = OpenAIResponsesOptions {
-            base: StreamOptions { max_tokens: Some(5), ..Default::default() },
+            base: StreamOptions {
+                max_tokens: Some(5),
+                ..Default::default()
+            },
             reasoning_effort: None,
             reasoning_summary: None,
             service_tier: None,
             tool_choice: None,
         };
         let params = build_params(&m, &ctx(), &opts);
-        assert_eq!(params["max_output_tokens"], OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
+        assert_eq!(
+            params["max_output_tokens"],
+            OPENAI_RESPONSES_MIN_OUTPUT_TOKENS
+        );
     }
 
     #[test]
@@ -529,7 +588,10 @@ mod tests {
         let long_key = "k".repeat(100);
         let m = model("gpt-5");
         let opts = OpenAIResponsesOptions {
-            base: StreamOptions { session_id: Some(long_key.clone()), ..Default::default() },
+            base: StreamOptions {
+                session_id: Some(long_key.clone()),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let params = build_params(&m, &ctx(), &opts);
@@ -538,11 +600,20 @@ mod tests {
 
     #[test]
     fn client_api_key_handling() {
-        assert_eq!(get_client_api_key("openai", Some("sk-123"), None).unwrap(), "sk-123");
+        assert_eq!(
+            get_client_api_key("openai", Some("sk-123"), None).unwrap(),
+            "sk-123"
+        );
         // Authorization header present -> "unused" placeholder key.
         let mut headers = crate::types::ProviderHeaders::new();
-        headers.insert("authorization".to_string(), Some("Bearer sk-456".to_string()));
-        assert_eq!(get_client_api_key("openai", None, Some(&headers)).unwrap(), "unused");
+        headers.insert(
+            "authorization".to_string(),
+            Some("Bearer sk-456".to_string()),
+        );
+        assert_eq!(
+            get_client_api_key("openai", None, Some(&headers)).unwrap(),
+            "unused"
+        );
         let err = get_client_api_key("openai", None, None).unwrap_err();
         assert!(err.contains("No API key for provider: openai"));
     }
@@ -551,8 +622,18 @@ mod tests {
     fn stream_without_key_is_terminal_error() {
         let m = model("gpt-5");
         let opts = OpenAIResponsesOptions::default();
-        let s = stream(&m, &Context::default(), reqwest::Client::new(), "https://api.openai.com/v1", None, &opts);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let s = stream(
+            &m,
+            &Context::default(),
+            reqwest::Client::new(),
+            "https://api.openai.com/v1",
+            None,
+            &opts,
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let (events, msg) = rt.block_on(s.collect());
         assert!(matches!(&events[0], AssistantMessageEvent::Error { .. }));
         let err = msg.error_message().unwrap_or("").to_string();

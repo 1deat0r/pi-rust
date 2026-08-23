@@ -113,7 +113,9 @@ fn parse_config_value_reference(config: &str) -> ConfigValueReference {
 }
 
 fn resolve_env_config_value(name: &str, env: Option<&HashMap<String, String>>) -> Option<String> {
-    env.and_then(|e| e.get(name)).cloned().or_else(|| std::env::var(name).ok())
+    env.and_then(|e| e.get(name))
+        .cloned()
+        .or_else(|| std::env::var(name).ok())
 }
 
 fn get_template_env_var_names(parts: &[TemplatePart]) -> Vec<String> {
@@ -128,7 +130,10 @@ fn get_template_env_var_names(parts: &[TemplatePart]) -> Vec<String> {
     names
 }
 
-fn resolve_template(parts: &[TemplatePart], env: Option<&HashMap<String, String>>) -> Option<String> {
+fn resolve_template(
+    parts: &[TemplatePart],
+    env: Option<&HashMap<String, String>>,
+) -> Option<String> {
     let mut resolved = String::new();
     for part in parts {
         match part {
@@ -163,7 +168,10 @@ pub fn get_config_value_env_var_names(config: &str) -> Vec<String> {
     }
 }
 
-pub fn get_missing_config_value_env_var_names(config: &str, env: Option<&HashMap<String, String>>) -> Vec<String> {
+pub fn get_missing_config_value_env_var_names(
+    config: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Vec<String> {
     get_config_value_env_var_names(config)
         .into_iter()
         .filter(|name| resolve_env_config_value(name, env).is_none())
@@ -171,7 +179,10 @@ pub fn get_missing_config_value_env_var_names(config: &str, env: Option<&HashMap
 }
 
 pub fn is_command_config_value(config: &str) -> bool {
-    matches!(parse_config_value_reference(config), ConfigValueReference::Command(_))
+    matches!(
+        parse_config_value_reference(config),
+        ConfigValueReference::Command(_)
+    )
 }
 
 pub fn is_config_value_configured(config: &str, env: Option<&HashMap<String, String>>) -> bool {
@@ -183,7 +194,13 @@ fn execute_with_default_shell(command: &str) -> Option<String> {
     // a 10s timeout. The port's shell-config surface (utils/shell.ts) is not
     // yet ported, so this mirrors the default `/bin/sh -c` path, polling
     // try_wait to enforce the timeout without a wait-timeout dependency.
-    let Ok(mut child) = Command::new("/bin/sh").arg("-c").arg(command).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn() else {
+    let Ok(mut child) = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
         return None;
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -206,7 +223,11 @@ fn execute_with_default_shell(command: &str) -> Option<String> {
     }
     let output = child.wait_with_output().ok()?;
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() { None } else { Some(value) }
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn execute_command_uncached(command_config: &str) -> Option<String> {
@@ -214,7 +235,8 @@ fn execute_command_uncached(command_config: &str) -> Option<String> {
 }
 
 fn command_result_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
-    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, Option<String>>>> = std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, Option<String>>>> =
+        std::sync::OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -227,7 +249,10 @@ pub fn resolve_config_value(config: &str, env: Option<&HashMap<String, String>>)
                 return value;
             }
             let result = execute_command_uncached(&command_config);
-            cache.lock().unwrap().insert(command_config.clone(), result.clone());
+            cache
+                .lock()
+                .unwrap()
+                .insert(command_config.clone(), result.clone());
             result
         }
         ConfigValueReference::Template(parts) => resolve_template(&parts, env),
@@ -245,7 +270,10 @@ mod tests {
 
     #[test]
     fn resolves_plain_literal() {
-        assert_eq!(resolve_config_value("sk-123", None).as_deref(), Some("sk-123"));
+        assert_eq!(
+            resolve_config_value("sk-123", None).as_deref(),
+            Some("sk-123")
+        );
     }
 
     #[test]
@@ -258,12 +286,18 @@ mod tests {
         // missing env var leaves the template unresolved
         assert_eq!(resolve_config_value("$PI_TEST_MISSING_KEY", None), None);
         // literal parts combine
-        assert_eq!(resolve_config_value("prefix-$PI_TEST_AUTH_KEY", None).as_deref(), Some("prefix-from-env"));
+        assert_eq!(
+            resolve_config_value("prefix-$PI_TEST_AUTH_KEY", None).as_deref(),
+            Some("prefix-from-env")
+        );
     }
 
     #[test]
     fn escapes_double_dollar_and_dollar_bang() {
-        assert_eq!(resolve_config_value("$$HOME", None).as_deref(), Some("$HOME"));
+        assert_eq!(
+            resolve_config_value("$$HOME", None).as_deref(),
+            Some("$HOME")
+        );
         assert_eq!(resolve_config_value("a$!b", None).as_deref(), Some("a!b"));
     }
 
@@ -281,7 +315,10 @@ mod tests {
     fn classification_helpers() {
         assert!(is_command_config_value("!echo hi"));
         assert!(!is_command_config_value("plain"));
-        assert_eq!(get_config_value_env_var_name("$FOO").as_deref(), Some("FOO"));
+        assert_eq!(
+            get_config_value_env_var_name("$FOO").as_deref(),
+            Some("FOO")
+        );
         assert_eq!(get_config_value_env_var_name("${FOO}x"), None);
         assert_eq!(get_config_value_env_var_names("$A-$B"), vec!["A", "B"]);
         std::env::set_var("PI_TEST_SET_A", "1");
@@ -291,6 +328,9 @@ mod tests {
 
     #[test]
     fn invalid_env_names_stay_literal() {
-        assert_eq!(resolve_config_value("${1bad}", None).as_deref(), Some("${1bad}"));
+        assert_eq!(
+            resolve_config_value("${1bad}", None).as_deref(),
+            Some("${1bad}")
+        );
     }
 }

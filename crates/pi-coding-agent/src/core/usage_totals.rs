@@ -14,10 +14,10 @@ use serde_json::Value;
 /// Aggregate usage counters (upstream `UsageTotals`).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct UsageTotals {
-    pub input: u64,
-    pub output: u64,
-    pub cache_read: u64,
-    pub cache_write: u64,
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_write: i64,
     pub cost: f64,
 }
 
@@ -40,7 +40,7 @@ pub fn add_usage_to_totals(totals: &mut UsageTotals, usage: &pi_ai::types::Usage
 pub struct UsageCostBreakdownEntry {
     pub key: String,
     pub cost: f64,
-    pub tokens: u64,
+    pub tokens: i64,
 }
 
 /// Minimal view of a session entry sufficient for usage attribution.
@@ -96,7 +96,12 @@ pub fn parse_session_entry(value: &Value) -> SessionEntryUsageView {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
                 let usage = usage_of(msg);
-                SessionEntryUsageView::Assistant { provider, model, response_model, usage }
+                SessionEntryUsageView::Assistant {
+                    provider,
+                    model,
+                    response_model,
+                    usage,
+                }
             } else if role == "toolResult" {
                 match usage_of(msg) {
                     Some(usage) => SessionEntryUsageView::ToolResult { usage },
@@ -121,9 +126,17 @@ pub fn get_usage_cost_breakdown(entries: &[Value]) -> Vec<UsageCostBreakdownEntr
 
     for entry in entries {
         let (key, usage) = match parse_session_entry(entry) {
-            SessionEntryUsageView::Assistant { provider, model, response_model, usage } => {
+            SessionEntryUsageView::Assistant {
+                provider,
+                model,
+                response_model,
+                usage,
+            } => {
                 let Some(usage) = usage else { continue };
-                (format!("{provider}/{}", response_model.unwrap_or(model)), usage)
+                (
+                    format!("{provider}/{}", response_model.unwrap_or(model)),
+                    usage,
+                )
             }
             SessionEntryUsageView::ToolResult { usage } => ("Tools/summaries".to_string(), usage),
             SessionEntryUsageView::Summary { usage } => ("Tools/summaries".to_string(), usage),
@@ -142,11 +155,19 @@ pub fn get_usage_cost_breakdown(entries: &[Value]) -> Vec<UsageCostBreakdownEntr
         .into_iter()
         .map(|(key, totals)| {
             let tokens = totals.input + totals.output + totals.cache_read + totals.cache_write;
-            UsageCostBreakdownEntry { key, cost: totals.cost, tokens }
+            UsageCostBreakdownEntry {
+                key,
+                cost: totals.cost,
+                tokens,
+            }
         })
         .collect();
     entries.retain(|entry| entry.cost > 0.0 || entry.tokens > 0);
-    entries.sort_by(|a, b| b.cost.partial_cmp(&a.cost).unwrap_or(std::cmp::Ordering::Equal));
+    entries.sort_by(|a, b| {
+        b.cost
+            .partial_cmp(&a.cost)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     entries
 }
 
@@ -156,7 +177,7 @@ mod tests {
     use pi_ai::types::{Cost, Usage};
     use serde_json::json;
 
-    fn usage(input: u64, output: u64, total: f64) -> Usage {
+    fn usage(input: i64, output: i64, total: f64) -> Usage {
         Usage {
             input,
             output,
@@ -175,20 +196,17 @@ mod tests {
         }
     }
 
-
     #[test]
     fn assistant_usage_attributes_to_provider_model() {
-        let entries = vec![
-            json!({
-                "type": "message",
-                "message": {
-                    "role": "assistant",
-                    "provider": "google",
-                    "model": "gemini-3.1-pro-preview",
-                    "usage": { "input": 10, "output": 5, "cacheRead": 2, "cacheWrite": 0, "totalTokens": 17, "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0.012 } }
-                }
-            }),
-        ];
+        let entries = vec![json!({
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "provider": "google",
+                "model": "gemini-3.1-pro-preview",
+                "usage": { "input": 10, "output": 5, "cacheRead": 2, "cacheWrite": 0, "totalTokens": 17, "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0.012 } }
+            }
+        })];
         let breakdown = get_usage_cost_breakdown(&entries);
         assert_eq!(breakdown.len(), 1);
         assert_eq!(breakdown[0].key, "google/gemini-3.1-pro-preview");
@@ -198,18 +216,16 @@ mod tests {
 
     #[test]
     fn response_model_wins_over_model_for_key() {
-        let entries = vec![
-            json!({
-                "type": "message",
-                "message": {
-                    "role": "assistant",
-                    "provider": "openrouter",
-                    "model": "some/router",
-                    "responseModel": "provider-x/actual",
-                    "usage": { "input": 1, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 1, "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0.001 } }
-                }
-            }),
-        ];
+        let entries = vec![json!({
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "provider": "openrouter",
+                "model": "some/router",
+                "responseModel": "provider-x/actual",
+                "usage": { "input": 1, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 1, "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0.001 } }
+            }
+        })];
         let breakdown = get_usage_cost_breakdown(&entries);
         assert_eq!(breakdown[0].key, "openrouter/provider-x/actual");
     }
@@ -247,17 +263,15 @@ mod tests {
 
     #[test]
     fn zero_cost_zero_tokens_filtered() {
-        let entries = vec![
-            json!({
-                "type": "message",
-                "message": {
-                    "role": "assistant",
-                    "provider": "faux",
-                    "model": "faux-1",
-                    "usage": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0 } }
-                }
-            }),
-        ];
+        let entries = vec![json!({
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "provider": "faux",
+                "model": "faux-1",
+                "usage": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0 } }
+            }
+        })];
         let breakdown = get_usage_cost_breakdown(&entries);
         assert!(breakdown.is_empty());
     }

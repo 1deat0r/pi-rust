@@ -26,7 +26,9 @@ pub fn merge_compat(base: Option<&Value>, override_compat: Option<&Value>) -> Op
         (None, Some(override_compat)) => Some(override_compat.clone()),
         (Some(base), Some(override_compat)) => {
             let mut merged = base.clone();
-            if let (Some(base_obj), Some(override_obj)) = (merged.as_object_mut(), override_compat.as_object()) {
+            if let (Some(base_obj), Some(override_obj)) =
+                (merged.as_object_mut(), override_compat.as_object())
+            {
                 for (key, override_value) in override_obj {
                     const NESTED_KEYS: &[&str] = &[
                         "openRouterRouting",
@@ -36,7 +38,9 @@ pub fn merge_compat(base: Option<&Value>, override_compat: Option<&Value>) -> Op
                     ];
                     if NESTED_KEYS.contains(&key.as_str()) {
                         let base_value = base_obj.get(key);
-                        if matches!(base_value, Some(Value::Object(_))) && override_value.is_object() {
+                        if matches!(base_value, Some(Value::Object(_)))
+                            && override_value.is_object()
+                        {
                             let mut nested = base_value.cloned().unwrap_or(Value::Null);
                             if let (Some(nested_obj), Some(override_nested)) =
                                 (nested.as_object_mut(), override_value.as_object())
@@ -115,7 +119,11 @@ pub fn apply_model_override(model: &Model, override_config: &ModelsJsonModelOver
         for (k, v) in headers {
             merged.insert(k.clone(), v.clone());
         }
-        result.headers = if merged.is_empty() { None } else { Some(merged) };
+        result.headers = if merged.is_empty() {
+            None
+        } else {
+            Some(merged)
+        };
     }
     if let Some(compat) = &override_config.compat {
         result.compat = merge_compat(result.compat.as_ref(), Some(compat));
@@ -133,10 +141,13 @@ fn thinking_level_map_from_config(
     let mut out: BTreeMap<pi_ai::types::ModelThinkingLevel, Option<String>> = BTreeMap::new();
     let mut push = |key: L, value: &Option<ValueOrNull>| {
         if let Some(value) = value {
-            out.insert(key, match value {
-                ValueOrNull::Str(s) => Some(s.clone()),
-                ValueOrNull::Null => None,
-            });
+            out.insert(
+                key,
+                match value {
+                    ValueOrNull::Str(s) => Some(s.clone()),
+                    ValueOrNull::Null => None,
+                },
+            );
         }
     };
     push(L::Off, &map.off);
@@ -185,18 +196,34 @@ pub fn model_from_json(
         .clone()
         .or_else(|| provider_config.base_url.clone())
         .or_else(|| defaults.map(|d| d.base_url.clone()))
-        .ok_or_else(|| format!("Provider {provider_id}: \"baseUrl\" is required when defining custom models."))?;
+        .ok_or_else(|| {
+            format!("Provider {provider_id}: \"baseUrl\" is required when defining custom models.")
+        })?;
     if let Some(window) = definition.context_window {
         if window <= 0.0 {
-            return Err(format!("Provider {provider_id}, model {}: invalid contextWindow", definition.id));
+            return Err(format!(
+                "Provider {provider_id}, model {}: invalid contextWindow",
+                definition.id
+            ));
         }
     }
     if let Some(max_tokens) = definition.max_tokens {
         if max_tokens <= 0.0 {
-            return Err(format!("Provider {provider_id}, model {}: invalid maxTokens", definition.id));
+            return Err(format!(
+                "Provider {provider_id}, model {}: invalid maxTokens",
+                definition.id
+            ));
         }
     }
-    let mut model = Model::new(definition.id.clone(), definition.name.clone().unwrap_or_else(|| definition.id.clone()), api, provider_id);
+    let mut model = Model::new(
+        definition.id.clone(),
+        definition
+            .name
+            .clone()
+            .unwrap_or_else(|| definition.id.clone()),
+        api,
+        provider_id,
+    );
     model.base_url = base_url;
     model.reasoning = definition.reasoning.unwrap_or(false);
     if let Some(map) = &definition.thinking_level_map {
@@ -252,17 +279,23 @@ pub fn apply_extension(
 ) -> Result<Vec<Model>, String> {
     let Some(extension_models) = &config.models else {
         return Ok(match &config.base_url {
-            Some(base_url) => models.iter().map(|m| {
-                let mut model = m.clone();
-                model.base_url = base_url.clone();
-                model
-            }).collect(),
+            Some(base_url) => models
+                .iter()
+                .map(|m| {
+                    let mut model = m.clone();
+                    model.base_url = base_url.clone();
+                    model
+                })
+                .collect(),
             None => models.to_vec(),
         });
     };
     let mut result = Vec::new();
     for definition in extension_models {
-        let defaults = models.iter().find(|m| m.id == definition.id).or_else(|| models.first());
+        let defaults = models
+            .iter()
+            .find(|m| m.id == definition.id)
+            .or_else(|| models.first());
         let api = definition
             .api
             .clone()
@@ -279,8 +312,20 @@ pub fn apply_extension(
             .clone()
             .or_else(|| config.base_url.clone())
             .or_else(|| defaults.map(|d| d.base_url.clone()))
-            .ok_or_else(|| format!("Provider {provider_id}: \"baseUrl\" is required when defining custom models."))?;
-        let mut model = Model::new(definition.id.clone(), definition.name.clone().unwrap_or_else(|| definition.id.clone()), api, provider_id.to_string());
+            .ok_or_else(|| {
+                format!(
+                    "Provider {provider_id}: \"baseUrl\" is required when defining custom models."
+                )
+            })?;
+        let mut model = Model::new(
+            definition.id.clone(),
+            definition
+                .name
+                .clone()
+                .unwrap_or_else(|| definition.id.clone()),
+            api,
+            provider_id.to_string(),
+        );
         model.base_url = base_url;
         model.reasoning = definition.reasoning.unwrap_or(false);
         if let Some(map) = &definition.thinking_level_map {
@@ -347,7 +392,10 @@ pub fn validate_extension_provider(
     models_config: Option<&ModelsJsonProvider>,
     extension: &ProviderExtensionConfig,
 ) -> Result<(), String> {
-    if extension.api.is_none() && extension.models.as_ref().is_some_and(|m| !m.is_empty()) && extension.api.is_none() {
+    if extension.api.is_none()
+        && extension.models.as_ref().is_some_and(|m| !m.is_empty())
+        && extension.api.is_none()
+    {
         // streamSimple-only extension providers require api in the JS port;
         // the Rust surface has no streamSimple so the check is informational.
     }
@@ -368,10 +416,20 @@ pub fn apply_models_json(
         return Ok(base_models.to_vec());
     };
     if config.oauth.is_some() && config.base_url.is_none() {
-        return Err(format!("Provider {provider_id}: \"baseUrl\" is required when \"oauth\" is set."));
+        return Err(format!(
+            "Provider {provider_id}: \"baseUrl\" is required when \"oauth\" is set."
+        ));
     }
-    let has_overrides = config.model_overrides.as_ref().map(|o| !o.is_empty()).unwrap_or(false);
-    let has_models = config.models.as_ref().map(|m| !m.is_empty()).unwrap_or(false);
+    let has_overrides = config
+        .model_overrides
+        .as_ref()
+        .map(|o| !o.is_empty())
+        .unwrap_or(false);
+    let has_models = config
+        .models
+        .as_ref()
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
     if !has_models
         && config.base_url.is_none()
         && config.headers.is_none()
@@ -423,7 +481,9 @@ pub fn apply_model_overrides(
     config: Option<&ModelsJsonProvider>,
 ) -> Vec<Model> {
     let Some(config) = config else { return models };
-    let Some(overrides) = &config.model_overrides else { return models };
+    let Some(overrides) = &config.model_overrides else {
+        return models;
+    };
     models
         .into_iter()
         .map(|model| {
@@ -496,18 +556,34 @@ pub fn configured_request_auth_status(
 ) -> Option<AuthStatus> {
     let value = extension_api_key.or_else(|| config.and_then(|c| c.api_key.as_deref()))?;
     if is_command_config_value(value) {
-        return Some(AuthStatus { configured: true, source: Some("models_json_command"), label: None });
+        return Some(AuthStatus {
+            configured: true,
+            source: Some("models_json_command"),
+            label: None,
+        });
     }
     let names = config_value_env_var_names(value);
     if !names.is_empty() {
         if is_config_value_configured(value) {
-            return Some(AuthStatus { configured: true, source: Some("environment"), label: Some(names.join(", ")) });
+            return Some(AuthStatus {
+                configured: true,
+                source: Some("environment"),
+                label: Some(names.join(", ")),
+            });
         }
-        return Some(AuthStatus { configured: false, source: None, label: None });
+        return Some(AuthStatus {
+            configured: false,
+            source: None,
+            label: None,
+        });
     }
     Some(AuthStatus {
         configured: true,
-        source: Some(if extension_api_key.is_some() { "fallback" } else { "models_json_key" }),
+        source: Some(if extension_api_key.is_some() {
+            "fallback"
+        } else {
+            "models_json_key"
+        }),
         label: None,
     })
 }
@@ -548,7 +624,11 @@ pub fn resolve_compatibility_request_config(
         merged.insert(k, Some(v));
     }
     CompatibilityRequestConfig {
-        headers: if merged.is_empty() { None } else { Some(merged) },
+        headers: if merged.is_empty() {
+            None
+        } else {
+            Some(merged)
+        },
         auth_header: config.and_then(|c| c.auth_header).unwrap_or(false),
     }
 }
@@ -584,7 +664,8 @@ mod tests {
         let cfg: ModelConfig = ModelConfig::from_value(json!({
             "providers": { "demo": { "baseUrl": "https://overridden.example.com/v1", "api": "openai-responses" } }
         })).unwrap();
-        let out = apply_models_json("demo", &[model("demo", "base-1")], cfg.get_provider("demo")).unwrap();
+        let out = apply_models_json("demo", &[model("demo", "base-1")], cfg.get_provider("demo"))
+            .unwrap();
         assert_eq!(out[0].base_url, "https://overridden.example.com/v1");
     }
 
@@ -599,7 +680,8 @@ mod tests {
                 ]
             } }
         })).unwrap();
-        let out = apply_models_json("demo", &[model("demo", "base-1")], cfg.get_provider("demo")).unwrap();
+        let out = apply_models_json("demo", &[model("demo", "base-1")], cfg.get_provider("demo"))
+            .unwrap();
         assert_eq!(out.len(), 2);
         let custom = out.iter().find(|m| m.id == "custom-1").unwrap();
         assert!(custom.reasoning);
@@ -613,8 +695,10 @@ mod tests {
         // from the base catalog model (upstream modelFromJson defaults).
         let cfg: ModelConfig = ModelConfig::from_value(json!({
             "providers": { "demo": { "models": [{ "id": "custom-x", "reasoning": true }] } }
-        })).unwrap();
-        let out = apply_models_json("demo", &[model("demo", "base-1")], cfg.get_provider("demo")).unwrap();
+        }))
+        .unwrap();
+        let out = apply_models_json("demo", &[model("demo", "base-1")], cfg.get_provider("demo"))
+            .unwrap();
         let custom = out.iter().find(|m| m.id == "custom-x").unwrap();
         assert_eq!(custom.api, "openai-responses");
         assert_eq!(custom.base_url, "https://demo.example.com/v1");
@@ -628,7 +712,8 @@ mod tests {
         // model without api errors.
         let cfg: ModelConfig = ModelConfig::from_value(json!({
             "providers": { "demo": { "models": [{ "id": "custom-x" }] } }
-        })).unwrap();
+        }))
+        .unwrap();
         let err = apply_models_json("demo", &[], cfg.get_provider("demo")).unwrap_err();
         assert!(err.contains("no \"api\" specified"), "{err}");
     }
@@ -640,7 +725,16 @@ mod tests {
                 "modelOverrides": { "base-1": { "name": "Renamed", "reasoning": true, "maxTokens": 9999 } } } }
         })).unwrap();
         let base = model("demo", "base-1");
-        let overridden = apply_model_override(&base, cfg.get_provider("demo").unwrap().model_overrides.as_ref().unwrap().get("base-1").unwrap());
+        let overridden = apply_model_override(
+            &base,
+            cfg.get_provider("demo")
+                .unwrap()
+                .model_overrides
+                .as_ref()
+                .unwrap()
+                .get("base-1")
+                .unwrap(),
+        );
         assert_eq!(overridden.name, "Renamed");
         assert!(overridden.reasoning);
         assert_eq!(overridden.max_tokens, 9999);
@@ -650,8 +744,14 @@ mod tests {
     fn oauth_requires_base_url() {
         let cfg: ModelConfig = ModelConfig::from_value(json!({
             "providers": { "radius-demo": { "oauth": "radius" } }
-        })).unwrap();
-        let err = apply_models_json("radius-demo", &[model("radius-demo", "auto")], cfg.get_provider("radius-demo")).unwrap_err();
+        }))
+        .unwrap();
+        let err = apply_models_json(
+            "radius-demo",
+            &[model("radius-demo", "auto")],
+            cfg.get_provider("radius-demo"),
+        )
+        .unwrap_err();
         assert!(err.contains("baseUrl"), "{err}");
     }
 
@@ -659,8 +759,10 @@ mod tests {
     fn empty_config_requires_something() {
         let cfg: ModelConfig = ModelConfig::from_value(json!({
             "providers": { "demo": {} }
-        })).unwrap();
-        let err = apply_models_json("demo", &[model("demo", "base-1")], cfg.get_provider("demo")).unwrap_err();
+        }))
+        .unwrap();
+        let err = apply_models_json("demo", &[model("demo", "base-1")], cfg.get_provider("demo"))
+            .unwrap_err();
         assert!(err.contains("must specify"), "{err}");
     }
 
@@ -668,26 +770,30 @@ mod tests {
     fn auth_status_classification() {
         let cfg: ModelConfig = ModelConfig::from_value(json!({
             "providers": { "demo": { "apiKey": "$DEMO_KEY" } }
-        })).unwrap();
+        }))
+        .unwrap();
         let status = configured_request_auth_status(cfg.get_provider("demo"), None).unwrap();
         assert!(status.configured);
         assert_eq!(status.source, Some("environment"));
 
         let cfg2: ModelConfig = ModelConfig::from_value(json!({
             "providers": { "demo": { "apiKey": "literal-key" } }
-        })).unwrap();
+        }))
+        .unwrap();
         let status = configured_request_auth_status(cfg2.get_provider("demo"), None).unwrap();
         assert_eq!(status.source, Some("models_json_key"));
 
         let cfg3: ModelConfig = ModelConfig::from_value(json!({
             "providers": { "demo": { "apiKey": "!secret fetch" } }
-        })).unwrap();
+        }))
+        .unwrap();
         let status = configured_request_auth_status(cfg3.get_provider("demo"), None).unwrap();
         assert_eq!(status.source, Some("models_json_command"));
 
         let cfg4: ModelConfig = ModelConfig::from_value(json!({
             "providers": { "demo": { "apiKey": "${A}${B}" } }
-        })).unwrap();
+        }))
+        .unwrap();
         let status = configured_request_auth_status(cfg4.get_provider("demo"), None).unwrap();
         assert_eq!(status.source, Some("environment"));
         assert_eq!(status.label.as_deref(), Some("A, B"));
@@ -722,7 +828,10 @@ mod tests {
         assert_eq!(out[0].id, "ext-model");
         assert_eq!(out[0].provider, "demo");
         assert_eq!(out[0].base_url, "https://ext.example.com/v1");
-        assert_eq!(out[0].api, "openai-responses", "defaults inherited from base");
+        assert_eq!(
+            out[0].api, "openai-responses",
+            "defaults inherited from base"
+        );
         assert!(out[0].reasoning);
     }
 
@@ -741,7 +850,10 @@ mod tests {
     #[test]
     fn validate_extension_provider_composes_layers() {
         let extension = ProviderExtensionConfig::default();
-        assert!(validate_extension_provider("demo", &[model("demo", "base-1")], None, &extension).is_ok());
+        assert!(
+            validate_extension_provider("demo", &[model("demo", "base-1")], None, &extension)
+                .is_ok()
+        );
     }
 
     #[test]

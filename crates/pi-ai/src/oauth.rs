@@ -8,8 +8,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const DEVICE_CODE_CANCEL_MESSAGE: &str = "Login cancelled";
@@ -34,9 +34,8 @@ pub enum DeviceCodePollResult<T> {
 }
 
 /// Poll closure: `FnMut()` returning a future that yields the poll result.
-pub type DeviceCodePollFn<T> = Box<
-    dyn FnMut() -> Pin<Box<dyn Future<Output = DeviceCodePollResult<T>> + Send>> + Send,
->;
+pub type DeviceCodePollFn<T> =
+    Box<dyn FnMut() -> Pin<Box<dyn Future<Output = DeviceCodePollResult<T>> + Send>> + Send>;
 
 /// Options for `poll_oauth_device_code_flow` (upstream
 /// `OAuthDeviceCodePollOptions`).
@@ -95,7 +94,10 @@ pub async fn poll_oauth_device_code_flow<T>(
         Some(seconds) => Instant::now() + Duration::from_secs(seconds),
         None => Instant::now() + Duration::from_secs(u64::MAX / 2),
     };
-    let mut interval_ms = (options.interval_seconds.unwrap_or(DEVICE_CODE_DEFAULT_POLL_INTERVAL_SECONDS) * 1000.0)
+    let mut interval_ms = (options
+        .interval_seconds
+        .unwrap_or(DEVICE_CODE_DEFAULT_POLL_INTERVAL_SECONDS)
+        * 1000.0)
         .floor()
         .max(DEVICE_CODE_MINIMUM_INTERVAL_MS as f64) as u64;
     let mut slow_down_responses = 0u32;
@@ -103,13 +105,22 @@ pub async fn poll_oauth_device_code_flow<T>(
     if options.wait_before_first_poll {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if !remaining.is_zero() {
-            abortable_sleep(interval_ms.min(remaining.as_millis() as u64), options.signal.as_ref(), DEVICE_CODE_CANCEL_MESSAGE)
-                .await?;
+            abortable_sleep(
+                interval_ms.min(remaining.as_millis() as u64),
+                options.signal.as_ref(),
+                DEVICE_CODE_CANCEL_MESSAGE,
+            )
+            .await?;
         }
     }
 
     loop {
-        if options.signal.as_ref().map(|s| s.load(Ordering::SeqCst)).unwrap_or(false) {
+        if options
+            .signal
+            .as_ref()
+            .map(|s| s.load(Ordering::SeqCst))
+            .unwrap_or(false)
+        {
             return Err(DEVICE_CODE_CANCEL_MESSAGE.to_string());
         }
         let result = (options.poll)().await;
@@ -122,9 +133,10 @@ pub async fn poll_oauth_device_code_flow<T>(
                 // Server-provided interval wins (GitHub reports the new
                 // required minimum); otherwise increment by 5s (RFC 8628 §3.5).
                 interval_ms = match interval_seconds {
-                    Some(seconds) if seconds.is_finite() && seconds > 0.0 => {
-                        (seconds * 1000.0).floor().max(DEVICE_CODE_MINIMUM_INTERVAL_MS as f64) as u64
-                    }
+                    Some(seconds) if seconds.is_finite() && seconds > 0.0 => (seconds * 1000.0)
+                        .floor()
+                        .max(DEVICE_CODE_MINIMUM_INTERVAL_MS as f64)
+                        as u64,
                     _ => interval_ms + DEVICE_CODE_SLOW_DOWN_INTERVAL_INCREMENT_MS,
                 };
             }
@@ -133,8 +145,12 @@ pub async fn poll_oauth_device_code_flow<T>(
         if remaining.is_zero() {
             break;
         }
-        abortable_sleep(interval_ms.min(remaining.as_millis() as u64), options.signal.as_ref(), DEVICE_CODE_CANCEL_MESSAGE)
-            .await?;
+        abortable_sleep(
+            interval_ms.min(remaining.as_millis() as u64),
+            options.signal.as_ref(),
+            DEVICE_CODE_CANCEL_MESSAGE,
+        )
+        .await?;
     }
 
     if slow_down_responses > 0 {
@@ -178,7 +194,9 @@ mod tests {
         assert_eq!(verifier.len(), 43, "verifier {verifier}");
         assert_eq!(challenge.len(), 43, "challenge {challenge}");
         assert_ne!(verifier, challenge);
-        assert!(verifier.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(verifier
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     }
 
     #[tokio::test]
@@ -196,13 +214,20 @@ mod tests {
     async fn handles_pending_slow_down_then_complete() {
         let states: Vec<DeviceCodePollResult<&'static str>> = vec![
             DeviceCodePollResult::Pending,
-            DeviceCodePollResult::SlowDown { interval_seconds: None },
-            DeviceCodePollResult::SlowDown { interval_seconds: Some(1.0) },
+            DeviceCodePollResult::SlowDown {
+                interval_seconds: None,
+            },
+            DeviceCodePollResult::SlowDown {
+                interval_seconds: Some(1.0),
+            },
             DeviceCodePollResult::Complete("done"),
         ];
         let mut index = 0usize;
         let mut options = DeviceCodePollOptions::new(Box::new(move || {
-            let state = states.get(index).cloned().unwrap_or(DeviceCodePollResult::Complete("done"));
+            let state = states
+                .get(index)
+                .cloned()
+                .unwrap_or(DeviceCodePollResult::Complete("done"));
             index += 1;
             Box::pin(async move { state })
         }));
@@ -215,7 +240,10 @@ mod tests {
         // sleep is min(6s, remaining) ... server SlowDown(1.0) resets to 1s,
         // then complete. Expect at least ~2s of sleeps.
         let elapsed = start.elapsed();
-        assert!(elapsed >= Duration::from_millis(1900), "elapsed {elapsed:?}");
+        assert!(
+            elapsed >= Duration::from_millis(1900),
+            "elapsed {elapsed:?}"
+        );
         assert!(elapsed < Duration::from_secs(12), "elapsed {elapsed:?}");
     }
 

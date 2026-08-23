@@ -4,9 +4,7 @@ pub mod estimate;
 pub mod retry;
 
 pub use estimate::estimate_context_tokens;
-pub use retry::{
-    is_retryable_assistant_error, retry_assistant_call, RetryCallbacks, RetryPolicy,
-};
+pub use retry::{is_retryable_assistant_error, retry_assistant_call, RetryCallbacks, RetryPolicy};
 
 /// Serialize tests that mutate process-global environment variables so
 /// parallel executions cannot race on the shared env (AWS_*, CLOUDFLARE_*,
@@ -15,5 +13,7 @@ pub use retry::{
 pub fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     use std::sync::OnceLock;
     static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap()
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap()
 }

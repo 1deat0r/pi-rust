@@ -28,19 +28,29 @@ impl ClientConnection {
         )
     }
 
-    pub async fn send_client_message(&self, message: &pi_protocol::ClientMessage) -> Result<(), PiClientError> {
+    pub async fn send_client_message(
+        &self,
+        message: &pi_protocol::ClientMessage,
+    ) -> Result<(), PiClientError> {
         if self.closed.load(Ordering::SeqCst) {
-            return Err(PiClientError { message: "client is closed".into() });
+            return Err(PiClientError {
+                message: "client is closed".into(),
+            });
         }
         // encode_client_message returns a complete length-prefixed frame.
-        let frame = pi_protocol::encode_client_message(message, &Default::default())
-            .map_err(|e| PiClientError { message: format!("encode: {e}") })?;
+        let frame =
+            pi_protocol::encode_client_message(message, &Default::default()).map_err(|e| {
+                PiClientError {
+                    message: format!("encode: {e}"),
+                }
+            })?;
         let mut writer = self.writer.lock().await;
-        writer
-            .write_all(&frame)
-            .await
-            .map_err(|e| PiClientError { message: format!("write: {e}") })?;
-        writer.flush().await.map_err(|e| PiClientError { message: format!("flush: {e}") })
+        writer.write_all(&frame).await.map_err(|e| PiClientError {
+            message: format!("write: {e}"),
+        })?;
+        writer.flush().await.map_err(|e| PiClientError {
+            message: format!("flush: {e}"),
+        })
     }
 
     pub async fn close(&self) -> Result<(), PiClientError> {

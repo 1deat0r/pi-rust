@@ -15,7 +15,9 @@ impl<'a> CborReader<'a> {
     fn decode(&mut self) -> Result<Value, CborError> {
         let value = self.read_item(0)?;
         if self.offset != self.bytes.len() {
-            return Err(CborError::new("CBOR payload contains trailing data".to_string()));
+            return Err(CborError::new(
+                "CBOR payload contains trailing data".to_string(),
+            ));
         }
         Ok(value)
     }
@@ -52,7 +54,9 @@ impl<'a> CborReader<'a> {
                 let bytes = self.read_bytes(length)?;
                 match std::str::from_utf8(bytes) {
                     Ok(s) => Ok(Value::Text(s.to_string())),
-                    Err(_) => Err(CborError::new("CBOR text string contains invalid UTF-8".to_string())),
+                    Err(_) => Err(CborError::new(
+                        "CBOR text string contains invalid UTF-8".to_string(),
+                    )),
                 }
             }
             4 => {
@@ -71,10 +75,14 @@ impl<'a> CborReader<'a> {
                     let key = self.read_item(depth + 1)?;
                     let key = match key {
                         Value::Text(s) => s,
-                        _ => return Err(CborError::new("CBOR map keys must be strings".to_string())),
+                        _ => {
+                            return Err(CborError::new("CBOR map keys must be strings".to_string()))
+                        }
                     };
                     if !keys.insert(key.clone()) {
-                        return Err(CborError::new("CBOR map contains a duplicate key".to_string()));
+                        return Err(CborError::new(
+                            "CBOR map contains a duplicate key".to_string(),
+                        ));
                     }
                     let value = self.read_item(depth + 1)?;
                     entries.push((key, value));
@@ -96,7 +104,9 @@ impl<'a> CborReader<'a> {
                 let bytes = self.read_bytes(8)?;
                 let value = f64::from_be_bytes(bytes.try_into().expect("8 bytes"));
                 if !value.is_finite() {
-                    return Err(CborError::new("Decoded CBOR number must be finite".to_string()));
+                    return Err(CborError::new(
+                        "Decoded CBOR number must be finite".to_string(),
+                    ));
                 }
                 if value.fract() == 0.0 && (value < MIN_SAFE_I64_F64 || value > MAX_SAFE_I64_F64) {
                     return Err(CborError::new(
@@ -105,7 +115,9 @@ impl<'a> CborReader<'a> {
                 }
                 Ok(Value::Float(value))
             }
-            31 => Err(CborError::new("CBOR break marker is not supported".to_string())),
+            31 => Err(CborError::new(
+                "CBOR break marker is not supported".to_string(),
+            )),
             _ => Err(CborError::new(
                 "Unsupported CBOR simple value or floating-point width".to_string(),
             )),
@@ -254,7 +266,10 @@ mod tests {
             ("63e6b0b4", Value::Text("水".into())),
             ("64f0908591", Value::Text("𐅑".into())),
             ("80", Value::Array(vec![])),
-            ("83010203", Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])),
+            (
+                "83010203",
+                Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            ),
             (
                 "8301820203820405",
                 Value::Array(vec![
@@ -297,17 +312,23 @@ mod tests {
     fn rejects_tags_and_breaks() {
         // Tag 0 wrapping integer 1
         assert_eq!(
-            decode_cbor(&from_hex("c001"), &CborOptions::default()).unwrap_err().0,
+            decode_cbor(&from_hex("c001"), &CborOptions::default())
+                .unwrap_err()
+                .0,
             "CBOR tags are not supported"
         );
         // Break in container position
         assert_eq!(
-            decode_cbor(&from_hex("9fff"), &CborOptions::default()).unwrap_err().0,
+            decode_cbor(&from_hex("9fff"), &CborOptions::default())
+                .unwrap_err()
+                .0,
             "Indefinite-length CBOR arrays are not supported"
         );
         // Indefinite-length string
         assert_eq!(
-            decode_cbor(&from_hex("7fff"), &CborOptions::default()).unwrap_err().0,
+            decode_cbor(&from_hex("7fff"), &CborOptions::default())
+                .unwrap_err()
+                .0,
             "Indefinite-length CBOR text strings are not supported"
         );
     }

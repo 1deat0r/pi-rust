@@ -5,7 +5,7 @@ use crate::core::usage_totals::UsageTotals;
 use crate::interactive::tui_theme as t;
 
 /// Format token counts for compact footer display (upstream `formatTokens`).
-pub fn format_tokens(count: u64) -> String {
+pub fn format_tokens(count: i64) -> String {
     if count < 1000 {
         return count.to_string();
     }
@@ -31,7 +31,9 @@ pub fn sanitize(text: &str) -> String {
 
 /// Replace the home directory with `~` in a path.
 pub fn format_cwd_for_footer(cwd: &str, home: Option<&str>) -> String {
-    let Some(home) = home else { return cwd.to_string() };
+    let Some(home) = home else {
+        return cwd.to_string();
+    };
     if cwd == home {
         return "~".to_string();
     }
@@ -53,7 +55,11 @@ pub fn git_branch(cwd: &str) -> Option<String> {
         return None;
     }
     let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if branch.is_empty() { None } else { Some(branch) }
+    if branch.is_empty() {
+        None
+    } else {
+        Some(branch)
+    }
 }
 
 /// The footer status payload.
@@ -75,22 +81,22 @@ pub struct FooterData {
 /// cacheWrite arrows, cache-hit rate, and total cost.
 pub fn render_usage_stats(usage: &UsageTotals, cache_hit_rate: Option<f64>) -> Vec<String> {
     let mut parts = Vec::new();
-    if usage.input > 0 {
+    if usage.input != 0 {
         parts.push(format!("↑{}", format_tokens(usage.input)));
     }
-    if usage.output > 0 {
+    if usage.output != 0 {
         parts.push(format!("↓{}", format_tokens(usage.output)));
     }
-    if usage.cache_read > 0 {
+    if usage.cache_read != 0 {
         parts.push(format!("R{}", format_tokens(usage.cache_read)));
     }
-    if usage.cache_write > 0 {
+    if usage.cache_write != 0 {
         parts.push(format!("W{}", format_tokens(usage.cache_write)));
     }
     if (usage.cache_read > 0 || usage.cache_write > 0) && cache_hit_rate.is_some() {
         parts.push(format!("CH{:.1}%", cache_hit_rate.unwrap()));
     }
-    if usage.cost > 0.0 {
+    if usage.cost != 0.0 {
         parts.push(format!("${:.3}", usage.cost));
     }
     parts
@@ -116,7 +122,10 @@ pub fn render_footer(data: &FooterData, width: usize) -> Vec<String> {
         .join(" ");
 
     // Right side: model + thinking.
-    let mut right = data.model_label.clone().unwrap_or_else(|| "no-model".to_string());
+    let mut right = data
+        .model_label
+        .clone()
+        .unwrap_or_else(|| "no-model".to_string());
     if let Some(thinking) = &data.thinking {
         if data.thinking.as_deref() != Some("off") {
             right = format!("{right} • {thinking}");
@@ -131,8 +140,13 @@ pub fn render_footer(data: &FooterData, width: usize) -> Vec<String> {
     let stats_left_width = pi_tui::utils::visible_width(&usage_stats);
     // Minimum 2 spaces between stats and model.
     let min_padding = 2;
-    let stats = if !usage_stats.is_empty() && stats_left_width + min_padding + right_width <= width {
-        let padding = " ".repeat(width.saturating_sub(stats_left_width + right_width).max(min_padding));
+    let stats = if !usage_stats.is_empty() && stats_left_width + min_padding + right_width <= width
+    {
+        let padding = " ".repeat(
+            width
+                .saturating_sub(stats_left_width + right_width)
+                .max(min_padding),
+        );
         format!("{usage_stats}{padding}{right}")
     } else if !usage_stats.is_empty() && stats_left_width <= width {
         // Not enough room for the model; show only stats.
@@ -151,8 +165,20 @@ pub fn render_footer(data: &FooterData, width: usize) -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn totals(input: u64, output: u64, cache_read: u64, cache_write: u64, cost: f64) -> UsageTotals {
-        UsageTotals { input, output, cache_read, cache_write, cost }
+    fn totals(
+        input: i64,
+        output: i64,
+        cache_read: i64,
+        cache_write: i64,
+        cost: f64,
+    ) -> UsageTotals {
+        UsageTotals {
+            input,
+            output,
+            cache_read,
+            cache_write,
+            cost,
+        }
     }
 
     #[test]
@@ -184,7 +210,10 @@ mod tests {
         assert!(stats.contains(&"R300".to_string()));
         assert!(stats.contains(&"W400".to_string()));
         assert!(stats.contains(&"CH80.0%".to_string()));
-        assert!(!stats.iter().any(|s| s.starts_with('$')), "zero cost omitted");
+        assert!(
+            !stats.iter().any(|s| s.starts_with('$')),
+            "zero cost omitted"
+        );
     }
 
     #[test]

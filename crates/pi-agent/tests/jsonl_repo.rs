@@ -22,7 +22,10 @@ fn repo(fs: MemoryFs) -> JsonlSessionRepo<MemoryFs> {
 
 #[test]
 fn exposes_complete_metadata_contract_with_cwd_layout() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let mut r = repo(fs.clone());
@@ -84,26 +87,40 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 #[test]
 fn rejects_malformed_header_on_open_and_skips_when_listing() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let mut r = repo(fs.clone());
-        r.create(CreateOptions::new("/work".to_string()).with_id("valid")).await.unwrap();
-        let session = r.create(CreateOptions::new("/work".to_string()).with_id("malformed-header")).await.unwrap();
+        r.create(CreateOptions::new("/work".to_string()).with_id("valid"))
+            .await
+            .unwrap();
+        let session = r
+            .create(CreateOptions::new("/work".to_string()).with_id("malformed-header"))
+            .await
+            .unwrap();
         let meta = session.get_metadata().await;
         fs.write_file(&meta.path, "not json\n").unwrap();
 
         let opened = r.open(&meta).await;
         assert!(opened.is_err());
         let listed = r.list(Some("/work")).await.unwrap();
-        assert_eq!(listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["valid"]);
+        assert_eq!(
+            listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["valid"]
+        );
         assert_eq!(fs.content(&meta.path).unwrap(), "not json\n");
     });
 }
 
 #[test]
 fn rejects_non_object_header_metadata_on_open_and_skips_when_listing() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let mut r = repo(fs.clone());
@@ -123,23 +140,50 @@ fn rejects_non_object_header_metadata_on_open_and_skips_when_listing() {
 
 #[test]
 fn rejects_session_ids_that_cannot_be_used_in_filenames() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let mut r = repo(fs.clone());
-        let err = r.create(CreateOptions { id: Some("../escape".into()), cwd: "/work".into(), ..Default::default() }).await.unwrap_err();
+        let err = r
+            .create(CreateOptions {
+                id: Some("../escape".into()),
+                cwd: "/work".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
         assert_eq!(err.kind, SessionErrorKind::InvalidPayload);
     });
 }
 
 #[test]
 fn allows_same_explicit_id_in_different_cwds() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let mut r = repo(fs.clone());
-        let a = r.create(CreateOptions { id: Some("shared".into()), cwd: "/work/one".into(), ..Default::default() }).await.unwrap();
-        let b = r.create(CreateOptions { id: Some("shared".into()), cwd: "/work/two".into(), ..Default::default() }).await.unwrap();
+        let a = r
+            .create(CreateOptions {
+                id: Some("shared".into()),
+                cwd: "/work/one".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let b = r
+            .create(CreateOptions {
+                id: Some("shared".into()),
+                cwd: "/work/two".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         assert_eq!(a.get_metadata().await.cwd, "/work/one");
         assert_eq!(b.get_metadata().await.cwd, "/work/two");
         // both listed (different dirs, same filename)
@@ -150,12 +194,19 @@ fn allows_same_explicit_id_in_different_cwds() {
 
 #[test]
 fn rejects_concurrent_create_for_same_destination() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let mut r = repo(fs.clone());
         let cwd = "/work".to_string();
-        let options = CreateOptions { id: Some("same".into()), cwd, ..Default::default() };
+        let options = CreateOptions {
+            id: Some("same".into()),
+            cwd,
+            ..Default::default()
+        };
         let first = r.create(options.clone()).await.unwrap();
         let err = r.create(options.clone()).await.unwrap_err();
         assert_eq!(err.kind, SessionErrorKind::AlreadyExists);
@@ -167,75 +218,189 @@ fn rejects_concurrent_create_for_same_destination() {
 
 #[test]
 fn sorts_listed_sessions_by_mtime_descending() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let mut r = repo(fs.clone());
-        let newest = r.create(CreateOptions { id: Some("newest".into()), cwd: "/work/n".into(), ..Default::default() }).await.unwrap();
+        let newest = r
+            .create(CreateOptions {
+                id: Some("newest".into()),
+                cwd: "/work/n".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         let newest_meta = newest.get_metadata().await;
-        let oldest = r.create(CreateOptions { id: Some("oldest".into()), cwd: "/work/o".into(), ..Default::default() }).await.unwrap();
+        let oldest = r
+            .create(CreateOptions {
+                id: Some("oldest".into()),
+                cwd: "/work/o".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         let oldest_meta = oldest.get_metadata().await;
         fs.set_mtime(&newest_meta.path, 1_700_000_002_000);
         fs.set_mtime(&oldest_meta.path, 1_700_000_001_000);
 
         let listed = r.list(None).await.unwrap();
-        assert_eq!(listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["newest", "oldest"]);
+        assert_eq!(
+            listed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["newest", "oldest"]
+        );
         let filtered = r.list(Some("/work/n")).await.unwrap();
-        assert_eq!(filtered.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["newest"]);
+        assert_eq!(
+            filtered.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["newest"]
+        );
     });
 }
 
 #[test]
 fn writes_one_line_per_mutation_and_restores_shared_sequence() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let mut r = repo(fs.clone());
-        let mut session = r.create(CreateOptions::new("/work".to_string()).with_id("session")).await.unwrap();
-        session.append_entry(EntryNoStats::Message { id: "m1".into(), message: user_message("a"), terminate: None }, "main").await.unwrap();
-        session.append_entry(EntryNoStats::Message { id: "m2".into(), message: user_message("b"), terminate: None }, "main").await.unwrap();
-        let m3 = session.append_entry(EntryNoStats::Message { id: "m3".into(), message: user_message("c"), terminate: None }, "main").await.unwrap();
+        let mut session = r
+            .create(CreateOptions::new("/work".to_string()).with_id("session"))
+            .await
+            .unwrap();
+        session
+            .append_entry(
+                EntryNoStats::Message {
+                    id: "m1".into(),
+                    message: user_message("a"),
+                    terminate: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        session
+            .append_entry(
+                EntryNoStats::Message {
+                    id: "m2".into(),
+                    message: user_message("b"),
+                    terminate: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        let m3 = session
+            .append_entry(
+                EntryNoStats::Message {
+                    id: "m3".into(),
+                    message: user_message("c"),
+                    terminate: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
         assert_eq!(m3.seq(), 3);
 
         let meta = session.get_metadata().await;
         let reopened = r.open(&meta).await.unwrap();
         let entries = reopened
-            .find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() })
+            .find_entries(&EntryQuery {
+                order: Some(EntryOrder::OldestFirst),
+                ..Default::default()
+            })
             .await
             .unwrap();
-        assert_eq!(entries.iter().map(|e| e.id().to_string()).collect::<Vec<_>>(), vec!["m1", "m2", "m3"]);
-        assert_eq!(entries.iter().map(|e| e.seq()).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| e.id().to_string())
+                .collect::<Vec<_>>(),
+            vec!["m1", "m2", "m3"]
+        );
+        assert_eq!(
+            entries.iter().map(|e| e.seq()).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
 
         // Reopened session continues the shared sequence (record append -> seq 4).
         let mut reopened = reopened;
-        let rec = reopened.append_record(pi_agent::session::types::NewRecord::AbortRequested {
-            id: "abort".into(), lane: "main".into(), run_id: "r".into(),
-        }).await.unwrap();
+        let rec = reopened
+            .append_record(pi_agent::session::types::NewRecord::AbortRequested {
+                id: "abort".into(),
+                lane: "main".into(),
+                run_id: "r".into(),
+            })
+            .await
+            .unwrap();
         assert_eq!(rec.seq(), 4);
     });
 }
 
 #[test]
 fn reopens_tree_fork_with_lanes_and_facts() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let mut r = repo(fs.clone());
-        let mut source = r.create(CreateOptions::new("/work".to_string()).with_id("source")).await.unwrap();
-        source.append_entry(EntryNoStats::Message { id: "m1".into(), message: user_message("a"), terminate: None }, "main").await.unwrap();
-        source.append_entry(EntryNoStats::Custom { id: "c1".into(), custom_type: "note".into(), data: None }, "main").await.unwrap();
+        let mut source = r
+            .create(CreateOptions::new("/work".to_string()).with_id("source"))
+            .await
+            .unwrap();
+        source
+            .append_entry(
+                EntryNoStats::Message {
+                    id: "m1".into(),
+                    message: user_message("a"),
+                    terminate: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        source
+            .append_entry(
+                EntryNoStats::Custom {
+                    id: "c1".into(),
+                    custom_type: "note".into(),
+                    data: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
         source.create_lane("branch", Some("m1")).await.unwrap();
         source.set_name(Some("A named session")).await.unwrap();
         source.set_label("m1", Some("checkpoint")).await.unwrap();
         let source_meta = source.get_metadata().await;
 
-        let fork = r.fork(&source_meta, CreateOptions {
-            id: Some("forked".into()), cwd: "/work".into(), fork_options: ForkOptions::Tree, ..Default::default()
-        }).await.unwrap();
+        let fork = r
+            .fork(
+                &source_meta,
+                CreateOptions {
+                    id: Some("forked".into()),
+                    cwd: "/work".into(),
+                    fork_options: ForkOptions::Tree,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
         let fork_meta = fork.get_metadata().await;
         assert_eq!(fork_meta.parent_session_id.as_deref(), Some("source"));
         let entries = fork
-            .find_entries(&EntryQuery { order: Some(EntryOrder::OldestFirst), ..Default::default() })
+            .find_entries(&EntryQuery {
+                order: Some(EntryOrder::OldestFirst),
+                ..Default::default()
+            })
             .await
             .unwrap();
         assert_eq!(entries.len(), 2);
@@ -244,34 +409,85 @@ fn reopens_tree_fork_with_lanes_and_facts() {
         assert_eq!(entries[1].seq(), 2);
         let lanes = fork.get_lanes().await;
         assert_eq!(lanes.len(), 2);
-        assert!(lanes.iter().any(|l| l.lane == "branch" && l.leaf_id.as_deref() == Some("m1")));
+        assert!(lanes
+            .iter()
+            .any(|l| l.lane == "branch" && l.leaf_id.as_deref() == Some("m1")));
         assert_eq!(fork.get_name().await.as_deref(), Some("A named session"));
         assert_eq!(fork.get_label("m1").await.as_deref(), Some("checkpoint"));
 
         // Full reopen after reload preserves lanes/facts.
         let reopened = r.open(&fork_meta).await.unwrap();
-        assert_eq!(reopened.get_name().await.as_deref(), Some("A named session"));
-        assert_eq!(reopened.get_label("m1").await.as_deref(), Some("checkpoint"));
-        assert_eq!(reopened.find_entries(&EntryQuery::default()).await.unwrap().len(), 2);
+        assert_eq!(
+            reopened.get_name().await.as_deref(),
+            Some("A named session")
+        );
+        assert_eq!(
+            reopened.get_label("m1").await.as_deref(),
+            Some("checkpoint")
+        );
+        assert_eq!(
+            reopened
+                .find_entries(&EntryQuery::default())
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
     });
 }
 
 #[test]
 fn recomputes_fork_message_counts_when_reopening() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         let mut r = repo(fs.clone());
-        let mut source = r.create(CreateOptions::new("/work".to_string()).with_id("source2")).await.unwrap();
-        source.append_entry(EntryNoStats::Message { id: "m1".into(), message: user_message("a"), terminate: None }, "main").await.unwrap();
-        source.append_entry(EntryNoStats::Custom { id: "c1".into(), custom_type: "note".into(), data: None }, "main").await.unwrap();
+        let mut source = r
+            .create(CreateOptions::new("/work".to_string()).with_id("source2"))
+            .await
+            .unwrap();
+        source
+            .append_entry(
+                EntryNoStats::Message {
+                    id: "m1".into(),
+                    message: user_message("a"),
+                    terminate: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        source
+            .append_entry(
+                EntryNoStats::Custom {
+                    id: "c1".into(),
+                    custom_type: "note".into(),
+                    data: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
         // branch fork at m1 (position at) => copies only m1; stats recount = 1 message
         let source_meta = source.get_metadata().await;
-        let fork = r.fork(&source_meta, CreateOptions {
-            id: Some("branch-fork".into()), cwd: "/work".into(),
-            fork_options: ForkOptions::Branch { entry_id: Some("m1".into()), position: Some(pi_agent::session::ForkPosition::At) },
-            ..Default::default()
-        }).await.unwrap();
+        let fork = r
+            .fork(
+                &source_meta,
+                CreateOptions {
+                    id: Some("branch-fork".into()),
+                    cwd: "/work".into(),
+                    fork_options: ForkOptions::Branch {
+                        entry_id: Some("m1".into()),
+                        position: Some(pi_agent::session::ForkPosition::At),
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
         // In-memory stats already recomputed from applied mutations.
         assert_eq!(fork.get_stats().await.message_count, 1);
         let fork_meta = fork.get_metadata().await;
@@ -282,7 +498,10 @@ fn recomputes_fork_message_counts_when_reopening() {
 
 #[test]
 fn rejects_imported_entry_referencing_missing_parent() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let fs = MemoryFs::new();
         #[allow(clippy::redundant_clone)]

@@ -75,7 +75,9 @@ fn parse_rgb_from_osc_value(value: &str) -> Option<RgbColor> {
 fn parse_osc11_payload(data: &str) -> Option<&str> {
     // Strict format: starts with ESC ] 11; and ends with BEL or ST (ESC \).
     let rest = data.strip_prefix("\x1b]11;")?;
-    let value = rest.strip_suffix('\x07').or_else(|| rest.strip_suffix("\x1b\\"))?;
+    let value = rest
+        .strip_suffix('\x07')
+        .or_else(|| rest.strip_suffix("\x1b\\"))?;
     // No internal ESC/BEL allowed (strict match).
     if value.contains('\x1b') || value.contains('\x07') {
         return None;
@@ -134,7 +136,11 @@ mod tests {
     fn parses_16bit_osc11_rgb_responses() {
         assert_eq!(
             parse_osc11_background_color("\x1b]11;rgb:0000/8000/ffff\x07"),
-            Some(RgbColor { r: 0, g: 128, b: 255 })
+            Some(RgbColor {
+                r: 0,
+                g: 128,
+                b: 255
+            })
         );
     }
 
@@ -142,7 +148,11 @@ mod tests {
     fn parses_osc11_hex_responses() {
         assert_eq!(
             parse_osc11_background_color("\x1b]11;#ffffff\x1b\\"),
-            Some(RgbColor { r: 255, g: 255, b: 255 })
+            Some(RgbColor {
+                r: 255,
+                g: 255,
+                b: 255
+            })
         );
         assert_eq!(
             parse_osc11_background_color("\x1b]11;#000000\x07"),
@@ -159,8 +169,14 @@ mod tests {
 
     #[test]
     fn parses_color_scheme_reports() {
-        assert_eq!(parse_terminal_color_scheme_report("\x1b[?997;1n"), Some(TerminalColorScheme::Dark));
-        assert_eq!(parse_terminal_color_scheme_report("\x1b[?997;2n"), Some(TerminalColorScheme::Light));
+        assert_eq!(
+            parse_terminal_color_scheme_report("\x1b[?997;1n"),
+            Some(TerminalColorScheme::Dark)
+        );
+        assert_eq!(
+            parse_terminal_color_scheme_report("\x1b[?997;2n"),
+            Some(TerminalColorScheme::Light)
+        );
         assert_eq!(
             parse_terminal_color_scheme_report("\x1b[?997;2n\x1b[?997;1n\x1b[?997;1n"),
             Some(TerminalColorScheme::Dark)

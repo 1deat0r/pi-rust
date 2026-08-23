@@ -164,19 +164,35 @@ fn group_observations(observations: &[HarnessObservation]) -> BTreeMap<String, E
         let eval_set = eval_sets
             .entry(observation.eval_set.clone())
             .or_insert_with(|| EvalSetData {
-                baseline: HarnessDescriptor { name: observation.baseline.clone(), index: 0 },
+                baseline: HarnessDescriptor {
+                    name: observation.baseline.clone(),
+                    index: 0,
+                },
                 candidates_by_name: BTreeMap::new(),
                 groups_by_key: BTreeMap::new(),
             });
         for (index, name) in observation.candidates.iter().enumerate() {
             let existing = eval_set.candidates_by_name.get(name);
-            if existing.map(|candidate| index < candidate.index).unwrap_or(true) {
-                eval_set.candidates_by_name.insert(name.clone(), HarnessDescriptor { name: name.clone(), index });
+            if existing
+                .map(|candidate| index < candidate.index)
+                .unwrap_or(true)
+            {
+                eval_set.candidates_by_name.insert(
+                    name.clone(),
+                    HarnessDescriptor {
+                        name: name.clone(),
+                        index,
+                    },
+                );
             }
         }
         let key = format!(
             "{}",
-            serde_json::json!([observation.file, observation.test_name, observation.group_key])
+            serde_json::json!([
+                observation.file,
+                observation.test_name,
+                observation.group_key
+            ])
         );
         let group = eval_set
             .groups_by_key
@@ -204,15 +220,25 @@ fn group_observations(observations: &[HarnessObservation]) -> BTreeMap<String, E
 
 fn ordered_harnesses(eval_set: &EvalSetData) -> Vec<HarnessDescriptor> {
     let mut result = vec![eval_set.baseline.clone()];
-    let mut candidates: Vec<HarnessDescriptor> = eval_set.candidates_by_name.values().cloned().collect();
-    candidates.sort_by(|left, right| left.index.cmp(&right.index).then_with(|| left.name.cmp(&right.name)));
+    let mut candidates: Vec<HarnessDescriptor> =
+        eval_set.candidates_by_name.values().cloned().collect();
+    candidates.sort_by(|left, right| {
+        left.index
+            .cmp(&right.index)
+            .then_with(|| left.name.cmp(&right.name))
+    });
     result.extend(candidates);
     result
 }
 
 fn ordered_candidates(eval_set: &EvalSetData) -> Vec<HarnessDescriptor> {
-    let mut candidates: Vec<HarnessDescriptor> = eval_set.candidates_by_name.values().cloned().collect();
-    candidates.sort_by(|left, right| left.index.cmp(&right.index).then_with(|| left.name.cmp(&right.name)));
+    let mut candidates: Vec<HarnessDescriptor> =
+        eval_set.candidates_by_name.values().cloned().collect();
+    candidates.sort_by(|left, right| {
+        left.index
+            .cmp(&right.index)
+            .then_with(|| left.name.cmp(&right.name))
+    });
     candidates
 }
 
@@ -233,7 +259,11 @@ fn collect_diagnostics(
     let mut diagnostics = Vec::new();
     for group in groups {
         for harness in harnesses {
-            let observations = group.observations_by_harness.get(&harness.name).cloned().unwrap_or_default();
+            let observations = group
+                .observations_by_harness
+                .get(&harness.name)
+                .cloned()
+                .unwrap_or_default();
             let reason = if observations.is_empty() {
                 Some(DiagnosticReason::MissingObservation)
             } else if observations.len() > 1 {
@@ -276,10 +306,21 @@ fn pair_observations(
 ) -> Vec<ObservationPair> {
     let mut pairs = Vec::new();
     for group in groups {
-        let baseline = group.observations_by_harness.get(baseline_harness).cloned().unwrap_or_default();
-        let candidate = group.observations_by_harness.get(candidate_harness).cloned().unwrap_or_default();
+        let baseline = group
+            .observations_by_harness
+            .get(baseline_harness)
+            .cloned()
+            .unwrap_or_default();
+        let candidate = group
+            .observations_by_harness
+            .get(candidate_harness)
+            .cloned()
+            .unwrap_or_default();
         if baseline.len() == 1 && candidate.len() == 1 {
-            pairs.push(ObservationPair { baseline: baseline[0].clone(), candidate: candidate[0].clone() });
+            pairs.push(ObservationPair {
+                baseline: baseline[0].clone(),
+                candidate: candidate[0].clone(),
+            });
         }
     }
     pairs
@@ -298,7 +339,8 @@ fn summarize_metric(
         }
         let baseline_value = select(&pair.baseline);
         let candidate_value = select(&pair.candidate);
-        let (Some(baseline_value), Some(candidate_value)) = (baseline_value, candidate_value) else {
+        let (Some(baseline_value), Some(candidate_value)) = (baseline_value, candidate_value)
+        else {
             continue;
         };
         if !baseline_value.is_finite() || !candidate_value.is_finite() {
@@ -351,8 +393,16 @@ fn summarize_correctness(pairs: &[ObservationPair], total_pairs: usize) -> Corre
         }
     }
 
-    let baseline_pass_rate = if eligible_pairs == 0 { None } else { Some(baseline_passes as f64 / eligible_pairs as f64) };
-    let candidate_pass_rate = if eligible_pairs == 0 { None } else { Some(candidate_passes as f64 / eligible_pairs as f64) };
+    let baseline_pass_rate = if eligible_pairs == 0 {
+        None
+    } else {
+        Some(baseline_passes as f64 / eligible_pairs as f64)
+    };
+    let candidate_pass_rate = if eligible_pairs == 0 {
+        None
+    } else {
+        Some(candidate_passes as f64 / eligible_pairs as f64)
+    };
     CorrectnessLiftSummary {
         total_pairs,
         eligible_pairs,
@@ -386,7 +436,9 @@ fn compare_harnesses(
 
 /// `summarizeHarnessComparisons`: groups observations by eval set / input and
 /// reports each candidate against the declared baseline.
-pub fn summarize_harness_comparisons(observations: &[HarnessObservation]) -> HarnessComparisonReport {
+pub fn summarize_harness_comparisons(
+    observations: &[HarnessObservation],
+) -> HarnessComparisonReport {
     let mut eval_sets = Vec::new();
     let mut diagnostics: Vec<HarnessComparisonDiagnostic> = Vec::new();
     for (eval_set, data) in group_observations(observations) {
@@ -395,7 +447,10 @@ pub fn summarize_harness_comparisons(observations: &[HarnessObservation]) -> Har
         let groups = ordered_groups(&data);
         eval_sets.push(HarnessEvalSetReport {
             eval_set,
-            comparisons: candidates.iter().map(|candidate| compare_harnesses(&data.baseline, candidate, &groups)).collect(),
+            comparisons: candidates
+                .iter()
+                .map(|candidate| compare_harnesses(&data.baseline, candidate, &groups))
+                .collect(),
         });
         diagnostics.extend(collect_diagnostics(&harnesses, &groups));
     }
@@ -407,7 +462,11 @@ pub fn summarize_harness_comparisons(observations: &[HarnessObservation]) -> Har
             .then_with(|| left.repetition.cmp(&right.repetition))
             .then_with(|| left.harness.cmp(&right.harness))
     });
-    HarnessComparisonReport { schema_version: 1, eval_sets, diagnostics }
+    HarnessComparisonReport {
+        schema_version: 1,
+        eval_sets,
+        diagnostics,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +529,11 @@ fn color_delta(value: f64, formatted: String, positive_is_better: bool) -> Strin
     if value == 0.0 {
         ansi::gray(&formatted)
     } else {
-        let improved = if positive_is_better { value > 0.0 } else { value < 0.0 };
+        let improved = if positive_is_better {
+            value > 0.0
+        } else {
+            value < 0.0
+        };
         if improved {
             ansi::green(&formatted)
         } else {
@@ -489,11 +552,16 @@ fn format_metric(
     let coverage = if metric.eligible_pairs == 0 || metric.eligible_pairs == comparison_pairs {
         String::new()
     } else {
-        format!(" {}", format_coverage(metric.eligible_pairs, metric.total_pairs))
+        format!(
+            " {}",
+            format_coverage(metric.eligible_pairs, metric.total_pairs)
+        )
     };
-    let (Some(baseline_mean), Some(candidate_mean), Some(mean_delta)) =
-        (metric.baseline_mean, metric.candidate_mean, metric.mean_delta)
-    else {
+    let (Some(baseline_mean), Some(candidate_mean), Some(mean_delta)) = (
+        metric.baseline_mean,
+        metric.candidate_mean,
+        metric.mean_delta,
+    ) else {
         return format_report_line(label, format!("{}{coverage}", ansi::yellow("unavailable")));
     };
     let delta = color_delta(mean_delta, format_delta(mean_delta), false);
@@ -507,7 +575,11 @@ fn format_metric(
 
 /// `formatHarnessComparisonReport`: renders the terminal comparison table.
 pub fn format_harness_comparison_report(report: &HarnessComparisonReport) -> String {
-    if report.eval_sets.iter().all(|set| set.comparisons.is_empty()) {
+    if report
+        .eval_sets
+        .iter()
+        .all(|set| set.comparisons.is_empty())
+    {
         return String::new();
     }
     let mut lines = vec![ansi::bold("Eval Comparisons")];
@@ -530,11 +602,8 @@ pub fn format_harness_comparison_report(report: &HarnessComparisonReport) -> Str
             match correctness.lift {
                 None => lines.push(format_report_line("Pass rate", ansi::yellow("unavailable"))),
                 Some(lift) => {
-                    let delta = color_delta(
-                        lift,
-                        format!("{} pp", format_signed(lift * 100.0, 1)),
-                        true,
-                    );
+                    let delta =
+                        color_delta(lift, format!("{} pp", format_signed(lift * 100.0, 1)), true);
                     let values = ansi::gray(&format!(
                         "(candidate {}, baseline {})",
                         format_percentage(correctness.candidate_pass_rate),

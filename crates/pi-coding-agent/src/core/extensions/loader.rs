@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::CONFIG_DIR_NAME;
 use crate::core::extensions::types::{
-    Extension, ExtensionLoadError, ExtensionRuntime, LoadExtensionsResult, PendingNativeProviderRegistration,
-    PendingProviderRegistration, SourceInfo,
+    Extension, ExtensionLoadError, ExtensionRuntime, LoadExtensionsResult,
+    PendingNativeProviderRegistration, PendingProviderRegistration, SourceInfo,
 };
 use crate::core::pi_manifest::read_pi_manifest;
 
@@ -130,16 +130,23 @@ pub fn run_external_extension(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|e| format!("Failed to load extension: {e}"))?;
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Failed to load extension: {e}"))?;
     if let Some(timeout_ms) = timeout_ms {
         let pid = child.id();
         let start = std::time::Instant::now();
         loop {
-            if let Some(status) = child.try_wait().map_err(|e| format!("Failed to load extension: {e}"))? {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|e| format!("Failed to load extension: {e}"))?
+            {
                 return finish_child(status.code(), child, extension_path, resolved_path);
             }
             if start.elapsed().as_millis() >= timeout_ms as u128 {
-                let _ = Command::new("kill").args([pid.to_string().as_str()]).status();
+                let _ = Command::new("kill")
+                    .args([pid.to_string().as_str()])
+                    .status();
                 return Err(format!(
                     "Failed to load extension: extension runner timed out for {extension_path}"
                 ));
@@ -158,7 +165,11 @@ pub fn run_external_extension(
             let error = if summary.is_empty() {
                 format!(
                     "Failed to load extension: runner exited with code {}",
-                    output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string())
+                    output
+                        .status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
                 )
             } else {
                 format!("Failed to load extension: {summary}")
@@ -183,7 +194,8 @@ fn finish_child(
         let _ = child.wait();
         Err(format!(
             "Failed to load extension: runner exited with code {}",
-            code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string())
+            code.map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
         ))
     }
 }
@@ -197,7 +209,9 @@ fn make_extension(extension_path: &str, resolved_path: &Path) -> Extension {
     let base_dir = if extension_path.starts_with('<') {
         None
     } else {
-        resolved_path.parent().map(|p| p.to_string_lossy().into_owned())
+        resolved_path
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
     };
     Extension {
         path: extension_path.to_string(),
@@ -240,7 +254,10 @@ pub fn load_extension(
     let resolved = resolve_relative_path(extension_path, cwd);
     match run_external_extension(extension_path, &resolved, runner, None) {
         Ok(extension) => Ok(extension),
-        Err(error) => Err(ExtensionLoadError { path: extension_path.to_string(), error }),
+        Err(error) => Err(ExtensionLoadError {
+            path: extension_path.to_string(),
+            error,
+        }),
     }
 }
 
@@ -276,7 +293,11 @@ pub fn load_extensions(
             Err(error) => errors.push(error),
         }
     }
-    LoadExtensionsResult { extensions, errors, runtime }
+    LoadExtensionsResult {
+        extensions,
+        errors,
+        runtime,
+    }
 }
 
 /// Discover and load extensions from standard locations (upstream
@@ -295,7 +316,11 @@ pub fn discover_and_load_extensions(
     let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
     let mut add_paths = |paths: Vec<PathBuf>| {
         for p in paths {
-            let absolute = if p.is_absolute() { p.clone() } else { Path::new(cwd).join(&p) };
+            let absolute = if p.is_absolute() {
+                p.clone()
+            } else {
+                Path::new(cwd).join(&p)
+            };
             if seen.insert(absolute.clone()) {
                 all_paths.push(absolute.to_string_lossy().into_owned());
             }
@@ -337,29 +362,50 @@ pub fn load_bundled_extension(
     runner: Option<&str>,
 ) -> Result<Extension, ExtensionLoadError> {
     let path = PathBuf::from(extension_path);
-    let resolved = if path.is_absolute() { path } else { Path::new(".").join(&path) };
+    let resolved = if path.is_absolute() {
+        path
+    } else {
+        Path::new(".").join(&path)
+    };
     match run_external_extension(extension_path, &resolved, runner, None) {
         Ok(extension) => Ok(extension),
-        Err(error) => Err(ExtensionLoadError { path: extension_path.to_string(), error }),
+        Err(error) => Err(ExtensionLoadError {
+            path: extension_path.to_string(),
+            error,
+        }),
     }
 }
 
 /// Runtime helpers used by runner.rs: queue a provider registration.
-pub fn queue_provider_registration(runtime: &Arc<Mutex<ExtensionRuntime>>, registration: PendingProviderRegistration) {
-    runtime.lock().unwrap().pending_provider_registrations.push(registration);
+pub fn queue_provider_registration(
+    runtime: &Arc<Mutex<ExtensionRuntime>>,
+    registration: PendingProviderRegistration,
+) {
+    runtime
+        .lock()
+        .unwrap()
+        .pending_provider_registrations
+        .push(registration);
 }
 
 pub fn queue_native_provider_registration(
     runtime: &Arc<Mutex<ExtensionRuntime>>,
     registration: PendingNativeProviderRegistration,
 ) {
-    runtime.lock().unwrap().pending_native_provider_registrations.push(registration);
+    runtime
+        .lock()
+        .unwrap()
+        .pending_native_provider_registrations
+        .push(registration);
 }
 
 /// Serialize the runtime's queued provider registrations (upstream flush).
 pub fn take_pending_provider_registrations(
     runtime: &Arc<Mutex<ExtensionRuntime>>,
-) -> (Vec<PendingProviderRegistration>, Vec<PendingNativeProviderRegistration>) {
+) -> (
+    Vec<PendingProviderRegistration>,
+    Vec<PendingNativeProviderRegistration>,
+) {
     let mut guard = runtime.lock().unwrap();
     (
         std::mem::take(&mut guard.pending_provider_registrations),
@@ -374,7 +420,9 @@ pub fn apply_flag_defaults(runtime: &Arc<Mutex<ExtensionRuntime>>, extensions: &
     for extension in extensions {
         for (name, flag) in &extension.flags {
             if flag.default.is_some() && !guard.flag_values.contains_key(name) {
-                guard.flag_values.insert(name.clone(), flag.default.clone().unwrap());
+                guard
+                    .flag_values
+                    .insert(name.clone(), flag.default.clone().unwrap());
             }
         }
     }
@@ -386,7 +434,8 @@ mod tests {
     use std::fs;
 
     fn sandbox(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pi-ext-loader-{tag}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("pi-ext-loader-{tag}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -402,7 +451,11 @@ mod tests {
     #[test]
     fn resolve_entries_prefers_pi_manifest() {
         let dir = sandbox("manifest");
-        fs::write(dir.join("package.json"), r#"{ "pi": { "extensions": ["main.ts"] } }"#).unwrap();
+        fs::write(
+            dir.join("package.json"),
+            r#"{ "pi": { "extensions": ["main.ts"] } }"#,
+        )
+        .unwrap();
         fs::write(dir.join("main.ts"), "export default () => {}").unwrap();
         fs::write(dir.join("index.ts"), "export default () => {}").unwrap();
         let entries = resolve_extension_entries(&dir).unwrap();
@@ -416,7 +469,10 @@ mod tests {
         let dir = sandbox("index");
         fs::write(dir.join("index.js"), "module.exports = () => {}").unwrap();
         let entries = resolve_extension_entries(&dir).unwrap();
-        assert_eq!(entries[0].file_name().unwrap().to_string_lossy(), "index.js");
+        assert_eq!(
+            entries[0].file_name().unwrap().to_string_lossy(),
+            "index.js"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -434,7 +490,11 @@ mod tests {
         fs::write(dir.join("two.js"), "x").unwrap();
         fs::write(dir.join("three.md"), "x").unwrap();
         fs::create_dir_all(dir.join("pkg")).unwrap();
-        fs::write(dir.join("pkg/package.json"), r#"{ "pi": { "extensions": ["ext.ts"] } }"#).unwrap();
+        fs::write(
+            dir.join("pkg/package.json"),
+            r#"{ "pi": { "extensions": ["ext.ts"] } }"#,
+        )
+        .unwrap();
         fs::write(dir.join("pkg/ext.ts"), "x").unwrap();
         fs::create_dir_all(dir.join("sub")).unwrap();
         fs::write(dir.join("sub/index.ts"), "x").unwrap();
@@ -479,7 +539,11 @@ mod tests {
         fs::write(&entry, "export default () => {}").unwrap();
         let err = load_extension("index.ts", &dir.to_string_lossy(), None).unwrap_err();
         let _ = &err;
-        assert!(err.error.starts_with("Failed to load extension:"), "{}", err.error);
+        assert!(
+            err.error.starts_with("Failed to load extension:"),
+            "{}",
+            err.error
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -503,7 +567,8 @@ mod tests {
             fs::set_permissions(&node_path, fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        let result = run_external_extension("index.ts", &entry, Some(node_path.to_str().unwrap()), None);
+        let result =
+            run_external_extension("index.ts", &entry, Some(node_path.to_str().unwrap()), None);
         assert!(result.is_ok(), "result was an error: {result:?}");
         let extension = result.unwrap();
         assert_eq!(extension.path, "index.ts");
@@ -521,13 +586,19 @@ mod tests {
         fs::write(&entry, "export default () => {}").unwrap();
         let bin = sandbox("binfail");
         let node_path = bin.join("node");
-        fs::write(&node_path, "#!/bin/sh\necho 'boom: bad extension' >&2\nexit 3\n").unwrap();
+        fs::write(
+            &node_path,
+            "#!/bin/sh\necho 'boom: bad extension' >&2\nexit 3\n",
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&node_path, fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let err = run_external_extension("index.ts", &entry, Some(node_path.to_str().unwrap()), None).unwrap_err();
+        let err =
+            run_external_extension("index.ts", &entry, Some(node_path.to_str().unwrap()), None)
+                .unwrap_err();
         assert!(err.starts_with("Failed to load extension:"), "{err}");
         assert!(err.contains("boom: bad extension"), "{err}");
         let _ = fs::remove_dir_all(&dir);
@@ -543,11 +614,23 @@ mod tests {
         fs::create_dir_all(agent_dir.join("extensions")).unwrap();
         fs::write(cwd.join(".pi/extensions/local.ts"), "x").unwrap();
         fs::write(agent_dir.join("extensions/global.ts"), "x").unwrap();
-        let result = discover_and_load_extensions(&[], &cwd.to_string_lossy(), &agent_dir.to_string_lossy(), None, None);
+        let result = discover_and_load_extensions(
+            &[],
+            &cwd.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            None,
+            None,
+        );
         // Both discovered; loads may record errors if no runner exists, but
         // the discovery surfaces both entries either as extensions or errors.
         let count = result.extensions.len() + result.errors.len();
-        assert_eq!(count, 2, "expected 2 entries; got {} extensions and {} errors", result.extensions.len(), result.errors.len());
+        assert_eq!(
+            count,
+            2,
+            "expected 2 entries; got {} extensions and {} errors",
+            result.extensions.len(),
+            result.errors.len()
+        );
         let paths: Vec<String> = result
             .extensions
             .iter()
@@ -570,7 +653,13 @@ mod tests {
         fs::write(&ext, "x").unwrap();
         // The configured path resolves to the same project-local extension.
         let configured = vec![ext.to_string_lossy().to_string()];
-        let result = discover_and_load_extensions(&configured, &cwd.to_string_lossy(), &agent_dir.to_string_lossy(), None, None);
+        let result = discover_and_load_extensions(
+            &configured,
+            &cwd.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            None,
+            None,
+        );
         let paths: Vec<String> = result
             .extensions
             .iter()

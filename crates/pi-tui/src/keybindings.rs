@@ -36,9 +36,18 @@ pub const TUI_KEYBINDINGS: &[KeybindingDefinition] = &[
     kb!("tui.editor.historyNext", []),
     kb!("tui.editor.cursorLeft", ["left", "ctrl+b"]),
     kb!("tui.editor.cursorRight", ["right", "ctrl+f"]),
-    kb!("tui.editor.cursorWordLeft", ["alt+left", "ctrl+left", "alt+b"]),
-    kb!("tui.editor.cursorWordRight", ["alt+right", "ctrl+right", "alt+f"]),
-    kb!("tui.editor.cursorLineStart", ["home", "ctrl+home", "ctrl+a"]),
+    kb!(
+        "tui.editor.cursorWordLeft",
+        ["alt+left", "ctrl+left", "alt+b"]
+    ),
+    kb!(
+        "tui.editor.cursorWordRight",
+        ["alt+right", "ctrl+right", "alt+f"]
+    ),
+    kb!(
+        "tui.editor.cursorLineStart",
+        ["home", "ctrl+home", "ctrl+a"]
+    ),
     kb!("tui.editor.cursorLineEnd", ["end", "ctrl+end", "ctrl+e"]),
     kb!("tui.editor.jumpForward", ["ctrl+]"]),
     kb!("tui.editor.jumpBackward", ["ctrl+alt+]"]),
@@ -73,7 +82,10 @@ pub const TUI_KEYBINDINGS: &[KeybindingDefinition] = &[
     kb!("tui.altScreen.nextPrompt", ["ctrl+shift+down"]),
     kb!("tui.altScreen.search", ["ctrl+shift+f"]),
     kb!("tui.altScreen.searchNext", ["enter", "ctrl+g"]),
-    kb!("tui.altScreen.searchPrevious", ["shift+enter", "ctrl+shift+g"]),
+    kb!(
+        "tui.altScreen.searchPrevious",
+        ["shift+enter", "ctrl+shift+g"]
+    ),
     kb!("tui.altScreen.searchClose", ["escape"]),
     kb!("tui.altScreen.top", ["home"]),
     kb!("tui.altScreen.bottom", ["end"]),
@@ -136,7 +148,10 @@ impl KeybindingsManager {
             }
             let normalized = normalize_keys(keys);
             for key in normalized {
-                user_claims.entry(key).or_default().insert(keybinding.clone());
+                user_claims
+                    .entry(key)
+                    .or_default()
+                    .insert(keybinding.clone());
             }
         }
         for (key, keybindings) in user_claims {
@@ -152,7 +167,11 @@ impl KeybindingsManager {
             let user_keys = self.user_bindings.get(definition.id);
             let keys = match user_keys {
                 Some(keys) => normalize_keys(keys),
-                None => definition.default_keys.iter().map(|k| k.to_string()).collect(),
+                None => definition
+                    .default_keys
+                    .iter()
+                    .map(|k| k.to_string())
+                    .collect(),
             };
             self.keys_by_id.insert(definition.id.to_string(), keys);
         }
@@ -171,10 +190,7 @@ impl KeybindingsManager {
     }
 
     pub fn get_keys(&self, binding: Keybinding) -> Vec<String> {
-        self.keys_by_id
-            .get(binding)
-            .cloned()
-            .unwrap_or_default()
+        self.keys_by_id.get(binding).cloned().unwrap_or_default()
     }
 
     pub fn get_definition(&self, binding: Keybinding) -> Option<&KeybindingDefinition> {
@@ -219,7 +235,10 @@ mod tests {
     #[test]
     fn binds_ctrl_j_as_default_newline_alias() {
         let kb = manager();
-        assert_eq!(kb.get_keys("tui.input.newLine"), vec!["shift+enter", "ctrl+j"]);
+        assert_eq!(
+            kb.get_keys("tui.input.newLine"),
+            vec!["shift+enter", "ctrl+j"]
+        );
         // In the pi key-string surface, kitty "\x1b[106;5u" arrives as ctrl+j.
         assert!(kb.matches(&TuiKey::shift("enter"), "tui.input.newLine"));
         assert!(kb.matches(&TuiKey::ctrl("j"), "tui.input.newLine"));
@@ -228,10 +247,22 @@ mod tests {
     #[test]
     fn binds_modified_and_unmodified_viewport_navigation() {
         let kb = manager();
-        assert_eq!(kb.get_keys("tui.editor.cursorLineStart"), vec!["home", "ctrl+home", "ctrl+a"]);
-        assert_eq!(kb.get_keys("tui.editor.cursorLineEnd"), vec!["end", "ctrl+end", "ctrl+e"]);
-        assert_eq!(kb.get_keys("tui.editor.pageUp"), vec!["pageup", "ctrl+pageup"]);
-        assert_eq!(kb.get_keys("tui.editor.pageDown"), vec!["pagedown", "ctrl+pagedown"]);
+        assert_eq!(
+            kb.get_keys("tui.editor.cursorLineStart"),
+            vec!["home", "ctrl+home", "ctrl+a"]
+        );
+        assert_eq!(
+            kb.get_keys("tui.editor.cursorLineEnd"),
+            vec!["end", "ctrl+end", "ctrl+e"]
+        );
+        assert_eq!(
+            kb.get_keys("tui.editor.pageUp"),
+            vec!["pageup", "ctrl+pageup"]
+        );
+        assert_eq!(
+            kb.get_keys("tui.editor.pageDown"),
+            vec!["pagedown", "ctrl+pagedown"]
+        );
     }
 
     #[test]
@@ -250,11 +281,23 @@ mod tests {
         assert!(kb.get_keys("tui.altScreen.halfPageDown").is_empty());
         assert!(kb.get_keys("tui.altScreen.lineUp").is_empty());
         assert!(kb.get_keys("tui.altScreen.lineDown").is_empty());
-        assert_eq!(kb.get_keys("tui.altScreen.previousPrompt"), vec!["ctrl+shift+up"]);
-        assert_eq!(kb.get_keys("tui.altScreen.nextPrompt"), vec!["ctrl+shift+down"]);
+        assert_eq!(
+            kb.get_keys("tui.altScreen.previousPrompt"),
+            vec!["ctrl+shift+up"]
+        );
+        assert_eq!(
+            kb.get_keys("tui.altScreen.nextPrompt"),
+            vec!["ctrl+shift+down"]
+        );
         assert_eq!(kb.get_keys("tui.altScreen.search"), vec!["ctrl+shift+f"]);
-        assert_eq!(kb.get_keys("tui.altScreen.searchNext"), vec!["enter", "ctrl+g"]);
-        assert_eq!(kb.get_keys("tui.altScreen.searchPrevious"), vec!["shift+enter", "ctrl+shift+g"]);
+        assert_eq!(
+            kb.get_keys("tui.altScreen.searchNext"),
+            vec!["enter", "ctrl+g"]
+        );
+        assert_eq!(
+            kb.get_keys("tui.altScreen.searchPrevious"),
+            vec!["shift+enter", "ctrl+shift+g"]
+        );
         assert_eq!(kb.get_keys("tui.altScreen.searchClose"), vec!["escape"]);
         assert_eq!(kb.get_keys("tui.altScreen.top"), vec!["home"]);
         assert_eq!(kb.get_keys("tui.altScreen.bottom"), vec!["end"]);
@@ -263,7 +306,10 @@ mod tests {
     #[test]
     fn does_not_evict_selector_confirm_when_input_submit_rebound() {
         let mut user = KeybindingsConfig::new();
-        user.insert("tui.input.submit".to_string(), vec!["enter".to_string(), "ctrl+enter".to_string()]);
+        user.insert(
+            "tui.input.submit".to_string(),
+            vec!["enter".to_string(), "ctrl+enter".to_string()],
+        );
         let kb = KeybindingsManager::with_defaults(user);
         assert_eq!(kb.get_keys("tui.input.submit"), vec!["enter", "ctrl+enter"]);
         assert_eq!(kb.get_keys("tui.select.confirm"), vec!["enter"]);
@@ -272,7 +318,10 @@ mod tests {
     #[test]
     fn does_not_evict_cursor_bindings_when_another_action_reuses_key() {
         let mut user = KeybindingsConfig::new();
-        user.insert("tui.select.up".to_string(), vec!["up".to_string(), "ctrl+p".to_string()]);
+        user.insert(
+            "tui.select.up".to_string(),
+            vec!["up".to_string(), "ctrl+p".to_string()],
+        );
         let kb = KeybindingsManager::with_defaults(user);
         assert_eq!(kb.get_keys("tui.select.up"), vec!["up", "ctrl+p"]);
         assert_eq!(kb.get_keys("tui.editor.cursorUp"), vec!["up"]);
@@ -288,7 +337,10 @@ mod tests {
             kb.get_conflicts(),
             vec![KeybindingConflict {
                 key: "ctrl+x".to_string(),
-                keybindings: vec!["tui.input.submit".to_string(), "tui.select.confirm".to_string()],
+                keybindings: vec![
+                    "tui.input.submit".to_string(),
+                    "tui.select.confirm".to_string()
+                ],
             }]
         );
         assert_eq!(kb.get_keys("tui.editor.cursorLeft"), vec!["left", "ctrl+b"]);

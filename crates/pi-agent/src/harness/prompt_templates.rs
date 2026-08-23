@@ -58,7 +58,10 @@ pub fn load_prompt_templates(
 pub fn load_sourced_prompt_templates<TSource: Clone>(
     cwd: &str,
     inputs: &[(String, TSource)],
-) -> (Vec<(PromptTemplate, TSource)>, Vec<(PromptTemplateDiagnostic, TSource)>) {
+) -> (
+    Vec<(PromptTemplate, TSource)>,
+    Vec<(PromptTemplateDiagnostic, TSource)>,
+) {
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
     for (path, source) in inputs {
@@ -219,27 +222,44 @@ pub fn substitute_args(content: &str, args: &[String]) -> String {
         let num: usize = caps[1].parse().unwrap_or(0);
         args.get(num.wrapping_sub(1)).cloned().unwrap_or_default()
     });
-    result = regex_replace(&result, &regex::Regex::new(r"\$\{@:(\d+)(?::(\d+))?\}").unwrap(), |caps| {
-        let start_raw: isize = caps[1].parse().unwrap_or(1);
-        let mut start = start_raw - 1;
-        if start < 0 {
-            start = 0;
-        }
-        let start = start as usize;
-        if let Some(len) = caps.get(2) {
-            let len: usize = len.as_str().parse().unwrap_or(0);
-            args.iter().skip(start).take(len).cloned().collect::<Vec<_>>().join(" ")
-        } else {
-            args.iter().skip(start).cloned().collect::<Vec<_>>().join(" ")
-        }
-    });
+    result = regex_replace(
+        &result,
+        &regex::Regex::new(r"\$\{@:(\d+)(?::(\d+))?\}").unwrap(),
+        |caps| {
+            let start_raw: isize = caps[1].parse().unwrap_or(1);
+            let mut start = start_raw - 1;
+            if start < 0 {
+                start = 0;
+            }
+            let start = start as usize;
+            if let Some(len) = caps.get(2) {
+                let len: usize = len.as_str().parse().unwrap_or(0);
+                args.iter()
+                    .skip(start)
+                    .take(len)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            } else {
+                args.iter()
+                    .skip(start)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        },
+    );
     let all_args = args.join(" ");
     result = result.replace("$ARGUMENTS", &all_args);
     result = result.replace("$@", &all_args);
     result
 }
 
-fn regex_replace(text: &str, re: &regex::Regex, mut f: impl FnMut(&regex::Captures) -> String) -> String {
+fn regex_replace(
+    text: &str,
+    re: &regex::Regex,
+    mut f: impl FnMut(&regex::Captures) -> String,
+) -> String {
     let mut out = String::new();
     let mut last = 0;
     for caps in re.captures_iter(text) {
@@ -272,13 +292,23 @@ mod tests {
     #[test]
     fn loads_templates_from_dir_sorted() {
         let dir = tmpdir("dir");
-        std::fs::write(dir.join("b.md"), "---\ndescription: B template\n---\nBody B\n").unwrap();
+        std::fs::write(
+            dir.join("b.md"),
+            "---\ndescription: B template\n---\nBody B\n",
+        )
+        .unwrap();
         std::fs::write(dir.join("a.md"), "# A template\n\nBody A\n").unwrap();
         std::fs::write(dir.join("notes.txt"), "not a template").unwrap();
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub").join("nested.md"), "nested").unwrap();
-        let (templates, diagnostics) = load_prompt_templates(&dir.to_string_lossy(), &[dir.to_string_lossy().into_owned()]);
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {diagnostics:?}");
+        let (templates, diagnostics) = load_prompt_templates(
+            &dir.to_string_lossy(),
+            &[dir.to_string_lossy().into_owned()],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
         assert_eq!(templates.len(), 2);
         assert_eq!(templates[0].name, "a");
         assert_eq!(templates[0].description.as_deref(), Some("# A template"));
@@ -299,7 +329,10 @@ mod tests {
         assert!(diagnostics.is_empty(), "missing path skipped silently");
         let bad = dir.join("bad.md");
         std::fs::write(&bad, "---\n{{{{not yaml\n---\nbody").unwrap();
-        let (templates, diagnostics) = load_prompt_templates(&dir.to_string_lossy(), &[bad.to_string_lossy().into_owned()]);
+        let (templates, diagnostics) = load_prompt_templates(
+            &dir.to_string_lossy(),
+            &[bad.to_string_lossy().into_owned()],
+        );
         assert!(templates.is_empty());
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].code, "parse_failed");
@@ -310,8 +343,15 @@ mod tests {
     fn first_line_description_truncates_to_60() {
         let dir = tmpdir("desc");
         let long = "x".repeat(80);
-        std::fs::write(dir.join("t.md"), format!("# This is a much longer first line {long}\nbody")).unwrap();
-        let (templates, _) = load_prompt_templates(&dir.to_string_lossy(), &[dir.to_string_lossy().into_owned()]);
+        std::fs::write(
+            dir.join("t.md"),
+            format!("# This is a much longer first line {long}\nbody"),
+        )
+        .unwrap();
+        let (templates, _) = load_prompt_templates(
+            &dir.to_string_lossy(),
+            &[dir.to_string_lossy().into_owned()],
+        );
         let desc = templates[0].description.as_deref().unwrap();
         assert!(desc.ends_with("..."));
         assert!(desc.chars().count() <= 63);
@@ -321,12 +361,21 @@ mod tests {
     #[test]
     fn parse_command_args_handles_quotes() {
         assert_eq!(parse_command_args("alpha beta"), vec!["alpha", "beta"]);
-        assert_eq!(parse_command_args("one \"two three\" four"), vec!["one", "two three", "four"]);
+        assert_eq!(
+            parse_command_args("one \"two three\" four"),
+            vec!["one", "two three", "four"]
+        );
         // Upstream quote handling is a naive toggle: the apostrophe inside
         // "it's" opens a quote that closes at the next apostrophe, so the
         // whole remainder joins into one argument. Parity over intuition.
-        assert_eq!(parse_command_args("it's a 'quoted' pair"), vec!["its a quoted pair"]);
-        assert_eq!(parse_command_args("one 'two three' four"), vec!["one", "two three", "four"]);
+        assert_eq!(
+            parse_command_args("it's a 'quoted' pair"),
+            vec!["its a quoted pair"]
+        );
+        assert_eq!(
+            parse_command_args("one 'two three' four"),
+            vec!["one", "two three", "four"]
+        );
         assert_eq!(parse_command_args("let's go"), vec!["lets go"]);
         assert_eq!(parse_command_args(""), Vec::<String>::new());
         assert_eq!(parse_command_args("  spaced  out  "), vec!["spaced", "out"]);
@@ -342,7 +391,10 @@ mod tests {
         assert_eq!(substitute_args("${@:2}", &args), "b c");
         assert_eq!(substitute_args("${@:2:1}", &args), "b");
         assert_eq!(substitute_args("${@:0}", &args), "a b c");
-        assert_eq!(substitute_args("no placeholders here", &args), "no placeholders here");
+        assert_eq!(
+            substitute_args("no placeholders here", &args),
+            "no placeholders here"
+        );
     }
 
     #[test]
@@ -352,7 +404,8 @@ mod tests {
             description: Some("d".into()),
             content: "Review: $1\nAll: $@".into(),
         };
-        let formatted = format_prompt_template_invocation(&template, &["code".to_string(), "docs".to_string()]);
+        let formatted =
+            format_prompt_template_invocation(&template, &["code".to_string(), "docs".to_string()]);
         assert_eq!(formatted, "Review: code\nAll: code docs");
     }
 }

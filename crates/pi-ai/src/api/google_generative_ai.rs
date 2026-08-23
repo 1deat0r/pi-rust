@@ -10,13 +10,13 @@
 
 use serde_json::{json, Value};
 
+use crate::event_stream::{AssistantMessageEventStream, StreamSink};
 use crate::model::{calculate_cost, clamp_thinking_level, Model};
+use crate::sse::SseParser;
 use crate::types::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, Context, DoneReason, ErrorReason,
     ModelThinkingLevel, SimpleStreamOptions, StopReason, StreamOptions, ToolChoice, Usage,
 };
-use crate::event_stream::{AssistantMessageEventStream, StreamSink};
-use crate::sse::SseParser;
 
 use super::google_shared::*;
 
@@ -39,7 +39,11 @@ pub struct GoogleThinking {
 
 impl GoogleOptions {
     pub fn from_stream_options(base: StreamOptions) -> Self {
-        Self { base, tool_choice: None, thinking: None }
+        Self {
+            base,
+            tool_choice: None,
+            thinking: None,
+        }
     }
 }
 
@@ -52,12 +56,16 @@ fn is_gemma4_model(id: &str) -> bool {
 }
 
 fn is_gemini3_pro_model(id: &str) -> bool {
-    regex::Regex::new(r"(?i)gemini-3(?:\.\d+)?-pro").unwrap().is_match(id)
+    regex::Regex::new(r"(?i)gemini-3(?:\.\d+)?-pro")
+        .unwrap()
+        .is_match(id)
 }
 
 fn is_gemini3_flash_model(id: &str) -> bool {
     let id = id.to_lowercase();
-    regex::Regex::new(r"gemini-3(?:\.\d+)?-flash").unwrap().is_match(&id)
+    regex::Regex::new(r"gemini-3(?:\.\d+)?-flash")
+        .unwrap()
+        .is_match(&id)
         || id == "gemini-flash-latest"
         || id == "gemini-flash-lite-latest"
 }
@@ -101,7 +109,11 @@ pub fn google_thinking_level(level: ResolvedGoogleThinkingLevel, model_id: &str)
 }
 
 /// Token budgets for Gemini 2.x thinking levels (upstream `getGoogleBudget`).
-pub fn google_budget(model_id: &str, level: ResolvedGoogleThinkingLevel, custom: Option<&crate::types::ThinkingBudgets>) -> i64 {
+pub fn google_budget(
+    model_id: &str,
+    level: ResolvedGoogleThinkingLevel,
+    custom: Option<&crate::types::ThinkingBudgets>,
+) -> i64 {
     if let Some(budgets) = custom {
         let value = match level {
             ResolvedGoogleThinkingLevel::Minimal => budgets.minimal,
@@ -154,13 +166,21 @@ pub fn build_params(model: &Model, context: &Context, options: &GoogleOptions) -
 
     let supports_strict = supports_google_strict_tool_sampling(&model.id);
     let function_calling_mode = if !context.tools.is_empty() {
-        resolve_google_function_calling_mode(&context.tools, options.tool_choice.as_deref(), supports_strict)
+        resolve_google_function_calling_mode(
+            &context.tools,
+            options.tool_choice.as_deref(),
+            supports_strict,
+        )
     } else {
         None
     };
 
     let mut config = json!({});
-    if generation_config.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
+    if generation_config
+        .as_object()
+        .map(|o| !o.is_empty())
+        .unwrap_or(false)
+    {
         config["generationConfig"] = generation_config;
     }
     if let Some(system_prompt) = &context.system_prompt {
@@ -249,7 +269,11 @@ fn process_chunk(
     state: &mut GoogleStreamState,
     push: &mut dyn FnMut(AssistantMessageEvent),
 ) -> Result<(), String> {
-    let GoogleStreamState { output, block_kind, blocks } = state;
+    let GoogleStreamState {
+        output,
+        block_kind,
+        blocks,
+    } = state;
 
     // responseId: keep the first non-empty one.
     if output.response_id().is_none() {
@@ -273,7 +297,11 @@ fn process_chunk(
             for part in parts {
                 if part.get("text").is_some() {
                     let is_thinking = is_thinking_part(part);
-                    let kind = if is_thinking { BlockKind::Thinking } else { BlockKind::Text };
+                    let kind = if is_thinking {
+                        BlockKind::Thinking
+                    } else {
+                        BlockKind::Text
+                    };
                     let block_kind_equal = block_kind.as_ref() == Some(&kind);
                     if !block_kind_equal {
                         // Close the previous block.
@@ -313,12 +341,19 @@ fn process_chunk(
                             });
                         }
                     }
-                    let delta = part.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let delta = part
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let signature = part.get("thoughtSignature").and_then(|v| v.as_str());
                     match block_kind.as_ref() {
                         Some(BlockKind::Thinking) => {
-                            if let Some(ContentBlock::Thinking { thinking, thinking_signature, .. }) =
-                                blocks.last_mut()
+                            if let Some(ContentBlock::Thinking {
+                                thinking,
+                                thinking_signature,
+                                ..
+                            }) = blocks.last_mut()
                             {
                                 *thinking += &delta;
                                 *thinking_signature = retain_thought_signature(
@@ -333,10 +368,14 @@ fn process_chunk(
                             });
                         }
                         _ => {
-                            if let Some(ContentBlock::Text { text, text_signature }) = blocks.last_mut()
+                            if let Some(ContentBlock::Text {
+                                text,
+                                text_signature,
+                            }) = blocks.last_mut()
                             {
                                 *text += &delta;
-                                *text_signature = retain_thought_signature(text_signature.as_deref(), signature);
+                                *text_signature =
+                                    retain_thought_signature(text_signature.as_deref(), signature);
                             }
                             push(AssistantMessageEvent::TextDelta {
                                 content_index: blocks.len() - 1,
@@ -377,10 +416,7 @@ fn process_chunk(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let args = function_call
-                        .get("args")
-                        .cloned()
-                        .unwrap_or(json!({}));
+                    let args = function_call.get("args").cloned().unwrap_or(json!({}));
                     let needs_new_id = provided_id.is_none()
                         || blocks
                             .iter()
@@ -404,7 +440,10 @@ fn process_chunk(
                         namespace: None,
                     };
                     if let Some(sig) = thought_sig {
-                        if let ContentBlock::ToolCall { thought_signature, .. } = &mut tool_call {
+                        if let ContentBlock::ToolCall {
+                            thought_signature, ..
+                        } = &mut tool_call
+                        {
                             *thought_signature = Some(sig.to_string());
                         }
                     }
@@ -437,7 +476,11 @@ fn process_chunk(
         output.set_raw_stop_reason(finish_reason.to_string());
         let stop = map_stop_reason(Some(finish_reason));
         output.set_stop_reason(stop);
-        if blocks.iter().any(|b| matches!(b, ContentBlock::ToolCall { .. })) && stop == StopReason::Stop {
+        if blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolCall { .. }))
+            && stop == StopReason::Stop
+        {
             output.set_stop_reason(StopReason::ToolUse);
         }
     }
@@ -449,7 +492,11 @@ fn process_chunk(
     Ok(())
 }
 
-fn close_block(kind: BlockKind, _blocks: &mut Vec<ContentBlock>, _push: &mut dyn FnMut(AssistantMessageEvent)) {
+fn close_block(
+    kind: BlockKind,
+    _blocks: &mut Vec<ContentBlock>,
+    _push: &mut dyn FnMut(AssistantMessageEvent),
+) {
     // Blocks are closed by the caller emitting the matching _end event. This
     // helper exists to mirror the upstream's explicit currentBlock close.
     let _ = kind;
@@ -472,11 +519,26 @@ fn block_thinking(blocks: &[ContentBlock], _kind: BlockKind) -> String {
 /// Apply usageMetadata to the output message and calculate cost (upstream
 /// usage assembly in the loops).
 fn apply_usage(model: &Model, output: &mut AssistantMessage, usage: &Value) {
-    let prompt = usage.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0);
-    let cached = usage.get("cachedContentTokenCount").and_then(|v| v.as_u64()).unwrap_or(0);
-    let candidates = usage.get("candidatesTokenCount").and_then(|v| v.as_u64()).unwrap_or(0);
-    let thoughts = usage.get("thoughtsTokenCount").and_then(|v| v.as_u64()).unwrap_or(0);
-    let total = usage.get("totalTokenCount").and_then(|v| v.as_u64()).unwrap_or(0);
+    let prompt = usage
+        .get("promptTokenCount")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let cached = usage
+        .get("cachedContentTokenCount")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let candidates = usage
+        .get("candidatesTokenCount")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let thoughts = usage
+        .get("thoughtsTokenCount")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let total = usage
+        .get("totalTokenCount")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
 
     let mut u = Usage {
         input: prompt.saturating_sub(cached),
@@ -540,9 +602,7 @@ pub fn process_google_events(
         }
     }
     match state.output.stop_reason() {
-        Some(StopReason::Pending) => {
-            Err("Google stream ended without a finish reason".to_string())
-        }
+        Some(StopReason::Pending) => Err("Google stream ended without a finish reason".to_string()),
         Some(StopReason::Aborted) | Some(StopReason::Error) => {
             let raw = state.output.raw_stop_reason().unwrap_or("").to_string();
             let msg = if !raw.is_empty() {
@@ -586,7 +646,9 @@ pub fn stream(
         );
     }
     let stream = AssistantMessageEventStream::new();
-    let Some(sender) = stream.sender() else { return stream };
+    let Some(sender) = stream.sender() else {
+        return stream;
+    };
     let model = model.clone();
     let context = context.clone();
     let options = options.clone();
@@ -599,7 +661,10 @@ pub fn stream(
         let mut pusher = crate::event_stream::StreamSinkAdapter::new(sender);
         let params = build_params(&model, &context, &options);
 
-        let endpoint = format!("{base_url}/models/{}:streamGenerateContent?alt=sse", model.id);
+        let endpoint = format!(
+            "{base_url}/models/{}:streamGenerateContent?alt=sse",
+            model.id
+        );
         let mut request = client
             .post(&endpoint)
             .header("content-type", "application/json")
@@ -618,7 +683,10 @@ pub fn stream(
             Err(err) => {
                 let mut message = new_output(&model);
                 message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(&mut message, format!("Request failed: {err}"));
+                super::anthropic_messages::set_error_message(
+                    &mut message,
+                    format!("Request failed: {err}"),
+                );
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -640,7 +708,10 @@ pub fn stream(
             Err(err) => {
                 let mut message = new_output(&model);
                 message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(&mut message, format!("Request body failed: {err}"));
+                super::anthropic_messages::set_error_message(
+                    &mut message,
+                    format!("Request body failed: {err}"),
+                );
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -669,7 +740,9 @@ pub fn stream(
         let body_text = String::from_utf8_lossy(&body).to_string();
         let events = SseParser::parse_text(&body_text);
 
-        pusher.push(AssistantMessageEvent::Start { partial: new_output(&model) });
+        pusher.push(AssistantMessageEvent::Start {
+            partial: new_output(&model),
+        });
         match process_google_events(&model, &events, |event| pusher.push(event)) {
             Ok(message) => {
                 let reason = match message.stop_reason().unwrap_or(StopReason::Stop) {
@@ -679,7 +752,10 @@ pub fn stream(
                     StopReason::Deferred => DoneReason::Deferred,
                     _ => DoneReason::Stop,
                 };
-                pusher.push(AssistantMessageEvent::Done { reason, message: message.clone() });
+                pusher.push(AssistantMessageEvent::Done {
+                    reason,
+                    message: message.clone(),
+                });
                 pusher.end(Some(message));
             }
             Err(err) => {
@@ -701,7 +777,11 @@ pub fn stream(
 /// Pull the Google error message from an error response body.
 pub fn extract_google_error(body: &str) -> String {
     if let Ok(value) = serde_json::from_str::<Value>(body) {
-        if let Some(msg) = value.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+        if let Some(msg) = value
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
             return msg.to_string();
         }
         if let Some(detail) = value.get("detail").and_then(|d| d.as_str()) {
@@ -721,7 +801,9 @@ pub fn stream_simple(
     api_key: Option<&str>,
     options: &SimpleStreamOptions,
 ) -> AssistantMessageEventStream {
-    let Some(api_key) = api_key.map(|s| s.to_string()).or_else(|| std::env::var("GEMINI_API_KEY").ok())
+    let Some(api_key) = api_key
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("GEMINI_API_KEY").ok())
     else {
         let mut message = new_output(model);
         message.set_stop_reason(StopReason::Error);
@@ -729,7 +811,12 @@ pub fn stream_simple(
             &mut message,
             format!("No API key for provider: {}", model.provider),
         );
-        return crate::event_stream::create_error_stream(&model.api, &model.provider, &model.id, message.error_message().unwrap_or("").to_string());
+        return crate::event_stream::create_error_stream(
+            &model.api,
+            &model.provider,
+            &model.id,
+            message.error_message().unwrap_or("").to_string(),
+        );
     };
 
     if options.reasoning.is_none() {
@@ -741,7 +828,11 @@ pub fn stream_simple(
                 ToolChoice::Auto => "auto".into(),
                 ToolChoice::None => "none".into(),
             }),
-            thinking: Some(GoogleThinking { enabled: false, budget_tokens: None, level: None }),
+            thinking: Some(GoogleThinking {
+                enabled: false,
+                budget_tokens: None,
+                level: None,
+            }),
         };
         return stream(model, context, client, base_url, Some(&api_key), &go);
     }
@@ -763,7 +854,11 @@ pub fn stream_simple(
     } else {
         GoogleThinking {
             enabled: true,
-            budget_tokens: Some(google_budget(&model_id, resolved, options.thinking_budgets.as_ref())),
+            budget_tokens: Some(google_budget(
+                &model_id,
+                resolved,
+                options.thinking_budgets.as_ref(),
+            )),
             level: None,
         }
     };
@@ -797,17 +892,31 @@ mod tests {
         Context {
             system_prompt: Some("You are helpful.".to_string()),
             messages: vec![Message::User(UserContent::string("hello", 1))],
-            tools: vec![json_tool("bash", "run a command", &json!({"type":"object","properties":{}}))],
+            tools: vec![json_tool(
+                "bash",
+                "run a command",
+                &json!({"type":"object","properties":{}}),
+            )],
         }
     }
 
     #[test]
     fn build_params_has_contents_system_and_tools() {
         let m = model("gemini-2.5-pro");
-        let params = build_params(&m, &ctx(), &GoogleOptions::from_stream_options(StreamOptions::default()));
+        let params = build_params(
+            &m,
+            &ctx(),
+            &GoogleOptions::from_stream_options(StreamOptions::default()),
+        );
         assert_eq!(params["contents"][0]["role"], "user");
-        assert_eq!(params["systemInstruction"]["parts"][0]["text"], "You are helpful.");
-        assert_eq!(params["tools"][0]["functionDeclarations"][0]["name"], "bash");
+        assert_eq!(
+            params["systemInstruction"]["parts"][0]["text"],
+            "You are helpful."
+        );
+        assert_eq!(
+            params["tools"][0]["functionDeclarations"][0]["name"],
+            "bash"
+        );
     }
 
     #[test]
@@ -816,7 +925,11 @@ mod tests {
         let opts = GoogleOptions {
             base: StreamOptions::default(),
             tool_choice: None,
-            thinking: Some(GoogleThinking { enabled: true, budget_tokens: Some(8192), level: None }),
+            thinking: Some(GoogleThinking {
+                enabled: true,
+                budget_tokens: Some(8192),
+                level: None,
+            }),
         };
         let params = build_params(&m, &ctx(), &opts);
         assert_eq!(params["thinkingConfig"]["includeThoughts"], true);
@@ -829,7 +942,11 @@ mod tests {
         let opts = GoogleOptions {
             base: StreamOptions::default(),
             tool_choice: None,
-            thinking: Some(GoogleThinking { enabled: true, budget_tokens: None, level: Some("HIGH") }),
+            thinking: Some(GoogleThinking {
+                enabled: true,
+                budget_tokens: None,
+                level: Some("HIGH"),
+            }),
         };
         let params = build_params(&m, &ctx(), &opts);
         assert_eq!(params["thinkingConfig"]["thinkingLevel"], "HIGH");
@@ -837,10 +954,22 @@ mod tests {
 
     #[test]
     fn disabled_thinking_config_by_model_family() {
-        assert_eq!(disabled_thinking_config("gemini-3-pro"), json!({"thinkingLevel":"LOW"}));
-        assert_eq!(disabled_thinking_config("gemini-3-flash"), json!({"thinkingLevel":"MINIMAL"}));
-        assert_eq!(disabled_thinking_config("gemma-4-27b"), json!({"thinkingLevel":"MINIMAL"}));
-        assert_eq!(disabled_thinking_config("gemini-2.5-pro"), json!({"thinkingBudget":0}));
+        assert_eq!(
+            disabled_thinking_config("gemini-3-pro"),
+            json!({"thinkingLevel":"LOW"})
+        );
+        assert_eq!(
+            disabled_thinking_config("gemini-3-flash"),
+            json!({"thinkingLevel":"MINIMAL"})
+        );
+        assert_eq!(
+            disabled_thinking_config("gemma-4-27b"),
+            json!({"thinkingLevel":"MINIMAL"})
+        );
+        assert_eq!(
+            disabled_thinking_config("gemini-2.5-pro"),
+            json!({"thinkingBudget":0})
+        );
     }
 
     #[test]
@@ -854,10 +983,25 @@ mod tests {
             24576
         );
         // Unknown family -> dynamic (-1)
-        assert_eq!(google_budget("gemini-1.5-pro", ResolvedGoogleThinkingLevel::High, None), -1);
+        assert_eq!(
+            google_budget("gemini-1.5-pro", ResolvedGoogleThinkingLevel::High, None),
+            -1
+        );
         // Custom budgets override.
-        let custom = ThinkingBudgets { minimal: Some(10), low: Some(20), medium: Some(30), high: Some(40) };
-        assert_eq!(google_budget("gemini-2.5-pro", ResolvedGoogleThinkingLevel::Low, Some(&custom)), 20);
+        let custom = ThinkingBudgets {
+            minimal: Some(10),
+            low: Some(20),
+            medium: Some(30),
+            high: Some(40),
+        };
+        assert_eq!(
+            google_budget(
+                "gemini-2.5-pro",
+                ResolvedGoogleThinkingLevel::Low,
+                Some(&custom)
+            ),
+            20
+        );
     }
 
     #[test]
@@ -875,7 +1019,11 @@ mod tests {
             }
         });
         let mut events: Vec<AssistantMessageEvent> = Vec::new();
-        let mut state = GoogleStreamState { output: new_output(&m), block_kind: None, blocks: Vec::new() };
+        let mut state = GoogleStreamState {
+            output: new_output(&m),
+            block_kind: None,
+            blocks: Vec::new(),
+        };
         process_chunk(&m, &chunk, &mut state, &mut |e| events.push(e)).unwrap();
         assert_eq!(state.output.stop_reason(), Some(StopReason::Stop));
         let text: String = state
@@ -904,7 +1052,11 @@ mod tests {
             }]
         });
         let mut events: Vec<AssistantMessageEvent> = Vec::new();
-        let mut state = GoogleStreamState { output: new_output(&m), block_kind: None, blocks: Vec::new() };
+        let mut state = GoogleStreamState {
+            output: new_output(&m),
+            block_kind: None,
+            blocks: Vec::new(),
+        };
         process_chunk(&m, &chunk, &mut state, &mut |e| events.push(e)).unwrap();
         // With a tool call present, STOP maps to toolUse
         assert_eq!(state.output.stop_reason(), Some(StopReason::ToolUse));
@@ -927,18 +1079,30 @@ mod tests {
             "usageMetadata": { "promptTokenCount": 3 }
         });
         let mut events: Vec<AssistantMessageEvent> = Vec::new();
-        let mut state = GoogleStreamState { output: new_output(&m), block_kind: None, blocks: Vec::new() };
+        let mut state = GoogleStreamState {
+            output: new_output(&m),
+            block_kind: None,
+            blocks: Vec::new(),
+        };
         process_chunk(&m, &chunk, &mut state, &mut |e| events.push(e)).unwrap();
         assert!(matches!(state.blocks[0], ContentBlock::Thinking { .. }));
         assert!(matches!(state.blocks[1], ContentBlock::Text { .. }));
-        assert!(events.iter().any(|e| matches!(e, AssistantMessageEvent::ThinkingDelta { .. })));
-        assert!(events.iter().any(|e| matches!(e, AssistantMessageEvent::TextStart { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::ThinkingDelta { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::TextStart { .. })));
     }
 
     #[test]
     fn missing_finish_reason_is_error() {
         let m = model("gemini-2.5-pro");
-        let events = vec![crate::sse::SseEvent { data: "{}".into(), event: None, id: None }];
+        let events = vec![crate::sse::SseEvent {
+            data: "{}".into(),
+            event: None,
+            id: None,
+        }];
         let result = process_google_events(&m, &events, |_| {});
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("without a finish reason"));
@@ -948,7 +1112,11 @@ mod tests {
     fn error_finish_reason_surfaces_message() {
         let m = model("gemini-2.5-pro");
         let chunk = json!({ "candidates": [{ "finishReason": "SAFETY" }] });
-        let events = vec![crate::sse::SseEvent { data: chunk.to_string(), event: None, id: None }];
+        let events = vec![crate::sse::SseEvent {
+            data: chunk.to_string(),
+            event: None,
+            id: None,
+        }];
         let result = process_google_events(&m, &events, |_| {});
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -962,10 +1130,26 @@ mod tests {
         let m = model("gemini-2.5-pro");
         let _guard = crate::utils::env_lock();
         std::env::remove_var("GEMINI_API_KEY");
-        let opts = SimpleStreamOptions { base: StreamOptions::default(), tool_choice: None, reasoning: None, deferred: None, thinking_budgets: None };
-        let stream = stream_simple(&m, &Context::default(), reqwest::Client::new(), DEFAULT_BASE_URL, None, &opts);
+        let opts = SimpleStreamOptions {
+            base: StreamOptions::default(),
+            tool_choice: None,
+            reasoning: None,
+            deferred: None,
+            thinking_budgets: None,
+        };
+        let stream = stream_simple(
+            &m,
+            &Context::default(),
+            reqwest::Client::new(),
+            DEFAULT_BASE_URL,
+            None,
+            &opts,
+        );
         // The stream must produce a terminal error quickly.
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let (events, msg) = rt.block_on(stream.collect());
         assert!(matches!(&events[0], AssistantMessageEvent::Error { .. }));
         assert!(msg.error_message().is_some());

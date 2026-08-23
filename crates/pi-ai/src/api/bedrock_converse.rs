@@ -21,9 +21,9 @@
 //! `diagnostics` field; error message prefixes and metadata that matter for
 //! retry classification are preserved verbatim.
 
-use std::collections::BTreeMap;
 use base64::Engine as _;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 use crate::event_stream::{AssistantMessageEventStream, StreamSink};
 use crate::model::{calculate_cost, Model};
@@ -109,7 +109,9 @@ pub fn get_standard_bedrock_endpoint_region(base_url: &str) -> Option<String> {
         .split('/')
         .next()?
         .to_lowercase();
-    let re = regex::Regex::new(r"^bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?$").unwrap();
+    let re =
+        regex::Regex::new(r"^bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?$")
+            .unwrap();
     re.captures(&host).map(|c| c[1].to_string())
 }
 
@@ -150,7 +152,11 @@ pub fn aws_profile_credentials(
         .map(std::path::PathBuf::from)
         .or_else(|| {
             let home = std::env::var("HOME").ok()?;
-            Some(std::path::PathBuf::from(home).join(".aws").join("credentials"))
+            Some(
+                std::path::PathBuf::from(home)
+                    .join(".aws")
+                    .join("credentials"),
+            )
         })?;
     let content = std::fs::read_to_string(&path).ok()?;
     let profile = profile.filter(|p| !p.is_empty()).unwrap_or("default");
@@ -198,7 +204,11 @@ pub fn aws_profile_credentials(
         }
     }
     if aws_access_key_id.is_some() && aws_secret_access_key.is_some() {
-        Some((aws_access_key_id?, aws_secret_access_key?, aws_session_token))
+        Some((
+            aws_access_key_id?,
+            aws_secret_access_key?,
+            aws_session_token,
+        ))
     } else {
         None
     }
@@ -214,7 +224,11 @@ pub fn arn_region(model_id: &str) -> Option<String> {
 /// GovCloud target detection (upstream `isGovCloudBedrockTarget`).
 fn is_gov_cloud_bedrock_target(model: &Model, options: &BedrockOptions) -> bool {
     let region = get_configured_bedrock_region(options);
-    if region.as_deref().map(|r| r.to_lowercase().starts_with("us-gov-")).unwrap_or(false) {
+    if region
+        .as_deref()
+        .map(|r| r.to_lowercase().starts_with("us-gov-"))
+        .unwrap_or(false)
+    {
         return true;
     }
     let model_id = model.id.to_lowercase();
@@ -243,10 +257,11 @@ pub fn resolve_config(
     api_key: Option<&str>,
 ) -> Result<BedrockResolvedConfig, String> {
     let env = options.base.base.env.as_ref();
-    let options_profile = options
-        .profile
-        .clone()
-        .or_else(|| env.and_then(|e| e.get("AWS_PROFILE")).cloned().filter(|v| !v.is_empty()));
+    let options_profile = options.profile.clone().or_else(|| {
+        env.and_then(|e| e.get("AWS_PROFILE"))
+            .cloned()
+            .filter(|v| !v.is_empty())
+    });
     let ambient_profile = get_provider_env_value("AWS_PROFILE", env);
     let profile = options_profile.clone().or_else(|| ambient_profile.clone());
 
@@ -401,8 +416,18 @@ pub fn sign_aws4_request(
     now_ms: u64,
 ) -> Vec<(String, String)> {
     sign_aws4_request_with_headers(
-        method, uri, query, host, payload, access_key, secret_key, session_token, region, service,
-        now_ms, &[],
+        method,
+        uri,
+        query,
+        host,
+        payload,
+        access_key,
+        secret_key,
+        session_token,
+        region,
+        service,
+        now_ms,
+        &[],
     )
 }
 
@@ -525,7 +550,13 @@ fn sanitize_surrogates(s: &str) -> String {
 fn normalize_tool_call_id(id: &str) -> String {
     let sanitized: String = id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if sanitized.len() > 64 {
         sanitized.chars().take(64).collect()
@@ -607,7 +638,10 @@ fn supports_prompt_caching(model: &Model, env: Option<&crate::types::ProviderEnv
     if !has_claude {
         return get_provider_env_value("AWS_BEDROCK_FORCE_CACHE", env).as_deref() == Some("1");
     }
-    if candidates.iter().any(|s| s.contains("fable-5") || s.contains("opus-5") || s.contains("sonnet-5")) {
+    if candidates
+        .iter()
+        .any(|s| s.contains("fable-5") || s.contains("opus-5") || s.contains("sonnet-5"))
+    {
         return true;
     }
     if candidates.iter().any(|s| s.contains("-4-")) {
@@ -638,25 +672,29 @@ fn model_match_candidates(model_id: &str, model_name: Option<&str>) -> Vec<Strin
 }
 
 fn supports_adaptive_thinking(model: &Model) -> bool {
-    model_match_candidates(&model.id, Some(&model.name)).iter().any(|s| {
-        s.contains("opus-4-6")
-            || s.contains("opus-4-7")
-            || s.contains("opus-4-8")
-            || s.contains("opus-5")
-            || s.contains("sonnet-4-6")
-            || s.contains("sonnet-5")
-            || s.contains("fable-5")
-    })
+    model_match_candidates(&model.id, Some(&model.name))
+        .iter()
+        .any(|s| {
+            s.contains("opus-4-6")
+                || s.contains("opus-4-7")
+                || s.contains("opus-4-8")
+                || s.contains("opus-5")
+                || s.contains("sonnet-4-6")
+                || s.contains("sonnet-5")
+                || s.contains("fable-5")
+        })
 }
 
 fn supports_native_xhigh_effort(model: &Model) -> bool {
-    model_match_candidates(&model.id, Some(&model.name)).iter().any(|s| {
-        s.contains("opus-4-7")
-            || s.contains("opus-4-8")
-            || s.contains("opus-5")
-            || s.contains("sonnet-5")
-            || s.contains("fable-5")
-    })
+    model_match_candidates(&model.id, Some(&model.name))
+        .iter()
+        .any(|s| {
+            s.contains("opus-4-7")
+                || s.contains("opus-4-8")
+                || s.contains("opus-5")
+                || s.contains("sonnet-5")
+                || s.contains("fable-5")
+        })
 }
 
 fn is_anthropic_claude_model(model: &Model) -> bool {
@@ -675,7 +713,10 @@ fn supports_thinking_signature(model: &Model) -> bool {
 
 /// `resolveCacheRetention`: default "short", `PI_CACHE_RETENTION=long` maps
 /// to "long".
-fn resolve_cache_retention(cache_retention: Option<&CacheRetention>, env: Option<&crate::types::ProviderEnv>) -> String {
+fn resolve_cache_retention(
+    cache_retention: Option<&CacheRetention>,
+    env: Option<&crate::types::ProviderEnv>,
+) -> String {
     if let Some(retention) = cache_retention {
         return retention.clone();
     }
@@ -687,7 +728,12 @@ fn resolve_cache_retention(cache_retention: Option<&CacheRetention>, env: Option
 
 /// `buildSystemPrompt`: text block plus an optional cache point for
 /// supported Claude models.
-fn build_system_prompt(system_prompt: Option<&str>, model: &Model, cache_retention: &str, env: Option<&crate::types::ProviderEnv>) -> Option<Value> {
+fn build_system_prompt(
+    system_prompt: Option<&str>,
+    model: &Model,
+    cache_retention: &str,
+    env: Option<&crate::types::ProviderEnv>,
+) -> Option<Value> {
     let system_prompt = system_prompt?;
     let mut blocks = vec![json!({ "text": sanitize_surrogates(system_prompt) })];
     if cache_retention != "none" && supports_prompt_caching(model, env) {
@@ -703,7 +749,9 @@ fn build_system_prompt(system_prompt: Option<&str>, model: &Model, cache_retenti
 /// Decode a stored base64 redacted payload (upstream `decodeRedactedContent`).
 fn decode_redacted_content(signature: Option<&str>) -> Option<Vec<u8>> {
     let signature = signature?;
-    base64::engine::general_purpose::STANDARD.decode(signature).ok()
+    base64::engine::general_purpose::STANDARD
+        .decode(signature)
+        .ok()
 }
 
 /// Encode redacted chunks to one base64 signature (upstream `bytesToBase64`).
@@ -722,9 +770,11 @@ pub fn convert_messages(
     cache_retention: &str,
     env: Option<&crate::types::ProviderEnv>,
 ) -> Vec<Value> {
-    let transformed = transform_messages(&context.messages, model, Some(&|id: &str, _m: &Model, _s: &AssistantMessage| {
-        normalize_tool_call_id(id)
-    }));
+    let transformed = transform_messages(
+        &context.messages,
+        model,
+        Some(&|id: &str, _m: &Model, _s: &AssistantMessage| normalize_tool_call_id(id)),
+    );
 
     let mut result: Vec<Value> = Vec::new();
     let mut i = 0;
@@ -773,7 +823,12 @@ pub fn convert_messages(
                                 blocks.push(text_block);
                             }
                         }
-                        ContentBlock::ToolCall { id, name, arguments, .. } => {
+                        ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } => {
                             blocks.push(json!({
                                 "toolUse": {
                                     "toolUseId": id,
@@ -782,9 +837,15 @@ pub fn convert_messages(
                                 }
                             }));
                         }
-                        ContentBlock::Thinking { thinking, thinking_signature, redacted, .. } => {
+                        ContentBlock::Thinking {
+                            thinking,
+                            thinking_signature,
+                            redacted,
+                            ..
+                        } => {
                             if *redacted == Some(true) {
-                                let redacted_content = decode_redacted_content(thinking_signature.as_deref());
+                                let redacted_content =
+                                    decode_redacted_content(thinking_signature.as_deref());
                                 if let Some(redacted_content) = redacted_content {
                                     if !redacted_content.is_empty() {
                                         blocks.push(json!({
@@ -801,7 +862,11 @@ pub fn convert_messages(
                                 continue;
                             }
                             if supports_thinking_signature(model) {
-                                if thinking_signature.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+                                if thinking_signature
+                                    .as_deref()
+                                    .map(|s| !s.trim().is_empty())
+                                    .unwrap_or(false)
+                                {
                                     blocks.push(json!({
                                         "reasoningContent": {
                                             "reasoningText": {
@@ -880,7 +945,9 @@ fn build_tool_result_block(tool_result: &ToolResultMessage) -> Value {
 fn resolve_json_schema_strict_sampling(tool: &Tool) -> bool {
     matches!(
         tool.constrained_sampling,
-        Some(crate::types::ConstrainedSampling::JsonSchema { strict: crate::types::StrictPreference::Require })
+        Some(crate::types::ConstrainedSampling::JsonSchema {
+            strict: crate::types::StrictPreference::Require
+        })
     )
 }
 
@@ -907,7 +974,11 @@ fn compat_supports_strict_mode(model: &Model) -> bool {
 }
 
 /// `convertToolConfig` — tool spec + toolChoice.
-pub fn convert_tool_config(tools: &[Tool], tool_choice: Option<&Value>, supports_strict_mode: bool) -> Option<Value> {
+pub fn convert_tool_config(
+    tools: &[Tool],
+    tool_choice: Option<&Value>,
+    supports_strict_mode: bool,
+) -> Option<Value> {
     if tools.is_empty() {
         return None;
     }
@@ -987,7 +1058,16 @@ pub fn build_additional_model_request_fields(
         return None;
     }
     let gov = is_gov_cloud_bedrock_target(model, options);
-    let display = if gov { None } else { Some(options.thinking_display.clone().unwrap_or_else(|| "summarized".to_string())) };
+    let display = if gov {
+        None
+    } else {
+        Some(
+            options
+                .thinking_display
+                .clone()
+                .unwrap_or_else(|| "summarized".to_string()),
+        )
+    };
 
     let mut result = serde_json::Map::new();
     if supports_adaptive_thinking(model) {
@@ -997,10 +1077,17 @@ pub fn build_additional_model_request_fields(
             thinking.insert("display".to_string(), json!(display));
         }
         result.insert("thinking".to_string(), Value::Object(thinking));
-        result.insert("output_config".to_string(), json!({ "effort": map_thinking_level_to_effort(model, options.reasoning.as_deref()) }));
+        result.insert(
+            "output_config".to_string(),
+            json!({ "effort": map_thinking_level_to_effort(model, options.reasoning.as_deref()) }),
+        );
     } else {
         let level = options.reasoning.as_deref();
-        let budget_level = if level == Some("xhigh") || level == Some("max") { "high" } else { level.unwrap_or("high") };
+        let budget_level = if level == Some("xhigh") || level == Some("max") {
+            "high"
+        } else {
+            level.unwrap_or("high")
+        };
         let budget = options
             .thinking_budgets
             .as_ref()
@@ -1025,7 +1112,10 @@ pub fn build_additional_model_request_fields(
         }
         result.insert("thinking".to_string(), Value::Object(thinking));
         if options.interleaved_thinking.unwrap_or(true) {
-            result.insert("anthropic_beta".to_string(), json!(["interleaved-thinking-2025-05-14"]));
+            result.insert(
+                "anthropic_beta".to_string(),
+                json!(["interleaved-thinking-2025-05-14"]),
+            );
         }
     }
     Some(Value::Object(result))
@@ -1047,23 +1137,16 @@ pub fn map_stop_reason(reason: Option<&str>) -> (StopReason, Option<String>) {
 
 /// Build the ConverseStream request body (upstream `commandInput` without the
 /// SDK wrapper).
-pub fn build_command_input(
-    model: &Model,
-    context: &Context,
-    options: &BedrockOptions,
-) -> Value {
+pub fn build_command_input(model: &Model, context: &Context, options: &BedrockOptions) -> Value {
     let env = options.base.base.env.as_ref();
     let cache_retention = resolve_cache_retention(options.base.cache_retention.as_ref(), env);
-    let inference_max_tokens = options
-        .max_tokens
-        .or(options.base.max_tokens)
-        .or_else(|| {
-            if is_anthropic_claude_model(model) {
-                Some(model.max_tokens)
-            } else {
-                None
-            }
-        });
+    let inference_max_tokens = options.max_tokens.or(options.base.max_tokens).or_else(|| {
+        if is_anthropic_claude_model(model) {
+            Some(model.max_tokens)
+        } else {
+            None
+        }
+    });
 
     let mut inference = serde_json::Map::new();
     if let Some(max_tokens) = inference_max_tokens {
@@ -1075,14 +1158,26 @@ pub fn build_command_input(
 
     let mut body = serde_json::Map::new();
     body.insert("modelId".to_string(), json!(model.id));
-    body.insert("messages".to_string(), json!(convert_messages(context, model, &cache_retention, env)));
-    if let Some(system) = build_system_prompt(context.system_prompt.as_deref(), model, &cache_retention, env) {
+    body.insert(
+        "messages".to_string(),
+        json!(convert_messages(context, model, &cache_retention, env)),
+    );
+    if let Some(system) = build_system_prompt(
+        context.system_prompt.as_deref(),
+        model,
+        &cache_retention,
+        env,
+    ) {
         body.insert("system".to_string(), system);
     }
     if !inference.is_empty() {
         body.insert("inferenceConfig".to_string(), Value::Object(inference));
     }
-    if let Some(tool_config) = convert_tool_config(&context.tools, options.tool_choice.as_ref(), compat_supports_strict_mode(model)) {
+    if let Some(tool_config) = convert_tool_config(
+        &context.tools,
+        options.tool_choice.as_ref(),
+        compat_supports_strict_mode(model),
+    ) {
         body.insert("toolConfig".to_string(), tool_config);
     }
     if let Some(fields) = build_additional_model_request_fields(model, options) {
@@ -1115,18 +1210,26 @@ pub fn decode_eventstream_frames(bytes: &[u8]) -> Result<Vec<EventStreamFrame>, 
         if bytes[offset..offset + 4] != [0x00, 0xC0, 0xDE, 0x00] {
             return Err("Invalid eventstream magic".to_string());
         }
-        let total_length = u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
-        let headers_length = u32::from_be_bytes(bytes[offset + 8..offset + 12].try_into().unwrap()) as usize;
+        let total_length =
+            u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        let headers_length =
+            u32::from_be_bytes(bytes[offset + 8..offset + 12].try_into().unwrap()) as usize;
         let prelude_crc = u32::from_be_bytes(bytes[offset + 12..offset + 16].try_into().unwrap());
         let expected_crc = crc32_ieee(&bytes[offset..offset + 12]);
         if prelude_crc != expected_crc {
             return Err("Eventstream prelude CRC mismatch".to_string());
         }
         if total_length < 16 || offset + total_length > bytes.len() {
-            return Err(format!("Eventstream frame length {total_length} exceeds buffer"));
+            return Err(format!(
+                "Eventstream frame length {total_length} exceeds buffer"
+            ));
         }
         let message_crc_offset = offset + total_length - 4;
-        let message_crc = u32::from_be_bytes(bytes[message_crc_offset..message_crc_offset + 4].try_into().unwrap());
+        let message_crc = u32::from_be_bytes(
+            bytes[message_crc_offset..message_crc_offset + 4]
+                .try_into()
+                .unwrap(),
+        );
         let expected_message_crc = crc32_ieee(&bytes[offset..message_crc_offset]);
         if message_crc != expected_message_crc {
             return Err("Eventstream message CRC mismatch".to_string());
@@ -1145,9 +1248,16 @@ pub fn decode_eventstream_frames(bytes: &[u8]) -> Result<Vec<EventStreamFrame>, 
         let payload = if payload_bytes.is_empty() {
             None
         } else {
-            Some(serde_json::from_slice(payload_bytes).map_err(|e| format!("Eventstream payload JSON: {e}"))?)
+            Some(
+                serde_json::from_slice(payload_bytes)
+                    .map_err(|e| format!("Eventstream payload JSON: {e}"))?,
+            )
         };
-        frames.push(EventStreamFrame { event_type, message_type, payload });
+        frames.push(EventStreamFrame {
+            event_type,
+            message_type,
+            payload,
+        });
         offset += total_length;
     }
     if offset != bytes.len() {
@@ -1173,41 +1283,65 @@ fn parse_event_headers(bytes: &[u8]) -> Result<BTreeMap<String, String>, String>
         let value_type = bytes[i];
         i += 1;
         let value = match value_type {
-            0 => { // bool
-                if i >= bytes.len() { return Err("Truncated bool header".to_string()); }
-                let v = if bytes[i] != 0 { "true".to_string() } else { "false".to_string() };
+            0 => {
+                // bool
+                if i >= bytes.len() {
+                    return Err("Truncated bool header".to_string());
+                }
+                let v = if bytes[i] != 0 {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                };
                 i += 1;
                 v
             }
-            1 => { // byte
-                if i >= bytes.len() { return Err("Truncated byte header".to_string()); }
+            1 => {
+                // byte
+                if i >= bytes.len() {
+                    return Err("Truncated byte header".to_string());
+                }
                 let v = bytes[i].to_string();
                 i += 1;
                 v
             }
-            2 => { // short
-                if i + 2 > bytes.len() { return Err("Truncated short header".to_string()); }
+            2 => {
+                // short
+                if i + 2 > bytes.len() {
+                    return Err("Truncated short header".to_string());
+                }
                 let v = i16::from_be_bytes(bytes[i..i + 2].try_into().unwrap()).to_string();
                 i += 2;
                 v
             }
-            3 => { // int
-                if i + 4 > bytes.len() { return Err("Truncated int header".to_string()); }
+            3 => {
+                // int
+                if i + 4 > bytes.len() {
+                    return Err("Truncated int header".to_string());
+                }
                 let v = i32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()).to_string();
                 i += 4;
                 v
             }
-            4 => { // long
-                if i + 8 > bytes.len() { return Err("Truncated long header".to_string()); }
+            4 => {
+                // long
+                if i + 8 > bytes.len() {
+                    return Err("Truncated long header".to_string());
+                }
                 let v = i64::from_be_bytes(bytes[i..i + 8].try_into().unwrap()).to_string();
                 i += 8;
                 v
             }
-            5 | 6 | 8 => { // byte_array / string / uuid (byte_array len + bytes)
-                if i + 2 > bytes.len() { return Err("Truncated byte array length".to_string()); }
+            5 | 6 | 8 => {
+                // byte_array / string / uuid (byte_array len + bytes)
+                if i + 2 > bytes.len() {
+                    return Err("Truncated byte array length".to_string());
+                }
                 let len = u16::from_be_bytes(bytes[i..i + 2].try_into().unwrap()) as usize;
                 i += 2;
-                if i + len > bytes.len() { return Err("Truncated byte array value".to_string()); }
+                if i + len > bytes.len() {
+                    return Err("Truncated byte array value".to_string());
+                }
                 let raw = &bytes[i..i + len];
                 i += len;
                 if value_type == 6 {
@@ -1216,8 +1350,11 @@ fn parse_event_headers(bytes: &[u8]) -> Result<BTreeMap<String, String>, String>
                     base64::engine::general_purpose::STANDARD.encode(raw)
                 }
             }
-            7 => { // timestamp (int64 ms)
-                if i + 8 > bytes.len() { return Err("Truncated timestamp header".to_string()); }
+            7 => {
+                // timestamp (int64 ms)
+                if i + 8 > bytes.len() {
+                    return Err("Truncated timestamp header".to_string());
+                }
                 let v = i64::from_be_bytes(bytes[i..i + 8].try_into().unwrap()).to_string();
                 i += 8;
                 v
@@ -1261,13 +1398,49 @@ struct Block {
 
 impl Block {
     fn text(index: usize) -> Self {
-        Self { kind: BlockKind::Text, index, text: String::new(), thinking: String::new(), thinking_signature: String::new(), redacted: false, redacted_chunks: Vec::new(), tool_id: String::new(), tool_name: String::new(), partial_json: String::new(), arguments: json!({}) }
+        Self {
+            kind: BlockKind::Text,
+            index,
+            text: String::new(),
+            thinking: String::new(),
+            thinking_signature: String::new(),
+            redacted: false,
+            redacted_chunks: Vec::new(),
+            tool_id: String::new(),
+            tool_name: String::new(),
+            partial_json: String::new(),
+            arguments: json!({}),
+        }
     }
     fn thinking(index: usize) -> Self {
-        Self { kind: BlockKind::Thinking, index, text: String::new(), thinking: String::new(), thinking_signature: String::new(), redacted: false, redacted_chunks: Vec::new(), tool_id: String::new(), tool_name: String::new(), partial_json: String::new(), arguments: json!({}) }
+        Self {
+            kind: BlockKind::Thinking,
+            index,
+            text: String::new(),
+            thinking: String::new(),
+            thinking_signature: String::new(),
+            redacted: false,
+            redacted_chunks: Vec::new(),
+            tool_id: String::new(),
+            tool_name: String::new(),
+            partial_json: String::new(),
+            arguments: json!({}),
+        }
     }
     fn tool_call(index: usize, id: String, name: String) -> Self {
-        Self { kind: BlockKind::ToolCall, index, text: String::new(), thinking: String::new(), thinking_signature: String::new(), redacted: false, redacted_chunks: Vec::new(), tool_id: id, tool_name: name, partial_json: String::new(), arguments: json!({}) }
+        Self {
+            kind: BlockKind::ToolCall,
+            index,
+            text: String::new(),
+            thinking: String::new(),
+            thinking_signature: String::new(),
+            redacted: false,
+            redacted_chunks: Vec::new(),
+            tool_id: id,
+            tool_name: name,
+            partial_json: String::new(),
+            arguments: json!({}),
+        }
     }
 }
 
@@ -1281,10 +1454,18 @@ fn block_to_content(block: &Block) -> ContentBlock {
         BlockKind::Text => ContentBlock::text(&block.text),
         BlockKind::Thinking => ContentBlock::Thinking {
             thinking: block.thinking.clone(),
-            thinking_signature: if block.thinking_signature.is_empty() { None } else { Some(block.thinking_signature.clone()) },
+            thinking_signature: if block.thinking_signature.is_empty() {
+                None
+            } else {
+                Some(block.thinking_signature.clone())
+            },
             redacted: if block.redacted { Some(true) } else { None },
         },
-        BlockKind::ToolCall => ContentBlock::tool_call(block.tool_id.clone(), block.tool_name.clone(), block.arguments.clone()),
+        BlockKind::ToolCall => ContentBlock::tool_call(
+            block.tool_id.clone(),
+            block.tool_name.clone(),
+            block.arguments.clone(),
+        ),
     }
 }
 
@@ -1296,17 +1477,32 @@ fn process_stream_event(
 ) -> Result<(), String> {
     if let Some(start) = event.get("messageStart") {
         if start.get("role").and_then(|v| v.as_str()) != Some("assistant") {
-            return Err("Unexpected assistant message start but got user message start instead".to_string());
+            return Err(
+                "Unexpected assistant message start but got user message start instead".to_string(),
+            );
         }
-        push(AssistantMessageEvent::Start { partial: state.output.clone() });
+        push(AssistantMessageEvent::Start {
+            partial: state.output.clone(),
+        });
     } else if let Some(block_start) = event.get("contentBlockStart") {
-        let index = block_start.get("contentBlockIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let index = block_start
+            .get("contentBlockIndex")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
         let start = block_start.get("start");
         if let Some(tool_use) = start.and_then(|s| s.get("toolUse")) {
             let block = Block::tool_call(
                 index,
-                tool_use.get("toolUseId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                tool_use.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                tool_use
+                    .get("toolUseId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                tool_use
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
             );
             let content_index = state.blocks.len();
             state.blocks.push(block);
@@ -1316,14 +1512,20 @@ fn process_stream_event(
             });
         }
     } else if let Some(delta_event) = event.get("contentBlockDelta") {
-        let index = delta_event.get("contentBlockIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let index = delta_event
+            .get("contentBlockIndex")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
         let delta = delta_event.get("delta");
         let mut block_index = state.blocks.iter().position(|b| b.index == index);
         let mut created = false;
         if block_index.is_none() {
             // Creating a new block when no start event was seen (text /
             // reasoning arrive without contentBlockStart).
-            let delta_text = delta.and_then(|d| d.get("text")).and_then(|v| v.as_str()).is_some();
+            let delta_text = delta
+                .and_then(|d| d.get("text"))
+                .and_then(|v| v.as_str())
+                .is_some();
             let delta_reasoning = delta.and_then(|d| d.get("reasoningContent")).is_some();
             let block = if delta_text {
                 Some(Block::text(index))
@@ -1339,7 +1541,9 @@ fn process_stream_event(
                 created = true;
             }
         }
-        let Some(block_index) = block_index else { return Ok(()) };
+        let Some(block_index) = block_index else {
+            return Ok(());
+        };
         let kind = state.blocks[block_index].kind.clone();
         if let Some(text) = delta.and_then(|d| d.get("text")).and_then(|v| v.as_str()) {
             if created {
@@ -1356,9 +1560,14 @@ fn process_stream_event(
             });
         } else if let Some(tool_use_delta) = delta.and_then(|d| d.get("toolUse")) {
             if kind == BlockKind::ToolCall {
-                let input = tool_use_delta.get("input").and_then(|v| v.as_str()).unwrap_or("");
+                let input = tool_use_delta
+                    .get("input")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 state.blocks[block_index].partial_json.push_str(input);
-                state.blocks[block_index].arguments = crate::partial_json::parse_streaming_json(&state.blocks[block_index].partial_json);
+                state.blocks[block_index].arguments = crate::partial_json::parse_streaming_json(
+                    &state.blocks[block_index].partial_json,
+                );
                 push(AssistantMessageEvent::ToolCallDelta {
                     content_index: block_index,
                     delta: input.to_string(),
@@ -1379,16 +1588,28 @@ fn process_stream_event(
                     });
                 }
             }
-            if reasoning.get("signature").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()) && !state.blocks[block_index].redacted {
-                let signature = reasoning.get("signature").and_then(|v| v.as_str()).unwrap_or("");
-                state.blocks[block_index].thinking_signature.push_str(signature);
+            if reasoning
+                .get("signature")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+                && !state.blocks[block_index].redacted
+            {
+                let signature = reasoning
+                    .get("signature")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                state.blocks[block_index]
+                    .thinking_signature
+                    .push_str(signature);
             }
             if let Some(redacted) = reasoning.get("redactedContent") {
                 let bytes_value = redacted;
                 if !state.blocks[block_index].redacted {
                     state.blocks[block_index].redacted = true;
                     state.blocks[block_index].thinking_signature.clear();
-                    state.blocks[block_index].thinking.push_str(REDACTED_THINKING_PLACEHOLDER);
+                    state.blocks[block_index]
+                        .thinking
+                        .push_str(REDACTED_THINKING_PLACEHOLDER);
                     push(AssistantMessageEvent::ThinkingDelta {
                         content_index: block_index,
                         delta: REDACTED_THINKING_PLACEHOLDER.to_string(),
@@ -1400,8 +1621,13 @@ fn process_stream_event(
             }
         }
     } else if let Some(block_stop) = event.get("contentBlockStop") {
-        let index = block_stop.get("contentBlockIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-        let Some(block_index) = state.blocks.iter().position(|b| b.index == index) else { return Ok(()) };
+        let index = block_stop
+            .get("contentBlockIndex")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        let Some(block_index) = state.blocks.iter().position(|b| b.index == index) else {
+            return Ok(());
+        };
         let block = state.blocks[block_index].clone();
         match block.kind {
             BlockKind::Text => {
@@ -1439,7 +1665,11 @@ fn process_stream_event(
             }
         }
     } else if let Some(message_stop) = event.get("messageStop") {
-        let raw = message_stop.get("stopReason").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let raw = message_stop
+            .get("stopReason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         state.output.set_raw_stop_reason(raw.clone());
         let (stop_reason, error_message) = map_stop_reason(Some(&raw));
         state.output.set_stop_reason(stop_reason);
@@ -1477,7 +1707,10 @@ fn process_stream_event(
 /// (blob) strings; a length+bytes array (as some SDKs produce) is tolerated.
 fn redacted_bytes(value: &Value) -> Vec<Vec<u8>> {
     match value {
-        Value::String(s) => base64::engine::general_purpose::STANDARD.decode(s).map(|v| vec![v]).unwrap_or_default(),
+        Value::String(s) => base64::engine::general_purpose::STANDARD
+            .decode(s)
+            .map(|v| vec![v])
+            .unwrap_or_default(),
         Value::Array(items) => {
             let mut out = Vec::new();
             for item in items {
@@ -1502,13 +1735,28 @@ fn exception_message(event: &Value, name: &str) -> String {
 
 fn apply_usage(model: &Model, output: &mut AssistantMessage, usage: &Value) {
     let mut u = Usage {
-        input: usage.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
-        output: usage.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
-        cache_read: usage.get("cacheReadInputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
-        cache_write: usage.get("cacheWriteInputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        input: usage
+            .get("inputTokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
+        output: usage
+            .get("outputTokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
+        cache_read: usage
+            .get("cacheReadInputTokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
+        cache_write: usage
+            .get("cacheWriteInputTokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
         cache_write_1h: None,
         reasoning: None,
-        total_tokens: usage.get("totalTokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        total_tokens: usage
+            .get("totalTokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
         cost: Default::default(),
     };
     if u.total_tokens == 0 {
@@ -1523,7 +1771,8 @@ fn apply_usage(model: &Model, output: &mut AssistantMessage, usage: &Value) {
 /// paths; upstream mirrors `finalizeStreamingBlock`).
 fn finalize_blocks(state: &mut BedrockStreamState) {
     let AssistantMessage::Assistant { content, .. } = &mut state.output;
-    *content = state.blocks
+    *content = state
+        .blocks
         .iter()
         .map(|b| {
             let mut b = b.clone();
@@ -1543,7 +1792,11 @@ pub fn adjust_max_tokens_for_thinking(
     reasoning_level: &str,
     custom_budgets: Option<&crate::types::ThinkingBudgets>,
 ) -> (u64, u64) {
-    let level = if reasoning_level == "xhigh" || reasoning_level == "max" { "high" } else { reasoning_level };
+    let level = if reasoning_level == "xhigh" || reasoning_level == "max" {
+        "high"
+    } else {
+        reasoning_level
+    };
     let thinking_budget = match custom_budgets {
         Some(b) => match level {
             "minimal" => b.minimal,
@@ -1614,7 +1867,10 @@ pub fn stream(
                     StopReason::Deferred => DoneReason::Deferred,
                     _ => DoneReason::Stop,
                 };
-                pusher.push(AssistantMessageEvent::Done { reason, message: message.clone() });
+                pusher.push(AssistantMessageEvent::Done {
+                    reason,
+                    message: message.clone(),
+                });
                 pusher.end(Some(message));
             }
             Err(err) => {
@@ -1642,11 +1898,16 @@ async fn run_bedrock_stream(
 ) -> Result<AssistantMessage, String> {
     let config = resolve_config(model, options, api_key)?;
     let body = build_command_input(model, context, options);
-    let body_bytes = serde_json::to_vec(&body).map_err(|e| format!("Failed to serialize request: {e}"))?;
+    let body_bytes =
+        serde_json::to_vec(&body).map_err(|e| format!("Failed to serialize request: {e}"))?;
 
     let uri = format!("/model/{}:converse-stream", uri_encode_path(&model.id));
     let host = url_host(&config.endpoint)?;
-    let url = format!("{}/model/{}:converse-stream", config.endpoint.trim_end_matches('/'), uri_encode_path(&model.id));
+    let url = format!(
+        "{}/model/{}:converse-stream",
+        config.endpoint.trim_end_matches('/'),
+        uri_encode_path(&model.id)
+    );
 
     let mut request = client
         .post(&url)
@@ -1700,7 +1961,10 @@ async fn run_bedrock_stream(
         }
     }
 
-    let response = request.send().await.map_err(|err| format!("Request failed: {err}"))?;
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("Request failed: {err}"))?;
     let status = response.status();
     let headers_map = response
         .headers()
@@ -1709,11 +1973,17 @@ async fn run_bedrock_stream(
         .collect::<std::collections::BTreeMap<_, _>>();
     if let Some(on_response) = &options.base.on_response {
         on_response(
-            &crate::types::ProviderResponse { status: status.as_u16(), headers: headers_map },
+            &crate::types::ProviderResponse {
+                status: status.as_u16(),
+                headers: headers_map,
+            },
             model,
         );
     }
-    let response_bytes = response.bytes().await.map_err(|err| format!("Request body failed: {err}"))?;
+    let response_bytes = response
+        .bytes()
+        .await
+        .map_err(|err| format!("Request body failed: {err}"))?;
 
     if !status.is_success() {
         let body_text = String::from_utf8_lossy(&response_bytes).to_string();
@@ -1726,14 +1996,19 @@ async fn run_bedrock_stream(
         blocks: Vec::new(),
     };
     for frame in frames {
-        let Some(payload) = &frame.payload else { continue };
+        let Some(payload) = &frame.payload else {
+            continue;
+        };
         process_stream_event(model, payload, &mut state, push)?;
     }
     finalize_blocks(&mut state);
     if state.output.stop_reason() == Some(StopReason::Pending) {
         return Err("Bedrock stream ended without a stop reason".to_string());
     }
-    if matches!(state.output.stop_reason(), Some(StopReason::Error) | Some(StopReason::Aborted)) {
+    if matches!(
+        state.output.stop_reason(),
+        Some(StopReason::Error) | Some(StopReason::Aborted)
+    ) {
         let message = state
             .output
             .error_message()
@@ -1748,14 +2023,20 @@ fn url_host(endpoint: &str) -> Result<String, String> {
     let rest = endpoint
         .trim_start_matches("https://")
         .trim_start_matches("http://");
-    rest.split('/').next().map(|s| s.to_string()).ok_or_else(|| "Invalid endpoint".to_string())
+    rest.split('/')
+        .next()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Invalid endpoint".to_string())
 }
 
 /// `formatBedrockError` for non-2xx responses (no SDK exception name): status
 /// + body with the data-retention hint.
 pub fn format_bedrock_error(status: u16, body: &str) -> String {
     let core = format!("{status}: {body}");
-    let data_retention_hint = if regex::Regex::new(r"(?i)data retention mode").unwrap().is_match(body) {
+    let data_retention_hint = if regex::Regex::new(r"(?i)data retention mode")
+        .unwrap()
+        .is_match(body)
+    {
         format!(" See {BEDROCK_DATA_RETENTION_DOCS_URL} for supported data retention modes.")
     } else {
         String::new()
@@ -1789,17 +2070,32 @@ pub fn stream_simple(
     };
 
     let Some(reasoning) = options.reasoning else {
-        return stream(model, context, client, api_key, &BedrockOptions { reasoning: None, ..base });
+        return stream(
+            model,
+            context,
+            client,
+            api_key,
+            &BedrockOptions {
+                reasoning: None,
+                ..base
+            },
+        );
     };
     let reasoning_str = reasoning.as_str();
 
     if is_anthropic_claude_model(model) {
         if supports_adaptive_thinking(model) {
-            return stream(model, context, client, api_key, &BedrockOptions {
-                reasoning: Some(reasoning_str.to_string()),
-                thinking_budgets: options.thinking_budgets.clone(),
-                ..base
-            });
+            return stream(
+                model,
+                context,
+                client,
+                api_key,
+                &BedrockOptions {
+                    reasoning: Some(reasoning_str.to_string()),
+                    thinking_budgets: options.thinking_budgets.clone(),
+                    ..base
+                },
+            );
         }
         let (max_tokens, thinking_budget) = adjust_max_tokens_for_thinking(
             options.base.max_tokens,
@@ -1809,7 +2105,11 @@ pub fn stream_simple(
         );
         // Context clamping (upstream clampMaxTokensToContext).
         let clamped = clamp_max_tokens_to_context(model, context, max_tokens);
-        let budget_level = if reasoning_str == "xhigh" || reasoning_str == "max" { "high" } else { reasoning_str };
+        let budget_level = if reasoning_str == "xhigh" || reasoning_str == "max" {
+            "high"
+        } else {
+            reasoning_str
+        };
         let mut budgets = options.thinking_budgets.clone().unwrap_or_default();
         match budget_level {
             "minimal" => budgets.minimal = Some(thinking_budget.min(clamped.saturating_sub(1024))),
@@ -1817,19 +2117,31 @@ pub fn stream_simple(
             "medium" => budgets.medium = Some(thinking_budget.min(clamped.saturating_sub(1024))),
             _ => budgets.high = Some(thinking_budget.min(clamped.saturating_sub(1024))),
         }
-        return stream(model, context, client, api_key, &BedrockOptions {
-            max_tokens: Some(clamped),
-            reasoning: Some(reasoning_str.to_string()),
-            thinking_budgets: Some(budgets),
-            ..base
-        });
+        return stream(
+            model,
+            context,
+            client,
+            api_key,
+            &BedrockOptions {
+                max_tokens: Some(clamped),
+                reasoning: Some(reasoning_str.to_string()),
+                thinking_budgets: Some(budgets),
+                ..base
+            },
+        );
     }
 
-    stream(model, context, client, api_key, &BedrockOptions {
-        reasoning: Some(reasoning_str.to_string()),
-        thinking_budgets: options.thinking_budgets.clone(),
-        ..base
-    })
+    stream(
+        model,
+        context,
+        client,
+        api_key,
+        &BedrockOptions {
+            reasoning: Some(reasoning_str.to_string()),
+            thinking_budgets: options.thinking_budgets.clone(),
+            ..base
+        },
+    )
 }
 
 /// `clampMaxTokensToContext`: keep at least 4096 safety tokens for the
@@ -1861,8 +2173,17 @@ mod tests {
         );
         m.base_url = "https://bedrock-runtime.us-east-1.amazonaws.com".to_string();
         m.reasoning = true;
-        m.input = vec![crate::model::ModelInput::Text, crate::model::ModelInput::Image];
-        m.cost = crate::model::ModelCost { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75, tiers: None };
+        m.input = vec![
+            crate::model::ModelInput::Text,
+            crate::model::ModelInput::Image,
+        ];
+        m.cost = crate::model::ModelCost {
+            input: 3.0,
+            output: 15.0,
+            cache_read: 0.3,
+            cache_write: 3.75,
+            tiers: None,
+        };
         m.context_window = 200_000;
         m.max_tokens = 64_000;
         m.compat = Some(json!({ "supportsStrictMode": true }));
@@ -1894,11 +2215,21 @@ mod tests {
             "us-east-1",
             "iam",
             now_ms,
-            &[("content-type", "application/x-www-form-urlencoded; charset=utf-8")],
+            &[(
+                "content-type",
+                "application/x-www-form-urlencoded; charset=utf-8",
+            )],
         );
-        let auth = headers.iter().find(|(k, _)| k == "authorization").unwrap().1.clone();
+        let auth = headers
+            .iter()
+            .find(|(k, _)| k == "authorization")
+            .unwrap()
+            .1
+            .clone();
         assert!(
-            auth.contains("Signature=5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7"),
+            auth.contains(
+                "Signature=5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7"
+            ),
             "got auth: {auth}"
         );
         assert!(auth.contains("Credential=AKIDEXAMPLE/20150830/us-east-1/iam/aws4_request"));
@@ -1921,7 +2252,9 @@ mod tests {
             1_700_000_000_000,
         );
         assert!(headers.iter().any(|(k, _)| k == "x-amz-date"));
-        assert!(headers.iter().any(|(k, v)| k == "authorization" && v.contains("/us-east-1/bedrock/aws4_request")));
+        assert!(headers
+            .iter()
+            .any(|(k, v)| k == "authorization" && v.contains("/us-east-1/bedrock/aws4_request")));
     }
 
     #[test]
@@ -1939,9 +2272,19 @@ mod tests {
             "bedrock",
             1_700_000_000_000,
         );
-        assert!(headers.iter().any(|(k, v)| k == "x-amz-security-token" && v == "TOKEN"));
-        let auth = headers.iter().find(|(k, _)| k == "authorization").unwrap().1.clone();
-        assert!(auth.contains("SignedHeaders=host;x-amz-date;x-amz-security-token"), "got {auth}");
+        assert!(headers
+            .iter()
+            .any(|(k, v)| k == "x-amz-security-token" && v == "TOKEN"));
+        let auth = headers
+            .iter()
+            .find(|(k, _)| k == "authorization")
+            .unwrap()
+            .1
+            .clone();
+        assert!(
+            auth.contains("SignedHeaders=host;x-amz-date;x-amz-security-token"),
+            "got {auth}"
+        );
     }
 
     #[test]
@@ -1985,14 +2328,23 @@ mod tests {
         let ctx = Context {
             system_prompt: None,
             messages: vec![Message::ToolResult(ToolResultMessage::new(
-                "tool-1", "tool", vec![ContentBlock::text("")], false,
+                "tool-1",
+                "tool",
+                vec![ContentBlock::text("")],
+                false,
             ))],
             tools: vec![],
         };
         let out = convert_messages(&ctx, &model, "none", None);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0]["content"][0]["toolResult"]["content"], json!([{ "text": "<empty>" }]));
-        assert_eq!(out[0]["content"][0]["toolResult"]["status"], json!("success"));
+        assert_eq!(
+            out[0]["content"][0]["toolResult"]["content"],
+            json!([{ "text": "<empty>" }])
+        );
+        assert_eq!(
+            out[0]["content"][0]["toolResult"]["status"],
+            json!("success")
+        );
     }
 
     #[test]
@@ -2022,7 +2374,9 @@ mod tests {
         *assistant.content_mut() = vec![
             ContentBlock::Thinking {
                 thinking: String::new(),
-                thinking_signature: Some("cnNuXzVaVnJpZjRKMGJYSXFtV2RsZWRqN1FJRmVOaWtSUWJF".to_string()),
+                thinking_signature: Some(
+                    "cnNuXzVaVnJpZjRKMGJYSXFtV2RsZWRqN1FJRmVOaWtSUWJF".to_string(),
+                ),
                 redacted: Some(true),
             },
             ContentBlock::tool_call("tool-1", "read", json!({ "path": "/tmp/a.txt" })),
@@ -2048,7 +2402,10 @@ mod tests {
                 }
             })
         );
-        assert_eq!(assistant_msg["content"][1]["toolUse"]["toolUseId"], json!("tool-1"));
+        assert_eq!(
+            assistant_msg["content"][1]["toolUse"]["toolUseId"],
+            json!("tool-1")
+        );
         assert_eq!(assistant_msg["content"][2]["text"], json!("done"));
     }
 
@@ -2094,7 +2451,10 @@ mod tests {
         // short: cache point without ttl on the last user message.
         let out = convert_messages(&ctx, &model, "short", None);
         let last = out.last().unwrap();
-        assert_eq!(last["content"].as_array().unwrap().last().unwrap()["cachePoint"], json!({ "type": "default" }));
+        assert_eq!(
+            last["content"].as_array().unwrap().last().unwrap()["cachePoint"],
+            json!({ "type": "default" })
+        );
         // long: ttl ONE_HOUR.
         let out = convert_messages(&ctx, &model, "long", None);
         let last = out.last().unwrap();
@@ -2105,7 +2465,11 @@ mod tests {
         // none: no cache point.
         let out = convert_messages(&ctx, &model, "none", None);
         let last = out.last().unwrap();
-        assert!(last["content"].as_array().unwrap().iter().all(|b| b.get("cachePoint").is_none()));
+        assert!(last["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|b| b.get("cachePoint").is_none()));
     }
 
     #[test]
@@ -2119,7 +2483,8 @@ mod tests {
         let sys = build_system_prompt(ctx.system_prompt.as_deref(), &model, "short", None).unwrap();
         assert_eq!(sys[0], json!({ "text": "You are helpful." }));
         assert_eq!(sys[1]["cachePoint"], json!({ "type": "default" }));
-        let sys_none = build_system_prompt(ctx.system_prompt.as_deref(), &model, "none", None).unwrap();
+        let sys_none =
+            build_system_prompt(ctx.system_prompt.as_deref(), &model, "none", None).unwrap();
         assert_eq!(sys_none.as_array().unwrap().len(), 1);
     }
 
@@ -2128,9 +2493,15 @@ mod tests {
         let mut model = base_model();
         model.id = "global.anthropic.claude-opus-4-8-v1".to_string();
         model.name = "Claude Opus 4.8 (Global)".to_string();
-        let options = BedrockOptions { reasoning: Some("high".to_string()), ..Default::default() };
+        let options = BedrockOptions {
+            reasoning: Some("high".to_string()),
+            ..Default::default()
+        };
         let fields = build_additional_model_request_fields(&model, &options).unwrap();
-        assert_eq!(fields["thinking"], json!({ "type": "adaptive", "display": "summarized" }));
+        assert_eq!(
+            fields["thinking"],
+            json!({ "type": "adaptive", "display": "summarized" })
+        );
         assert_eq!(fields["output_config"], json!({ "effort": "high" }));
         assert!(fields.get("anthropic_beta").is_none());
     }
@@ -2140,7 +2511,10 @@ mod tests {
         let mut model = base_model();
         model.id = "global.anthropic.claude-opus-4-8-v1".to_string();
         model.name = "Claude Opus 4.8 (Global)".to_string();
-        let options = BedrockOptions { reasoning: Some("xhigh".to_string()), ..Default::default() };
+        let options = BedrockOptions {
+            reasoning: Some("xhigh".to_string()),
+            ..Default::default()
+        };
         let fields = build_additional_model_request_fields(&model, &options).unwrap();
         assert_eq!(fields["output_config"], json!({ "effort": "xhigh" }));
     }
@@ -2151,9 +2525,15 @@ mod tests {
         model.id = "global.anthropic.claude-fable-5".to_string();
         model.name = "Claude Fable 5".to_string();
         model.compat = None;
-        let options = BedrockOptions { reasoning: Some("high".to_string()), ..Default::default() };
+        let options = BedrockOptions {
+            reasoning: Some("high".to_string()),
+            ..Default::default()
+        };
         let fields = build_additional_model_request_fields(&model, &options).unwrap();
-        assert_eq!(fields["thinking"], json!({ "type": "adaptive", "display": "summarized" }));
+        assert_eq!(
+            fields["thinking"],
+            json!({ "type": "adaptive", "display": "summarized" })
+        );
     }
 
     #[test]
@@ -2161,10 +2541,19 @@ mod tests {
         let mut model = base_model();
         model.id = "us.anthropic.claude-sonnet-4-5-20250929-v1:0".to_string();
         model.name = "Claude Sonnet 4.5 (US)".to_string();
-        let options = BedrockOptions { reasoning: Some("high".to_string()), ..Default::default() };
+        let options = BedrockOptions {
+            reasoning: Some("high".to_string()),
+            ..Default::default()
+        };
         let fields = build_additional_model_request_fields(&model, &options).unwrap();
-        assert_eq!(fields["thinking"], json!({ "type": "enabled", "budget_tokens": 16384, "display": "summarized" }));
-        assert_eq!(fields["anthropic_beta"], json!(["interleaved-thinking-2025-05-14"]));
+        assert_eq!(
+            fields["thinking"],
+            json!({ "type": "enabled", "budget_tokens": 16384, "display": "summarized" })
+        );
+        assert_eq!(
+            fields["anthropic_beta"],
+            json!(["interleaved-thinking-2025-05-14"])
+        );
     }
 
     #[test]
@@ -2172,18 +2561,36 @@ mod tests {
         let mut model = base_model();
         model.id = "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0".to_string();
         model.name = "Claude Sonnet 4.5 (GovCloud)".to_string();
-        let options = BedrockOptions { reasoning: Some("high".to_string()), ..Default::default() };
+        let options = BedrockOptions {
+            reasoning: Some("high".to_string()),
+            ..Default::default()
+        };
         let fields = build_additional_model_request_fields(&model, &options).unwrap();
-        assert_eq!(fields["thinking"], json!({ "type": "enabled", "budget_tokens": 16384 }));
+        assert_eq!(
+            fields["thinking"],
+            json!({ "type": "enabled", "budget_tokens": 16384 })
+        );
     }
 
     #[test]
     fn stop_reason_mapping() {
         assert_eq!(map_stop_reason(Some("end_turn")), (StopReason::Stop, None));
-        assert_eq!(map_stop_reason(Some("stop_sequence")), (StopReason::Stop, None));
-        assert_eq!(map_stop_reason(Some("max_tokens")), (StopReason::Length, None));
-        assert_eq!(map_stop_reason(Some("model_context_window_exceeded")), (StopReason::Length, None));
-        assert_eq!(map_stop_reason(Some("tool_use")), (StopReason::ToolUse, None));
+        assert_eq!(
+            map_stop_reason(Some("stop_sequence")),
+            (StopReason::Stop, None)
+        );
+        assert_eq!(
+            map_stop_reason(Some("max_tokens")),
+            (StopReason::Length, None)
+        );
+        assert_eq!(
+            map_stop_reason(Some("model_context_window_exceeded")),
+            (StopReason::Length, None)
+        );
+        assert_eq!(
+            map_stop_reason(Some("tool_use")),
+            (StopReason::ToolUse, None)
+        );
         let (reason, msg) = map_stop_reason(Some("rating_card"));
         assert_eq!(reason, StopReason::Error);
         assert_eq!(msg.unwrap(), "Provider stopped with: rating_card");
@@ -2196,7 +2603,10 @@ mod tests {
         let options = BedrockOptions::default();
         let config = resolve_config(&model, &options, None).unwrap();
         assert_eq!(config.region, "us-east-1");
-        assert_eq!(config.endpoint, "https://bedrock-runtime.us-east-1.amazonaws.com");
+        assert_eq!(
+            config.endpoint,
+            "https://bedrock-runtime.us-east-1.amazonaws.com"
+        );
 
         // Custom endpoint always used.
         let mut custom = model.clone();
@@ -2209,19 +2619,29 @@ mod tests {
     fn endpoint_resolution_uses_configured_region_for_standard_endpoint() {
         let _guard = crate::utils::env_lock();
         let model = base_model();
-        unsafe { std::env::set_var("AWS_REGION", "us-east-2"); }
+        unsafe {
+            std::env::set_var("AWS_REGION", "us-east-2");
+        }
         let config = resolve_config(&model, &BedrockOptions::default(), None).unwrap();
         assert_eq!(config.region, "us-east-2");
         // Standard endpoint template uses the configured region (upstream
         // leaves config.endpoint unset and the SDK resolves the region).
-        assert_eq!(config.endpoint, "https://bedrock-runtime.us-east-2.amazonaws.com");
-        unsafe { std::env::remove_var("AWS_REGION"); }
+        assert_eq!(
+            config.endpoint,
+            "https://bedrock-runtime.us-east-2.amazonaws.com"
+        );
+        unsafe {
+            std::env::remove_var("AWS_REGION");
+        }
     }
 
     #[test]
     fn arn_region_extracted() {
         assert_eq!(
-            arn_region("arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abc123").unwrap(),
+            arn_region(
+                "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abc123"
+            )
+            .unwrap(),
             "us-west-2"
         );
         assert_eq!(
@@ -2233,7 +2653,8 @@ mod tests {
     #[test]
     fn bearer_token_used_when_api_key_present() {
         let model = base_model();
-        let config = resolve_config(&model, &BedrockOptions::default(), Some("bedrock-api-key")).unwrap();
+        let config =
+            resolve_config(&model, &BedrockOptions::default(), Some("bedrock-api-key")).unwrap();
         assert_eq!(config.bearer_token.as_deref(), Some("bedrock-api-key"));
         assert_eq!(config.access_key, None);
     }
@@ -2313,7 +2734,10 @@ mod tests {
         let frames = decode_eventstream_frames(&bytes).unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].event_type, "messageStart");
-        assert_eq!(frames[0].payload.as_ref().unwrap()["messageStart"]["role"], json!("assistant"));
+        assert_eq!(
+            frames[0].payload.as_ref().unwrap()["messageStart"]["role"],
+            json!("assistant")
+        );
 
         // Two frames concatenated.
         let payload2 = json!({ "messageStop": { "stopReason": "end_turn" } });
@@ -2332,7 +2756,10 @@ mod tests {
     // Full-stream E2E with a local server
     // ------------------------------------------------------------------
 
-    async fn start_eventstream_server(frames: &[Vec<u8>], status: u16) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    async fn start_eventstream_server(
+        frames: &[Vec<u8>],
+        status: u16,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2345,9 +2772,13 @@ mod tests {
             let mut tmp = [0u8; 2048];
             loop {
                 let n = socket.read(&mut tmp).await.unwrap();
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 buf.extend_from_slice(&tmp[..n]);
-                if buf.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
             }
             let text = String::from_utf8_lossy(&buf).to_string();
             requests_handle.lock().unwrap().push(text);
@@ -2366,15 +2797,30 @@ mod tests {
     #[tokio::test]
     async fn full_stream_text_and_stop() {
         let frames = vec![
-            build_frame("messageStart", &json!({ "messageStart": { "role": "assistant" } })),
-            build_frame("contentBlockDelta", &json!({
-                "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "text": "Hello" } }
-            })),
-            build_frame("contentBlockStop", &json!({ "contentBlockStop": { "contentBlockIndex": 0 } })),
-            build_frame("messageStop", &json!({ "messageStop": { "stopReason": "end_turn" } })),
-            build_frame("metadata", &json!({
-                "metadata": { "usage": { "inputTokens": 10, "outputTokens": 5, "cacheReadInputTokens": 2, "cacheWriteInputTokens": 0, "totalTokens": 15 } }
-            })),
+            build_frame(
+                "messageStart",
+                &json!({ "messageStart": { "role": "assistant" } }),
+            ),
+            build_frame(
+                "contentBlockDelta",
+                &json!({
+                    "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "text": "Hello" } }
+                }),
+            ),
+            build_frame(
+                "contentBlockStop",
+                &json!({ "contentBlockStop": { "contentBlockIndex": 0 } }),
+            ),
+            build_frame(
+                "messageStop",
+                &json!({ "messageStop": { "stopReason": "end_turn" } }),
+            ),
+            build_frame(
+                "metadata",
+                &json!({
+                    "metadata": { "usage": { "inputTokens": 10, "outputTokens": 5, "cacheReadInputTokens": 2, "cacheWriteInputTokens": 0, "totalTokens": 15 } }
+                }),
+            ),
         ];
         let (base_url, requests) = start_eventstream_server(&frames, 200).await;
         let mut model = base_model();
@@ -2408,25 +2854,46 @@ mod tests {
         assert_eq!(message.usage().map(|u| u.input), Some(10)); // upstream keeps inputTokens verbatim
         assert_eq!(message.usage().map(|u| u.cache_read), Some(2));
         assert_eq!(message.usage().map(|u| u.total_tokens), Some(15));
-        assert!(events.iter().any(|e| matches!(e, AssistantMessageEvent::TextDelta { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::TextDelta { .. })));
         // The request was SigV4-signed even with dummy keys (skipAuth path).
         let req = requests.lock().unwrap()[0].clone();
-        assert!(req.to_lowercase().contains("authorization: aws4-hmac-sha256"), "got: {req}");
+        assert!(
+            req.to_lowercase()
+                .contains("authorization: aws4-hmac-sha256"),
+            "got: {req}"
+        );
         let _ = &mut options;
     }
 
     #[tokio::test]
     async fn full_stream_tool_use_json_arguments() {
         let frames = vec![
-            build_frame("messageStart", &json!({ "messageStart": { "role": "assistant" } })),
-            build_frame("contentBlockStart", &json!({
-                "contentBlockStart": { "contentBlockIndex": 1, "start": { "toolUse": { "toolUseId": "tool-1", "name": "edit" } } }
-            })),
-            build_frame("contentBlockDelta", &json!({
-                "contentBlockDelta": { "contentBlockIndex": 1, "delta": { "toolUse": { "input": "{\"path\":\"/workspace/file.js\",\"edits\":[{\"oldText\":\"first\",\"newText\":\"up\",\"\":\"\"}]}" } } }
-            })),
-            build_frame("contentBlockStop", &json!({ "contentBlockStop": { "contentBlockIndex": 1 } })),
-            build_frame("messageStop", &json!({ "messageStop": { "stopReason": "tool_use" } })),
+            build_frame(
+                "messageStart",
+                &json!({ "messageStart": { "role": "assistant" } }),
+            ),
+            build_frame(
+                "contentBlockStart",
+                &json!({
+                    "contentBlockStart": { "contentBlockIndex": 1, "start": { "toolUse": { "toolUseId": "tool-1", "name": "edit" } } }
+                }),
+            ),
+            build_frame(
+                "contentBlockDelta",
+                &json!({
+                    "contentBlockDelta": { "contentBlockIndex": 1, "delta": { "toolUse": { "input": "{\"path\":\"/workspace/file.js\",\"edits\":[{\"oldText\":\"first\",\"newText\":\"up\",\"\":\"\"}]}" } } }
+                }),
+            ),
+            build_frame(
+                "contentBlockStop",
+                &json!({ "contentBlockStop": { "contentBlockIndex": 1 } }),
+            ),
+            build_frame(
+                "messageStop",
+                &json!({ "messageStop": { "stopReason": "tool_use" } }),
+            ),
         ];
         let (base_url, _) = start_eventstream_server(&frames, 200).await;
         let mut model = base_model();
@@ -2451,10 +2918,19 @@ mod tests {
         let s = stream(&model, &ctx, client, None, &options);
         let (_, message) = s.collect().await;
         assert_eq!(message.stop_reason(), Some(StopReason::ToolUse));
-        let tool = message.content().iter().find_map(|b| match b {
-            ContentBlock::ToolCall { id, name, arguments, .. } => Some((id.clone(), name.clone(), arguments.clone())),
-            _ => None,
-        }).unwrap();
+        let tool = message
+            .content()
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                    ..
+                } => Some((id.clone(), name.clone(), arguments.clone())),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(tool.0, "tool-1");
         assert_eq!(tool.1, "edit");
         assert_eq!(tool.2["path"], json!("/workspace/file.js"));
@@ -2464,24 +2940,47 @@ mod tests {
     #[tokio::test]
     async fn full_stream_redacted_reasoning_joins_deltas() {
         let redacted_b64 = "cnNuXzVaVnJpZjRKMGJYSXFtV2RsZWRqN1FJRmVOaWtSUWJF";
-        let redacted_bytes = base64::engine::general_purpose::STANDARD.decode(redacted_b64).unwrap();
+        let redacted_bytes = base64::engine::general_purpose::STANDARD
+            .decode(redacted_b64)
+            .unwrap();
         let (head, tail) = redacted_bytes.split_at(7);
         let head_b64 = base64::engine::general_purpose::STANDARD.encode(head);
         let tail_b64 = base64::engine::general_purpose::STANDARD.encode(tail);
         let frames = vec![
-            build_frame("messageStart", &json!({ "messageStart": { "role": "assistant" } })),
-            build_frame("contentBlockDelta", &json!({
-                "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "reasoningContent": { "redactedContent": head_b64 } } }
-            })),
-            build_frame("contentBlockDelta", &json!({
-                "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "reasoningContent": { "redactedContent": tail_b64 } } }
-            })),
-            build_frame("contentBlockStop", &json!({ "contentBlockStop": { "contentBlockIndex": 0 } })),
-            build_frame("contentBlockDelta", &json!({
-                "contentBlockDelta": { "contentBlockIndex": 1, "delta": { "text": "done" } }
-            })),
-            build_frame("contentBlockStop", &json!({ "contentBlockStop": { "contentBlockIndex": 1 } })),
-            build_frame("messageStop", &json!({ "messageStop": { "stopReason": "end_turn" } })),
+            build_frame(
+                "messageStart",
+                &json!({ "messageStart": { "role": "assistant" } }),
+            ),
+            build_frame(
+                "contentBlockDelta",
+                &json!({
+                    "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "reasoningContent": { "redactedContent": head_b64 } } }
+                }),
+            ),
+            build_frame(
+                "contentBlockDelta",
+                &json!({
+                    "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "reasoningContent": { "redactedContent": tail_b64 } } }
+                }),
+            ),
+            build_frame(
+                "contentBlockStop",
+                &json!({ "contentBlockStop": { "contentBlockIndex": 0 } }),
+            ),
+            build_frame(
+                "contentBlockDelta",
+                &json!({
+                    "contentBlockDelta": { "contentBlockIndex": 1, "delta": { "text": "done" } }
+                }),
+            ),
+            build_frame(
+                "contentBlockStop",
+                &json!({ "contentBlockStop": { "contentBlockIndex": 1 } }),
+            ),
+            build_frame(
+                "messageStop",
+                &json!({ "messageStop": { "stopReason": "end_turn" } }),
+            ),
         ];
         let (base_url, _) = start_eventstream_server(&frames, 200).await;
         let mut model = base_model();
@@ -2508,35 +3007,42 @@ mod tests {
         let s = stream(&model, &ctx, client, None, &options);
         let (_, message) = s.collect().await;
         assert_eq!(message.stop_reason(), Some(StopReason::Stop));
-        let types: Vec<&str> = message.content().iter().map(|b| match b {
-            ContentBlock::Text { .. } => "text",
-            ContentBlock::Thinking { .. } => "thinking",
-            _ => "other",
-        }).collect();
+        let types: Vec<&str> = message
+            .content()
+            .iter()
+            .map(|b| match b {
+                ContentBlock::Text { .. } => "text",
+                ContentBlock::Thinking { .. } => "thinking",
+                _ => "other",
+            })
+            .collect();
         assert_eq!(types, vec!["thinking", "text"]);
-        let thinking = message.content().iter().find_map(|b| match b {
-            ContentBlock::Thinking { thinking, thinking_signature, redacted, .. } => {
-                Some((thinking.clone(), thinking_signature.clone(), *redacted))
-            }
-            _ => None,
-        }).unwrap();
+        let thinking = message
+            .content()
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Thinking {
+                    thinking,
+                    thinking_signature,
+                    redacted,
+                    ..
+                } => Some((thinking.clone(), thinking_signature.clone(), *redacted)),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(thinking.0, "[Reasoning redacted]");
         assert_eq!(thinking.1.as_deref(), Some(redacted_b64));
         assert_eq!(thinking.2, Some(true));
     }
 }
 
-
 #[cfg(test)]
 mod profile_credentials_tests {
     use super::*;
 
     fn write_credentials(tag: &str, content: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "pi-bedrock-creds-{}-{}",
-            std::process::id(),
-            tag
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pi-bedrock-creds-{}-{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("credentials");
@@ -2547,7 +3053,8 @@ mod profile_credentials_tests {
     #[test]
     fn reads_default_profile_without_profile_arg() {
         let _guard = crate::utils::env_lock();
-        let file = write_credentials("default",
+        let file = write_credentials(
+            "default",
             "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n",
         );
         unsafe { std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file) };
@@ -2577,7 +3084,10 @@ mod profile_credentials_tests {
     #[test]
     fn returns_none_for_unknown_profile() {
         let _guard = crate::utils::env_lock();
-        let file = write_credentials("unknown", "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n");
+        let file = write_credentials(
+            "unknown",
+            "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n",
+        );
         unsafe { std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file) };
         assert!(aws_profile_credentials(Some("missing"), None).is_none());
         std::env::remove_var("AWS_SHARED_CREDENTIALS_FILE");
@@ -2587,7 +3097,10 @@ mod profile_credentials_tests {
     #[test]
     fn env_keys_win_over_profile_file() {
         let _guard = crate::utils::env_lock();
-        let file = write_credentials("unknown", "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n");
+        let file = write_credentials(
+            "unknown",
+            "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n",
+        );
         unsafe {
             std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file);
             std::env::set_var("AWS_ACCESS_KEY_ID", "AKIAENV");

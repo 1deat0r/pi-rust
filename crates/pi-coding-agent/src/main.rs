@@ -7,12 +7,21 @@ use pi_coding_agent::args::{parse_args, print_help, print_version, ParseOutcome}
 async fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
 
+    // Keep startup network behavior consistent across subcommands. The
+    // upstream sets both switches before auth/package dispatch, so an
+    // offline invocation never performs a version or catalog request.
+    if argv.iter().any(|arg| arg == "--offline") || pi_coding_agent::config::env_flag("PI_OFFLINE")
+    {
+        std::env::set_var("PI_OFFLINE", "1");
+        std::env::set_var("PI_SKIP_VERSION_CHECK", "1");
+    }
+
     // Subcommand dispatch mirrors main.ts: auth commands, package commands,
     // and the config command run before generic arg parsing.
     if pi_coding_agent::commands::auth::handle_auth_command(&argv) {
         return;
     }
-    if pi_coding_agent::commands::package::handle_package_command(&argv) {
+    if pi_coding_agent::commands::package::handle_package_command(&argv).await {
         return;
     }
     if pi_coding_agent::commands::config::handle_config_command(&argv) {
@@ -64,7 +73,9 @@ async fn main() {
                     &agent_dir.display().to_string(),
                     pi_coding_agent::core::settings::SettingsManagerCreateOptions::default(),
                 );
-                let result = pi_coding_agent::modes::interactive::run_interactive_mode(&args, settings).await;
+                let result =
+                    pi_coding_agent::modes::interactive::run_interactive_mode(&args, settings)
+                        .await;
                 if let Err(err) = result {
                     eprintln!("interactive error: {err}");
                     std::process::exit(1);
@@ -80,7 +91,9 @@ async fn main() {
                     &agent_dir.display().to_string(),
                     pi_coding_agent::core::settings::SettingsManagerCreateOptions::default(),
                 );
-                if let Err(err) = pi_coding_agent::modes::json_event::run_json_mode(&args, settings).await {
+                if let Err(err) =
+                    pi_coding_agent::modes::json_event::run_json_mode(&args, settings).await
+                {
                     eprintln!("Error: {err}");
                     std::process::exit(1);
                 }
@@ -104,8 +117,9 @@ async fn main() {
             // --list-models: build the built-in provider registry and print
             // the auth-gated model table (upstream list-models behavior).
             if args.list_models_requested() {
-                let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
-                let out = pi_coding_agent::list_models::list_models(&models, args.list_models.as_deref());
+                let models = pi_coding_agent::core::model_registry::builtin_models();
+                let out =
+                    pi_coding_agent::list_models::list_models(&models, args.list_models.as_deref());
                 print!("{out}");
                 return;
             }

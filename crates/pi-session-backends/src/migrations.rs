@@ -17,7 +17,11 @@ pub struct SqliteMigration {
 pub const MIGRATION_001_INITIAL_SQL: &str = include_str!("migrations/001_initial.sql");
 
 pub fn load_migrations() -> Vec<SqliteMigration> {
-    vec![SqliteMigration { id: "001_initial.sql", order: 1, sql: MIGRATION_001_INITIAL_SQL }]
+    vec![SqliteMigration {
+        id: "001_initial.sql",
+        order: 1,
+        sql: MIGRATION_001_INITIAL_SQL,
+    }]
 }
 
 fn ensure_migrations_table(db: &Connection) -> rusqlite::Result<()> {

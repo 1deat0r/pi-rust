@@ -13,7 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use pi_ai::api::mistral_conversations::MistralOptions;
 use pi_ai::api::openai_codex_responses::OpenAICodexResponsesOptions;
 use pi_ai::types::{
-    Context, ContentBlock, Message, ProviderRequestOptions, StopReason, StreamOptions, UserContent,
+    ContentBlock, Context, Message, ProviderRequestOptions, StopReason, StreamOptions, UserContent,
 };
 
 /// A captured HTTP request: method, path, headers, body.
@@ -93,7 +93,12 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> CapturedRequest {
         }
         body.push_str(&String::from_utf8_lossy(&buf[..n]));
     }
-    CapturedRequest { method, path, headers, body }
+    CapturedRequest {
+        method,
+        path,
+        headers,
+        body,
+    }
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -142,12 +147,18 @@ fn mistral_terminal_sse() -> String {
 
 #[test]
 fn mistral_full_transport_roundtrip() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let captured = std::sync::Arc::new(tokio::sync::Mutex::new(None::<CapturedRequest>));
         let response = simple_response(
             "200 OK",
-            &[("content-type", "text/event-stream"), ("x-request-id", "request-1")],
+            &[
+                ("content-type", "text/event-stream"),
+                ("x-request-id", "request-1"),
+            ],
             &mistral_terminal_sse(),
         );
         let (server_base, shutdown_tx) = spawn_local_server(response, captured.clone());
@@ -176,7 +187,9 @@ fn mistral_full_transport_roundtrip() {
             },
             prompt_mode: Some("reasoning".to_string()),
             reasoning_effort: Some("high".to_string()),
-            tool_choice: Some(serde_json::json!({ "type": "function", "function": { "name": "lookup" } })),
+            tool_choice: Some(
+                serde_json::json!({ "type": "function", "function": { "name": "lookup" } }),
+            ),
         };
         let stream = pi_ai::api::mistral_conversations::stream(
             &model,
@@ -192,7 +205,11 @@ fn mistral_full_transport_roundtrip() {
         assert_eq!(message.usage().unwrap().output, 1);
         assert_eq!(message.response_id().unwrap(), "mistral-response-id");
 
-        let req = captured.lock().await.take().expect("server received a request");
+        let req = captured
+            .lock()
+            .await
+            .take()
+            .expect("server received a request");
         assert_eq!(req.method, "POST");
         assert_eq!(req.path, "/v1/chat/completions");
         assert_eq!(req.headers.get("authorization").unwrap(), "Bearer secret");
@@ -209,7 +226,10 @@ fn mistral_full_transport_roundtrip() {
         assert_eq!(body["reasoning_effort"], "high");
         assert_eq!(body["prompt_cache_key"], "session-1");
         assert_eq!(body["temperature"], 0.9);
-        assert_eq!(body["tool_choice"], serde_json::json!({ "type": "function", "function": { "name": "lookup" } }));
+        assert_eq!(
+            body["tool_choice"],
+            serde_json::json!({ "type": "function", "function": { "name": "lookup" } })
+        );
         assert!(!body.as_object().unwrap().contains_key("maxTokens"));
         assert!(!body.as_object().unwrap().contains_key("promptMode"));
         assert!(!body.as_object().unwrap().contains_key("promptCacheKey"));
@@ -223,7 +243,10 @@ fn mistral_full_transport_roundtrip() {
 
 #[test]
 fn mistral_http_error_surface() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let captured = std::sync::Arc::new(tokio::sync::Mutex::new(None::<CapturedRequest>));
         let response = simple_response("403 Forbidden", &[], r#"{"message":"blocked by gateway"}"#);
@@ -240,7 +263,13 @@ fn mistral_http_error_surface() {
             &Context::default(),
             reqwest::Client::new(),
             Some("secret"),
-            &MistralOptions { base: StreamOptions { base: request_options, ..Default::default() }, ..Default::default() },
+            &MistralOptions {
+                base: StreamOptions {
+                    base: request_options,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         );
         let message = stream.collect().await.1;
         assert_eq!(message.stop_reason(), Some(StopReason::Error));
@@ -254,7 +283,10 @@ fn mistral_http_error_surface() {
 
 #[test]
 fn mistral_timeout_while_waiting_for_stream() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         // A server that accepts the connection and never responds: the reqwest
         // request-level timeout must surface as an error stream.
@@ -289,7 +321,13 @@ fn mistral_timeout_while_waiting_for_stream() {
             &Context::default(),
             reqwest::Client::new(),
             Some("secret"),
-            &MistralOptions { base: StreamOptions { base: request_options, ..Default::default() }, ..Default::default() },
+            &MistralOptions {
+                base: StreamOptions {
+                    base: request_options,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         );
         let message = stream.collect().await.1;
         assert_eq!(message.stop_reason(), Some(StopReason::Error));
@@ -305,7 +343,10 @@ fn mistral_timeout_while_waiting_for_stream() {
 
 fn codex_model() -> pi_ai::Model {
     let models = pi_ai::providers::catalog_models("openai-codex");
-    models.into_iter().find(|m| m.id == "gpt-5.5").expect("gpt-5.5 in catalog")
+    models
+        .into_iter()
+        .find(|m| m.id == "gpt-5.5")
+        .expect("gpt-5.5 in catalog")
 }
 
 fn codex_token(account_id: &str) -> String {
@@ -331,10 +372,17 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
 
 #[test]
 fn codex_sse_transport_roundtrip() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let captured = std::sync::Arc::new(tokio::sync::Mutex::new(None::<CapturedRequest>));
-        let response = simple_response("200 OK", &[("content-type", "text/event-stream")], &codex_terminal_sse());
+        let response = simple_response(
+            "200 OK",
+            &[("content-type", "text/event-stream")],
+            &codex_terminal_sse(),
+        );
         let (server_base, shutdown_tx) = spawn_local_server(response, captured.clone());
 
         let mut model = codex_model();
@@ -372,16 +420,29 @@ fn codex_sse_transport_roundtrip() {
         let end_turn = *end_turn;
         assert_eq!(end_turn, Some(false));
 
-        let req = captured.lock().await.take().expect("server received a request");
+        let req = captured
+            .lock()
+            .await
+            .take()
+            .expect("server received a request");
         assert_eq!(req.method, "POST");
         assert_eq!(req.path, "/codex/responses");
-        assert_eq!(req.headers.get("authorization").unwrap(), &format!("Bearer {token}"));
+        assert_eq!(
+            req.headers.get("authorization").unwrap(),
+            &format!("Bearer {token}")
+        );
         assert_eq!(req.headers.get("chatgpt-account-id").unwrap(), "acc_test");
         assert_eq!(req.headers.get("originator").unwrap(), "pi");
-        assert_eq!(req.headers.get("openai-beta").unwrap(), "responses=experimental");
+        assert_eq!(
+            req.headers.get("openai-beta").unwrap(),
+            "responses=experimental"
+        );
         assert_eq!(req.headers.get("accept").unwrap(), "text/event-stream");
         assert_eq!(req.headers.get("session-id").unwrap(), "test-session-123");
-        assert_eq!(req.headers.get("x-client-request-id").unwrap(), "test-session-123");
+        assert_eq!(
+            req.headers.get("x-client-request-id").unwrap(),
+            "test-session-123"
+        );
         assert!(!req.headers.contains_key("content-encoding"));
 
         let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();

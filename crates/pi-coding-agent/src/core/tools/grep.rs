@@ -10,13 +10,13 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use pi_ai::types::json_tool;
 use pi_agent::tools::path_utils::resolve_tool_path;
 use pi_agent::tools::truncate::{truncate_head_with, DEFAULT_MAX_BYTES};
 use pi_agent::tools::{AgentTool, AgentToolResult};
+use pi_ai::types::json_tool;
 
-use super::find::path_relative;
 use super::bytes_limit_notice;
+use super::find::path_relative;
 
 const DEFAULT_LIMIT: u64 = 100;
 const GREP_MAX_LINE_LENGTH: usize = 500;
@@ -131,9 +131,14 @@ pub async fn grep_execute(
         if event.get("type").and_then(|v| v.as_str()) != Some("match") {
             continue;
         }
-        let Some(data) = event.get("data") else { continue };
+        let Some(data) = event.get("data") else {
+            continue;
+        };
         match_count += 1;
-        let file_path = data.get("path").and_then(|p| p.get("text")).and_then(|v| v.as_str());
+        let file_path = data
+            .get("path")
+            .and_then(|p| p.get("text"))
+            .and_then(|v| v.as_str());
         let line_number = data.get("line_number").and_then(|v| v.as_u64());
         if let (Some(file_path), Some(line_number)) = (file_path, line_number) {
             let line_text = data
@@ -154,7 +159,10 @@ pub async fn grep_execute(
         }
     }
 
-    let status = child.wait().await.map_err(|e| format!("rg failed to wait: {e}"))?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("rg failed to wait: {e}"))?;
     let stderr = stderr_task.await.unwrap_or_default();
 
     if !killed_due_to_limit && status.code().map(|c| c != 0 && c != 1).unwrap_or(true) {
@@ -214,19 +222,22 @@ pub async fn grep_execute(
         } else {
             let lines = get_file_lines(&m.file_path, &mut file_cache);
             if lines.is_empty() {
-                output_lines.push(format!("{}:{}: (unable to read file)", relative_path, m.line_number));
+                output_lines.push(format!(
+                    "{}:{}: (unable to read file)",
+                    relative_path, m.line_number
+                ));
                 continue;
             }
             let start = context_value
                 .saturating_sub(0)
                 .max(1)
                 .max(m.line_number.saturating_sub(context_value as u64) as usize);
-            let end = (m.line_number + context_value as u64)
-                .min(lines.len() as u64) as usize;
+            let end = (m.line_number + context_value as u64).min(lines.len() as u64) as usize;
             for current in start..=end {
                 let line_text = lines.get(current - 1).cloned().unwrap_or_default();
                 let sanitized = line_text.replace('\r', "");
-                let (truncated_text, was_truncated) = truncate_line(&sanitized, GREP_MAX_LINE_LENGTH);
+                let (truncated_text, was_truncated) =
+                    truncate_line(&sanitized, GREP_MAX_LINE_LENGTH);
                 if was_truncated {
                     lines_truncated = true;
                 }
@@ -320,7 +331,11 @@ mod tests {
             let root = std::env::temp_dir().join(format!("pi-grep-{tag}-{}", uuid::Uuid::new_v4()));
             fs::create_dir_all(root.join("src")).unwrap();
             fs::create_dir_all(root.join("vendor")).unwrap();
-            fs::write(root.join("src").join("main.rs"), "TODO: add feature\nline two\n").unwrap();
+            fs::write(
+                root.join("src").join("main.rs"),
+                "TODO: add feature\nline two\n",
+            )
+            .unwrap();
             fs::write(root.join("src").join("lib.rs"), "const TODO: u32 = 1;\n").unwrap();
             fs::write(root.join("vendor").join("dep.rs"), "todo lowercase todo\n").unwrap();
             fs::write(root.join("notes.md"), "TODO in markdown\n").unwrap();
@@ -337,32 +352,74 @@ mod tests {
     #[tokio::test]
     async fn basic_match_outputs_path_line_text() {
         let tree = Tree::new("basic");
-        let out = grep_execute(&tree.root.display().to_string(), "TODO", None, None, false, false, None, None)
-            .await
-            .unwrap();
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "TODO",
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let lines: Vec<String> = out.lines().map(|s| s.to_string()).collect();
-        assert!(lines.contains(&"src/main.rs:1: TODO: add feature".to_string()), "got: {out}");
-        assert!(lines.contains(&"src/lib.rs:1: const TODO: u32 = 1;".to_string()), "got: {out}");
-        assert!(lines.contains(&"notes.md:1: TODO in markdown".to_string()), "got: {out}");
+        assert!(
+            lines.contains(&"src/main.rs:1: TODO: add feature".to_string()),
+            "got: {out}"
+        );
+        assert!(
+            lines.contains(&"src/lib.rs:1: const TODO: u32 = 1;".to_string()),
+            "got: {out}"
+        );
+        assert!(
+            lines.contains(&"notes.md:1: TODO in markdown".to_string()),
+            "got: {out}"
+        );
     }
 
     #[tokio::test]
     async fn no_matches_returns_marker() {
         let tree = Tree::new("nomatch");
-        let out = grep_execute(&tree.root.display().to_string(), "ZZZ_NOT_HERE", None, None, false, false, None, None)
-            .await
-            .unwrap();
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "ZZZ_NOT_HERE",
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(out, "No matches found");
     }
 
     #[tokio::test]
     async fn ignore_case_matches() {
         let tree = Tree::new("ic");
-        let out = grep_execute(&tree.root.display().to_string(), "todo", None, None, true, false, None, None)
-            .await
-            .unwrap();
-        assert!(out.contains("vendor/dep.rs:1: todo lowercase todo"), "got: {out}");
-        assert!(out.contains("src/main.rs:1: TODO: add feature"), "got: {out}");
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "todo",
+            None,
+            None,
+            true,
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            out.contains("vendor/dep.rs:1: todo lowercase todo"),
+            "got: {out}"
+        );
+        assert!(
+            out.contains("src/main.rs:1: TODO: add feature"),
+            "got: {out}"
+        );
     }
 
     #[tokio::test]
@@ -371,19 +428,40 @@ mod tests {
         // Pattern is a regex metachar sequence; literal mode must find the
         // literal text, regex mode would not.
         fs::write(tree.root.join("src").join("regex.txt"), "a.c\n").unwrap();
-        let out = grep_execute(&tree.root.display().to_string(), "a.c", None, None, false, true, None, None)
-            .await
-            .unwrap();
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "a.c",
+            None,
+            None,
+            false,
+            true,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(out.contains("src/regex.txt:1: a.c"), "got: {out}");
     }
 
     #[tokio::test]
     async fn glob_filters_files() {
         let tree = Tree::new("glob");
-        let out = grep_execute(&tree.root.display().to_string(), "TODO", None, Some("*.rs"), false, false, None, None)
-            .await
-            .unwrap();
-        assert!(out.contains("src/main.rs:1: TODO: add feature"), "got: {out}");
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "TODO",
+            None,
+            Some("*.rs"),
+            false,
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            out.contains("src/main.rs:1: TODO: add feature"),
+            "got: {out}"
+        );
         assert!(!out.contains("notes.md"), "got: {out}");
     }
 
@@ -414,36 +492,88 @@ mod tests {
         let tree = Tree::new("gi");
         fs::write(tree.root.join(".gitignore"), "vendor/\n").unwrap();
 
-        let out = grep_execute(&tree.root.display().to_string(), "todo", None, None, true, false, None, None)
-            .await
-            .unwrap();
-        assert!(out.contains("vendor/dep.rs"), "expected vendor hit outside git repo: got {out}");
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "todo",
+            None,
+            None,
+            true,
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            out.contains("vendor/dep.rs"),
+            "expected vendor hit outside git repo: got {out}"
+        );
 
         fs::create_dir_all(tree.root.join(".git")).unwrap();
-        let out = grep_execute(&tree.root.display().to_string(), "todo", None, None, true, false, None, None)
-            .await
-            .unwrap();
-        assert!(!out.contains("vendor/dep.rs"), "expected vendor ignored inside git repo: got {out}");
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "todo",
+            None,
+            None,
+            true,
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !out.contains("vendor/dep.rs"),
+            "expected vendor ignored inside git repo: got {out}"
+        );
     }
 
     #[tokio::test]
     async fn context_prints_neighbor_lines() {
         let tree = Tree::new("ctx");
-        let out = grep_execute(&tree.root.display().to_string(), "TODO", None, None, false, false, Some(1), None)
-            .await
-            .unwrap();
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "TODO",
+            None,
+            None,
+            false,
+            false,
+            Some(1),
+            None,
+        )
+        .await
+        .unwrap();
         let lines: Vec<String> = out.lines().map(|s| s.to_string()).collect();
-        assert!(lines.contains(&"src/main.rs:1: TODO: add feature".to_string()), "got: {out}");
-        assert!(lines.contains(&"src/main.rs-2- line two".to_string()), "got: {out}");
+        assert!(
+            lines.contains(&"src/main.rs:1: TODO: add feature".to_string()),
+            "got: {out}"
+        );
+        assert!(
+            lines.contains(&"src/main.rs-2- line two".to_string()),
+            "got: {out}"
+        );
     }
 
     #[tokio::test]
     async fn limit_caps_matches_with_notice() {
         let tree = Tree::new("limit");
-        let out = grep_execute(&tree.root.display().to_string(), "TODO", None, None, false, false, None, Some(1))
-            .await
-            .unwrap();
-        let lines: Vec<String> = out.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect();
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "TODO",
+            None,
+            None,
+            false,
+            false,
+            None,
+            Some(1),
+        )
+        .await
+        .unwrap();
+        let lines: Vec<String> = out
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(lines.len(), 2, "got: {out:?}");
         // rg traversal order across matching files is not contractual; with
         // limit=1 the single hit may be any of the three TODO files.
@@ -454,7 +584,10 @@ mod tests {
             "unexpected first match: {:?}; got: {out:?}",
             lines[0]
         );
-        assert!(out.contains("1 matches limit reached. Use limit=2 for more, or refine pattern"), "got: {out}");
+        assert!(
+            out.contains("1 matches limit reached. Use limit=2 for more, or refine pattern"),
+            "got: {out}"
+        );
     }
 
     #[tokio::test]
@@ -462,19 +595,40 @@ mod tests {
         let tree = Tree::new("long");
         let long = "x".repeat(600);
         fs::write(tree.root.join("src").join("long.txt"), format!("{long}\n")).unwrap();
-        let out = grep_execute(&tree.root.display().to_string(), "xxx", None, None, false, true, None, None)
-            .await
-            .unwrap();
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "xxx",
+            None,
+            None,
+            false,
+            true,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(out.contains("... [truncated]"), "got: {out}");
-        assert!(out.contains("Some lines truncated to 500 chars. Use read tool to see full lines"), "got: {out}");
+        assert!(
+            out.contains("Some lines truncated to 500 chars. Use read tool to see full lines"),
+            "got: {out}"
+        );
     }
 
     #[tokio::test]
     async fn missing_path_errors() {
         let root = std::env::temp_dir().join(format!("pi-grep-missing-{}", uuid::Uuid::new_v4()));
-        let err = grep_execute(&root.display().to_string(), "x", Some("nope"), None, false, false, None, None)
-            .await
-            .unwrap_err();
+        let err = grep_execute(
+            &root.display().to_string(),
+            "x",
+            Some("nope"),
+            None,
+            false,
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("Path not found"), "got: {err}");
         let _ = fs::remove_dir_all(&root);
     }

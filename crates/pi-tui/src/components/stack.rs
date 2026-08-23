@@ -51,7 +51,11 @@ impl Component for HStack {
             }
         }
         let available = width.saturating_sub(fixed_widths);
-        let per = if grow_count > 0 { available / grow_count } else { 0 };
+        let per = if grow_count > 0 {
+            available / grow_count
+        } else {
+            0
+        };
         let mut parts: Vec<Vec<String>> = Vec::new();
         let mut widths: Vec<usize> = Vec::new();
         for (w, child) in &self.children {

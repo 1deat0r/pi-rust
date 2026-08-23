@@ -25,7 +25,10 @@ pub fn env(name: &str) -> Option<String> {
 }
 
 pub fn env_flag(name: &str) -> bool {
-    matches!(std::env::var(name).ok().as_deref(), Some("1") | Some("true") | Some("yes") | Some("on"))
+    matches!(
+        std::env::var(name).ok().as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
 }
 
 /// Expands a leading `~` to the home directory (returns the input unchanged

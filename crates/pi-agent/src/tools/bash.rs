@@ -25,7 +25,9 @@ pub fn validate_timeout(timeout: Option<f64>) -> Result<(), String> {
             if !v.is_finite() || v <= 0.0 {
                 Err("Invalid timeout: must be a finite number of seconds".to_string())
             } else if v > MAX_TIMEOUT_SECONDS {
-                Err(format!("Invalid timeout: maximum is {MAX_TIMEOUT_SECONDS} seconds"))
+                Err(format!(
+                    "Invalid timeout: maximum is {MAX_TIMEOUT_SECONDS} seconds"
+                ))
             } else {
                 Ok(())
             }
@@ -54,7 +56,8 @@ pub async fn run_bash(
 
     // Drain both pipes concurrently, racing the deadline so partial output is
     // preserved when the command times out.
-    let deadline = timeout_secs.map(|secs| tokio::time::Instant::now() + std::time::Duration::from_secs_f64(secs));
+    let deadline = timeout_secs
+        .map(|secs| tokio::time::Instant::now() + std::time::Duration::from_secs_f64(secs));
     let mut so: Vec<u8> = Vec::new();
     let mut se: Vec<u8> = Vec::new();
     let mut so_eof = false;
@@ -83,13 +86,14 @@ pub async fn run_bash(
                         break;
                     }
                 }
-                None => {
-                    match stdout.read(&mut buf_so).await {
-                        Ok(0) => so_eof = true,
-                        Ok(n) => { so.extend_from_slice(&buf_so[..n]); saw_progress = true; },
-                        Err(_) => so_eof = true,
+                None => match stdout.read(&mut buf_so).await {
+                    Ok(0) => so_eof = true,
+                    Ok(n) => {
+                        so.extend_from_slice(&buf_so[..n]);
+                        saw_progress = true;
                     }
-                }
+                    Err(_) => so_eof = true,
+                },
             }
         }
         if !se_eof {
@@ -111,13 +115,14 @@ pub async fn run_bash(
                         break;
                     }
                 }
-                None => {
-                    match stderr.read(&mut buf_se).await {
-                        Ok(0) => se_eof = true,
-                        Ok(n) => { se.extend_from_slice(&buf_se[..n]); saw_progress = true; },
-                        Err(_) => se_eof = true,
+                None => match stderr.read(&mut buf_se).await {
+                    Ok(0) => se_eof = true,
+                    Ok(n) => {
+                        se.extend_from_slice(&buf_se[..n]);
+                        saw_progress = true;
                     }
-                }
+                    Err(_) => se_eof = true,
+                },
             }
         }
         if !saw_progress && timeout_secs.is_some() {
@@ -186,7 +191,11 @@ pub async fn execute_bash(
 
     let output_text = format!("{}{}", capture.output, capture.truncation_message);
     let append_status = |status: String| -> String {
-        if output_text.is_empty() { status } else { format!("{output_text}\n\n{status}") }
+        if output_text.is_empty() {
+            status
+        } else {
+            format!("{output_text}\n\n{status}")
+        }
     };
 
     if capture.timed_out {
@@ -199,10 +208,17 @@ pub async fn execute_bash(
         Ok(ToolResultMessage::text(
             "bash",
             "bash",
-            if output_text.is_empty() { "(no output)".to_string() } else { output_text },
+            if output_text.is_empty() {
+                "(no output)".to_string()
+            } else {
+                output_text
+            },
             false,
         ))
     } else {
-        Err(append_status(format!("Command exited with code {}", capture.exit_code.unwrap_or(0))))
+        Err(append_status(format!(
+            "Command exited with code {}",
+            capture.exit_code.unwrap_or(0)
+        )))
     }
 }

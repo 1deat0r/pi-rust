@@ -16,7 +16,9 @@ impl Default for ReporterOptions {
             .ok()
             .filter(|value| !value.trim().is_empty())
             .map(PathBuf::from);
-        Self { artifact_directory: dir }
+        Self {
+            artifact_directory: dir,
+        }
     }
 }
 
@@ -37,7 +39,8 @@ pub fn append_harness_run_report(
     let Some(artifact_directory) = &options.artifact_directory else {
         return Ok(());
     };
-    std::fs::create_dir_all(artifact_directory).map_err(|error| format!("Failed to create artifact dir: {error}"))?;
+    std::fs::create_dir_all(artifact_directory)
+        .map_err(|error| format!("Failed to create artifact dir: {error}"))?;
     let references = persist_eval_artifact_references(artifacts, run_id, artifact_directory)?;
     let record = RunRecord {
         schema_version: 1,
@@ -51,7 +54,8 @@ pub fn append_harness_run_report(
         metadata,
     };
     let path = artifact_directory.join("runs.jsonl");
-    let line = serde_json::to_string(&record).map_err(|error| format!("Failed to serialize run record: {error}"))?;
+    let line = serde_json::to_string(&record)
+        .map_err(|error| format!("Failed to serialize run record: {error}"))?;
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)

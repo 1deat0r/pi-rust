@@ -13,7 +13,10 @@ pub struct Loader {
 
 impl Loader {
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into(), started: Instant::now() }
+        Self {
+            message: message.into(),
+            started: Instant::now(),
+        }
     }
     pub fn set_message(&mut self, message: impl Into<String>) {
         self.message = message.into();

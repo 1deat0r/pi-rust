@@ -42,8 +42,8 @@ const DASHES: [char; 7] = [
     '\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}', '\u{2014}', '\u{2015}', '\u{2212}',
 ];
 const SPECIAL_SPACES: [char; 13] = [
-    '\u{00A0}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}',
-    '\u{2008}', '\u{2009}', '\u{200A}', '\u{202F}', '\u{205F}', '\u{3000}',
+    '\u{00A0}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}',
+    '\u{2009}', '\u{200A}', '\u{202F}', '\u{205F}', '\u{3000}',
 ];
 
 /// Upstream `normalizeForFuzzyMatch`: NFKC, strip trailing whitespace per
@@ -96,7 +96,10 @@ pub fn get_line_spans(content: &str) -> Vec<LineSpan> {
     split_lines_with_endings(content)
         .into_iter()
         .map(|line| {
-            let span = LineSpan { start: offset, end: offset + line.len() };
+            let span = LineSpan {
+                start: offset,
+                end: offset + line.len(),
+            };
             offset = span.end;
             span
         })
@@ -138,7 +141,12 @@ pub fn fuzzy_find_text(content: &str, old_text: &str) -> FuzzyMatchResult {
             match_length: fuzzy_old_text.len(),
             used_fuzzy_match: true,
         },
-        None => FuzzyMatchResult { found: false, index: 0, match_length: 0, used_fuzzy_match: false },
+        None => FuzzyMatchResult {
+            found: false,
+            index: 0,
+            match_length: 0,
+            used_fuzzy_match: false,
+        },
     }
 }
 
@@ -146,7 +154,10 @@ pub fn fuzzy_find_text(content: &str, old_text: &str) -> FuzzyMatchResult {
 pub fn count_occurrences(content: &str, old_text: &str) -> usize {
     let fuzzy_content = normalize_for_fuzzy_match(content);
     let fuzzy_old_text = normalize_for_fuzzy_match(old_text);
-    fuzzy_content.split(&fuzzy_old_text).count().saturating_sub(1)
+    fuzzy_content
+        .split(&fuzzy_old_text)
+        .count()
+        .saturating_sub(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +200,12 @@ fn not_found_error(path: &str, edit_index: usize, total_edits: usize) -> String 
     }
 }
 
-fn duplicate_error(path: &str, edit_index: usize, total_edits: usize, occurrences: usize) -> String {
+fn duplicate_error(
+    path: &str,
+    edit_index: usize,
+    total_edits: usize,
+    occurrences: usize,
+) -> String {
     if total_edits == 1 {
         format!(
             "Found {occurrences} occurrences of the text in {path}. The text must be unique. Please provide more context to make it unique."
@@ -279,7 +295,9 @@ fn apply_replacements_preserving_unchanged_lines(
     let original_lines = split_lines_with_endings(original_content);
     let base_lines = get_line_spans(base_content);
     if original_lines.len() != base_lines.len() {
-        panic!("Cannot preserve unchanged lines because the base content has a different line count.");
+        panic!(
+            "Cannot preserve unchanged lines because the base content has a different line count."
+        );
     }
 
     // Group replacements by the base lines they touch.
@@ -341,8 +359,11 @@ pub fn apply_edits_to_normalized_content(
         .map(|e| fuzzy_find_text(normalized_content, &e.old_text))
         .collect();
     let used_fuzzy_match = initial_matches.iter().any(|m| m.used_fuzzy_match);
-    let replacement_base_content =
-        if used_fuzzy_match { normalize_for_fuzzy_match(normalized_content) } else { normalized_content.to_string() };
+    let replacement_base_content = if used_fuzzy_match {
+        normalize_for_fuzzy_match(normalized_content)
+    } else {
+        normalized_content.to_string()
+    };
 
     let mut matched_edits: Vec<TextReplacement> = Vec::new();
     for (i, edit) in normalized_edits.iter().enumerate() {
@@ -352,7 +373,12 @@ pub fn apply_edits_to_normalized_content(
         }
         let occurrences = count_occurrences(&replacement_base_content, &edit.old_text);
         if occurrences > 1 {
-            return Err(duplicate_error(path, i, normalized_edits.len(), occurrences));
+            return Err(duplicate_error(
+                path,
+                i,
+                normalized_edits.len(),
+                occurrences,
+            ));
         }
         matched_edits.push(TextReplacement {
             edit_index: i,
@@ -386,9 +412,11 @@ pub fn apply_edits_to_normalized_content(
         return Err(no_change_error(path, normalized_edits.len()));
     }
 
-    Ok(AppliedEditsResult { base_content, new_content })
+    Ok(AppliedEditsResult {
+        base_content,
+        new_content,
+    })
 }
-
 
 // ---------------------------------------------------------------------------
 // Display diff + unified patch
@@ -435,17 +463,26 @@ fn line_diff_parts(old: &str, new: &str) -> Vec<DiffLine> {
                     parts.push(DiffLine::Context(old_lines[*old_index + i].to_string()));
                 }
             }
-            DiffOp::Delete { old_index, old_len, .. } => {
+            DiffOp::Delete {
+                old_index, old_len, ..
+            } => {
                 for i in 0..*old_len {
                     parts.push(DiffLine::Removed(old_lines[*old_index + i].to_string()));
                 }
             }
-            DiffOp::Insert { new_index, new_len, .. } => {
+            DiffOp::Insert {
+                new_index, new_len, ..
+            } => {
                 for i in 0..*new_len {
                     parts.push(DiffLine::Added(new_lines[*new_index + i].to_string()));
                 }
             }
-            DiffOp::Replace { old_index, old_len, new_index, new_len } => {
+            DiffOp::Replace {
+                old_index,
+                old_len,
+                new_index,
+                new_len,
+            } => {
                 for i in 0..*old_len {
                     parts.push(DiffLine::Removed(old_lines[*old_index + i].to_string()));
                 }
@@ -535,11 +572,23 @@ pub fn generate_diff_string(
 
         if has_leading_change && has_trailing_change {
             if raw_len <= context_lines * 2 {
-                let (o, n) = emit_context(&parts, context_start..context_start + raw_len, &mut output, old_line_num, new_line_num);
+                let (o, n) = emit_context(
+                    &parts,
+                    context_start..context_start + raw_len,
+                    &mut output,
+                    old_line_num,
+                    new_line_num,
+                );
                 old_line_num = o;
                 new_line_num = n;
             } else {
-                let (o, n) = emit_context(&parts, context_start..context_start + context_lines, &mut output, old_line_num, new_line_num);
+                let (o, n) = emit_context(
+                    &parts,
+                    context_start..context_start + context_lines,
+                    &mut output,
+                    old_line_num,
+                    new_line_num,
+                );
                 old_line_num = o;
                 new_line_num = n;
                 output.push(format!(" {} ...", " ".repeat(line_num_width)));
@@ -558,7 +607,13 @@ pub fn generate_diff_string(
             }
         } else if has_leading_change {
             let shown = raw_len.min(context_lines);
-            let (o, n) = emit_context(&parts, context_start..context_start + shown, &mut output, old_line_num, new_line_num);
+            let (o, n) = emit_context(
+                &parts,
+                context_start..context_start + shown,
+                &mut output,
+                old_line_num,
+                new_line_num,
+            );
             old_line_num = o;
             new_line_num = n;
             let skipped = raw_len - shown;
@@ -574,7 +629,13 @@ pub fn generate_diff_string(
                 old_line_num += skipped;
                 new_line_num += skipped;
             }
-            let (o, n) = emit_context(&parts, context_start + skipped..context_start + raw_len, &mut output, old_line_num, new_line_num);
+            let (o, n) = emit_context(
+                &parts,
+                context_start + skipped..context_start + raw_len,
+                &mut output,
+                old_line_num,
+                new_line_num,
+            );
             old_line_num = o;
             new_line_num = n;
         } else {
@@ -691,13 +752,15 @@ fn hunk_range(start: usize, count: usize) -> String {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn edit(old: &str, new: &str) -> Edit {
-        Edit { old_text: old.to_string(), new_text: new.to_string() }
+        Edit {
+            old_text: old.to_string(),
+            new_text: new.to_string(),
+        }
     }
 
     // ---- basic helpers -----------------------------------------------------
@@ -775,7 +838,10 @@ mod tests {
     fn rejects_overlapping_edits() {
         let err = apply_edits_to_normalized_content(
             "one\ntwo\nthree\n",
-            &[edit("one\ntwo\n", "ONE\nTWO\n"), edit("two\nthree\n", "TWO\nTHREE\n")],
+            &[
+                edit("one\ntwo\n", "ONE\nTWO\n"),
+                edit("two\nthree\n", "TWO\nTHREE\n"),
+            ],
             "edit.txt",
         )
         .unwrap_err();
@@ -784,12 +850,17 @@ mod tests {
 
     #[test]
     fn rejects_missing_and_duplicate() {
-        let err = apply_edits_to_normalized_content("alpha beta gamma", &[edit("bar", "baz")], "edit.txt")
-            .unwrap_err();
+        let err = apply_edits_to_normalized_content(
+            "alpha beta gamma",
+            &[edit("bar", "baz")],
+            "edit.txt",
+        )
+        .unwrap_err();
         assert!(err.contains("Could not find the exact text"), "got: {err}");
 
-        let err = apply_edits_to_normalized_content("foo foo foo", &[edit("foo", "bar")], "edit.txt")
-            .unwrap_err();
+        let err =
+            apply_edits_to_normalized_content("foo foo foo", &[edit("foo", "bar")], "edit.txt")
+                .unwrap_err();
         assert!(err.contains("Found 3 occurrences"), "got: {err}");
     }
 
@@ -809,9 +880,12 @@ mod tests {
     fn fuzzy_edit_preserves_unchanged_lines_bytes() {
         // Curly apostrophe in the file; ASCII apostrophe in the edit target.
         let content = "fn main() {\n    println!(\"it\u{2019}s fine\");\n    other();\n}\n";
-        let result =
-            apply_edits_to_normalized_content(content, &[edit("it's fine", "it is fine")], "main.rs")
-                .unwrap_or_else(|e| panic!("{e}"));
+        let result = apply_edits_to_normalized_content(
+            content,
+            &[edit("it's fine", "it is fine")],
+            "main.rs",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(
             result.new_content,
             "fn main() {\n    println!(\"it is fine\");\n    other();\n}\n"
@@ -830,9 +904,21 @@ mod tests {
         // Fuzzy path rewrites each touched line from the normalized base, so
         // the curly quotes on *touched* lines become straight quotes; the
         // untouched "two" line keeps its original bytes.
-        assert!(result.new_content.contains("one \"\"X\"\""), "got: {:?}", result.new_content);
-        assert!(result.new_content.contains("three \"\"Y\"\""), "got: {:?}", result.new_content);
-        assert!(result.new_content.contains("    two"), "got: {:?}", result.new_content);
+        assert!(
+            result.new_content.contains("one \"\"X\"\""),
+            "got: {:?}",
+            result.new_content
+        );
+        assert!(
+            result.new_content.contains("three \"\"Y\"\""),
+            "got: {:?}",
+            result.new_content
+        );
+        assert!(
+            result.new_content.contains("    two"),
+            "got: {:?}",
+            result.new_content
+        );
     }
 
     #[test]
@@ -877,7 +963,10 @@ mod tests {
             "ALPHA\nbeta\nGAMMA\ndelta\n",
             4,
         );
-        assert!(patch.starts_with("--- edit.txt\n+++ edit.txt\n"), "got: {patch}");
+        assert!(
+            patch.starts_with("--- edit.txt\n+++ edit.txt\n"),
+            "got: {patch}"
+        );
         assert!(patch.contains("@@ -1,4 +1,4 @@"), "got: {patch}");
         assert!(patch.contains("-alpha"), "got: {patch}");
         assert!(patch.contains("+ALPHA"), "got: {patch}");
@@ -914,7 +1003,10 @@ mod tests {
                 let o = parts.next().unwrap().strip_prefix('-').unwrap().to_string();
                 let _n = parts.next().unwrap().strip_prefix('+').unwrap().to_string();
                 let o_start = o.split(',').next().unwrap().parse::<usize>().unwrap();
-                hunks.push(Hunk { o_start, lines: Vec::new() });
+                hunks.push(Hunk {
+                    o_start,
+                    lines: Vec::new(),
+                });
                 continue;
             }
             if line == "--- f.txt" || line.starts_with("--- ") || line.starts_with("+++ ") {

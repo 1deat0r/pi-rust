@@ -19,8 +19,11 @@ use crate::config;
 use crate::core::settings::SettingsManager;
 
 /// Provider stream function: `(model, context) -> event stream`.
-pub type StreamFn =
-    Arc<dyn Fn(&pi_ai::model::Model, &pi_ai::types::Context) -> pi_ai::AssistantMessageEventStream + Send + Sync>;
+pub type StreamFn = Arc<
+    dyn Fn(&pi_ai::model::Model, &pi_ai::types::Context) -> pi_ai::AssistantMessageEventStream
+        + Send
+        + Sync,
+>;
 
 pub struct RunOutcome {
     pub final_text: String,
@@ -89,7 +92,8 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     } else {
         None
     };
-    let trust_store = crate::core::project_trust::ProjectTrustStore::new(&agent_dir.display().to_string());
+    let trust_store =
+        crate::core::project_trust::ProjectTrustStore::new(&agent_dir.display().to_string());
     let default_project_trust = settings_default_project_trust(&agent_dir);
     let project_trusted = crate::core::project_trust::resolve_project_trusted(
         &cwd,
@@ -126,7 +130,9 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     // resolution + auth application + api dispatch). `faux` keeps its
     // scripted path for tests.
     let (model, stream_fn): (pi_ai::model::Model, StreamFn) = if provider == "faux" {
-        let core = pi_ai::providers::FauxProviderCore::new(&pi_ai::providers::RegisterFauxProviderOptions::default());
+        let core = pi_ai::providers::FauxProviderCore::new(
+            &pi_ai::providers::RegisterFauxProviderOptions::default(),
+        );
         let model = match model_hint.as_deref() {
             Some(hint) => {
                 let id = hint.rsplit('/').next().unwrap_or(hint);
@@ -134,7 +140,11 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
                     .cloned()
                     .ok_or_else(|| format!("unknown faux model {id:?}"))?
             }
-            None => core.models.first().cloned().ok_or_else(|| "no faux model".to_string())?,
+            None => core
+                .models
+                .first()
+                .cloned()
+                .ok_or_else(|| "no faux model".to_string())?,
         };
         // Queue one scripted faux response per prompt so sequential
         // print-mode turns (one assistant turn per positional message,
@@ -147,10 +157,14 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         let responses: Vec<pi_ai::providers::FauxResponseStep> = prompts
             .into_iter()
             .map(|text| {
-                pi_ai::providers::FauxResponseStep::Message(pi_ai::providers::faux_assistant_message(
-                    vec![pi_ai::types::ContentBlock::text(format!("faux response to: {text}"))],
-                    pi_ai::providers::FauxAssistantOptions::default(),
-                ))
+                pi_ai::providers::FauxResponseStep::Message(
+                    pi_ai::providers::faux_assistant_message(
+                        vec![pi_ai::types::ContentBlock::text(format!(
+                            "faux response to: {text}"
+                        ))],
+                        pi_ai::providers::FauxAssistantOptions::default(),
+                    ),
+                )
             })
             .collect();
         core.set_responses(responses);
@@ -161,7 +175,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         // models.json runtime merge: the registry overlays the bundled
         // catalog with ~/.pi/agent/models.json (upstream applyModelsJson).
         let models = {
-            let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+            let models = crate::core::model_registry::builtin_models();
             let config = crate::core::model_config::ModelConfig::load(
                 crate::core::model_config::models_json_path().as_deref(),
             );
@@ -169,9 +183,15 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             registry.into_models()
         };
         if models.get_provider(&provider).is_none() {
-            return Err(format!("provider {provider:?} is not registered in the model registry"));
+            return Err(format!(
+                "provider {provider:?} is not registered in the model registry"
+            ));
         }
-        let model = crate::core::model_runtime::resolve_run_model_for_provider(&models, &provider, model_hint.as_deref())?;
+        let model = crate::core::model_runtime::resolve_run_model_for_provider(
+            &models,
+            &provider,
+            model_hint.as_deref(),
+        )?;
         // Stream options carry the explicit --api-key / PI_KEY (the facade
         // applies env-key auth when absent).
         let api_key = args
@@ -186,14 +206,13 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             ..Default::default()
         };
         let models = models.clone();
-        let stream_fn: StreamFn = Arc::new(move |_model, ctx| {
-            models.stream(_model, ctx, Some(&stream_options))
-        });
+        let stream_fn: StreamFn =
+            Arc::new(move |_model, ctx| models.stream(_model, ctx, Some(&stream_options)));
         (model, stream_fn)
     };
 
     let system_prompt = assemble_run_system_prompt(args, &cwd, &agent_dir, &settings);
-    
+
     // Register built-in tools (bash/read/write/edit + ls/find/grep) unless
     // --no-tools.
     let mut tools: Vec<pi_agent::tools::AgentTool> = Vec::new();
@@ -229,7 +248,8 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     // context so a later prompt observes earlier turns.
     let mut all_messages: Vec<pi_agent::types::AgentMessage> = Vec::new();
     for text in &args.messages {
-        let expanded = crate::core::prompt_templates::expand_prompt_template(text, &prompt_templates);
+        let expanded =
+            crate::core::prompt_templates::expand_prompt_template(text, &prompt_templates);
         let prompt = pi_agent::agent::user_text_prompt(expanded, pi_ai::types::now_ms());
         let turn_messages =
             run_agent_loop(vec![prompt], &mut context, &cfg, &mut |e| events.push(e)).await;
@@ -320,14 +340,22 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         session_path = Some(meta.path);
     }
 
-    Ok(RunOutcome { final_text, session_path })
+    Ok(RunOutcome {
+        final_text,
+        session_path,
+    })
 }
 
 /// Assemble the run-path system prompt from loaded resources: the base
 /// `--system-prompt`, the `<available_skills>` block, the `<project_context>`
 /// section (disabled by `-nc`), and `--append-system-prompt` inputs (existing
 /// files read verbatim, inline text used as-is).
-fn assemble_run_system_prompt(args: &Args, cwd: &str, agent_dir: &std::path::Path, settings: &SettingsManager) -> String {
+fn assemble_run_system_prompt(
+    args: &Args,
+    cwd: &str,
+    agent_dir: &std::path::Path,
+    settings: &SettingsManager,
+) -> String {
     let base = args.system_prompt.clone().unwrap_or_default();
     let skills_block = build_skills_block(args, cwd, agent_dir, settings);
     let mut prompt = format!("{base}\n{skills_block}");
@@ -370,7 +398,12 @@ fn resolve_prompt_input(input: &str, description: &str) -> String {
 /// Load skills (user + project + `--skill`) and render the `<available_skills>`
 /// system-prompt block, marking `-ns` disabled. Surfaces load diagnostics as
 /// warnings.
-fn build_skills_block(args: &Args, cwd: &str, agent_dir: &std::path::Path, settings: &SettingsManager) -> String {
+fn build_skills_block(
+    args: &Args,
+    cwd: &str,
+    agent_dir: &std::path::Path,
+    settings: &SettingsManager,
+) -> String {
     if args.no_skills {
         return String::new();
     }
@@ -395,7 +428,11 @@ fn build_skills_block(args: &Args, cwd: &str, agent_dir: &std::path::Path, setti
 
 /// Load prompt templates (user + project + `--prompt-template`) for run-path
 /// expansion, marking `-np` / `-npt` disabled.
-fn load_prompt_templates_for_run(args: &Args, cwd: &str, agent_dir: &std::path::Path) -> Vec<crate::core::prompt_templates::PromptTemplate> {
+fn load_prompt_templates_for_run(
+    args: &Args,
+    cwd: &str,
+    agent_dir: &std::path::Path,
+) -> Vec<crate::core::prompt_templates::PromptTemplate> {
     if args.no_prompt_templates {
         return Vec::new();
     }
@@ -416,7 +453,6 @@ fn load_prompt_templates_for_run(args: &Args, cwd: &str, agent_dir: &std::path::
     templates
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,10 +460,13 @@ mod tests {
     use serde_json::json;
 
     fn manager() -> SettingsManager {
-        SettingsManager::in_memory(serde_json::from_value(json!({
-            "defaultProvider": "faux",
-            "defaultModel": "faux-1"
-        })).unwrap())
+        SettingsManager::in_memory(
+            serde_json::from_value(json!({
+                "defaultProvider": "faux",
+                "defaultModel": "faux-1"
+            }))
+            .unwrap(),
+        )
     }
 
     fn clear_env_provider_model() {
@@ -440,9 +479,12 @@ mod tests {
     #[test]
     fn resolve_provider_cli_beats_settings() {
         clear_env_provider_model();
-        let settings = SettingsManager::in_memory(serde_json::from_value(json!({
-            "defaultProvider": "faux"
-        })).unwrap());
+        let settings = SettingsManager::in_memory(
+            serde_json::from_value(json!({
+                "defaultProvider": "faux"
+            }))
+            .unwrap(),
+        );
         let provider = resolve_run_provider(Some("anthropic"), &settings);
         assert_eq!(provider, "anthropic");
         let provider = resolve_run_provider(None, &settings);
@@ -514,8 +556,14 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let file = root.join("append.md");
         std::fs::write(&file, "appended content").unwrap();
-        assert_eq!(resolve_prompt_input(&file.to_string_lossy(), "append system prompt"), "appended content");
-        assert_eq!(resolve_prompt_input("inline text", "append system prompt"), "inline text");
+        assert_eq!(
+            resolve_prompt_input(&file.to_string_lossy(), "append system prompt"),
+            "appended content"
+        );
+        assert_eq!(
+            resolve_prompt_input("inline text", "append system prompt"),
+            "inline text"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -538,8 +586,12 @@ mod tests {
 
         let mut args_nc = Args::default();
         args_nc.no_context_files = true;
-        let prompt_nc = assemble_run_system_prompt(&args_nc, &cwd.to_string_lossy(), &agent, &settings);
-        assert!(!prompt_nc.contains("<project_instructions"), "-nc must skip context files");
+        let prompt_nc =
+            assemble_run_system_prompt(&args_nc, &cwd.to_string_lossy(), &agent, &settings);
+        assert!(
+            !prompt_nc.contains("<project_instructions"),
+            "-nc must skip context files"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 }
@@ -547,7 +599,9 @@ mod tests {
 /// Build the faux model for the scripted test provider (shared by the run
 /// and RPC paths).
 pub fn build_faux_model(model_hint: Option<&str>) -> Result<pi_ai::model::Model, String> {
-    let core = pi_ai::providers::FauxProviderCore::new(&pi_ai::providers::RegisterFauxProviderOptions::default());
+    let core = pi_ai::providers::FauxProviderCore::new(
+        &pi_ai::providers::RegisterFauxProviderOptions::default(),
+    );
     match model_hint {
         Some(hint) => {
             let id = hint.rsplit('/').next().unwrap_or(hint);
@@ -555,6 +609,10 @@ pub fn build_faux_model(model_hint: Option<&str>) -> Result<pi_ai::model::Model,
                 .cloned()
                 .ok_or_else(|| format!("unknown faux model {id:?}"))
         }
-        None => core.models.first().cloned().ok_or_else(|| "no faux model".to_string()),
+        None => core
+            .models
+            .first()
+            .cloned()
+            .ok_or_else(|| "no faux model".to_string()),
     }
 }

@@ -22,17 +22,32 @@ const BUILTIN_MODEL_DATA_GENERATED_AT: u64 = 1786701750583;
 
 /// Embedded vendored provider data files: (provider id, JSON text).
 static PROVIDER_DATA: &[(&str, &str)] = &[
-    ("amazon-bedrock", include_str!("../data/amazon-bedrock.json")),
+    (
+        "amazon-bedrock",
+        include_str!("../data/amazon-bedrock.json"),
+    ),
     ("ant-ling", include_str!("../data/ant-ling.json")),
     ("anthropic", include_str!("../data/anthropic.json")),
-    ("azure-openai-responses", include_str!("../data/azure-openai-responses.json")),
+    (
+        "azure-openai-responses",
+        include_str!("../data/azure-openai-responses.json"),
+    ),
     ("baseten", include_str!("../data/baseten.json")),
     ("cerebras", include_str!("../data/cerebras.json")),
-    ("cloudflare-ai-gateway", include_str!("../data/cloudflare-ai-gateway.json")),
-    ("cloudflare-workers-ai", include_str!("../data/cloudflare-workers-ai.json")),
+    (
+        "cloudflare-ai-gateway",
+        include_str!("../data/cloudflare-ai-gateway.json"),
+    ),
+    (
+        "cloudflare-workers-ai",
+        include_str!("../data/cloudflare-workers-ai.json"),
+    ),
     ("deepseek", include_str!("../data/deepseek.json")),
     ("fireworks", include_str!("../data/fireworks.json")),
-    ("github-copilot", include_str!("../data/github-copilot.json")),
+    (
+        "github-copilot",
+        include_str!("../data/github-copilot.json"),
+    ),
     ("google-vertex", include_str!("../data/google-vertex.json")),
     ("google", include_str!("../data/google.json")),
     ("groq", include_str!("../data/groq.json")),
@@ -49,15 +64,36 @@ static PROVIDER_DATA: &[(&str, &str)] = &[
     ("opencode-go", include_str!("../data/opencode-go.json")),
     ("opencode", include_str!("../data/opencode.json")),
     ("openrouter", include_str!("../data/openrouter.json")),
-    ("qwen-token-plan-cn", include_str!("../data/qwen-token-plan-cn.json")),
-    ("qwen-token-plan-individual", include_str!("../data/qwen-token-plan-individual.json")),
-    ("qwen-token-plan", include_str!("../data/qwen-token-plan.json")),
+    (
+        "qwen-token-plan-cn",
+        include_str!("../data/qwen-token-plan-cn.json"),
+    ),
+    (
+        "qwen-token-plan-individual",
+        include_str!("../data/qwen-token-plan-individual.json"),
+    ),
+    (
+        "qwen-token-plan",
+        include_str!("../data/qwen-token-plan.json"),
+    ),
     ("together", include_str!("../data/together.json")),
-    ("vercel-ai-gateway", include_str!("../data/vercel-ai-gateway.json")),
+    (
+        "vercel-ai-gateway",
+        include_str!("../data/vercel-ai-gateway.json"),
+    ),
     ("xai", include_str!("../data/xai.json")),
-    ("xiaomi-token-plan-ams", include_str!("../data/xiaomi-token-plan-ams.json")),
-    ("xiaomi-token-plan-cn", include_str!("../data/xiaomi-token-plan-cn.json")),
-    ("xiaomi-token-plan-sgp", include_str!("../data/xiaomi-token-plan-sgp.json")),
+    (
+        "xiaomi-token-plan-ams",
+        include_str!("../data/xiaomi-token-plan-ams.json"),
+    ),
+    (
+        "xiaomi-token-plan-cn",
+        include_str!("../data/xiaomi-token-plan-cn.json"),
+    ),
+    (
+        "xiaomi-token-plan-sgp",
+        include_str!("../data/xiaomi-token-plan-sgp.json"),
+    ),
     ("xiaomi", include_str!("../data/xiaomi.json")),
     ("zai-coding-cn", include_str!("../data/zai-coding-cn.json")),
     ("zai", include_str!("../data/zai.json")),
@@ -80,7 +116,11 @@ pub fn models() -> &'static BTreeMap<String, BTreeMap<String, Model>> {
                 for (model_id, model_value) in models_obj {
                     let model: Model = serde_json::from_value(model_value.clone())
                         .expect("vendored model entry must deserialize");
-                    debug_assert_eq!(model.id.as_str(), model_id.as_str(), "model id must match key");
+                    debug_assert_eq!(
+                        model.id.as_str(),
+                        model_id.as_str(),
+                        "model id must match key"
+                    );
                     debug_assert_eq!(&model.provider, provider, "provider must match filename");
                     provider_models.insert(model_id.clone(), model);
                 }
@@ -103,7 +143,10 @@ pub fn get_builtin_providers() -> Vec<String> {
 
 /// All built-in models for a provider (upstream `getBuiltinModels`).
 pub fn get_builtin_models(provider: &str) -> Vec<&'static Model> {
-    models().get(provider).map(|m| m.values().collect()).unwrap_or_default()
+    models()
+        .get(provider)
+        .map(|m| m.values().collect())
+        .unwrap_or_default()
 }
 
 /// Generation timestamp shared by all built-in provider catalogs.
@@ -113,10 +156,7 @@ pub fn get_builtin_model_data_generated_at() -> Option<u64> {
 
 /// All built-in models across all providers, in provider order.
 pub fn get_all_builtin_models() -> Vec<&'static Model> {
-    models()
-        .values()
-        .flat_map(|m| m.values())
-        .collect()
+    models().values().flat_map(|m| m.values()).collect()
 }
 
 #[cfg(test)]
@@ -158,7 +198,10 @@ mod tests {
     fn get_builtin_model_google_reasoning_map() {
         let model = get_builtin_model("google", "gemini-2.5-flash").expect("gemini flash exists");
         assert_eq!(model.api, "google-generative-ai");
-        assert_eq!(model.base_url, "https://generativelanguage.googleapis.com/v1beta");
+        assert_eq!(
+            model.base_url,
+            "https://generativelanguage.googleapis.com/v1beta"
+        );
         assert!(model.reasoning);
         assert!(model.input.contains(&crate::model::ModelInput::Image));
     }

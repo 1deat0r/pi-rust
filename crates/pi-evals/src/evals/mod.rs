@@ -91,7 +91,10 @@ pub fn run_pi_case(
     std::fs::create_dir_all(&cwd).ok();
 
     for step in steps {
-        let prompt = step.get("content").and_then(|v| v.as_str()).unwrap_or_default();
+        let prompt = step
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         let output = crate::harness::run_pi_binary(runner, &cwd, prompt);
         match output {
             Ok(output) => {
@@ -140,8 +143,14 @@ pub fn run_pi_case(
         output: json!({ "response": final_output }),
         errors,
         events: vec![
-            crate::harness::TranscriptEvent::Message { role: "user".into(), content: "prompt".into() },
-            crate::harness::TranscriptEvent::Message { role: "assistant".into(), content: final_output.clone() },
+            crate::harness::TranscriptEvent::Message {
+                role: "user".into(),
+                content: "prompt".into(),
+            },
+            crate::harness::TranscriptEvent::Message {
+                role: "assistant".into(),
+                content: final_output.clone(),
+            },
         ],
         usage: HarnessUsage {
             provider: runner.provider.clone(),
@@ -151,7 +160,9 @@ pub fn run_pi_case(
             ..Default::default()
         },
         artifacts,
-        timings: Some(crate::harness::HarnessTimings { total_ms: started.elapsed().as_secs_f64() * 1000.0 }),
+        timings: Some(crate::harness::HarnessTimings {
+            total_ms: started.elapsed().as_secs_f64() * 1000.0,
+        }),
     }
 }
 

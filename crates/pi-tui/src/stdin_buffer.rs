@@ -39,7 +39,11 @@ fn is_complete_sequence(data: &str) -> SequenceStatus {
         // Old-style mouse: ESC[M + 3 bytes = 6 total
         if let Some(mouse) = rest.strip_prefix('M') {
             let _ = mouse;
-            return if data.len() >= 6 { SequenceStatus::Complete } else { SequenceStatus::Incomplete };
+            return if data.len() >= 6 {
+                SequenceStatus::Complete
+            } else {
+                SequenceStatus::Incomplete
+            };
         }
         return is_complete_csi_sequence(data);
     }
@@ -61,7 +65,11 @@ fn is_complete_sequence(data: &str) -> SequenceStatus {
 
     // SS3 sequences: ESC O
     if after_esc.starts_with('O') {
-        return if after_esc.len() >= 2 { SequenceStatus::Complete } else { SequenceStatus::Incomplete };
+        return if after_esc.len() >= 2 {
+            SequenceStatus::Complete
+        } else {
+            SequenceStatus::Incomplete
+        };
     }
 
     // Meta key sequences: ESC followed by a single character
@@ -90,7 +98,11 @@ fn is_complete_csi_sequence(data: &str) -> SequenceStatus {
         if let Some(mouse) = payload.strip_prefix('<') {
             let without_last = &mouse[..mouse.len() - 1]; // drop 'M'/'m'
             let parts: Vec<&str> = without_last.split(';').collect();
-            if parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
+            if parts.len() == 3
+                && parts
+                    .iter()
+                    .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+            {
                 return SequenceStatus::Complete;
             }
             return SequenceStatus::Incomplete;
@@ -170,7 +182,9 @@ fn extract_complete_sequences(buffer: &str) -> (Vec<String>, String) {
         let remaining = &bytes[pos..];
         if !remaining.starts_with(b"\x1b") {
             // Not an escape sequence - take a single character.
-            let ch = std::str::from_utf8(remaining).ok().and_then(|s| s.chars().next());
+            let ch = std::str::from_utf8(remaining)
+                .ok()
+                .and_then(|s| s.chars().next());
             match ch {
                 Some(c) => {
                     sequences.push(c.to_string());
@@ -209,7 +223,10 @@ fn extract_complete_sequences(buffer: &str) -> (Vec<String>, String) {
                 if candidate == "\x1b\x1b" {
                     let next_start = seq_end;
                     let next = remaining_str[next_start..].chars().next();
-                    if matches!(next, Some('[') | Some(']') | Some('O') | Some('P') | Some('_')) {
+                    if matches!(
+                        next,
+                        Some('[') | Some(']') | Some('O') | Some('P') | Some('_')
+                    ) {
                         sequences.push(ESC.to_string());
                         pos += 1;
                         found = true;
@@ -258,14 +275,15 @@ impl StdinBuffer {
     pub fn process(&mut self, data: &str) -> Vec<String> {
         let mut emitted: Vec<String> = Vec::new();
 
-        let str_data = if data.is_ascii() && data.len() == 1 && data.bytes().next().unwrap_or(0) > 127 {
-            // High-byte conversion: single byte > 127 -> ESC + (byte - 128).
-            let byte = data.bytes().next().unwrap() - 128;
-            let c = char::from(byte);
-            format!("\x1b{c}")
-        } else {
-            data.to_string()
-        };
+        let str_data =
+            if data.is_ascii() && data.len() == 1 && data.bytes().next().unwrap_or(0) > 127 {
+                // High-byte conversion: single byte > 127 -> ESC + (byte - 128).
+                let byte = data.bytes().next().unwrap() - 128;
+                let c = char::from(byte);
+                format!("\x1b{c}")
+            } else {
+                data.to_string()
+            };
 
         if str_data.is_empty() && self.buffer.is_empty() {
             emitted.push(String::new());
@@ -352,7 +370,8 @@ impl StdinBuffer {
                 return false;
             }
         }
-        self.pending_kitty_printable_codepoint = parse_unmodified_kitty_printable_codepoint(sequence);
+        self.pending_kitty_printable_codepoint =
+            parse_unmodified_kitty_printable_codepoint(sequence);
         true
     }
 
@@ -398,7 +417,10 @@ mod tests {
     #[test]
     fn handles_unicode_characters() {
         let mut buffer = StdinBuffer::new();
-        assert_eq!(buffer.process("hello 世界"), vec!["h", "e", "l", "l", "o", " ", "世", "界"]);
+        assert_eq!(
+            buffer.process("hello 世界"),
+            vec!["h", "e", "l", "l", "o", " ", "世", "界"]
+        );
     }
 
     #[test]
@@ -499,7 +521,10 @@ mod tests {
     #[test]
     fn handles_multiple_complete_sequences() {
         let mut buffer = StdinBuffer::new();
-        assert_eq!(buffer.process("\x1b[A\x1b[B\x1b[C"), vec!["\x1b[A", "\x1b[B", "\x1b[C"]);
+        assert_eq!(
+            buffer.process("\x1b[A\x1b[B\x1b[C"),
+            vec!["\x1b[A", "\x1b[B", "\x1b[C"]
+        );
     }
 
     #[test]
@@ -517,7 +542,10 @@ mod tests {
         let mut buffer = StdinBuffer::new();
         assert_eq!(buffer.process("\x1b[97;1:3u"), vec!["\x1b[97;1:3u"]);
         let mut buffer = StdinBuffer::new();
-        assert_eq!(buffer.process("\x1b[97u\x1b[97;1:3u"), vec!["\x1b[97u", "\x1b[97;1:3u"]);
+        assert_eq!(
+            buffer.process("\x1b[97u\x1b[97;1:3u"),
+            vec!["\x1b[97u", "\x1b[97;1:3u"]
+        );
         let mut buffer = StdinBuffer::new();
         assert_eq!(
             buffer.process("\x1b[97u\x1b[97;1:3u\x1b[98u\x1b[98;1:3u"),
@@ -532,9 +560,15 @@ mod tests {
     #[test]
     fn splits_esc_esc_csi_into_standalone_esc_and_csi() {
         let mut buffer = StdinBuffer::new();
-        assert_eq!(buffer.process("\x1b\x1b[27;129:3u"), vec!["\x1b", "\x1b[27;129:3u"]);
+        assert_eq!(
+            buffer.process("\x1b\x1b[27;129:3u"),
+            vec!["\x1b", "\x1b[27;129:3u"]
+        );
         let mut buffer = StdinBuffer::new();
-        assert_eq!(buffer.process("\x1b\x1b[27;1:3u"), vec!["\x1b", "\x1b[27;1:3u"]);
+        assert_eq!(
+            buffer.process("\x1b\x1b[27;1:3u"),
+            vec!["\x1b", "\x1b[27;1:3u"]
+        );
     }
 
     #[test]
@@ -546,9 +580,15 @@ mod tests {
     #[test]
     fn bracketed_paste_is_emitted_as_paste() {
         let mut buffer = StdinBuffer::new();
-        assert_eq!(buffer.process("\x1b[200~hello world\x1b[201~"), vec!["hello world"]);
+        assert_eq!(
+            buffer.process("\x1b[200~hello world\x1b[201~"),
+            vec!["hello world"]
+        );
         // Paste with surrounding input.
         let mut buffer = StdinBuffer::new();
-        assert_eq!(buffer.process("ab\x1b[200~pasted\x1b[201~cd"), vec!["a", "b", "pasted", "c", "d"]);
+        assert_eq!(
+            buffer.process("ab\x1b[200~pasted\x1b[201~cd"),
+            vec!["a", "b", "pasted", "c", "d"]
+        );
     }
 }

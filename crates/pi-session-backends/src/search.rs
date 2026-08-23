@@ -24,14 +24,17 @@ pub struct SqliteSessionSearchHit {
 }
 
 fn table_exists(db: &Connection, name: &str) -> rusqlite::Result<bool> {
-    Ok(SqlQuery::new("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
-        .bind(name)
-        .get_row(db, |_row| Ok(()))?
-        .is_some())
+    Ok(SqlQuery::new(
+        "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+    )
+    .bind(name)
+    .get_row(db, |_row| Ok(()))?
+    .is_some())
 }
 
 fn rebuild_search_index(db: &Connection) -> rusqlite::Result<()> {
-    SqlQuery::new("INSERT INTO session_search_fts(session_search_fts) VALUES('rebuild')").run(db)?;
+    SqlQuery::new("INSERT INTO session_search_fts(session_search_fts) VALUES('rebuild')")
+        .run(db)?;
     Ok(())
 }
 
@@ -87,7 +90,9 @@ pub struct SqliteSessionSearch {
 
 impl SqliteSessionSearch {
     pub fn new(options: SqliteSessionSearchOptions) -> Self {
-        Self { database_path: options.database_path }
+        Self {
+            database_path: options.database_path,
+        }
     }
 
     fn open_database(&self) -> Result<Connection, SessionError> {
@@ -100,7 +105,10 @@ impl SqliteSessionSearch {
             )
         })?;
         let mut db = Connection::open(&path).map_err(|error| {
-            SessionError::new(SessionErrorKind::Storage, format!("Failed to open SQLite search database {path}: {error}"))
+            SessionError::new(
+                SessionErrorKind::Storage,
+                format!("Failed to open SQLite search database {path}: {error}"),
+            )
         })?;
         let setup = (|| -> rusqlite::Result<()> {
             configure_sqlite_database(&db)?;
@@ -119,7 +127,11 @@ impl SqliteSessionSearch {
     }
 
     /// Runs a search, returning all hits (port of the async iterator).
-    pub fn search(&self, text: &str, options: &SearchOptions) -> Result<Vec<SqliteSessionSearchHit>, SessionError> {
+    pub fn search(
+        &self,
+        text: &str,
+        options: &SearchOptions,
+    ) -> Result<Vec<SqliteSessionSearchHit>, SessionError> {
         let has_entry_types = options
             .entry_types
             .as_ref()
@@ -146,9 +158,17 @@ impl SqliteSessionSearch {
         let mut predicates = vec!["session_search_fts MATCH ?".to_string()];
         let mut params: Vec<rusqlite::types::Value> = vec![quoted.into()];
         if let Some(entry_types) = &options.entry_types {
-            let placeholders = entry_types.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let placeholders = entry_types
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
             predicates.push(format!("se.type IN ({placeholders})"));
-            params.extend(entry_types.iter().map(|t| rusqlite::types::Value::Text(t.clone())));
+            params.extend(
+                entry_types
+                    .iter()
+                    .map(|t| rusqlite::types::Value::Text(t.clone())),
+            );
         }
 
         let predicates = predicates.join(" AND ");
@@ -174,29 +194,40 @@ impl SqliteSessionSearch {
         );
         let limit = options.limit.map(|l| l as i64).unwrap_or(-1);
         let mut stmt = db.prepare(&sql).map_err(|error| {
-            SessionError::new(SessionErrorKind::Storage, format!("Failed to prepare search: {error}"))
+            SessionError::new(
+                SessionErrorKind::Storage,
+                format!("Failed to prepare search: {error}"),
+            )
         })?;
         let rows = stmt
-            .query_map(rusqlite::params_from_iter(params.into_iter().chain(std::iter::once(limit.into()))), |row| {
-                Ok(SearchRow {
-                    id: row.get(0)?,
-                    created_at: row.get(1)?,
-                    metadata: row.get(2)?,
-                    cwd: row.get(3)?,
-                    parent_session_id: row.get(4)?,
-                    has_session_name: row.get::<_, i64>(5)? != 0,
-                    session_name: row.get(6)?,
-                    entry_id: row.get(7)?,
-                    timestamp: row.get(8)?,
-                    score: row.get(9)?,
-                })
-            })
-            .map_err(|error| SessionError::new(SessionErrorKind::Storage, format!("Search failed: {error}")))?;
+            .query_map(
+                rusqlite::params_from_iter(params.into_iter().chain(std::iter::once(limit.into()))),
+                |row| {
+                    Ok(SearchRow {
+                        id: row.get(0)?,
+                        created_at: row.get(1)?,
+                        metadata: row.get(2)?,
+                        cwd: row.get(3)?,
+                        parent_session_id: row.get(4)?,
+                        has_session_name: row.get::<_, i64>(5)? != 0,
+                        session_name: row.get(6)?,
+                        entry_id: row.get(7)?,
+                        timestamp: row.get(8)?,
+                        score: row.get(9)?,
+                    })
+                },
+            )
+            .map_err(|error| {
+                SessionError::new(SessionErrorKind::Storage, format!("Search failed: {error}"))
+            })?;
 
         let mut hits = Vec::new();
         for row in rows {
             let row = row.map_err(|error| {
-                SessionError::new(SessionErrorKind::Storage, format!("Search row failed: {error}"))
+                SessionError::new(
+                    SessionErrorKind::Storage,
+                    format!("Search row failed: {error}"),
+                )
             })?;
             let core_row = crate::storage::sessions::SessionRow {
                 id: row.id,
@@ -245,5 +276,7 @@ pub struct SearchOptions {
 
 /// Convenience factory (port of `createSqliteSessionSearch`).
 pub fn create_sqlite_session_search(database_path: impl Into<String>) -> SqliteSessionSearch {
-    SqliteSessionSearch::new(SqliteSessionSearchOptions { database_path: database_path.into() })
+    SqliteSessionSearch::new(SqliteSessionSearchOptions {
+        database_path: database_path.into(),
+    })
 }

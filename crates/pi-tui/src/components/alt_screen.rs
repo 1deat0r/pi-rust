@@ -89,7 +89,11 @@ pub struct SearchMatch {
     pub segments: Vec<SearchSegment>,
 }
 
-fn append_mapped_text(text: &str, span: Option<SearchSegment>, corpus: &mut (String, Vec<Option<SearchSegment>>)) {
+fn append_mapped_text(
+    text: &str,
+    span: Option<SearchSegment>,
+    corpus: &mut (String, Vec<Option<SearchSegment>>),
+) {
     corpus.0.push_str(text);
     for _ in 0..text.chars().count() {
         corpus.1.push(span.clone());
@@ -106,7 +110,10 @@ fn build_search_corpus(lines: &[String]) -> (String, Vec<Option<SearchSegment>>)
         let chars: Vec<char> = clean.chars().collect();
         let mut i = 0usize;
         while i < chars.len() {
-            let mut text: String = chars[i..].iter().take_while(|c| !c.is_whitespace()).collect();
+            let mut text: String = chars[i..]
+                .iter()
+                .take_while(|c| !c.is_whitespace())
+                .collect();
             if text.is_empty() {
                 text = chars[i].to_string();
             }
@@ -123,7 +130,15 @@ fn build_search_corpus(lines: &[String]) -> (String, Vec<Option<SearchSegment>>)
                 append_mapped_text(" ", None, &mut corpus);
                 pending_separator = false;
             }
-            append_mapped_text(&text, Some(SearchSegment { row, start_col: column, end_col: column + width }), &mut corpus);
+            append_mapped_text(
+                &text,
+                Some(SearchSegment {
+                    row,
+                    start_col: column,
+                    end_col: column + width,
+                }),
+                &mut corpus,
+            );
             column += width;
             i += text.chars().count();
         }
@@ -136,7 +151,12 @@ fn build_search_corpus(lines: &[String]) -> (String, Vec<Option<SearchSegment>>)
 }
 
 fn normalize_query(query: &str) -> String {
-    query.split_whitespace().collect::<Vec<_>>().join(" ").trim().to_string()
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string()
 }
 
 /// Find search matches in rendered lines (upstream `findAltScreenSearchMatches`).
@@ -231,10 +251,16 @@ impl Component for AltScreenSearchComponent {
         };
         let label_width = visible_width(label);
         let status_width = visible_width(&status);
-        let gap = " ".repeat(std::cmp::max(1, safe_width.saturating_sub(label_width + status_width)));
+        let gap = " ".repeat(std::cmp::max(
+            1,
+            safe_width.saturating_sub(label_width + status_width),
+        ));
         let title = truncate_to_width(&format!("{label}{gap}{status}"), safe_width, "");
         let padding = " ".repeat(safe_width.saturating_sub(visible_width(&title)));
-        vec![format!("\x1b[7m{title}{padding}\x1b[27m"), format!("{}", self.input.render(safe_width)[0])]
+        vec![
+            format!("\x1b[7m{title}{padding}\x1b[27m"),
+            format!("{}", self.input.render(safe_width)[0]),
+        ]
     }
 
     fn handle_input(&mut self, key: &TuiKey) {

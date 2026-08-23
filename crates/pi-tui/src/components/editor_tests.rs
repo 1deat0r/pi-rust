@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod editor_tests {
-    use crate::components::editor::{plain_editor_theme, Editor, EditorOptions};
     use crate::autocomplete::{CombinedAutocompleteProvider, SlashCommand};
+    use crate::components::editor::{plain_editor_theme, Editor, EditorOptions};
 
     fn editor(rows: usize) -> Editor {
         Editor::new(rows, plain_editor_theme(), EditorOptions::default())
@@ -388,16 +388,31 @@ mod editor_tests {
         let mut e = editor(24);
         let commands = vec![
             SlashCommand::new("settings", Some("Open settings".into()), None),
-            SlashCommand::new("model", Some("Select model".into()), Some("<provider/model>".into())),
-            SlashCommand::new("thinking", Some("Set thinking level".into()), Some("<level>".into())),
+            SlashCommand::new(
+                "model",
+                Some("Select model".into()),
+                Some("<provider/model>".into()),
+            ),
+            SlashCommand::new(
+                "thinking",
+                Some("Set thinking level".into()),
+                Some("<level>".into()),
+            ),
         ];
-        let provider = Box::new(CombinedAutocompleteProvider::new(commands, "/tmp".to_string(), None));
+        let provider = Box::new(CombinedAutocompleteProvider::new(
+            commands,
+            "/tmp".to_string(),
+            None,
+        ));
         e.set_autocomplete_provider(provider);
         e.handle_input("/");
         e.handle_input("m");
         assert!(e.is_showing_autocomplete());
         // Select remains on the fuzzy best match ("model").
-        assert_eq!(e.current_autocomplete_selection().map(|i| i.value), Some("model".to_string()));
+        assert_eq!(
+            e.current_autocomplete_selection().map(|i| i.value),
+            Some("model".to_string())
+        );
         e.handle_input("enter");
         assert_eq!(e.drain_submitted(), Some("/model".to_string()));
     }
@@ -405,10 +420,16 @@ mod editor_tests {
     #[test]
     fn tab_applies_unique_autocomplete() {
         let mut e = editor(24);
-        let commands = vec![
-            SlashCommand::new("settings", Some("Open settings".into()), None),
-        ];
-        let provider = Box::new(CombinedAutocompleteProvider::new(commands, "/tmp".to_string(), None));
+        let commands = vec![SlashCommand::new(
+            "settings",
+            Some("Open settings".into()),
+            None,
+        )];
+        let provider = Box::new(CombinedAutocompleteProvider::new(
+            commands,
+            "/tmp".to_string(),
+            None,
+        ));
         e.set_autocomplete_provider(provider);
         e.handle_input("/set");
         e.handle_input("tab");
@@ -420,7 +441,11 @@ mod editor_tests {
         use crate::autocomplete::{CombinedAutocompleteProvider, SlashCommand};
         let mut e = editor(24);
         let provider = CombinedAutocompleteProvider::new(
-            vec![SlashCommand::new("share", Some("Share session as a secret GitHub gist".to_string()), Some(String::new()))],
+            vec![SlashCommand::new(
+                "share",
+                Some("Share session as a secret GitHub gist".to_string()),
+                Some(String::new()),
+            )],
             "/tmp".to_string(),
             None,
         );
@@ -430,13 +455,20 @@ mod editor_tests {
             e.update_autocomplete();
         }
         assert!(e.is_showing_autocomplete(), "autocomplete should be open");
-        assert!(e.current_autocomplete_selection().is_some(), "slash item should be selectable");
+        assert!(
+            e.current_autocomplete_selection().is_some(),
+            "slash item should be selectable"
+        );
         e.handle_input("enter");
         // Mirror the loop: a few ticks before drain (like the frame loop).
         e.update_autocomplete();
         e.update_autocomplete();
         let submitted = e.drain_submitted();
-        assert!(submitted.is_some(), "slash command should be submitted: {:?}", submitted);
+        assert!(
+            submitted.is_some(),
+            "slash command should be submitted: {:?}",
+            submitted
+        );
         let submitted = submitted.unwrap();
         assert!(submitted.starts_with("/share"), "submitted: {submitted:?}");
     }

@@ -14,8 +14,8 @@ pub mod write;
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use pi_ai::types::ToolResultMessage;
 use pi_ai::types::{json_tool, Tool};
@@ -116,11 +116,7 @@ pub struct AgentTool {
 
 impl AgentTool {
     /// Build a tool from a schema + execute closure with the upstream shape.
-    pub fn new(
-        tool: Tool,
-        label: impl Into<String>,
-        execute: ToolExecuteFn,
-    ) -> Self {
+    pub fn new(tool: Tool, label: impl Into<String>, execute: ToolExecuteFn) -> Self {
         Self {
             tool,
             label: label.into(),

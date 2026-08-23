@@ -2,8 +2,8 @@
 //! Shared test fixtures — port of upstream `test/test-utils.ts`.
 
 use pi_agent::session::types::Entry;
-use pi_ai::types::{ContentBlock, Cost, Message, StopReason, Usage, UserContent};
 use pi_agent::types::AgentMessage;
+use pi_ai::types::{ContentBlock, Cost, Message, StopReason, Usage, UserContent};
 
 /// Creates a temp dir for one test.
 pub fn create_temp_dir() -> std::path::PathBuf {
@@ -29,21 +29,23 @@ pub fn user_message(text: &str) -> AgentMessage {
 }
 
 pub fn assistant_message(text: &str) -> AgentMessage {
-    AgentMessage::Core(Message::Assistant(pi_ai::types::AssistantMessage::Assistant {
-        content: vec![ContentBlock::text(text)],
-        api: Some("anthropic-messages".into()),
-        provider: Some("anthropic".into()),
-        model: Some("claude-sonnet-4-5".into()),
-        response_model: None,
-        response_id: None,
-        usage: Some(zero_usage()),
-        stop_reason: Some(StopReason::Stop),
-        deferred: None,
-        error_message: None,
-        raw_stop_reason: None,
-        end_turn: None,
-        timestamp: now_ms(),
-    }))
+    AgentMessage::Core(Message::Assistant(
+        pi_ai::types::AssistantMessage::Assistant {
+            content: vec![ContentBlock::text(text)],
+            api: Some("anthropic-messages".into()),
+            provider: Some("anthropic".into()),
+            model: Some("claude-sonnet-4-5".into()),
+            response_model: None,
+            response_id: None,
+            usage: Some(zero_usage()),
+            stop_reason: Some(StopReason::Stop),
+            deferred: None,
+            error_message: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: now_ms(),
+        },
+    ))
 }
 
 pub fn now_ms() -> u64 {
@@ -55,9 +57,20 @@ pub fn now_ms() -> u64 {
 
 pub fn zero_usage() -> Usage {
     Usage {
-        input: 0, output: 0, cache_read: 0, cache_write: 0, cache_write_1h: None, reasoning: None,
+        input: 0,
+        output: 0,
+        cache_read: 0,
+        cache_write: 0,
+        cache_write_1h: None,
+        reasoning: None,
         total_tokens: 0,
-        cost: Cost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, total: 0.0 },
+        cost: Cost {
+            input: 0.0,
+            output: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            total: 0.0,
+        },
     }
 }
 
@@ -93,7 +106,9 @@ pub async fn move_sqlite_main_lane(
     summary: Option<(String, Option<serde_json::Value>, Option<Usage>)>,
 ) -> Result<Option<String>, pi_agent::session::types::SessionError> {
     session.move_lane("main", entry_id).await?;
-    let Some((summary, details, usage)) = summary else { return Ok(None) };
+    let Some((summary, details, usage)) = summary else {
+        return Ok(None);
+    };
     let entry = session
         .append_entry(
             pi_agent::session::types::EntryNoStats::BranchSummary {
@@ -117,9 +132,14 @@ pub async fn get_sqlite_branch(
         Some(start) => start,
         None => return Ok(Vec::new()),
     };
-    let bounds = pi_agent::session::state::BranchBounds { stop_at_type: Some("compaction".into()), stop_at_id: None };
+    let bounds = pi_agent::session::state::BranchBounds {
+        stop_at_type: Some("compaction".into()),
+        stop_at_id: None,
+    };
     let query = pi_agent::session::state::EntryQuery::default();
-    let mut newest = session.find_entries_on_branch(&query, Some(&start), &bounds).await?;
+    let mut newest = session
+        .find_entries_on_branch(&query, Some(&start), &bounds)
+        .await?;
     newest.reverse();
     Ok(newest)
 }
@@ -132,7 +152,8 @@ pub async fn get_sqlite_entries(
     let query = pi_agent::session::state::EntryQuery {
         order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
         limit,
-        cursor: after_entry_seq.map(|after_seq| pi_agent::session::state::EntryCursor { after_seq }),
+        cursor: after_entry_seq
+            .map(|after_seq| pi_agent::session::state::EntryCursor { after_seq }),
         ..Default::default()
     };
     session.find_entries(&query).await

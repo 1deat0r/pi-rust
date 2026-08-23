@@ -21,14 +21,21 @@ struct ThemeState {
 
 /// Resolve and cache the active theme's colors.
 pub fn load_theme(name: &str) {
-    let colors: IndexMap<String, String> = theme::get_resolved_theme_colors(Some(name)).unwrap_or_default();
+    let colors: IndexMap<String, String> =
+        theme::get_resolved_theme_colors(Some(name)).unwrap_or_default();
     let colors: HashMap<String, String> = colors.into_iter().collect();
     let mut guard = THEME_STATE.write().unwrap_or_else(|e| e.into_inner());
-    *guard = Some(ThemeState { name: name.to_string(), colors });
+    *guard = Some(ThemeState {
+        name: name.to_string(),
+        colors,
+    });
 }
 
 pub fn active_theme_name() -> Option<String> {
-    THEME_STATE.read().ok().and_then(|g| g.as_ref().map(|s| s.name.clone()))
+    THEME_STATE
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| s.name.clone()))
 }
 
 fn color_value(name: &str) -> Option<String> {
@@ -124,7 +131,14 @@ pub fn markdown_theme() -> pi_tui::components::markdown::MarkdownTheme {
 pub fn user_message_style() -> pi_tui::components::markdown::DefaultTextStyle {
     use pi_tui::components::markdown::DefaultTextStyle;
     let color: Box<dyn Fn(&str) -> String + Send + Sync> = Box::new(|s| fg("userMessageText", s));
-    DefaultTextStyle { color: Some(color), bg_color: None, bold: false, italic: false, strikethrough: false, underline: false }
+    DefaultTextStyle {
+        color: Some(color),
+        bg_color: None,
+        bold: false,
+        italic: false,
+        strikethrough: false,
+        underline: false,
+    }
 }
 
 /// Editor border color function.

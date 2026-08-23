@@ -76,7 +76,11 @@ fn migrate_v1_to_v2(entries: &mut [Value]) {
         // conversion; the target lookup must happen after the id pass so the
         // whole array is populated.
         if entry.get("type").and_then(Value::as_str) == Some("compaction") {
-            if let Some(first_kept_index) = entry.get("firstKeptEntryIndex").and_then(Value::as_u64).map(|i| i as usize) {
+            if let Some(first_kept_index) = entry
+                .get("firstKeptEntryIndex")
+                .and_then(Value::as_u64)
+                .map(|i| i as usize)
+            {
                 compaction_conversions.push((index, first_kept_index));
             }
         }
@@ -122,7 +126,9 @@ fn migrate_v2_to_v3(entries: &mut [Value]) {
 /// Run all necessary migrations to bring entries to current version.
 /// Mutates entries in place. Returns true if any migration was applied.
 fn migrate_to_current_version(entries: &mut [Value]) -> bool {
-    let header = entries.iter().find(|e| e.get("type").and_then(Value::as_str) == Some("session"));
+    let header = entries
+        .iter()
+        .find(|e| e.get("type").and_then(Value::as_str) == Some("session"));
     let version = header
         .and_then(|h| h.get("version").and_then(Value::as_u64))
         .unwrap_or(1) as u32;
@@ -238,7 +244,10 @@ mod tests {
         migrate_session_entries(&mut entries);
         let compaction = &entries[3];
         // firstKeptEntryId points at the entry that used to sit at index 1.
-        assert_eq!(compaction["firstKeptEntryId"].as_str().unwrap(), entries[1]["id"].as_str().unwrap());
+        assert_eq!(
+            compaction["firstKeptEntryId"].as_str().unwrap(),
+            entries[1]["id"].as_str().unwrap()
+        );
         assert!(compaction.get("firstKeptEntryIndex").is_none());
     }
 
@@ -267,7 +276,9 @@ mod tests {
 /// Parse an ISO-8601 timestamp (e.g. "2026-08-22T00:00:01.000Z") into epoch
 /// milliseconds. Falls back to `now_ms` when unparseable.
 fn iso_timestamp_to_ms(value: &Value, now_ms: u64) -> u64 {
-    let Some(s) = value.as_str() else { return now_ms };
+    let Some(s) = value.as_str() else {
+        return now_ms;
+    };
     let s = s.trim();
     // Bare epoch-seconds / epoch-ms numbers.
     if let Ok(ms) = s.parse::<u64>() {
@@ -290,7 +301,13 @@ fn iso_timestamp_to_ms(value: &Value, now_ms: u64) -> u64 {
     let h = digits[8] * 10 + digits[9];
     let mi = digits[10] * 10 + digits[11];
     let se = digits[12] * 10 + digits[13];
-    let millis = if digits.len() > 14 { digits[14] * 100 + digits.get(15).copied().unwrap_or(0) * 10 + digits.get(16).copied().unwrap_or(0) } else { 0 };
+    let millis = if digits.len() > 14 {
+        digits[14] * 100
+            + digits.get(15).copied().unwrap_or(0) * 10
+            + digits.get(16).copied().unwrap_or(0)
+    } else {
+        0
+    };
     if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
         return now_ms;
     }
@@ -367,7 +384,10 @@ pub fn convert_legacy_to_v4(content: &str) -> Result<String, String> {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("m-{}", uuid::Uuid::new_v4()));
-        let parent_id = entry.get("parentId").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let parent_id = entry
+            .get("parentId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let timestamp = iso_timestamp_to_ms(entry.get("timestamp").unwrap_or(&Value::Null), now_ms);
 
         let mut v4_entry = serde_json::Map::new();
@@ -388,7 +408,20 @@ pub fn convert_legacy_to_v4(content: &str) -> Result<String, String> {
         // Carry the message payload (or custom data) through. The v4 message
         // payload requires a `timestamp` (epoch ms) on user/assistant/toolResult
         // messages; legacy files may omit it, so inject the entry timestamp.
-        for key in ["message", "customType", "data", "summary", "retainedTail", "tokensBefore", "details", "usage", "provider", "modelId", "thinkingLevel", "activeToolNames"] {
+        for key in [
+            "message",
+            "customType",
+            "data",
+            "summary",
+            "retainedTail",
+            "tokensBefore",
+            "details",
+            "usage",
+            "provider",
+            "modelId",
+            "thinkingLevel",
+            "activeToolNames",
+        ] {
             if let Some(value) = entry.get(key) {
                 let mut value = value.clone();
                 if key == "message" {
@@ -484,7 +517,10 @@ mod repo_integration_tests {
         let path = session_root.join("imported-sess-legacy.jsonl");
         std::fs::write(&path, &v4).unwrap();
 
-        let mut repo = JsonlSessionRepo::new(StdFileSystem::new("/tmp"), session_root.to_string_lossy().into_owned());
+        let repo = JsonlSessionRepo::new(
+            StdFileSystem::new("/tmp"),
+            session_root.to_string_lossy().into_owned(),
+        );
         let metadata = pi_agent::session::types::SessionMetadata {
             id: "sess-legacy".to_string(),
             created_at: 0,
@@ -496,7 +532,10 @@ mod repo_integration_tests {
             legacy_parent_session_path: None,
             metadata: None,
         };
-        let session = repo.open(&metadata).await.expect("repo opens converted v4 file");
+        let session = repo
+            .open(&metadata)
+            .await
+            .expect("repo opens converted v4 file");
         let entries = session
             .find_entries(&pi_agent::session::state::EntryQuery {
                 order: Some(pi_agent::session::state::EntryOrder::OldestFirst),

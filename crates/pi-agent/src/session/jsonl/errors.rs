@@ -17,7 +17,10 @@ pub struct JsonlDecodeError {
 
 impl JsonlDecodeError {
     pub fn new(kind: JsonlDecodeErrorKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into() }
+        Self {
+            kind,
+            message: message.into(),
+        }
     }
 }
 

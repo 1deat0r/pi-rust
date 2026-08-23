@@ -61,12 +61,12 @@ impl From<serde_json::Value> for Value {
                 }
             }
             serde_json::Value::String(s) => Value::Text(s),
-            serde_json::Value::Array(items) => Value::Array(items.into_iter().map(Value::from).collect()),
-            serde_json::Value::Object(map) => Value::Map(
-                map.into_iter()
-                    .map(|(k, v)| (k, Value::from(v)))
-                    .collect(),
-            ),
+            serde_json::Value::Array(items) => {
+                Value::Array(items.into_iter().map(Value::from).collect())
+            }
+            serde_json::Value::Object(map) => {
+                Value::Map(map.into_iter().map(|(k, v)| (k, Value::from(v))).collect())
+            }
         }
     }
 }
@@ -81,7 +81,10 @@ impl fmt::Debug for Value {
             Value::Text(s) => write!(f, "{s:?}"),
             Value::Bytes(b) => write!(f, "Bytes({} bytes)", b.len()),
             Value::Array(items) => f.debug_list().entries(items).finish(),
-            Value::Map(entries) => f.debug_map().entries(entries.iter().map(|(k, v)| (k, v))).finish(),
+            Value::Map(entries) => f
+                .debug_map()
+                .entries(entries.iter().map(|(k, v)| (k, v)))
+                .finish(),
             Value::Undefined => write!(f, "undefined"),
         }
     }

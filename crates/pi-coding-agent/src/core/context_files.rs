@@ -205,7 +205,8 @@ pub fn format_project_context(files: &[ContextFile]) -> String {
     if files.is_empty() {
         return String::new();
     }
-    let mut out = "\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n".to_string();
+    let mut out =
+        "\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n".to_string();
     for f in files {
         out.push_str(&format!(
             "<project_instructions path=\"{}\">\n{}\n</project_instructions>\n\n",
@@ -259,7 +260,10 @@ mod tests {
         let cwd = root.join("proj");
         std::fs::create_dir_all(&cwd).unwrap();
         write(&cwd.join("AGENTS.MD"), "\u{feff}uppercase variant");
-        let files = load_project_context_files(&cwd.to_string_lossy(), &root.join("agent").to_string_lossy());
+        let files = load_project_context_files(
+            &cwd.to_string_lossy(),
+            &root.join("agent").to_string_lossy(),
+        );
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].content, "uppercase variant");
         std::fs::remove_dir_all(&root).ok();
@@ -270,7 +274,10 @@ mod tests {
         let root = tmpdir("empty");
         let cwd = root.join("proj");
         std::fs::create_dir_all(&cwd).unwrap();
-        let files = load_project_context_files(&cwd.to_string_lossy(), &root.join("agent").to_string_lossy());
+        let files = load_project_context_files(
+            &cwd.to_string_lossy(),
+            &root.join("agent").to_string_lossy(),
+        );
         assert!(files.is_empty());
         std::fs::remove_dir_all(&root).ok();
     }
@@ -297,7 +304,10 @@ mod tests {
         // override wins over AGENTS.md
         write(&cwd.join("AGENTS.md"), "base");
         write(&cwd.join("AGENTS.override.md"), "override");
-        let files = load_project_context_files(&cwd.to_string_lossy(), &root.join("agent").to_string_lossy());
+        let files = load_project_context_files(
+            &cwd.to_string_lossy(),
+            &root.join("agent").to_string_lossy(),
+        );
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].content, "override");
         // only one loaded for the dir
@@ -309,13 +319,21 @@ mod tests {
     fn format_project_context_wraps_files_in_xml() {
         assert_eq!(format_project_context(&[]), "");
         let files = vec![
-            ContextFile { path: "/p/AGENTS.md".into(), content: "be concise".into() },
-            ContextFile { path: "/p/nested/CLAUDE.md".into(), content: "note".into() },
+            ContextFile {
+                path: "/p/AGENTS.md".into(),
+                content: "be concise".into(),
+            },
+            ContextFile {
+                path: "/p/nested/CLAUDE.md".into(),
+                content: "note".into(),
+            },
         ];
         let out = format_project_context(&files);
         assert!(out.starts_with("\n\n<project_context>"));
         assert!(out.ends_with("</project_context>\n"));
-        assert!(out.contains("<project_instructions path=\"/p/AGENTS.md\">\nbe concise\n</project_instructions>"));
+        assert!(out.contains(
+            "<project_instructions path=\"/p/AGENTS.md\">\nbe concise\n</project_instructions>"
+        ));
         assert!(out.contains("Project-specific instructions and guidelines:"));
     }
 }

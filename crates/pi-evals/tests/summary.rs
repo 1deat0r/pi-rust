@@ -1,7 +1,8 @@
 //! Port of `packages/evals/test/vitest-evals/summary.test.ts`.
 
 use pi_evals::summary::{
-    format_harness_comparison_report, summarize_harness_comparisons, strip_ansi, HarnessObservation, Outcome,
+    format_harness_comparison_report, strip_ansi, summarize_harness_comparisons,
+    HarnessObservation, Outcome,
 };
 
 type ObservationResult = &'static str;
@@ -31,7 +32,11 @@ fn observation(
         estimated_cost_usd,
     };
     if result == "passed" || result == "failed" {
-        HarnessObservation { outcome: Outcome::Scored, score: Some(if result == "passed" { 1.0 } else { 0.0 }), ..base }
+        HarnessObservation {
+            outcome: Outcome::Scored,
+            score: Some(if result == "passed" { 1.0 } else { 0.0 }),
+            ..base
+        }
     } else {
         let outcome = match result {
             "errored" => Outcome::Errored,
@@ -40,17 +45,49 @@ fn observation(
             "pending" => Outcome::Pending,
             _ => panic!("unknown observation result: {result}"),
         };
-        HarnessObservation { outcome, score: None, ..base }
+        HarnessObservation {
+            outcome,
+            score: None,
+            ..base
+        }
     }
 }
 
 #[test]
 fn computes_paired_correctness_lift_separately_from_efficiency_deltas() {
     let report = summarize_harness_comparisons(&[
-        observation("without-tools", "create", "failed", Some((Some(100.0), Some(1000.0), Some(0.01))), "without-tools", vec!["with-tools".into()]),
-        observation("with-tools", "create", "passed", Some((Some(120.0), Some(800.0), Some(0.02))), "without-tools", vec!["with-tools".into()]),
-        observation("without-tools", "inspect", "passed", Some((Some(200.0), None, None)), "without-tools", vec!["with-tools".into()]),
-        observation("with-tools", "inspect", "passed", Some((Some(180.0), None, None)), "without-tools", vec!["with-tools".into()]),
+        observation(
+            "without-tools",
+            "create",
+            "failed",
+            Some((Some(100.0), Some(1000.0), Some(0.01))),
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
+        observation(
+            "with-tools",
+            "create",
+            "passed",
+            Some((Some(120.0), Some(800.0), Some(0.02))),
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
+        observation(
+            "without-tools",
+            "inspect",
+            "passed",
+            Some((Some(200.0), None, None)),
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
+        observation(
+            "with-tools",
+            "inspect",
+            "passed",
+            Some((Some(180.0), None, None)),
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
     ]);
 
     assert_eq!(report.eval_sets.len(), 1);
@@ -106,9 +143,30 @@ fn computes_paired_correctness_lift_separately_from_efficiency_deltas() {
 #[test]
 fn reports_missing_observations_without_coercing_them_to_failures_or_zero_telemetry() {
     let report = summarize_harness_comparisons(&[
-        observation("without-tools", "create", "failed", None, "without-tools", vec!["with-tools".into()]),
-        observation("with-tools", "create", "passed", None, "without-tools", vec!["with-tools".into()]),
-        observation("without-tools", "inspect", "passed", None, "without-tools", vec!["with-tools".into()]),
+        observation(
+            "without-tools",
+            "create",
+            "failed",
+            None,
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
+        observation(
+            "with-tools",
+            "create",
+            "passed",
+            None,
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
+        observation(
+            "without-tools",
+            "inspect",
+            "passed",
+            None,
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
     ]);
     let comparison = &report.eval_sets[0].comparisons[0];
 
@@ -143,45 +201,117 @@ fn reports_missing_observations_without_coercing_them_to_failures_or_zero_teleme
 #[test]
 fn keeps_identical_inputs_in_different_test_files_separate() {
     let report = summarize_harness_comparisons(&[
-        observation("without-tools", "shared", "failed", None, "without-tools", vec!["with-tools".into()]),
-        observation("with-tools", "shared", "passed", None, "without-tools", vec!["with-tools".into()]),
+        observation(
+            "without-tools",
+            "shared",
+            "failed",
+            None,
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
+        observation(
+            "with-tools",
+            "shared",
+            "passed",
+            None,
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
         {
-            let mut o = observation("without-tools", "shared", "passed", None, "without-tools", vec!["with-tools".into()]);
+            let mut o = observation(
+                "without-tools",
+                "shared",
+                "passed",
+                None,
+                "without-tools",
+                vec!["with-tools".into()],
+            );
             o.file = "src/other.eval.ts".to_string();
             o
         },
         {
-            let mut o = observation("with-tools", "shared", "passed", None, "without-tools", vec!["with-tools".into()]);
+            let mut o = observation(
+                "with-tools",
+                "shared",
+                "passed",
+                None,
+                "without-tools",
+                vec!["with-tools".into()],
+            );
             o.file = "src/other.eval.ts".to_string();
             o
         },
     ]);
-    assert_eq!(report.eval_sets[0].comparisons[0].correctness.total_pairs, 2);
-    assert_eq!(report.eval_sets[0].comparisons[0].correctness.eligible_pairs, 2);
+    assert_eq!(
+        report.eval_sets[0].comparisons[0].correctness.total_pairs,
+        2
+    );
+    assert_eq!(
+        report.eval_sets[0].comparisons[0]
+            .correctness
+            .eligible_pairs,
+        2
+    );
     assert!(report.diagnostics.is_empty());
 }
 
 #[test]
 fn does_not_score_harness_errors_as_correctness_failures() {
     let report = summarize_harness_comparisons(&[
-        observation("without-tools", "create", "errored", Some((Some(100.0), None, None)), "without-tools", vec!["with-tools".into()]),
-        observation("with-tools", "create", "passed", Some((Some(100.0), None, None)), "without-tools", vec!["with-tools".into()]),
+        observation(
+            "without-tools",
+            "create",
+            "errored",
+            Some((Some(100.0), None, None)),
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
+        observation(
+            "with-tools",
+            "create",
+            "passed",
+            Some((Some(100.0), None, None)),
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
     ]);
     let comparison = &report.eval_sets[0].comparisons[0];
     assert_eq!(comparison.correctness.total_pairs, 1);
     assert_eq!(comparison.correctness.eligible_pairs, 0);
     assert_eq!(comparison.total_tokens.eligible_pairs, 0);
-    assert!(report.diagnostics.iter().any(|d| d.harness == "without-tools"
-        && d.reason == pi_evals::summary::DiagnosticReason::HarnessError));
+    assert!(report
+        .diagnostics
+        .iter()
+        .any(|d| d.harness == "without-tools"
+            && d.reason == pi_evals::summary::DiagnosticReason::HarnessError));
 }
 
 #[test]
 fn does_not_derive_correctness_from_completed_tests_without_judge_scores() {
     let report = summarize_harness_comparisons(&[
-        observation("without-tools", "create", "unscored", None, "without-tools", vec!["with-tools".into()]),
-        observation("with-tools", "create", "unscored", None, "without-tools", vec!["with-tools".into()]),
+        observation(
+            "without-tools",
+            "create",
+            "unscored",
+            None,
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
+        observation(
+            "with-tools",
+            "create",
+            "unscored",
+            None,
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
     ]);
-    assert_eq!(report.eval_sets[0].comparisons[0].correctness.eligible_pairs, 0);
+    assert_eq!(
+        report.eval_sets[0].comparisons[0]
+            .correctness
+            .eligible_pairs,
+        0
+    );
     let reasons: Vec<(&str, pi_evals::summary::DiagnosticReason)> = report
         .diagnostics
         .iter()
@@ -190,8 +320,14 @@ fn does_not_derive_correctness_from_completed_tests_without_judge_scores() {
     assert_eq!(
         reasons,
         vec![
-            ("with-tools", pi_evals::summary::DiagnosticReason::MissingScore),
-            ("without-tools", pi_evals::summary::DiagnosticReason::MissingScore),
+            (
+                "with-tools",
+                pi_evals::summary::DiagnosticReason::MissingScore
+            ),
+            (
+                "without-tools",
+                pi_evals::summary::DiagnosticReason::MissingScore
+            ),
         ]
     );
 }
@@ -200,9 +336,30 @@ fn does_not_derive_correctness_from_completed_tests_without_judge_scores() {
 fn compares_each_candidate_with_the_declared_baseline() {
     let candidates = vec!["second".to_string(), "third".to_string()];
     let report = summarize_harness_comparisons(&[
-        observation("first", "input", "passed", None, "first", candidates.clone()),
-        observation("second", "input", "passed", None, "first", candidates.clone()),
-        observation("third", "input", "passed", None, "first", candidates.clone()),
+        observation(
+            "first",
+            "input",
+            "passed",
+            None,
+            "first",
+            candidates.clone(),
+        ),
+        observation(
+            "second",
+            "input",
+            "passed",
+            None,
+            "first",
+            candidates.clone(),
+        ),
+        observation(
+            "third",
+            "input",
+            "passed",
+            None,
+            "first",
+            candidates.clone(),
+        ),
     ]);
     let pairs: Vec<(&str, &str)> = report.eval_sets[0]
         .comparisons
@@ -214,9 +371,21 @@ fn compares_each_candidate_with_the_declared_baseline() {
 
 #[test]
 fn retains_a_declared_harness_with_no_completed_observations() {
-    let report = summarize_harness_comparisons(&[observation("without-tools", "create", "failed", None, "without-tools", vec!["with-tools".into()])]);
+    let report = summarize_harness_comparisons(&[observation(
+        "without-tools",
+        "create",
+        "failed",
+        None,
+        "without-tools",
+        vec!["with-tools".into()],
+    )]);
     assert_eq!(report.eval_sets[0].comparisons.len(), 1);
-    assert_eq!(report.eval_sets[0].comparisons[0].correctness.eligible_pairs, 0);
+    assert_eq!(
+        report.eval_sets[0].comparisons[0]
+            .correctness
+            .eligible_pairs,
+        0
+    );
     assert!(report.diagnostics.iter().any(|d| d.test_name == "create"
         && d.harness == "with-tools"
         && d.reason == pi_evals::summary::DiagnosticReason::MissingObservation));
@@ -226,13 +395,62 @@ fn retains_a_declared_harness_with_no_completed_observations() {
 fn reports_duplicate_and_unscorable_observations_once_across_multiple_harness_pairs() {
     let candidates = vec!["second".to_string(), "third".to_string()];
     let report = summarize_harness_comparisons(&[
-        observation("first", "duplicate", "passed", None, "first", candidates.clone()),
-        observation("first", "duplicate", "failed", None, "first", candidates.clone()),
-        observation("second", "duplicate", "passed", None, "first", candidates.clone()),
-        observation("third", "duplicate", "passed", None, "first", candidates.clone()),
-        observation("first", "skipped", "skipped", None, "first", candidates.clone()),
-        observation("second", "skipped", "passed", None, "first", candidates.clone()),
-        observation("third", "skipped", "passed", None, "first", candidates.clone()),
+        observation(
+            "first",
+            "duplicate",
+            "passed",
+            None,
+            "first",
+            candidates.clone(),
+        ),
+        observation(
+            "first",
+            "duplicate",
+            "failed",
+            None,
+            "first",
+            candidates.clone(),
+        ),
+        observation(
+            "second",
+            "duplicate",
+            "passed",
+            None,
+            "first",
+            candidates.clone(),
+        ),
+        observation(
+            "third",
+            "duplicate",
+            "passed",
+            None,
+            "first",
+            candidates.clone(),
+        ),
+        observation(
+            "first",
+            "skipped",
+            "skipped",
+            None,
+            "first",
+            candidates.clone(),
+        ),
+        observation(
+            "second",
+            "skipped",
+            "passed",
+            None,
+            "first",
+            candidates.clone(),
+        ),
+        observation(
+            "third",
+            "skipped",
+            "passed",
+            None,
+            "first",
+            candidates.clone(),
+        ),
     ]);
     let duplicates: Vec<&str> = report
         .diagnostics
@@ -253,14 +471,43 @@ fn reports_duplicate_and_unscorable_observations_once_across_multiple_harness_pa
 #[test]
 fn formats_lift_and_telemetry_availability_for_the_terminal_report() {
     let report = summarize_harness_comparisons(&[
-        observation("without-tools", "create", "failed", Some((None, Some(34853.7), None)), "without-tools", vec!["with-tools".into()]),
-        observation("with-tools", "create", "passed", Some((None, Some(30694.2), None)), "without-tools", vec!["with-tools".into()]),
+        observation(
+            "without-tools",
+            "create",
+            "failed",
+            Some((None, Some(34853.7), None)),
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
+        observation(
+            "with-tools",
+            "create",
+            "passed",
+            Some((None, Some(30694.2), None)),
+            "without-tools",
+            vec!["with-tools".into()],
+        ),
     ]);
     let formatted = strip_ansi(&format_harness_comparison_report(&report));
     assert!(formatted.contains("Eval Comparisons"), "got: {formatted}");
-    assert!(formatted.contains(" Baseline  without-tools"), "got: {formatted}");
-    assert!(formatted.contains("Candidate  with-tools (1/1 pairs)"), "got: {formatted}");
-    assert!(formatted.contains("Pass rate  +100.0 pp (candidate 100.0%, baseline 0.0%)"), "got: {formatted}");
-    assert!(formatted.contains("   Tokens  unavailable"), "got: {formatted}");
-    assert!(formatted.contains("  Latency  -4159.5ms (candidate 30694.2ms, baseline 34853.7ms)"), "got: {formatted}");
+    assert!(
+        formatted.contains(" Baseline  without-tools"),
+        "got: {formatted}"
+    );
+    assert!(
+        formatted.contains("Candidate  with-tools (1/1 pairs)"),
+        "got: {formatted}"
+    );
+    assert!(
+        formatted.contains("Pass rate  +100.0 pp (candidate 100.0%, baseline 0.0%)"),
+        "got: {formatted}"
+    );
+    assert!(
+        formatted.contains("   Tokens  unavailable"),
+        "got: {formatted}"
+    );
+    assert!(
+        formatted.contains("  Latency  -4159.5ms (candidate 30694.2ms, baseline 34853.7ms)"),
+        "got: {formatted}"
+    );
 }

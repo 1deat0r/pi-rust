@@ -1,6 +1,9 @@
 //! Tool path helpers — port of `packages/agent/src/harness/tools/path-utils.ts`.
 
-const UNICODE_SPACES: [char; 9] = ['\u{00A0}', '\u{2000}', '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{3000}'];
+const UNICODE_SPACES: [char; 9] = [
+    '\u{00A0}', '\u{2000}', '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}',
+    '\u{3000}',
+];
 
 /// Normalizes tool paths: unicode spaces become regular spaces, a leading
 /// `@` (used to disambiguate paths starting with `-`) is stripped.
@@ -42,7 +45,12 @@ pub fn resolve_read_tool_path(cwd: &str, path: &str) -> Vec<String> {
     variants.push(resolved.clone());
     // curly apostrophe variants
     variants.push(resolved.replace('\'', "\u{2019}"));
-    variants.iter().map(|v| v.clone()).collect::<std::collections::HashSet<_>>().into_iter().collect()
+    variants
+        .iter()
+        .map(|v| v.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// Picks the first read path variant that exists.

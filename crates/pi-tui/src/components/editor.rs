@@ -13,14 +13,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::autocomplete::{AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions};
+use crate::components::select_list::{SelectItem, SelectList, SelectListLayoutOptions};
 use crate::keys::{match_key, TuiKey};
 use crate::kill_ring::{KillRing, KillRingPushOptions};
 use crate::tui::Component;
 use crate::undo_stack::UndoStack;
 use crate::utils::{slice_with_width, visible_width};
-use crate::word_navigation::{find_word_backward, find_word_forward, segment_text, Segment, WordNavigationOptions};
-use crate::autocomplete::{AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions};
-use crate::components::select_list::{SelectItem, SelectList, SelectListLayoutOptions};
+use crate::word_navigation::{
+    find_word_backward, find_word_forward, segment_text, Segment, WordNavigationOptions,
+};
 
 /// Regex matching paste markers like `[paste #1 +123 lines]`.
 fn paste_marker_regex() -> regex::Regex {
@@ -110,12 +112,26 @@ fn grapheme_segments(text: &str) -> Vec<Segment> {
     while i < chars.len() {
         let start = i;
         i += 1;
-        while i < chars.len() && !is_grapheme_start(Some(chars[i - 1]), Some(chars.get(i + 1).copied().unwrap_or(' ')), chars[i]) {
+        while i < chars.len()
+            && !is_grapheme_start(
+                Some(chars[i - 1]),
+                Some(chars.get(i + 1).copied().unwrap_or(' ')),
+                chars[i],
+            )
+        {
             i += 1;
         }
         let seg: String = chars[start..i].iter().collect();
-        let byte = text.char_indices().nth(start).map(|(b, _)| b).unwrap_or(text.len());
-        segments.push(Segment { segment: seg, index: byte, is_word_like: true });
+        let byte = text
+            .char_indices()
+            .nth(start)
+            .map(|(b, _)| b)
+            .unwrap_or(text.len());
+        segments.push(Segment {
+            segment: seg,
+            index: byte,
+            is_word_like: true,
+        });
     }
     if segments.is_empty() {
         return segments;
@@ -126,7 +142,11 @@ fn grapheme_segments(text: &str) -> Vec<Segment> {
 
 /// Segment with paste-marker awareness: markers whose ID exists in
 /// `valid_ids` are merged into single atomic segments.
-fn segment_with_markers(text: &str, base: &[Segment], valid_ids: &std::collections::HashSet<usize>) -> Vec<Segment> {
+fn segment_with_markers(
+    text: &str,
+    base: &[Segment],
+    valid_ids: &std::collections::HashSet<usize>,
+) -> Vec<Segment> {
     if valid_ids.is_empty() || !text.contains("[paste #") {
         return base.to_vec();
     }
@@ -169,13 +189,25 @@ fn segment_with_markers(text: &str, base: &[Segment], valid_ids: &std::collectio
 }
 
 /// Split a line into word-wrapped chunks (upstream `wordWrapLine`).
-pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[Segment]>) -> Vec<TextChunk> {
+pub fn word_wrap_line(
+    line: &str,
+    max_width: usize,
+    pre_segmented: Option<&[Segment]>,
+) -> Vec<TextChunk> {
     if line.is_empty() || max_width == 0 {
-        return vec![TextChunk { text: String::new(), start_index: 0, end_index: 0 }];
+        return vec![TextChunk {
+            text: String::new(),
+            start_index: 0,
+            end_index: 0,
+        }];
     }
     let line_width = visible_width(line);
     if line_width <= max_width {
-        return vec![TextChunk { text: line.to_string(), start_index: 0, end_index: line.len() }];
+        return vec![TextChunk {
+            text: line.to_string(),
+            start_index: 0,
+            end_index: line.len(),
+        }];
     }
 
     let segments: Vec<Segment> = match pre_segmented {
@@ -194,7 +226,12 @@ pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[Segm
         let grapheme = &seg.segment;
         let g_width = visible_width(grapheme);
         let char_index = seg.index;
-        let is_ws = !is_paste_marker(grapheme) && grapheme.chars().next().map(|c| c.is_whitespace()).unwrap_or(false);
+        let is_ws = !is_paste_marker(grapheme)
+            && grapheme
+                .chars()
+                .next()
+                .map(|c| c.is_whitespace())
+                .unwrap_or(false);
 
         if current_width + g_width > max_width {
             if wrap_opp_index >= 0 && current_width - wrap_opp_width + g_width <= max_width {
@@ -241,7 +278,12 @@ pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[Segm
         if is_ws {
             if let Some(nextseg) = next {
                 if is_paste_marker(&nextseg.segment)
-                    || !nextseg.segment.chars().next().map(|c| c.is_whitespace()).unwrap_or(false)
+                    || !nextseg
+                        .segment
+                        .chars()
+                        .next()
+                        .map(|c| c.is_whitespace())
+                        .unwrap_or(false)
                 {
                     wrap_opp_index = nextseg.index as isize;
                     wrap_opp_width = current_width;
@@ -251,7 +293,8 @@ pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[Segm
             let next_ws = nextseg.segment.chars().next().map(|c| c.is_whitespace());
             if next_ws == Some(false) {
                 let is_cjk = !is_paste_marker(grapheme) && is_cjk_segment(grapheme);
-                let next_is_cjk = !is_paste_marker(&nextseg.segment) && is_cjk_segment(&nextseg.segment);
+                let next_is_cjk =
+                    !is_paste_marker(&nextseg.segment) && is_cjk_segment(&nextseg.segment);
                 if is_cjk || next_is_cjk {
                     wrap_opp_index = nextseg.index as isize;
                     wrap_opp_width = current_width;
@@ -260,12 +303,19 @@ pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[Segm
         }
     }
 
-    chunks.push(TextChunk { text: line[chunk_start..].to_string(), start_index: chunk_start, end_index: line.len() });
+    chunks.push(TextChunk {
+        text: line[chunk_start..].to_string(),
+        start_index: chunk_start,
+        end_index: line.len(),
+    });
     chunks
 }
 
 fn is_cjk_segment(seg: &str) -> bool {
-    seg.chars().next().map(crate::word_navigation::is_cjk_char).unwrap_or(false)
+    seg.chars()
+        .next()
+        .map(crate::word_navigation::is_cjk_char)
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -277,7 +327,11 @@ struct EditorState {
 
 impl EditorState {
     fn empty() -> Self {
-        Self { lines: vec![String::new()], cursor_line: 0, cursor_col: 0 }
+        Self {
+            lines: vec![String::new()],
+            cursor_line: 0,
+            cursor_col: 0,
+        }
     }
 }
 
@@ -308,7 +362,9 @@ impl std::fmt::Debug for EditorTheme {
 
 /// Default theme: plain border (no ANSI decoration) — for tests.
 pub fn plain_editor_theme() -> EditorTheme {
-    EditorTheme { border_color: Arc::new(|s| s.to_string()) }
+    EditorTheme {
+        border_color: Arc::new(|s| s.to_string()),
+    }
 }
 
 pub struct EditorOptions {
@@ -318,7 +374,10 @@ pub struct EditorOptions {
 
 impl Default for EditorOptions {
     fn default() -> Self {
-        Self { padding_x: 0, autocomplete_max_visible: 5 }
+        Self {
+            padding_x: 0,
+            autocomplete_max_visible: 5,
+        }
     }
 }
 
@@ -390,7 +449,9 @@ pub struct Editor {
 
 impl std::fmt::Debug for Editor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Editor").field("state", &self.state).finish()
+        f.debug_struct("Editor")
+            .field("state", &self.state)
+            .finish()
     }
 }
 
@@ -443,7 +504,10 @@ impl Editor {
         self.autocomplete_max_visible = max_visible.clamp(3, 20);
     }
 
-    pub fn set_autocomplete_provider(&mut self, provider: Box<dyn AutocompleteProvider + Send + Sync>) {
+    pub fn set_autocomplete_provider(
+        &mut self,
+        provider: Box<dyn AutocompleteProvider + Send + Sync>,
+    ) {
         self.cancel_autocomplete();
         let triggers = provider.trigger_characters();
         self.autocomplete_provider = Some(provider);
@@ -455,7 +519,11 @@ impl Editor {
     }
 
     fn segment(&self, text: &str, mode: &str) -> Vec<Segment> {
-        let base = if mode == "word" { segment_text(text) } else { grapheme_segments(text) };
+        let base = if mode == "word" {
+            segment_text(text)
+        } else {
+            grapheme_segments(text)
+        };
         segment_with_markers(text, &base, &self.valid_paste_ids())
     }
 
@@ -510,12 +578,17 @@ impl Editor {
                 self.state = draft;
                 self.preferred_visual_col = None;
                 self.snapped_from_cursor_col = None;
-                self.scroll_offset.store(0, std::sync::atomic::Ordering::Relaxed);
+                self.scroll_offset
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
             } else {
                 self.set_text_internal("", "end");
             }
         } else {
-            let entry = self.history.get(self.history_index as usize).cloned().unwrap_or_default();
+            let entry = self
+                .history
+                .get(self.history_index as usize)
+                .cloned()
+                .unwrap_or_default();
             let placement = if direction == -1 { "start" } else { "end" };
             self.set_text_internal(&entry, placement);
         }
@@ -533,14 +606,19 @@ impl Editor {
             text.split('\n').map(|s| s.to_string()).collect()
         };
         self.state.lines = lines;
-        self.state.cursor_line = if cursor_placement == "start" { 0 } else { self.state.lines.len() - 1 };
+        self.state.cursor_line = if cursor_placement == "start" {
+            0
+        } else {
+            self.state.lines.len() - 1
+        };
         let col = if cursor_placement == "start" {
             0
         } else {
             self.state.lines[self.state.cursor_line].len()
         };
         self.set_cursor_col(col);
-        self.scroll_offset.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.scroll_offset
+            .store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
     // ------------------------------------------------------------------ text access
@@ -600,7 +678,9 @@ impl Editor {
     }
 
     fn normalize_text(&self, text: &str) -> String {
-        text.replace("\r\n", "\n").replace('\r', "\n").replace('\t', "    ")
+        text.replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\t', "    ")
     }
 
     fn insert_text_at_cursor_internal(&mut self, text: &str) {
@@ -610,21 +690,35 @@ impl Editor {
         let normalized = self.normalize_text(text);
         let inserted_lines: Vec<&str> = normalized.split('\n').collect();
         let current_line = self.state.lines[self.state.cursor_line].clone();
-        let before_cursor = current_line[..self.state.cursor_col.min(current_line.len())].to_string();
-        let after_cursor = current_line[self.state.cursor_col.min(current_line.len())..].to_string();
+        let before_cursor =
+            current_line[..self.state.cursor_col.min(current_line.len())].to_string();
+        let after_cursor =
+            current_line[self.state.cursor_col.min(current_line.len())..].to_string();
 
         if inserted_lines.len() == 1 {
-            self.state.lines[self.state.cursor_line] = format!("{before_cursor}{normalized}{after_cursor}");
+            self.state.lines[self.state.cursor_line] =
+                format!("{before_cursor}{normalized}{after_cursor}");
             self.set_cursor_col(self.state.cursor_col + normalized.len());
         } else {
             let mut new_lines: Vec<String> = Vec::new();
             new_lines.extend(self.state.lines[..self.state.cursor_line].iter().cloned());
             new_lines.push(format!("{before_cursor}{}", inserted_lines[0]));
-            for mid in inserted_lines.iter().skip(1).take(inserted_lines.len().saturating_sub(2)) {
+            for mid in inserted_lines
+                .iter()
+                .skip(1)
+                .take(inserted_lines.len().saturating_sub(2))
+            {
                 new_lines.push(mid.to_string());
             }
-            new_lines.push(format!("{}{after_cursor}", inserted_lines[inserted_lines.len() - 1]));
-            new_lines.extend(self.state.lines[self.state.cursor_line + 1..].iter().cloned());
+            new_lines.push(format!(
+                "{}{after_cursor}",
+                inserted_lines[inserted_lines.len() - 1]
+            ));
+            new_lines.extend(
+                self.state.lines[self.state.cursor_line + 1..]
+                    .iter()
+                    .cloned(),
+            );
             self.state.lines = new_lines;
             self.state.cursor_line += inserted_lines.len() - 1;
             self.set_cursor_col(inserted_lines[inserted_lines.len() - 1].len());
@@ -639,7 +733,10 @@ impl Editor {
         let max_padding = if width > 1 { (width - 1) / 2 } else { 0 };
         let padding_x = self.padding_x.min(max_padding);
         let content_width = std::cmp::max(1, width.saturating_sub(padding_x * 2));
-        let layout_width = std::cmp::max(1, content_width.saturating_sub(if padding_x > 0 { 0 } else { 1 }));
+        let layout_width = std::cmp::max(
+            1,
+            content_width.saturating_sub(if padding_x > 0 { 0 } else { 1 }),
+        );
 
         let horizontal = (self.border_color)("─");
         let layout_lines = self.layout_text(layout_width);
@@ -648,25 +745,43 @@ impl Editor {
         let max_visible_lines = std::cmp::max(5, terminal_rows * 3 / 10);
 
         let cursor_line_index = layout_lines.iter().position(|l| l.has_cursor).unwrap_or(0);
-        let scroll = self.scroll_offset.load(std::sync::atomic::Ordering::Relaxed);
+        let scroll = self
+            .scroll_offset
+            .load(std::sync::atomic::Ordering::Relaxed);
         if cursor_line_index < scroll {
-            self.scroll_offset.store(cursor_line_index, std::sync::atomic::Ordering::Relaxed);
+            self.scroll_offset
+                .store(cursor_line_index, std::sync::atomic::Ordering::Relaxed);
         } else if cursor_line_index >= scroll + max_visible_lines {
-            self.scroll_offset.store(cursor_line_index - max_visible_lines + 1, std::sync::atomic::Ordering::Relaxed);
+            self.scroll_offset.store(
+                cursor_line_index - max_visible_lines + 1,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
         let max_scroll_offset = layout_lines.len().saturating_sub(max_visible_lines);
-        self.scroll_offset.store(self.scroll_offset.load(std::sync::atomic::Ordering::Relaxed).min(max_scroll_offset), std::sync::atomic::Ordering::Relaxed);
+        self.scroll_offset.store(
+            self.scroll_offset
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .min(max_scroll_offset),
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
-        let scroll = self.scroll_offset.load(std::sync::atomic::Ordering::Relaxed);
-        let visible_lines = &layout_lines[scroll..scroll + max_visible_lines.min(layout_lines.len().saturating_sub(scroll))];
+        let scroll = self
+            .scroll_offset
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let visible_lines = &layout_lines
+            [scroll..scroll + max_visible_lines.min(layout_lines.len().saturating_sub(scroll))];
 
         let mut result: Vec<String> = Vec::new();
         let left_padding = " ".repeat(padding_x);
         let right_padding = left_padding.clone();
 
-        let scroll = self.scroll_offset.load(std::sync::atomic::Ordering::Relaxed);
+        let scroll = self
+            .scroll_offset
+            .load(std::sync::atomic::Ordering::Relaxed);
         if scroll > 0 {
-            result.push((self.border_color)(&create_scroll_border("↑", scroll, width)));
+            result.push((self.border_color)(&create_scroll_border(
+                "↑", scroll, width,
+            )));
         } else {
             result.push(horizontal.repeat(width));
         }
@@ -683,11 +798,16 @@ impl Editor {
                     let after = display_text[cursor_pos.min(display_text.len())..].to_string();
 
                     // Hardware cursor marker for IME positioning.
-                    let marker = if emit_cursor_marker { "\x1b_pi:c\x07" } else { "" };
+                    let marker = if emit_cursor_marker {
+                        "\x1b_pi:c\x07"
+                    } else {
+                        ""
+                    };
 
                     if !after.is_empty() {
                         let gen = self.segment(&after, "grapheme");
-                        let first_grapheme = gen.first().map(|s| s.segment.clone()).unwrap_or_default();
+                        let first_grapheme =
+                            gen.first().map(|s| s.segment.clone()).unwrap_or_default();
                         let rest_after = after[first_grapheme.len().min(after.len())..].to_string();
                         let cursor = format!("\x1b[7m{first_grapheme}\x1b[0m");
                         display_text = format!("{before}{marker}{cursor}{rest_after}");
@@ -702,14 +822,28 @@ impl Editor {
             }
 
             let padding = " ".repeat(content_width.saturating_sub(line_visible_width));
-            let line_right_padding = if cursor_in_padding { right_padding[1..].to_string() } else { right_padding.clone() };
-            result.push(format!("{left_padding}{display_text}{padding}{line_right_padding}"));
+            let line_right_padding = if cursor_in_padding {
+                right_padding[1..].to_string()
+            } else {
+                right_padding.clone()
+            };
+            result.push(format!(
+                "{left_padding}{display_text}{padding}{line_right_padding}"
+            ));
         }
 
-        let scroll = self.scroll_offset.load(std::sync::atomic::Ordering::Relaxed);
-        let lines_below = layout_lines.len().saturating_sub((scroll + visible_lines.len()).min(layout_lines.len()));
+        let scroll = self
+            .scroll_offset
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let lines_below = layout_lines
+            .len()
+            .saturating_sub((scroll + visible_lines.len()).min(layout_lines.len()));
         if lines_below > 0 {
-            result.push((self.border_color)(&create_scroll_border("↓", lines_below, width)));
+            result.push((self.border_color)(&create_scroll_border(
+                "↓",
+                lines_below,
+                width,
+            )));
         } else {
             result.push(horizontal.repeat(width));
         }
@@ -732,8 +866,14 @@ impl Editor {
     fn layout_text(&self, content_width: usize) -> Vec<LayoutLine> {
         let mut layout_lines: Vec<LayoutLine> = Vec::new();
 
-        if self.state.lines.is_empty() || (self.state.lines.len() == 1 && self.state.lines[0].is_empty()) {
-            layout_lines.push(LayoutLine { text: String::new(), has_cursor: true, cursor_pos: Some(0) });
+        if self.state.lines.is_empty()
+            || (self.state.lines.len() == 1 && self.state.lines[0].is_empty())
+        {
+            layout_lines.push(LayoutLine {
+                text: String::new(),
+                has_cursor: true,
+                cursor_pos: Some(0),
+            });
             return layout_lines;
         }
 
@@ -750,7 +890,11 @@ impl Editor {
                         cursor_pos: Some(self.state.cursor_col.min(line.len())),
                     });
                 } else {
-                    layout_lines.push(LayoutLine { text: line.clone(), has_cursor: false, cursor_pos: None });
+                    layout_lines.push(LayoutLine {
+                        text: line.clone(),
+                        has_cursor: false,
+                        cursor_pos: None,
+                    });
                 }
             } else {
                 let segmented = self.segment(line, "grapheme");
@@ -766,7 +910,8 @@ impl Editor {
                             has_cursor_in_chunk = cursor_pos >= chunk.start_index;
                             adjusted_cursor_pos = cursor_pos.saturating_sub(chunk.start_index);
                         } else {
-                            has_cursor_in_chunk = cursor_pos >= chunk.start_index && cursor_pos < chunk.end_index;
+                            has_cursor_in_chunk =
+                                cursor_pos >= chunk.start_index && cursor_pos < chunk.end_index;
                             if has_cursor_in_chunk {
                                 adjusted_cursor_pos = cursor_pos - chunk.start_index;
                                 if adjusted_cursor_pos > chunk.text.len() {
@@ -783,7 +928,11 @@ impl Editor {
                             cursor_pos: Some(adjusted_cursor_pos),
                         });
                     } else {
-                        layout_lines.push(LayoutLine { text: chunk.text.clone(), has_cursor: false, cursor_pos: None });
+                        layout_lines.push(LayoutLine {
+                            text: chunk.text.clone(),
+                            has_cursor: false,
+                            cursor_pos: None,
+                        });
                     }
                 }
             }
@@ -792,7 +941,6 @@ impl Editor {
         layout_lines
     }
 }
-
 
 impl Editor {
     // ------------------------------------------------------------------ input
@@ -868,7 +1016,11 @@ impl Editor {
                 return;
             }
             if matches_key(data, "tab") {
-                let selected = self.autocomplete_list.as_ref().and_then(|l| l.get_selected_item()).cloned();
+                let selected = self
+                    .autocomplete_list
+                    .as_ref()
+                    .and_then(|l| l.get_selected_item())
+                    .cloned();
                 if let Some(selected) = selected {
                     self.push_undo_snapshot();
                     self.last_action = None;
@@ -877,7 +1029,11 @@ impl Editor {
                 return;
             }
             if matches_key(data, "enter") {
-                let selected = self.autocomplete_list.as_ref().and_then(|l| l.get_selected_item()).cloned();
+                let selected = self
+                    .autocomplete_list
+                    .as_ref()
+                    .and_then(|l| l.get_selected_item())
+                    .cloned();
                 if let Some(selected) = selected {
                     self.push_undo_snapshot();
                     self.last_action = None;
@@ -925,7 +1081,10 @@ impl Editor {
             self.handle_backspace();
             return;
         }
-        if matches_key(data, "delete") || matches_key(data, "ctrl+d") || matches_key(data, "shift+delete") {
+        if matches_key(data, "delete")
+            || matches_key(data, "ctrl+d")
+            || matches_key(data, "shift+delete")
+        {
             self.handle_forward_delete();
             return;
         }
@@ -941,19 +1100,29 @@ impl Editor {
         }
 
         // Line start/end.
-        if matches_key(data, "home") || matches_key(data, "ctrl+home") || matches_key(data, "ctrl+a") {
+        if matches_key(data, "home")
+            || matches_key(data, "ctrl+home")
+            || matches_key(data, "ctrl+a")
+        {
             self.move_to_line_start();
             return;
         }
-        if matches_key(data, "end") || matches_key(data, "ctrl+end") || matches_key(data, "ctrl+e") {
+        if matches_key(data, "end") || matches_key(data, "ctrl+end") || matches_key(data, "ctrl+e")
+        {
             self.move_to_line_end();
             return;
         }
-        if matches_key(data, "alt+left") || matches_key(data, "ctrl+left") || matches_key(data, "alt+b") {
+        if matches_key(data, "alt+left")
+            || matches_key(data, "ctrl+left")
+            || matches_key(data, "alt+b")
+        {
             self.move_word_backwards();
             return;
         }
-        if matches_key(data, "alt+right") || matches_key(data, "ctrl+right") || matches_key(data, "alt+f") {
+        if matches_key(data, "alt+right")
+            || matches_key(data, "ctrl+right")
+            || matches_key(data, "alt+f")
+        {
             self.move_word_forwards();
             return;
         }
@@ -969,7 +1138,12 @@ impl Editor {
             if self.disable_submit {
                 return;
             }
-            let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+            let current_line = self
+                .state
+                .lines
+                .get(self.state.cursor_line)
+                .cloned()
+                .unwrap_or_default();
             if self.state.cursor_col > 0
                 && current_line
                     .chars()
@@ -1060,13 +1234,22 @@ impl Editor {
     fn insert_character(&mut self, char: &str) {
         self.exit_history_browsing();
 
-        let is_ws = char.chars().next().map(|c| c.is_whitespace()).unwrap_or(false);
+        let is_ws = char
+            .chars()
+            .next()
+            .map(|c| c.is_whitespace())
+            .unwrap_or(false);
         if is_ws || self.last_action != Some("type-word") {
             self.push_undo_snapshot();
         }
         self.last_action = Some("type-word");
 
-        let line = self.state.lines.get_mut(self.state.cursor_line).cloned().unwrap_or_default();
+        let line = self
+            .state
+            .lines
+            .get_mut(self.state.cursor_line)
+            .cloned()
+            .unwrap_or_default();
         let before = line[..self.state.cursor_col.min(line.len())].to_string();
         let after = line[self.state.cursor_col.min(line.len())..].to_string();
         self.state.lines[self.state.cursor_line] = format!("{before}{char}{after}");
@@ -1075,12 +1258,21 @@ impl Editor {
         // Autocomplete triggers.
         if self.autocomplete_state.is_none() {
             let current_line = self.state.lines[self.state.cursor_line].clone();
-            let text_before_cursor = current_line[..self.state.cursor_col.min(current_line.len())].to_string();
+            let text_before_cursor =
+                current_line[..self.state.cursor_col.min(current_line.len())].to_string();
             if char == "/" && self.is_at_start_of_message() {
                 self.try_trigger_autocomplete(false);
-            } else if self.autocomplete_trigger_characters.iter().any(|t| t == char) {
+            } else if self
+                .autocomplete_trigger_characters
+                .iter()
+                .any(|t| t == char)
+            {
                 let chars: Vec<char> = text_before_cursor.chars().collect();
-                let char_before_symbol = if chars.len() >= 2 { Some(chars[chars.len() - 2]) } else { None };
+                let char_before_symbol = if chars.len() >= 2 {
+                    Some(chars[chars.len() - 2])
+                } else {
+                    None
+                };
                 if text_before_cursor.chars().count() == 1
                     || char_before_symbol == Some(' ')
                     || char_before_symbol == Some('\t')
@@ -1113,7 +1305,9 @@ impl Editor {
             return false;
         }
         let first = token.chars().next().unwrap();
-        self.autocomplete_trigger_characters.iter().any(|t| t == &first.to_string())
+        self.autocomplete_trigger_characters
+            .iter()
+            .any(|t| t == &first.to_string())
     }
 
     fn handle_paste(&mut self, pasted_text: &str) {
@@ -1134,8 +1328,16 @@ impl Editor {
             .collect();
 
         let mut filtered_text = filtered;
-        if filtered_text.starts_with('/') || filtered_text.starts_with('~') || filtered_text.starts_with('.') {
-            let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+        if filtered_text.starts_with('/')
+            || filtered_text.starts_with('~')
+            || filtered_text.starts_with('.')
+        {
+            let current_line = self
+                .state
+                .lines
+                .get(self.state.cursor_line)
+                .cloned()
+                .unwrap_or_default();
             let char_before = if self.state.cursor_col > 0 {
                 current_line
                     .chars()
@@ -1185,13 +1387,17 @@ impl Editor {
 
     fn submit_value(&mut self) {
         self.cancel_autocomplete();
-        let result = self.expand_paste_markers(&self.state.lines.join("\n")).trim().to_string();
+        let result = self
+            .expand_paste_markers(&self.state.lines.join("\n"))
+            .trim()
+            .to_string();
 
         self.state = EditorState::empty();
         self.pastes.clear();
         self.paste_counter = 0;
         self.exit_history_browsing();
-        self.scroll_offset.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.scroll_offset
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         self.undo_stack.clear();
         self.last_action = None;
         self.submit_pending = Some(result);
@@ -1224,7 +1430,12 @@ impl Editor {
                         self.pastes.remove(&target_id);
                         self.paste_counter = self.paste_counter.saturating_sub(1);
                         // Renumber higher ids down by one.
-                        let mut higher: Vec<usize> = self.pastes.keys().copied().filter(|id| *id > target_id).collect();
+                        let mut higher: Vec<usize> = self
+                            .pastes
+                            .keys()
+                            .copied()
+                            .filter(|id| *id > target_id)
+                            .collect();
                         higher.sort();
                         for id in higher {
                             if let Some(content) = self.pastes.remove(&id) {
@@ -1237,7 +1448,8 @@ impl Editor {
                             let re = paste_marker_regex();
                             let updated = re
                                 .replace_all(line, |caps: &regex::Captures| {
-                                    let x: usize = caps.get(1).unwrap().as_str().parse().unwrap_or(0);
+                                    let x: usize =
+                                        caps.get(1).unwrap().as_str().parse().unwrap_or(0);
                                     if x <= target_id {
                                         return caps.get(0).unwrap().as_str().to_string();
                                     }
@@ -1254,7 +1466,8 @@ impl Editor {
 
             line = self.state.lines[self.state.cursor_line].clone();
             let cursor_col = self.state.cursor_col;
-            let before = line[..cursor_col.saturating_sub(grapheme_len).min(line.len())].to_string();
+            let before =
+                line[..cursor_col.saturating_sub(grapheme_len).min(line.len())].to_string();
             let after = line[cursor_col.min(line.len())..].to_string();
             self.state.lines[self.state.cursor_line] = format!("{before}{after}");
             self.set_cursor_col(self.state.cursor_col.saturating_sub(grapheme_len));
@@ -1273,8 +1486,10 @@ impl Editor {
             self.update_autocomplete();
         } else {
             let current_line = self.state.lines[self.state.cursor_line].clone();
-            let text_before_cursor = current_line[..self.state.cursor_col.min(current_line.len())].to_string();
-            if self.is_in_slash_command_context(&text_before_cursor) || self.autocomplete_trigger_pattern(&text_before_cursor)
+            let text_before_cursor =
+                current_line[..self.state.cursor_col.min(current_line.len())].to_string();
+            if self.is_in_slash_command_context(&text_before_cursor)
+                || self.autocomplete_trigger_pattern(&text_before_cursor)
             {
                 self.try_trigger_autocomplete(false);
             }
@@ -1293,18 +1508,37 @@ impl Editor {
 
     fn delete_to_start_of_line(&mut self) {
         self.exit_history_browsing();
-        let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+        let current_line = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .cloned()
+            .unwrap_or_default();
 
         if self.state.cursor_col > 0 {
             self.push_undo_snapshot();
-            let deleted_text = current_line[..self.state.cursor_col.min(current_line.len())].to_string();
-            self.kill_ring.push(&deleted_text, KillRingPushOptions { prepend: true, accumulate: self.last_action == Some("kill") });
+            let deleted_text =
+                current_line[..self.state.cursor_col.min(current_line.len())].to_string();
+            self.kill_ring.push(
+                &deleted_text,
+                KillRingPushOptions {
+                    prepend: true,
+                    accumulate: self.last_action == Some("kill"),
+                },
+            );
             self.last_action = Some("kill");
-            self.state.lines[self.state.cursor_line] = current_line[self.state.cursor_col.min(current_line.len())..].to_string();
+            self.state.lines[self.state.cursor_line] =
+                current_line[self.state.cursor_col.min(current_line.len())..].to_string();
             self.set_cursor_col(0);
         } else if self.state.cursor_line > 0 {
             self.push_undo_snapshot();
-            self.kill_ring.push("\n", KillRingPushOptions { prepend: true, accumulate: self.last_action == Some("kill") });
+            self.kill_ring.push(
+                "\n",
+                KillRingPushOptions {
+                    prepend: true,
+                    accumulate: self.last_action == Some("kill"),
+                },
+            );
             self.last_action = Some("kill");
             let previous_line = self.state.lines[self.state.cursor_line - 1].clone();
             self.state.lines[self.state.cursor_line - 1] = format!("{previous_line}{current_line}");
@@ -1316,17 +1550,36 @@ impl Editor {
 
     fn delete_to_end_of_line(&mut self) {
         self.exit_history_browsing();
-        let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+        let current_line = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .cloned()
+            .unwrap_or_default();
 
         if self.state.cursor_col < current_line.len() {
             self.push_undo_snapshot();
-            let deleted_text = current_line[self.state.cursor_col.min(current_line.len())..].to_string();
-            self.kill_ring.push(&deleted_text, KillRingPushOptions { prepend: false, accumulate: self.last_action == Some("kill") });
+            let deleted_text =
+                current_line[self.state.cursor_col.min(current_line.len())..].to_string();
+            self.kill_ring.push(
+                &deleted_text,
+                KillRingPushOptions {
+                    prepend: false,
+                    accumulate: self.last_action == Some("kill"),
+                },
+            );
             self.last_action = Some("kill");
-            self.state.lines[self.state.cursor_line] = current_line[..self.state.cursor_col.min(current_line.len())].to_string();
+            self.state.lines[self.state.cursor_line] =
+                current_line[..self.state.cursor_col.min(current_line.len())].to_string();
         } else if self.state.cursor_line < self.state.lines.len() - 1 {
             self.push_undo_snapshot();
-            self.kill_ring.push("\n", KillRingPushOptions { prepend: false, accumulate: self.last_action == Some("kill") });
+            self.kill_ring.push(
+                "\n",
+                KillRingPushOptions {
+                    prepend: false,
+                    accumulate: self.last_action == Some("kill"),
+                },
+            );
             self.last_action = Some("kill");
             let next_line = self.state.lines[self.state.cursor_line + 1].clone();
             self.state.lines[self.state.cursor_line] = format!("{current_line}{next_line}");
@@ -1336,15 +1589,27 @@ impl Editor {
 
     fn delete_word_backwards(&mut self) {
         self.exit_history_browsing();
-        let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+        let current_line = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .cloned()
+            .unwrap_or_default();
 
         if self.state.cursor_col == 0 {
             if self.state.cursor_line > 0 {
                 self.push_undo_snapshot();
-                self.kill_ring.push("\n", KillRingPushOptions { prepend: true, accumulate: self.last_action == Some("kill") });
+                self.kill_ring.push(
+                    "\n",
+                    KillRingPushOptions {
+                        prepend: true,
+                        accumulate: self.last_action == Some("kill"),
+                    },
+                );
                 self.last_action = Some("kill");
                 let previous_line = self.state.lines[self.state.cursor_line - 1].clone();
-                self.state.lines[self.state.cursor_line - 1] = format!("{previous_line}{current_line}");
+                self.state.lines[self.state.cursor_line - 1] =
+                    format!("{previous_line}{current_line}");
                 self.state.lines.remove(self.state.cursor_line);
                 self.state.cursor_line -= 1;
                 self.set_cursor_col(previous_line.len());
@@ -1356,23 +1621,45 @@ impl Editor {
             self.move_word_backwards();
             let delete_from = self.state.cursor_col;
             self.set_cursor_col(old_cursor_col);
-            let deleted_text = current_line[delete_from.min(current_line.len())..self.state.cursor_col.min(current_line.len())].to_string();
-            self.kill_ring.push(&deleted_text, KillRingPushOptions { prepend: true, accumulate: was_kill });
+            let deleted_text = current_line[delete_from.min(current_line.len())
+                ..self.state.cursor_col.min(current_line.len())]
+                .to_string();
+            self.kill_ring.push(
+                &deleted_text,
+                KillRingPushOptions {
+                    prepend: true,
+                    accumulate: was_kill,
+                },
+            );
             self.last_action = Some("kill");
-            self.state.lines[self.state.cursor_line] =
-                format!("{}{}", &current_line[..delete_from.min(current_line.len())], &current_line[self.state.cursor_col.min(current_line.len())..]);
+            self.state.lines[self.state.cursor_line] = format!(
+                "{}{}",
+                &current_line[..delete_from.min(current_line.len())],
+                &current_line[self.state.cursor_col.min(current_line.len())..]
+            );
             self.set_cursor_col(delete_from);
         }
     }
 
     fn delete_word_forward(&mut self) {
         self.exit_history_browsing();
-        let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+        let current_line = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .cloned()
+            .unwrap_or_default();
 
         if self.state.cursor_col >= current_line.len() {
             if self.state.cursor_line < self.state.lines.len() - 1 {
                 self.push_undo_snapshot();
-                self.kill_ring.push("\n", KillRingPushOptions { prepend: false, accumulate: self.last_action == Some("kill") });
+                self.kill_ring.push(
+                    "\n",
+                    KillRingPushOptions {
+                        prepend: false,
+                        accumulate: self.last_action == Some("kill"),
+                    },
+                );
                 self.last_action = Some("kill");
                 let next_line = self.state.lines[self.state.cursor_line + 1].clone();
                 self.state.lines[self.state.cursor_line] = format!("{current_line}{next_line}");
@@ -1385,18 +1672,34 @@ impl Editor {
             self.move_word_forwards();
             let delete_to = self.state.cursor_col;
             self.set_cursor_col(old_cursor_col);
-            let deleted_text = current_line[self.state.cursor_col.min(current_line.len())..delete_to.min(current_line.len())].to_string();
-            self.kill_ring.push(&deleted_text, KillRingPushOptions { prepend: false, accumulate: was_kill });
+            let deleted_text = current_line
+                [self.state.cursor_col.min(current_line.len())..delete_to.min(current_line.len())]
+                .to_string();
+            self.kill_ring.push(
+                &deleted_text,
+                KillRingPushOptions {
+                    prepend: false,
+                    accumulate: was_kill,
+                },
+            );
             self.last_action = Some("kill");
-            self.state.lines[self.state.cursor_line] =
-                format!("{}{}", &current_line[..self.state.cursor_col.min(current_line.len())], &current_line[delete_to.min(current_line.len())..]);
+            self.state.lines[self.state.cursor_line] = format!(
+                "{}{}",
+                &current_line[..self.state.cursor_col.min(current_line.len())],
+                &current_line[delete_to.min(current_line.len())..]
+            );
         }
     }
 
     fn handle_forward_delete(&mut self) {
         self.exit_history_browsing();
         self.last_action = None;
-        let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+        let current_line = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .cloned()
+            .unwrap_or_default();
 
         if self.state.cursor_col < current_line.len() {
             self.push_undo_snapshot();
@@ -1405,7 +1708,9 @@ impl Editor {
             let first_grapheme = graphemes.first().cloned();
             let grapheme_len = first_grapheme.map(|g| g.segment.len()).unwrap_or(1);
             let before = current_line[..self.state.cursor_col.min(current_line.len())].to_string();
-            let after = current_line[(self.state.cursor_col + grapheme_len).min(current_line.len())..].to_string();
+            let after = current_line
+                [(self.state.cursor_col + grapheme_len).min(current_line.len())..]
+                .to_string();
             self.state.lines[self.state.cursor_line] = format!("{before}{after}");
         } else if self.state.cursor_line < self.state.lines.len() - 1 {
             self.push_undo_snapshot();
@@ -1418,8 +1723,10 @@ impl Editor {
             self.update_autocomplete();
         } else {
             let current_line = self.state.lines[self.state.cursor_line].clone();
-            let text_before_cursor = current_line[..self.state.cursor_col.min(current_line.len())].to_string();
-            if self.is_in_slash_command_context(&text_before_cursor) || self.autocomplete_trigger_pattern(&text_before_cursor)
+            let text_before_cursor =
+                current_line[..self.state.cursor_col.min(current_line.len())].to_string();
+            if self.is_in_slash_command_context(&text_before_cursor)
+                || self.autocomplete_trigger_pattern(&text_before_cursor)
             {
                 self.try_trigger_autocomplete(false);
             }
@@ -1433,7 +1740,12 @@ impl Editor {
 
     fn move_to_line_end(&mut self) {
         self.last_action = None;
-        let len = self.state.lines.get(self.state.cursor_line).map(|l| l.len()).unwrap_or(0);
+        let len = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .map(|l| l.len())
+            .unwrap_or(0);
         self.set_cursor_col(len);
     }
 
@@ -1458,7 +1770,12 @@ impl Editor {
         visual_lines
     }
 
-    fn find_visual_line_at(&self, visual_lines: &[(usize, usize, usize)], line: usize, col: usize) -> usize {
+    fn find_visual_line_at(
+        &self,
+        visual_lines: &[(usize, usize, usize)],
+        line: usize,
+        col: usize,
+    ) -> usize {
         let last = visual_lines.len().saturating_sub(1);
         for (i, vl) in visual_lines.iter().enumerate() {
             if vl.0 != line {
@@ -1466,7 +1783,9 @@ impl Editor {
             }
             let offset = col as isize - vl.1 as isize;
             let is_last_segment = i == visual_lines.len() - 1 || visual_lines[i + 1].0 != vl.0;
-            if offset >= 0 && (offset < vl.2 as isize || (is_last_segment && offset == vl.2 as isize)) {
+            if offset >= 0
+                && (offset < vl.2 as isize || (is_last_segment && offset == vl.2 as isize))
+            {
                 return i;
             }
         }
@@ -1477,8 +1796,15 @@ impl Editor {
         self.find_visual_line_at(visual_lines, self.state.cursor_line, self.state.cursor_col)
     }
 
-    fn move_to_visual_line(&mut self, visual_lines: &[(usize, usize, usize)], current_visual_line: usize, target_visual_line: usize) {
-        let Some(&(tgt_line, tgt_start, tgt_len)) = visual_lines.get(target_visual_line) else { return };
+    fn move_to_visual_line(
+        &mut self,
+        visual_lines: &[(usize, usize, usize)],
+        current_visual_line: usize,
+        target_visual_line: usize,
+    ) {
+        let Some(&(tgt_line, tgt_start, tgt_len)) = visual_lines.get(target_visual_line) else {
+            return;
+        };
         let (cur_line, cur_start, _cur_len) = visual_lines[current_visual_line];
 
         let current_visual_col = match self.snapped_from_cursor_col {
@@ -1491,12 +1817,25 @@ impl Editor {
 
         let is_last_source = current_visual_line == visual_lines.len() - 1
             || visual_lines[current_visual_line + 1].0 != cur_line;
-        let source_max = if is_last_source { _cur_len } else { _cur_len.saturating_sub(1) };
+        let source_max = if is_last_source {
+            _cur_len
+        } else {
+            _cur_len.saturating_sub(1)
+        };
         let is_last_target = target_visual_line == visual_lines.len() - 1
-            || visual_lines.get(target_visual_line + 1).map(|v| v.0).unwrap_or(tgt_line + 1) != tgt_line;
-        let target_max = if is_last_target { tgt_len } else { tgt_len.saturating_sub(1) };
+            || visual_lines
+                .get(target_visual_line + 1)
+                .map(|v| v.0)
+                .unwrap_or(tgt_line + 1)
+                != tgt_line;
+        let target_max = if is_last_target {
+            tgt_len
+        } else {
+            tgt_len.saturating_sub(1)
+        };
 
-        let move_to_col = self.compute_vertical_move_column(current_visual_col, source_max, target_max);
+        let move_to_col =
+            self.compute_vertical_move_column(current_visual_col, source_max, target_max);
 
         self.state.cursor_line = tgt_line;
         let target_col = tgt_start + move_to_col;
@@ -1537,7 +1876,12 @@ impl Editor {
         self.snapped_from_cursor_col = None;
     }
 
-    fn compute_vertical_move_column(&mut self, current_visual_col: usize, source_max: usize, target_max: usize) -> usize {
+    fn compute_vertical_move_column(
+        &mut self,
+        current_visual_col: usize,
+        source_max: usize,
+        target_max: usize,
+    ) -> usize {
         let has_preferred = self.preferred_visual_col.is_some();
         let cursor_in_middle = current_visual_col < source_max;
         let target_too_short = target_max < current_visual_col;
@@ -1573,30 +1917,49 @@ impl Editor {
         }
 
         if delta_col != 0 {
-            let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+            let current_line = self
+                .state
+                .lines
+                .get(self.state.cursor_line)
+                .cloned()
+                .unwrap_or_default();
             if delta_col > 0 {
                 if self.state.cursor_col < current_line.len() {
-                    let after_cursor = &current_line[self.state.cursor_col.min(current_line.len())..];
+                    let after_cursor =
+                        &current_line[self.state.cursor_col.min(current_line.len())..];
                     let graphemes = self.segment(after_cursor, "grapheme");
                     let first = graphemes.first().cloned();
-                    self.set_cursor_col(self.state.cursor_col + first.map(|g| g.segment.len()).unwrap_or(1));
+                    self.set_cursor_col(
+                        self.state.cursor_col + first.map(|g| g.segment.len()).unwrap_or(1),
+                    );
                 } else if self.state.cursor_line < self.state.lines.len() - 1 {
                     self.state.cursor_line += 1;
                     self.set_cursor_col(0);
                 } else {
                     if let Some(vl) = visual_lines.get(current_visual_line) {
-                        self.preferred_visual_col = Some(self.state.cursor_col.saturating_sub(vl.1));
+                        self.preferred_visual_col =
+                            Some(self.state.cursor_col.saturating_sub(vl.1));
                     }
                 }
             } else {
                 if self.state.cursor_col > 0 {
-                    let before_cursor = &current_line[..self.state.cursor_col.min(current_line.len())];
+                    let before_cursor =
+                        &current_line[..self.state.cursor_col.min(current_line.len())];
                     let graphemes = self.segment(before_cursor, "grapheme");
                     let last = graphemes.last().cloned();
-                    self.set_cursor_col(self.state.cursor_col.saturating_sub(last.map(|g| g.segment.len()).unwrap_or(1)));
+                    self.set_cursor_col(
+                        self.state
+                            .cursor_col
+                            .saturating_sub(last.map(|g| g.segment.len()).unwrap_or(1)),
+                    );
                 } else if self.state.cursor_line > 0 {
                     self.state.cursor_line -= 1;
-                    let prev_len = self.state.lines.get(self.state.cursor_line).map(|l| l.len()).unwrap_or(0);
+                    let prev_len = self
+                        .state
+                        .lines
+                        .get(self.state.cursor_line)
+                        .map(|l| l.len())
+                        .unwrap_or(0);
                     self.set_cursor_col(prev_len);
                 }
             }
@@ -1621,12 +1984,22 @@ impl Editor {
 
     fn move_word_backwards(&mut self) {
         self.last_action = None;
-        let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+        let current_line = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .cloned()
+            .unwrap_or_default();
 
         if self.state.cursor_col == 0 {
             if self.state.cursor_line > 0 {
                 self.state.cursor_line -= 1;
-                let prev_len = self.state.lines.get(self.state.cursor_line).map(|l| l.len()).unwrap_or(0);
+                let prev_len = self
+                    .state
+                    .lines
+                    .get(self.state.cursor_line)
+                    .map(|l| l.len())
+                    .unwrap_or(0);
                 self.set_cursor_col(prev_len);
             }
             return;
@@ -1643,7 +2016,12 @@ impl Editor {
 
     fn move_word_forwards(&mut self) {
         self.last_action = None;
-        let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+        let current_line = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .cloned()
+            .unwrap_or_default();
 
         if self.state.cursor_col >= current_line.len() {
             if self.state.cursor_line < self.state.lines.len() - 1 {
@@ -1690,21 +2068,41 @@ impl Editor {
         self.exit_history_browsing();
         let lines: Vec<&str> = text.split('\n').collect();
         if lines.len() == 1 {
-            let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+            let current_line = self
+                .state
+                .lines
+                .get(self.state.cursor_line)
+                .cloned()
+                .unwrap_or_default();
             let before = current_line[..self.state.cursor_col.min(current_line.len())].to_string();
             let after = current_line[self.state.cursor_col.min(current_line.len())..].to_string();
             self.state.lines[self.state.cursor_line] = format!("{before}{text}{after}");
             self.set_cursor_col(self.state.cursor_col + text.len());
         } else {
-            let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+            let current_line = self
+                .state
+                .lines
+                .get(self.state.cursor_line)
+                .cloned()
+                .unwrap_or_default();
             let before = current_line[..self.state.cursor_col.min(current_line.len())].to_string();
             let after = current_line[self.state.cursor_col.min(current_line.len())..].to_string();
             self.state.lines[self.state.cursor_line] = format!("{before}{}", lines[0]);
-            for (idx, line) in lines.iter().skip(1).take(lines.len().saturating_sub(2)).enumerate() {
-                self.state.lines.insert(self.state.cursor_line + idx + 1, line.to_string());
+            for (idx, line) in lines
+                .iter()
+                .skip(1)
+                .take(lines.len().saturating_sub(2))
+                .enumerate()
+            {
+                self.state
+                    .lines
+                    .insert(self.state.cursor_line + idx + 1, line.to_string());
             }
             let last_line_index = self.state.cursor_line + lines.len() - 1;
-            self.state.lines.insert(last_line_index, format!("{}{after}", lines[lines.len() - 1]));
+            self.state.lines.insert(
+                last_line_index,
+                format!("{}{after}", lines[lines.len() - 1]),
+            );
             self.state.cursor_line = last_line_index;
             self.set_cursor_col(lines[lines.len() - 1].len());
         }
@@ -1712,13 +2110,25 @@ impl Editor {
 
     fn delete_yanked_text(&mut self) {
         let yanked_text = self.kill_ring.peek().map(|s| s.to_string());
-        let Some(yanked_text) = yanked_text else { return };
+        let Some(yanked_text) = yanked_text else {
+            return;
+        };
         let yank_lines: Vec<&str> = yanked_text.split('\n').collect();
 
         if yank_lines.len() == 1 {
-            let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
+            let current_line = self
+                .state
+                .lines
+                .get(self.state.cursor_line)
+                .cloned()
+                .unwrap_or_default();
             let delete_len = yanked_text.len();
-            let before = current_line[..self.state.cursor_col.saturating_sub(delete_len).min(current_line.len())].to_string();
+            let before = current_line[..self
+                .state
+                .cursor_col
+                .saturating_sub(delete_len)
+                .min(current_line.len())]
+                .to_string();
             let after = current_line[self.state.cursor_col.min(current_line.len())..].to_string();
             self.state.lines[self.state.cursor_line] = format!("{before}{after}");
             self.set_cursor_col(self.state.cursor_col.saturating_sub(delete_len));
@@ -1746,7 +2156,9 @@ impl Editor {
             // Replace the yanked span (startLine..=cursorLine) with the
             // merged before-yank + after-cursor line.
             self.state.lines.drain(start_line..=self.state.cursor_line);
-            self.state.lines.insert(start_line, format!("{before_yank}{after_cursor}"));
+            self.state
+                .lines
+                .insert(start_line, format!("{before_yank}{after_cursor}"));
             self.state.cursor_line = start_line;
             self.set_cursor_col(start_col);
         }
@@ -1764,7 +2176,9 @@ impl Editor {
 
     fn undo(&mut self) {
         self.exit_history_browsing();
-        let Some(snapshot) = self.undo_stack.pop() else { return };
+        let Some(snapshot) = self.undo_stack.pop() else {
+            return;
+        };
         self.state = snapshot.state;
         self.pastes = snapshot.pastes;
         self.paste_counter = snapshot.paste_counter;
@@ -1785,8 +2199,14 @@ impl Editor {
             let line = &lines[line_idx as usize];
             let is_current = line_idx as usize == self.state.cursor_line;
             let found = if is_forward {
-                let search_from = if is_current { self.state.cursor_col + 1 } else { 0 };
-                line[search_from.min(line.len())..].find(ch).map(|i| search_from.min(line.len()) + i)
+                let search_from = if is_current {
+                    self.state.cursor_col + 1
+                } else {
+                    0
+                };
+                line[search_from.min(line.len())..]
+                    .find(ch)
+                    .map(|i| search_from.min(line.len()) + i)
             } else {
                 let search_from = if is_current {
                     self.state.cursor_col.saturating_sub(1).min(line.len())
@@ -1814,8 +2234,14 @@ impl Editor {
         if !self.is_slash_menu_allowed() {
             return false;
         }
-        let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
-        let before_cursor = current_line[..self.state.cursor_col.min(current_line.len())].to_string();
+        let current_line = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .cloned()
+            .unwrap_or_default();
+        let before_cursor =
+            current_line[..self.state.cursor_col.min(current_line.len())].to_string();
         let t = before_cursor.trim();
         t.is_empty() || t == "/"
     }
@@ -1896,9 +2322,17 @@ impl Editor {
         if self.autocomplete_provider.is_none() {
             return;
         }
-        let current_line = self.state.lines.get(self.state.cursor_line).cloned().unwrap_or_default();
-        let before_cursor = current_line[..self.state.cursor_col.min(current_line.len())].to_string();
-        if self.is_in_slash_command_context(&before_cursor) && !before_cursor.trim_start().contains(' ') {
+        let current_line = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .cloned()
+            .unwrap_or_default();
+        let before_cursor =
+            current_line[..self.state.cursor_col.min(current_line.len())].to_string();
+        if self.is_in_slash_command_context(&before_cursor)
+            && !before_cursor.trim_start().contains(' ')
+        {
             self.request_autocomplete(false, true);
         } else {
             self.force_file_autocomplete(true);
@@ -1910,7 +2344,9 @@ impl Editor {
     }
 
     fn request_autocomplete(&mut self, force: bool, explicit_tab: bool) {
-        let Some(provider) = self.autocomplete_provider.take() else { return };
+        let Some(provider) = self.autocomplete_provider.take() else {
+            return;
+        };
 
         let should_proceed = !force
             || provider.should_trigger_file_completion(
@@ -1952,12 +2388,19 @@ impl Editor {
                     return;
                 }
                 self.autocomplete_provider = Some(provider);
-                self.apply_autocomplete_suggestions(suggestions, if force { "force" } else { "regular" });
+                self.apply_autocomplete_suggestions(
+                    suggestions,
+                    if force { "force" } else { "regular" },
+                );
             }
         }
     }
 
-    fn apply_autocomplete_suggestions(&mut self, suggestions: AutocompleteSuggestions, state: &'static str) {
+    fn apply_autocomplete_suggestions(
+        &mut self,
+        suggestions: AutocompleteSuggestions,
+        state: &'static str,
+    ) {
         self.autocomplete_prefix = suggestions.prefix.clone();
         let mut list = self.create_autocomplete_list(&suggestions.prefix, suggestions.items);
         let prefix = suggestions.prefix.clone();
@@ -1996,7 +2439,9 @@ impl Editor {
     }
 
     fn apply_autocomplete_item(&mut self, selected: &SelectItem) {
-        let Some(provider) = self.autocomplete_provider.take() else { return };
+        let Some(provider) = self.autocomplete_provider.take() else {
+            return;
+        };
         let item = AutocompleteItem {
             value: selected.value.clone(),
             label: selected.label.clone(),
@@ -2026,7 +2471,9 @@ impl Editor {
     }
 
     pub fn current_autocomplete_selection(&self) -> Option<SelectItem> {
-        self.autocomplete_list.as_ref().and_then(|l| l.get_selected_item().cloned())
+        self.autocomplete_list
+            .as_ref()
+            .and_then(|l| l.get_selected_item().cloned())
     }
 }
 
@@ -2045,9 +2492,14 @@ fn matches_jump_cancel(data: &str) -> bool {
 fn decode_printable(data: &str) -> Option<String> {
     let c = data.chars().next()?;
     if data.len() == c.len_utf8() && (c as u32) >= 32 && !c.is_control() {
-        if matches_key(data, "enter") || matches_key(data, "tab") || matches_key(data, "backspace")
-            || matches_key(data, "delete") || matches_key(data, "up") || matches_key(data, "down")
-            || matches_key(data, "left") || matches_key(data, "right")
+        if matches_key(data, "enter")
+            || matches_key(data, "tab")
+            || matches_key(data, "backspace")
+            || matches_key(data, "delete")
+            || matches_key(data, "up")
+            || matches_key(data, "down")
+            || matches_key(data, "left")
+            || matches_key(data, "right")
         {
             return None;
         }

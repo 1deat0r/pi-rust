@@ -861,6 +861,7 @@ dependencies = [
  "pi-ai",
  "pi-tui",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -936,6 +937,7 @@ name = "pi-tui"
 version = "0.84.2"
 dependencies = [
  "crossterm",
+ "libc",
  "regex",
  "serde_json",
  "tokio",

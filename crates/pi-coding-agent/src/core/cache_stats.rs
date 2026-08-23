@@ -100,17 +100,30 @@ pub fn parse_assistant_message(value: &Value) -> Option<AssistantView> {
     if msg.get("role").and_then(|v| v.as_str()) != Some("assistant") {
         return None;
     }
-    let provider = msg.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let model = msg.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let provider = msg
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let model = msg
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let timestamp = value.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
     let usage = msg
         .get("usage")
         .and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok());
-    Some(AssistantView { provider, model, timestamp, usage })
+    Some(AssistantView {
+        provider,
+        model,
+        timestamp,
+        usage,
+    })
 }
 
 fn compute_prompt_tokens(usage: &Usage) -> u64 {
-    usage.input + usage.cache_read + usage.cache_write
+    (usage.input + usage.cache_read + usage.cache_write).max(0) as u64
 }
 
 fn as_previous_request(msg: &AssistantView, reported_cache: bool) -> Option<PreviousRequest> {
@@ -146,7 +159,10 @@ fn detect_miss(
         return None;
     }
 
-    let missed_tokens = prev.prompt_tokens.min(prompt_tokens).saturating_sub(usage.cache_read);
+    let missed_tokens = prev
+        .prompt_tokens
+        .min(prompt_tokens)
+        .saturating_sub(usage.cache_read.max(0) as u64);
     if missed_tokens <= NOISE_FLOOR_TOKENS {
         return None;
     }
@@ -181,10 +197,7 @@ struct ScanResult {
     misses: Vec<(usize, CacheMiss)>,
 }
 
-fn scan(
-    entries: &[Value],
-    models: &dyn ModelPriceSource,
-) -> ScanResult {
+fn scan(entries: &[Value], models: &dyn ModelPriceSource) -> ScanResult {
     let mut prev: Option<PreviousRequest> = None;
     let mut totals = CacheWasteTotals::default();
     let mut misses: Vec<(usize, CacheMiss)> = Vec::new();
@@ -206,11 +219,19 @@ fn scan(
                     totals.miss_count += 1;
                     misses.push((index, miss));
                 }
-                prev = as_previous_request(&msg, prev.as_ref().map(|p| p.reported_cache).unwrap_or(false)).or(prev);
+                prev = as_previous_request(
+                    &msg,
+                    prev.as_ref().map(|p| p.reported_cache).unwrap_or(false),
+                )
+                .or(prev);
             }
         }
     }
-    ScanResult { prev, totals, misses }
+    ScanResult {
+        prev,
+        totals,
+        misses,
+    }
 }
 
 /// Cumulative cache waste across a session: prompt tokens that should have
@@ -224,7 +245,10 @@ pub fn compute_cache_waste(entries: &[Value], models: &dyn ModelPriceSource) -> 
 /// for the entries that paid for them. Used to re-derive transcript notices
 /// when rebuilding the chat from entries (upstream `collectCacheMisses`, whose
 /// map keys are the assistant message objects — keyed here by entry index).
-pub fn collect_cache_misses(entries: &[Value], models: &dyn ModelPriceSource) -> Vec<(usize, CacheMiss)> {
+pub fn collect_cache_misses(
+    entries: &[Value],
+    models: &dyn ModelPriceSource,
+) -> Vec<(usize, CacheMiss)> {
     scan(entries, models).misses
 }
 
@@ -243,12 +267,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn assistant(
-        input: u64,
-        cache_read: u64,
-        cache_write: u64,
-        timestamp: u64,
-    ) -> Value {
+    fn assistant(input: u64, cache_read: u64, cache_write: u64, timestamp: u64) -> Value {
         json!({
             "type": "message",
             "timestamp": timestamp,
@@ -294,10 +313,7 @@ mod tests {
     fn counts_miss_when_previous_prompt_not_cached() {
         // Turn 1: 5000 prompt tokens, nothing cached. Turn 2: same 5000 prompt
         // tokens, but only 1000 read from cache -> 4000 should have been.
-        let entries = vec![
-            assistant(5000, 0, 0, 1000),
-            assistant(4000, 1000, 0, 2000),
-        ];
+        let entries = vec![assistant(5000, 0, 0, 1000), assistant(4000, 1000, 0, 2000)];
         let totals = compute_cache_waste(&entries, &NoPrices);
         assert_eq!(totals.miss_count, 1);
         assert_eq!(totals.missed_tokens, 4000);
@@ -309,10 +325,7 @@ mod tests {
     #[test]
     fn noise_floor_ignores_small_misses() {
         // Only 900 tokens missed, below the 1024 noise floor.
-        let entries = vec![
-            assistant(5000, 0, 0, 1000),
-            assistant(1000, 100, 0, 2000),
-        ];
+        let entries = vec![assistant(5000, 0, 0, 1000), assistant(1000, 100, 0, 2000)];
         // missed = min(5000, 1000) - 100 = 900 <= 1024 -> no count.
         let totals = compute_cache_waste(&entries, &NoPrices);
         assert_eq!(totals.miss_count, 0);
@@ -372,10 +385,7 @@ mod tests {
     #[test]
     fn header_price_used_when_cache_read_cost_unknown_in_message() {
         // cacheRead=0 so per-token read rate falls back to the price source.
-        let entries = vec![
-            assistant(5000, 0, 0, 1000),
-            assistant(4000, 0, 0, 2000),
-        ];
+        let entries = vec![assistant(5000, 0, 0, 1000), assistant(4000, 0, 0, 2000)];
         let prices: fn(&str, &str) -> f64 = |_p, _m| 0.0_f64;
         let totals = compute_cache_waste(&entries, &prices);
         // Only counted if cache activity was reported before. First turn

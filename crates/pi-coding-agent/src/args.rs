@@ -4,7 +4,8 @@
 use crate::config::VERSION;
 
 /// Upstream `VALID_THINKING_LEVELS` (args.ts).
-const VALID_THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const VALID_THINKING_LEVELS: [&str; 7] =
+    ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 #[derive(Debug, Clone, Default)]
 pub struct Args {
@@ -85,10 +86,16 @@ pub struct Diagnostic {
 
 impl Diagnostic {
     fn error(message: impl Into<String>) -> Self {
-        Self { kind: DiagnosticKind::Error, message: message.into() }
+        Self {
+            kind: DiagnosticKind::Error,
+            message: message.into(),
+        }
     }
     fn warning(message: impl Into<String>) -> Self {
-        Self { kind: DiagnosticKind::Warning, message: message.into() }
+        Self {
+            kind: DiagnosticKind::Warning,
+            message: message.into(),
+        }
     }
 }
 
@@ -137,7 +144,11 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
 
         // Helpers to fetch a value: inline (`--flag=v`) or the next argv token.
         // Returns None (and records a diagnostic) when no value follows.
-        let take_value = |args_state: &mut Args, i: &mut usize, flag: &str, inline: Option<String>| -> Option<String> {
+        let take_value = |args_state: &mut Args,
+                          i: &mut usize,
+                          flag: &str,
+                          inline: Option<String>|
+         -> Option<String> {
             match inline {
                 Some(v) => Some(v),
                 None => {
@@ -190,13 +201,15 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
                     i += 2; // past --tui-mode and its value
                 }
                 Some(v) if v.starts_with('-') => {
-                    args.diagnostics
-                        .push(Diagnostic::error("--tui-mode requires regular or fullscreen"));
+                    args.diagnostics.push(Diagnostic::error(
+                        "--tui-mode requires regular or fullscreen",
+                    ));
                     i += 1; // do not consume the flag-like token
                 }
                 None => {
-                    args.diagnostics
-                        .push(Diagnostic::error("--tui-mode requires regular or fullscreen"));
+                    args.diagnostics.push(Diagnostic::error(
+                        "--tui-mode requires regular or fullscreen",
+                    ));
                     i += 1;
                 }
                 Some(other) => {
@@ -225,11 +238,29 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
 
         // Value-taking flags.
         let value_flags: [&str; 23] = [
-            "--provider", "--model", "--api-key", "--system-prompt",
-            "--session", "--session-id", "--fork", "--session-dir",
-            "--name", "-n", "--tools", "-t", "--exclude-tools", "-xt",
-            "--models", "--append-system-prompt", "--extension", "-e",
-            "--skill", "--prompt-template", "--theme", "--mode", "--export",
+            "--provider",
+            "--model",
+            "--api-key",
+            "--system-prompt",
+            "--session",
+            "--session-id",
+            "--fork",
+            "--session-dir",
+            "--name",
+            "-n",
+            "--tools",
+            "-t",
+            "--exclude-tools",
+            "-xt",
+            "--models",
+            "--append-system-prompt",
+            "--extension",
+            "-e",
+            "--skill",
+            "--prompt-template",
+            "--theme",
+            "--mode",
+            "--export",
         ];
         if value_flags.contains(&flag.as_str()) {
             let value = match take_value(&mut args, &mut i, flag.as_str(), inline_value) {
@@ -254,8 +285,24 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
                 "--skill" => args.skills.push(value),
                 "--prompt-template" => args.prompt_templates.push(value),
                 "--theme" => args.themes.push(value),
-                "--tools" | "-t" => args.tools = Some(value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
-                "--exclude-tools" | "-xt" => args.exclude_tools = Some(value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
+                "--tools" | "-t" => {
+                    args.tools = Some(
+                        value
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect(),
+                    )
+                }
+                "--exclude-tools" | "-xt" => {
+                    args.exclude_tools = Some(
+                        value
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect(),
+                    )
+                }
                 "--mode" => {
                     if matches!(value.as_str(), "text" | "json" | "rpc") {
                         args.mode = Some(value);
@@ -275,7 +322,10 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
             match inline_value {
                 Some(v) => args.list_models = Some(v),
                 None => {
-                    if i + 1 < argv.len() && !argv[i + 1].starts_with('-') && !argv[i + 1].starts_with('@') {
+                    if i + 1 < argv.len()
+                        && !argv[i + 1].starts_with('-')
+                        && !argv[i + 1].starts_with('@')
+                    {
                         args.list_models = Some(argv[i + 1].clone());
                         i += 1;
                     } else {
@@ -322,10 +372,16 @@ pub fn print_version() {
 }
 
 pub fn print_help() {
-    println!("{} - AI coding assistant with read, bash, edit, write tools", crate::config::APP_NAME);
+    println!(
+        "{} - AI coding assistant with read, bash, edit, write tools",
+        crate::config::APP_NAME
+    );
     println!();
     println!("Usage:");
-    println!("  {} [options] [@files...] [messages...]", crate::config::APP_NAME);
+    println!(
+        "  {} [options] [@files...] [messages...]",
+        crate::config::APP_NAME
+    );
     println!();
     println!("Options:");
     println!("  --provider <name>              Provider name (default: google)");
@@ -337,7 +393,9 @@ pub fn print_help() {
     println!("  --continue, -c                 Continue previous session");
     println!("  --resume, -r                   Select a session to resume");
     println!("  --session <path|id>            Use specific session file or partial UUID");
-    println!("  --session-id <id>              Use exact project session ID, creating it if missing");
+    println!(
+        "  --session-id <id>              Use exact project session ID, creating it if missing"
+    );
     println!("  --fork <path|id>               Fork a session by file path or partial UUID");
     println!("  --session-dir <dir>            Directory for session storage and lookup");
     println!("  --no-session                   Don't save session (ephemeral)");
@@ -346,25 +404,35 @@ pub fn print_help() {
     println!("  --tools, -t <tools>            Comma-separated allowlist of tool names to enable");
     println!("  --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable");
     println!("  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max");
-    println!("  --no-tools, -nt                Disable all tools by default (built-in and extension)");
-    println!("  --no-builtin-tools, -nbt       Disable built-in tools but keep extension/custom tools");
+    println!(
+        "  --no-tools, -nt                Disable all tools by default (built-in and extension)"
+    );
+    println!(
+        "  --no-builtin-tools, -nbt       Disable built-in tools but keep extension/custom tools"
+    );
     println!("  --extension, -e <path>         Load an extension file (repeatable)");
     println!("  --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)");
     println!("  --skill <path>                 Load a skill file or directory (repeatable)");
     println!("  --no-skills, -ns               Disable skills discovery and loading");
-    println!("  --prompt-template <path>       Load a prompt template file or directory (repeatable)");
+    println!(
+        "  --prompt-template <path>       Load a prompt template file or directory (repeatable)"
+    );
     println!("  --no-prompt-templates, -np     Disable prompt template discovery and loading");
     println!("  --theme <path>                 Load a theme file or directory (repeatable)");
     println!("  --use-theme <name[/name]>      Set the initial interactive theme for this run");
     println!("  --no-themes                    Disable theme discovery and loading");
-    println!("  --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading");
+    println!(
+        "  --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading"
+    );
     println!("  --approve, -a                  Trust project-local files for this run");
     println!("  --no-approve, -na              Ignore project-local files for this run");
     println!("  --offline                      Disable startup network operations (same as PI_OFFLINE=1)");
     println!("  --export <file>                Export session file to HTML and exit");
     println!("  --list-models [search]         List available models (with optional fuzzy search)");
     println!("  --tui-mode <mode>              TUI mode: regular or fullscreen");
-    println!("  --verbose                      Force verbose startup (overrides quietStartup setting)");
+    println!(
+        "  --verbose                      Force verbose startup (overrides quietStartup setting)"
+    );
     println!("  --help, -h                     Show this help");
     println!("  --version, -v                  Show version number");
 }
@@ -416,7 +484,15 @@ mod tests {
 
     #[test]
     fn parses_flags() {
-        let args = parse(&["--provider", "faux", "--model", "faux/faux-1", "-p", "--name", "demo"]);
+        let args = parse(&[
+            "--provider",
+            "faux",
+            "--model",
+            "faux/faux-1",
+            "-p",
+            "--name",
+            "demo",
+        ]);
         assert_eq!(args.provider.as_deref(), Some("faux"));
         assert_eq!(args.model.as_deref(), Some("faux/faux-1"));
         assert!(args.print);
@@ -490,7 +566,10 @@ mod tests {
         assert_eq!(args.use_theme.as_deref(), Some("solarized"));
         let args = parse(&["--use-theme", "--verbose"]);
         assert!(args.use_theme.is_none());
-        assert!(args.diagnostics.iter().any(|d| d.message.contains("--use-theme")));
+        assert!(args
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("--use-theme")));
     }
 
     #[test]
@@ -511,7 +590,11 @@ mod tests {
     fn thinking_invalid_level_records_diagnostic() {
         let args = parse(&["--thinking", "bogus"]);
         assert!(args.thinking.is_none());
-        assert!(args.diagnostics.iter().any(|d| d.kind == DiagnosticKind::Warning && d.message.contains("Invalid thinking level")));
+        assert!(args
+            .diagnostics
+            .iter()
+            .any(|d| d.kind == DiagnosticKind::Warning
+                && d.message.contains("Invalid thinking level")));
     }
 
     #[test]
@@ -521,18 +604,27 @@ mod tests {
         // Invalid non-flag value: quoted in the message (upstream), consumed.
         let args = parse(&["--tui-mode", "bogus", "--verbose"]);
         assert!(args.tui_mode.is_none());
-        assert!(args.diagnostics.iter().any(|d| d.message == "Invalid TUI mode \"bogus\". Valid values: regular, fullscreen"));
+        assert!(args
+            .diagnostics
+            .iter()
+            .any(|d| d.message == "Invalid TUI mode \"bogus\". Valid values: regular, fullscreen"));
         // The invalid value was consumed; the trailing --verbose parsed.
         assert!(args.verbose);
         // Flag-like value: "--tui-mode requires ..." and the token is NOT
         // consumed (upstream parses it normally).
         let args = parse(&["--tui-mode", "--verbose"]);
         assert!(args.tui_mode.is_none());
-        assert!(args.diagnostics.iter().any(|d| d.message == "--tui-mode requires regular or fullscreen"));
+        assert!(args
+            .diagnostics
+            .iter()
+            .any(|d| d.message == "--tui-mode requires regular or fullscreen"));
         assert!(args.verbose, "the flag-like token must not be swallowed");
         // Missing value: same diagnostic.
         let args = parse(&["--tui-mode"]);
-        assert!(args.diagnostics.iter().any(|d| d.message == "--tui-mode requires regular or fullscreen"));
+        assert!(args
+            .diagnostics
+            .iter()
+            .any(|d| d.message == "--tui-mode requires regular or fullscreen"));
     }
 }
 
@@ -546,7 +638,6 @@ impl ParseOutcome {
         }
     }
 }
-
 
 #[cfg(test)]
 mod mode_parsing {

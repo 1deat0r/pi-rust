@@ -45,7 +45,10 @@ fn assembles_text_stream_with_usage_and_cost() {
             "content_block_delta",
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}"#,
         ),
-        ("content_block_stop", r#"{"type":"content_block_stop","index":0}"#),
+        (
+            "content_block_stop",
+            r#"{"type":"content_block_stop","index":0}"#,
+        ),
         (
             "message_delta",
             r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":1000}}"#,
@@ -98,13 +101,34 @@ fn assembles_text_stream_with_usage_and_cost() {
 #[test]
 fn assembles_tool_use_stream_with_partial_json() {
     let events = sse(&[
-        ("message_start", r#"{"type":"message_start","message":{"id":"m2","model":"claude-opus-4-8","usage":{}}}"#),
-        ("content_block_start", r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"bash","input":{}}}"#),
-        ("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\": "}}"#),
-        ("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"ls -la\""}}"#),
-        ("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"}"}}"#),
-        ("content_block_stop", r#"{"type":"content_block_stop","index":0}"#),
-        ("message_delta", r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{}}"#),
+        (
+            "message_start",
+            r#"{"type":"message_start","message":{"id":"m2","model":"claude-opus-4-8","usage":{}}}"#,
+        ),
+        (
+            "content_block_start",
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"bash","input":{}}}"#,
+        ),
+        (
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\": "}}"#,
+        ),
+        (
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"ls -la\""}}"#,
+        ),
+        (
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"}"}}"#,
+        ),
+        (
+            "content_block_stop",
+            r#"{"type":"content_block_stop","index":0}"#,
+        ),
+        (
+            "message_delta",
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{}}"#,
+        ),
         ("message_stop", r#"{"type":"message_stop"}"#),
     ]);
 
@@ -117,41 +141,86 @@ fn assembles_tool_use_stream_with_partial_json() {
         .filter(|b| matches!(b, ContentBlock::ToolCall { .. }))
         .collect();
     assert_eq!(calls.len(), 1);
-    if let ContentBlock::ToolCall { id, name, arguments, .. } = calls[0] {
+    if let ContentBlock::ToolCall {
+        id,
+        name,
+        arguments,
+        ..
+    } = calls[0]
+    {
         assert_eq!(id, "toolu_1");
         assert_eq!(name, "bash");
         assert_eq!(arguments, &serde_json::json!({"command": "ls -la"}));
     }
-    assert!(pushed.iter().any(|e| matches!(e, AssistantMessageEvent::ToolCallDelta { .. })));
-    assert!(pushed.iter().any(|e| matches!(e, AssistantMessageEvent::ToolCallEnd { .. })));
+    assert!(pushed
+        .iter()
+        .any(|e| matches!(e, AssistantMessageEvent::ToolCallDelta { .. })));
+    assert!(pushed
+        .iter()
+        .any(|e| matches!(e, AssistantMessageEvent::ToolCallEnd { .. })));
 }
 
 #[test]
 fn assembles_thinking_and_redacted_thinking_blocks() {
     let events = sse(&[
-        ("message_start", r#"{"type":"message_start","message":{"id":"m3","model":"claude-opus-4-8","usage":{}}}"#),
-        ("content_block_start", r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":"sig1"}}"#),
-        ("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think"}}"#),
-        ("content_block_stop", r#"{"type":"content_block_stop","index":0}"#),
-        ("content_block_start", r#"{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"REDACTED_PAYLOAD"}}"#),
-        ("content_block_stop", r#"{"type":"content_block_stop","index":1}"#),
-        ("message_delta", r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}"#),
+        (
+            "message_start",
+            r#"{"type":"message_start","message":{"id":"m3","model":"claude-opus-4-8","usage":{}}}"#,
+        ),
+        (
+            "content_block_start",
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":"sig1"}}"#,
+        ),
+        (
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think"}}"#,
+        ),
+        (
+            "content_block_stop",
+            r#"{"type":"content_block_stop","index":0}"#,
+        ),
+        (
+            "content_block_start",
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"REDACTED_PAYLOAD"}}"#,
+        ),
+        (
+            "content_block_stop",
+            r#"{"type":"content_block_stop","index":1}"#,
+        ),
+        (
+            "message_delta",
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}"#,
+        ),
         ("message_stop", r#"{"type":"message_stop"}"#),
     ]);
 
     let message = process_anthropic_events(&model(), &events, |_| {}).unwrap();
-    assert!(matches!(&message.content()[0], ContentBlock::Thinking { thinking, thinking_signature, redacted }
-        if thinking == "Let me think" && thinking_signature.as_deref() == Some("sig1") && redacted == &None));
-    assert!(matches!(&message.content()[1], ContentBlock::Thinking { thinking, thinking_signature, redacted }
-        if thinking == "[Reasoning redacted]" && thinking_signature.as_deref() == Some("REDACTED_PAYLOAD") && redacted == &Some(true)));
+    assert!(
+        matches!(&message.content()[0], ContentBlock::Thinking { thinking, thinking_signature, redacted }
+        if thinking == "Let me think" && thinking_signature.as_deref() == Some("sig1") && redacted == &None)
+    );
+    assert!(
+        matches!(&message.content()[1], ContentBlock::Thinking { thinking, thinking_signature, redacted }
+        if thinking == "[Reasoning redacted]" && thinking_signature.as_deref() == Some("REDACTED_PAYLOAD") && redacted == &Some(true))
+    );
 }
 
 #[test]
 fn maps_stop_reasons() {
-    assert_eq!(map_stop_reason("end_turn", None).unwrap().0, StopReason::Stop);
-    assert_eq!(map_stop_reason("max_tokens", None).unwrap().0, StopReason::Length);
-    assert_eq!(map_stop_reason("tool_use", None).unwrap().0, StopReason::ToolUse);
-    let (reason, msg) = map_stop_reason("refusal", Some(&serde_json::json!({"explanation": "nope"}))).unwrap();
+    assert_eq!(
+        map_stop_reason("end_turn", None).unwrap().0,
+        StopReason::Stop
+    );
+    assert_eq!(
+        map_stop_reason("max_tokens", None).unwrap().0,
+        StopReason::Length
+    );
+    assert_eq!(
+        map_stop_reason("tool_use", None).unwrap().0,
+        StopReason::ToolUse
+    );
+    let (reason, msg) =
+        map_stop_reason("refusal", Some(&serde_json::json!({"explanation": "nope"}))).unwrap();
     assert_eq!(reason, StopReason::Error);
     assert_eq!(msg.as_deref(), Some("nope"));
     assert!(map_stop_reason("bogus", None).is_err());
@@ -168,11 +237,17 @@ fn converts_messages_to_anthropic_params() {
                 m.set_api_provider_model("anthropic-messages", "anthropic", "claude-opus-4-8");
                 m.content_mut().push(ContentBlock::text("hello"));
                 m.content_mut().push(ContentBlock::thinking("deep think"));
-                m.content_mut().push(ContentBlock::tool_call("call_1", "read", serde_json::json!({"path": "x"})));
+                m.content_mut().push(ContentBlock::tool_call(
+                    "call_1",
+                    "read",
+                    serde_json::json!({"path": "x"}),
+                ));
                 m.set_stop_reason(StopReason::ToolUse);
                 m
             }),
-            Message::ToolResult(pi_ai::types::ToolResultMessage::text("call_1", "read", "contents", false)),
+            Message::ToolResult(pi_ai::types::ToolResultMessage::text(
+                "call_1", "read", "contents", false,
+            )),
         ],
         tools: vec![pi_ai::types::Tool {
             name: "read".into(),

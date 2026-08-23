@@ -3,8 +3,8 @@
 
 use super::path_utils::resolve_read_tool_path_existing;
 use super::truncate::{format_size, truncate_head, DEFAULT_MAX_BYTES};
-use pi_ai::types::ToolResultMessage;
 use pi_ai::types::ContentBlock;
+use pi_ai::types::ToolResultMessage;
 
 /// Detect supported image mime types from magic bytes; matches upstream
 /// `detectSupportedImageMimeType` for the common set.
@@ -73,7 +73,8 @@ pub async fn execute_read(
         ));
     }
 
-    let (selected_content, user_limited_lines): (String, Option<usize>) = if let Some(limit) = limit {
+    let (selected_content, user_limited_lines): (String, Option<usize>) = if let Some(limit) = limit
+    {
         let end_line = (start_line + limit as usize).min(all_lines.len());
         (
             all_lines[start_line..end_line].join("\n"),
@@ -85,7 +86,9 @@ pub async fn execute_read(
 
     let truncation = truncate_head(&selected_content);
     let mut output_text: String;
-    if truncation.truncated_by == Some(super::truncate::TruncatedBy::Bytes) && truncation.output_lines == 0 {
+    if truncation.truncated_by == Some(super::truncate::TruncatedBy::Bytes)
+        && truncation.output_lines == 0
+    {
         let first_line_size = format_size(utf8_len(all_lines[start_line]));
         output_text = format!(
             "[Line {start_line_display} is {first_line_size}, exceeds {} limit. Use bash: sed -n '{start_line_display}p' {path} | head -c {}]",
@@ -121,7 +124,12 @@ pub async fn execute_read(
         output_text = truncation.content.clone();
     }
 
-    Ok(ToolResultMessage::text(tool_call_id, "read", output_text, false))
+    Ok(ToolResultMessage::text(
+        tool_call_id,
+        "read",
+        output_text,
+        false,
+    ))
 }
 
 fn utf8_len(s: &str) -> usize {

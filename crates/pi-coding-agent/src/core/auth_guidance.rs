@@ -44,7 +44,10 @@ pub fn format_no_models_available_message() -> String {
 
 /// `formatNoModelSelectedMessage`.
 pub fn format_no_model_selected_message() -> String {
-    format!("No model selected.\n\n{}\n\nThen use /model to select a model.", get_provider_login_help())
+    format!(
+        "No model selected.\n\n{}\n\nThen use /model to select a model.",
+        get_provider_login_help()
+    )
 }
 
 /// `formatNoApiKeyFoundMessage(provider)` — names the provider (or "the
@@ -55,7 +58,10 @@ pub fn format_no_api_key_found_message(provider: &str) -> String {
     } else {
         provider.to_string()
     };
-    format!("No API key found for {display}.\n\n{}", get_provider_login_help())
+    format!(
+        "No API key found for {display}.\n\n{}",
+        get_provider_login_help()
+    )
 }
 
 #[cfg(test)]

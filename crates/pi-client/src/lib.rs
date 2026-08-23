@@ -8,8 +8,8 @@ pub mod session_handle;
 pub mod transport;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use pi_protocol::{
     ClientMessage, Command, CommandResult, ServerEvent, ServerMessage, ServerSnapshot,
@@ -51,11 +51,15 @@ impl PiClient {
     pub async fn connect(socket_path: &str) -> Result<Self, PiClientError> {
         let stream = tokio::net::UnixStream::connect(socket_path)
             .await
-            .map_err(|e| PiClientError { message: format!("connect: {e}") })?;
-        let pending: Arc<Mutex<HashMap<String, Option<Pending>>>> = Arc::new(Mutex::new(HashMap::new()));
+            .map_err(|e| PiClientError {
+                message: format!("connect: {e}"),
+            })?;
+        let pending: Arc<Mutex<HashMap<String, Option<Pending>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let listeners: Arc<Mutex<Vec<EventListener>>> = Arc::new(Mutex::new(Vec::new()));
         let snapshot: Arc<Mutex<Option<ServerSnapshot>>> = Arc::new(Mutex::new(None));
-        let session_snapshots: Arc<Mutex<HashMap<String, pi_protocol::SessionSnapshot>>> = Arc::new(Mutex::new(HashMap::new()));
+        let session_snapshots: Arc<Mutex<HashMap<String, pi_protocol::SessionSnapshot>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let (connection, reader) = transport::ClientConnection::new(stream);
         let mut client = Self {
             connection,
@@ -69,7 +73,10 @@ impl PiClient {
         Ok(client)
     }
 
-    async fn handshake(&mut self, mut reader: tokio::net::unix::OwnedReadHalf) -> Result<(), PiClientError> {
+    async fn handshake(
+        &mut self,
+        mut reader: tokio::net::unix::OwnedReadHalf,
+    ) -> Result<(), PiClientError> {
         self.connection
             .send_client_message(&ClientMessage::Hello {
                 version: pi_protocol::PROTOCOL_VERSION,
@@ -80,7 +87,8 @@ impl PiClient {
         let listeners = self.listeners.clone();
         let snapshot = self.snapshot.clone();
         let session_snapshots = self.session_snapshots.clone();
-        let mut decoder = pi_protocol::ServerMessageDecoder::new(&Default::default()).expect("decoder");
+        let mut decoder =
+            pi_protocol::ServerMessageDecoder::new(&Default::default()).expect("decoder");
         tokio::spawn(async move {
             let mut buf = vec![0u8; 64 * 1024];
             loop {
@@ -106,7 +114,9 @@ impl PiClient {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        Err(PiClientError { message: "handshake timed out waiting for server hello".into() })
+        Err(PiClientError {
+            message: "handshake timed out waiting for server hello".into(),
+        })
     }
 
     /// Send a command and await its correlated response.
@@ -117,10 +127,14 @@ impl PiClient {
             let mut pending = self.pending.lock().unwrap();
             pending.insert(id.clone(), Some(Pending { resolve: tx }));
         }
-        let message = ClientMessage::Request { id, request: command };
+        let message = ClientMessage::Request {
+            id,
+            request: command,
+        };
         self.connection.send_client_message(&message).await?;
-        rx.await
-            .map_err(|_| PiClientError { message: "connection closed before response".into() })?
+        rx.await.map_err(|_| PiClientError {
+            message: "connection closed before response".into(),
+        })?
     }
 
     /// Subscribe to server events.
@@ -137,11 +151,18 @@ impl PiClient {
     /// attach path so `handle.snapshot()` is correct before the event fanout
     /// arrives from the server reader task).
     pub(crate) fn note_session_snapshot(&self, snapshot: pi_protocol::SessionSnapshot) {
-        self.session_snapshots.lock().unwrap().insert(snapshot.id.clone(), snapshot);
+        self.session_snapshots
+            .lock()
+            .unwrap()
+            .insert(snapshot.id.clone(), snapshot);
     }
 
     pub fn session_snapshot(&self, session_id: &str) -> Option<pi_protocol::SessionSnapshot> {
-        self.session_snapshots.lock().unwrap().get(session_id).cloned()
+        self.session_snapshots
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
     }
 
     pub async fn close(&self) -> Result<(), PiClientError> {
@@ -165,16 +186,25 @@ fn handle_message(
             let all_pending = std::mem::take(&mut *pending.lock().unwrap());
             for (_, p) in all_pending {
                 if let Some(Pending { resolve }) = p {
-                    let _ = resolve.send(Err(PiClientError { message: msg.clone() }));
+                    let _ = resolve.send(Err(PiClientError {
+                        message: msg.clone(),
+                    }));
                 }
             }
         }
-        ServerMessage::Response { id, ok, result, error } => {
+        ServerMessage::Response {
+            id,
+            ok,
+            result,
+            error,
+        } => {
             let mut pending_map = pending.lock().unwrap();
             if let Some(Some(Pending { resolve })) = pending_map.remove(&id) {
                 let outcome = if ok {
                     result.map(Ok).unwrap_or_else(|| {
-                        Err(PiClientError { message: "response with no result".into() })
+                        Err(PiClientError {
+                            message: "response with no result".into(),
+                        })
                     })
                 } else {
                     let error = error.unwrap_or(pi_protocol::ProtocolError {
@@ -182,7 +212,9 @@ fn handle_message(
                         message: "unknown error".into(),
                         details: None,
                     });
-                    Err(PiClientError { message: format!("{:?}: {}", error.code, error.message) })
+                    Err(PiClientError {
+                        message: format!("{:?}: {}", error.code, error.message),
+                    })
                 };
                 let _ = resolve.send(outcome);
             }
@@ -192,7 +224,10 @@ fn handle_message(
                 *snapshot.lock().unwrap() = Some(snap.clone());
             }
             if let ServerEvent::SessionSnapshot { snapshot: sess } = &event {
-                session_snapshots.lock().unwrap().insert(sess.id.clone(), sess.clone());
+                session_snapshots
+                    .lock()
+                    .unwrap()
+                    .insert(sess.id.clone(), sess.clone());
             }
             let listeners = listeners.lock().unwrap().clone();
             for listener in listeners {
@@ -217,7 +252,8 @@ mod tests {
                 models: vec![],
             },
         };
-        let pending: Arc<Mutex<HashMap<String, Option<Pending>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<String, Option<Pending>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let listeners: Arc<Mutex<Vec<EventListener>>> = Arc::new(Mutex::new(Vec::new()));
         let snapshot: Arc<Mutex<Option<ServerSnapshot>>> = Arc::new(Mutex::new(None));
         handle_message(

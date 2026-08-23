@@ -16,16 +16,25 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("pi-run-settings-{tag}-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("pi-run-settings-{tag}-{}", uuid::Uuid::new_v4()));
         let home = root.join("home");
         let sessions = root.join("sessions");
         fs::create_dir_all(home.join(".pi").join("agent")).unwrap();
         fs::create_dir_all(&sessions).unwrap();
-        Self { root, home, sessions }
+        Self {
+            root,
+            home,
+            sessions,
+        }
     }
 
     fn write_global_settings(&self, v: serde_json::Value) {
-        fs::write(self.home.join(".pi").join("agent").join("settings.json"), v.to_string()).unwrap();
+        fs::write(
+            self.home.join(".pi").join("agent").join("settings.json"),
+            v.to_string(),
+        )
+        .unwrap();
     }
 
     fn write_project_settings(&self, project: &Path, v: serde_json::Value) {
@@ -101,7 +110,10 @@ fn pi_run_prefers_cli_provider_over_settings_default() {
         .expect("spawn pi");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    assert!(stdout.contains("faux response to: cli wins"), "unexpected stdout: {stdout}");
+    assert!(
+        stdout.contains("faux response to: cli wins"),
+        "unexpected stdout: {stdout}"
+    );
 }
 
 #[test]

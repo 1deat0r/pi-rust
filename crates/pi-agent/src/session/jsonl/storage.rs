@@ -3,13 +3,11 @@
 
 use super::super::state::{BranchBounds, EntryQuery, LogOptions, RecordQuery, SessionState};
 use super::super::types::{
-    Entry, EntryNoStats, Fact, JsonlV4Header, LanePointer, LaneRecord, LogItem, Mutation, NewRecord,
-    SessionError, SessionErrorKind, SessionMetadata, SessionStats,
+    Entry, EntryNoStats, Fact, JsonlV4Header, LanePointer, LaneRecord, LogItem, Mutation,
+    NewRecord, SessionError, SessionErrorKind, SessionMetadata, SessionStats,
 };
 use super::errors::{file_result, JsonlDecodeError, JsonlDecodeErrorKind};
-use super::{
-    encode_header, encode_mutation, metadata_from_header, parse_header, parse_mutation,
-};
+use super::{encode_header, encode_mutation, metadata_from_header, parse_header, parse_mutation};
 use crate::fs::FileSystem;
 use crate::types::FileError;
 
@@ -53,7 +51,11 @@ pub struct JsonlSessionStorage<F: FileSystem> {
 
 impl<F: FileSystem> JsonlSessionStorage<F> {
     pub fn new(fs: F, metadata: SessionMetadata) -> Self {
-        Self { fs, metadata, state: SessionState::default() }
+        Self {
+            fs,
+            metadata,
+            state: SessionState::default(),
+        }
     }
 
     pub async fn create(fs: F, path: &str, header: JsonlV4Header) -> Result<Self, FileError> {
@@ -88,8 +90,7 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
                 message: "is missing a header".to_string(),
             });
         }
-        let header = parse_header(physical_lines[0])
-            .map_err(|e| invalid_file(path, 1, e))?;
+        let header = parse_header(physical_lines[0]).map_err(|e| invalid_file(path, 1, e))?;
         let file_info = file_result(
             fs.file_info(path),
             &format!("Failed to read session metadata {path}"),
@@ -101,7 +102,8 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
             let mutation = match parse_mutation(line) {
                 Ok(m) => m,
                 Err(e) => {
-                    let is_torn_tail = index == physical_lines.len() - 1 && e.kind == JsonlDecodeErrorKind::Syntax;
+                    let is_torn_tail =
+                        index == physical_lines.len() - 1 && e.kind == JsonlDecodeErrorKind::Syntax;
                     if is_torn_tail {
                         torn_tail_repaired = true;
                         let valid_prefix = format!("{}\n", physical_lines[..index].join("\n"));
@@ -126,7 +128,11 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
             storage
                 .state
                 .apply_mutation(&mutation)
-                .map_err(|e| LoadError::InvalidMutation { path: path.to_string(), line: index + 1, error: e })?;
+                .map_err(|e| LoadError::InvalidMutation {
+                    path: path.to_string(),
+                    line: index + 1,
+                    error: e,
+                })?;
         }
         if !torn_tail_repaired && !content.ends_with('\n') {
             file_result(
@@ -220,11 +226,18 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
         Ok(())
     }
 
-    pub async fn append_entry(&mut self, entry: EntryNoStats, lane: &str) -> Result<Entry, SessionError> {
+    pub async fn append_entry(
+        &mut self,
+        entry: EntryNoStats,
+        lane: &str,
+    ) -> Result<Entry, SessionError> {
         let parent_id = self.state.require_lane(lane)?;
         self.state.validate_unused_id(entry.id())?;
         let entry = Entry::from_provisioned(entry, parent_id, self.state.next_sequence(), now_ms());
-        let mutation = Mutation::Entry { lane: Some(lane.to_string()), entry: entry.clone() };
+        let mutation = Mutation::Entry {
+            lane: Some(lane.to_string()),
+            entry: entry.clone(),
+        };
         self.append_mutation(&mutation).await?;
         self.state.apply_mutation(&mutation)?;
         Ok(entry)
@@ -247,11 +260,15 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
         .await
     }
 
-    pub async fn append_record(&mut self, new_record: NewRecord) -> Result<LaneRecord, SessionError> {
+    pub async fn append_record(
+        &mut self,
+        new_record: NewRecord,
+    ) -> Result<LaneRecord, SessionError> {
         self.state.require_lane(new_record.lane())?;
         self.state.validate_unused_id(new_record.id())?;
         let current_open_operation_ids = self.state.open_operation_ids(new_record.lane());
-        if new_record.record_type() == "operation_started" && !current_open_operation_ids.is_empty() {
+        if new_record.record_type() == "operation_started" && !current_open_operation_ids.is_empty()
+        {
             return Err(SessionError::new(
                 SessionErrorKind::Storage,
                 format!(
@@ -262,7 +279,9 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
             ));
         }
         let record = new_record_complete(new_record, self.state.next_sequence(), now_ms());
-        let mutation = Mutation::Record { record: record.clone() };
+        let mutation = Mutation::Record {
+            record: record.clone(),
+        };
         self.append_mutation(&mutation).await?;
         self.state.apply_mutation(&mutation)?;
         Ok(record)
@@ -346,7 +365,10 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
 
     async fn append_mutation(&mut self, mutation: &Mutation) -> Result<(), SessionError> {
         let line = encode_mutation(mutation).map_err(|e| {
-            SessionError::new(SessionErrorKind::Storage, format!("failed to encode mutation: {e}"))
+            SessionError::new(
+                SessionErrorKind::Storage,
+                format!("failed to encode mutation: {e}"),
+            )
         })?;
         file_result(
             self.fs.append_file(&self.metadata.path, &line),
@@ -359,40 +381,143 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
 
 fn new_record_complete(new_record: NewRecord, seq: u64, timestamp: u64) -> LaneRecord {
     match new_record {
-        NewRecord::OperationStarted { id, lane, source_leaf_id, intent } => LaneRecord::OperationStarted {
-            id, seq, lane, timestamp, source_leaf_id, intent,
+        NewRecord::OperationStarted {
+            id,
+            lane,
+            source_leaf_id,
+            intent,
+        } => LaneRecord::OperationStarted {
+            id,
+            seq,
+            lane,
+            timestamp,
+            source_leaf_id,
+            intent,
         },
         NewRecord::AbortRequested { id, lane, run_id } => LaneRecord::AbortRequested {
-            id, seq, lane, timestamp, run_id,
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id,
         },
-        NewRecord::OperationFinished { id, lane, run_id, outcome, error } => {
-            LaneRecord::OperationFinished { id, seq, lane, timestamp, run_id, outcome, error }
-        }
-        NewRecord::StepAttempt { id, lane, run_id, step, attempt, result_entry_id, compaction_reason } => {
-            LaneRecord::StepAttempt {
-                id, seq, lane, timestamp, run_id, step, attempt, result_entry_id, compaction_reason,
-            }
-        }
+        NewRecord::OperationFinished {
+            id,
+            lane,
+            run_id,
+            outcome,
+            error,
+        } => LaneRecord::OperationFinished {
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id,
+            outcome,
+            error,
+        },
+        NewRecord::StepAttempt {
+            id,
+            lane,
+            run_id,
+            step,
+            attempt,
+            result_entry_id,
+            compaction_reason,
+        } => LaneRecord::StepAttempt {
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id,
+            step,
+            attempt,
+            result_entry_id,
+            compaction_reason,
+        },
         NewRecord::ToolStarted {
-            id, lane, run_id, assistant_entry_id, tool_index, tool_call_id, tool_name, effective_args,
-            result_entry_id, replay,
+            id,
+            lane,
+            run_id,
+            assistant_entry_id,
+            tool_index,
+            tool_call_id,
+            tool_name,
+            effective_args,
+            result_entry_id,
+            replay,
         } => LaneRecord::ToolStarted {
-            id, seq, lane, timestamp, run_id, assistant_entry_id, tool_index, tool_call_id, tool_name,
-            effective_args, result_entry_id, replay,
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id,
+            assistant_entry_id,
+            tool_index,
+            tool_call_id,
+            tool_name,
+            effective_args,
+            result_entry_id,
+            replay,
         },
-        NewRecord::QueueEnqueued { id, lane, queue, run_id, target } => LaneRecord::QueueEnqueued {
-            id, seq, lane, timestamp, queue, run_id, target,
+        NewRecord::QueueEnqueued {
+            id,
+            lane,
+            queue,
+            run_id,
+            target,
+        } => LaneRecord::QueueEnqueued {
+            id,
+            seq,
+            lane,
+            timestamp,
+            queue,
+            run_id,
+            target,
         },
-        NewRecord::QueueCancelled { id, lane, run_id, entry_id } => {
-            LaneRecord::QueueCancelled { id, seq, lane, timestamp, run_id, entry_id }
-        }
-        NewRecord::WriteDeferred { id, lane, run_id, target } => LaneRecord::WriteDeferred {
-            id, seq, lane, timestamp, run_id, target,
+        NewRecord::QueueCancelled {
+            id,
+            lane,
+            run_id,
+            entry_id,
+        } => LaneRecord::QueueCancelled {
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id,
+            entry_id,
+        },
+        NewRecord::WriteDeferred {
+            id,
+            lane,
+            run_id,
+            target,
+        } => LaneRecord::WriteDeferred {
+            id,
+            seq,
+            lane,
+            timestamp,
+            run_id,
+            target,
         },
         NewRecord::Usage {
-            id, lane, cause, run_id, entry_id, attempt, stop_reason, tool_call_id, details, usage,
+            id,
+            lane,
+            cause,
+            run_id,
+            entry_id,
+            attempt,
+            stop_reason,
+            tool_call_id,
+            details,
+            usage,
         } => LaneRecord::Usage {
-            id, seq, lane, timestamp, cause,
+            id,
+            seq,
+            lane,
+            timestamp,
+            cause,
             run_id: run_id.unwrap_or_default(),
             entry_id: entry_id.unwrap_or_default(),
             attempt: attempt.unwrap_or(0),

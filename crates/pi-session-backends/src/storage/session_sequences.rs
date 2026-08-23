@@ -19,10 +19,16 @@ pub fn get_next_sequence(db: &Connection, session_id: &str) -> Result<i64, Sessi
         .bind(session_id)
         .get_row(db, |row| row.get::<_, i64>(0))
         .map_err(|error| {
-            SessionError::new(SessionErrorKind::Storage, format!("Failed to read next sequence: {error}"))
+            SessionError::new(
+                SessionErrorKind::Storage,
+                format!("Failed to read next sequence: {error}"),
+            )
         })?;
     row.ok_or_else(|| {
-        SessionError::new(SessionErrorKind::Storage, format!("Missing sequence row for session {session_id}"))
+        SessionError::new(
+            SessionErrorKind::Storage,
+            format!("Missing sequence row for session {session_id}"),
+        )
     })
 }
 
@@ -39,6 +45,8 @@ pub fn advance_sequence(db: &Connection, session_id: &str, seq: i64) -> rusqlite
 }
 
 pub fn delete_sequence(db: &Connection, session_id: &str) -> rusqlite::Result<()> {
-    SqlQuery::new("DELETE FROM session_sequences WHERE session_id = ?").bind(session_id).run(db)?;
+    SqlQuery::new("DELETE FROM session_sequences WHERE session_id = ?")
+        .bind(session_id)
+        .run(db)?;
     Ok(())
 }

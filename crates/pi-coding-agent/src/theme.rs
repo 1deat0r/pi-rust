@@ -71,8 +71,14 @@ fn parse_theme_json(label: &str, content: &str) -> Result<ThemeJson, String> {
 /// Built-in theme registry (embedded copies of the shipped dark/light JSON).
 pub fn builtin_themes() -> BTreeMap<String, ThemeJson> {
     let mut map = BTreeMap::new();
-    map.insert("dark".to_string(), parse_theme_json("dark", BUILTIN_DARK).expect("embedded dark theme parses"));
-    map.insert("light".to_string(), parse_theme_json("light", BUILTIN_LIGHT).expect("embedded light theme parses"));
+    map.insert(
+        "dark".to_string(),
+        parse_theme_json("dark", BUILTIN_DARK).expect("embedded dark theme parses"),
+    );
+    map.insert(
+        "light".to_string(),
+        parse_theme_json("light", BUILTIN_LIGHT).expect("embedded light theme parses"),
+    );
     map
 }
 
@@ -133,7 +139,9 @@ pub fn resolve_theme_colors(
 
 /// Upstream `withThemeColorFallbacks` — fill optional colors with their
 /// canonical fallbacks.
-pub fn with_theme_color_fallbacks(colors: &IndexMap<String, ColorValue>) -> IndexMap<String, ColorValue> {
+pub fn with_theme_color_fallbacks(
+    colors: &IndexMap<String, ColorValue>,
+) -> IndexMap<String, ColorValue> {
     let mut out = colors.clone();
     if !out.contains_key("thinkingMax") {
         if let Some(xhigh) = out.get("thinkingXhigh") {
@@ -192,9 +200,12 @@ pub fn hex_to_rgb(hex: &str) -> Result<(u8, u8, u8), String> {
     if cleaned.len() != 6 {
         return Err(format!("Invalid hex color: {hex}"));
     }
-    let r = u8::from_str_radix(&cleaned[0..2], 16).map_err(|_| format!("Invalid hex color: {hex}"))?;
-    let g = u8::from_str_radix(&cleaned[2..4], 16).map_err(|_| format!("Invalid hex color: {hex}"))?;
-    let b = u8::from_str_radix(&cleaned[4..6], 16).map_err(|_| format!("Invalid hex color: {hex}"))?;
+    let r =
+        u8::from_str_radix(&cleaned[0..2], 16).map_err(|_| format!("Invalid hex color: {hex}"))?;
+    let g =
+        u8::from_str_radix(&cleaned[2..4], 16).map_err(|_| format!("Invalid hex color: {hex}"))?;
+    let b =
+        u8::from_str_radix(&cleaned[4..6], 16).map_err(|_| format!("Invalid hex color: {hex}"))?;
     Ok((r, g, b))
 }
 
@@ -211,7 +222,9 @@ pub fn resolve_color_css(value: &ColorValue, default_text: &str) -> String {
 }
 
 /// Upstream `getResolvedThemeColors` — all theme colors as CSS strings.
-pub fn get_resolved_theme_colors(theme_name: Option<&str>) -> Result<IndexMap<String, String>, String> {
+pub fn get_resolved_theme_colors(
+    theme_name: Option<&str>,
+) -> Result<IndexMap<String, String>, String> {
     let default = default_theme();
     let name = theme_name.unwrap_or(&default);
     let is_light = name == LIGHT_THEME;
@@ -246,7 +259,11 @@ pub fn get_theme_export_colors(theme_name: Option<&str>) -> Result<ExportColors,
         Some(ColorValue::Str(s)) if s.is_empty() => None,
         Some(ColorValue::Str(s)) => {
             // Resolve var refs, then output hex for indices.
-            match resolve_var_refs(&ColorValue::Str(s.clone()), &theme_json.vars, &mut Vec::new()) {
+            match resolve_var_refs(
+                &ColorValue::Str(s.clone()),
+                &theme_json.vars,
+                &mut Vec::new(),
+            ) {
                 Ok(ColorValue::Int(i)) => Some(ansi256_to_hex(i)),
                 Ok(ColorValue::Str(s)) if s.is_empty() => None,
                 Ok(ColorValue::Str(s)) => Some(s),
@@ -282,7 +299,11 @@ fn colorfgbg_background_index(colorfgbg: &str) -> Option<u8> {
 fn rgb_luminance(r: u8, g: u8, b: u8) -> f64 {
     let to_linear = |c: f64| {
         let s = c / 255.0;
-        if s <= 0.03928 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+        if s <= 0.03928 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
     };
     0.2126 * to_linear(r as f64) + 0.7152 * to_linear(g as f64) + 0.0722 * to_linear(b as f64)
 }
@@ -290,10 +311,17 @@ fn rgb_luminance(r: u8, g: u8, b: u8) -> f64 {
 /// Detect the terminal theme from `COLORFGBG` (upstream
 /// `detectTerminalBackgroundFromEnv`); falls back to dark.
 pub fn default_theme() -> String {
-    if let Some(bg) = std::env::var("COLORFGBG").ok().and_then(|v| colorfgbg_background_index(&v)) {
+    if let Some(bg) = std::env::var("COLORFGBG")
+        .ok()
+        .and_then(|v| colorfgbg_background_index(&v))
+    {
         let hex = ansi256_to_hex(bg);
         if let Ok((r, g, b)) = hex_to_rgb(&hex) {
-            return if rgb_luminance(r, g, b) >= 0.5 { LIGHT_THEME.to_string() } else { DEFAULT_THEME.to_string() };
+            return if rgb_luminance(r, g, b) >= 0.5 {
+                LIGHT_THEME.to_string()
+            } else {
+                DEFAULT_THEME.to_string()
+            };
         }
     }
     DEFAULT_THEME.to_string()
@@ -317,7 +345,11 @@ pub fn parse_auto_theme_setting(theme_setting: Option<&str>) -> Option<(String, 
 /// Upstream `resolveThemeSetting` (env-free terminal-theme variant).
 pub fn resolve_theme_setting(theme_setting: Option<&str>, terminal_theme: &str) -> Option<String> {
     if let Some((light, dark)) = parse_auto_theme_setting(theme_setting) {
-        return Some(if terminal_theme == "light" { light } else { dark });
+        return Some(if terminal_theme == "light" {
+            light
+        } else {
+            dark
+        });
     }
     if theme_setting?.contains('/') {
         return None;
@@ -345,13 +377,16 @@ mod tests {
         let dark = &themes["dark"];
         let vars = &dark.vars;
         // accent -> "accent" var -> "#8abeb7"
-        let resolved = resolve_var_refs(&ColorValue::Str("accent".into()), vars, &mut Vec::new()).unwrap();
+        let resolved =
+            resolve_var_refs(&ColorValue::Str("accent".into()), vars, &mut Vec::new()).unwrap();
         assert_eq!(resolved, ColorValue::Str("#8abeb7".into()));
         // Direct hex passes through
-        let direct = resolve_var_refs(&ColorValue::Str("#123456".into()), vars, &mut Vec::new()).unwrap();
+        let direct =
+            resolve_var_refs(&ColorValue::Str("#123456".into()), vars, &mut Vec::new()).unwrap();
         assert_eq!(direct, ColorValue::Str("#123456".into()));
         // Empty passes through
-        let empty = resolve_var_refs(&ColorValue::Str(String::new()), vars, &mut Vec::new()).unwrap();
+        let empty =
+            resolve_var_refs(&ColorValue::Str(String::new()), vars, &mut Vec::new()).unwrap();
         assert_eq!(empty, ColorValue::Str(String::new()));
         // Integer passes through
         let int = resolve_var_refs(&ColorValue::Int(7), vars, &mut Vec::new()).unwrap();
@@ -363,14 +398,16 @@ mod tests {
         let mut vars = IndexMap::new();
         vars.insert("a".to_string(), ColorValue::Str("b".to_string()));
         vars.insert("b".to_string(), ColorValue::Str("a".to_string()));
-        let err = resolve_var_refs(&ColorValue::Str("a".into()), &vars, &mut Vec::new()).unwrap_err();
+        let err =
+            resolve_var_refs(&ColorValue::Str("a".into()), &vars, &mut Vec::new()).unwrap_err();
         assert!(err.contains("Circular"));
     }
 
     #[test]
     fn missing_variable_errors() {
         let vars = IndexMap::new();
-        let err = resolve_var_refs(&ColorValue::Str("nope".into()), &vars, &mut Vec::new()).unwrap_err();
+        let err =
+            resolve_var_refs(&ColorValue::Str("nope".into()), &vars, &mut Vec::new()).unwrap_err();
         assert!(err.contains("Variable reference not found"));
     }
 
@@ -379,10 +416,22 @@ mod tests {
         let themes = builtin_themes();
         let dark = &themes["dark"];
         let fb = with_theme_color_fallbacks(&dark.colors);
-        assert_eq!(fb.get("thinkingMax"), Some(&ColorValue::Str("#ff5fff".into())));
-        assert_eq!(fb.get("scrollbarThumb"), Some(&ColorValue::Str("selectedBg".into())));
-        assert_eq!(fb.get("searchMatchBg"), Some(&ColorValue::Str("selectedBg".into())));
-        assert_eq!(fb.get("searchMatchText"), Some(&ColorValue::Str("text".into())));
+        assert_eq!(
+            fb.get("thinkingMax"),
+            Some(&ColorValue::Str("#ff5fff".into()))
+        );
+        assert_eq!(
+            fb.get("scrollbarThumb"),
+            Some(&ColorValue::Str("selectedBg".into()))
+        );
+        assert_eq!(
+            fb.get("searchMatchBg"),
+            Some(&ColorValue::Str("selectedBg".into()))
+        );
+        assert_eq!(
+            fb.get("searchMatchText"),
+            Some(&ColorValue::Str("text".into()))
+        );
     }
 
     #[test]
@@ -401,8 +450,14 @@ mod tests {
         let colors = get_resolved_theme_colors(Some("dark")).unwrap();
         assert_eq!(colors.get("accent").map(|s| s.as_str()), Some("#8abeb7"));
         assert_eq!(colors.get("border").map(|s| s.as_str()), Some("#5f87ff"));
-        assert_eq!(colors.get("userMessageBg").map(|s| s.as_str()), Some("#343541"));
-        assert_eq!(colors.get("thinkingMax").map(|s| s.as_str()), Some("#ff5fff"));
+        assert_eq!(
+            colors.get("userMessageBg").map(|s| s.as_str()),
+            Some("#343541")
+        );
+        assert_eq!(
+            colors.get("thinkingMax").map(|s| s.as_str()),
+            Some("#ff5fff")
+        );
         assert_eq!(colors.get("text").map(|s| s.as_str()), Some("#d4d4d4"));
     }
 
@@ -410,7 +465,10 @@ mod tests {
     fn resolved_theme_colors_light() {
         let colors = get_resolved_theme_colors(Some("light")).unwrap();
         assert_eq!(colors.get("accent").map(|s| s.as_str()), Some("#5a8080"));
-        assert_eq!(colors.get("userMessageBg").map(|s| s.as_str()), Some("#e8e8e8"));
+        assert_eq!(
+            colors.get("userMessageBg").map(|s| s.as_str()),
+            Some("#e8e8e8")
+        );
         // Empty values fall back to black on light themes
         assert_eq!(colors.get("text").map(|s| s.as_str()), Some("#1f2328"));
     }
@@ -441,7 +499,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pi-theme-test-{}", std::process::id()));
         let themes = dir.join("themes");
         std::fs::create_dir_all(&themes).unwrap();
-                let custom = r##"{     "$schema": "https://example.com/schema.json",
+        let custom = r##"{     "$schema": "https://example.com/schema.json",
             "name": "custom",
             "vars": { "brand": "#ff5500" },
             "colors": {
@@ -512,14 +570,26 @@ mod tests {
 
     #[test]
     fn auto_theme_setting_parsing() {
-        assert_eq!(parse_auto_theme_setting(Some("light/dark")), Some(("light".into(), "dark".into())));
+        assert_eq!(
+            parse_auto_theme_setting(Some("light/dark")),
+            Some(("light".into(), "dark".into()))
+        );
         assert_eq!(parse_auto_theme_setting(Some("light")), None);
         assert_eq!(parse_auto_theme_setting(Some("a/b/c")), None);
         assert_eq!(parse_auto_theme_setting(Some(" /dark")), None);
         assert_eq!(parse_auto_theme_setting(None), None);
-        assert_eq!(resolve_theme_setting(Some("light/dark"), "light").as_deref(), Some("light"));
-        assert_eq!(resolve_theme_setting(Some("light/dark"), "dark").as_deref(), Some("dark"));
-        assert_eq!(resolve_theme_setting(Some("dark"), "light").as_deref(), Some("dark"));
+        assert_eq!(
+            resolve_theme_setting(Some("light/dark"), "light").as_deref(),
+            Some("light")
+        );
+        assert_eq!(
+            resolve_theme_setting(Some("light/dark"), "dark").as_deref(),
+            Some("dark")
+        );
+        assert_eq!(
+            resolve_theme_setting(Some("dark"), "light").as_deref(),
+            Some("dark")
+        );
         assert_eq!(resolve_theme_setting(Some("a/b/c"), "light"), None);
     }
 

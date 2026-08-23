@@ -59,18 +59,19 @@ pub fn list_models(models: &Models, search_pattern: Option<&str>) -> String {
         _ => all.iter().collect(),
     };
     if filtered.is_empty() {
-        return format!("No models matching \"{}\"", search_pattern.unwrap_or_default());
+        return format!(
+            "No models matching \"{}\"",
+            search_pattern.unwrap_or_default()
+        );
     }
 
     // Sort by provider, then by model id (upstream localeCompare).
     let mut rows: Vec<&pi_ai::model::Model> = filtered;
-    rows.sort_by(|a, b| {
-        a.provider
-            .cmp(&b.provider)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    rows.sort_by(|a, b| a.provider.cmp(&b.provider).then_with(|| a.id.cmp(&b.id)));
 
-    let headers = ["provider", "model", "context", "max-out", "thinking", "images"];
+    let headers = [
+        "provider", "model", "context", "max-out", "thinking", "images",
+    ];
     let row_render: Vec<[String; 6]> = rows
         .iter()
         .map(|m| {
@@ -79,7 +80,11 @@ pub fn list_models(models: &Models, search_pattern: Option<&str>) -> String {
                 m.id.clone(),
                 format_token_count(m.context_window),
                 format_token_count(m.max_tokens),
-                if m.reasoning { "yes".to_string() } else { "no".to_string() },
+                if m.reasoning {
+                    "yes".to_string()
+                } else {
+                    "no".to_string()
+                },
                 if m.input.contains(&pi_ai::model::ModelInput::Image) {
                     "yes".to_string()
                 } else {
@@ -126,12 +131,23 @@ mod tests {
     use super::*;
     use pi_ai::model::{Model, ModelInput};
 
-    fn model(provider: &str, id: &str, ctx: u64, max_tokens: u64, reasoning: bool, images: bool) -> Model {
+    fn model(
+        provider: &str,
+        id: &str,
+        ctx: u64,
+        max_tokens: u64,
+        reasoning: bool,
+        images: bool,
+    ) -> Model {
         let mut m = Model::new(id, id, "test-api", provider);
         m.context_window = ctx;
         m.max_tokens = max_tokens;
         m.reasoning = reasoning;
-        m.input = if images { vec![ModelInput::Text, ModelInput::Image] } else { vec![ModelInput::Text] };
+        m.input = if images {
+            vec![ModelInput::Text, ModelInput::Image]
+        } else {
+            vec![ModelInput::Text]
+        };
         m
     }
 
@@ -148,7 +164,14 @@ mod tests {
     fn filtering_and_sorting() {
         let ms = vec![
             model("openai", "gpt-4o", 128_000, 16_384, false, true),
-            model("anthropic", "claude-sonnet-4-6", 1_000_000, 128_000, true, true),
+            model(
+                "anthropic",
+                "claude-sonnet-4-6",
+                1_000_000,
+                128_000,
+                true,
+                true,
+            ),
             model("google", "gemini-2.5-flash", 1_000_000, 65_536, true, true),
         ];
         let f = filter_models(&ms, "gemini");
@@ -158,9 +181,13 @@ mod tests {
 
     #[test]
     fn empty_models_message() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
-            let models = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
+            let models =
+                pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
             let out = list_models(&models, None);
             assert!(out.contains("No models available"));
         });

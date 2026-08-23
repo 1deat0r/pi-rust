@@ -35,8 +35,14 @@ fn encodes_and_decodes_rfc_8949_vectors() {
         (serde_json::json!(100), "1864"),
         (serde_json::json!(1000), "1903e8"),
         (serde_json::json!(1_000_000), "1a000f4240"),
-        (serde_json::json!(1_000_000_000_000i64), "1b000000e8d4a51000"),
-        (serde_json::json!(9_007_199_254_740_991_i64), "1b001fffffffffffff"),
+        (
+            serde_json::json!(1_000_000_000_000i64),
+            "1b000000e8d4a51000",
+        ),
+        (
+            serde_json::json!(9_007_199_254_740_991_i64),
+            "1b001fffffffffffff",
+        ),
         (serde_json::json!(-1), "20"),
         (serde_json::json!(-10), "29"),
         (serde_json::json!(-24), "37"),
@@ -44,7 +50,10 @@ fn encodes_and_decodes_rfc_8949_vectors() {
         (serde_json::json!(-100), "3863"),
         (serde_json::json!(-1000), "3903e7"),
         (serde_json::json!(-1_000_000), "3a000f423f"),
-        (serde_json::json!(-9_007_199_254_740_991_i64), "3b001ffffffffffffe"),
+        (
+            serde_json::json!(-9_007_199_254_740_991_i64),
+            "3b001ffffffffffffe",
+        ),
         (serde_json::json!(1.1), "fb3ff199999999999a"),
         (serde_json::json!(""), "60"),
         (serde_json::json!("IETF"), "6449455446"),
@@ -89,12 +98,15 @@ fn omits_undefined_properties_without_omitting_falsey_values() {
     ]);
     let encoded = encode_cbor(&value, &CborOptions::default()).unwrap();
     let decoded = decode_cbor(&encoded, &CborOptions::default()).unwrap();
-    assert_eq!(decoded, Value::Map(vec![
-        ("zero".into(), Value::Int(0)),
-        ("empty".into(), Value::Text(String::new())),
-        ("no".into(), Value::Bool(false)),
-        ("nil".into(), Value::Null),
-    ]));
+    assert_eq!(
+        decoded,
+        Value::Map(vec![
+            ("zero".into(), Value::Int(0)),
+            ("empty".into(), Value::Text(String::new())),
+            ("no".into(), Value::Bool(false)),
+            ("nil".into(), Value::Null),
+        ])
+    );
 }
 
 #[test]
@@ -108,48 +120,60 @@ fn rejects_unsupported_encoder_values() {
     // Top-level undefined
     assert!(encode_cbor(&Value::Undefined, &CborOptions::default()).is_err());
     // Undefined array element
-    assert!(encode_cbor(&Value::Array(vec![Value::Undefined]), &CborOptions::default()).is_err());
+    assert!(encode_cbor(
+        &Value::Array(vec![Value::Undefined]),
+        &CborOptions::default()
+    )
+    .is_err());
     // NaN / infinities
     assert!(encode_cbor(&Value::Float(f64::NAN), &CborOptions::default()).is_err());
     assert!(encode_cbor(&Value::Float(f64::INFINITY), &CborOptions::default()).is_err());
     assert!(encode_cbor(&Value::Float(f64::NEG_INFINITY), &CborOptions::default()).is_err());
     // Unsafe integers
-    assert!(encode_cbor(&Value::Int(9_007_199_254_740_991 + 1), &CborOptions::default()).is_err());
-    assert!(encode_cbor(&Value::Int(-9_007_199_254_740_991 - 1), &CborOptions::default()).is_err());
+    assert!(encode_cbor(
+        &Value::Int(9_007_199_254_740_991 + 1),
+        &CborOptions::default()
+    )
+    .is_err());
+    assert!(encode_cbor(
+        &Value::Int(-9_007_199_254_740_991 - 1),
+        &CborOptions::default()
+    )
+    .is_err());
 }
 
 #[test]
 fn rejects_invalid_decoder_inputs() {
     let invalid: Vec<&str> = vec![
-        "",                          // empty input
-        "18",                        // truncated integer
-        "1c",                        // reserved additional information
-        "5f",                        // indefinite byte string
-        "7f",                        // indefinite text string
-        "9f",                        // indefinite array
-        "bf",                        // indefinite map
-        "c000",                      // tag
-        "f7",                        // undefined simple value
-        "e0",                        // unsupported simple value
-        "ff",                        // break outside an indefinite item
-        "f93c00",                    // float16
-        "fa3f800000",                // float32
-        "fb7ff0000000000000",        // positive infinity
-        "fb7ff8000000000000",        // NaN
-        "fb3ff00000",                // truncated float64
-        "44010203",                  // truncated byte string
-        "636162",                    // truncated text string
-        "8201",                      // truncated array
-        "a16161",                    // truncated map
-        "0000",                      // trailing data
-        "a10102",                    // non-string map key
-        "a2616101616102",            // duplicate map key
-        "61ff",                      // invalid UTF-8 byte
-        "62c080",                    // overlong UTF-8
-        "63eda080",                  // UTF-8 surrogate
-        "1b0020000000000000",        // unsafe positive integer
-        "3b001fffffffffffff",        // unsafe negative integer
-        "fb4340000000000000",        // unsafe integer encoded as float64
+        "",                   // empty input
+        "18",                 // truncated integer
+        "1c",                 // reserved additional information
+        "5f",                 // indefinite byte string
+        "7f",                 // indefinite text string
+        "9f",                 // indefinite array
+        "bf",                 // indefinite map
+        "c000",               // tag
+        "f7",                 // undefined simple value
+        "e0",                 // unsupported simple value
+        "ff",                 // break outside an indefinite item
+        "f93c00",             // float16
+        "fa3f800000",         // float32
+        "fb7ff0000000000000", // positive infinity
+        "fb7ff8000000000000", // NaN
+        "fb3ff00000",         // truncated float64
+        "44010203",           // truncated byte string
+        "636162",             // truncated text string
+        "8201",               // truncated array
+        "a16161",             // truncated map
+        "0000",               // trailing data
+        "a10102",             // non-string map key
+        "a2616101616102",     // duplicate map key
+        "61ff",               // invalid UTF-8 byte
+        "62c080",             // overlong UTF-8
+        "63eda080",           // UTF-8 surrogate
+        "1b0020000000000000", // unsafe positive integer
+        "3b001fffffffffffff", // unsafe negative integer
+        "fb4340000000000000", // unsafe integer encoded as float64
     ];
     for hex_str in invalid {
         assert!(
@@ -185,7 +209,10 @@ fn enforces_declared_length_limits() {
     let map_trunc = format!("ba{:08x}", DEFAULT_MAX_CBOR_CONTAINER_LENGTH + 1);
     for hex_str in [bytes_trunc, text_trunc, array_trunc, map_trunc] {
         let err = decode_cbor(&from_hex(&hex_str), &CborOptions::default()).unwrap_err();
-        assert!(err.0.contains("limit"), "expected limit error for {hex_str}");
+        assert!(
+            err.0.contains("limit"),
+            "expected limit error for {hex_str}"
+        );
     }
 }
 
@@ -193,18 +220,34 @@ fn enforces_declared_length_limits() {
 fn supports_stricter_caller_provided_limits() {
     assert!(decode_cbor(
         &from_hex("83010203"),
-        &CborOptions { max_container_length: Some(2), ..Default::default() }
-    ).is_err());
+        &CborOptions {
+            max_container_length: Some(2),
+            ..Default::default()
+        }
+    )
+    .is_err());
     assert!(decode_cbor(
         &from_hex("626162"),
-        &CborOptions { max_byte_length: Some(2), ..Default::default() }
-    ).is_err());
+        &CborOptions {
+            max_byte_length: Some(2),
+            ..Default::default()
+        }
+    )
+    .is_err());
     assert!(encode_cbor(
         &Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
-        &CborOptions { max_container_length: Some(2), ..Default::default() }
-    ).is_err());
+        &CborOptions {
+            max_container_length: Some(2),
+            ..Default::default()
+        }
+    )
+    .is_err());
     assert!(encode_cbor(
         &Value::Text("ab".into()),
-        &CborOptions { max_byte_length: Some(2), ..Default::default() }
-    ).is_err());
+        &CborOptions {
+            max_byte_length: Some(2),
+            ..Default::default()
+        }
+    )
+    .is_err());
 }

@@ -21,14 +21,19 @@ pub fn validate_unix_socket_path(path: &str, description: &str) -> Result<(), St
         return Err(format!("{description} must not be empty"));
     }
     if path.len() > MAX_UNIX_SOCKET_PATH_BYTES {
-        return Err(format!("{description} is too long; maximum is {MAX_UNIX_SOCKET_PATH_BYTES} UTF-8 bytes"));
+        return Err(format!(
+            "{description} is too long; maximum is {MAX_UNIX_SOCKET_PATH_BYTES} UTF-8 bytes"
+        ));
     }
     Ok(())
 }
 
 pub trait PiServerListener: Send + Sync {
     fn address(&self) -> Option<String>;
-    fn start(&mut self, accept: ByteConnectionAcceptor) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
+    fn start(
+        &mut self,
+        accept: ByteConnectionAcceptor,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
     fn close(&mut self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
 }
 
@@ -37,12 +42,20 @@ async fn remove_stale_socket(path: &Path) -> Result<(), String> {
         return Ok(());
     };
     if !meta.file_type().is_socket() {
-        return Err(format!("Refusing to remove non-socket Unix listener path: {}", path.display()));
+        return Err(format!(
+            "Refusing to remove non-socket Unix listener path: {}",
+            path.display()
+        ));
     }
     if socket_is_live(path).await? {
-        return Err(format!("Unix listener is already running: {}", path.display()));
+        return Err(format!(
+            "Unix listener is already running: {}",
+            path.display()
+        ));
     }
-    tokio::fs::remove_file(path).await.map_err(|e| format!("remove stale socket: {e}"))?;
+    tokio::fs::remove_file(path)
+        .await
+        .map_err(|e| format!("remove stale socket: {e}"))?;
     Ok(())
 }
 
@@ -96,7 +109,10 @@ impl UnixListener {
             let mut hasher = sha2::Sha256::new();
             hasher.update(self.path.to_string_lossy().as_bytes());
             let digest = hasher.finalize();
-            format!("{:08x}", u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]))
+            format!(
+                "{:08x}",
+                u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]])
+            )
         };
         let dir = self.path.parent().unwrap_or(Path::new(".")).to_path_buf();
         dir.join(format!(".p-{suffix}"))
@@ -108,7 +124,10 @@ impl PiServerListener for UnixListener {
         self.bound_path.clone()
     }
 
-    fn start(&mut self, accept: ByteConnectionAcceptor) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+    fn start(
+        &mut self,
+        accept: ByteConnectionAcceptor,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
         Box::pin(start_inner(self, accept))
     }
 
@@ -129,7 +148,9 @@ impl UnixListener {
 
         if let Some(parent) = self.path.parent() {
             if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent).await.map_err(|e| format!("mkdir: {e}"))?;
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| format!("mkdir: {e}"))?;
             }
         }
         remove_stale_socket(&self.path).await?;
@@ -141,7 +162,8 @@ impl UnixListener {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.mode));
+            let _ =
+                std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.mode));
         }
 
         let flag = tokio_util::sync::CancellationToken::new();
@@ -200,11 +222,16 @@ fn start_inner<'a>(
 }
 
 /// Boxed close future for the trait (private access wrapper).
-fn close_inner<'a>(listener: &'a mut UnixListener) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+fn close_inner<'a>(
+    listener: &'a mut UnixListener,
+) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(listener.close_inner())
 }
 
-async fn read_loop(mut reader: crate::connection::UnixReadHalf, handler: Arc<Mutex<dyn ByteConnectionHandler>>) {
+async fn read_loop(
+    mut reader: crate::connection::UnixReadHalf,
+    handler: Arc<Mutex<dyn ByteConnectionHandler>>,
+) {
     use tokio::io::AsyncReadExt;
     let mut buf = vec![0u8; 64 * 1024];
     loop {

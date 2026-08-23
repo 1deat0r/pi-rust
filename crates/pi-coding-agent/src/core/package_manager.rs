@@ -23,7 +23,7 @@ use crate::core::model_resolver::glob_match;
 use crate::core::pi_manifest::read_pi_manifest;
 use crate::core::settings::{PackageSource, PackageSourceObj, SettingsManager};
 use crate::interactive::config_selector::{
-    PathMetadata, ResolvedPaths, ResolvedResource, SourceScope as ResolvedScope, ResourceOrigin,
+    PathMetadata, ResolvedPaths, ResolvedResource, ResourceOrigin, SourceScope as ResolvedScope,
 };
 
 /// How `resolve` handles a configured source that is not currently installed
@@ -34,7 +34,6 @@ pub enum MissingSourceAction {
     Skip,
     Error,
 }
-
 
 // ---------------------------------------------------------------------------
 // Parsed sources
@@ -90,7 +89,9 @@ pub fn parse_semver_valid(version: &str) -> bool {
     if parts.len() != 3 {
         return false;
     }
-    parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    parts
+        .iter()
+        .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Minimal semver range validity (upstream `semver.validRange`). Accepts
@@ -122,7 +123,10 @@ pub fn parse_npm_spec(spec: &str) -> (String, Option<String>) {
     let re = regex::Regex::new(r"^(@?[^@]+(?:/[^@]+)?)(?:@(.+))?$").unwrap();
     match re.captures(spec) {
         Some(caps) => {
-            let name = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_else(|| spec.to_string());
+            let name = caps
+                .get(1)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_else(|| spec.to_string());
             let version = caps.get(2).map(|m| m.as_str().to_string());
             (name, version)
         }
@@ -131,7 +135,10 @@ pub fn parse_npm_spec(spec: &str) -> (String, Option<String>) {
 }
 
 fn is_local_path(source: &str) -> bool {
-    source.starts_with("./") || source.starts_with("../") || source.starts_with('/') || source == "."
+    source.starts_with("./")
+        || source.starts_with("../")
+        || source.starts_with('/')
+        || source == "."
 }
 
 fn split_git_ref(url: &str) -> (String, Option<String>) {
@@ -143,7 +150,10 @@ fn split_git_ref(url: &str) -> (String, Option<String>) {
                 let repo_path = &path_with_maybe_ref[..at];
                 let ref_ = &path_with_maybe_ref[at + 1..];
                 if !repo_path.is_empty() && !ref_.is_empty() {
-                    return (format!("git@{}:{repo_path}", &rest[..colon]), Some(ref_.to_string()));
+                    return (
+                        format!("git@{}:{repo_path}", &rest[..colon]),
+                        Some(ref_.to_string()),
+                    );
                 }
             }
             return (url.to_string(), None);
@@ -160,7 +170,11 @@ fn split_git_ref(url: &str) -> (String, Option<String>) {
                     let repo_path = &path_with_maybe_ref[..at];
                     let ref_ = &path_with_maybe_ref[at + 1..];
                     if !repo_path.is_empty() && !ref_.is_empty() {
-                        let mut new_url = format!("{}://{}{repo_path}", &url[..scheme_end], &after_scheme[..slash + 1]);
+                        let mut new_url = format!(
+                            "{}://{}{repo_path}",
+                            &url[..scheme_end],
+                            &after_scheme[..slash + 1]
+                        );
                         while new_url.ends_with('/') {
                             new_url.pop();
                         }
@@ -195,7 +209,10 @@ fn decode_for_validation(value: &str) -> Option<String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' {
-            if i + 2 < bytes.len() && bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit() {
+            if i + 2 < bytes.len()
+                && bytes[i + 1].is_ascii_hexdigit()
+                && bytes[i + 2].is_ascii_hexdigit()
+            {
                 let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
                 let byte = u8::from_str_radix(hex, 16).ok()?;
                 out.push(byte);
@@ -212,7 +229,9 @@ fn decode_for_validation(value: &str) -> Option<String> {
 }
 
 fn has_unsafe_git_install_part(value: &str, allow_slash: bool) -> bool {
-    let Some(decoded) = decode_for_validation(value) else { return true };
+    let Some(decoded) = decode_for_validation(value) else {
+        return true;
+    };
     for candidate in [value, decoded.as_str()] {
         if candidate.contains('\0') || candidate.contains('\\') || candidate.starts_with('/') {
             return true;
@@ -227,15 +246,25 @@ fn has_unsafe_git_install_part(value: &str, allow_slash: bool) -> bool {
     false
 }
 
-fn builtin_git_source(repo: String, host: &str, path: &str, ref_: Option<String>) -> Option<GitSource> {
+fn builtin_git_source(
+    repo: String,
+    host: &str,
+    path: &str,
+    ref_: Option<String>,
+) -> Option<GitSource> {
     if path.starts_with('/') {
         return None;
     }
-    let normalized_path = path.trim_end_matches(".git").trim_start_matches('/').to_string();
+    let normalized_path = path
+        .trim_end_matches(".git")
+        .trim_start_matches('/')
+        .to_string();
     if host.is_empty() || normalized_path.is_empty() || normalized_path.split('/').count() < 2 {
         return None;
     }
-    if has_unsafe_git_install_part(host, false) || has_unsafe_git_install_part(&normalized_path, true) {
+    if has_unsafe_git_install_part(host, false)
+        || has_unsafe_git_install_part(&normalized_path, true)
+    {
         return None;
     }
     Some(GitSource {
@@ -272,7 +301,12 @@ pub fn parse_git_url(source: &str) -> Option<GitSource> {
     {
         let (host, path) = parse_protocol_host_path(&repo_without_ref)?;
         if is_known_git_host(&host) && !path.is_empty() {
-            let repo_url = if has_git_prefix && !repo_without_ref.starts_with("https://") && !repo_without_ref.starts_with("http://") && !repo_without_ref.starts_with("ssh://") && !repo_without_ref.starts_with("git://") {
+            let repo_url = if has_git_prefix
+                && !repo_without_ref.starts_with("https://")
+                && !repo_without_ref.starts_with("http://")
+                && !repo_without_ref.starts_with("ssh://")
+                && !repo_without_ref.starts_with("git://")
+            {
                 format!("https://{}", repo_without_ref)
             } else {
                 repo_without_ref.clone()
@@ -302,7 +336,10 @@ pub fn parse_git_url(source: &str) -> Option<GitSource> {
 
 fn is_explicit_protocol(url: &str) -> bool {
     let lower = url.to_lowercase();
-    lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("ssh://") || lower.starts_with("git://")
+    lower.starts_with("https://")
+        || lower.starts_with("http://")
+        || lower.starts_with("ssh://")
+        || lower.starts_with("git://")
 }
 
 fn parse_protocol_host_path(url: &str) -> Option<(String, String)> {
@@ -313,7 +350,11 @@ fn parse_protocol_host_path(url: &str) -> Option<(String, String)> {
     if host.is_empty() {
         return None;
     }
-    let path = after_scheme.split('/').skip(1).collect::<Vec<_>>().join("/");
+    let path = after_scheme
+        .split('/')
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("/");
     Some((host.to_string(), path))
 }
 
@@ -339,12 +380,16 @@ impl ParsedSource {
             });
         }
         if is_local_path(source) {
-            return ParsedSource::Local(LocalSource { path: source.to_string() });
+            return ParsedSource::Local(LocalSource {
+                path: source.to_string(),
+            });
         }
         if let Some(git) = parse_git_url(source) {
             return ParsedSource::Git(git);
         }
-        ParsedSource::Local(LocalSource { path: source.to_string() })
+        ParsedSource::Local(LocalSource {
+            path: source.to_string(),
+        })
     }
 
     pub fn type_name(&self) -> &'static str {
@@ -483,9 +528,17 @@ fn prefix_ignore_pattern(line: &str, prefix: &str) -> Option<String> {
 
 /// Port of upstream `addIgnoreRules`: load `.gitignore`/`.ignore`/`.fdignore`
 /// rules from `dir`, prefixed relative to `root_dir`.
-fn add_ignore_rules(ig: &mut pi_agent::harness::skills::IgnoreMatcher, dir: &Path, root_dir: &Path) {
+fn add_ignore_rules(
+    ig: &mut pi_agent::harness::skills::IgnoreMatcher,
+    dir: &Path,
+    root_dir: &Path,
+) {
     let rel = os_rel_posix(root_dir, dir);
-    let prefix = if rel.is_empty() { String::new() } else { format!("{rel}/") };
+    let prefix = if rel.is_empty() {
+        String::new()
+    } else {
+        format!("{rel}/")
+    };
     for filename in IGNORE_FILE_NAMES {
         let ignore_path = dir.join(filename);
         let Ok(content) = fs::read_to_string(&ignore_path) else {
@@ -544,13 +597,23 @@ fn collect_files_inner(
         let full_path = entry.path();
         let (is_dir, is_file) = entry_is_dir_or_file(&entry);
         let rel_path = os_rel_posix(root_dir, &full_path);
-        let ignore_path = if is_dir { format!("{rel_path}/") } else { rel_path };
+        let ignore_path = if is_dir {
+            format!("{rel_path}/")
+        } else {
+            rel_path
+        };
         if ig.ignores(&ignore_path) {
             continue;
         }
         if is_dir {
             add_ignore_rules(ig, &full_path, root_dir);
-            files.extend(collect_files_inner(&full_path, file_pattern, skip_node_modules, root_dir, ig));
+            files.extend(collect_files_inner(
+                &full_path,
+                file_pattern,
+                skip_node_modules,
+                root_dir,
+                ig,
+            ));
         } else if is_file {
             if let Some(pattern) = file_pattern {
                 if pattern.is_match(&name_str) {
@@ -616,7 +679,9 @@ fn collect_skill_entries_inner(
         }
         let full_path = entry.path();
         let is_file = match entry.file_type() {
-            Ok(ft) if ft.is_symlink() => fs::metadata(&full_path).map(|m| m.is_file()).unwrap_or(false),
+            Ok(ft) if ft.is_symlink() => fs::metadata(&full_path)
+                .map(|m| m.is_file())
+                .unwrap_or(false),
             Ok(ft) => ft.is_file(),
             Err(_) => false,
         };
@@ -717,7 +782,11 @@ fn collect_auto_extension_entries(dir: &Path, root_dir: &Path) -> Vec<String> {
         let full_path = entry.path();
         let (is_dir, is_file) = entry_is_dir_or_file(entry);
         let rel_path = os_rel_posix(root_dir, &full_path);
-        let ignore_path = if is_dir { format!("{rel_path}/") } else { rel_path };
+        let ignore_path = if is_dir {
+            format!("{rel_path}/")
+        } else {
+            rel_path
+        };
         if ig.ignores(&ignore_path) {
             continue;
         }
@@ -734,12 +803,22 @@ fn collect_auto_extension_entries(dir: &Path, root_dir: &Path) -> Vec<String> {
 
 /// Port of upstream `collectAutoPromptEntries`: flat `.md` files in a dir.
 fn collect_auto_prompt_entries(dir: &Path, root_dir: &Path) -> Vec<String> {
-    collect_files(dir, Some(&file_pattern_regex(ResourceType::Prompts)), true, root_dir)
+    collect_files(
+        dir,
+        Some(&file_pattern_regex(ResourceType::Prompts)),
+        true,
+        root_dir,
+    )
 }
 
 /// Port of upstream `collectAutoThemeEntries`: flat `.json` files in a dir.
 fn collect_auto_theme_entries(dir: &Path, root_dir: &Path) -> Vec<String> {
-    collect_files(dir, Some(&file_pattern_regex(ResourceType::Themes)), true, root_dir)
+    collect_files(
+        dir,
+        Some(&file_pattern_regex(ResourceType::Themes)),
+        true,
+        root_dir,
+    )
 }
 
 fn file_pattern_regex(resource_type: ResourceType) -> regex::Regex {
@@ -846,12 +925,16 @@ fn matches_any_pattern(file_path: &str, patterns: &[String], base_dir: &str) -> 
     } else {
         None
     };
-    let parent_rel = parent_dir.as_deref().map(|p| os_rel_posix(Path::new(base_dir), p));
+    let parent_rel = parent_dir
+        .as_deref()
+        .map(|p| os_rel_posix(Path::new(base_dir), p));
     let parent_name = parent_dir
         .as_deref()
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().into_owned());
-    let parent_dir_posix = parent_dir.as_deref().map(|p| to_posix_path(&path_to_string(p)));
+    let parent_dir_posix = parent_dir
+        .as_deref()
+        .map(|p| to_posix_path(&path_to_string(p)));
 
     patterns.iter().any(|pattern| {
         let normalized = to_posix_path(pattern);
@@ -894,12 +977,16 @@ fn matches_any_exact_pattern(file_path: &str, patterns: &[String], base_dir: &st
     let file_path_posix = to_posix_path(file_path);
     let is_skill_file = name == "SKILL.md";
     let parent_rel = if is_skill_file {
-        Path::new(file_path).parent().map(|p| os_rel_posix(Path::new(base_dir), p))
+        Path::new(file_path)
+            .parent()
+            .map(|p| os_rel_posix(Path::new(base_dir), p))
     } else {
         None
     };
     let parent_dir_posix = if is_skill_file {
-        Path::new(file_path).parent().map(|p| to_posix_path(&path_to_string(p)))
+        Path::new(file_path)
+            .parent()
+            .map(|p| to_posix_path(&path_to_string(p)))
     } else {
         None
     };
@@ -912,7 +999,8 @@ fn matches_any_exact_pattern(file_path: &str, patterns: &[String], base_dir: &st
         if !is_skill_file {
             return false;
         }
-        normalized == parent_rel.as_deref().unwrap_or("") || normalized == parent_dir_posix.as_deref().unwrap_or("")
+        normalized == parent_rel.as_deref().unwrap_or("")
+            || normalized == parent_dir_posix.as_deref().unwrap_or("")
     })
 }
 
@@ -948,10 +1036,12 @@ fn is_enabled_by_overrides(file_path: &str, patterns: &[String], base_dir: &str)
     if !excludes.is_empty() && matches_any_pattern(file_path, &excludes, base_dir) {
         enabled = false;
     }
-    if !force_includes.is_empty() && matches_any_exact_pattern(file_path, &force_includes, base_dir) {
+    if !force_includes.is_empty() && matches_any_exact_pattern(file_path, &force_includes, base_dir)
+    {
         enabled = true;
     }
-    if !force_excludes.is_empty() && matches_any_exact_pattern(file_path, &force_excludes, base_dir) {
+    if !force_excludes.is_empty() && matches_any_exact_pattern(file_path, &force_excludes, base_dir)
+    {
         enabled = false;
     }
     enabled
@@ -959,7 +1049,11 @@ fn is_enabled_by_overrides(file_path: &str, patterns: &[String], base_dir: &str)
 
 /// Port of upstream `applyPatterns`: apply include/`!exclude`/`+force-include`/
 /// `-force-exclude` patterns over a full path set, returning the enabled set.
-fn apply_patterns(all_paths: &[String], patterns: &[String], base_dir: &str) -> std::collections::HashSet<String> {
+fn apply_patterns(
+    all_paths: &[String],
+    patterns: &[String],
+    base_dir: &str,
+) -> std::collections::HashSet<String> {
     let mut includes = Vec::new();
     let mut excludes = Vec::new();
     let mut force_includes = Vec::new();
@@ -1011,11 +1105,12 @@ fn apply_autoload_disabled_patterns(
 ) -> std::collections::HashMap<String, bool> {
     let mut result = std::collections::HashMap::new();
     for pattern in patterns {
-        let target = if pattern.starts_with('+') || pattern.starts_with('-') || pattern.starts_with('!') {
-            pattern[1..].to_string()
-        } else {
-            pattern.clone()
-        };
+        let target =
+            if pattern.starts_with('+') || pattern.starts_with('-') || pattern.starts_with('!') {
+                pattern[1..].to_string()
+            } else {
+                pattern.clone()
+            };
         let enabled = !pattern.starts_with('-') && !pattern.starts_with('!');
         let exact = pattern.starts_with('+') || pattern.starts_with('-');
         for file_path in all_paths {
@@ -1038,7 +1133,11 @@ fn resource_precedence_rank(m: &PathMetadata) -> u8 {
     if m.origin == ResourceOrigin::Package {
         return 4;
     }
-    let scope_base = if m.scope == ResolvedScope::Project { 0 } else { 2 };
+    let scope_base = if m.scope == ResolvedScope::Project {
+        0
+    } else {
+        2
+    };
     scope_base + if m.source == "local" { 0 } else { 1 }
 }
 
@@ -1184,11 +1283,18 @@ impl PackageManager {
         match ParsedSource::parse(source) {
             ParsedSource::Npm(npm) => format!("npm:{}", npm.name),
             ParsedSource::Git(git) => format!("git:{}/{}", git.host, git.path),
-            ParsedSource::Local(local) => format!("local:{}", self.resolve_path(&local.path).display()),
+            ParsedSource::Local(local) => {
+                format!("local:{}", self.resolve_path(&local.path).display())
+            }
         }
     }
 
-    fn package_sources_match(&self, existing: &PackageSource, input_source: &str, scope: SourceScope) -> bool {
+    fn package_sources_match(
+        &self,
+        existing: &PackageSource,
+        input_source: &str,
+        scope: SourceScope,
+    ) -> bool {
         let existing_source = match existing {
             PackageSource::Str(s) => s.clone(),
             PackageSource::Obj(o) => o.source.clone(),
@@ -1220,7 +1326,11 @@ impl PackageManager {
         let scope: SourceScope = if local { "project" } else { "user" };
         let current = self.get_scope_packages(scope);
         let normalized_source = self.normalize_package_source_for_settings(source, scope);
-        if let Some((index, existing)) = current.iter().enumerate().find(|(_, e)| self.package_sources_match(e, source, scope)) {
+        if let Some((index, existing)) = current
+            .iter()
+            .enumerate()
+            .find(|(_, e)| self.package_sources_match(e, source, scope))
+        {
             let existing_source = match existing {
                 PackageSource::Str(s) => s.clone(),
                 PackageSource::Obj(o) => o.source.clone(),
@@ -1314,9 +1424,14 @@ impl PackageManager {
 
     pub fn get_managed_npm_install_path(&self, source: &NpmSource, scope: SourceScope) -> PathBuf {
         if scope == "temporary" {
-            return self.temporary_dir("npm").join("node_modules").join(&source.name);
+            return self
+                .temporary_dir("npm")
+                .join("node_modules")
+                .join(&source.name);
         }
-        self.get_npm_install_root(scope, false).join("node_modules").join(&source.name)
+        self.get_npm_install_root(scope, false)
+            .join("node_modules")
+            .join(&source.name)
     }
 
     pub fn get_git_install_path(&self, source: &GitSource, scope: SourceScope) -> PathBuf {
@@ -1338,7 +1453,9 @@ impl PackageManager {
         let resolved = if path.is_absolute() {
             path.clone()
         } else {
-            std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()).join(parts.to_vec().join("/"))
+            std::fs::canonicalize(root)
+                .unwrap_or_else(|_| root.to_path_buf())
+                .join(parts.to_vec().join("/"))
         };
         let resolved_root = if root.is_absolute() {
             root.to_path_buf()
@@ -1347,7 +1464,9 @@ impl PackageManager {
         };
         let resolved_root_str = normalized_path(&resolved_root);
         let resolved_str = normalized_path(&resolved);
-        if resolved_str != resolved_root_str && !resolved_str.starts_with(&format!("{resolved_root_str}/")) {
+        if resolved_str != resolved_root_str
+            && !resolved_str.starts_with(&format!("{resolved_root_str}/"))
+        {
             panic_write("Refusing to use path outside package install root");
         }
         path
@@ -1438,33 +1557,55 @@ impl PackageManager {
             .unwrap_or_else(|| package_manager_command)
     }
 
-    fn run_command(&self, command: &str, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
+    fn run_command(
+        &self,
+        command: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+    ) -> Result<(), String> {
         let mut cmd = Command::new(command);
         cmd.args(args);
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
-        let output = cmd.output().map_err(|e| format!("Failed to run {command}: {e}"))?;
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run {command}: {e}"))?;
         if output.status.success() {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("{command} exited with {:?}: {}", output.status.code(), stderr.trim()))
+            Err(format!(
+                "{command} exited with {:?}: {}",
+                output.status.code(),
+                stderr.trim()
+            ))
         }
     }
 
-    fn run_command_capture(&self, command: &str, args: &[String], cwd: Option<&Path>) -> Result<String, String> {
+    fn run_command_capture(
+        &self,
+        command: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+    ) -> Result<String, String> {
         let mut cmd = Command::new(command);
         cmd.args(args);
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
-        let output = cmd.output().map_err(|e| format!("Failed to run {command}: {e}"))?;
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run {command}: {e}"))?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("{command} exited with {:?}: {}", output.status.code(), stderr.trim()))
+            Err(format!(
+                "{command} exited with {:?}: {}",
+                output.status.code(),
+                stderr.trim()
+            ))
         }
     }
 
@@ -1498,7 +1639,13 @@ impl PackageManager {
     }
 
     fn get_git_dependency_install_args(&self) -> Vec<String> {
-        if self.settings_manager.get_npm_command().as_ref().map(|c| !c.is_empty()).unwrap_or(false) {
+        if self
+            .settings_manager
+            .get_npm_command()
+            .as_ref()
+            .map(|c| !c.is_empty())
+            .unwrap_or(false)
+        {
             vec!["install".to_string()]
         } else {
             vec!["install".to_string(), "--omit=dev".to_string()]
@@ -1512,7 +1659,10 @@ impl PackageManager {
         let package_json = install_root.join("package.json");
         if !package_json.exists() {
             let pkg_json = json!({ "name": "pi-extensions", "private": true });
-            let _ = std::fs::write(package_json, serde_json::to_string_pretty(&pkg_json).unwrap());
+            let _ = std::fs::write(
+                package_json,
+                serde_json::to_string_pretty(&pkg_json).unwrap(),
+            );
         }
     }
 
@@ -1520,7 +1670,8 @@ impl PackageManager {
         std::fs::create_dir_all(dir).map_err(|e| format!("create dir: {e}"))?;
         let ignore_path = dir.join(".gitignore");
         if !ignore_path.exists() {
-            std::fs::write(&ignore_path, "*\n!.gitignore\n").map_err(|e| format!("write .gitignore: {e}"))?;
+            std::fs::write(&ignore_path, "*\n!.gitignore\n")
+                .map_err(|e| format!("write .gitignore: {e}"))?;
         }
         Ok(())
     }
@@ -1560,8 +1711,11 @@ impl PackageManager {
         let scope: SourceScope = if local { "project" } else { "user" };
         let parsed = ParsedSource::parse(source);
         let source_owned = source.to_string();
-        self.with_progress("install", source, &format!("Installing {source}..."), || {
-            match &parsed {
+        self.with_progress(
+            "install",
+            source,
+            &format!("Installing {source}..."),
+            || match &parsed {
                 ParsedSource::Npm(npm) => self.install_npm(npm, scope, false),
                 ParsedSource::Git(git) => self.install_git(git, scope),
                 ParsedSource::Local(local) => {
@@ -1571,8 +1725,8 @@ impl PackageManager {
                     }
                     Ok(())
                 }
-            }
-        })?;
+            },
+        )?;
         let _ = source_owned;
         Ok(())
     }
@@ -1587,11 +1741,16 @@ impl PackageManager {
         let scope: SourceScope = if local { "project" } else { "user" };
         let parsed = ParsedSource::parse(source);
         let source_owned = source.to_string();
-        self.with_progress("remove", source, &format!("Removing {source}..."), || match &parsed {
-            ParsedSource::Npm(npm) => self.uninstall_npm(npm, scope),
-            ParsedSource::Git(git) => self.remove_git(git, scope),
-            ParsedSource::Local(_) => Ok(()),
-        })?;
+        self.with_progress(
+            "remove",
+            source,
+            &format!("Removing {source}..."),
+            || match &parsed {
+                ParsedSource::Npm(npm) => self.uninstall_npm(npm, scope),
+                ParsedSource::Git(git) => self.remove_git(git, scope),
+                ParsedSource::Local(_) => Ok(()),
+            },
+        )?;
         let _ = source_owned;
         Ok(())
     }
@@ -1660,7 +1819,10 @@ impl PackageManager {
             ParsedSource::Local(local) => match scope {
                 Some(scope) => {
                     let base = self.base_dir_for_scope(scope);
-                    format!("local:{}", self.resolve_path_from_base(&local.path, &base).display())
+                    format!(
+                        "local:{}",
+                        self.resolve_path_from_base(&local.path, &base).display()
+                    )
                 }
                 None => format!("local:{}", self.resolve_path(&local.path).display()),
             },
@@ -1671,7 +1833,12 @@ impl PackageManager {
     // npm install internals
     // ------------------------------------------------------------------
 
-    fn install_npm(&self, source: &NpmSource, scope: SourceScope, temporary: bool) -> Result<(), String> {
+    fn install_npm(
+        &self,
+        source: &NpmSource,
+        scope: SourceScope,
+        temporary: bool,
+    ) -> Result<(), String> {
         let install_root = self.get_npm_install_root(scope, temporary);
         self.ensure_npm_project(&install_root);
         let args = self.get_npm_install_args(std::slice::from_ref(&source.spec), &install_root);
@@ -1685,10 +1852,20 @@ impl PackageManager {
         }
         let package_manager_name = self.get_package_manager_name();
         if package_manager_name == "bun" {
-            let args = vec!["uninstall".to_string(), source.name.clone(), "--cwd".to_string(), install_root.display().to_string()];
+            let args = vec![
+                "uninstall".to_string(),
+                source.name.clone(),
+                "--cwd".to_string(),
+                install_root.display().to_string(),
+            ];
             return self.run_npm_command(&args, None);
         }
-        let mut args = vec!["uninstall".to_string(), source.name.clone(), "--prefix".to_string(), install_root.display().to_string()];
+        let mut args = vec![
+            "uninstall".to_string(),
+            source.name.clone(),
+            "--prefix".to_string(),
+            install_root.display().to_string(),
+        ];
         if package_manager_name != "pnpm" {
             args.push("--legacy-peer-deps".to_string());
         }
@@ -1733,7 +1910,8 @@ impl PackageManager {
         if raw.is_empty() {
             return Err("Empty response from npm view".to_string());
         }
-        let parsed: Value = serde_json::from_str(raw).map_err(|_| "Unexpected response from npm view".to_string())?;
+        let parsed: Value = serde_json::from_str(raw)
+            .map_err(|_| "Unexpected response from npm view".to_string())?;
         if let Ok(s) = serde_json::from_value::<String>(parsed.clone()) {
             return Ok(s);
         }
@@ -1744,7 +1922,9 @@ impl PackageManager {
                 .collect();
             if !versions.is_empty() {
                 if let Some(range) = &source.range {
-                    if let Some(latest) = versions.iter().filter(|v| semver_satisfies(v, range)).max() {
+                    if let Some(latest) =
+                        versions.iter().filter(|v| semver_satisfies(v, range)).max()
+                    {
                         return Ok(latest.clone());
                     }
                 } else if let Some(latest) = versions.iter().max() {
@@ -1763,7 +1943,15 @@ impl PackageManager {
         let target_dir = self.get_git_install_path(source, scope);
         if target_dir.exists() {
             if source.ref_.is_some() {
-                self.ensure_git_ref(&target_dir, &["fetch".to_string(), "origin".to_string(), source.ref_.clone().unwrap()], "FETCH_HEAD")?;
+                self.ensure_git_ref(
+                    &target_dir,
+                    &[
+                        "fetch".to_string(),
+                        "origin".to_string(),
+                        source.ref_.clone().unwrap(),
+                    ],
+                    "FETCH_HEAD",
+                )?;
                 return Ok(());
             }
             let target = self.get_local_git_update_target(&target_dir)?;
@@ -1781,9 +1969,21 @@ impl PackageManager {
         let _ = std::fs::remove_file(&marker_path);
 
         let result = (|| -> Result<(), String> {
-            self.run_command("git", &["clone".to_string(), source.repo.clone(), target_dir.display().to_string()], None)?;
+            self.run_command(
+                "git",
+                &[
+                    "clone".to_string(),
+                    source.repo.clone(),
+                    target_dir.display().to_string(),
+                ],
+                None,
+            )?;
             if let Some(ref_) = &source.ref_ {
-                self.run_command("git", &["checkout".to_string(), ref_.clone()], Some(&target_dir))?;
+                self.run_command(
+                    "git",
+                    &["checkout".to_string(), ref_.clone()],
+                    Some(&target_dir),
+                )?;
             }
             let package_json = target_dir.join("package.json");
             if package_json.exists() {
@@ -1810,7 +2010,11 @@ impl PackageManager {
             return Ok(true);
         }
         if let Some(ref_) = &source.ref_ {
-            self.ensure_git_ref(&target_dir, &["fetch".to_string(), "origin".to_string(), ref_.clone()], "FETCH_HEAD")?;
+            self.ensure_git_ref(
+                &target_dir,
+                &["fetch".to_string(), "origin".to_string(), ref_.clone()],
+                "FETCH_HEAD",
+            )?;
             return Ok(true);
         }
         let target = self.get_local_git_update_target(&target_dir)?;
@@ -1820,17 +2024,33 @@ impl PackageManager {
 
     fn git_update_marker_path(&self, target_dir: &Path) -> PathBuf {
         let parent = target_dir.parent().unwrap_or(Path::new("."));
-        let name = target_dir.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = target_dir
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
         parent.join(format!(".{name}.pi-update-incomplete"))
     }
 
-    fn get_local_git_update_target(&self, installed_path: &Path) -> Result<LocalGitUpdateTarget, String> {
-        let upstream = self
-            .run_command_capture("git", &["rev-parse".to_string(), "--abbrev-ref".to_string(), "@{upstream}".to_string()], Some(installed_path))?;
+    fn get_local_git_update_target(
+        &self,
+        installed_path: &Path,
+    ) -> Result<LocalGitUpdateTarget, String> {
+        let upstream = self.run_command_capture(
+            "git",
+            &[
+                "rev-parse".to_string(),
+                "--abbrev-ref".to_string(),
+                "@{upstream}".to_string(),
+            ],
+            Some(installed_path),
+        )?;
         let trimmed = upstream.trim().to_string();
         if let Some(branch) = trimmed.strip_prefix("origin/") {
-            let head = self
-                .run_command_capture("git", &["rev-parse".to_string(), "@{upstream}".to_string()], Some(installed_path))?;
+            let head = self.run_command_capture(
+                "git",
+                &["rev-parse".to_string(), "@{upstream}".to_string()],
+                Some(installed_path),
+            )?;
             Ok(LocalGitUpdateTarget {
                 ref_: "@{upstream}".to_string(),
                 head: head.trim().to_string(),
@@ -1844,9 +2064,21 @@ impl PackageManager {
             })
         } else {
             // Fall back to origin/HEAD.
-            let _ = self.run_command("git", &["remote".to_string(), "set-head".to_string(), "origin".to_string(), "-a".to_string()], Some(installed_path));
-            let head = self
-                .run_command_capture("git", &["rev-parse".to_string(), "origin/HEAD".to_string()], Some(installed_path))?;
+            let _ = self.run_command(
+                "git",
+                &[
+                    "remote".to_string(),
+                    "set-head".to_string(),
+                    "origin".to_string(),
+                    "-a".to_string(),
+                ],
+                Some(installed_path),
+            );
+            let head = self.run_command_capture(
+                "git",
+                &["rev-parse".to_string(), "origin/HEAD".to_string()],
+                Some(installed_path),
+            )?;
             Ok(LocalGitUpdateTarget {
                 ref_: "origin/HEAD".to_string(),
                 head: head.trim().to_string(),
@@ -1861,22 +2093,45 @@ impl PackageManager {
         }
     }
 
-    fn ensure_git_ref(&self, target_dir: &Path, fetch_args: &[String], ref_: &str) -> Result<(), String> {
+    fn ensure_git_ref(
+        &self,
+        target_dir: &Path,
+        fetch_args: &[String],
+        ref_: &str,
+    ) -> Result<(), String> {
         self.run_command("git", fetch_args, Some(target_dir))?;
-        let local_head = self
-            .run_command_capture("git", &["rev-parse".to_string(), "HEAD".to_string()], Some(target_dir))?;
+        let local_head = self.run_command_capture(
+            "git",
+            &["rev-parse".to_string(), "HEAD".to_string()],
+            Some(target_dir),
+        )?;
         let commit_ref = format!("{ref_}^{{commit}}");
-        let target_head = self
-            .run_command_capture("git", &["rev-parse".to_string(), commit_ref], Some(target_dir))?;
+        let target_head = self.run_command_capture(
+            "git",
+            &["rev-parse".to_string(), commit_ref],
+            Some(target_dir),
+        )?;
         let marker_path = self.git_update_marker_path(target_dir);
         if local_head.trim() == target_head.trim() {
             let _ = std::fs::remove_file(&marker_path);
             return Ok(());
         }
         std::fs::write(&marker_path, "").map_err(|e| format!("write marker: {e}"))?;
-        self.run_command("git", &["reset".to_string(), "--hard".to_string(), target_head.trim().to_string()], Some(target_dir))?;
+        self.run_command(
+            "git",
+            &[
+                "reset".to_string(),
+                "--hard".to_string(),
+                target_head.trim().to_string(),
+            ],
+            Some(target_dir),
+        )?;
         // Clean + reinstall deps.
-        let clean_result = self.run_command("git", &["clean".to_string(), "-fdx".to_string()], Some(target_dir));
+        let clean_result = self.run_command(
+            "git",
+            &["clean".to_string(), "-fdx".to_string()],
+            Some(target_dir),
+        );
         let _ = std::fs::remove_file(&marker_path);
         clean_result?;
         let package_json = target_dir.join("package.json");
@@ -1909,7 +2164,9 @@ impl PackageManager {
                 current = dir.parent().map(|p| p.to_path_buf());
                 continue;
             }
-            let has_entries = std::fs::read_dir(&dir).map(|mut it| it.next().is_some()).unwrap_or(false);
+            let has_entries = std::fs::read_dir(&dir)
+                .map(|mut it| it.next().is_some())
+                .unwrap_or(false);
             if !has_entries {
                 let _ = std::fs::remove_dir_all(&dir);
             } else {
@@ -2010,9 +2267,17 @@ impl PackageManager {
         temporary: bool,
     ) -> Result<ResolvedPaths, String> {
         let mut accumulator = self.create_accumulator();
-        let scope: &'static str = if temporary { "temporary" } else if local { "project" } else { "user" };
-        let package_sources: Vec<(PackageSource, &'static str)> =
-            sources.iter().map(|s| (PackageSource::Str(s.clone()), scope)).collect();
+        let scope: &'static str = if temporary {
+            "temporary"
+        } else if local {
+            "project"
+        } else {
+            "user"
+        };
+        let package_sources: Vec<(PackageSource, &'static str)> = sources
+            .iter()
+            .map(|s| (PackageSource::Str(s.clone()), scope))
+            .collect();
         self.resolve_package_sources(&package_sources, &mut accumulator, None)?;
         Ok(self.to_resolved_paths(&accumulator))
     }
@@ -2035,7 +2300,10 @@ impl PackageManager {
                 None
             };
             let delta_base = self.find_autoload_delta_base(pkg, scope, sources);
-            let resolved_source = delta_base.as_ref().map(|d| d.0.as_str()).unwrap_or(source_str.as_str());
+            let resolved_source = delta_base
+                .as_ref()
+                .map(|d| d.0.as_str())
+                .unwrap_or(source_str.as_str());
             let resolved_scope = delta_base.as_ref().map(|d| d.1).unwrap_or(scope);
             let parsed = ParsedSource::parse(resolved_source);
             let metadata = PathMetadata {
@@ -2051,7 +2319,13 @@ impl PackageManager {
 
             if let ParsedSource::Local(local) = &parsed {
                 let base_dir = self.base_dir_for_scope(resolved_scope);
-                self.resolve_local_extension_source(local, accumulator, filter.as_ref(), &metadata, &base_dir);
+                self.resolve_local_extension_source(
+                    local,
+                    accumulator,
+                    filter.as_ref(),
+                    &metadata,
+                    &base_dir,
+                );
                 continue;
             }
 
@@ -2092,7 +2366,12 @@ impl PackageManager {
                     }
                     let mut metadata = metadata;
                     metadata.base_dir = Some(path_to_string(&installed_path));
-                    self.collect_package_resources(&installed_path, accumulator, filter.as_ref(), &metadata);
+                    self.collect_package_resources(
+                        &installed_path,
+                        accumulator,
+                        filter.as_ref(),
+                        &metadata,
+                    );
                 }
                 ParsedSource::Git(git) => {
                     let installed_path = self.get_git_install_path(git, resolved_scope);
@@ -2106,7 +2385,12 @@ impl PackageManager {
                     }
                     let mut metadata = metadata;
                     metadata.base_dir = Some(path_to_string(&installed_path));
-                    self.collect_package_resources(&installed_path, accumulator, filter.as_ref(), &metadata);
+                    self.collect_package_resources(
+                        &installed_path,
+                        accumulator,
+                        filter.as_ref(),
+                        &metadata,
+                    );
                 }
                 ParsedSource::Local(_) => {}
             }
@@ -2114,7 +2398,11 @@ impl PackageManager {
         Ok(())
     }
 
-    fn install_parsed_source(&self, parsed: &ParsedSource, scope: &'static str) -> Result<(), String> {
+    fn install_parsed_source(
+        &self,
+        parsed: &ParsedSource,
+        scope: &'static str,
+    ) -> Result<(), String> {
         match parsed {
             ParsedSource::Npm(npm) => self.install_npm(npm, scope, scope == "temporary"),
             ParsedSource::Git(git) => self.install_git(git, scope),
@@ -2135,7 +2423,9 @@ impl PackageManager {
         if !is_obj {
             return None;
         }
-        let PackageSource::Obj(obj) = pkg else { return None };
+        let PackageSource::Obj(obj) = pkg else {
+            return None;
+        };
         if obj.autoload != Some(false) {
             return None;
         }
@@ -2166,17 +2456,30 @@ impl PackageManager {
         }
         match fs::metadata(&resolved) {
             Ok(m) if m.is_file() => {
-                let dirname = resolved.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| resolved.clone());
+                let dirname = resolved
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| resolved.clone());
                 let mut m2 = metadata.clone();
                 m2.base_dir = Some(path_to_string(&dirname));
-                self.add_resource(&mut accumulator.extensions, &path_to_string(&resolved), &m2, true);
+                self.add_resource(
+                    &mut accumulator.extensions,
+                    &path_to_string(&resolved),
+                    &m2,
+                    true,
+                );
             }
             Ok(m) if m.is_dir() => {
                 let mut m2 = metadata.clone();
                 m2.base_dir = Some(path_to_string(&resolved));
                 let resources = self.collect_package_resources(&resolved, accumulator, filter, &m2);
                 if !resources {
-                    self.add_resource(&mut accumulator.extensions, &path_to_string(&resolved), &m2, true);
+                    self.add_resource(
+                        &mut accumulator.extensions,
+                        &path_to_string(&resolved),
+                        &m2,
+                        true,
+                    );
                 }
             }
             _ => {}
@@ -2186,7 +2489,10 @@ impl PackageManager {
     /// Port of upstream `dedupePackages`: project scope wins over global for
     /// the same package identity; an `autoload: false` project entry is a delta
     /// over the (kept) global entry.
-    fn dedupe_packages(&self, packages: &[(PackageSource, &'static str)]) -> Vec<(PackageSource, &'static str)> {
+    fn dedupe_packages(
+        &self,
+        packages: &[(PackageSource, &'static str)],
+    ) -> Vec<(PackageSource, &'static str)> {
         let mut result: Vec<(PackageSource, &'static str)> = Vec::new();
         let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for entry in packages {
@@ -2248,9 +2554,21 @@ impl PackageManager {
                 let target = self.get_target_map(accumulator, resource_type);
                 let patterns = filter.patterns(resource_type);
                 if filter.autoload == Some(false) {
-                    self.apply_package_delta_filter(package_root, patterns, resource_type, target, metadata);
+                    self.apply_package_delta_filter(
+                        package_root,
+                        patterns,
+                        resource_type,
+                        target,
+                        metadata,
+                    );
                 } else if let Some(patterns) = patterns {
-                    self.apply_package_filter(package_root, patterns, resource_type, target, metadata);
+                    self.apply_package_filter(
+                        package_root,
+                        patterns,
+                        resource_type,
+                        target,
+                        metadata,
+                    );
                 } else {
                     self.collect_default_resources(package_root, resource_type, target, metadata);
                 }
@@ -2284,7 +2602,12 @@ impl PackageManager {
             if dir.exists() {
                 let files = collect_resource_files(&dir, resource_type, &dir);
                 for f in files {
-                    self.add_resource(self.get_target_map(accumulator, resource_type), &f, metadata, true);
+                    self.add_resource(
+                        self.get_target_map(accumulator, resource_type),
+                        &f,
+                        metadata,
+                        true,
+                    );
                 }
                 has_any_dir = true;
             }
@@ -2334,7 +2657,8 @@ impl PackageManager {
             }
             return;
         }
-        let enabled_by_user = apply_patterns(&all_files, user_patterns, &path_to_string(package_root));
+        let enabled_by_user =
+            apply_patterns(&all_files, user_patterns, &path_to_string(package_root));
         for f in &all_files {
             let enabled = enabled_by_user.contains(f);
             self.add_resource(target, f, metadata, enabled);
@@ -2354,7 +2678,11 @@ impl PackageManager {
             _ => return,
         };
         let all_files = self.collect_manifest_files(package_root, resource_type);
-        let enabled_by_user = apply_autoload_disabled_patterns(&all_files, user_patterns, &path_to_string(package_root));
+        let enabled_by_user = apply_autoload_disabled_patterns(
+            &all_files,
+            user_patterns,
+            &path_to_string(package_root),
+        );
         for (file_path, enabled) in enabled_by_user {
             self.add_resource(target, &file_path, metadata, enabled);
         }
@@ -2362,7 +2690,11 @@ impl PackageManager {
 
     /// Port of `collectManifestFiles`: all files of a resource type from a
     /// package, after the manifest's own patterns.
-    fn collect_manifest_files(&self, package_root: &Path, resource_type: ResourceType) -> Vec<String> {
+    fn collect_manifest_files(
+        &self,
+        package_root: &Path,
+        resource_type: ResourceType,
+    ) -> Vec<String> {
         let manifest = read_pi_manifest(&package_root.join("package.json"));
         let entries = manifest.as_ref().map(|m| match resource_type {
             ResourceType::Extensions => m.extensions.clone(),
@@ -2372,10 +2704,19 @@ impl PackageManager {
         });
         if let Some(entries) = entries {
             if !entries.is_empty() {
-                let all_files = self.collect_files_from_manifest_entries(&entries, package_root, resource_type);
-                let manifest_patterns: Vec<String> = entries.iter().filter(|e| is_override_pattern(e)).cloned().collect();
+                let all_files =
+                    self.collect_files_from_manifest_entries(&entries, package_root, resource_type);
+                let manifest_patterns: Vec<String> = entries
+                    .iter()
+                    .filter(|e| is_override_pattern(e))
+                    .cloned()
+                    .collect();
                 return if !manifest_patterns.is_empty() {
-                    let set = apply_patterns(&all_files, &manifest_patterns, &path_to_string(package_root));
+                    let set = apply_patterns(
+                        &all_files,
+                        &manifest_patterns,
+                        &path_to_string(package_root),
+                    );
                     set.into_iter().collect()
                 } else {
                     all_files
@@ -2401,7 +2742,11 @@ impl PackageManager {
             return;
         }
         let all_files = self.collect_files_from_manifest_entries(entries, root, resource_type);
-        let patterns: Vec<String> = entries.iter().filter(|e| is_override_pattern(e)).cloned().collect();
+        let patterns: Vec<String> = entries
+            .iter()
+            .filter(|e| is_override_pattern(e))
+            .cloned()
+            .collect();
         let enabled_paths = apply_patterns(&all_files, &patterns, &path_to_string(root));
         for f in &all_files {
             if enabled_paths.contains(f) {
@@ -2416,7 +2761,8 @@ impl PackageManager {
         root: &Path,
         resource_type: ResourceType,
     ) -> Vec<String> {
-        let source_entries: Vec<&String> = entries.iter().filter(|e| !is_override_pattern(e)).collect();
+        let source_entries: Vec<&String> =
+            entries.iter().filter(|e| !is_override_pattern(e)).collect();
         let mut resolved: Vec<String> = Vec::new();
         for entry in source_entries {
             if has_glob_pattern(entry) {
@@ -2460,7 +2806,9 @@ impl PackageManager {
         let project_agents_skill_dirs: Vec<String> = if project_trusted {
             collect_ancestor_agents_skill_dirs(Path::new(&self.cwd))
                 .into_iter()
-                .filter(|dir| resolve_noop(dir) != resolve_noop(&path_to_string(&user_agents_skills_dir)))
+                .filter(|dir| {
+                    resolve_noop(dir) != resolve_noop(&path_to_string(&user_agents_skills_dir))
+                })
                 .collect()
         } else {
             Vec::new()
@@ -2488,7 +2836,11 @@ impl PackageManager {
             );
             add_resources(
                 ResourceType::Skills,
-                &collect_skill_entries(&project_dirs.skills, SkillDiscoveryMode::Pi, &project_dirs.skills),
+                &collect_skill_entries(
+                    &project_dirs.skills,
+                    SkillDiscoveryMode::Pi,
+                    &project_dirs.skills,
+                ),
                 &project_metadata,
                 &project_overrides.skills,
                 project_base_dir,
@@ -2497,12 +2849,19 @@ impl PackageManager {
 
         for agents_skills_dir in &project_agents_skill_dirs {
             let agents_skills_path = Path::new(agents_skills_dir);
-            let agents_base_dir = agents_skills_path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+            let agents_base_dir = agents_skills_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
             let mut agents_metadata = project_metadata.clone();
             agents_metadata.base_dir = Some(path_to_string(&agents_base_dir));
             add_resources(
                 ResourceType::Skills,
-                &collect_skill_entries(agents_skills_path, SkillDiscoveryMode::Agents, agents_skills_path),
+                &collect_skill_entries(
+                    agents_skills_path,
+                    SkillDiscoveryMode::Agents,
+                    agents_skills_path,
+                ),
                 &agents_metadata,
                 &project_overrides.skills,
                 &agents_base_dir,
@@ -2549,7 +2908,11 @@ impl PackageManager {
         user_agents_metadata.base_dir = Some(path_to_string(&user_agents_base_dir));
         add_resources(
             ResourceType::Skills,
-            &collect_skill_entries(&user_agents_skills_dir, SkillDiscoveryMode::Agents, &user_agents_skills_dir),
+            &collect_skill_entries(
+                &user_agents_skills_dir,
+                SkillDiscoveryMode::Agents,
+                &user_agents_skills_dir,
+            ),
             &user_agents_metadata,
             &user_overrides.skills,
             &user_agents_base_dir,
@@ -2571,7 +2934,11 @@ impl PackageManager {
         );
     }
 
-    fn collect_files_from_paths(&self, paths: &[String], resource_type: ResourceType) -> Vec<String> {
+    fn collect_files_from_paths(
+        &self,
+        paths: &[String],
+        resource_type: ResourceType,
+    ) -> Vec<String> {
         let mut files = Vec::new();
         for p in paths {
             let path = Path::new(p);
@@ -2627,7 +2994,11 @@ impl PackageManager {
     }
 
     fn to_resolved_paths(&self, accumulator: &ResourceAccumulator) -> ResolvedPaths {
-        let map_to_resolved = |entries: &std::collections::HashMap<String, (PathMetadata, bool)>| -> Vec<ResolvedResource> {
+        let map_to_resolved = |entries: &std::collections::HashMap<
+            String,
+            (PathMetadata, bool),
+        >|
+         -> Vec<ResolvedResource> {
             let mut resolved: Vec<(String, PathMetadata, bool)> = entries
                 .iter()
                 .map(|(path, (metadata, enabled))| (path.clone(), metadata.clone(), *enabled))
@@ -2674,7 +3045,11 @@ fn resolve_noop(p: &str) -> String {
 fn canonicalize_path(p: &str) -> String {
     fs::canonicalize(p)
         .map(|c| to_posix_path(&path_to_string(&c)))
-        .unwrap_or_else(|_| normalize_lexical_path(Path::new(p)).to_string_lossy().into_owned())
+        .unwrap_or_else(|_| {
+            normalize_lexical_path(Path::new(p))
+                .to_string_lossy()
+                .into_owned()
+        })
 }
 
 fn settings_string_list(settings: &crate::core::settings::SettingsMap, key: &str) -> Vec<String> {
@@ -2690,12 +3065,19 @@ fn settings_string_list(settings: &crate::core::settings::SettingsMap, key: &str
         .unwrap_or_default()
 }
 
-fn settings_overrides(settings: &crate::core::settings::SettingsMap) -> crate::core::package_manager::SettingsOverrides {
+fn settings_overrides(
+    settings: &crate::core::settings::SettingsMap,
+) -> crate::core::package_manager::SettingsOverrides {
     let extensions = settings_string_list(settings, "extensions");
     let skills = settings_string_list(settings, "skills");
     let prompts = settings_string_list(settings, "prompts");
     let themes = settings_string_list(settings, "themes");
-    crate::core::package_manager::SettingsOverrides { extensions, skills, prompts, themes }
+    crate::core::package_manager::SettingsOverrides {
+        extensions,
+        skills,
+        prompts,
+        themes,
+    }
 }
 
 struct SettingsOverrides {
@@ -2770,7 +3152,9 @@ fn collect_glob_matches(stack: &mut Vec<PathBuf>, pattern: &str, out: &mut Vec<S
     let Some((prefix_part, rest)) = normalized.split_once('/') else {
         // No slash left: treat remaining as a filename glob.
         while let Some(dir) = stack.pop() {
-            let Ok(entries) = fs::read_dir(&dir) else { continue };
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if glob_match(&normalized, &name, false) {
@@ -2789,7 +3173,9 @@ fn collect_glob_matches(stack: &mut Vec<PathBuf>, pattern: &str, out: &mut Vec<S
             continue;
         }
         if part.contains('*') || part.contains('?') || part.contains('[') {
-            let Ok(entries) = fs::read_dir(&dir) else { continue };
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if glob_match(part, &name, false) {
@@ -2825,17 +3211,25 @@ fn installed_npm_version(installed_path: &Path) -> Option<String> {
     let package_json = installed_path.join("package.json");
     let content = std::fs::read_to_string(package_json).ok()?;
     let pkg: Value = serde_json::from_str(&content).ok()?;
-    pkg.get("version").and_then(|v| v.as_str()).map(|s| s.to_string())
+    pkg.get("version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Very small semver comparison: numeric dots first, then prerelease-aware.
 fn semver_gt(a: &str, b: &str) -> bool {
-    parse_semver_parts(a).zip(parse_semver_parts(b)).map(|(pa, pb)| pa > pb).unwrap_or(a > b)
+    parse_semver_parts(a)
+        .zip(parse_semver_parts(b))
+        .map(|(pa, pb)| pa > pb)
+        .unwrap_or(a > b)
 }
 
 fn parse_semver_parts(version: &str) -> Option<(Vec<u64>, Option<String>)> {
     let core = version.split(['-', '+']).next().unwrap_or(version);
-    let prerelease = version.split('-').nth(1).map(|s| s.split('+').next().unwrap_or(s).to_string());
+    let prerelease = version
+        .split('-')
+        .nth(1)
+        .map(|s| s.split('+').next().unwrap_or(s).to_string());
     let parts: Vec<u64> = core.split('.').filter_map(|p| p.parse().ok()).collect();
     if parts.is_empty() {
         return None;
@@ -2890,7 +3284,9 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
 
 fn expand_home(input: &str) -> String {
     if input == "~" {
-        return dirs::home_dir().map(|h| h.display().to_string()).unwrap_or_else(|| input.to_string());
+        return dirs::home_dir()
+            .map(|h| h.display().to_string())
+            .unwrap_or_else(|| input.to_string());
     }
     if let Some(rest) = input.strip_prefix("~/") {
         return dirs::home_dir()
@@ -2905,10 +3301,19 @@ fn normalized_path(path: &Path) -> String {
 }
 
 fn pathdiff(base: &Path, target: &Path) -> String {
-    let base_parts: Vec<String> = base.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-    let target_parts: Vec<String> = target.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    let base_parts: Vec<String> = base
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let target_parts: Vec<String> = target
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
     let mut common = 0;
-    while common < base_parts.len() && common < target_parts.len() && base_parts[common] == target_parts[common] {
+    while common < base_parts.len()
+        && common < target_parts.len()
+        && base_parts[common] == target_parts[common]
+    {
         common += 1;
     }
     let mut rel = Vec::new();
@@ -2980,7 +3385,10 @@ mod tests {
 
     #[test]
     fn parses_git_sources() {
-        assert_eq!(ParsedSource::parse("git:github.com/user/repo@v1").type_name(), "git");
+        assert_eq!(
+            ParsedSource::parse("git:github.com/user/repo@v1").type_name(),
+            "git"
+        );
         let parsed = ParsedSource::parse("https://github.com/user/repo@v1.2.3");
         match parsed {
             ParsedSource::Git(git) => {
@@ -2991,19 +3399,40 @@ mod tests {
             }
             _ => panic!("expected git"),
         }
-        assert_eq!(ParsedSource::parse("git:git@github.com:user/repo@v1").type_name(), "git");
-        assert_eq!(ParsedSource::parse("ssh://git@github.com/user/repo@v1").type_name(), "git");
+        assert_eq!(
+            ParsedSource::parse("git:git@github.com:user/repo@v1").type_name(),
+            "git"
+        );
+        assert_eq!(
+            ParsedSource::parse("ssh://git@github.com/user/repo@v1").type_name(),
+            "git"
+        );
         // Host/path shorthand without git: is local.
-        assert_eq!(ParsedSource::parse("github.com/user/repo").type_name(), "local");
+        assert_eq!(
+            ParsedSource::parse("github.com/user/repo").type_name(),
+            "local"
+        );
         // With git: prefix it is git.
-        assert_eq!(ParsedSource::parse("git:github.com/user/repo").type_name(), "git");
+        assert_eq!(
+            ParsedSource::parse("git:github.com/user/repo").type_name(),
+            "git"
+        );
     }
 
     #[test]
     fn parses_local_sources() {
-        assert_eq!(ParsedSource::parse("/absolute/path/to/package").type_name(), "local");
-        assert_eq!(ParsedSource::parse("./relative/path/to/package").type_name(), "local");
-        assert_eq!(ParsedSource::parse("../relative/path/to/package").type_name(), "local");
+        assert_eq!(
+            ParsedSource::parse("/absolute/path/to/package").type_name(),
+            "local"
+        );
+        assert_eq!(
+            ParsedSource::parse("./relative/path/to/package").type_name(),
+            "local"
+        );
+        assert_eq!(
+            ParsedSource::parse("../relative/path/to/package").type_name(),
+            "local"
+        );
         let local = ParsedSource::parse("../agents/foo");
         match local {
             ParsedSource::Local(l) => assert_eq!(l.path, "../agents/foo"),
@@ -3026,12 +3455,24 @@ mod tests {
         let agent = Path::new("/tmp/agent");
         let pm = manager(cwd, agent);
         // npm user root.
-        assert_eq!(pm.get_npm_install_root("user", false), Path::new("/tmp/agent/npm"));
+        assert_eq!(
+            pm.get_npm_install_root("user", false),
+            Path::new("/tmp/agent/npm")
+        );
         // npm project root.
-        assert_eq!(pm.get_npm_install_root("project", false), Path::new("/tmp/cwd/.pi/npm"));
+        assert_eq!(
+            pm.get_npm_install_root("project", false),
+            Path::new("/tmp/cwd/.pi/npm")
+        );
         // git user root.
-        assert_eq!(pm.get_git_install_root("user").unwrap(), Path::new("/tmp/agent/git"));
-        assert_eq!(pm.get_git_install_root("project").unwrap(), Path::new("/tmp/cwd/.pi/git"));
+        assert_eq!(
+            pm.get_git_install_root("user").unwrap(),
+            Path::new("/tmp/agent/git")
+        );
+        assert_eq!(
+            pm.get_git_install_root("project").unwrap(),
+            Path::new("/tmp/cwd/.pi/git")
+        );
     }
 
     #[test]
@@ -3095,21 +3536,28 @@ mod tests {
     #[test]
     fn add_git_preserves_object_filters() {
         let mut pm = manager_in_memory(Default::default());
-        pm.settings_manager.set_packages(vec![PackageSource::Obj(PackageSourceObj {
-            source: "git:github.com/user/repo@v1".into(),
-            autoload: None,
-            extensions: Some(vec!["extensions/main.ts".into()]),
-            skills: Some(vec![]),
-            prompts: Some(vec!["prompts/review.md".into()]),
-            themes: Some(vec!["themes/dark.json".into()]),
-        })]);
+        pm.settings_manager
+            .set_packages(vec![PackageSource::Obj(PackageSourceObj {
+                source: "git:github.com/user/repo@v1".into(),
+                autoload: None,
+                extensions: Some(vec!["extensions/main.ts".into()]),
+                skills: Some(vec![]),
+                prompts: Some(vec!["prompts/review.md".into()]),
+                themes: Some(vec!["themes/dark.json".into()]),
+            })]);
         assert!(pm.add_source_to_settings("git:github.com/user/repo@v2", false));
         let packages = pm.settings_manager.get_packages();
         match &packages[0] {
             PackageSource::Obj(o) => {
                 assert_eq!(o.source, "git:github.com/user/repo@v2");
-                assert_eq!(o.extensions.as_ref().unwrap(), &vec!["extensions/main.ts".to_string()]);
-                assert_eq!(o.prompts.as_ref().unwrap(), &vec!["prompts/review.md".to_string()]);
+                assert_eq!(
+                    o.extensions.as_ref().unwrap(),
+                    &vec!["extensions/main.ts".to_string()]
+                );
+                assert_eq!(
+                    o.prompts.as_ref().unwrap(),
+                    &vec!["prompts/review.md".to_string()]
+                );
             }
             _ => panic!("expected object package source"),
         }
@@ -3153,27 +3601,38 @@ mod tests {
         assert_eq!(parsed["name"], "pi-extensions");
         assert_eq!(parsed["private"], true);
         // .gitignore content for managed installs.
-        assert_eq!(std::fs::read_to_string(root.join(".gitignore")).unwrap(), "*\n!.gitignore\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join(".gitignore")).unwrap(),
+            "*\n!.gitignore\n"
+        );
         let _ = std::fs::remove_dir_all(&cwd);
     }
 
     #[test]
     fn package_manager_name_and_npm_command() {
         let mut pm = manager_in_memory(Default::default());
-        pm.settings_manager.set_npm_command(Some(vec!["/usr/bin/npm".into()]));
+        pm.settings_manager
+            .set_npm_command(Some(vec!["/usr/bin/npm".into()]));
         assert_eq!(pm.get_npm_command(), ("/usr/bin/npm".to_string(), vec![]));
         assert_eq!(pm.get_package_manager_name(), "npm");
-        pm.settings_manager.set_npm_command(Some(vec!["npx".into(), "yarn".into(), "--".into(), "bun".into()]));
+        pm.settings_manager.set_npm_command(Some(vec![
+            "npx".into(),
+            "yarn".into(),
+            "--".into(),
+            "bun".into(),
+        ]));
         assert_eq!(pm.get_package_manager_name(), "bun");
     }
 
     #[test]
     fn npm_install_args_per_pm() {
         let mut pm = manager_in_memory(Default::default());
-        pm.settings_manager.set_npm_command(Some(vec!["npm".into()]));
+        pm.settings_manager
+            .set_npm_command(Some(vec!["npm".into()]));
         let args = pm.get_npm_install_args(&["left-pad".into()], Path::new("/root"));
         assert!(args.contains(&"--legacy-peer-deps".to_string()), "{args:?}");
-        pm.settings_manager.set_npm_command(Some(vec!["bun".into()]));
+        pm.settings_manager
+            .set_npm_command(Some(vec!["bun".into()]));
         let args = pm.get_npm_install_args(&["left-pad".into()], Path::new("/root"));
         assert!(args.contains(&"--omit=peer".to_string()), "{args:?}");
         assert!(args.contains(&"/root".to_string()), "{args:?}");
@@ -3222,25 +3681,45 @@ mod resolve_tests {
     fn resolve_auto_discovers_user_resources() {
         let cwd = fixture("auto-cwd");
         let agent = fixture("auto-agent");
-        write(&agent.join("skills").join("alpha").join("SKILL.md"), "---\nname: alpha\n---\nA\n");
+        write(
+            &agent.join("skills").join("alpha").join("SKILL.md"),
+            "---\nname: alpha\n---\nA\n",
+        );
         write(&agent.join("extensions").join("hook.ts"), "export {}\n");
         write(&agent.join("prompts").join("tip.md"), "# tip\n");
         write(&agent.join("themes").join("dark.json"), "{}");
         let pm = resolve_manager(&cwd, &agent);
         let resolved = pm.resolve(None).unwrap();
 
-        let skill = resolved.skills.iter().find(|r| r.path.ends_with("SKILL.md")).expect("skill");
+        let skill = resolved
+            .skills
+            .iter()
+            .find(|r| r.path.ends_with("SKILL.md"))
+            .expect("skill");
         assert!(skill.enabled);
         assert_eq!(skill.metadata.source, "auto");
         assert_eq!(skill.metadata.scope, ResolvedScope::User);
         assert_eq!(skill.metadata.origin, ResourceOrigin::TopLevel);
 
-        assert!(resolved.extensions.iter().any(|r| r.path.ends_with("hook.ts")));
+        assert!(resolved
+            .extensions
+            .iter()
+            .any(|r| r.path.ends_with("hook.ts")));
         assert!(resolved.prompts.iter().any(|r| r.path.ends_with("tip.md")));
-        assert!(resolved.themes.iter().any(|r| r.path.ends_with("dark.json")));
+        assert!(resolved
+            .themes
+            .iter()
+            .any(|r| r.path.ends_with("dark.json")));
 
         // The user skills dir metadata carries the agent_dir baseDir.
-        assert!(resolved.skills.iter().find(|r| r.path.ends_with("SKILL.md")).unwrap().metadata.base_dir.is_some());
+        assert!(resolved
+            .skills
+            .iter()
+            .find(|r| r.path.ends_with("SKILL.md"))
+            .unwrap()
+            .metadata
+            .base_dir
+            .is_some());
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(&agent);
     }
@@ -3249,7 +3728,13 @@ mod resolve_tests {
     fn resolve_discovers_project_resources_when_trusted() {
         let cwd = fixture("proj-cwd");
         let agent = fixture("proj-agent");
-        write(&cwd.join(CONFIG_DIR_NAME).join("skills").join("beta").join("SKILL.md"), "---\nname: beta\n---\nB\n");
+        write(
+            &cwd.join(CONFIG_DIR_NAME)
+                .join("skills")
+                .join("beta")
+                .join("SKILL.md"),
+            "---\nname: beta\n---\nB\n",
+        );
         let mut pm = resolve_manager(&cwd, &agent);
         let trusted = true;
         pm.settings_manager.set_project_trusted(trusted);
@@ -3270,7 +3755,10 @@ mod resolve_tests {
         let agent = fixture("local-agent");
         write(&agent.join("extensions").join("mine.ts"), "export {}\n");
         let mut map = crate::core::settings::SettingsMap::new();
-        map.insert("extensions".to_string(), Value::Array(vec![Value::String("extensions/mine.ts".into())]));
+        map.insert(
+            "extensions".to_string(),
+            Value::Array(vec![Value::String("extensions/mine.ts".into())]),
+        );
         let pm = PackageManager::new(PackageManagerOptions {
             cwd: cwd.display().to_string(),
             agent_dir: agent.display().to_string(),
@@ -3296,24 +3784,47 @@ mod resolve_tests {
         let cwd = fixture("filter-cwd");
         let agent = fixture("filter-agent");
         // Configured local package at agent_dir/pkgs/ext with an extensions dir.
-        write(&agent.join("pkgs").join("ext").join("extensions").join("a.ts"), "export {}\n");
-        write(&agent.join("pkgs").join("ext").join("extensions").join("b.ts"), "export {}\n");
+        write(
+            &agent
+                .join("pkgs")
+                .join("ext")
+                .join("extensions")
+                .join("a.ts"),
+            "export {}\n",
+        );
+        write(
+            &agent
+                .join("pkgs")
+                .join("ext")
+                .join("extensions")
+                .join("b.ts"),
+            "export {}\n",
+        );
         let mut pm = resolve_manager(&cwd, &agent);
-        pm.settings_manager.set_packages(vec![PackageSource::Obj(PackageSourceObj {
-            source: "./pkgs/ext".into(),
-            autoload: None,
-            extensions: Some(vec!["extensions/a.ts".into(), "!extensions/b.ts".into()]),
-            skills: None,
-            prompts: None,
-            themes: None,
-        })]);
+        pm.settings_manager
+            .set_packages(vec![PackageSource::Obj(PackageSourceObj {
+                source: "./pkgs/ext".into(),
+                autoload: None,
+                extensions: Some(vec!["extensions/a.ts".into(), "!extensions/b.ts".into()]),
+                skills: None,
+                prompts: None,
+                themes: None,
+            })]);
         let resolved = pm.resolve(None).unwrap();
 
-        let a = resolved.extensions.iter().find(|r| r.path.ends_with("a.ts")).expect("a");
+        let a = resolved
+            .extensions
+            .iter()
+            .find(|r| r.path.ends_with("a.ts"))
+            .expect("a");
         assert!(a.enabled);
         assert_eq!(a.metadata.origin, ResourceOrigin::Package);
         // b is present but disabled by the `!` exclude pattern.
-        let b = resolved.extensions.iter().find(|r| r.path.ends_with("b.ts")).expect("b");
+        let b = resolved
+            .extensions
+            .iter()
+            .find(|r| r.path.ends_with("b.ts"))
+            .expect("b");
         assert!(!b.enabled);
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(&agent);
@@ -3324,8 +3835,14 @@ mod resolve_tests {
         let cwd = fixture("ignore-cwd");
         let agent = fixture("ignore-agent");
         write(&agent.join("skills").join(".gitignore"), "secret/\n");
-        write(&agent.join("skills").join("keep").join("SKILL.md"), "---\nname: keep\n---\nK\n");
-        write(&agent.join("skills").join("secret").join("SKILL.md"), "---\nname: secret\n---\nS\n");
+        write(
+            &agent.join("skills").join("keep").join("SKILL.md"),
+            "---\nname: keep\n---\nK\n",
+        );
+        write(
+            &agent.join("skills").join("secret").join("SKILL.md"),
+            "---\nname: secret\n---\nS\n",
+        );
         let pm = resolve_manager(&cwd, &agent);
         let resolved = pm.resolve(None).unwrap();
 
@@ -3343,7 +3860,9 @@ mod resolve_tests {
         pm.settings_manager
             .set_packages(vec![PackageSource::Str("npm:left-pad".into())]);
         // Missing, not offline, but the on_missing seam says skip => skipped.
-        let resolved = pm.resolve(Some(&|_source| MissingSourceAction::Skip)).unwrap();
+        let resolved = pm
+            .resolve(Some(&|_source| MissingSourceAction::Skip))
+            .unwrap();
         assert!(resolved.extensions.is_empty());
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(&agent);
@@ -3368,21 +3887,29 @@ mod resolve_tests {
     fn resolve_feeds_build_groups() {
         let cwd = fixture("groups-cwd");
         let agent = fixture("groups-agent");
-        write(&agent.join("skills").join("delta").join("SKILL.md"), "---\nname: delta\n---\nD\n");
+        write(
+            &agent.join("skills").join("delta").join("SKILL.md"),
+            "---\nname: delta\n---\nD\n",
+        );
         write(&agent.join("extensions").join("plain.ts"), "export {}\n");
         let pm = resolve_manager(&cwd, &agent);
         let resolved = pm.resolve(None).unwrap();
 
-        let groups = build_groups(&resolved, &agent.display().to_string(), CONFIG_DIR_NAME, None);
+        let groups = build_groups(
+            &resolved,
+            &agent.display().to_string(),
+            CONFIG_DIR_NAME,
+            None,
+        );
         // Auto-discovered user resources share a group keyed on the agent_dir;
         // real-home ~/.agents skills (if any) form separate groups. Find the
         // group that contains our fixture skill and assert on it.
         let fixture_group = groups
             .iter()
             .find(|g| {
-                g.subgroups.iter().any(|sg| {
-                    sg.items.iter().any(|i| i.display_name == "delta")
-                })
+                g.subgroups
+                    .iter()
+                    .any(|sg| sg.items.iter().any(|i| i.display_name == "delta"))
             })
             .expect("group containing fixture skill");
         assert!(fixture_group.is_user());
@@ -3405,13 +3932,43 @@ mod resolve_tests {
             PathMetadata::synthetic(source, scope, origin, None)
         };
         // lower rank = higher precedence
-        assert!(resource_precedence_rank(&mk("local", ResolvedScope::Project, ResourceOrigin::TopLevel))
-            < resource_precedence_rank(&mk("auto", ResolvedScope::Project, ResourceOrigin::TopLevel)));
-        assert!(resource_precedence_rank(&mk("auto", ResolvedScope::Project, ResourceOrigin::TopLevel))
-            < resource_precedence_rank(&mk("local", ResolvedScope::User, ResourceOrigin::TopLevel)));
-        assert!(resource_precedence_rank(&mk("local", ResolvedScope::User, ResourceOrigin::TopLevel))
-            < resource_precedence_rank(&mk("auto", ResolvedScope::User, ResourceOrigin::TopLevel)));
-        assert!(resource_precedence_rank(&mk("auto", ResolvedScope::User, ResourceOrigin::TopLevel))
-            < resource_precedence_rank(&mk("auto", ResolvedScope::User, ResourceOrigin::Package)));
+        assert!(
+            resource_precedence_rank(&mk(
+                "local",
+                ResolvedScope::Project,
+                ResourceOrigin::TopLevel
+            )) < resource_precedence_rank(&mk(
+                "auto",
+                ResolvedScope::Project,
+                ResourceOrigin::TopLevel
+            ))
+        );
+        assert!(
+            resource_precedence_rank(&mk(
+                "auto",
+                ResolvedScope::Project,
+                ResourceOrigin::TopLevel
+            )) < resource_precedence_rank(&mk(
+                "local",
+                ResolvedScope::User,
+                ResourceOrigin::TopLevel
+            ))
+        );
+        assert!(
+            resource_precedence_rank(&mk("local", ResolvedScope::User, ResourceOrigin::TopLevel))
+                < resource_precedence_rank(&mk(
+                    "auto",
+                    ResolvedScope::User,
+                    ResourceOrigin::TopLevel
+                ))
+        );
+        assert!(
+            resource_precedence_rank(&mk("auto", ResolvedScope::User, ResourceOrigin::TopLevel))
+                < resource_precedence_rank(&mk(
+                    "auto",
+                    ResolvedScope::User,
+                    ResourceOrigin::Package
+                ))
+        );
     }
 }

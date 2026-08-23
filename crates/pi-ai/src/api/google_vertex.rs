@@ -23,8 +23,8 @@ use serde_json::{json, Value};
 
 use crate::event_stream::{AssistantMessageEventStream, StreamSink};
 use crate::model::{clamp_thinking_level, Model};
-use crate::types::ModelThinkingLevel;
 use crate::sse::SseParser;
+use crate::types::ModelThinkingLevel;
 use crate::types::{
     AssistantMessage, AssistantMessageEvent, Context, DoneReason, ErrorReason, SimpleStreamOptions,
     StopReason, StreamOptions, ToolChoice, Usage,
@@ -33,9 +33,7 @@ use crate::types::{
 use super::google_generative_ai::{
     build_params, extract_google_error, process_google_events, GoogleOptions, GoogleThinking,
 };
-use super::google_shared::{
-    resolve_google_thinking_level, ResolvedGoogleThinkingLevel,
-};
+use super::google_shared::{resolve_google_thinking_level, ResolvedGoogleThinkingLevel};
 
 const API_VERSION: &str = "v1";
 const GCP_VERTEX_CREDENTIALS_MARKER: &str = "gcp-vertex-credentials";
@@ -84,7 +82,10 @@ fn is_placeholder_api_key(api_key: &str) -> bool {
 
 /// Resolve the project id: options.project, `GOOGLE_CLOUD_PROJECT`, or
 /// `GCLOUD_PROJECT` (upstream `resolveProject`).
-pub fn resolve_project(project: Option<&str>, env: Option<&crate::types::ProviderEnv>) -> Result<String, String> {
+pub fn resolve_project(
+    project: Option<&str>,
+    env: Option<&crate::types::ProviderEnv>,
+) -> Result<String, String> {
     let project = project
         .map(|s| s.to_string())
         .or_else(|| get_provider_env_value("GOOGLE_CLOUD_PROJECT", env))
@@ -97,11 +98,17 @@ pub fn resolve_project(project: Option<&str>, env: Option<&crate::types::Provide
 
 /// Resolve the location: options.location or `GOOGLE_CLOUD_LOCATION`
 /// (upstream `resolveLocation`).
-pub fn resolve_location(location: Option<&str>, env: Option<&crate::types::ProviderEnv>) -> Result<String, String> {
+pub fn resolve_location(
+    location: Option<&str>,
+    env: Option<&crate::types::ProviderEnv>,
+) -> Result<String, String> {
     let location = location
         .map(|s| s.to_string())
         .or_else(|| get_provider_env_value("GOOGLE_CLOUD_LOCATION", env));
-    location.ok_or_else(|| "Vertex AI requires a location. Set GOOGLE_CLOUD_LOCATION or pass location in options.".to_string())
+    location.ok_or_else(|| {
+        "Vertex AI requires a location. Set GOOGLE_CLOUD_LOCATION or pass location in options."
+            .to_string()
+    })
 }
 
 /// `resolveCustomBaseUrl`: a custom base URL is used unless empty or still
@@ -117,13 +124,17 @@ pub fn resolve_custom_base_url(base_url: &str) -> Option<String> {
 /// `baseUrlIncludesApiVersion`: the base path contains a `vNbetaM`-style
 /// version segment.
 pub fn base_url_includes_api_version(base_url: &str) -> bool {
-    let path_has_version = base_url
-        .split('/')
-        .any(|part| regex::Regex::new(r"^v\d+(?:beta\d*)?$").unwrap().is_match(part));
+    let path_has_version = base_url.split('/').any(|part| {
+        regex::Regex::new(r"^v\d+(?:beta\d*)?$")
+            .unwrap()
+            .is_match(part)
+    });
     if path_has_version {
         return true;
     }
-    regex::Regex::new(r"(?:^|/)v\d+(?:beta\d*)?(?:/|$)").unwrap().is_match(base_url)
+    regex::Regex::new(r"(?:^|/)v\d+(?:beta\d*)?(?:/|$)")
+        .unwrap()
+        .is_match(base_url)
 }
 
 /// Compute the URL + headers for a Vertex `:streamGenerateContent` request.
@@ -183,12 +194,16 @@ fn pi_user_agent() -> String {
 }
 
 fn is_gemini3_pro_model(id: &str) -> bool {
-    regex::Regex::new(r"(?i)gemini-3(?:\.\d+)?-pro").unwrap().is_match(id)
+    regex::Regex::new(r"(?i)gemini-3(?:\.\d+)?-pro")
+        .unwrap()
+        .is_match(id)
 }
 
 fn is_gemini3_flash_model(id: &str) -> bool {
     let id = id.to_lowercase();
-    regex::Regex::new(r"gemini-3(?:\.\d+)?-flash").unwrap().is_match(&id)
+    regex::Regex::new(r"gemini-3(?:\.\d+)?-flash")
+        .unwrap()
+        .is_match(&id)
         || id == "gemini-flash-latest"
         || id == "gemini-flash-lite-latest"
 }
@@ -205,12 +220,18 @@ fn thinking_for_level(
         GoogleThinking {
             enabled: true,
             budget_tokens: None,
-            level: Some(super::google_generative_ai::google_thinking_level(level, model_id)),
+            level: Some(super::google_generative_ai::google_thinking_level(
+                level, model_id,
+            )),
         }
     } else {
         GoogleThinking {
             enabled: true,
-            budget_tokens: Some(super::google_generative_ai::google_budget(model_id, level, custom_budgets)),
+            budget_tokens: Some(super::google_generative_ai::google_budget(
+                model_id,
+                level,
+                custom_budgets,
+            )),
             level: None,
         }
     }
@@ -260,11 +281,16 @@ pub fn stream(
                 .as_ref()
                 .and_then(|h| h.get("x-goog-api-key"))
                 .and_then(|v| v.clone());
-            let api_key = store_api_key
-                .or_else(|| options_key.as_deref().and_then(|k| resolve_api_key(Some(k))));
+            let api_key = store_api_key.or_else(|| {
+                options_key
+                    .as_deref()
+                    .and_then(|k| resolve_api_key(Some(k)))
+            });
 
-            let project = resolve_project(options.project.as_deref(), options.base.base.env.as_ref())?;
-            let location = resolve_location(options.location.as_deref(), options.base.base.env.as_ref())?;
+            let project =
+                resolve_project(options.project.as_deref(), options.base.base.env.as_ref())?;
+            let location =
+                resolve_location(options.location.as_deref(), options.base.base.env.as_ref())?;
 
             let params = build_params(&model, &context, &to_google_options(&options));
 
@@ -290,7 +316,10 @@ pub fn stream(
             for (name, value) in headers {
                 request = request.header(name.as_str(), value.as_str());
             }
-            let response = request.send().await.map_err(|err| format!("Request failed: {err}"))?;
+            let response = request
+                .send()
+                .await
+                .map_err(|err| format!("Request failed: {err}"))?;
             let status = response.status();
             let provider_response = crate::types::ProviderResponse {
                 status: status.as_u16(),
@@ -299,11 +328,18 @@ pub fn stream(
             if let Some(on_response) = &options.base.on_response {
                 on_response(&provider_response, &model);
             }
-            let body = response.bytes().await.map_err(|err| format!("Request body failed: {err}"))?;
+            let body = response
+                .bytes()
+                .await
+                .map_err(|err| format!("Request body failed: {err}"))?;
             if !status.is_success() {
                 let body_text = String::from_utf8_lossy(&body).to_string();
                 let detail = extract_google_error(&body_text);
-                return Err(format!("Google API error ({}): {}", status.as_u16(), detail));
+                return Err(format!(
+                    "Google API error ({}): {}",
+                    status.as_u16(),
+                    detail
+                ));
             }
             Ok::<_, String>((body.to_vec(), status.as_u16()))
         }
@@ -313,7 +349,9 @@ pub fn stream(
             Ok((body, _status)) => {
                 let body_text = String::from_utf8_lossy(&body).to_string();
                 let events = SseParser::parse_text(&body_text);
-                pusher.push(AssistantMessageEvent::Start { partial: new_output(&model) });
+                pusher.push(AssistantMessageEvent::Start {
+                    partial: new_output(&model),
+                });
                 match process_google_events(&model, &events, |event| pusher.push(event)) {
                     Ok(message) => {
                         let reason = match message.stop_reason().unwrap_or(StopReason::Stop) {
@@ -323,7 +361,10 @@ pub fn stream(
                             StopReason::Deferred => DoneReason::Deferred,
                             _ => DoneReason::Stop,
                         };
-                        pusher.push(AssistantMessageEvent::Done { reason, message: message.clone() });
+                        pusher.push(AssistantMessageEvent::Done {
+                            reason,
+                            message: message.clone(),
+                        });
                         pusher.end(Some(message));
                     }
                     Err(err) => {
@@ -373,17 +414,36 @@ pub fn stream_simple(
         location: None,
     };
     if options.reasoning.is_none() {
-        return stream(model, context, client, api_key, &GoogleVertexOptions {
-            thinking: Some(GoogleThinking { enabled: false, budget_tokens: None, level: None }),
-            ..base
-        });
+        return stream(
+            model,
+            context,
+            client,
+            api_key,
+            &GoogleVertexOptions {
+                thinking: Some(GoogleThinking {
+                    enabled: false,
+                    budget_tokens: None,
+                    level: None,
+                }),
+                ..base
+            },
+        );
     }
 
     let reasoning = options.reasoning.unwrap();
     let clamped = clamp_thinking_level(model, ModelThinkingLevel::from(reasoning));
     let resolved = resolve_google_thinking_level(clamped, model);
     let thinking = thinking_for_level(&model.id, resolved, options.thinking_budgets.as_ref());
-    stream(model, context, client, api_key, &GoogleVertexOptions { thinking: Some(thinking), ..base })
+    stream(
+        model,
+        context,
+        client,
+        api_key,
+        &GoogleVertexOptions {
+            thinking: Some(thinking),
+            ..base
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -392,28 +452,37 @@ pub fn stream_simple(
 
 fn expand_home(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
-        std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or_else(|_| path.to_string())
+        std::env::var("HOME")
+            .map(|h| format!("{h}/{rest}"))
+            .unwrap_or_else(|_| path.to_string())
     } else {
         path.to_string()
     }
 }
 
 fn find_adc_path(env: Option<&crate::types::ProviderEnv>) -> Option<String> {
-    get_provider_env_value("GOOGLE_APPLICATION_CREDENTIALS", env)
-        .or_else(|| {
-            if std::path::Path::new(&expand_home(VERTEX_ADC_DEFAULT_PATH)).exists() {
-                Some(expand_home(VERTEX_ADC_DEFAULT_PATH))
-            } else {
-                None
-            }
-        })
+    get_provider_env_value("GOOGLE_APPLICATION_CREDENTIALS", env).or_else(|| {
+        if std::path::Path::new(&expand_home(VERTEX_ADC_DEFAULT_PATH)).exists() {
+            Some(expand_home(VERTEX_ADC_DEFAULT_PATH))
+        } else {
+            None
+        }
+    })
 }
 
 fn read_service_account(path: &str) -> Result<(String, String, String), String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read ADC credentials file: {e}"))?;
-    let value: Value = serde_json::from_slice(&bytes).map_err(|e| format!("Malformed ADC credentials file: {e}"))?;
-    let client_email = value.get("client_email").and_then(|v| v.as_str()).ok_or_else(|| "ADC file missing client_email".to_string())?;
-    let private_key = value.get("private_key").and_then(|v| v.as_str()).ok_or_else(|| "ADC file missing private_key".to_string())?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Failed to read ADC credentials file: {e}"))?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("Malformed ADC credentials file: {e}"))?;
+    let client_email = value
+        .get("client_email")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "ADC file missing client_email".to_string())?;
+    let private_key = value
+        .get("private_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "ADC file missing private_key".to_string())?;
     let token_uri = value
         .get("token_uri")
         .and_then(|v| v.as_str())
@@ -469,7 +538,8 @@ fn decode_rsa_key(pem: &str) -> Result<ring::signature::RsaKeyPair, String> {
         // PKCS#8 = SEQUENCE { version: 0, AlgorithmIdentifier, OCTET STRING der }
         let mut pkcs8 = vec![0x30];
         let alg_id: &[u8] = &[
-            0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
+            0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05,
+            0x00,
         ];
         let inner = der.len() + alg_id.len() + 2 + 2; // octet string header
         let len = inner + 1; // version byte content byte
@@ -497,7 +567,10 @@ fn pem_to_der<'a>(pem: &'a str, label: &str) -> Option<&'a [u8]> {
     let end_idx = lines[start_idx + 1..].iter().position(|l| *l == end)? + start_idx + 1;
     use base64::Engine;
     let b64: String = lines[start_idx + 1..end_idx].concat();
-    base64::engine::general_purpose::STANDARD.decode(b64).ok().map(|v| Box::leak(v.into_boxed_slice()) as &[u8])
+    base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .ok()
+        .map(|v| Box::leak(v.into_boxed_slice()) as &[u8])
 }
 
 /// Resolve an ADC access token via the self-signed JWT exchange (upstream's
@@ -506,7 +579,13 @@ fn pem_to_der<'a>(pem: &'a str, label: &str) -> Option<&'a [u8]> {
 async fn resolve_adc_access_token(env: Option<&crate::types::ProviderEnv>) -> Option<String> {
     let path = find_adc_path(env)?;
     let (client_email, private_key, token_uri) = read_service_account(&path).ok()?;
-    let jwt = build_self_signed_jwt(&client_email, &private_key, &token_uri, crate::types::now_ms() / 1000).ok()?;
+    let jwt = build_self_signed_jwt(
+        &client_email,
+        &private_key,
+        &token_uri,
+        crate::types::now_ms() / 1000,
+    )
+    .ok()?;
     exchange_jwt_for_token(&token_uri, &jwt).await
 }
 
@@ -522,7 +601,9 @@ async fn exchange_jwt_for_token(token_uri: &str, jwt: &str) -> Option<String> {
         .await
         .ok()?;
     let body: Value = response.json().await.ok()?;
-    body.get("access_token").and_then(|v| v.as_str()).map(|s| s.to_string())
+    body.get("access_token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 #[cfg(test)]
@@ -530,7 +611,12 @@ mod tests {
     use super::*;
 
     fn vertex_model() -> Model {
-        let mut m = Model::new("gemini-3-flash-preview", "Gemini 3 Flash", "google-vertex", "google-vertex");
+        let mut m = Model::new(
+            "gemini-3-flash-preview",
+            "Gemini 3 Flash",
+            "google-vertex",
+            "google-vertex",
+        );
         m.reasoning = true;
         m.base_url = "https://{location}-aiplatform.googleapis.com".to_string();
         m
@@ -540,7 +626,10 @@ mod tests {
     fn api_key_markers_fall_back_to_adc() {
         assert_eq!(resolve_api_key(Some("<authenticated>")), None);
         assert_eq!(resolve_api_key(Some("gcp-vertex-credentials")), None);
-        assert_eq!(resolve_api_key(Some("  AIzaSyExampleKey123 ")).unwrap(), "AIzaSyExampleKey123");
+        assert_eq!(
+            resolve_api_key(Some("  AIzaSyExampleKey123 ")).unwrap(),
+            "AIzaSyExampleKey123"
+        );
         assert_eq!(resolve_api_key(None), None);
     }
 
@@ -552,38 +641,70 @@ mod tests {
         env.insert("GCLOUD_PROJECT".to_string(), "from-env".to_string());
         assert_eq!(resolve_project(None, Some(&env)).unwrap(), "from-env");
         assert!(resolve_location(None, Some(&env)).is_err());
-        env.insert("GOOGLE_CLOUD_LOCATION".to_string(), "us-central1".to_string());
+        env.insert(
+            "GOOGLE_CLOUD_LOCATION".to_string(),
+            "us-central1".to_string(),
+        );
         assert_eq!(resolve_location(None, Some(&env)).unwrap(), "us-central1");
     }
 
     #[test]
     fn custom_base_url_resolution() {
-        assert_eq!(resolve_custom_base_url("https://{location}-aiplatform.googleapis.com"), None);
+        assert_eq!(
+            resolve_custom_base_url("https://{location}-aiplatform.googleapis.com"),
+            None
+        );
         assert_eq!(resolve_custom_base_url("  "), None);
-        assert_eq!(resolve_custom_base_url("https://proxy.example.com").unwrap(), "https://proxy.example.com");
-        assert!(base_url_includes_api_version("https://proxy.example.com/v1/projects/x"));
-        assert!(base_url_includes_api_version("https://proxy.example.com/v1beta1"));
+        assert_eq!(
+            resolve_custom_base_url("https://proxy.example.com").unwrap(),
+            "https://proxy.example.com"
+        );
+        assert!(base_url_includes_api_version(
+            "https://proxy.example.com/v1/projects/x"
+        ));
+        assert!(base_url_includes_api_version(
+            "https://proxy.example.com/v1beta1"
+        ));
         assert!(!base_url_includes_api_version("https://proxy.example.com"));
     }
 
     #[test]
     fn build_request_urls_and_headers() {
         let options = GoogleVertexOptions::default();
-        let (url, headers) = build_request(&vertex_model(), &options, "test-project", "us-central1", Some("key"), None, API_VERSION);
+        let (url, headers) = build_request(
+            &vertex_model(),
+            &options,
+            "test-project",
+            "us-central1",
+            Some("key"),
+            None,
+            API_VERSION,
+        );
         assert_eq!(
             url,
             "https://us-central1-aiplatform.googleapis.com/v1/projects/test-project/locations/us-central1/publishers/google/models/gemini-3-flash-preview:streamGenerateContent?alt=sse"
         );
-        assert!(headers.iter().any(|(k, v)| k == "x-goog-api-key" && v == "key"));
+        assert!(headers
+            .iter()
+            .any(|(k, v)| k == "x-goog-api-key" && v == "key"));
         assert!(headers.iter().any(|(k, _)| k == "User-Agent"));
     }
 
     #[test]
     fn build_request_uses_custom_base_with_version_and_api_key() {
         let mut model = vertex_model();
-        model.base_url = "https://proxy.example.com/v1/projects/test-project/locations/global".to_string();
+        model.base_url =
+            "https://proxy.example.com/v1/projects/test-project/locations/global".to_string();
         let options = GoogleVertexOptions::default();
-        let (url, _) = build_request(&model, &options, "test-project", "us-central1", Some("key"), None, API_VERSION);
+        let (url, _) = build_request(
+            &model,
+            &options,
+            "test-project",
+            "us-central1",
+            Some("key"),
+            None,
+            API_VERSION,
+        );
         // baseUrl is the collection root: the resource path appends after it
         // and the version segment is not duplicated (SDK COLLECTION scope).
         assert_eq!(
@@ -600,8 +721,13 @@ mod tests {
             h.insert("User-Agent".to_string(), Some("custom-agent".to_string()));
             h
         });
-        let (_, headers) = build_request(&vertex_model(), &options, "p", "l", None, None, API_VERSION);
-        let ua = headers.iter().find(|(k, _)| k == "User-Agent").map(|(_, v)| v.clone()).unwrap();
+        let (_, headers) =
+            build_request(&vertex_model(), &options, "p", "l", None, None, API_VERSION);
+        let ua = headers
+            .iter()
+            .find(|(k, _)| k == "User-Agent")
+            .map(|(_, v)| v.clone())
+            .unwrap();
         assert_eq!(ua, "custom-agent");
         assert_eq!(headers.iter().filter(|(k, _)| k == "User-Agent").count(), 1);
     }
@@ -613,10 +739,19 @@ mod tests {
         let mut opts = GoogleVertexOptions::default();
         // No project/location anywhere -> resolution error becomes a terminal
         // error event, matching the upstream throw-inside-async-wrap behavior.
-        let s = stream(&model, &Context::default(), client, Some("<authenticated>"), &opts);
+        let s = stream(
+            &model,
+            &Context::default(),
+            client,
+            Some("<authenticated>"),
+            &opts,
+        );
         let (_, message) = s.collect().await;
         assert_eq!(message.stop_reason(), Some(StopReason::Error));
-        assert!(message.error_message().unwrap_or("").contains("Vertex AI requires a project ID"));
+        assert!(message
+            .error_message()
+            .unwrap_or("")
+            .contains("Vertex AI requires a project ID"));
         let _ = &mut opts;
     }
 
@@ -651,13 +786,29 @@ PMgLxH//0PXY7k2j5xPHlO+UQVcZ5waO2ySGdBfljTeFtWi1UryhV6o8N22ICPzY
 pxb9Ao9R6mqLWjzEaSeYzN4o
 -----END PRIVATE KEY-----
 "#;
-        let jwt = build_self_signed_jwt("sa@example.iam.gserviceaccount.com", KEY, "https://oauth2.googleapis.com/token", 1_700_000_000).unwrap();
+        let jwt = build_self_signed_jwt(
+            "sa@example.iam.gserviceaccount.com",
+            KEY,
+            "https://oauth2.googleapis.com/token",
+            1_700_000_000,
+        )
+        .unwrap();
         assert_eq!(jwt.split('.').count(), 3);
         let parts: Vec<&str> = jwt.split('.').collect();
         use base64::Engine;
-        let header: Value = serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[0]).unwrap()).unwrap();
+        let header: Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(parts[0])
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(header["alg"], json!("RS256"));
-        let claims: Value = serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
+        let claims: Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(parts[1])
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(claims["iss"], json!("sa@example.iam.gserviceaccount.com"));
         assert_eq!(claims["aud"], json!("https://oauth2.googleapis.com/token"));
     }

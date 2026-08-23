@@ -78,7 +78,11 @@ fn parse_color(color: &str) -> Option<(u8, u8, u8)> {
 fn get_luminance((r, g, b): (u8, u8, u8)) -> f64 {
     let to_linear = |c: f64| {
         let s = c / 255.0;
-        if s <= 0.03928 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+        if s <= 0.03928 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
     };
     0.2126 * to_linear(r as f64) + 0.7152 * to_linear(g as f64) + 0.0722 * to_linear(b as f64)
 }
@@ -109,13 +113,23 @@ fn derive_export_colors(base_color: &str) -> (String, String, String) {
                 (
                     adjust_brightness(base_color, 0.96),
                     base_color.to_string(),
-                    format!("rgb({}, {}, {})", (r as u16 + 10).min(255), (g as u16 + 5).min(255), (b as u16).saturating_sub(20)),
+                    format!(
+                        "rgb({}, {}, {})",
+                        (r as u16 + 10).min(255),
+                        (g as u16 + 5).min(255),
+                        (b as u16).saturating_sub(20)
+                    ),
                 )
             } else {
                 (
                     adjust_brightness(base_color, 0.7),
                     adjust_brightness(base_color, 0.85),
-                    format!("rgb({}, {}, {})", (r as u16 + 20).min(255), (g as u16 + 15).min(255), b),
+                    format!(
+                        "rgb({}, {}, {})",
+                        (r as u16 + 20).min(255),
+                        (g as u16 + 15).min(255),
+                        b
+                    ),
                 )
             }
         }
@@ -131,7 +145,10 @@ fn generate_theme_vars(theme_name: Option<&str>) -> Result<String, ExportError> 
         lines.push(format!("--{key}: {value};"));
     }
     let theme_export = theme::get_theme_export_colors(theme_name).unwrap_or_default();
-    let user_message_bg = colors.get("userMessageBg").cloned().unwrap_or_else(|| "#343541".to_string());
+    let user_message_bg = colors
+        .get("userMessageBg")
+        .cloned()
+        .unwrap_or_else(|| "#343541".to_string());
     let derived = derive_export_colors(&user_message_bg);
     let page_bg = theme_export.page_bg.unwrap_or_else(|| derived.0.clone());
     let card_bg = theme_export.card_bg.unwrap_or_else(|| derived.1.clone());
@@ -157,10 +174,13 @@ fn session_data_to_base64(data: &SessionData) -> Result<String, ExportError> {
     let mut map = Map::new();
     map.insert("header".to_string(), data.header.clone());
     map.insert("entries".to_string(), Value::Array(data.entries.clone()));
-    map.insert("leafId".to_string(), match &data.leaf_id {
-        Some(id) => Value::String(id.clone()),
-        None => Value::Null,
-    });
+    map.insert(
+        "leafId".to_string(),
+        match &data.leaf_id {
+            Some(id) => Value::String(id.clone()),
+            None => Value::Null,
+        },
+    );
     if let Some(sp) = &data.system_prompt {
         map.insert("systemPrompt".to_string(), Value::String(sp.clone()));
     }
@@ -170,10 +190,10 @@ fn session_data_to_base64(data: &SessionData) -> Result<String, ExportError> {
     if let Some(rt) = &data.rendered_tools {
         map.insert("renderedTools".to_string(), Value::Object(rt.clone()));
     }
-    let json = serde_json::to_string(&Value::Object(map)).map_err(|e| ExportError::msg(format!("serialize session data: {e}")))?;
+    let json = serde_json::to_string(&Value::Object(map))
+        .map_err(|e| ExportError::msg(format!("serialize session data: {e}")))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(json.as_bytes()))
 }
-
 
 /// JS `String.prototype.replace(searchString, replacement)` semantics with no
 /// capture groups (ES GetSubstitution): `$$` -> `$`, `$&` -> the matched
@@ -240,15 +260,40 @@ pub fn generate_html(data: &SessionData, theme_name: Option<&str>) -> Result<Str
     let colors = theme::get_resolved_theme_colors(theme_name)
         .map_err(|e| ExportError::msg(format!("Failed to resolve theme colors: {e}")))?;
     let theme_export = theme::get_theme_export_colors(theme_name).unwrap_or_default();
-    let derived = derive_export_colors(colors.get("userMessageBg").map(String::as_str).unwrap_or("#343541"));
-    let body_bg = theme_export.page_bg.clone().unwrap_or_else(|| derived.0.clone());
-    let container_bg = theme_export.card_bg.clone().unwrap_or_else(|| derived.1.clone());
-    let info_bg = theme_export.info_bg.clone().unwrap_or_else(|| derived.2.clone());
+    let derived = derive_export_colors(
+        colors
+            .get("userMessageBg")
+            .map(String::as_str)
+            .unwrap_or("#343541"),
+    );
+    let body_bg = theme_export
+        .page_bg
+        .clone()
+        .unwrap_or_else(|| derived.0.clone());
+    let container_bg = theme_export
+        .card_bg
+        .clone()
+        .unwrap_or_else(|| derived.1.clone());
+    let info_bg = theme_export
+        .info_bg
+        .clone()
+        .unwrap_or_else(|| derived.2.clone());
 
     let session_data_b64 = session_data_to_base64(data)?;
 
-    let css = js_replace(&js_replace(&js_replace(&js_replace(TEMPLATE_CSS, "{{THEME_VARS}}", &theme_vars),
-        "{{BODY_BG}}", &body_bg), "{{CONTAINER_BG}}", &container_bg), "{{INFO_BG}}", &info_bg);
+    let css = js_replace(
+        &js_replace(
+            &js_replace(
+                &js_replace(TEMPLATE_CSS, "{{THEME_VARS}}", &theme_vars),
+                "{{BODY_BG}}",
+                &body_bg,
+            ),
+            "{{CONTAINER_BG}}",
+            &container_bg,
+        ),
+        "{{INFO_BG}}",
+        &info_bg,
+    );
 
     let html = js_replace(TEMPLATE_HTML, "{{CSS}}", &css);
     let html = js_replace(&html, "{{JS}}", TEMPLATE_JS);
@@ -293,7 +338,11 @@ pub fn load_session_file(path: &str) -> Result<LoadedSession, ExportError> {
         }
     }
     if file_entries.is_empty() {
-        return Ok(LoadedSession { header: None, entries: Vec::new(), leaf_id: None });
+        return Ok(LoadedSession {
+            header: None,
+            entries: Vec::new(),
+            leaf_id: None,
+        });
     }
     let first = &file_entries[0];
     let session_type = first.get("type").and_then(|t| t.as_str());
@@ -304,7 +353,11 @@ pub fn load_session_file(path: &str) -> Result<LoadedSession, ExportError> {
         _ => false,
     };
     if !valid_header {
-        return Ok(LoadedSession { header: None, entries: Vec::new(), leaf_id: None });
+        return Ok(LoadedSession {
+            header: None,
+            entries: Vec::new(),
+            leaf_id: None,
+        });
     }
     let mut header = first.clone();
     // Synthesize `timestamp` from pi-agent v4 `createdAt` (ms epoch) so the
@@ -332,7 +385,11 @@ pub fn load_session_file(path: &str) -> Result<LoadedSession, ExportError> {
     let leaf_id = entries
         .last()
         .and_then(|e| e.get("id").and_then(|i| i.as_str()).map(|s| s.to_string()));
-    Ok(LoadedSession { header: Some(header), entries, leaf_id })
+    Ok(LoadedSession {
+        header: Some(header),
+        entries,
+        leaf_id,
+    })
 }
 
 /// Format an epoch (seconds, nanos) as an ISO-8601 UTC timestamp (used to
@@ -341,7 +398,11 @@ fn time_from_epoch_ms(secs: u64, nanos: u32) -> String {
     let days = secs.div_euclid(86_400);
     let secs_of_day = secs.rem_euclid(86_400);
     let (y, m, d) = civil_from_days(days as i64);
-    let (hh, mm, ss) = (secs_of_day / 3600, (secs_of_day % 3600) / 60, secs_of_day % 60);
+    let (hh, mm, ss) = (
+        secs_of_day / 3600,
+        (secs_of_day % 3600) / 60,
+        secs_of_day % 60,
+    );
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
         y,
@@ -389,7 +450,9 @@ pub fn export_session_file(
     }
     let loaded = load_session_file(input_path)?;
     let data = SessionData {
-        header: loaded.header.unwrap_or_else(|| serde_json::json!({"type": "session"})),
+        header: loaded
+            .header
+            .unwrap_or_else(|| serde_json::json!({"type": "session"})),
         entries: loaded.entries,
         leaf_id: loaded.leaf_id,
         system_prompt: None,
@@ -472,7 +535,8 @@ mod tests {
 
     #[test]
     fn loads_session_file() {
-        let dir = std::env::temp_dir().join(format!("pi-export-{}-{}", std::process::id(), line!()));
+        let dir =
+            std::env::temp_dir().join(format!("pi-export-{}-{}", std::process::id(), line!()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("session.jsonl");
         let path_str = write_tmp_session(&path);
@@ -492,7 +556,8 @@ mod tests {
 
     #[test]
     fn exports_pi_agent_v4_header_session() {
-        let dir = std::env::temp_dir().join(format!("pi-export-v4-{}-{}", std::process::id(), line!()));
+        let dir =
+            std::env::temp_dir().join(format!("pi-export-v4-{}-{}", std::process::id(), line!()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("session.jsonl");
         let content = r#"{"kind":"header","version":4,"id":"sess_001","createdAt":1787375500419,"cwd":"/tmp"}
@@ -507,7 +572,12 @@ mod tests {
         // timestamp synthesized from createdAt
         assert_eq!(header["timestamp"], "2026-08-22T05:11:40.419Z");
         let out = dir.join("out.html");
-        let out_str = export_session_file(path.to_str().unwrap(), Some(out.to_str().unwrap()), Some("dark")).unwrap();
+        let out_str = export_session_file(
+            path.to_str().unwrap(),
+            Some(out.to_str().unwrap()),
+            Some("dark"),
+        )
+        .unwrap();
         let html = std::fs::read_to_string(&out_str).unwrap();
         assert!(html.contains("Session Export"));
         // The timestamp travels in the base64 session payload (the viewer
@@ -516,7 +586,9 @@ mod tests {
         let start = html.find(marker).unwrap() + marker.len();
         let end = html[start..].find("</script>").unwrap();
         let b64 = &html[start..start + end];
-        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
         let data: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(data["header"]["timestamp"], "2026-08-22T05:11:40.419Z");
         let _ = std::fs::remove_dir_all(&dir);
@@ -524,12 +596,14 @@ mod tests {
 
     #[test]
     fn exports_html_with_theme() {
-        let dir = std::env::temp_dir().join(format!("pi-export-{}-{}", std::process::id(), line!()));
+        let dir =
+            std::env::temp_dir().join(format!("pi-export-{}-{}", std::process::id(), line!()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("session.jsonl");
         let path_str = write_tmp_session(&path);
         let out = dir.join("out.html");
-        let out_str = export_session_file(&path_str, Some(out.to_str().unwrap()), Some("dark")).unwrap();
+        let out_str =
+            export_session_file(&path_str, Some(out.to_str().unwrap()), Some("dark")).unwrap();
         let html = std::fs::read_to_string(&out_str).unwrap();
         // Template markers substituted (the {{HIGHLIGHT_JS}} occurrence
         // inside the vendored highlight.min.js is reproduced verbatim, like
@@ -547,7 +621,9 @@ mod tests {
         let start = html.find(marker).unwrap() + marker.len();
         let end = html[start..].find("</script>").unwrap();
         let b64 = &html[start..start + end];
-        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
         let data: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(data["header"]["id"], "sess_001");
         assert_eq!(data["entries"].as_array().unwrap().len(), 2);
@@ -559,7 +635,8 @@ mod tests {
     fn default_output_name() {
         static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = ENV_LOCK.lock().unwrap();
-        let dir = std::env::temp_dir().join(format!("pi-export-{}-{}", std::process::id(), line!()));
+        let dir =
+            std::env::temp_dir().join(format!("pi-export-{}-{}", std::process::id(), line!()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("2026-08-22_abc123.jsonl");
         let path_str = write_tmp_session(&path);
@@ -572,7 +649,6 @@ mod tests {
         std::env::set_current_dir(cwd).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 
     #[test]
     fn js_replace_semantics_match_es() {

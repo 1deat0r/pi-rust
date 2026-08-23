@@ -60,23 +60,27 @@ pub fn wrap_registered_tool(
 ) -> WrappedTool {
     let definition = registered_tool.clone();
     let execute_inner = execute;
-    let wrapped_execute: std::sync::Arc<dyn Fn(WrappedToolCall) -> WrappedToolResult + Send + Sync> =
-        std::sync::Arc::new(move |call: WrappedToolCall| {
-            let active_before: Vec<String> = call.active_tools_before.clone();
-            let result = execute_inner(&call);
-            let before_set: std::collections::BTreeSet<&String> = active_before.iter().collect();
-            let added: Vec<String> = call
-                .active_tools_after
-                .iter()
-                .filter(|name| !before_set.contains(name))
-                .cloned()
-                .collect();
-            if added.is_empty() {
-                return result;
-            }
-            result.merge_added_tool_names(added)
-        });
-    WrappedTool { definition, execute: wrapped_execute }
+    let wrapped_execute: std::sync::Arc<
+        dyn Fn(WrappedToolCall) -> WrappedToolResult + Send + Sync,
+    > = std::sync::Arc::new(move |call: WrappedToolCall| {
+        let active_before: Vec<String> = call.active_tools_before.clone();
+        let result = execute_inner(&call);
+        let before_set: std::collections::BTreeSet<&String> = active_before.iter().collect();
+        let added: Vec<String> = call
+            .active_tools_after
+            .iter()
+            .filter(|name| !before_set.contains(name))
+            .cloned()
+            .collect();
+        if added.is_empty() {
+            return result;
+        }
+        result.merge_added_tool_names(added)
+    });
+    WrappedTool {
+        definition,
+        execute: wrapped_execute,
+    }
 }
 
 /// Wrap all registered tools (upstream `wrapRegisteredTools`).
@@ -104,7 +108,8 @@ mod tests {
         }
     }
 
-    fn simple_execute() -> std::sync::Arc<dyn Fn(&WrappedToolCall) -> WrappedToolResult + Send + Sync> {
+    fn simple_execute(
+    ) -> std::sync::Arc<dyn Fn(&WrappedToolCall) -> WrappedToolResult + Send + Sync> {
         std::sync::Arc::new(|_call: &WrappedToolCall| WrappedToolResult::default())
     }
 
@@ -123,8 +128,12 @@ mod tests {
 
     #[test]
     fn wrapper_deduplicates_added_names() {
-        let result = WrappedToolResult { content: vec![], is_error: false, added_tool_names: vec!["x".into()] }
-            .merge_added_tool_names(vec!["x".into(), "y".into()]);
+        let result = WrappedToolResult {
+            content: vec![],
+            is_error: false,
+            added_tool_names: vec!["x".into()],
+        }
+        .merge_added_tool_names(vec!["x".into(), "y".into()]);
         assert_eq!(result.added_tool_names, vec!["x", "y"]);
     }
 

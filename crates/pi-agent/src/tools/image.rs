@@ -14,10 +14,18 @@ const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 /// rejected, malformed BMP is rejected).
 pub fn detect_supported_image_mime_type(buffer: &[u8]) -> Option<&'static str> {
     if starts_with_bytes(buffer, &[0xff, 0xd8, 0xff]) {
-        return if buffer.get(3) == Some(&0xf7) { None } else { Some("image/jpeg") };
+        return if buffer.get(3) == Some(&0xf7) {
+            None
+        } else {
+            Some("image/jpeg")
+        };
     }
     if starts_with_bytes(buffer, &PNG_SIGNATURE) {
-        return if is_png(buffer) && !is_animated_png(buffer) { Some("image/png") } else { None };
+        return if is_png(buffer) && !is_animated_png(buffer) {
+            Some("image/png")
+        } else {
+            None
+        };
     }
     if starts_with_ascii(buffer, 0, "GIF") {
         return Some("image/gif");
@@ -31,7 +39,7 @@ pub fn detect_supported_image_mime_type(buffer: &[u8]) -> Option<&'static str> {
     None
 }
 
-/// Base64-encode bytes using the upstream manual algorithm (the 
+/// Base64-encode bytes using the upstream manual algorithm (the
 /// `undefined` padding maps to `=`; partial trailing bytes are handled with
 /// zero-fill exactly like the reference).
 pub fn encode_base64(bytes: &[u8]) -> String {
@@ -43,10 +51,15 @@ pub fn encode_base64(bytes: &[u8]) -> String {
         let second = bytes.get(index + 1).copied();
         let third = bytes.get(index + 2).copied();
         output.push(ALPHABET[(first >> 2) as usize] as char);
-        output.push(ALPHABET[(((first & 0x03) << 4) | ((second.unwrap_or(0)) >> 4)) as usize] as char);
+        output.push(
+            ALPHABET[(((first & 0x03) << 4) | ((second.unwrap_or(0)) >> 4)) as usize] as char,
+        );
         match second {
             Some(second) => {
-                output.push(ALPHABET[(((second & 0x0f) << 2) | ((third.unwrap_or(0)) >> 6)) as usize] as char);
+                output.push(
+                    ALPHABET[(((second & 0x0f) << 2) | ((third.unwrap_or(0)) >> 6)) as usize]
+                        as char,
+                );
             }
             None => output.push('='),
         }
@@ -142,7 +155,10 @@ fn starts_with_ascii(buffer: &[u8], offset: usize, text: &str) -> bool {
     if buffer.len() < offset + text.len() {
         return false;
     }
-    text.as_bytes().iter().enumerate().all(|(i, b)| buffer[offset + i] == *b)
+    text.as_bytes()
+        .iter()
+        .enumerate()
+        .all(|(i, b)| buffer[offset + i] == *b)
 }
 
 #[cfg(test)]
@@ -170,9 +186,15 @@ mod tests {
 
     #[test]
     fn detects_jpeg() {
-        assert_eq!(detect_supported_image_mime_type(&[0xff, 0xd8, 0xff, 0xe0]), Some("image/jpeg"));
+        assert_eq!(
+            detect_supported_image_mime_type(&[0xff, 0xd8, 0xff, 0xe0]),
+            Some("image/jpeg")
+        );
         // 0xf7 trailing byte rejected
-        assert_eq!(detect_supported_image_mime_type(&[0xff, 0xd8, 0xff, 0xf7]), None);
+        assert_eq!(
+            detect_supported_image_mime_type(&[0xff, 0xd8, 0xff, 0xf7]),
+            None
+        );
         // too short
         assert_eq!(detect_supported_image_mime_type(&[0xff, 0xd8]), None);
     }
@@ -187,8 +209,14 @@ mod tests {
 
     #[test]
     fn detects_gif_webp_bmp() {
-        assert_eq!(detect_supported_image_mime_type(b"GIF89a"), Some("image/gif"));
-        assert_eq!(detect_supported_image_mime_type(b"RIFF1234WEBPVP8 "), Some("image/webp"));
+        assert_eq!(
+            detect_supported_image_mime_type(b"GIF89a"),
+            Some("image/gif")
+        );
+        assert_eq!(
+            detect_supported_image_mime_type(b"RIFF1234WEBPVP8 "),
+            Some("image/webp")
+        );
         // valid BMP: declare size 54, pixel data at 54, DIB 40, planes 1, bpp 24
         let mut bmp = vec![0u8; 54 + 4];
         bmp[0] = b'B';
@@ -214,6 +242,9 @@ mod tests {
         assert_eq!(encode_base64(b"foobar"), "Zm9vYmFy");
         // against the standard crate encoding
         let data: Vec<u8> = (0..=255u8).collect();
-        assert_eq!(encode_base64(&data), base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data));
+        assert_eq!(
+            encode_base64(&data),
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data)
+        );
     }
 }

@@ -61,7 +61,10 @@ pub fn read_latest_fact(
     .get_row(db, map_fact_row)
 }
 
-pub fn read_latest_label_facts(db: &Connection, session_id: &str) -> rusqlite::Result<Vec<(String, String)>> {
+pub fn read_latest_label_facts(
+    db: &Connection,
+    session_id: &str,
+) -> rusqlite::Result<Vec<(String, String)>> {
     SqlQuery::new(
         "SELECT f.key, f.value
         FROM facts AS f INDEXED BY idx_facts_session_kind_key_seq
@@ -78,7 +81,9 @@ pub fn read_latest_label_facts(db: &Connection, session_id: &str) -> rusqlite::R
         ORDER BY f.key",
     )
     .bind(session_id)
-    .all_rows(db, |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+    .all_rows(db, |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })
 }
 
 pub fn read_fact_rows(
@@ -87,8 +92,9 @@ pub fn read_fact_rows(
     after_seq: Option<i64>,
     limit: Option<i64>,
 ) -> rusqlite::Result<Vec<FactRow>> {
-    let mut query = SqlQuery::new("SELECT session_id, seq, kind, key, value FROM facts WHERE session_id = ?")
-        .bind(session_id);
+    let mut query =
+        SqlQuery::new("SELECT session_id, seq, kind, key, value FROM facts WHERE session_id = ?")
+            .bind(session_id);
     if let Some(after) = after_seq {
         query = query.inline(&SqlQuery::new(" AND seq > ?").bind(after));
     }
@@ -100,7 +106,9 @@ pub fn read_fact_rows(
 }
 
 pub fn delete_fact_rows(db: &Connection, session_id: &str) -> rusqlite::Result<()> {
-    SqlQuery::new("DELETE FROM facts WHERE session_id = ?").bind(session_id).run(db)?;
+    SqlQuery::new("DELETE FROM facts WHERE session_id = ?")
+        .bind(session_id)
+        .run(db)?;
     Ok(())
 }
 

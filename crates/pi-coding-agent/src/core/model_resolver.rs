@@ -7,7 +7,6 @@
 //! port). The runtime/auth boundary is represented by a small `RegistryView`
 //! trait so the functions stay testable without a live model runtime.
 
-
 use pi_ai::model::Model;
 
 use crate::core::model_runtime::default_model_per_provider;
@@ -36,14 +35,13 @@ fn is_alias(id: &str) -> bool {
     if id.ends_with("-latest") {
         return true;
     }
-    !id.ends_with(|c: char| c.is_ascii_digit())
-        || {
-            let last = id.len();
-            let start = last.saturating_sub(8);
-            let suffix = &id[start..last];
-            let has_date_pattern = suffix.len() == 8 && suffix.bytes().all(|b| b.is_ascii_digit());
-            !has_date_pattern
-        }
+    !id.ends_with(|c: char| c.is_ascii_digit()) || {
+        let last = id.len();
+        let start = last.saturating_sub(8);
+        let suffix = &id[start..last];
+        let has_date_pattern = suffix.len() == 8 && suffix.bytes().all(|b| b.is_ascii_digit());
+        !has_date_pattern
+    }
 }
 
 /// Find an exact model reference match. Supports either a bare model id or a
@@ -119,8 +117,16 @@ pub fn try_match_model(model_pattern: &str, available_models: &[Model]) -> Optio
         return None;
     }
 
-    let mut aliases: Vec<&Model> = matches.iter().copied().filter(|m| is_alias(&m.id)).collect();
-    let mut dated: Vec<&Model> = matches.iter().copied().filter(|m| !is_alias(&m.id)).collect();
+    let mut aliases: Vec<&Model> = matches
+        .iter()
+        .copied()
+        .filter(|m| is_alias(&m.id))
+        .collect();
+    let mut dated: Vec<&Model> = matches
+        .iter()
+        .copied()
+        .filter(|m| !is_alias(&m.id))
+        .collect();
     if !aliases.is_empty() {
         aliases.sort_by(|a, b| b.id.cmp(&a.id));
         return Some(aliases[0].clone());
@@ -140,8 +146,15 @@ pub struct ParsedModelResult {
 
 /// Build a fallback model for a provider when the requested id is not in the
 /// catalog (upstream `buildFallbackModel`).
-pub fn build_fallback_model(provider: &str, model_id: &str, available_models: &[Model]) -> Option<Model> {
-    let provider_models: Vec<&Model> = available_models.iter().filter(|m| m.provider == provider).collect();
+pub fn build_fallback_model(
+    provider: &str,
+    model_id: &str,
+    available_models: &[Model],
+) -> Option<Model> {
+    let provider_models: Vec<&Model> = available_models
+        .iter()
+        .filter(|m| m.provider == provider)
+        .collect();
     let base_model = if !provider_models.is_empty() {
         let default_id = default_model_per_provider(provider);
         match default_id {
@@ -169,7 +182,11 @@ pub fn parse_model_pattern(
     allow_invalid_thinking_level_fallback: bool,
 ) -> ParsedModelResult {
     if let Some(exact) = try_match_model(pattern, available_models) {
-        return ParsedModelResult { model: Some(exact), thinking_level: None, warning: None };
+        return ParsedModelResult {
+            model: Some(exact),
+            thinking_level: None,
+            warning: None,
+        };
     }
 
     let Some(last_colon) = pattern.rfind(':') else {
@@ -180,10 +197,18 @@ pub fn parse_model_pattern(
     let suffix = &pattern[last_colon + 1..];
 
     if is_valid_thinking_level(suffix) {
-        let result = parse_model_pattern(prefix, available_models, allow_invalid_thinking_level_fallback);
+        let result = parse_model_pattern(
+            prefix,
+            available_models,
+            allow_invalid_thinking_level_fallback,
+        );
         if result.model.is_some() {
             return ParsedModelResult {
-                thinking_level: if result.warning.is_none() { Some(suffix.to_string()) } else { None },
+                thinking_level: if result.warning.is_none() {
+                    Some(suffix.to_string())
+                } else {
+                    None
+                },
                 ..result
             };
         }
@@ -195,7 +220,11 @@ pub fn parse_model_pattern(
         return ParsedModelResult::default();
     }
 
-    let result = parse_model_pattern(prefix, available_models, allow_invalid_thinking_level_fallback);
+    let result = parse_model_pattern(
+        prefix,
+        available_models,
+        allow_invalid_thinking_level_fallback,
+    );
     if result.model.is_some() {
         return ParsedModelResult {
             model: result.model,
@@ -213,8 +242,16 @@ pub fn parse_model_pattern(
 /// Reused by the package-manager resource resolver for path-pattern
 /// include/exclude filtering (upstream `minimatch`).
 pub(crate) fn glob_match(pattern: &str, text: &str, nocase: bool) -> bool {
-    let p: Vec<char> = if nocase { pattern.to_lowercase().chars().collect() } else { pattern.chars().collect() };
-    let t: Vec<char> = if nocase { text.to_lowercase().chars().collect() } else { text.chars().collect() };
+    let p: Vec<char> = if nocase {
+        pattern.to_lowercase().chars().collect()
+    } else {
+        pattern.chars().collect()
+    };
+    let t: Vec<char> = if nocase {
+        text.to_lowercase().chars().collect()
+    } else {
+        text.chars().collect()
+    };
     glob_match_rec(&p, &t)
 }
 
@@ -339,8 +376,14 @@ pub fn resolve_model_scope_from_models(
             }
 
             if let Some(exact) = find_exact_model_reference_match(glob_pattern, available_models) {
-                if !scoped_models.iter().any(|sm| models_are_equal(&sm.model, &exact)) {
-                    scoped_models.push(ScopedModel { model: exact, thinking_level: thinking_level.clone() });
+                if !scoped_models
+                    .iter()
+                    .any(|sm| models_are_equal(&sm.model, &exact))
+                {
+                    scoped_models.push(ScopedModel {
+                        model: exact,
+                        thinking_level: thinking_level.clone(),
+                    });
                 }
                 continue;
             }
@@ -349,7 +392,8 @@ pub fn resolve_model_scope_from_models(
                 .iter()
                 .filter(|m| {
                     let full_id = format!("{}/{}", m.provider, m.id);
-                    glob_match(glob_pattern, &full_id, true) || glob_match(glob_pattern, &m.id, true)
+                    glob_match(glob_pattern, &full_id, true)
+                        || glob_match(glob_pattern, &m.id, true)
                 })
                 .collect();
 
@@ -364,8 +408,14 @@ pub fn resolve_model_scope_from_models(
             }
 
             for model in matching_models {
-                if !scoped_models.iter().any(|sm| models_are_equal(&sm.model, model)) {
-                    scoped_models.push(ScopedModel { model: model.clone(), thinking_level: thinking_level.clone() });
+                if !scoped_models
+                    .iter()
+                    .any(|sm| models_are_equal(&sm.model, model))
+                {
+                    scoped_models.push(ScopedModel {
+                        model: model.clone(),
+                        thinking_level: thinking_level.clone(),
+                    });
                 }
             }
             continue;
@@ -389,8 +439,14 @@ pub fn resolve_model_scope_from_models(
             });
             continue;
         };
-        if !scoped_models.iter().any(|sm| models_are_equal(&sm.model, &model)) {
-            scoped_models.push(ScopedModel { model, thinking_level: result.thinking_level });
+        if !scoped_models
+            .iter()
+            .any(|sm| models_are_equal(&sm.model, &model))
+        {
+            scoped_models.push(ScopedModel {
+                model,
+                thinking_level: result.thinking_level,
+            });
         }
     }
 
@@ -469,14 +525,20 @@ pub fn resolve_cli_model(
             model: None,
             thinking_level: None,
             warning: None,
-            error: Some("No models available. Check your installation or add models to models.json.".to_string()),
+            error: Some(
+                "No models available. Check your installation or add models to models.json."
+                    .to_string(),
+            ),
         };
     }
 
     // Case-insensitive canonical provider lookup.
     let canonical_provider = |name: &str| -> Option<String> {
         let lower = name.to_lowercase();
-        available_models.iter().find(|m| m.provider.to_lowercase() == lower).map(|m| m.provider.clone())
+        available_models
+            .iter()
+            .find(|m| m.provider.to_lowercase() == lower)
+            .map(|m| m.provider.clone())
     };
 
     let mut provider = cli_provider.and_then(canonical_provider);
@@ -513,10 +575,16 @@ pub fn resolve_cli_model(
         let lower = cli_model.to_lowercase();
         let exact_matches: Vec<&Model> = available_models
             .iter()
-            .filter(|m| m.id.to_lowercase() == lower || format!("{}/{}", m.provider, m.id).to_lowercase() == lower)
+            .filter(|m| {
+                m.id.to_lowercase() == lower
+                    || format!("{}/{}", m.provider, m.id).to_lowercase() == lower
+            })
             .collect();
         if exact_matches.len() == 1 {
-            return ResolveCliModelResult { model: Some(exact_matches[0].clone()), ..Default::default() };
+            return ResolveCliModelResult {
+                model: Some(exact_matches[0].clone()),
+                ..Default::default()
+            };
         }
         if exact_matches.len() > 1 {
             let authenticated: Vec<&Model> = exact_matches
@@ -525,7 +593,10 @@ pub fn resolve_cli_model(
                 .filter(|m| registry.has_configured_auth(&m.provider))
                 .collect();
             if authenticated.len() == 1 {
-                return ResolveCliModelResult { model: Some(authenticated[0].clone()), ..Default::default() };
+                return ResolveCliModelResult {
+                    model: Some(authenticated[0].clone()),
+                    ..Default::default()
+                };
             }
             let mut matches: Vec<String> = exact_matches
                 .iter()
@@ -558,7 +629,11 @@ pub fn resolve_cli_model(
     }
 
     let candidates: Vec<Model> = match &provider {
-        Some(p) => available_models.iter().filter(|m| m.provider == *p).cloned().collect(),
+        Some(p) => available_models
+            .iter()
+            .filter(|m| m.provider == *p)
+            .cloned()
+            .collect(),
         None => available_models.to_vec(),
     };
     let result = parse_model_pattern(pattern, &candidates, false);
@@ -568,7 +643,9 @@ pub fn resolve_cli_model(
         if inferred_provider {
             let raw_exact_matches: Vec<&Model> = available_models
                 .iter()
-                .filter(|m| m.id.to_lowercase() == cli_model.to_lowercase() && !models_are_equal(m, &model))
+                .filter(|m| {
+                    m.id.to_lowercase() == cli_model.to_lowercase() && !models_are_equal(m, &model)
+                })
                 .collect();
             if !raw_exact_matches.is_empty() && !registry.has_configured_auth(&model.provider) {
                 let authenticated: Vec<&Model> = raw_exact_matches
@@ -577,7 +654,10 @@ pub fn resolve_cli_model(
                     .filter(|m| registry.has_configured_auth(&m.provider))
                     .collect();
                 if authenticated.len() == 1 {
-                    return ResolveCliModelResult { model: Some(authenticated[0].clone()), ..Default::default() };
+                    return ResolveCliModelResult {
+                        model: Some(authenticated[0].clone()),
+                        ..Default::default()
+                    };
                 }
             }
         }
@@ -591,11 +671,15 @@ pub fn resolve_cli_model(
 
     if inferred_provider {
         let lower = cli_model.to_lowercase();
-        let exact = available_models
-            .iter()
-            .find(|m| m.id.to_lowercase() == lower || format!("{}/{}", m.provider, m.id).to_lowercase() == lower);
+        let exact = available_models.iter().find(|m| {
+            m.id.to_lowercase() == lower
+                || format!("{}/{}", m.provider, m.id).to_lowercase() == lower
+        });
         if let Some(exact) = exact {
-            return ResolveCliModelResult { model: Some(exact.clone()), ..Default::default() };
+            return ResolveCliModelResult {
+                model: Some(exact.clone()),
+                ..Default::default()
+            };
         }
         let fallback = parse_model_pattern(cli_model, available_models, false);
         if let Some(model) = fallback.model {
@@ -622,7 +706,9 @@ pub fn resolve_cli_model(
                 }
             }
         }
-        if let Some(mut fallback_model) = build_fallback_model(provider, fallback_pattern, available_models) {
+        if let Some(mut fallback_model) =
+            build_fallback_model(provider, fallback_pattern, available_models)
+        {
             let requested_thinking = cli_thinking.or(fallback_thinking.as_deref());
             if let Some(level) = requested_thinking {
                 if level != "off" {
@@ -654,7 +740,9 @@ pub fn resolve_cli_model(
         model: None,
         thinking_level: None,
         warning: result.warning,
-        error: Some(format!("Model \"{display}\" not found. Use --list-models to see available models.")),
+        error: Some(format!(
+            "Model \"{display}\" not found. Use --list-models to see available models."
+        )),
     }
 }
 
@@ -671,7 +759,11 @@ mod tests {
     fn catalog() -> Vec<Model> {
         vec![
             model("anthropic", "claude-sonnet-4-5", Some("Claude 4.5 Sonnet")),
-            model("anthropic", "claude-sonnet-4-5-20250929", Some("Claude 4.5 Sonnet (dated)")),
+            model(
+                "anthropic",
+                "claude-sonnet-4-5-20250929",
+                Some("Claude 4.5 Sonnet (dated)"),
+            ),
             model("anthropic", "claude-opus-4-8", Some("Claude Opus 4.8")),
             model("google", "gemini-3.1-pro-preview", Some("Gemini 3.1 Pro")),
             model("google", "gemini-3.1-flash", Some("Gemini 3.1 Flash")),
@@ -698,10 +790,7 @@ mod tests {
 
     #[test]
     fn exact_reference_ambiguous_bare_id_rejected() {
-        let models = vec![
-            model("a", "same", None),
-            model("b", "same", None),
-        ];
+        let models = vec![model("a", "same", None), model("b", "same", None)];
         assert!(find_exact_model_reference_match("same", &models).is_none());
     }
 
@@ -821,13 +910,19 @@ mod tests {
         let patterns = vec!["anthropic/*:high".to_string()];
         let (scoped, _) = resolve_model_scope_from_models(&patterns, &models);
         assert!(!scoped.is_empty());
-        assert!(scoped.iter().all(|sm| sm.thinking_level.as_deref() == Some("high")));
+        assert!(scoped
+            .iter()
+            .all(|sm| sm.thinking_level.as_deref() == Some("high")));
     }
 
     #[test]
     fn glob_match_handles_basic_cases() {
         assert!(glob_match("*sonnet*", "claude-sonnet-4-5", true));
-        assert!(glob_match("anthropic/*", "anthropic/claude-sonnet-4-5", true));
+        assert!(glob_match(
+            "anthropic/*",
+            "anthropic/claude-sonnet-4-5",
+            true
+        ));
         assert!(!glob_match("anthropic/*", "google/gemini", true));
         assert!(glob_match("gemini-?", "gemini-3", true));
         assert!(!glob_match("gemini-?", "gemini-31", true));

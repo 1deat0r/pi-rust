@@ -11,7 +11,11 @@ pub struct ScrollView {
 
 impl ScrollView {
     pub fn new(child: SharedComponent) -> Self {
-        Self { child, offset: 0, height: None }
+        Self {
+            child,
+            offset: 0,
+            height: None,
+        }
     }
     pub fn set_height(&mut self, height: usize) {
         self.height = Some(height);
@@ -30,7 +34,11 @@ impl Component for ScrollView {
                     return content;
                 }
                 let max_offset = content.len() - height;
-                let offset = if self.offset == usize::MAX { max_offset } else { self.offset.min(max_offset) };
+                let offset = if self.offset == usize::MAX {
+                    max_offset
+                } else {
+                    self.offset.min(max_offset)
+                };
                 content[offset..offset + height].to_vec()
             }
             None => content,
@@ -46,7 +54,9 @@ impl Component for ScrollView {
                 self.offset = self.offset.saturating_sub(step);
             }
             "pagedown" => {
-                self.offset = self.offset.saturating_add(self.height.unwrap_or(10).saturating_sub(1));
+                self.offset = self
+                    .offset
+                    .saturating_add(self.height.unwrap_or(10).saturating_sub(1));
             }
             _ => {}
         }

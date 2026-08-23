@@ -12,12 +12,12 @@
 pub mod api;
 pub mod auth;
 pub mod auth_flows;
-pub mod oauth;
 pub mod event_stream;
 pub mod images;
 pub mod model;
 pub mod model_catalog;
 pub mod models;
+pub mod oauth;
 pub mod partial_json;
 pub mod providers;
 pub mod sse;
@@ -25,5 +25,8 @@ pub mod types;
 pub mod utils;
 
 pub use event_stream::{create_error_stream, AssistantMessageEventStream};
-pub use model::{calculate_cost, clamp_thinking_level, get_supported_thinking_levels, models_are_equal, Model, ModelCost, ModelCostTier, ModelInput};
+pub use model::{
+    calculate_cost, clamp_thinking_level, get_supported_thinking_levels, models_are_equal, Model,
+    ModelCost, ModelCostTier, ModelInput,
+};
 pub use types::*;

@@ -86,6 +86,8 @@ pub fn release_writer_lease(
 }
 
 pub fn delete_writer_lease(db: &Connection, session_id: &str) -> rusqlite::Result<()> {
-    SqlQuery::new("DELETE FROM writer_leases WHERE session_id = ?").bind(session_id).run(db)?;
+    SqlQuery::new("DELETE FROM writer_leases WHERE session_id = ?")
+        .bind(session_id)
+        .run(db)?;
     Ok(())
 }

@@ -86,12 +86,14 @@ pub struct LockResult<T> {
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 /// Boxed future resolving to `LockResult<T>` — the `withLockAsync` callback
 /// shape (upstream `(current) => Promise<LockResult<T>>`).
-pub type LockFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = LockResult<T>> + Send + 'a>>;
+pub type LockFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = LockResult<T>> + Send + 'a>>;
 
 /// `withLockAsync` callback: `(current) => Promise<LockResult<T>>`. The
 /// callback parses the borrowed `current` into owned data before boxing, so
 /// its returned future is `'static`.
-pub type LockCallback<T> = Box<dyn FnOnce(Option<&str>) -> BoxFuture<'static, Result<LockResult<T>, String>> + Send>;
+pub type LockCallback<T> =
+    Box<dyn FnOnce(Option<&str>) -> BoxFuture<'static, Result<LockResult<T>, String>> + Send>;
 
 /// Storage backend (upstream `AuthStorageBackend`): unlocked mutation of the
 /// current value behind a lock. The two concrete backends (file, in-memory)
@@ -127,11 +129,17 @@ impl AuthStorageBackend {
 
 fn rand_fraction() -> f64 {
     // Deterministic-enough jitter without pulling in a rand dep.
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
     (nanos as f64) / 1_000_000_000.0
 }
 
-async fn sleep_abortable(duration: Duration, signal: Option<&Arc<AtomicBool>>) -> Result<(), String> {
+async fn sleep_abortable(
+    duration: Duration,
+    signal: Option<&Arc<AtomicBool>>,
+) -> Result<(), String> {
     let deadline = std::time::Instant::now() + duration;
     loop {
         throw_if_aborted(signal)?;
@@ -189,7 +197,11 @@ impl FileAuthStorageBackend {
         let delay_ms = 20;
         let lock_path = self.lock_path();
         for attempt in 1..=max_attempts {
-            match fs::OpenOptions::new().write(true).create_new(true).open(&lock_path) {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
                 Ok(file) => return Ok(file),
                 Err(error) => {
                     let is_elocked = error.kind() == std::io::ErrorKind::AlreadyExists;
@@ -203,7 +215,10 @@ impl FileAuthStorageBackend {
         Err("Failed to acquire auth storage lock".to_string())
     }
 
-    async fn acquire_lock_async(&self, signal: Option<&Arc<AtomicBool>>) -> Result<fs::File, String> {
+    async fn acquire_lock_async(
+        &self,
+        signal: Option<&Arc<AtomicBool>>,
+    ) -> Result<fs::File, String> {
         let stale_ms = 30_000;
         let max_delay_ms = 2_000;
         let deadline = std::time::Instant::now() + Duration::from_millis(stale_ms);
@@ -211,7 +226,11 @@ impl FileAuthStorageBackend {
         let lock_path = self.lock_path();
         loop {
             throw_if_aborted(signal)?;
-            match fs::OpenOptions::new().write(true).create_new(true).open(&lock_path) {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
                 Ok(file) => {
                     if let Some(s) = signal {
                         if s.load(Ordering::SeqCst) {
@@ -224,12 +243,15 @@ impl FileAuthStorageBackend {
                 Err(error) => {
                     let is_elocked = error.kind() == std::io::ErrorKind::AlreadyExists;
                     throw_if_aborted(signal)?;
-                    let remaining_ms = deadline.saturating_duration_since(std::time::Instant::now());
+                    let remaining_ms =
+                        deadline.saturating_duration_since(std::time::Instant::now());
                     if !is_elocked || remaining_ms.is_zero() {
                         return Err(format!("Failed to acquire auth storage lock: {error}"));
                     }
-                    let base_delay_ms =
-                        std::cmp::min(10u64.saturating_mul(1u64 << retry.min(30)), max_delay_ms / 2);
+                    let base_delay_ms = std::cmp::min(
+                        10u64.saturating_mul(1u64 << retry.min(30)),
+                        max_delay_ms / 2,
+                    );
                     retry += 1;
                     let delay_ms = std::cmp::min(
                         (base_delay_ms as f64 * (1.0 + rand_fraction())) as u64,
@@ -366,7 +388,10 @@ pub struct ReadOnlyAuthStorage {
 
 impl ReadOnlyAuthStorage {
     pub fn new(auth_path: PathBuf) -> Self {
-        Self { auth_path, data: Mutex::new(None) }
+        Self {
+            auth_path,
+            data: Mutex::new(None),
+        }
     }
 
     fn load(&self) -> Result<AuthStorageData, String> {
@@ -389,19 +414,27 @@ impl ReadOnlyAuthStorage {
         let mut data = AuthStorageData::new();
         for (provider_id, credential) in parsed.as_object().unwrap() {
             validate_credential(provider_id, credential)?;
-            let credential: Credential = serde_json::from_value(credential.clone())
-                .map_err(|e| format!("Invalid auth.json credential for provider \"{provider_id}\": {e}"))?;
+            let credential: Credential =
+                serde_json::from_value(credential.clone()).map_err(|e| {
+                    format!("Invalid auth.json credential for provider \"{provider_id}\": {e}")
+                })?;
             data.insert(provider_id.clone(), credential);
         }
         *self.data.lock().unwrap() = Some(data.clone());
         Ok(data)
     }
 
-    pub async fn read(&self, provider_id: &str, options: &AuthOperationOptions) -> Result<Option<Credential>, String> {
+    pub async fn read(
+        &self,
+        provider_id: &str,
+        options: &AuthOperationOptions,
+    ) -> Result<Option<Credential>, String> {
         throw_if_aborted(options.signal.as_ref())?;
         let credential = self.load()?.get(provider_id).cloned();
         throw_if_aborted(options.signal.as_ref())?;
-        let Some(credential) = credential else { return Ok(None) };
+        let Some(credential) = credential else {
+            return Ok(None);
+        };
         // Command-configured keys are returned untouched; template keys are
         // resolved (upstream ReadOnlyAuthStorage.read).
         if let Credential::ApiKey { key: Some(key), .. } = &credential {
@@ -418,7 +451,10 @@ impl ReadOnlyAuthStorage {
         Ok(Some(credential))
     }
 
-    pub async fn list(&self, options: &AuthOperationOptions) -> Result<Vec<CredentialInfo>, String> {
+    pub async fn list(
+        &self,
+        options: &AuthOperationOptions,
+    ) -> Result<Vec<CredentialInfo>, String> {
         throw_if_aborted(options.signal.as_ref())?;
         let credentials = self
             .load()?
@@ -435,13 +471,18 @@ impl ReadOnlyAuthStorage {
     pub async fn modify(
         &self,
         _provider_id: &str,
-        _f: impl FnMut(Option<&Credential>) -> BoxFuture<'static, Result<Option<Credential>, String>> + Send,
+        _f: impl FnMut(Option<&Credential>) -> BoxFuture<'static, Result<Option<Credential>, String>>
+            + Send,
         _options: &AuthOperationOptions,
     ) -> Result<Option<Credential>, String> {
         Err("Read-only credential storage cannot modify auth.json".to_string())
     }
 
-    pub async fn delete(&self, _provider_id: &str, _options: &AuthOperationOptions) -> Result<(), String> {
+    pub async fn delete(
+        &self,
+        _provider_id: &str,
+        _options: &AuthOperationOptions,
+    ) -> Result<(), String> {
         Err("Read-only credential storage cannot modify auth.json".to_string())
     }
 
@@ -452,7 +493,9 @@ impl ReadOnlyAuthStorage {
 
 fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), String> {
     if !credential.is_object() {
-        return Err(format!("Invalid auth.json credential for provider \"{provider_id}\""));
+        return Err(format!(
+            "Invalid auth.json credential for provider \"{provider_id}\""
+        ));
     }
     let value = credential.as_object().unwrap();
     match value.get("type").and_then(Value::as_str) {
@@ -460,12 +503,16 @@ fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), Stri
             let valid_key = value.get("key").is_none_or(|k| k.is_string());
             let valid_env = match value.get("env") {
                 None => true,
-                Some(env) => env.as_object().is_some_and(|m| m.values().all(|entry| entry.is_string())),
+                Some(env) => env
+                    .as_object()
+                    .is_some_and(|m| m.values().all(|entry| entry.is_string())),
             };
             if valid_key && valid_env {
                 Ok(())
             } else {
-                Err(format!("Invalid auth.json credential for provider \"{provider_id}\""))
+                Err(format!(
+                    "Invalid auth.json credential for provider \"{provider_id}\""
+                ))
             }
         }
         Some("oauth") => {
@@ -475,10 +522,14 @@ fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), Stri
             if valid {
                 Ok(())
             } else {
-                Err(format!("Invalid auth.json credential for provider \"{provider_id}\""))
+                Err(format!(
+                    "Invalid auth.json credential for provider \"{provider_id}\""
+                ))
             }
         }
-        _ => Err(format!("Invalid auth.json credential for provider \"{provider_id}\"")),
+        _ => Err(format!(
+            "Invalid auth.json credential for provider \"{provider_id}\""
+        )),
     }
 }
 
@@ -511,13 +562,20 @@ struct AuthFileReadState {
 
 impl AuthStorage {
     fn new(storage: AuthStorageBackend, auth_path: Option<PathBuf>) -> Self {
-        let mut storage = Self { storage, auth_path, read_state: Mutex::new(AuthFileReadState::default()) };
+        let mut storage = Self {
+            storage,
+            auth_path,
+            read_state: Mutex::new(AuthFileReadState::default()),
+        };
         storage.reload();
         storage
     }
 
     pub fn create(auth_path: PathBuf) -> Self {
-        Self::new(AuthStorageBackend::File(FileAuthStorageBackend::new(auth_path.clone())), Some(auth_path))
+        Self::new(
+            AuthStorageBackend::File(FileAuthStorageBackend::new(auth_path.clone())),
+            Some(auth_path),
+        )
     }
 
     pub fn from_storage(storage: AuthStorageBackend) -> Self {
@@ -529,7 +587,9 @@ impl AuthStorage {
         // Initialize through the same value slot the backend treats as the
         // source of truth (upstream `AuthStorage.inMemory` writes the JSON).
         if !data.is_empty() {
-            storage.value = Arc::new(Mutex::new(Some(serde_json::to_string_pretty(&data).unwrap())));
+            storage.value = Arc::new(Mutex::new(Some(
+                serde_json::to_string_pretty(&data).unwrap(),
+            )));
         }
         Self::from_storage(AuthStorageBackend::InMemory(storage))
     }
@@ -545,7 +605,10 @@ impl AuthStorage {
         let mut content: Option<String> = None;
         self.storage.with_lock(&mut |current| {
             content = current.map(|s| s.to_string());
-            LockResult { result: (), next: None }
+            LockResult {
+                result: (),
+                next: None,
+            }
         });
         content
     }
@@ -565,7 +628,10 @@ impl AuthStorage {
         state.revision = revision;
     }
 
-    async fn read_latest_data(&self, options: &AuthOperationOptions) -> Result<AuthStorageData, String> {
+    async fn read_latest_data(
+        &self,
+        options: &AuthOperationOptions,
+    ) -> Result<AuthStorageData, String> {
         throw_if_aborted(options.signal.as_ref())?;
         // In-memory stores are read freshly each time (their value is the
         // source of truth); file stores are cached by revision and reloaded
@@ -594,10 +660,16 @@ impl AuthStorage {
         Ok(data)
     }
 
-    pub async fn read(&self, provider: &str, options: &AuthOperationOptions) -> Result<Option<Credential>, String> {
+    pub async fn read(
+        &self,
+        provider: &str,
+        options: &AuthOperationOptions,
+    ) -> Result<Option<Credential>, String> {
         let credential = self.read_latest_data(options).await?.get(provider).cloned();
         throw_if_aborted(options.signal.as_ref())?;
-        let Some(credential) = credential else { return Ok(None) };
+        let Some(credential) = credential else {
+            return Ok(None);
+        };
         if let Credential::ApiKey { key: Some(key), .. } = &credential {
             if let Some(resolved) = resolve_config_value(key, None) {
                 let mut resolved_credential = credential.clone();
@@ -613,7 +685,9 @@ impl AuthStorage {
     pub async fn modify(
         &self,
         provider: &str,
-        mut f: impl FnMut(Option<&Credential>) -> BoxFuture<'static, Result<Option<Credential>, String>> + Send + 'static,
+        mut f: impl FnMut(Option<&Credential>) -> BoxFuture<'static, Result<Option<Credential>, String>>
+            + Send
+            + 'static,
         options: &AuthOperationOptions,
     ) -> Result<Option<Credential>, String> {
         let provider = provider.to_string();
@@ -653,7 +727,11 @@ impl AuthStorage {
         Ok(result)
     }
 
-    pub async fn delete(&self, provider: &str, options: &AuthOperationOptions) -> Result<(), String> {
+    pub async fn delete(
+        &self,
+        provider: &str,
+        options: &AuthOperationOptions,
+    ) -> Result<(), String> {
         let provider = provider.to_string();
         self.storage
             .with_lock_async(
@@ -680,7 +758,10 @@ impl AuthStorage {
         Ok(())
     }
 
-    pub async fn list(&self, options: &AuthOperationOptions) -> Result<Vec<CredentialInfo>, String> {
+    pub async fn list(
+        &self,
+        options: &AuthOperationOptions,
+    ) -> Result<Vec<CredentialInfo>, String> {
         let entries = self.read_latest_data(options).await?;
         throw_if_aborted(options.signal.as_ref())?;
         Ok(entries
@@ -707,7 +788,8 @@ mod tests {
     use std::fs;
 
     fn temp_auth_path(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pi-auth-test-{}-{}", name, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("pi-auth-test-{}-{}", name, std::process::id()));
         let _ = fs::create_dir_all(&dir);
         dir.join("auth.json")
     }
@@ -721,19 +803,32 @@ mod tests {
         let storage = AuthStorage::in_memory(AuthStorageData::new());
         let opts = AuthOperationOptions::default();
         runtime().block_on(async {
-            let credential = Credential::ApiKey { key: Some("sk-test".into()), env: None };
+            let credential = Credential::ApiKey {
+                key: Some("sk-test".into()),
+                env: None,
+            };
             let saved = storage
-                .modify("openai", move |current| {
-                    assert!(current.is_none());
-                    let credential = credential.clone();
-                    Box::pin(async move { Ok(Some(credential)) })
-                }, &opts)
+                .modify(
+                    "openai",
+                    move |current| {
+                        assert!(current.is_none());
+                        let credential = credential.clone();
+                        Box::pin(async move { Ok(Some(credential)) })
+                    },
+                    &opts,
+                )
                 .await
                 .unwrap();
             assert!(saved.is_some());
 
             let read = storage.read("openai", &opts).await.unwrap().unwrap();
-            assert_eq!(read, Credential::ApiKey { key: Some("sk-test".into()), env: None });
+            assert_eq!(
+                read,
+                Credential::ApiKey {
+                    key: Some("sk-test".into()),
+                    env: None
+                }
+            );
 
             let list = storage.list(&opts).await.unwrap();
             assert_eq!(list.len(), 1);
@@ -754,11 +849,18 @@ mod tests {
             let opts = AuthOperationOptions::default();
             runtime().block_on(async {
                 storage
-                    .modify("anthropic", |_| {
-                        Box::pin(async move {
-                            Ok(Some(Credential::ApiKey { key: Some("$PI_TEST_AUTH_FILE_KEY".into()), env: None }))
-                        })
-                    }, &opts)
+                    .modify(
+                        "anthropic",
+                        |_| {
+                            Box::pin(async move {
+                                Ok(Some(Credential::ApiKey {
+                                    key: Some("$PI_TEST_AUTH_FILE_KEY".into()),
+                                    env: None,
+                                }))
+                            })
+                        },
+                        &opts,
+                    )
                     .await
                     .unwrap();
             });
@@ -770,7 +872,13 @@ mod tests {
         let opts = AuthOperationOptions::default();
         runtime().block_on(async {
             let read = fresh.read("anthropic", &opts).await.unwrap().unwrap();
-            assert_eq!(read, Credential::ApiKey { key: Some("resolved-key".into()), env: None });
+            assert_eq!(
+                read,
+                Credential::ApiKey {
+                    key: Some("resolved-key".into()),
+                    env: None
+                }
+            );
         });
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(Path::new(&format!("{}.lock", path.display())));
@@ -789,7 +897,10 @@ mod tests {
     #[test]
     fn read_only_rejects_invalid_credentials() {
         let path = temp_auth_path("ro");
-        write_auth_file(&path, r#"{"openai":{"type":"api_key","key":"sk-1"},"bad":{"type":"unknown"}}"#);
+        write_auth_file(
+            &path,
+            r#"{"openai":{"type":"api_key","key":"sk-1"},"bad":{"type":"unknown"}}"#,
+        );
         let store = ReadOnlyAuthStorage::new(path.clone());
         let opts = AuthOperationOptions::default();
         runtime().block_on(async {
@@ -801,13 +912,22 @@ mod tests {
     #[test]
     fn read_only_accepts_valid_credentials_and_resolves_templates() {
         let path = temp_auth_path("ro-ok");
-        write_auth_file(&path, r#"{"openai":{"type":"api_key","key":"$PI_TEST_RO_KEY"}}"#);
+        write_auth_file(
+            &path,
+            r#"{"openai":{"type":"api_key","key":"$PI_TEST_RO_KEY"}}"#,
+        );
         std::env::set_var("PI_TEST_RO_KEY", "resolved-ro");
         let store = ReadOnlyAuthStorage::new(path.clone());
         let opts = AuthOperationOptions::default();
         runtime().block_on(async {
             let read = store.read("openai", &opts).await.unwrap().unwrap();
-            assert_eq!(read, Credential::ApiKey { key: Some("resolved-ro".into()), env: None });
+            assert_eq!(
+                read,
+                Credential::ApiKey {
+                    key: Some("resolved-ro".into()),
+                    env: None
+                }
+            );
             let list = store.list(&opts).await.unwrap();
             assert_eq!(list.len(), 1);
             assert_eq!(list[0].credential_type, "api_key");
@@ -823,9 +943,10 @@ mod tests {
         let store = ReadOnlyAuthStorage::new(path);
         let opts = AuthOperationOptions::default();
         runtime().block_on(async {
-            assert!(store.modify("x", |_| {
-                Box::pin(async move { Ok(None) })
-            }, &opts).await.is_err());
+            assert!(store
+                .modify("x", |_| { Box::pin(async move { Ok(None) }) }, &opts)
+                .await
+                .is_err());
             assert!(store.delete("x", &opts).await.is_err());
         });
     }
@@ -833,10 +954,19 @@ mod tests {
     #[test]
     fn read_stored_credential_is_resolution_free() {
         let path = temp_auth_path("stored");
-        write_auth_file(&path, r#"{"google":{"type":"api_key","key":"!echo gg-key"}}"#);
+        write_auth_file(
+            &path,
+            r#"{"google":{"type":"api_key","key":"!echo gg-key"}}"#,
+        );
         // Returns the raw stored value (command config untouched).
         let credential = read_stored_credential("google", &path).unwrap();
-        assert_eq!(credential, Credential::ApiKey { key: Some("!echo gg-key".into()), env: None });
+        assert_eq!(
+            credential,
+            Credential::ApiKey {
+                key: Some("!echo gg-key".into()),
+                env: None
+            }
+        );
         let _ = fs::remove_file(&path);
     }
 
@@ -849,11 +979,22 @@ mod tests {
         );
         let credential = read_stored_credential("github", &path).unwrap();
         match credential {
-            Credential::OAuth { access, refresh, expires, extra } => {
+            Credential::OAuth {
+                access,
+                refresh,
+                expires,
+                extra,
+            } => {
                 assert_eq!(access, "acc");
                 assert_eq!(refresh, "ref");
                 assert_eq!(expires, 123);
-                assert_eq!(extra.get("scope").and_then(Value::as_array).map(|a| a.len()), Some(1));
+                assert_eq!(
+                    extra
+                        .get("scope")
+                        .and_then(Value::as_array)
+                        .map(|a| a.len()),
+                    Some(1)
+                );
             }
             _ => panic!("expected oauth"),
         }

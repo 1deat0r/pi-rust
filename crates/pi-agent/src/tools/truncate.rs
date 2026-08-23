@@ -76,7 +76,11 @@ pub fn truncate_tail(content: &str) -> (Truncation, bool, usize) {
     truncate_tail_with(content, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES)
 }
 
-pub fn truncate_tail_with(content: &str, max_lines: usize, max_bytes: usize) -> (Truncation, bool, usize) {
+pub fn truncate_tail_with(
+    content: &str,
+    max_lines: usize,
+    max_bytes: usize,
+) -> (Truncation, bool, usize) {
     let all_lines: Vec<&str> = content.lines().collect();
     let total_lines = all_lines.len();
     let mut start = 0usize;
@@ -86,13 +90,19 @@ pub fn truncate_tail_with(content: &str, max_lines: usize, max_bytes: usize) -> 
     for (idx, line) in all_lines.iter().enumerate().rev() {
         bytes += utf8_len(line) + 1;
         if bytes > max_bytes || (all_lines.len() - idx) > max_lines {
-            truncated_by = Some(if bytes > max_bytes { TruncatedBy::Bytes } else { TruncatedBy::Lines });
+            truncated_by = Some(if bytes > max_bytes {
+                TruncatedBy::Bytes
+            } else {
+                TruncatedBy::Lines
+            });
             break;
         }
         start = idx;
     }
     let selected: Vec<&str> = all_lines[start..].to_vec();
-    let last_line_partial = truncated_by == Some(TruncatedBy::Bytes) && selected.len() == 1 && selected[0].len() > max_bytes;
+    let last_line_partial = truncated_by == Some(TruncatedBy::Bytes)
+        && selected.len() == 1
+        && selected[0].len() > max_bytes;
     let joined = selected.join("\n");
     (
         Truncation {
@@ -104,7 +114,9 @@ pub fn truncate_tail_with(content: &str, max_lines: usize, max_bytes: usize) -> 
             content: joined,
         },
         last_line_partial,
-        last_line_partial.then(|| utf8_len(selected[0])).unwrap_or(0),
+        last_line_partial
+            .then(|| utf8_len(selected[0]))
+            .unwrap_or(0),
     )
 }
 
@@ -114,7 +126,10 @@ mod tests {
 
     #[test]
     fn head_truncates_by_lines() {
-        let content = (0..2002).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let content = (0..2002)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let t = truncate_head(&content);
         assert!(t.truncated);
         assert_eq!(t.truncated_by, Some(TruncatedBy::Lines));
@@ -138,7 +153,10 @@ mod tests {
 
     #[test]
     fn tail_keeps_last_lines() {
-        let content = (0..2005).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let content = (0..2005)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let (t, _, _) = truncate_tail(&content);
         assert!(t.truncated);
         assert_eq!(t.output_lines, 2000);

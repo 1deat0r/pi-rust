@@ -139,7 +139,11 @@ pub fn parse_streaming_json(input: &str) -> JsonValue {
 /// behavior (see module docs). Returns `Err` for fragments the npm package
 /// rejects.
 pub fn parse_partial_json(input: &str) -> PartialJsonResult<JsonValue> {
-    let mut parser = Parser { input, pos: 0, aborted: false };
+    let mut parser = Parser {
+        input,
+        pos: 0,
+        aborted: false,
+    };
     if parser.eof() {
         return Err(PartialJsonError); // npm: "is empty"
     }
@@ -233,7 +237,8 @@ impl<'a> Parser<'a> {
             ("false", JsonValue::Bool(false))
         } else if rest.starts_with("null") {
             ("null", JsonValue::Null)
-        } else if "true".starts_with(rest) || "false".starts_with(rest) || "null".starts_with(rest) {
+        } else if "true".starts_with(rest) || "false".starts_with(rest) || "null".starts_with(rest)
+        {
             // Truncated keyword at EOF: npm completes it (tru -> true).
             self.pos = self.input.len();
             return Ok(if rest.starts_with('f') {
@@ -398,8 +403,9 @@ impl<'a> Parser<'a> {
                                 if let Some(high) = pending_high_surrogate.take() {
                                     // Complete a low surrogate pair.
                                     if (0xdc00..=0xdfff).contains(&code) {
-                                        let combined =
-                                            0x10000 + ((high as u32 - 0xd800) << 10) + (code as u32 - 0xdc00);
+                                        let combined = 0x10000
+                                            + ((high as u32 - 0xd800) << 10)
+                                            + (code as u32 - 0xdc00);
                                         if let Some(ch) = char::from_u32(combined) {
                                             out.push(ch);
                                         }
@@ -547,14 +553,8 @@ mod tests {
         // Upstream's repair doubles the invalid escape, so the parsed string
         // contains a literal backslash-x / backslash-q (not valid JSON text
         // for `val()`, hence the direct JsonValue construction).
-        assert_oracle(
-            "{\"a\": \"b\\xc\"}",
-            serde_json::json!({"a": "b\\xc"}),
-        );
-        assert_oracle(
-            "{\"a\": \"b\\qc\"}",
-            serde_json::json!({"a": "b\\qc"}),
-        );
+        assert_oracle("{\"a\": \"b\\xc\"}", serde_json::json!({"a": "b\\xc"}));
+        assert_oracle("{\"a\": \"b\\qc\"}", serde_json::json!({"a": "b\\qc"}));
         assert_oracle("{\"a\": \"b\\", val(r#"{"a":"b"}"#));
         assert_oracle("\\", val("{}"));
         assert_oracle("{\"a\": \"b\u{0001}c", val("{}"));
@@ -563,7 +563,10 @@ mod tests {
 
     #[test]
     fn repair_json_port() {
-        assert_eq!(repair_json("{\"a\": \"b\u{0001}c\"}"), "{\"a\": \"b\\u0001c\"}");
+        assert_eq!(
+            repair_json("{\"a\": \"b\u{0001}c\"}"),
+            "{\"a\": \"b\\u0001c\"}"
+        );
         assert_eq!(repair_json("{\"a\": \"b\\xc\"}"), "{\"a\": \"b\\\\xc\"}");
         assert_eq!(repair_json("{\"a\": \"b\\"), "{\"a\": \"b\\\\");
         // Outside strings backslashes pass through verbatim.
@@ -574,7 +577,10 @@ mod tests {
     fn tolerant_partial_values() {
         assert_eq!(parse_partial_json("true").unwrap(), val("true"));
         assert_eq!(parse_partial_json("tru").unwrap(), val("true"));
-        assert_eq!(parse_partial_json("{\"a\": \"hel").unwrap(), val(r#"{"a":"hel"}"#));
+        assert_eq!(
+            parse_partial_json("{\"a\": \"hel").unwrap(),
+            val(r#"{"a":"hel"}"#)
+        );
         assert_eq!(parse_partial_json("[1, 2,").unwrap(), val("[1,2]"));
         // npm rejects these (partial-json throws -> chain returns {}).
         assert!(parse_partial_json("-").is_err());
@@ -582,4 +588,3 @@ mod tests {
         assert!(parse_partial_json("tru\"e").is_err());
     }
 }
-

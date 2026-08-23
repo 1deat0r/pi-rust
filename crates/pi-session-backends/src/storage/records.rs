@@ -46,7 +46,11 @@ pub struct NewRecordRow {
     pub payload: String,
 }
 
-pub fn append_record_row(db: &Connection, session_id: &str, record: &NewRecordRow) -> rusqlite::Result<()> {
+pub fn append_record_row(
+    db: &Connection,
+    session_id: &str,
+    record: &NewRecordRow,
+) -> rusqlite::Result<()> {
     SqlQuery::new(
         "INSERT INTO records
             (session_id, seq, id, lane, run_id, type, op_kind, timestamp, payload)
@@ -66,15 +70,19 @@ pub fn append_record_row(db: &Connection, session_id: &str, record: &NewRecordRo
 }
 
 pub fn id_exists_in_records(db: &Connection, session_id: &str, id: &str) -> rusqlite::Result<bool> {
-    Ok(SqlQuery::new("SELECT 1 AS found FROM records WHERE session_id = ? AND id = ? LIMIT 1")
-        .bind(session_id)
-        .bind(id)
-        .get_row(db, |_row| Ok(()))?
-        .is_some())
+    Ok(
+        SqlQuery::new("SELECT 1 AS found FROM records WHERE session_id = ? AND id = ? LIMIT 1")
+            .bind(session_id)
+            .bind(id)
+            .get_row(db, |_row| Ok(()))?
+            .is_some(),
+    )
 }
 
 pub fn delete_record_rows(db: &Connection, session_id: &str) -> rusqlite::Result<()> {
-    SqlQuery::new("DELETE FROM records WHERE session_id = ?").bind(session_id).run(db)?;
+    SqlQuery::new("DELETE FROM records WHERE session_id = ?")
+        .bind(session_id)
+        .run(db)?;
     Ok(())
 }
 
@@ -117,11 +125,13 @@ pub fn read_record_rows(
         WHERE ",
     )
     .inline(&where_clause);
-    full = full.inline(&SqlQuery::new(if matches!(query.order, Some(EntryOrder::OldestFirst)) {
-        " ORDER BY seq ASC"
-    } else {
-        " ORDER BY seq DESC"
-    }));
+    full = full.inline(&SqlQuery::new(
+        if matches!(query.order, Some(EntryOrder::OldestFirst)) {
+            " ORDER BY seq ASC"
+        } else {
+            " ORDER BY seq DESC"
+        },
+    ));
     if let Some(limit) = query.limit {
         full = full.inline(&SqlQuery::new(" LIMIT ?").bind(limit));
     }
@@ -133,11 +143,17 @@ pub fn read_open_operation_rows(
     session_id: &str,
     lane: &str,
 ) -> Result<Vec<RecordRow>, SessionError> {
-    let lane_row = SqlQuery::new("SELECT open_operation_id FROM lanes WHERE session_id = ? AND lane = ?")
-        .bind(session_id)
-        .bind(lane)
-        .get_row(db, |row| row.get::<_, Option<String>>(0))
-        .map_err(|error| SessionError::new(SessionErrorKind::Storage, format!("Failed to read lane: {error}")))?;
+    let lane_row =
+        SqlQuery::new("SELECT open_operation_id FROM lanes WHERE session_id = ? AND lane = ?")
+            .bind(session_id)
+            .bind(lane)
+            .get_row(db, |row| row.get::<_, Option<String>>(0))
+            .map_err(|error| {
+                SessionError::new(
+                    SessionErrorKind::Storage,
+                    format!("Failed to read lane: {error}"),
+                )
+            })?;
     let Some(open_operation_id) = lane_row.flatten() else {
         return Ok(Vec::new());
     };
@@ -150,7 +166,12 @@ pub fn read_open_operation_rows(
     .bind(session_id)
     .bind(&open_operation_id)
     .get_row(db, map_record_row)
-    .map_err(|error| SessionError::new(SessionErrorKind::Storage, format!("Failed to read open operation: {error}")))?;
+    .map_err(|error| {
+        SessionError::new(
+            SessionErrorKind::Storage,
+            format!("Failed to read open operation: {error}"),
+        )
+    })?;
     let record = match record {
         Some(record) => record,
         None => {

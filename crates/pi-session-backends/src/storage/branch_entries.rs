@@ -26,7 +26,9 @@ pub struct CachedBranchEntryRow {
     pub payload: String,
 }
 
-pub fn map_cached_branch_entry_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedBranchEntryRow> {
+pub fn map_cached_branch_entry_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CachedBranchEntryRow> {
     Ok(CachedBranchEntryRow {
         session_id: row.get(0)?,
         id: row.get(1)?,
@@ -63,8 +65,13 @@ pub fn read_cached_branch(
     )
     .bind(session_id)
     .bind(leaf_id)
-    .get_row(db, |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
-    Ok(membership.map(|(branch_id, entry_seq)| CachedBranch { branch_id, leaf_seq: entry_seq }))
+    .get_row(db, |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    Ok(membership.map(|(branch_id, entry_seq)| CachedBranch {
+        branch_id,
+        leaf_seq: entry_seq,
+    }))
 }
 
 pub fn query_cached_branch_rows(
@@ -125,7 +132,10 @@ pub fn query_cached_branch_rows(
         );
     }
     if let Some(cursor) = query.cursor {
-        predicates.push(SqlQuery::new(format!("b.entry_seq {cursor_comparison} ?")).bind(cursor.after_seq as i64));
+        predicates.push(
+            SqlQuery::new(format!("b.entry_seq {cursor_comparison} ?"))
+                .bind(cursor.after_seq as i64),
+        );
     }
     if let Some(entry_type) = &query.entry_type {
         predicates.push(SqlQuery::new("b.entry_type = ?").bind(entry_type));
@@ -149,7 +159,9 @@ pub fn query_cached_branch_rows(
 }
 
 pub fn delete_branch_entries(db: &Connection, session_id: &str) -> rusqlite::Result<()> {
-    SqlQuery::new("DELETE FROM branch_entries WHERE session_id = ?").bind(session_id).run(db)?;
+    SqlQuery::new("DELETE FROM branch_entries WHERE session_id = ?")
+        .bind(session_id)
+        .run(db)?;
     Ok(())
 }
 
@@ -193,7 +205,10 @@ fn custom_type_from_payload(row: &BranchPathEntryRow) -> Result<Option<String>, 
     let parsed: serde_json::Value = serde_json::from_str(&row.payload).map_err(|error| {
         SessionError::new(
             SessionErrorKind::InvalidEntry,
-            format!("Invalid SQLite session entry {}: failed to decode entry {}: {error}", row.id, row.id),
+            format!(
+                "Invalid SQLite session entry {}: failed to decode entry {}: {error}",
+                row.id, row.id
+            ),
         )
     })?;
     let custom_type = parsed.get("customType").and_then(|v| v.as_str());
@@ -201,7 +216,10 @@ fn custom_type_from_payload(row: &BranchPathEntryRow) -> Result<Option<String>, 
         Some(custom_type) => Ok(Some(custom_type.to_string())),
         None => Err(SessionError::new(
             SessionErrorKind::InvalidEntry,
-            format!("Invalid SQLite session entry {}: failed to decode entry {}", row.id, row.id),
+            format!(
+                "Invalid SQLite session entry {}: failed to decode entry {}",
+                row.id, row.id
+            ),
         )),
     }
 }
@@ -240,8 +258,18 @@ pub fn insert_branch_entries_for_path(
                 payload: row.get(4)?,
             })
         })
-        .map_err(|error| SessionError::new(SessionErrorKind::Storage, format!("Failed to read entry: {error}")))?;
-        let row = row.ok_or_else(|| SessionError::new(SessionErrorKind::InvalidEntry, format!("Entry {current} not found")))?;
+        .map_err(|error| {
+            SessionError::new(
+                SessionErrorKind::Storage,
+                format!("Failed to read entry: {error}"),
+            )
+        })?;
+        let row = row.ok_or_else(|| {
+            SessionError::new(
+                SessionErrorKind::InvalidEntry,
+                format!("Entry {current} not found"),
+            )
+        })?;
         entry_id = row.parent_id.clone();
         path.push(row);
     }
@@ -257,7 +285,12 @@ pub fn insert_branch_entries_for_path(
             &row.entry_type,
             custom_type.as_deref(),
         )
-        .map_err(|error| SessionError::new(SessionErrorKind::Storage, format!("Failed to insert branch entry: {error}")))?;
+        .map_err(|error| {
+            SessionError::new(
+                SessionErrorKind::Storage,
+                format!("Failed to insert branch entry: {error}"),
+            )
+        })?;
     }
     Ok(())
 }
@@ -276,8 +309,13 @@ pub fn read_branch_containing_entry(
     )
     .bind(session_id)
     .bind(entry_id)
-    .get_row(db, |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
-    Ok(row.map(|(branch_id, entry_seq)| CachedBranch { branch_id, leaf_seq: entry_seq }))
+    .get_row(db, |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    Ok(row.map(|(branch_id, entry_seq)| CachedBranch {
+        branch_id,
+        leaf_seq: entry_seq,
+    }))
 }
 
 pub fn copy_branch_entries_through_seq(

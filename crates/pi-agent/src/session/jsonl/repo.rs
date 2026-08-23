@@ -3,11 +3,11 @@
 
 use std::collections::HashSet;
 
-use super::storage::JsonlSessionStorage;
-use super::{metadata_from_header, parse_header};
 use super::super::session::Session;
 use super::super::state::ForkOptions;
 use super::super::types::{JsonlV4Header, SessionError, SessionErrorKind, SessionMetadata};
+use super::storage::JsonlSessionStorage;
+use super::{metadata_from_header, parse_header};
 use crate::fs::FileSystem;
 use crate::types::FileError;
 
@@ -29,7 +29,13 @@ pub fn jsonl_session_directory_name(cwd: &str) -> String {
     let stripped = cwd.trim_start_matches(['/', '\\']);
     let replaced: String = stripped
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c == ':' { '-' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c == ':' {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect();
     format!("--{replaced}--")
 }
@@ -144,13 +150,16 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
             .await
             .map_err(|e| SessionError::new(SessionErrorKind::InvalidEntry, e.to_string()))?;
         let fork_options = options.fork_options.clone();
-        let parent_session_id = options.parent_session_id.clone().or(Some(source.id.clone()));
+        let parent_session_id = options
+            .parent_session_id
+            .clone()
+            .or(Some(source.id.clone()));
         let create_options = CreateOptions {
             parent_session_id,
             ..options.clone()
         };
-        let destination = self
-            .resolve_create_destination(create_options.id.as_deref(), &create_options.cwd)?;
+        let destination =
+            self.resolve_create_destination(create_options.id.as_deref(), &create_options.cwd)?;
         let sessions_root = self.sessions_root.clone();
         let fs = self.fs.clone();
         let dest = destination.clone();
@@ -170,7 +179,11 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
         .await
     }
 
-    fn resolve_create_destination(&self, id: Option<&str>, cwd: &str) -> Result<CreateDestination, SessionError> {
+    fn resolve_create_destination(
+        &self,
+        id: Option<&str>,
+        cwd: &str,
+    ) -> Result<CreateDestination, SessionError> {
         let id = match id {
             Some(id) => id.to_string(),
             None => super::super::session::new_id(),
@@ -212,7 +225,10 @@ fn prepare_create<F: FileSystem>(
     let dir = fs.join_path(sessions_root, &session_dir);
     if !fs.exists(&dir) {
         fs.create_dir(&dir).map_err(|e| {
-            SessionError::new(SessionErrorKind::Storage, format!("Failed to create sessions directory: {e}"))
+            SessionError::new(
+                SessionErrorKind::Storage,
+                format!("Failed to create sessions directory: {e}"),
+            )
         })?;
     }
     // Cross-process/session exclusion: the durable filename ends with
@@ -221,7 +237,11 @@ fn prepare_create<F: FileSystem>(
     let suffix = format!("_{}.jsonl", destination.id);
     let exists = fs
         .list_dir_entries(&dir)
-        .map(|entries| entries.iter().any(|e| !e.is_dir && e.name.ends_with(&suffix)))
+        .map(|entries| {
+            entries
+                .iter()
+                .any(|e| !e.is_dir && e.name.ends_with(&suffix))
+        })
         .unwrap_or(false);
     if exists {
         return Err(SessionError::new(
@@ -277,7 +297,10 @@ impl Default for CreateOptions {
 
 impl CreateOptions {
     pub fn new(cwd: impl Into<String>) -> Self {
-        Self { cwd: cwd.into(), ..Default::default() }
+        Self {
+            cwd: cwd.into(),
+            ..Default::default()
+        }
     }
 }
 
@@ -301,7 +324,10 @@ impl std::error::Error for StorageError {}
 
 impl From<StorageError> for SessionError {
     fn from(e: StorageError) -> Self {
-        SessionError::new(SessionErrorKind::Storage, format!("Failed to initialize session: {}", e.0))
+        SessionError::new(
+            SessionErrorKind::Storage,
+            format!("Failed to initialize session: {}", e.0),
+        )
     }
 }
 
@@ -346,7 +372,9 @@ pub fn list_jsonl_session_metadata<F: FileSystem>(
             if first_line.is_empty() {
                 continue;
             }
-            let Ok(header) = parse_header(first_line) else { continue };
+            let Ok(header) = parse_header(first_line) else {
+                continue;
+            };
             metadata.push(metadata_from_header(&header, &path, entry.mtime_ms));
         }
     }

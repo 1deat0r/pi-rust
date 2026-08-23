@@ -1,24 +1,21 @@
-# NEXT-100 — micro-task tracker for the full 1:1 pi → pi-rust conversion
+# Full Pi → pi-rust Conversion Ledger
 
 Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
-Base revision: HEAD 83e55cb (1240 tests at last clean revision).
+Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
-## Current status (last updated 2026-08-23)
+## Current status (last updated 2026-08-24)
 
-- HEAD `244fff6` on main; workspace test suite **1415 tests, 0 failures**
-  (`cargo test --workspace`), held clippy-clean for new-code regions.
-- The audit snapshot below ("Current state", before these tasks) is the
-  historical baseline the tracker was built from. Nearly all of its listed
-  gaps are now closed and recorded as completed items in the tracks below:
-  OAuth flows (T1), codex WebSocket transport (T1), `/share` gist + `--export`
-  (T0/T7), the full CLI flag surface + auto-compaction + tools + json/jsonl/
-  RPC modes (T2/T3/T6), models.json merge + provider composer (T3/T6), and
-  the T5/T6/T7 item surfaces closed per-item in their tracks.
-- Still open (all bracketed `[ ]` below): T5 interactive render surfaces
-  (PTY-bound), T7 edge parity (negative usage, `pi update`, export_html
-  fixtures, remaining RPC runtime audits), and the T8/T9 packaging/parity/
-  final-verification passes.
+- The exhaustive checker reports **41.57% (69/166)**. Run
+  `node scripts/conversion-progress.mjs` after any ledger change; the same
+  value is copied into `PLAN.md`.
+- The workspace currently checks successfully (`cargo check --workspace
+  --offline`), and the focused TUI/config/RPC suites pass. The full workspace
+  test result is re-run at the verification gates rather than inferred from a
+  historical session count.
+- The original 100 entries remain the historical work queue. The supplemental
+  S1 section is authoritative for residual provider, harness, runtime, TUI,
+  RPC, auxiliary client/server, evaluation, and final-audit work.
 
 ## Current state (verified 2026-08-23, before these tasks)
 
@@ -32,9 +29,9 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
   device-code flows, codex WebSocket transport (SSE fallback today),
   `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
   full TUI component, `update --models` pi.dev fetch seam, models.json runtime
-  merge seam, pi-ai Usage u64 negative-adjustment decision, TUI alt-screen full
-  swap + ICU word segmentation, server/client concurrency surfaces (leases,
-  reconnect, queuing).
+  merge seam, TUI alt-screen full swap + ICU word segmentation, server/client
+  concurrency surfaces (leases, reconnect, queuing). Signed usage adjustment
+  parity is closed in Session 16.
 - **Additional gaps found in this audit** (not in any TODO file):
   - Missing CLI flags vs 0.84.2 surface: `--fork`, `--approve/-a`,
     `--no-approve/-na`, `--no-builtin-tools/-nbt`, `--extension/-e`,
@@ -107,8 +104,8 @@ Recut of the remaining work by user impact + risk:
    **wiring** them into the run path, not re-porting the loaders.
 2. **T5 TUI polish** second: config selector, alt-screen full swap, word-nav,
    feature probes, footer totals, editor IME, slash-command E2E.
-3. **T7 product surfaces** third: `pi update`, session tree, export_html,
-   negative-usage edge. RPC-edge audits after the visible surfaces.
+3. **T7 product surfaces** third: `pi update`, session tree, export_html.
+   RPC-edge audits after the visible surfaces.
 4. **T4 #52-58 reclassified: OPTIONAL/DEFERRED auxiliary** — a separate
    "server/client as a library" milestone, clearly off the CLI path. Only
    restart if the goal becomes structural parity (i.e. wire `pi-coding-agent` →
@@ -175,24 +172,24 @@ Recut of the remaining work by user impact + risk:
 - [x] 23. Audit upstream AgentTool shape vs current `pi-agent/src/tools/`
       trait; per-tool deltas. (unit)
 - [x] 24. Upgrade tool trait to upstream shape.
-- [x] 25. `prepareArguments` for bash/read/write/edit/edit-diff/ls/find/grep/
+- [ ] 25. `prepareArguments` for bash/read/write/edit/edit-diff/ls/find/grep/
       image.
-- [x] 26. `execute` upstream signature + `onUpdate` → rich loop emits
+- [ ] 26. `execute` upstream signature + `onUpdate` → rich loop emits
       `tool_execution_update`.
-- [x] 27. Terminate-hint plumbing in `rich_agent.rs`.
+- [ ] 27. Terminate-hint plumbing in `rich_agent.rs`.
 - [x] 28. Migrate every tool constructor + run.rs call sites.
 - [x] 29. Port `validateToolArguments` (tool-args JSON-schema validation).
 - [x] 30. Wire validation into `prepare_tool_call` with upstream errors.
 - [x] 31. Tool-args validation tests (schema errors, unknown keys,
       partial-JSON args).
-- [x] 32. Image tool parity audit + register model-facing `image` in run.rs
+- [ ] 32. Image tool parity audit + register model-facing `image` in run.rs
       (7 → 8 built-in tools), match `/images` toggle.
 
 ## T3 — coding-agent run-path parity
 
-- [x] 33. Wire auto-compaction into run path (settings threshold → compact →
+- [ ] 33. Wire auto-compaction into run path (settings threshold → compact →
       continue; upstream `core/compaction/` loop).
-- [x] 34. Binary-level auto-compaction test (JSONL gains compaction entry). (mock)
+- [ ] 34. Binary-level auto-compaction test (JSONL gains compaction entry). (mock)
 - [x] 35. Port `core/messages.ts` extended-message wiring
       (BashExecutionMessage/CustomMessage reach provider in run.rs).
 - [x] 36. v3→v4 legacy session import in coding-agent session runtime
@@ -399,9 +396,15 @@ Recut of the remaining work by user impact + risk:
 
 ## T7 — Data model, session tree, export, RPC edge parity
 
-- [ ] 81. Negative-usage decision: widen pi-ai Usage token counts to i64;
-      ripple through agent/reducer + session-backends stats.
-- [ ] 82. Re-enable negative-adjustment conformance case (C-neg) + regressions.
+- [x] 81. Negative-usage decision: widened pi-ai `Usage` token counts,
+      optional cache-write/reasoning counts, session stats, usage totals, and
+      model cost accounting to signed `i64`/preserved negative values; normal
+      context/cache estimates clamp ledger corrections out of window arithmetic.
+      (unit: `cargo test --workspace`)
+- [x] 82. Re-enabled the upstream negative-adjustment conformance case (C-neg)
+      in both the in-memory/JSONL agent backend and SQLite backend; `-2`
+      input/total and `-0.5` cost produce `uncached=10`, `total=18`,
+      `costTotal=9.5`. (unit: `cargo test --workspace`)
 - [x] 83. Session tree/navigation parity: `get_tree` RPC. `modes/rpc.rs`
       `build_tree` now matches upstream `SessionManager.getTree()`: nodes as
       `{ entry, children, label? }` (label emitted only when `labelsById` has
@@ -430,11 +433,13 @@ Recut of the remaining work by user impact + risk:
       were regenerated and both remain byte-identical. `export_html_parity.rs`
       gains a `fixture_covers_tool_compaction_and_branch_summary` coverage
       test (8 non-session entries). Workspace green at 1416.
-- [ ] 87. RPC get_entries/get_tree/get_messages/get_last_assistant_text audit.
-      PARTIAL: `get_tree` parity fixed + tested under #83/#84. The remaining
-      `get_entries`/`get_messages`/`get_last_assistant_text` shape audits and
-      runtime honoring of set_auto_compaction/retry/steering/follow-up (#88)
-      still to verify.
+- [x] 87. RPC get_entries/get_tree/get_messages/get_last_assistant_text audit.
+      `get_entries` preserves oldest-first order, `since`, and `leafId`;
+      `get_tree` returns the labeled tree plus leaf; and the message queries
+      now rebuild the active branch after switch/fork, trim the last assistant
+      text, and return real entry ids for fork messages. Covered by RPC tests.
+      Runtime honoring of set_auto_compaction/retry/steering/follow-up remains
+      tracked separately in #88.
 - [ ] 88. RPC runtime audit: set_auto_compaction/retry/steering/follow-up honored.
 - [ ] 89. `pi update` parity: version check + `--models` pi.dev fetch seam;
       `PI_SKIP_VERSION_CHECK`.
@@ -462,6 +467,226 @@ Recut of the remaining work by user impact + risk:
 - [ ] 100. Final clean-room check: fresh clone → workspace tests green,
       0 warnings, clippy -D warnings clean, flag/env/tool/provider matrix
       recorded in PLAN.md with tiers, milestone tagged.
+
+---
+
+## Supplemental source-audit tasks (S1)
+
+The first 100 entries were the original work queue. This section is the
+additional inventory required to make the ledger exhaustive. These items came
+from a second pass over every package TODO, the pinned upstream module map,
+the current Rust implementation, and the documented Session 11 divergences.
+The denominator is allowed to grow if the source inventory discovers a new
+observable contract; the ledger is frozen only by S-001 and the final audit.
+
+### S1-A — inventory and evidence control
+
+- [ ] S-001 Complete a source-to-source inventory of every upstream exported
+      runtime surface and record one ledger ID per observable behavior; freeze
+      the denominator only after the inventory and all TODO files reconcile.
+- [ ] S-002 Reconcile stale `TODO.md`, session reports, README, and PLAN claims
+      against the current source and replace every “done” claim lacking an
+      exact test or live command with an open task.
+- [ ] S-003 Add a reproducible ledger-progress checker that counts only
+      checked/unchecked tasks in this file and fails on malformed checklist
+      lines or duplicate task IDs.
+- [ ] S-004 Run the independent-reviewer gate against this exhaustive ledger,
+      including a review of every deferred divergence and evidence tier.
+
+### S1-B — pi-ai residual provider and transport parity
+
+- [ ] S-005 Wire deferred-response fetch/cancel through the coding-agent model
+      runtime, interactive mode, RPC mode, and provider-composer path; test a
+      deferred response from request through resolution and cancellation.
+- [ ] S-006 Complete lazy API capability propagation for deferred fetch/cancel,
+      including missing-capability error text and models-store overrides.
+- [ ] S-007 Port the upstream image retry loop and its abort/quota/error
+      classification for image generation requests.
+- [ ] S-008 Complete constrained-sampling/grammar tool support for every
+      adaptor that advertises strict or grammar tools; reject unsupported
+      schemas with the upstream diagnostics.
+- [ ] S-009 Complete Codex WebSocket session caching/reuse and the
+      `websocket-cached` transport behavior, including eviction and close/error
+      recovery.
+- [ ] S-010 Complete AWS credential/profile-file and region resolution parity
+      for Bedrock, with environment/config precedence fixtures.
+- [ ] S-011 Complete Google Vertex ADC file, token URI, scope, refresh, and
+      project/location precedence parity.
+- [ ] S-012 Complete Cloudflare AI Gateway account/gateway binding and all
+      documented base URL/header precedence cases.
+- [ ] S-013 Complete GitHub Copilot OAuth refresh, enterprise-domain, token
+      exchange, and expired-credential behavior in the auth store and CLI.
+- [ ] S-014 Complete Anthropic OAuth provider-name mapping, adaptive-thinking
+      replay, eager beta headers, client injection, deferred tool references,
+      and server-side fallback behavior.
+- [ ] S-015 Add provider-by-provider request/stream/usage/error fixtures for
+      all catalog providers, including each advertised API variant and an
+      explicit no-API implementation check where upstream intentionally has
+      one.
+- [ ] S-016 Finish remote model-catalog HTTP semantics: RFC date parsing,
+      freshness, ETag/304 handling, 404/501 handling, atomic persistence, and
+      offline behavior.
+- [ ] S-017 Add model-catalog refresh and runtime-merge tests for every
+      provider shape, including custom providers, malformed payloads, and
+      generated-at precedence.
+
+### S1-C — pi-agent contract and harness integration
+
+- [ ] S-018 Emit upstream `tool_execution_update` events from built-in tools
+      through the `onUpdate` callback, including throttling and final-update
+      ordering.
+- [ ] S-019 Preserve and apply tool `terminate` hints in the model-facing
+      result/session/RPC event contract, including mixed parallel batches.
+- [ ] S-020 Verify exact `AgentTool` prepare/execute/error semantics for every
+      built-in and coding-agent tool against upstream malformed-call fixtures;
+      close any remaining signature or payload drift.
+- [ ] S-021 Integrate the `AgentHarness` lane/session abstraction into the
+      coding-agent run path instead of maintaining a parallel direct-loop
+      implementation.
+- [ ] S-022 Wire the complete harness event and telemetry lifecycle into print,
+      interactive, JSON, JSONL, and RPC modes with span/event golden checks.
+- [ ] S-023 Add panic-safe telemetry callback settlement equivalent to the
+      upstream `try/catch/finally` span lifecycle.
+- [ ] S-024 Complete JSON-schema validation parity for unions, arrays, numeric
+      bounds, formats, additional properties, and partial tool-call arguments;
+      compare all diagnostics with upstream.
+
+### S1-D — coding-agent product/runtime parity
+
+- [ ] S-025 Add automatic compaction/context rebuilding to the one-shot print
+      path, including settings thresholds, retained-tail entries, and
+      continuation after compaction.
+- [ ] S-026 Complete legacy v1/v2/v3-to-v4 import integration for every resume,
+      switch, fork, and `/import` path, not only the standalone converter.
+- [ ] S-027 Port TypeScript extension execution semantics or provide a proven
+      equivalent embedded runtime; cover extension commands, hooks, renderers,
+      and failure isolation.
+- [ ] S-028 Port the upstream self-update path (`pi update --self`) or document
+      and test the exact supported replacement behavior for this distribution.
+- [ ] S-029 Complete install-telemetry report transport, opt-out, retry, and
+      offline behavior where the upstream CLI performs the network ping.
+- [ ] S-030 Wire cache-miss notices and “cache re-billed” display data into the
+      interactive transcript/footer, including setting gates and reset events.
+- [ ] S-031 Port the `PI_TIMING=1` startup timing surface or prove/document its
+      intentional non-port with a compatibility test and user-facing fallback.
+- [ ] S-032 Wire provider-specific no-key/auth guidance into every model
+      resolution and provider error path, preserving upstream help text.
+- [ ] S-033 Complete interactive slash-command behavior audits for export,
+      import, share, trust, login/logout, new/resume, fork/clone, tree, and
+      reload; each command needs a real terminal or fixture transcript.
+- [ ] S-034 Finish ConfigSelector project/global inheritance, package pattern
+      toggles, search/navigation, write-scope persistence, and close behavior
+      against the upstream component.
+- [ ] S-035 Add PTY snapshot/golden tests for ConfigSelector rendering,
+      resizing, glyph probes, keyboard navigation, and settings writes.
+- [ ] S-036 Complete project-trust safety matrix for all commands and resource
+      loaders, including saved trust, default trust, `-a`, `-na`, and prompts.
+
+### S1-E — RPC behavior and concurrency
+
+- [x] S-037 Refactor RPC input handling so abort, steer, follow-up, and state
+      requests can be received while a prompt is streaming, matching upstream
+      concurrency and response ordering. (unit; mock) Prompts now run in a
+      detached Tokio worker with ordered event/completion delivery while the
+      JSONL loop continues reading control/state commands. Verified with
+      `cargo test -p pi-coding-agent modes::rpc::tests --offline` (25 passed),
+      `cargo test --workspace --offline`, and a faux-provider JSONL smoke run
+      showing prompt preflight → get_state → stream event/agent_settled →
+      abort response.
+- [x] S-038 Verify queue drain points, one-at-a-time/all modes, cancellation,
+      pending counts, steering precedence, and follow-up precedence with live
+      streamed transcripts. (unit; mock) RPC tests cover both queue batch
+      modes, turn-boundary precedence, pending-state reporting, detached abort
+      cancellation, live mode changes, and post-settlement abort ordering.
+      The faux stream supplies multiple deterministic turns for queued
+      follow-ups. Verified with `cargo test -p pi-coding-agent
+      modes::rpc::tests --offline` (25 passed) and `cargo test --workspace
+      --offline`.
+- [x] S-039 Make retry preserve first-attempt deltas, retry status events,
+      final usage/stop reason, abort-retry, and response persistence exactly.
+      (unit; mock) Retry attempts retain first-attempt deltas and terminal
+      messages, emit upstream-compatible `auto_retry_start`/
+      `auto_retry_end` events, preserve final usage and stop reason, accept
+      `abort_retry` while detached, and persist intermediate failures while
+      keeping failed retries out of the live context. Verified with
+      `cargo test -p pi-agent --offline rich_agent::tests -- --nocapture`
+      (7 passed), `cargo test -p pi-coding-agent --offline
+      modes::rpc::tests -- --nocapture` (29 passed), and
+      `cargo test --workspace --offline`.
+- [ ] S-040 Apply all settings values (reserve/keep tokens, retry provider
+      options, queue modes, transport, model) in RPC runtime behavior instead
+      of using only defaults or approximations.
+- [ ] S-041 Audit RPC abort vs abort-bash lifecycle, terminal events, and
+      session records under simultaneous prompt/tool activity.
+- [ ] S-042 Produce golden transcripts for every RPC command and event type,
+      including switch/fork/clone, queue modes, compaction, export, and all
+      error responses.
+
+### S1-F — pi-server/pi-client auxiliary library parity
+
+- [ ] S-043 Port the upstream `testing/service.ts`, test client, deferred
+      helpers, and test-server fixtures.
+- [ ] S-044 Run the complete server protocol/service conformance suite,
+      including malformed frames, handshake errors, snapshots, and lifecycle
+      events.
+- [ ] S-045 Port client reconnect/backoff and connection-state listener
+      behavior, including in-flight request failure and replay rules.
+- [ ] S-046 Complete client session lease acquire/release/reconcile,
+      exclusive-attach, snapshot reconciliation, and detach-on-close behavior.
+- [ ] S-047 Complete client dispose semantics, request timeouts, and transport
+      shutdown/error mapping.
+- [ ] S-048 Add the transport-factory abstraction and every upstream transport
+      option beyond the Unix implementation.
+- [ ] S-049 Add reconnect/lease-churn/session-close end-to-end tests over a
+      real socket with deterministic timing seams.
+
+### S1-G — pi-tui and terminal parity
+
+- [x] S-050 Complete cell-dimension querying/updating and use measured
+      dimensions in image sizing rather than fixed defaults. (unit) Raw Unix
+      stdin now flows through `StdinBuffer`; interactive/config loops pass the
+      complete response to `Tree::consume_cell_size_response` before key
+      dispatch, preserving following input. Verified with
+      `cargo test -p pi-tui --offline` (186 passed) and
+      `cargo test --workspace --offline`.
+- [ ] S-051 Add capability-matrix tests for Kitty, Ghostty, WezTerm, Warp,
+      iTerm2, VS Code, Alacritty, JetBrains, screen, tmux, Windows Terminal,
+      and unknown terminals.
+- [ ] S-052 Complete Editor IME/selection/kitty-event edge behavior and
+      bracketed-paste parity from the upstream fixtures.
+- [ ] S-053 Complete autocomplete debounce, cancellation, marked-input,
+      slash/path provider, and selection-application parity.
+- [ ] S-054 Complete SettingsList callback, disabled-row, selection, and
+      persistence semantics.
+- [ ] S-055 Complete marked/Markdown edge parity and renderer snapshot coverage
+      for all upstream block shapes.
+- [ ] S-056 Add PTY end-to-end coverage for the full interactive slash-command
+      matrix, resize/raw-mode cleanup, alt-screen restoration, and terminal
+      feature probes.
+- [ ] S-057 Add cross-platform terminal capability and cleanup checks for
+      Windows console, Unix terminals, tmux, and nested alternate screens.
+
+### S1-H — evals, fixtures, packaging, and final evidence
+
+- [ ] S-058 Capture usage/cost tokens from subprocess session JSONL in pi-evals
+      so evaluation metrics match the upstream harness.
+- [ ] S-059 Make the extension scenario scorable under faux, or provide the
+      same deterministic extension fixture/diagnostic contract as upstream.
+- [ ] S-060 Add provider/CLI exit-code and output-format matrix checks to the
+      parity suite, not only smoke checks.
+- [ ] S-061 Add golden RPC transcript fixtures and byte-level session fixtures
+      for v1/v2/v3/v4 migration and current writes.
+- [ ] S-062 Add settings/auth/models.json and package-resource on-disk golden
+      fixtures, including unknown-key preservation and lock/retry behavior.
+- [ ] S-063 Add full provider/adaptor fixture execution to the release parity
+      suite with network-free mock servers and explicit live smoke cases.
+- [ ] S-064 Port telemetry schema conformance tests and include them in the
+      release gate.
+- [ ] S-065 Synchronize README, per-crate TODOs, session reports, and PLAN with
+      the final ledger state and remove stale historical claims.
+- [ ] S-066 Freeze the final denominator after S-001, run the full source/TODO
+      audit, and record the final 100.00% evidence only when no open or
+      unclassified task remains.
 
 ---
 

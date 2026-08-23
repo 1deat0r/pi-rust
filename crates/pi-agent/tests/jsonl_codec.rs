@@ -151,7 +151,10 @@ fn round_trips_lane_line() {
 
 #[test]
 fn round_trips_fact_lines_including_cleared_values() {
-    mutation_round_trip(Mutation::Fact(Fact::Name { seq: 1, name: Some("Example".into()) }));
+    mutation_round_trip(Mutation::Fact(Fact::Name {
+        seq: 1,
+        name: Some("Example".into()),
+    }));
     mutation_round_trip(Mutation::Fact(Fact::Name { seq: 2, name: None }));
     mutation_round_trip(Mutation::Fact(Fact::Label {
         seq: 3,
@@ -162,7 +165,8 @@ fn round_trips_fact_lines_including_cleared_values() {
 
 #[test]
 fn rejects_custom_entry_without_custom_type() {
-    let line = r#"{"kind":"entry","type":"custom","id":"entry","parentId":null,"seq":1,"timestamp":1}"#;
+    let line =
+        r#"{"kind":"entry","type":"custom","id":"entry","parentId":null,"seq":1,"timestamp":1}"#;
     let err = parse_mutation(line).unwrap_err();
     assert_eq!(err.kind, JsonlDecodeErrorKind::Schema);
 }
@@ -199,7 +203,12 @@ fn round_trips_message_entry_with_typed_message() {
     let line = r#"{"kind":"entry","lane":"main","type":"message","id":"m1","parentId":null,"seq":1,"timestamp":10,"terminate":true,"message":{"role":"user","content":[{"type":"text","text":"question"}],"timestamp":1}}"#;
     let parsed = parse_mutation(line).unwrap();
     match &parsed {
-        Mutation::Entry { entry: Entry::Message { message, terminate, .. }, .. } => {
+        Mutation::Entry {
+            entry: Entry::Message {
+                message, terminate, ..
+            },
+            ..
+        } => {
             assert_eq!(terminate, &Some(true));
             // user message with one text block "question"
             match message {
@@ -207,7 +216,9 @@ fn round_trips_message_entry_with_typed_message() {
                     match u.content() {
                         pi_ai::types::UserContentBody::Blocks(blocks) => {
                             assert_eq!(blocks.len(), 1);
-                            assert!(matches!(&blocks[0], pi_ai::types::ContentBlock::Text { text, .. } if text == "question"));
+                            assert!(
+                                matches!(&blocks[0], pi_ai::types::ContentBlock::Text { text, .. } if text == "question")
+                            );
                         }
                         other => panic!("expected blocks, got {other:?}"),
                     }

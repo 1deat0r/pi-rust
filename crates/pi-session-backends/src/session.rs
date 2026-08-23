@@ -51,7 +51,9 @@ impl SqliteSession {
 
     /// Returns the full SQLite metadata (including the `name` projection and
     /// the application-owned `metadata` object).
-    pub async fn get_sqlite_metadata(&self) -> Result<crate::types::SqliteSessionMetadata, SessionError> {
+    pub async fn get_sqlite_metadata(
+        &self,
+    ) -> Result<crate::types::SqliteSessionMetadata, SessionError> {
         self.storage.get_metadata().await
     }
 
@@ -83,21 +85,39 @@ impl SqliteSession {
             .iter()
             .find(|pointer| pointer.lane == lane)
             .map(|pointer| pointer.leaf_id.clone())
-            .ok_or_else(|| session_error(SessionErrorKind::InvalidLane, format!("Lane not found: {lane}")))
+            .ok_or_else(|| {
+                session_error(
+                    SessionErrorKind::InvalidLane,
+                    format!("Lane not found: {lane}"),
+                )
+            })
     }
 
     // ---------------------------------------------------------------------
     // Entries / records
     // ---------------------------------------------------------------------
 
-    pub async fn append_entry(&mut self, entry: EntryNoStats, lane: &str) -> Result<Entry, SessionError> {
+    pub async fn append_entry(
+        &mut self,
+        entry: EntryNoStats,
+        lane: &str,
+    ) -> Result<Entry, SessionError> {
         self.storage.append_entry(entry, lane).await
     }
 
     /// `appendMessage(message) → id`.
     pub async fn append_message(&mut self, message: AgentMessage) -> Result<String, SessionError> {
         let id = new_id();
-        let entry = self.append_entry(EntryNoStats::Message { id, message, terminate: None }, "main").await?;
+        let entry = self
+            .append_entry(
+                EntryNoStats::Message {
+                    id,
+                    message,
+                    terminate: None,
+                },
+                "main",
+            )
+            .await?;
         Ok(entry.id().to_string())
     }
 
@@ -109,7 +129,14 @@ impl SqliteSession {
     ) -> Result<String, SessionError> {
         let id = new_id();
         let entry = self
-            .append_entry(EntryNoStats::Custom { id, custom_type: custom_type.to_string(), data }, "main")
+            .append_entry(
+                EntryNoStats::Custom {
+                    id,
+                    custom_type: custom_type.to_string(),
+                    data,
+                },
+                "main",
+            )
             .await?;
         Ok(entry.id().to_string())
     }
@@ -122,7 +149,14 @@ impl SqliteSession {
     ) -> Result<String, SessionError> {
         let id = new_id();
         let entry = self
-            .append_entry(EntryNoStats::Message { id, message, terminate: None }, lane)
+            .append_entry(
+                EntryNoStats::Message {
+                    id,
+                    message,
+                    terminate: None,
+                },
+                lane,
+            )
             .await?;
         Ok(entry.id().to_string())
     }
@@ -136,7 +170,14 @@ impl SqliteSession {
     ) -> Result<String, SessionError> {
         let id = new_id();
         let entry = self
-            .append_entry(EntryNoStats::Custom { id, custom_type: custom_type.to_string(), data }, lane)
+            .append_entry(
+                EntryNoStats::Custom {
+                    id,
+                    custom_type: custom_type.to_string(),
+                    data,
+                },
+                lane,
+            )
             .await?;
         Ok(entry.id().to_string())
     }
@@ -156,7 +197,10 @@ impl SqliteSession {
     fn assert_valid_limit(limit: Option<usize>) -> Result<(), SessionError> {
         if let Some(limit) = limit {
             if limit == 0 {
-                return Err(session_error(SessionErrorKind::InvalidQuery, "limit must be a positive integer"));
+                return Err(session_error(
+                    SessionErrorKind::InvalidQuery,
+                    "limit must be a positive integer",
+                ));
             }
         }
         Ok(())
@@ -177,7 +221,10 @@ impl SqliteSession {
     pub async fn find_entry(&self, query: &EntryQuery) -> Result<Option<Entry>, SessionError> {
         let narrowed = match query.limit {
             Some(_) => query.clone(),
-            None => EntryQuery { limit: Some(1), ..query.clone() },
+            None => EntryQuery {
+                limit: Some(1),
+                ..query.clone()
+            },
         };
         let result = self.find_entries(&narrowed).await?;
         Ok(result.first().cloned())
@@ -190,7 +237,8 @@ impl SqliteSession {
         start: Option<&str>,
         bounds: &BranchBounds,
     ) -> Result<Vec<Entry>, SessionError> {
-        self.query_branch_entries("main", query, start, bounds).await
+        self.query_branch_entries("main", query, start, bounds)
+            .await
     }
 
     /// `findEntryOnBranch`.
@@ -202,9 +250,14 @@ impl SqliteSession {
     ) -> Result<Option<Entry>, SessionError> {
         let narrowed = match query.limit {
             Some(_) => query.clone(),
-            None => EntryQuery { limit: Some(1), ..query.clone() },
+            None => EntryQuery {
+                limit: Some(1),
+                ..query.clone()
+            },
         };
-        let result = self.query_branch_entries("main", &narrowed, start, bounds).await?;
+        let result = self
+            .query_branch_entries("main", &narrowed, start, bounds)
+            .await?;
         Ok(result.first().cloned())
     }
 
@@ -222,7 +275,11 @@ impl SqliteSession {
             None => self.get_leaf_id_for_lane(default_lane).await?,
         };
         match start {
-            Some(start) => self.storage.find_entries_on_branch(query, bounds, &start).await,
+            Some(start) => {
+                self.storage
+                    .find_entries_on_branch(query, bounds, &start)
+                    .await
+            }
             None => Ok(Vec::new()),
         }
     }
@@ -231,7 +288,9 @@ impl SqliteSession {
     pub async fn find_records(&self, query: &RecordQuery) -> Result<Vec<LaneRecord>, SessionError> {
         Self::assert_valid_limit(query.limit)?;
         Self::assert_valid_cursor(query.after_seq)?;
-        if query.operation_kind.is_some() && query.record_type.as_deref() != Some("operation_started") {
+        if query.operation_kind.is_some()
+            && query.record_type.as_deref() != Some("operation_started")
+        {
             return Err(session_error(
                 SessionErrorKind::InvalidQuery,
                 "operationKind requires type \"operation_started\"",
@@ -286,7 +345,10 @@ impl SqliteSession {
 
     /// `view(lane)` — a lane-bound SessionTree (mirror of upstream `Session.view`).
     pub fn view<'a>(&'a mut self, lane: &'a str) -> SqliteSessionView<'a> {
-        SqliteSessionView { session: self, lane }
+        SqliteSessionView {
+            session: self,
+            lane,
+        }
     }
 }
 
@@ -322,7 +384,11 @@ impl SqliteSessionView<'_> {
         self.session.get_label(target_id).await
     }
 
-    pub async fn set_label(&mut self, target_id: &str, label: Option<&str>) -> Result<(), SessionError> {
+    pub async fn set_label(
+        &mut self,
+        target_id: &str,
+        label: Option<&str>,
+    ) -> Result<(), SessionError> {
         self.session.set_label(target_id, label).await
     }
 
@@ -339,7 +405,9 @@ impl SqliteSessionView<'_> {
         query: &EntryQuery,
         bounds: &BranchBounds,
     ) -> Result<Vec<Entry>, SessionError> {
-        self.session.query_branch_entries(self.lane, query, None, bounds).await
+        self.session
+            .query_branch_entries(self.lane, query, None, bounds)
+            .await
     }
 
     pub async fn find_entry_on_branch(
@@ -347,12 +415,17 @@ impl SqliteSessionView<'_> {
         query: &EntryQuery,
         bounds: &BranchBounds,
     ) -> Result<Option<Entry>, SessionError> {
-        let result = self.session.query_branch_entries(self.lane, query, None, bounds).await?;
+        let result = self
+            .session
+            .query_branch_entries(self.lane, query, None, bounds)
+            .await?;
         Ok(result.first().cloned())
     }
 
     pub async fn append_message(&mut self, message: AgentMessage) -> Result<String, SessionError> {
-        self.session.append_message_to_lane(self.lane, message).await
+        self.session
+            .append_message_to_lane(self.lane, message)
+            .await
     }
 
     pub async fn append_custom_entry(
@@ -360,12 +433,16 @@ impl SqliteSessionView<'_> {
         custom_type: &str,
         data: Option<serde_json::Value>,
     ) -> Result<String, SessionError> {
-        self.session.append_custom_entry_to_lane(self.lane, custom_type, data).await
+        self.session
+            .append_custom_entry_to_lane(self.lane, custom_type, data)
+            .await
     }
 }
 
 impl std::fmt::Debug for SqliteSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SqliteSession").field("session_id", &self.session_id()).finish()
+        f.debug_struct("SqliteSession")
+            .field("session_id", &self.session_id())
+            .finish()
     }
 }

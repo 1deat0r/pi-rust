@@ -22,7 +22,8 @@ pub use repo::SqliteSessionRepository;
 pub use search::create_sqlite_session_search;
 pub use session::SqliteSession;
 pub use types::{
-    SqliteSessionCreateOptions, SqliteSessionListOptions, SqliteSessionMetadata, SqliteWriterLeaseOptions,
+    SqliteSessionCreateOptions, SqliteSessionListOptions, SqliteSessionMetadata,
+    SqliteWriterLeaseOptions,
 };
 
 /// Generates a session/branch id (upstream `uuidv7`; pi-agent's port uses
