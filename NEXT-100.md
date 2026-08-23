@@ -260,8 +260,19 @@ Recut of the remaining work by user impact + risk:
 - [ ] 64. Word-segmentation tests (upstream cases).
 - [ ] 65. tmux `client_termfeatures` probe (feature detection parity).
 - [ ] 66. Terminal feature probe tests.
-- [ ] 67. Token-total footer reads (usage totals → footer parity).
-- [ ] 68. Footer tests.
+- [x] 67. Token-total footer reads (usage totals → footer parity). Ported
+      upstream `formatTokens` (exact thresholds) into `interactive/footer.rs`,
+      added `render_usage_stats` (`↑input ↓output Rcache Wcache CH{rate}%
+      $cost`) and an optional `usage`/`cache_hit_rate` on `FooterData`, and
+      wired `interactive.rs` to aggregate cumulative usage + latest-turn
+      cache-hit-rate from transcript assistant messages (upstream
+      `FooterComponent.render`).
+- [x] 68. Footer tests. 5 footer.rs tests (formatTokens thresholds, usage-stats
+      nonzero/cache/CH/cost rendering, usage-left+model-right layout) + 2
+      interactive.rs tests (usage aggregation across turns + hit-rate math,
+      empty-when-no-usage). Verified full `cargo test --workspace` green at
+      1390. Interactive TUI E2E render not reachable headlessly (first-run
+      terminal-feature glyph probes need a real terminal's font judgment).
 - [ ] 69. Editor IME/selection edge parity (kitty flags, bracketed paste).
 - [ ] 70. Interactive-mode E2E tmux script: full slash-command matrix.
 
@@ -307,8 +318,11 @@ Recut of the remaining work by user impact + risk:
       `modes/interactive.rs` resume: a session whose stored cwd no longer
       exists is refused with the upstream error banner instead of resumed.
 - [ ] 77. Port `core/cache-stats.ts` + `timings.ts` into usage totals/footer —
-      AUDIT: `core/usage_totals.rs` exists; token-total footer surface is
-      tracked under T5 #67. cache-stats/timings land with the footer work.
+      AUDIT: `core/usage_totals.rs` exists; the token-total footer read landed
+      with T5 #67 (usage aggregated from transcript assistant messages).
+      `cache-stats.ts` (`detectMiss`/`computeCacheWaste`/`collectCacheMisses`)
+      and `timings.ts` remain unported; land with the remaining footer display
+      work.
 - [x] 78. Port `core/auth-guidance.ts` messages parity. New `core/auth_guidance.rs`:
       `getProviderLoginHelp` (docs providers.md/models.md paths + `/login`),
       `formatNoModelsAvailableMessage`, `formatNoModelSelectedMessage`,

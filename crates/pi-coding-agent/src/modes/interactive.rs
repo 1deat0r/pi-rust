@@ -200,6 +200,36 @@ fn meta_short_cwd(cwd: &str) -> String {
     cwd.to_string()
 }
 
+/// Aggregate cumulative usage + the latest assistant turn's cache-hit rate
+/// from the in-memory transcript, for the footer token totals (upstream
+/// `FooterComponent.render`).
+fn footer_usage_from_messages(messages: &[pi_agent::types::AgentMessage]) -> (Option<crate::core::usage_totals::UsageTotals>, Option<f64>) {
+    use crate::core::usage_totals as ut;
+    let mut totals = ut::create_usage_totals();
+    let mut saw_any = false;
+    let mut cache_hit_rate: Option<f64> = None;
+    for message in messages {
+        let assistant = match message {
+            pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(a)) => a,
+            _ => continue,
+        };
+        let Some(usage) = assistant.usage() else { continue };
+        saw_any = true;
+        ut::add_usage_to_totals(&mut totals, usage);
+        let prompt_tokens = usage.input + usage.cache_read + usage.cache_write;
+        cache_hit_rate = if prompt_tokens > 0 {
+            Some((usage.cache_read as f64 / prompt_tokens as f64) * 100.0)
+        } else {
+            None
+        };
+    }
+    if saw_any {
+        (Some(totals), cache_hit_rate)
+    } else {
+        (None, None)
+    }
+}
+
 /// Rehydrate in-memory messages + transcript from a session's message
 /// entries (oldest first), mirroring the RPC get_entries load path.
 async fn rehydrate_transcript(
@@ -593,6 +623,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
 
             // 2) Footer.
             {
+                let (usage, cache_hit_rate) = footer_usage_from_messages(&runtime.messages);
                 let fd = FooterData {
                     cwd: cwd.clone(),
                     branch: footer::git_branch(&cwd),
@@ -600,6 +631,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     model_label: Some(format!("{}/{}", runtime.provider, runtime.model.name)),
                     thinking: Some(thinking_level.clone()),
                     provider_count: runtime.models.get_providers().len(),
+                    usage,
+                    cache_hit_rate,
                 };
                 let lines = footer::render_footer(&fd, 80);
                 footer_text.lock().unwrap().set_text(lines.join("\n"));
@@ -1618,6 +1651,49 @@ mod tests {
         assert!(!compacted, "no compaction under threshold");
         assert_eq!(runtime.messages.len(), 1);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn footer_usage_aggregates_assistant_messages_and_hit_rate() {
+        use pi_ai::types::{Cost, Message, Usage};
+        let usage = |input: u64, cache_read: u64, output: u64| Usage {
+            input,
+            output,
+            cache_read,
+            cache_write: 0,
+            cache_write_1h: None,
+            reasoning: None,
+            total_tokens: input + output + cache_read,
+            cost: Cost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0, total: 0.01 },
+        };
+        let with_usage = |u: Usage| -> pi_agent::types::AgentMessage {
+            let mut msg = pi_ai::providers::faux_assistant_message(
+                vec![pi_ai::types::ContentBlock::text("hi")],
+                pi_ai::providers::FauxAssistantOptions::default(),
+            );
+            msg.set_usage(u);
+            pi_agent::types::AgentMessage::Core(Message::Assistant(msg))
+        };
+
+        let messages = vec![
+            with_usage(usage(100, 50, 30)),
+            with_usage(usage(200, 50, 70)),
+        ];
+        let (totals, hit_rate) = footer_usage_from_messages(&messages);
+        let totals = totals.expect("usage present");
+        assert_eq!(totals.input, 300);
+        assert_eq!(totals.output, 100);
+        assert_eq!(totals.cache_read, 100);
+        // Last turn: 200 prompt, 50 cached => 50 / 250 = 20%.
+        assert!((hit_rate.unwrap() - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn footer_usage_empty_when_no_assistant_usage() {
+        let messages = vec![pi_agent::agent::user_text_prompt("hi".to_string(), pi_ai::types::now_ms())];
+        let (totals, hit_rate) = footer_usage_from_messages(&messages);
+        assert!(totals.is_none());
+        assert!(hit_rate.is_none());
     }
 
 }
