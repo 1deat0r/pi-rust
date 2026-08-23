@@ -9,10 +9,10 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Arc;
 
-use pi_ai::types::{json_tool, ToolResultMessage};
+use pi_ai::types::json_tool;
 use pi_agent::tools::path_utils::resolve_tool_path;
 use pi_agent::tools::truncate::{truncate_head_with, DEFAULT_MAX_BYTES};
-use pi_agent::tools::AgentTool;
+use pi_agent::tools::{AgentTool, AgentToolResult};
 
 use super::bytes_limit_notice;
 
@@ -154,8 +154,8 @@ pub async fn find_execute(
 
 /// Builds the `find` tool bound to a working directory.
 pub fn find_tool(cwd: String) -> AgentTool {
-    AgentTool {
-        tool: json_tool(
+    AgentTool::new(
+        json_tool(
             "find",
             "Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to 1000 results or 50KB (whichever is hit first).",
             &serde_json::json!({
@@ -168,7 +168,8 @@ pub fn find_tool(cwd: String) -> AgentTool {
                 "required": ["pattern"]
             }),
         ),
-        execute: Arc::new(move |args| {
+        "Find files",
+        Arc::new(move |_tool_call_id, args, _signal, _on_update| {
             let cwd = cwd.clone();
             Box::pin(async move {
                 let pattern = args
@@ -178,12 +179,12 @@ pub fn find_tool(cwd: String) -> AgentTool {
                 let path = args.get("path").and_then(|v| v.as_str());
                 let limit = args.get("limit").and_then(|v| v.as_u64());
                 match find_execute(&cwd, pattern, path, limit).await {
-                    Ok(output) => Ok(ToolResultMessage::text("find", "find", output, false)),
+                    Ok(output) => Ok(AgentToolResult::text(output)),
                     Err(e) => Err(e),
                 }
             })
         }),
-    }
+    )
 }
 
 #[cfg(test)]

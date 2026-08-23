@@ -10,10 +10,10 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use pi_ai::types::{json_tool, ToolResultMessage};
+use pi_ai::types::json_tool;
 use pi_agent::tools::path_utils::resolve_tool_path;
 use pi_agent::tools::truncate::{truncate_head_with, DEFAULT_MAX_BYTES};
-use pi_agent::tools::AgentTool;
+use pi_agent::tools::{AgentTool, AgentToolResult};
 
 use super::find::path_relative;
 use super::bytes_limit_notice;
@@ -265,8 +265,8 @@ pub async fn grep_execute(
 
 /// Builds the `grep` tool bound to a working directory.
 pub fn grep_tool(cwd: String) -> AgentTool {
-    AgentTool {
-        tool: json_tool(
+    AgentTool::new(
+        json_tool(
             "grep",
             "Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to 100 matches or 50KB (whichever is hit first). Long lines are truncated to 500 chars.",
             &serde_json::json!({
@@ -283,7 +283,8 @@ pub fn grep_tool(cwd: String) -> AgentTool {
                 "required": ["pattern"]
             }),
         ),
-        execute: Arc::new(move |args| {
+        "Grep",
+        Arc::new(move |_tool_call_id, args, _signal, _on_update| {
             let cwd = cwd.clone();
             Box::pin(async move {
                 let pattern = args
@@ -297,12 +298,12 @@ pub fn grep_tool(cwd: String) -> AgentTool {
                 let context = args.get("context").and_then(|v| v.as_u64());
                 let limit = args.get("limit").and_then(|v| v.as_u64());
                 match grep_execute(&cwd, pattern, path, glob, ignore_case, literal, context, limit).await {
-                    Ok(output) => Ok(ToolResultMessage::text("grep", "grep", output, false)),
+                    Ok(output) => Ok(AgentToolResult::text(output)),
                     Err(e) => Err(e),
                 }
             })
         }),
-    }
+    )
 }
 
 #[cfg(test)]

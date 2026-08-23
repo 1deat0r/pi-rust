@@ -97,20 +97,20 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
 
 ## T1 — Close the 9 documented divergences (audit → port → gate)
 
-- [ ] 11. Divergence-close audit: for each remaining gap, pin upstream file +
+- [x] 11. Divergence-close audit: for each remaining gap, pin upstream file +
       current Rust behavior + test plan. (unit)
-- [ ] 12. Port upstream `ai/src/oauth.ts` + `auth/oauth/device-code.ts` state
+- [x] 12. Port upstream `ai/src/oauth.ts` + `auth/oauth/device-code.ts` state
       machine (device auth endpoint, poll interval, expiry, cancellation).
-- [ ] 13. GitHub device-code flow.
-- [ ] 14. Google OAuth2 device + refresh flow.
-- [ ] 15. Anthropic OAuth flow.
-- [ ] 16. Wire OAuth into `auth_storage.rs`, `commands/auth.rs`, `/login`.
-- [ ] 17. OAuth tests (mock device endpoints, expiry, cancel). (mock)
-- [ ] 18. Codex WS audit: upstream websocket transport paths vs current
+- [x] 13. GitHub device-code flow.
+- [x] 14. (non-gap: upstream v0.84.2 Google provider is API-key only; no OAuth flow exists to port) Google OAuth2 device + refresh flow.
+- [x] 15. Anthropic OAuth flow.
+- [x] 16. Wire OAuth into `auth_storage.rs`, `commands/auth.rs`, `/login`.
+- [x] 17. OAuth tests (mock device endpoints, expiry, cancel). (mock)
+- [x] 18. Codex WS audit: upstream websocket transport paths vs current
       SSE-only `openai_codex_responses.rs`.
-- [ ] 19. Port WebSocket client transport (`pi-ai/src/transports/ws.rs`).
-- [ ] 20. Route codex to WS when settings `transport: websocket`; SSE fallback.
-- [ ] 21. WS tests (fixture-driven + local ws echo server). (unit/mock)
+- [x] 19. Port WebSocket client transport (`pi-ai/src/transports/ws.rs`).
+- [x] 20. Route codex to WS when settings `transport: websocket`; SSE fallback.
+- [x] 21. WS tests (fixture-driven + local ws echo server). (unit/mock)
 - [ ] 22. Reviewer gate: multi-session diff review of T0+T1 before continuing.
 
 ## T2 — Tool contract + validation

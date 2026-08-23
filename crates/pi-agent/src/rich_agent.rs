@@ -241,10 +241,37 @@ struct ToolCallRef<'a> {
 /// Result of a tool-batch execution (upstream `ExecutedToolCallBatch`).
 pub struct ExecutedToolBatch {
     pub messages: Vec<ToolResultMessage>,
+    /// True when every finalized tool result in the batch set `terminate`
+    /// (upstream `shouldTerminateToolBatch`).
+    pub terminate: bool,
 }
 
 fn create_error_tool_result(tool_call_id: &str, tool_name: &str, message: &str) -> ToolResultMessage {
     ToolResultMessage::text(tool_call_id, tool_name, message, true)
+}
+
+/// Convert an `AgentToolResult` into a `ToolResultMessage` (upstream
+/// `createToolResultMessage`).
+fn agent_tool_result_to_message(
+    tool_call_id: &str,
+    tool_name: &str,
+    result: &crate::tools::AgentToolResult,
+    is_error: bool,
+) -> ToolResultMessage {
+    ToolResultMessage::ToolResult {
+        tool_call_id: tool_call_id.to_string(),
+        tool_name: tool_name.to_string(),
+        content: result.content.clone(),
+        details: Some(result.details.clone()),
+        usage: result.usage.clone(),
+        added_tool_names: if result.added_tool_names.is_empty() {
+            None
+        } else {
+            Some(result.added_tool_names.clone())
+        },
+        is_error,
+        timestamp: pi_ai::types::now_ms(),
+    }
 }
 
 async fn drain_steering(config: &RichAgentLoopConfig) -> Vec<AgentMessage> {
@@ -284,7 +311,7 @@ where
         });
         emit_tool_result_messages(&mut messages, result, emit);
     }
-    ExecutedToolBatch { messages }
+    ExecutedToolBatch { messages, terminate: false }
 }
 
 fn emit_tool_result_messages<F>(messages: &mut Vec<ToolResultMessage>, result: ToolResultMessage, emit: &mut F)
@@ -325,6 +352,7 @@ where
     F: FnMut(RichAgentEvent),
 {
     let mut messages: Vec<ToolResultMessage> = Vec::new();
+    let mut terminate_flags: Vec<bool> = Vec::new();
     for tc in tool_calls_of(message) {
         emit(RichAgentEvent::ToolExecutionStart {
             tool_call_id: tc.id.to_string(),
@@ -340,24 +368,29 @@ where
                     is_error,
                 });
                 emit_tool_result_messages(&mut messages, result, emit);
+                terminate_flags.push(false);
             }
             PreparedToolCall::Prepared { tool, args } => {
                 let (result, is_error) = execute_tool_once(&tc, &tool, args.clone(), config.signal.as_ref()).await;
+                let terminate = result.terminate;
                 let (result, is_error) = finalize_tool_call(message, &tc, args, result, is_error, config, emit).await;
+                let message_result = agent_tool_result_to_message(&tc.id, &tc.name, &result, is_error);
                 emit(RichAgentEvent::ToolExecutionEnd {
                     tool_call_id: tc.id.to_string(),
                     tool_name: tc.name.to_string(),
-                    result: result.clone(),
+                    result: message_result.clone(),
                     is_error,
                 });
-                emit_tool_result_messages(&mut messages, result, emit);
+                emit_tool_result_messages(&mut messages, message_result, emit);
+                terminate_flags.push(terminate);
             }
         }
         if is_aborted(config.signal.as_ref()) {
             break;
         }
     }
-    ExecutedToolBatch { messages }
+    let terminate = !terminate_flags.is_empty() && terminate_flags.iter().all(|t| *t);
+    ExecutedToolBatch { messages, terminate }
 }
 
 async fn execute_tool_calls_parallel<F>(
@@ -397,7 +430,7 @@ where
 
     let tools: Vec<AgentTool> = context.tools.clone();
 
-    let mut finalized: Vec<(usize, (ToolResultMessage, bool))> = Vec::new();
+    let mut finalized: Vec<(usize, (crate::tools::AgentToolResult, bool))> = Vec::new();
     if !calls.is_empty() {
         let futures: Vec<_> = calls
             .iter()
@@ -414,7 +447,7 @@ where
                             let tc = ToolCallRef { id: &id, name: &name, arguments: &args };
                             execute_tool_once(&tc, &tool, args.clone(), None).await
                         }
-                        None => (create_error_tool_result(&id, &name, &format!("Tool {name} not found")), true),
+                        None => (crate::tools::AgentToolResult::text(format!("Tool {name} not found")), true),
                     };
                     (i, (result, is_error))
                 }
@@ -428,14 +461,17 @@ where
     // Emit tool_execution_end + tool-result messages in assistant source order.
     let mut messages: Vec<ToolResultMessage> = Vec::new();
     let mut emitted: Vec<(String, String)> = Vec::new();
+    let mut terminate_flags: Vec<bool> = Vec::new();
     for (i, (result, is_error)) in finalized {
         let (id, name) = calls.get(i).map(|c| (c.0.clone(), c.1.clone())).unwrap_or_default();
         if emitted.iter().any(|(eid, _)| eid == &id) {
             continue;
         }
         emitted.push((id.clone(), name.clone()));
-        emit(RichAgentEvent::ToolExecutionEnd { tool_call_id: id, tool_name: name, result: result.clone(), is_error });
-        emit_tool_result_messages(&mut messages, result, emit);
+        terminate_flags.push(result.terminate);
+        let message_result = agent_tool_result_to_message(&id, &name, &result, is_error);
+        emit(RichAgentEvent::ToolExecutionEnd { tool_call_id: id, tool_name: name, result: message_result.clone(), is_error });
+        emit_tool_result_messages(&mut messages, message_result, emit);
     }
     // Immediate (error) preparations in source order too.
     for (i, entry) in prepared.iter().enumerate() {
@@ -452,7 +488,8 @@ where
             emit_tool_result_messages(&mut messages, result.clone(), emit);
         }
     }
-    ExecutedToolBatch { messages }
+    let terminate = !terminate_flags.is_empty() && terminate_flags.iter().all(|t| *t);
+    ExecutedToolBatch { messages, terminate }
 }
 
 enum PreparedToolCall {
@@ -474,13 +511,36 @@ async fn prepare_tool_call(
             is_error: true,
         };
     };
+    // prepareArguments compatibility shim (upstream `prepareToolCallArguments`).
+    let mut args = tc.arguments.clone();
+    if let Some(prepare) = &tool.prepare_arguments {
+        let prepared = prepare(args.clone());
+        if prepared != args {
+            args = prepared;
+        }
+    }
+    // validateToolArguments: schema validation with coercion (upstream
+    // `validateToolArguments`). Failures become immediate error results.
+    let validated = match crate::tools::validation::validate_tool_arguments(
+        tc.name,
+        &tool.tool.parameters,
+        &args,
+    ) {
+        Ok(validated) => validated,
+        Err(e) => {
+            return PreparedToolCall::Immediate {
+                result: create_error_tool_result(tc.id, tc.name, &e),
+                is_error: true,
+            };
+        }
+    };
     if let Some(hook) = &config.before_tool_call {
         let before = hook(
             BeforeToolCallContext {
                 assistant_message: message.clone(),
                 tool_call_id: tc.id.to_string(),
                 tool_name: tc.name.to_string(),
-                args: tc.arguments.clone(),
+                args: validated.clone(),
             },
             config.signal.clone(),
         )
@@ -507,7 +567,7 @@ async fn prepare_tool_call(
             is_error: true,
         };
     }
-    PreparedToolCall::Prepared { tool: tool.clone(), args: tc.arguments.clone() }
+    PreparedToolCall::Prepared { tool: tool.clone(), args: validated }
 }
 
 async fn execute_tool_once(
@@ -515,16 +575,16 @@ async fn execute_tool_once(
     tool: &AgentTool,
     args: serde_json::Value,
     signal: Option<&Arc<AtomicBool>>,
-) -> (ToolResultMessage, bool) {
+) -> (crate::tools::AgentToolResult, bool) {
     if is_aborted(signal) {
-        return (create_error_tool_result(tc.id, tc.name, "Operation aborted"), true);
+        return (crate::tools::AgentToolResult::text("Operation aborted"), true);
     }
-    match (tool.execute)(args).await {
+    match (tool.execute)(tc.id.to_string(), args, signal.cloned(), None).await {
         Ok(result) => {
-            let is_error = result.is_error();
+            let is_error = false;
             (result, is_error)
         }
-        Err(e) => (create_error_tool_result(tc.id, tc.name, &e), true),
+        Err(e) => (crate::tools::AgentToolResult::text(e), true),
     }
 }
 
@@ -533,11 +593,11 @@ async fn finalize_tool_call<F>(
     message: &AssistantMessage,
     tc: &ToolCallRef<'_>,
     args: serde_json::Value,
-    result: ToolResultMessage,
+    result: crate::tools::AgentToolResult,
     is_error: bool,
     config: &RichAgentLoopConfig,
     emit: &mut F,
-) -> (ToolResultMessage, bool)
+) -> (crate::tools::AgentToolResult, bool)
 where
     F: FnMut(RichAgentEvent),
 {
@@ -551,7 +611,7 @@ where
             tool_call_id: tc.id.to_string(),
             tool_name: tc.name.to_string(),
             args,
-            result: result.clone(),
+            result: agent_tool_result_to_message(tc.id, tc.name, &result, is_error),
             is_error,
         },
         config.signal.clone(),
@@ -562,8 +622,7 @@ where
     };
     let mut result = result;
     if let Some(content) = after.content {
-        let ToolResultMessage::ToolResult { content: slot, .. } = &mut result;
-        *slot = content;
+        result.content = content;
     }
     let is_error = after.is_error.unwrap_or(is_error);
     (result, is_error)
@@ -642,6 +701,11 @@ where
                 for result in &tool_results {
                     current_messages.push(AgentMessage::Core(Message::ToolResult(result.clone())));
                     new_messages.push(AgentMessage::Core(Message::ToolResult(result.clone())));
+                }
+                if batch.terminate {
+                    emit(RichAgentEvent::TurnEnd { message: AgentMessage::Core(Message::Assistant(message.clone())), tool_results: tool_results.clone() });
+                    emit(RichAgentEvent::AgentEnd { messages: new_messages.clone() });
+                    return new_messages;
                 }
             }
 

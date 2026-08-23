@@ -108,8 +108,27 @@ pub async fn run_agent_loop(
                             )
                         } else {
                             match context.tools.iter().find(|t| t.tool.name == *name) {
-                                Some(tool) => match (tool.execute)(arguments.clone()).await {
-                                    Ok(result) => result,
+                                Some(tool) => match (tool.execute)(id.clone(), arguments.clone(), None, None).await {
+                                    Ok(result) => {
+                                        let content = result.content;
+                                        let details = result.details;
+                                        let usage = result.usage;
+                                        let added_tool_names = if result.added_tool_names.is_empty() {
+                                            None
+                                        } else {
+                                            Some(result.added_tool_names)
+                                        };
+                                        ToolResultMessage::ToolResult {
+                                            tool_call_id: id.clone(),
+                                            tool_name: name.clone(),
+                                            content,
+                                            details: Some(details),
+                                            usage,
+                                            added_tool_names,
+                                            is_error: false,
+                                            timestamp: pi_ai::types::now_ms(),
+                                        }
+                                    }
                                     Err(e) => ToolResultMessage::text(id.clone(), name.clone(), e, true),
                                 },
                                 None => ToolResultMessage::text(
