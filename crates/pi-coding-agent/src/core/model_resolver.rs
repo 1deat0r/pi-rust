@@ -210,7 +210,9 @@ pub fn parse_model_pattern(
 
 /// Glob compiler for model scoping patterns (`*`, `?`, `[...]`).
 /// A faithful port of minimatch for the pattern subset pi uses.
-fn glob_match(pattern: &str, text: &str, nocase: bool) -> bool {
+/// Reused by the package-manager resource resolver for path-pattern
+/// include/exclude filtering (upstream `minimatch`).
+pub(crate) fn glob_match(pattern: &str, text: &str, nocase: bool) -> bool {
     let p: Vec<char> = if nocase { pattern.to_lowercase().chars().collect() } else { pattern.chars().collect() };
     let t: Vec<char> = if nocase { text.to_lowercase().chars().collect() } else { text.chars().collect() };
     glob_match_rec(&p, &t)

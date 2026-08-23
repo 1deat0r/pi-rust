@@ -95,7 +95,7 @@ pub fn handle_config_command(args: &[String]) -> bool {
         agent_dir: agent_dir.display().to_string(),
         settings_manager: global_settings,
     });
-    let global_resources = summarize_resources(&global_manager);
+    let global_resources = summarize_resources(&global_manager, &agent_dir.display().to_string());
     let project_resources = if settings.is_project_trusted() {
         let project_settings = SettingsManager::create(
             &cwd,
@@ -107,7 +107,7 @@ pub fn handle_config_command(args: &[String]) -> bool {
             agent_dir: agent_dir.display().to_string(),
             settings_manager: project_settings,
         });
-        Some(summarize_resources(&project_manager))
+        Some(summarize_resources(&project_manager, &agent_dir.display().to_string()))
     } else {
         None
     };
@@ -152,7 +152,7 @@ pub fn handle_config_command(args: &[String]) -> bool {
     std::process::exit(0);
 }
 
-fn summarize_resources(manager: &PackageManager) -> Vec<(String, Vec<String>)> {
+fn summarize_resources(manager: &PackageManager, agent_dir: &str) -> Vec<(String, Vec<String>)> {
     let mut sections: Vec<(String, Vec<String>)> = Vec::new();
     let packages: Vec<String> = manager
         .list_configured_packages()
@@ -167,6 +167,30 @@ fn summarize_resources(manager: &PackageManager) -> Vec<(String, Vec<String>)> {
         .collect();
     if !packages.is_empty() {
         sections.push(("packages".to_string(), packages));
+    }
+
+    // Resolve the discovered resources (extensions/skills/prompts/themes) and
+    // group them the way the ConfigSelector would (upstream buildGroups), so
+    // the non-TUI summary reflects the real resolve() producer.
+    if let Ok(resolved) = manager.resolve(None) {
+        let groups = crate::interactive::config_selector::build_groups(
+            &resolved,
+            agent_dir,
+            CONFIG_DIR_NAME,
+            dirs::home_dir().as_deref().map(|h| h.to_string_lossy().into_owned()).as_deref(),
+        );
+        for group in &groups {
+            let mut lines = Vec::new();
+            for subgroup in &group.subgroups {
+                for item in &subgroup.items {
+                    let state = if item.enabled { "" } else { " (disabled)" };
+                    lines.push(format!("    {} [{}{state}]", item.display_name, subgroup.label));
+                }
+            }
+            if !lines.is_empty() {
+                sections.push((group.label.clone(), lines));
+            }
+        }
     }
     sections
 }

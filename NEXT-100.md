@@ -253,18 +253,28 @@ Recut of the remaining work by user impact + risk:
 ## T5 — TUI completion
 
 - [ ] 59. ConfigSelector full TUI component (config command interactive).
-      PARTIAL (data layer landed): `interactive/config_selector.rs` now ports
-      the upstream config-selector.ts data model — `PathMetadata`/
-      `ResolvedResource`/`ResolvedPaths`, `buildGroups` (group/subgroup/item
-      construction, labels via `getGroupLabel`, display-name derivation for
-      extensions/skills, exact package-first/user-before-project/type/item
-      ordering), `format_base_dir` — 5 tests. Still pending: the
-      `packageManager.resolve()` → `ResolvedPaths` producer (package-manager
-      data model is itself absent in Rust), the render/`handleInput` component,
-      and wiring into `commands/config.rs`.
+      DATA LAYER DONE (model + producer + buildGroups): `interactive/
+      config_selector.rs` ports the upstream config-selector.ts data model
+      (`PathMetadata`/`ResolvedResource`/`ResolvedPaths`, `build_groups`,
+      `format_base_dir`) with 5 tests. `core/package_manager.rs` now ports the
+      full `resolve()` **producer**: on-disk resource collection (recursive
+      `collect_files`, `collect_skill_entries` pi/agents modes, auto
+      extension/prompt/theme collectors, ancestor `.agents/skills` discovery),
+      include/`!exclude`/`+force`/`-force` pattern filtering + autoload-disabled
+      deltas, precedence-ranked first-wins collision resolution with canonical
+      dedup, project-over-global package dedupe, and install-on-missing via an
+      `on_missing` seam — 8 fixture-based tests (auto/user/project discovery,
+      filtering, ignore-file exclusion, precedence ranking, npm missing
+      skip/error, resolve→build_groups integration). Wired into
+      `commands/config.rs` (`summarize_resources` now renders `resolve()` →
+      `build_groups` groups). STILL PENDING: the interactive
+      render/`handleInput` component (PTY-bound; needs pi-tui Input/Container
+      equivalents and glyph-probe setup).
 - [ ] 60. ConfigSelector snapshot tests. PARTIAL: 5 unit tests cover the
-      buildGroups ordering/labels/display-name behavior; full component
-      snapshot tests await the render surface.
+      buildGroups ordering/labels/display-name behavior + 8 resolve() producer
+      tests (collection/filter/precedence/scopes) + `resolve_feeds_build_groups`
+      integration; full interactive-component snapshot tests await the render
+      surface.
 - [ ] 61. Full alt-screen screen-swap parity (save/restore around overlays).
 - [ ] 62. Alt-screen swap tmux probe.
 - [x] 63. ICU word segmentation (replace regex word-nav with unicode parity).

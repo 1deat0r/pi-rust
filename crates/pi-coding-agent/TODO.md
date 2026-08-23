@@ -99,7 +99,8 @@ Settings manager (full upstream surface) landed.
 - core/extensions/{types,loader,runner,wrapper,mod}.rs — discovery/resolution, external node/bun
   runner, runtime state + runner aggregation, wrapper addedToolNames diff.
 - core/package_manager.rs + commands/package.rs — npm/local/git install/remove/update/list, settings
-  persistence, upstream output/exit codes.
+  persistence, upstream output/exit codes. core/package_manager.rs also ports the `resolve()`
+  resource producer (collection/filter/precedence/dedupe) feeding the config command.
 - core/event_bus.rs, usage_totals.rs, provider_attribution.rs, slash_commands.rs (BUILTIN registry).
 - core/model_config.rs, model_registry.rs, model_resolver.rs, models_store.rs, remote_catalog_provider.rs,
   provider_composer.rs (applyModelsJson/applyExtension/applyModelOverride/compat).
