@@ -253,7 +253,18 @@ Recut of the remaining work by user impact + risk:
 ## T5 — TUI completion
 
 - [ ] 59. ConfigSelector full TUI component (config command interactive).
-- [ ] 60. ConfigSelector snapshot tests.
+      PARTIAL (data layer landed): `interactive/config_selector.rs` now ports
+      the upstream config-selector.ts data model — `PathMetadata`/
+      `ResolvedResource`/`ResolvedPaths`, `buildGroups` (group/subgroup/item
+      construction, labels via `getGroupLabel`, display-name derivation for
+      extensions/skills, exact package-first/user-before-project/type/item
+      ordering), `format_base_dir` — 5 tests. Still pending: the
+      `packageManager.resolve()` → `ResolvedPaths` producer (package-manager
+      data model is itself absent in Rust), the render/`handleInput` component,
+      and wiring into `commands/config.rs`.
+- [ ] 60. ConfigSelector snapshot tests. PARTIAL: 5 unit tests cover the
+      buildGroups ordering/labels/display-name behavior; full component
+      snapshot tests await the render surface.
 - [ ] 61. Full alt-screen screen-swap parity (save/restore around overlays).
 - [ ] 62. Alt-screen swap tmux probe.
 - [x] 63. ICU word segmentation (replace regex word-nav with unicode parity).

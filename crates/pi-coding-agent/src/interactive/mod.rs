@@ -6,6 +6,7 @@
 //! (model / thinking / theme / settings), the footer, and the agent turn
 //! loop. The terminal event loop lives in `crate::modes::interactive`.
 
+pub mod config_selector;
 pub mod footer;
 pub mod session_meta;
 pub use session_meta::{SessionMetaForPicker, session_picker_items, picker_select_items};
