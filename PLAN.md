@@ -757,6 +757,13 @@ executed from the NEXT-100 tracker against the T6 verify-then-port recut.
   gated by the wired `showCacheMissNotices` setting) are PTY-bound; `timings.ts`
   is a deliberate non-port (no Rust startup-timing namespace). Recorded in
   NEXT-100 #77.
+- **Addendum (T7 #83/#84):** `modes/rpc.rs` `build_tree` parity fixed vs
+  upstream `SessionManager.getTree()` — nodes carry `label?` (via
+  `JsonlSession::get_label`), children sorted by entry timestamp, and
+  self-parent/orphan entries treated as roots (the prior revision emitted no
+  label, left children unsorted, and took stale clone snapshots). 3 tree
+  build tests; workspace green at 1415. The interactive entry-tree banner
+  remains PTY-bound. Recorded in NEXT-100 #83/#84.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

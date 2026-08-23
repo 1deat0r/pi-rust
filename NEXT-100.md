@@ -386,8 +386,18 @@ Recut of the remaining work by user impact + risk:
 - [ ] 81. Negative-usage decision: widen pi-ai Usage token counts to i64;
       ripple through agent/reducer + session-backends stats.
 - [ ] 82. Re-enable negative-adjustment conformance case (C-neg) + regressions.
-- [ ] 83. Session tree/navigation parity: `get_tree` RPC + entry-tree banner.
-- [ ] 84. Session tree tests.
+- [x] 83. Session tree/navigation parity: `get_tree` RPC. `modes/rpc.rs`
+      `build_tree` now matches upstream `SessionManager.getTree()`: nodes as
+      `{ entry, children, label? }` (label emitted only when `labelsById` has
+      the id, sourced from `JsonlSession::get_label`), children sorted by
+      entry timestamp ascending, and self-parent / orphan (missing-parent)
+      entries treated as roots — fixing the prior revision, which emitted no
+      label and left children unsorted in a stale-clone snapshot. The
+      interactive "entry-tree banner" render remains PTY-bound with the TUI
+      surface.
+- [x] 84. Session tree tests. 3 `RpcRuntime::build_tree` tests: nest + child
+      timestamp ordering, self-parent/orphan-root handling, label emitted only
+      when resolved.
 - [ ] 85. export_html full parity audit (dark/light, mermaid, search, tmp cleanup).
 - [ ] 86. export_html fixture expansion (tools/compaction/summary rows).
 - [ ] 87. RPC get_entries/get_tree/get_messages/get_last_assistant_text audit.

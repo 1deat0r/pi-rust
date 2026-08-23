@@ -363,30 +363,73 @@ impl RpcRuntime {
             .map_err(|e| e.to_string())
     }
 
-    /// Build an RPC session-tree: parent-linked entries (upstream
-    /// SessionTreeNode: entry + children + optional label).
-    fn build_tree(entries: &[pi_agent::session::types::Entry]) -> serde_json::Value {
-        let mut nodes: Vec<serde_json::Value> = Vec::new();
-        let mut by_id: HashMap<String, usize> = HashMap::new();
-        for entry in entries {
-            let node = serde_json::json!({ "entry": entry, "children": [] });
-            by_id.insert(entry.id().to_string(), nodes.len());
-            nodes.push(node);
-        }
-        let mut roots: Vec<serde_json::Value> = Vec::new();
-        for (i, entry) in entries.iter().enumerate() {
-            match entry.parent_id() {
-                Some(parent) if by_id.contains_key(parent) => {
-                    let parent_idx = by_id[parent];
-                    let child = nodes[i].clone();
-                    nodes[parent_idx]["children"]
-                        .as_array_mut()
-                        .unwrap()
-                        .push(child);
+    /// Build an RPC session-tree (upstream `SessionManager.getTree()`):
+    /// parent-linked entries as `{ entry, children, label? }` nodes, roots
+    /// first, each node's children sorted by entry timestamp ascending.
+    /// Entries whose parent is absent, unresolved, or the entry itself are
+    /// treated as roots (matches upstream, which also orphans on a missing or
+    /// self-referential `parentId`). A `label` key is emitted only when the
+    /// session has resolved a label for that entry id (upstream `labelsById`).
+    fn build_tree(
+        entries: &[pi_agent::session::types::Entry],
+        labels: &HashMap<String, String>,
+    ) -> serde_json::Value {
+        let node_count = entries.len();
+        let by_id: HashMap<String, usize> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.id().to_string(), i))
+            .collect();
+
+        // Node shells: `{ entry, children: [], label? }`.
+        let shells: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| {
+                let mut node = serde_json::json!({ "entry": e, "children": [] });
+                if let Some(label) = labels.get(e.id()) {
+                    node["label"] = serde_json::Value::String(label.clone());
                 }
-                _ => roots.push(nodes[i].clone()),
+                node
+            })
+            .collect();
+
+        // Adjacency: which node indices are children of each parent.
+        let mut children_of: Vec<Vec<usize>> = vec![Vec::new(); node_count];
+        let mut is_root = vec![true; node_count];
+        for (i, entry) in entries.iter().enumerate() {
+            if let Some(parent) = entry.parent_id() {
+                if parent != entry.id() {
+                    if let Some(&parent_idx) = by_id.get(parent) {
+                        children_of[parent_idx].push(i);
+                        is_root[i] = false;
+                    }
+                }
             }
         }
+
+        // Sort each parent's children by entry timestamp ascending.
+        for children in children_of.iter_mut() {
+            children.sort_by_key(|&ci| entries[ci].timestamp());
+        }
+
+        // Build bottom-up (a child always follows its parent in the
+        // oldest-first entries array, so reverse-index order builds children
+        // before parents) — iterative, matching upstream's overflow-safe note.
+        let mut result: Vec<serde_json::Value> = vec![serde_json::Value::Null; node_count];
+        for i in (0..node_count).rev() {
+            let mut node = shells[i].clone();
+            let kids: Vec<serde_json::Value> = children_of[i]
+                .iter()
+                .map(|&ci| result[ci].clone())
+                .collect();
+            node["children"] = serde_json::Value::Array(kids);
+            result[i] = node;
+        }
+
+        let roots: Vec<serde_json::Value> = (0..node_count)
+            .filter(|&i| is_root[i])
+            .map(|i| result[i].clone())
+            .collect();
         serde_json::Value::Array(roots)
     }
 
@@ -913,7 +956,14 @@ impl RpcRuntime {
                     fail(store, &id, &cmd, e.clone());
                     e
                 })?;
-                let tree = Self::build_tree(&entries);
+                let mut labels: HashMap<String, String> = HashMap::new();
+                for entry in &entries {
+                    let entry_id = entry.id().to_string();
+                    if let Some(label) = self.session.get_label(entry.id()).await {
+                        labels.insert(entry_id, label);
+                    }
+                }
+                let tree = Self::build_tree(&entries, &labels);
                 let leaf_id = self.session.get_leaf_id().await.ok().flatten();
                 respond(store, success(id.as_deref(), &cmd, Some(serde_json::json!({ "tree": tree, "leafId": leaf_id }))));
                 Ok(())
@@ -1671,4 +1721,68 @@ mod tests {
         std::env::remove_var("FAUX_API_KEY");
     }
 
+    fn entry(
+        id: &str,
+        parent: Option<&str>,
+        seq: u64,
+        timestamp: u64,
+    ) -> pi_agent::session::types::Entry {
+        pi_agent::session::types::Entry::from_provisioned(
+            pi_agent::session::types::EntryNoStats::ModelChange {
+                id: id.to_string(),
+                provider: "p".to_string(),
+                model_id: "m".to_string(),
+            },
+            parent.map(|p| p.to_string()),
+            seq,
+            timestamp,
+        )
+    }
+
+    #[test]
+    fn tree_nests_children_and_orders_by_timestamp() {
+        let entries = vec![
+            entry("r", None, 1, 100),
+            entry("a", Some("r"), 2, 300),
+            entry("b", Some("r"), 3, 200),
+        ];
+        let tree = RpcRuntime::build_tree(&entries, &HashMap::new());
+        let roots = tree.as_array().unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0]["entry"]["id"], "r");
+        // Children sorted by entry timestamp ascending, not insertion order.
+        let children = roots[0]["children"].as_array().unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0]["entry"]["id"], "b");
+        assert_eq!(children[1]["entry"]["id"], "a");
+    }
+
+    #[test]
+    fn tree_self_parent_and_missing_parent_are_roots() {
+        let entries = vec![
+            entry("s", Some("s"), 1, 100),      // self-parent
+            entry("o", Some("missing"), 2, 200), // orphan
+            entry("r", None, 3, 300),
+        ];
+        let tree = RpcRuntime::build_tree(&entries, &HashMap::new());
+        let roots = tree.as_array().unwrap();
+        assert_eq!(roots.len(), 3, "self-parent and orphan must be roots");
+        let ids: Vec<&str> = roots.iter().map(|n| n["entry"]["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"s"));
+        assert!(ids.contains(&"o"));
+        assert!(ids.contains(&"r"));
+    }
+
+    #[test]
+    fn tree_emits_label_only_when_resolved() {
+        let entries = vec![entry("x", None, 1, 100), entry("y", None, 2, 200)];
+        let labels: HashMap<String, String> = [("y".to_string(), "My label".to_string())].into();
+        let tree = RpcRuntime::build_tree(&entries, &labels);
+        let roots = tree.as_array().unwrap();
+        let by_id: Vec<&serde_json::Value> = roots.iter().collect();
+        let x = by_id.iter().find(|n| n["entry"]["id"] == "x").unwrap();
+        let y = by_id.iter().find(|n| n["entry"]["id"] == "y").unwrap();
+        assert!(x.get("label").is_none(), "no label key when unresolved");
+        assert_eq!(y["label"], "My label");
+    }
 }
