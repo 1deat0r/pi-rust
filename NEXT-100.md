@@ -349,12 +349,21 @@ Recut of the remaining work by user impact + risk:
       `MissingSessionCwdError`, `assertSessionCwdExists`. Wired into
       `modes/interactive.rs` resume: a session whose stored cwd no longer
       exists is refused with the upstream error banner instead of resumed.
-- [ ] 77. Port `core/cache-stats.ts` + `timings.ts` into usage totals/footer —
-      AUDIT: `core/usage_totals.rs` exists; the token-total footer read landed
-      with T5 #67 (usage aggregated from transcript assistant messages).
-      `cache-stats.ts` (`detectMiss`/`computeCacheWaste`/`collectCacheMisses`)
-      and `timings.ts` remain unported; land with the remaining footer display
-      work.
+- [x] 77. Port `core/cache-stats.ts` (cache-waste accounting) into the usage
+      surface. New `core/cache_stats.rs`: `compute_cache_waste` /
+      `collect_cache_misses` / `detect_cache_miss` over `&[Value]` session
+      entries — prompt-cache miss detection (previous-turn prompt tokens
+      re-billed as input/cacheWrite vs cacheRead), `NOISE_FLOOR_TOKENS`,
+      compaction/branch_summary prev-reset, model-change + idle-TTL flags,
+      `ModelPriceSource` (per-million cacheRead price) with `NoPrices`/fn-ptr
+      sources. 7 fixture tests (first-turn, counted miss + cost math, noise
+      floor, compaction reset, model change, price-source fallback, pending-
+      message detect). The interactive consumers (cache-miss transcript
+      notices + the "Cache Re-billed" stats line, gated by the already-wired
+      `showCacheMissNotices` setting) are PTY/render-bound and land with the
+      remaining interactive surface. `timings.ts` (a `PI_TIMING=1`-gated stderr
+      startup profiler) is a deliberate non-port — the Rust binary has no
+      equivalent startup-timing namespace, so the module would be dead code.
 - [x] 78. Port `core/auth-guidance.ts` messages parity. New `core/auth_guidance.rs`:
       `getProviderLoginHelp` (docs providers.md/models.md paths + `/login`),
       `formatNoModelsAvailableMessage`, `formatNoModelSelectedMessage`,

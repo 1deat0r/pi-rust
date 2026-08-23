@@ -749,6 +749,14 @@ executed from the NEXT-100 tracker against the T6 verify-then-port recut.
   `package_manager.rs`, config.rs, model_resolver.rs clippy-clean (`cargo
   clippy -p pi-coding-agent --no-deps`). Docs updated in NEXT-100.md (#59/#60)
   and pi-coding-agent/TODO.md.
+- **Addendum (T6 #77):** `core/cache_stats.rs` landed — prompt-cache waste
+  accounting (`compute_cache_waste`/`collect_cache_misses`/`detect_cache_miss`
+  over session entries, `ModelPriceSource`, TTL/noise-floor/compaction-reset/
+  model-change semantics), 7 fixture tests; workspace green at 1412. The
+  interactive consumers (cache-miss notices + "Cache Re-billed" stats line,
+  gated by the wired `showCacheMissNotices` setting) are PTY-bound; `timings.ts`
+  is a deliberate non-port (no Rust startup-timing namespace). Recorded in
+  NEXT-100 #77.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
