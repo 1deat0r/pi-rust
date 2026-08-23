@@ -167,8 +167,15 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
       surface, error-valued diagnostics (missing `--use-theme` value) exit
       nonzero with an `Error:` line, and invalid `--thinking` warns-but-runs.
       5 binary tests.
-- [ ] 48. Telemetry wiring: `PI_TELEMETRY` env → subscriber + span emission in
-      run path; in-memory capture test.
+- [x] 48. Telemetry wiring: ported `core/telemetry.ts` → `core/telemetry.rs`
+      (`isInstallTelemetryEnabled` honoring the `PI_TELEMETRY` env override:
+      `1`/`true`/`yes` enable, `0`/`false`/`no` disable, unset defers to the
+      `enableInstallTelemetry` setting) and wired it into provider attribution
+      (the observable §2.2 env surface). 4 unit tests + 1 attribution
+      env-override test. Follow-ups tracked: interactive-mode install-report
+      ping to `pi.dev/api/report-install` (network-bound), and any
+      tracing-subscriber span instrumentation (orthogonal to upstream's
+      actual `PI_TELEMETRY` semantics).
 
 ## T4 — Server/client completion (P6 concurrency)
 

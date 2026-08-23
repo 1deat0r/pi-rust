@@ -19,5 +19,6 @@ pub mod resolve_config_value;
 pub mod session_migration;
 pub mod settings;
 pub mod slash_commands;
+pub mod telemetry;
 pub mod tools;
 pub mod usage_totals;

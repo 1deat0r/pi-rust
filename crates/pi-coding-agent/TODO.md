@@ -128,6 +128,12 @@ Settings manager (full upstream surface) landed.
   surface against the built binary — no "unknown flags" for recognized flags,
   `--help` lists the full surface, error diagnostics exit 1, invalid
   `--thinking` warns-and-continues. 5 binary tests.
+- core/telemetry.rs (T3 #48): port of upstream core/telemetry.ts —
+  isInstallTelemetryEnabled honors the PI_TELEMETRY env override (1/true/yes
+  enable, 0/false/no disable, unset defers to enableInstallTelemetry setting).
+  Wired into provider_attribution.rs (previously it only checked the setting,
+  ignoring the env). 4 telemetry tests + provider_attribution env-override
+  test.
 
 ## Remaining (upstream mapping — big items first)
 - Wire SettingsManager into run/main (currently standalone; P4 criterion

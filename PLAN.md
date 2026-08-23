@@ -664,10 +664,17 @@ Agent: pi (Claude)   HEAD: f3ae75f
 - **Scope note**: `--fork`, `-e`, `--skill`, `--prompt-template`, `--theme`
   parsing is done; run-path *honoring* of these flags lands with the T6 loaders
   (#73/#74) and the session-tree fork parity (#83/#88) — not half-wired here.
-- Workspace: **1323 tests passing** (was 1310); 0 lib warnings; clippy-clean for
+- **Telemetry gate wired (T3 #48)**: ported `core/telemetry.ts` →
+  `core/telemetry.rs` (`isInstallTelemetryEnabled` honoring the `PI_TELEMETRY`
+  env override — `1`/`true`/`yes` enable, `0`/`false`/`no` disable, unset defers
+  to the `enableInstallTelemetry` setting) and wired it into
+  `provider_attribution.rs`, which previously checked only the setting and
+  ignored the env. Emits the observable §2.2 env-surface contract.
+- Workspace: **1328 tests passing** (was 1310); 0 lib warnings; clippy-clean for
   the touched files.
-- Docs: NEXT-100.md (#46/#47 done, #44/#45 already done last commit),
-  pi-coding-agent/TODO.md updated. Repo pushed after every commit.
+- Docs: NEXT-100.md (#46/#47/#48 done, #44/#45 already done last commit),
+  pi-coding-agent/TODO.md updated. T3 remaining: #42–#43 (print-mode parity).
+  Repo pushed after every commit.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
