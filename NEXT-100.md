@@ -309,10 +309,14 @@ Recut of the remaining work by user impact + risk:
 - [ ] 77. Port `core/cache-stats.ts` + `timings.ts` into usage totals/footer —
       AUDIT: `core/usage_totals.rs` exists; token-total footer surface is
       tracked under T5 #67. cache-stats/timings land with the footer work.
-- [x] 78. Port `core/auth-guidance.ts` messages parity. AUDIT: missing-auth
-      surfaces as a terminal provider error (nonzero exit + raw error, verified
-      in `tests/cli_print_parity.rs` provider-error case). Full auth-guidance
-      copy awaits the interactive login/guidance surface (slash `login`).
+- [x] 78. Port `core/auth-guidance.ts` messages parity. New `core/auth_guidance.rs`:
+      `getProviderLoginHelp` (docs providers.md/models.md paths + `/login`),
+      `formatNoModelsAvailableMessage`, `formatNoModelSelectedMessage`,
+      `formatNoApiKeyFoundMessage(provider)` ("the selected model" when
+      unknown). Wired into `list_models.rs`: an empty auth-gated model set now
+      surfaces the guidance (previously a bare "No models available."). The
+      per-provider no-api-key error surfaces in pi-ai remain a deliberate
+      follow-up (the guidance module + formatters are ready to append there).
 - [x] 79. Port `core/settings-diagnostics.ts` + `diagnostics.ts` — the
       `ResourceDiagnostic`/`ResourceCollision` types landed in new
       `core/diagnostics.rs` (warning/error/collision kinds); skills +

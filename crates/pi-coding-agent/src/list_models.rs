@@ -51,7 +51,7 @@ fn filter_models<'a>(
 pub fn list_models(models: &Models, search_pattern: Option<&str>) -> String {
     let all = models.get_available(None);
     if all.is_empty() {
-        return "No models available.".to_string();
+        return crate::core::auth_guidance::format_no_models_available_message();
     }
 
     let filtered = match search_pattern {
