@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-42.17% = 70 completed / 166 total tasks
-96 tasks remain open
+42.77% = 71 completed / 166 total tasks
+95 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,9 +26,9 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The earlier large port is checkpointed locally in commit `7bace4f`. The current
-S-040 implementation and its documentation are still uncommitted at this
-handoff point. Preserve existing changes; do not use `git reset --hard`,
+The earlier port is checkpointed locally through commit `358c30d` (S-040). The
+current S-041 implementation and its documentation are still uncommitted at
+this handoff point. Preserve existing changes; do not use `git reset --hard`,
 `git checkout --`, or broad revert commands.
 
 The worktree is very large because the baseline was already heavily changed
@@ -44,7 +44,7 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, no cargo/rustc process still running,
-progress checker reports `42.17% (70/166; 96 open)`.
+progress checker reports `42.77% (71/166; 95 open)`.
 
 ## Verification already completed
 
@@ -59,18 +59,21 @@ These checks passed during the session:
 node scripts/conversion-progress.mjs
 ```
 
-A full `cargo test --workspace --offline` passed after the S-040 RPC settings
-changes, including all workspace unit, integration, and doctest targets.
+A full `cargo test --workspace --offline` passed after the S-041 RPC abort,
+lifecycle, and session-record changes, including all workspace unit,
+integration, and doctest targets.
 
 ## Last code change
 
-The latest change completed RPC settings parity:
+The latest change completed RPC abort/lifecycle parity:
 
-- `rpc.rs`: applies configured compaction, retry/provider, transport, thinking,
-  model, and queue settings to normal prompt and compaction execution while
-  preserving request-local overrides.
-- Focused coverage: 30 RPC tests; the full workspace suite also passes
-  offline.
+- `rpc.rs`: separates agent abort from standalone bash cancellation, admits
+  concurrent bash tasks, defers bash session records until agent settlement,
+  and emits lifecycle/message/tool terminal events in the upstream wire shape.
+- `rich_agent.rs` and `tools/bash.rs`: continue after successful tool batches
+  and propagate the agent abort signal into bash execution.
+- Focused coverage: 8 rich-agent tests and 34 RPC tests; the full workspace
+  suite also passes offline.
 
 ## Major parity work already present
 
@@ -97,17 +100,15 @@ items just because a similarly named Rust module exists.
 
 ## Recommended next sequence
 
-1. Audit RPC abort vs abort-bash lifecycle, terminal events, and session
-   records under simultaneous prompt/tool activity (S-041).
-2. Produce golden transcripts for every RPC command and event type (S-042),
+1. Produce golden transcripts for every RPC command and event type (S-042),
    including switch/fork/clone, queue modes, compaction, export, and errors.
-3. Complete image/read processing parity and register the model-facing image
+2. Complete image/read processing parity and register the model-facing image
    behavior in the run path (#32 / S-020-related audit).
-4. Finish one-shot print-path auto-compaction and its binary/session fixture
+3. Finish one-shot print-path auto-compaction and its binary/session fixture
    tests (#33–34 / S-025).
-5. Audit client reconnect/timeouts and the remaining TUI/config-selector
+4. Audit client reconnect/timeouts and the remaining TUI/config-selector
    interactive behavior.
-6. Keep `CONVERSION-LEDGER.md` and the percentage in `PLAN.md` synchronized;
+5. Keep `CONVERSION-LEDGER.md` and the percentage in `PLAN.md` synchronized;
    only mark a task complete with an evidence tier and exact command/fixture.
 
 ## Useful source references

@@ -528,6 +528,7 @@ where
         .collect();
 
     let tools: Vec<AgentTool> = context.tools.clone();
+    let signal = config.signal.clone();
 
     let mut finalized: Vec<(usize, (crate::tools::AgentToolResult, bool))> = Vec::new();
     if !calls.is_empty() {
@@ -539,6 +540,7 @@ where
                 let args = args.clone();
                 let i = *i;
                 let tools = tools.clone();
+                let signal = signal.clone();
                 async move {
                     let tool = tools.iter().find(|t| t.tool.name == name).cloned();
                     let (result, is_error) = match tool {
@@ -548,7 +550,7 @@ where
                                 name: &name,
                                 arguments: &args,
                             };
-                            execute_tool_once(&tc, &tool, args.clone(), None).await
+                            execute_tool_once(&tc, &tool, args.clone(), signal.as_ref()).await
                         }
                         None => (
                             crate::tools::AgentToolResult::text(format!("Tool {name} not found")),
@@ -860,6 +862,11 @@ where
                     execute_tool_batch(&message, context, config, emit).await
                 };
                 tool_results.extend(batch.messages);
+                // A non-terminating tool batch must cause another assistant
+                // turn. Upstream's `hasMoreToolCalls` is the loop gate; the
+                // earlier Rust port left it false for every successful batch,
+                // which dropped the follow-up model response after tools.
+                has_more_tool_calls = !batch.terminate;
                 for result in &tool_results {
                     current_messages.push(AgentMessage::Core(Message::ToolResult(result.clone())));
                     new_messages.push(AgentMessage::Core(Message::ToolResult(result.clone())));
@@ -1586,6 +1593,68 @@ mod tests {
                 matches!(m, AgentMessage::Core(Message::ToolResult(r)) if !r.is_error())
             });
             assert!(has_tool_result);
+        });
+    }
+
+    #[test]
+    fn rich_loop_abort_cancels_inflight_bash_tool() {
+        let rt = rt();
+        rt.block_on(async {
+            let dir = std::env::temp_dir().join(format!(
+                "pi-agent-rich-abort-{}",
+                uuid::Uuid::new_v4().simple()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let cwd = dir.to_string_lossy().to_string();
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
+                vec![ContentBlock::tool_call(
+                    "tool-abort",
+                    "bash",
+                    serde_json::json!({"command": "sleep 10"}),
+                )],
+                FauxAssistantOptions {
+                    stop_reason: Some(pi_ai::types::StopReason::ToolUse),
+                    ..Default::default()
+                },
+            ))]);
+            let model = core.get_model(None).unwrap().clone();
+            let stream_fn = scripted_stream(core);
+            let abort = Arc::new(AtomicBool::new(false));
+            let config = RichAgentLoopConfig::new(model, stream_fn, Some(abort.clone()));
+            let mut context = AgentContext::new(
+                Some("test".into()),
+                vec![crate::tools::bash_tool(cwd.clone())],
+            );
+            let task = tokio::spawn(async move {
+                run_rich_agent_loop(
+                    vec![steer_msg("abort tool")],
+                    &mut context,
+                    &config,
+                    &mut |_| {},
+                )
+                .await
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            abort.store(true, Ordering::SeqCst);
+            let messages = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+                .await
+                .expect("agent abort should stop the bash tool")
+                .unwrap();
+            assert!(messages.iter().any(|message| {
+                matches!(
+                    message,
+                    AgentMessage::Core(Message::ToolResult(result)) if result.is_error()
+                )
+            }));
+            assert!(messages.iter().any(|message| {
+                matches!(
+                    message,
+                    AgentMessage::Core(Message::Assistant(assistant))
+                        if assistant.stop_reason() == Some(StopReason::Aborted)
+                )
+            }));
+            let _ = std::fs::remove_dir_all(dir);
         });
     }
 

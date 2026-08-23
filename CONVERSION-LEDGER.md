@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **42.17% (70/166)**. Run
+- The exhaustive checker reports **42.77% (71/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -18,11 +18,11 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD `7bace4f` on `main` contains the prior conversion checkpoint. The
-  S-040 RPC settings implementation is the current uncommitted change until
+- HEAD `358c30d` on `main` contains the S-040 conversion checkpoint. The
+  S-041 RPC/lifecycle implementation is the current uncommitted change until
   its dedicated checkpoint is created.
 - The workspace is green under `cargo test --workspace --offline`; the focused
-  RPC settings suite passes all 30 tests.
+  RPC suite passes 34 tests and the focused rich-agent suite passes 8 tests.
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
   device-code flows, codex WebSocket transport (SSE fallback today),
   `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
@@ -621,8 +621,18 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       preserving request-local overrides. Verified with `cargo test
       -p pi-coding-agent --offline modes::rpc::tests -- --nocapture` (30
       passed) and `cargo test --workspace --offline`.
-- [ ] S-041 Audit RPC abort vs abort-bash lifecycle, terminal events, and
-      session records under simultaneous prompt/tool activity.
+- [x] S-041 Audit RPC abort vs abort-bash lifecycle, terminal events, and
+      session records under simultaneous prompt/tool activity. (unit; mock)
+      `abort` now targets only the agent/retry signals, while standalone bash
+      tasks run concurrently, `abort_bash` interrupts silent or active
+      processes, and bash records defer until agent settlement to preserve
+      message ordering. RPC now emits upstream lifecycle, message terminal,
+      turn, and tool execution events. The rich loop continues after
+      non-terminating tool batches and propagates abort into bash tools.
+      Verified with `cargo test -p pi-agent --offline
+      rich_agent::tests -- --nocapture` (8 passed), `cargo test
+      -p pi-coding-agent --offline modes::rpc::tests -- --nocapture` (34
+      passed), and `cargo test --workspace --offline`.
 - [ ] S-042 Produce golden transcripts for every RPC command and event type,
       including switch/fork/clone, queue modes, compaction, export, and all
       error responses.

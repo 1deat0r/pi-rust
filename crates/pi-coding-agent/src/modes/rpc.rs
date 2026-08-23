@@ -2,7 +2,7 @@
 //!
 //! Headless operation over a JSONL stdin/stdout protocol. Receives `RpcCommand`
 //! objects as one JSON per line on stdin; emits `response` records and
-//! `message_update`/`agent_settled` events as JSON lines on stdout.
+//! session lifecycle events as JSON lines on stdout.
 //!
 //! Implemented over the port's current layers: the pi-ai Models facade
 //! (provider registry / catalog / auth + stream dispatch), the pi-agent agent
@@ -27,7 +27,7 @@ use pi_agent::session::types::{EntryNoStats, SessionMetadata};
 use pi_agent::session::JsonlSessionRepo;
 use pi_ai::model::Model;
 use pi_ai::models::Models;
-use pi_ai::types::{AssistantMessageEvent, DoneReason, Message};
+use pi_ai::types::{AssistantMessageEvent, Message};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -189,6 +189,14 @@ pub struct RpcRuntime {
     pub messages: Vec<pi_agent::types::AgentMessage>,
     pub repo: JsonlSessionRepo<pi_agent::fs::StdFileSystem>,
     pub session: JsonlSession<pi_agent::fs::StdFileSystem>,
+    /// Bash results that finish while an agent run is active. Upstream defers
+    /// these messages until the run settles so they cannot split an assistant
+    /// tool-call/tool-result sequence.
+    pending_bash_messages: Vec<pi_agent::types::AgentMessage>,
+    /// One cancellation flag per standalone RPC bash task. `abort_bash` must
+    /// cancel every current command without allowing a new command to clear
+    /// an older command's cancellation state.
+    bash_abort_flags: Vec<Arc<AtomicBool>>,
     pub run_lock: Arc<Mutex<bool>>,
     pub abort_bash: Arc<AtomicBool>,
     pub abort_signal: Arc<AtomicBool>,
@@ -222,8 +230,31 @@ enum RpcPromptTaskMessage {
     Finished(RpcPromptResult),
 }
 
+struct RpcBashTaskResult {
+    id: Option<String>,
+    command: String,
+    exclude_from_context: Option<bool>,
+    abort: Arc<AtomicBool>,
+    result: serde_json::Value,
+}
+
+enum RpcTaskMessage {
+    Prompt(RpcPromptTaskMessage),
+    Bash(RpcBashTaskResult),
+}
+
 fn serialize_rpc_prompt_event(event: RichAgentEvent) -> Option<String> {
     match event {
+        RichAgentEvent::AgentStart => Some(serialize_json_line(&serde_json::json!({
+            "type": "agent_start",
+        }))),
+        RichAgentEvent::AgentEnd { messages } => Some(serialize_json_line(&serde_json::json!({
+            "type": "agent_end",
+            "messages": messages,
+            // Provider retries are handled inside this Rust agent run; there
+            // is no second session-level retry after this event.
+            "willRetry": false,
+        }))),
         RichAgentEvent::AutoRetryStart {
             attempt,
             max_attempts,
@@ -251,46 +282,65 @@ fn serialize_rpc_prompt_event(event: RichAgentEvent) -> Option<String> {
             }
             Some(serialize_json_line(&event))
         }
+        RichAgentEvent::TurnStart => Some(serialize_json_line(&serde_json::json!({
+            "type": "turn_start",
+        }))),
+        RichAgentEvent::TurnEnd {
+            message,
+            tool_results,
+        } => Some(serialize_json_line(&serde_json::json!({
+            "type": "turn_end",
+            "message": message,
+            "toolResults": tool_results,
+        }))),
+        RichAgentEvent::MessageStart { message } => Some(serialize_json_line(&serde_json::json!({
+            "type": "message_start",
+            "message": message,
+        }))),
         RichAgentEvent::MessageUpdate {
             assistant_message_event,
             ..
         } => Some(serialize_json_line(&to_json_message_update(
             &assistant_message_event,
         ))),
-        RichAgentEvent::MessageEnd { message } => {
-            if let pi_agent::types::AgentMessage::Core(Message::Assistant(message)) = message {
-                let terminal = match message.stop_reason() {
-                    Some(pi_ai::types::StopReason::Error) => AssistantMessageEvent::Error {
-                        reason: pi_ai::types::ErrorReason::Error,
-                        error_message: message,
-                    },
-                    Some(pi_ai::types::StopReason::Aborted) => AssistantMessageEvent::Error {
-                        reason: pi_ai::types::ErrorReason::Aborted,
-                        error_message: message,
-                    },
-                    Some(pi_ai::types::StopReason::Length) => AssistantMessageEvent::Done {
-                        reason: DoneReason::Length,
-                        message,
-                    },
-                    Some(pi_ai::types::StopReason::ToolUse) => AssistantMessageEvent::Done {
-                        reason: DoneReason::ToolUse,
-                        message,
-                    },
-                    Some(pi_ai::types::StopReason::Deferred) => AssistantMessageEvent::Done {
-                        reason: DoneReason::Deferred,
-                        message,
-                    },
-                    _ => AssistantMessageEvent::Done {
-                        reason: DoneReason::Stop,
-                        message,
-                    },
-                };
-                Some(serialize_json_line(&to_json_message_update(&terminal)))
-            } else {
-                None
-            }
-        }
-        _ => None,
+        RichAgentEvent::MessageEnd { message } => Some(serialize_json_line(&serde_json::json!({
+            "type": "message_end",
+            "message": message,
+        }))),
+        RichAgentEvent::ToolExecutionStart {
+            tool_call_id,
+            tool_name,
+            args,
+        } => Some(serialize_json_line(&serde_json::json!({
+            "type": "tool_execution_start",
+            "toolCallId": tool_call_id,
+            "toolName": tool_name,
+            "args": args,
+        }))),
+        RichAgentEvent::ToolExecutionUpdate {
+            tool_call_id,
+            tool_name,
+            args,
+            partial_result,
+        } => Some(serialize_json_line(&serde_json::json!({
+            "type": "tool_execution_update",
+            "toolCallId": tool_call_id,
+            "toolName": tool_name,
+            "args": args,
+            "partialResult": partial_result,
+        }))),
+        RichAgentEvent::ToolExecutionEnd {
+            tool_call_id,
+            tool_name,
+            result,
+            is_error,
+        } => Some(serialize_json_line(&serde_json::json!({
+            "type": "tool_execution_end",
+            "toolCallId": tool_call_id,
+            "toolName": tool_name,
+            "result": result,
+            "isError": is_error,
+        }))),
     }
 }
 
@@ -471,6 +521,8 @@ impl RpcRuntime {
             messages: Vec::new(),
             repo,
             session,
+            pending_bash_messages: Vec::new(),
+            bash_abort_flags: Vec::new(),
             run_lock: Arc::new(Mutex::new(false)),
             abort_bash: Arc::new(AtomicBool::new(false)),
             abort_signal: Arc::new(AtomicBool::new(false)),
@@ -562,6 +614,113 @@ impl RpcRuntime {
                     .await
             })
         })
+    }
+
+    fn bash_message(
+        command: &str,
+        result: &serde_json::Value,
+        exclude_from_context: Option<bool>,
+    ) -> pi_agent::types::AgentMessage {
+        pi_agent::types::AgentMessage::Custom(pi_agent::types::CustomAgentMessage::BashExecution {
+            command: command.to_string(),
+            output: result
+                .get("output")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            exit_code: result.get("exitCode").and_then(serde_json::Value::as_i64),
+            cancelled: result
+                .get("cancelled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            truncated: result
+                .get("truncated")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            full_output_path: result
+                .get("fullOutputPath")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            timestamp: pi_ai::types::now_ms(),
+            exclude_from_context,
+        })
+    }
+
+    async fn record_bash_result(
+        &mut self,
+        command: &str,
+        result: &serde_json::Value,
+        exclude_from_context: Option<bool>,
+    ) -> Result<(), String> {
+        let message = Self::bash_message(command, result, exclude_from_context);
+        if self.is_streaming {
+            self.pending_bash_messages.push(message);
+            return Ok(());
+        }
+
+        self.messages.push(message.clone());
+        self.persist_messages(std::slice::from_ref(&message)).await
+    }
+
+    async fn flush_pending_bash_messages(&mut self) -> Result<(), String> {
+        if self.pending_bash_messages.is_empty() {
+            return Ok(());
+        }
+        let pending = std::mem::take(&mut self.pending_bash_messages);
+        self.messages.extend(pending.iter().cloned());
+        self.persist_messages(&pending).await
+    }
+
+    fn register_bash_abort(&mut self, abort: Arc<AtomicBool>) {
+        self.bash_abort_flags.push(abort);
+    }
+
+    fn unregister_bash_abort(&mut self, abort: &Arc<AtomicBool>) {
+        self.bash_abort_flags
+            .retain(|candidate| !Arc::ptr_eq(candidate, abort));
+    }
+
+    fn abort_all_bash(&self) {
+        self.abort_bash.store(true, Ordering::SeqCst);
+        for abort in &self.bash_abort_flags {
+            abort.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Start standalone RPC bash execution without blocking prompt events or
+    /// input processing. The response and session record are emitted when the
+    /// task completes, matching upstream's concurrently handled command.
+    fn start_bash_task(
+        &mut self,
+        command: RpcCommand,
+        task_events: &UnboundedSender<RpcTaskMessage>,
+        store: &mut Vec<String>,
+    ) -> bool {
+        let id = command.id.clone();
+        let Some(bash_command) = command.str_field("command") else {
+            store.push(serialize_json_line(&failure(
+                id.as_deref(),
+                "bash",
+                "missing command".to_string(),
+            )));
+            return false;
+        };
+        let exclude_from_context = command.bool_field("excludeFromContext");
+        let abort = Arc::new(AtomicBool::new(false));
+        self.register_bash_abort(abort.clone());
+        let cwd = self.cwd.clone();
+        let task_events = task_events.clone();
+        tokio::spawn(async move {
+            let result = run_bash(&bash_command, &cwd, abort.clone()).await;
+            let _ = task_events.send(RpcTaskMessage::Bash(RpcBashTaskResult {
+                id,
+                command: bash_command,
+                exclude_from_context,
+                abort,
+                result,
+            }));
+        });
+        true
     }
 
     /// The stream function used by the agent loop (facade-backed dispatch;
@@ -768,6 +927,10 @@ impl RpcRuntime {
                 &serde_json::json!({"type": "compacted"}),
             ));
         }
+        // Standalone RPC bash is allowed to run alongside the agent. Defer
+        // its context/session message until the agent lifecycle is complete,
+        // exactly as the upstream session does for pending bash messages.
+        let _ = self.flush_pending_bash_messages().await;
         store.push(serialize_json_line(
             &serde_json::json!({"type": "agent_settled"}),
         ));
@@ -1103,7 +1266,6 @@ impl RpcRuntime {
 
             "abort" => {
                 self.abort_signal.store(true, Ordering::SeqCst);
-                self.abort_bash.store(true, Ordering::SeqCst);
                 self.abort_retry_signal.store(true, Ordering::SeqCst);
                 respond(store, success(id.as_deref(), &cmd, None));
                 Ok(())
@@ -1449,6 +1611,12 @@ impl RpcRuntime {
                     .ok_or_else(|| "missing command".to_string())?;
                 self.abort_bash.store(false, Ordering::SeqCst);
                 let result = run_bash(&bash_command, &self.cwd, self.abort_bash.clone()).await;
+                self.record_bash_result(
+                    &bash_command,
+                    &result,
+                    command.bool_field("excludeFromContext"),
+                )
+                .await?;
                 respond(
                     store,
                     success(
@@ -1461,7 +1629,7 @@ impl RpcRuntime {
             }
 
             "abort_bash" => {
-                self.abort_bash.store(true, Ordering::SeqCst);
+                self.abort_all_bash();
                 respond(store, success(id.as_deref(), &cmd, None));
                 Ok(())
             }
@@ -1852,55 +2020,53 @@ pub async fn run_bash(command: &str, cwd: &str, abort: Arc<AtomicBool>) -> serde
         .spawn()
     {
         Ok(mut child) => {
-            let stdout = child.stdout.take();
-            let stderr = child.stderr.take();
-            if let Some(mut stdout) = stdout {
-                use tokio::io::AsyncReadExt;
-                let mut buf = [0u8; 4096];
-                loop {
-                    if abort.load(Ordering::SeqCst) {
-                        let _ = child.kill().await;
-                        break;
-                    }
-                    let n = match stdout.read(&mut buf).await {
-                        Ok(n) => n,
-                        Err(_) => 0,
-                    };
-                    if n == 0 {
-                        break;
-                    }
-                    if out.len() < BASH_TRUNCATE_LIMIT {
-                        out.extend_from_slice(&buf[..n]);
-                        if out.len() >= BASH_TRUNCATE_LIMIT {
-                            truncated = true;
-                        }
-                    } else {
-                        truncated = true;
-                    }
+            use tokio::io::AsyncReadExt;
+            let mut stdout = child.stdout.take().expect("stdout piped");
+            let mut stderr = child.stderr.take().expect("stderr piped");
+            let mut stdout_done = false;
+            let mut stderr_done = false;
+            let mut stdout_buf = [0u8; 4096];
+            let mut stderr_buf = [0u8; 4096];
+
+            // Drain both pipes concurrently. The short polling branch makes
+            // a silent command interruptible even though the cancellation
+            // state is an atomic flag rather than an async signal.
+            while !stdout_done || !stderr_done {
+                if abort.load(Ordering::SeqCst) {
+                    let _ = child.kill().await;
+                    break;
                 }
-            }
-            if let Some(mut stderr) = stderr {
-                use tokio::io::AsyncReadExt;
-                let mut buf = [0u8; 4096];
-                loop {
-                    if abort.load(Ordering::SeqCst) {
-                        let _ = child.kill().await;
-                        break;
-                    }
-                    let n = match stderr.read(&mut buf).await {
-                        Ok(n) => n,
-                        Err(_) => 0,
-                    };
-                    if n == 0 {
-                        break;
-                    }
-                    if out.len() < BASH_TRUNCATE_LIMIT {
-                        out.extend_from_slice(&buf[..n]);
-                        if out.len() >= BASH_TRUNCATE_LIMIT {
-                            truncated = true;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+                    result = stdout.read(&mut stdout_buf), if !stdout_done => {
+                        match result {
+                            Ok(0) => stdout_done = true,
+                            Ok(n) => {
+                                if out.len() < BASH_TRUNCATE_LIMIT {
+                                    let kept = n.min(BASH_TRUNCATE_LIMIT - out.len());
+                                    out.extend_from_slice(&stdout_buf[..kept]);
+                                    truncated |= kept < n || out.len() == BASH_TRUNCATE_LIMIT;
+                                } else {
+                                    truncated = true;
+                                }
+                            }
+                            Err(_) => stdout_done = true,
                         }
-                    } else {
-                        truncated = true;
+                    }
+                    result = stderr.read(&mut stderr_buf), if !stderr_done => {
+                        match result {
+                            Ok(0) => stderr_done = true,
+                            Ok(n) => {
+                                if out.len() < BASH_TRUNCATE_LIMIT {
+                                    let kept = n.min(BASH_TRUNCATE_LIMIT - out.len());
+                                    out.extend_from_slice(&stderr_buf[..kept]);
+                                    truncated |= kept < n || out.len() == BASH_TRUNCATE_LIMIT;
+                                } else {
+                                    truncated = true;
+                                }
+                            }
+                            Err(_) => stderr_done = true,
+                        }
                     }
                 }
             }
@@ -2153,6 +2319,151 @@ async fn handle_rpc_prompt_task_message<W: AsyncWrite + Unpin>(
     }
 }
 
+async fn handle_rpc_task_message<W: AsyncWrite + Unpin>(
+    runtime: &mut RpcRuntime,
+    message: Option<RpcTaskMessage>,
+    out: &mut W,
+    prompt_active: &mut bool,
+    active_bashes: &mut usize,
+    pending_abort_responses: &mut VecDeque<String>,
+) -> Result<(), String> {
+    match message {
+        Some(RpcTaskMessage::Prompt(message)) => {
+            if handle_rpc_prompt_task_message(runtime, Some(message), out, pending_abort_responses)
+                .await?
+            {
+                *prompt_active = false;
+            }
+            Ok(())
+        }
+        Some(RpcTaskMessage::Bash(result)) => {
+            *active_bashes = active_bashes.saturating_sub(1);
+            runtime.unregister_bash_abort(&result.abort);
+            runtime
+                .record_bash_result(&result.command, &result.result, result.exclude_from_context)
+                .await?;
+            write_rpc_lines(
+                out,
+                std::iter::once(serialize_json_line(&success(
+                    result.id.as_deref(),
+                    "bash",
+                    Some(result.result),
+                ))),
+            )
+            .await
+        }
+        None => Err("RPC task channel ended unexpectedly".to_string()),
+    }
+}
+
+fn start_forwarded_prompt_task(
+    runtime: &mut RpcRuntime,
+    command: RpcCommand,
+    store: &mut Vec<String>,
+    task_events: &UnboundedSender<RpcTaskMessage>,
+    prompt_active: &mut bool,
+) {
+    let Some(receiver) = runtime.start_prompt_task(command, store) else {
+        return;
+    };
+    *prompt_active = true;
+    let task_events = task_events.clone();
+    tokio::spawn(async move {
+        let mut receiver = receiver;
+        while let Some(message) = receiver.recv().await {
+            if task_events.send(RpcTaskMessage::Prompt(message)).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+async fn dispatch_rpc_command<W: AsyncWrite + Unpin>(
+    runtime: &mut RpcRuntime,
+    command: RpcCommand,
+    out: &mut W,
+    task_events: &UnboundedSender<RpcTaskMessage>,
+    prompt_active: &mut bool,
+    active_bashes: &mut usize,
+    pending_commands: &mut VecDeque<RpcCommand>,
+    pending_abort_responses: &mut VecDeque<String>,
+) -> Result<(), String> {
+    // Standalone bash and abort_bash are always admitted, including while an
+    // agent prompt is streaming. This is the key distinction from `abort`:
+    // abort only targets the agent run, while abort_bash only targets shell
+    // tasks.
+    if command.type_ == "bash" {
+        let mut store = Vec::new();
+        if runtime.start_bash_task(command, task_events, &mut store) {
+            *active_bashes += 1;
+        }
+        return write_rpc_lines(out, store).await;
+    }
+    if command.type_ == "abort_bash" {
+        let mut store = Vec::new();
+        runtime.handle_command(command, &mut store).await?;
+        return write_rpc_lines(out, store).await;
+    }
+
+    if *prompt_active {
+        if can_handle_during_prompt(&command) {
+            let is_abort = command.type_ == "abort";
+            let mut store = Vec::new();
+            runtime.handle_command(command, &mut store).await?;
+            if is_abort {
+                pending_abort_responses.extend(store);
+                return Ok(());
+            }
+            return write_rpc_lines(out, store).await;
+        }
+        pending_commands.push_back(command);
+        return Ok(());
+    }
+
+    if command.type_ == "prompt" {
+        let mut store = Vec::new();
+        start_forwarded_prompt_task(runtime, command, &mut store, task_events, prompt_active);
+        return write_rpc_lines(out, store).await;
+    }
+
+    let mut store = Vec::new();
+    runtime.handle_command(command, &mut store).await?;
+    write_rpc_lines(out, store).await
+}
+
+async fn dispatch_rpc_line<W: AsyncWrite + Unpin>(
+    runtime: &mut RpcRuntime,
+    line: String,
+    out: &mut W,
+    task_events: &UnboundedSender<RpcTaskMessage>,
+    prompt_active: &mut bool,
+    active_bashes: &mut usize,
+    pending_commands: &mut VecDeque<RpcCommand>,
+    pending_abort_responses: &mut VecDeque<String>,
+) -> Result<(), String> {
+    if line.trim().is_empty() {
+        return Ok(());
+    }
+    let command = match parse_rpc_input(&line) {
+        Ok(command) => command,
+        Err(error) => {
+            let response = failure(None, "parse", error);
+            return write_rpc_lines(out, std::iter::once(serialize_json_line(&response))).await;
+        }
+    };
+    dispatch_rpc_command(
+        runtime,
+        command,
+        out,
+        task_events,
+        prompt_active,
+        active_bashes,
+        pending_commands,
+        pending_abort_responses,
+    )
+    .await
+}
+
 /// Run the RPC mode loop: read commands from stdin, write responses/events
 /// to stdout until EOF.
 pub async fn run_rpc_mode(args: &Args, settings: SettingsManager) -> Result<(), String> {
@@ -2161,146 +2472,96 @@ pub async fn run_rpc_mode(args: &Args, settings: SettingsManager) -> Result<(), 
     let stdout = tokio::io::stdout();
     let mut reader = JsonlLineReader::new(stdin);
     let mut out = tokio::io::BufWriter::new(stdout);
-    let mut active_prompt: Option<UnboundedReceiver<RpcPromptTaskMessage>> = None;
+    let (task_events, mut task_receiver) = mpsc::unbounded_channel::<RpcTaskMessage>();
+    let mut prompt_active = false;
+    let mut active_bashes = 0usize;
     let mut pending_commands = VecDeque::new();
     let mut pending_abort_responses = VecDeque::new();
     let mut input_closed = false;
 
     loop {
-        if active_prompt.is_some() {
-            if input_closed {
-                let message = active_prompt
-                    .as_mut()
-                    .expect("active prompt receiver")
-                    .recv()
-                    .await;
-                if handle_rpc_prompt_task_message(
+        if !prompt_active {
+            if let Some(command) = pending_commands.pop_front() {
+                dispatch_rpc_command(
                     &mut runtime,
-                    message,
+                    command,
                     &mut out,
+                    &task_events,
+                    &mut prompt_active,
+                    &mut active_bashes,
+                    &mut pending_commands,
                     &mut pending_abort_responses,
                 )
-                .await?
-                {
-                    active_prompt = None;
-                }
+                .await?;
                 continue;
             }
-
-            // Keep stdin intake live while the detached prompt sends stream
-            // events. Tokio's fair selection prevents a high-volume event
-            // stream from starving control commands; the worker channel still
-            // preserves event order internally.
-            let outcome = {
-                let receiver = active_prompt.as_mut().expect("active prompt receiver");
-                tokio::select! {
-                    message = receiver.recv() => Ok(message),
-                    line = reader.next_line() => Err(line),
-                }
-            };
-            match outcome {
-                Ok(message) => {
-                    if handle_rpc_prompt_task_message(
-                        &mut runtime,
-                        message,
-                        &mut out,
-                        &mut pending_abort_responses,
-                    )
-                    .await?
-                    {
-                        active_prompt = None;
-                    }
-                }
-                Err(line_result) => {
-                    let Some(line) = line_result.map_err(|e| format!("stdin read error: {e}"))?
-                    else {
-                        input_closed = true;
-                        continue;
-                    };
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-                    let command = match parse_rpc_input(&line) {
-                        Ok(command) => command,
-                        Err(error) => {
-                            let response = failure(None, "parse", error);
-                            write_rpc_lines(
-                                &mut out,
-                                std::iter::once(serialize_json_line(&response)),
-                            )
-                            .await?;
-                            continue;
-                        }
-                    };
-                    if can_handle_during_prompt(&command) {
-                        let is_abort = command.type_ == "abort";
-                        let mut store = Vec::new();
-                        runtime.handle_command(command, &mut store).await?;
-                        if is_abort {
-                            pending_abort_responses.extend(store);
-                        } else {
-                            write_rpc_lines(&mut out, store).await?;
-                        }
-                    } else {
-                        pending_commands.push_back(command);
-                    }
-                }
-            }
-            continue;
-        }
-
-        if let Some(command) = pending_commands.pop_front() {
-            if command.type_ == "prompt" {
-                let mut store = Vec::new();
-                if let Some(receiver) = runtime.start_prompt_task(command, &mut store) {
-                    write_rpc_lines(&mut out, store).await?;
-                    active_prompt = Some(receiver);
-                } else {
-                    write_rpc_lines(&mut out, store).await?;
-                }
-            } else {
-                let mut store = Vec::new();
-                runtime.handle_command(command, &mut store).await?;
-                write_rpc_lines(&mut out, store).await?;
-            }
-            continue;
         }
 
         if input_closed {
-            break;
+            if !prompt_active && active_bashes == 0 {
+                break;
+            }
+            handle_rpc_task_message(
+                &mut runtime,
+                task_receiver.recv().await,
+                &mut out,
+                &mut prompt_active,
+                &mut active_bashes,
+                &mut pending_abort_responses,
+            )
+            .await?;
+            continue;
         }
 
-        let Some(line) = reader
-            .next_line()
-            .await
-            .map_err(|e| format!("stdin read error: {e}"))?
-        else {
-            input_closed = true;
-            continue;
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let command = match parse_rpc_input(&line) {
-            Ok(command) => command,
-            Err(error) => {
-                let response = failure(None, "parse", error);
-                write_rpc_lines(&mut out, std::iter::once(serialize_json_line(&response))).await?;
-                continue;
-            }
-        };
-        if command.type_ == "prompt" {
-            let mut store = Vec::new();
-            if let Some(receiver) = runtime.start_prompt_task(command, &mut store) {
-                write_rpc_lines(&mut out, store).await?;
-                active_prompt = Some(receiver);
-            } else {
-                write_rpc_lines(&mut out, store).await?;
+        if prompt_active || active_bashes > 0 {
+            tokio::select! {
+                task = task_receiver.recv() => {
+                    handle_rpc_task_message(
+                        &mut runtime,
+                        task,
+                        &mut out,
+                        &mut prompt_active,
+                        &mut active_bashes,
+                        &mut pending_abort_responses,
+                    ).await?;
+                }
+                line = reader.next_line() => {
+                    match line.map_err(|e| format!("stdin read error: {e}"))? {
+                        Some(line) => dispatch_rpc_line(
+                            &mut runtime,
+                            line,
+                            &mut out,
+                            &task_events,
+                            &mut prompt_active,
+                            &mut active_bashes,
+                            &mut pending_commands,
+                            &mut pending_abort_responses,
+                        ).await?,
+                        None => input_closed = true,
+                    }
+                }
             }
         } else {
-            let mut store = Vec::new();
-            runtime.handle_command(command, &mut store).await?;
-            write_rpc_lines(&mut out, store).await?;
+            match reader
+                .next_line()
+                .await
+                .map_err(|e| format!("stdin read error: {e}"))?
+            {
+                Some(line) => {
+                    dispatch_rpc_line(
+                        &mut runtime,
+                        line,
+                        &mut out,
+                        &task_events,
+                        &mut prompt_active,
+                        &mut active_bashes,
+                        &mut pending_commands,
+                        &mut pending_abort_responses,
+                    )
+                    .await?
+                }
+                None => input_closed = true,
+            }
         }
     }
     Ok(())
@@ -2388,13 +2649,8 @@ mod tests {
         })
         .expect("assistant terminal event should serialize");
         let json: serde_json::Value = serde_json::from_str(json.trim()).unwrap();
-        assert_eq!(json["assistantMessageEvent"]["type"], "error");
-        assert_eq!(json["assistantMessageEvent"]["reason"], "error");
-        assert_eq!(json["usage"]["input"], 0);
-        assert_eq!(
-            json["assistantMessageEvent"]["error"]["stopReason"],
-            "error"
-        );
+        assert_eq!(json["type"], "message_end");
+        assert_eq!(json["message"]["stopReason"], "error");
     }
 
     #[test]
@@ -2527,15 +2783,15 @@ mod tests {
             .position(|value| value["type"] == "auto_retry_end")
             .expect("retry end event");
         assert!(retry_start < retry_end);
-        assert!(values[..retry_start]
-            .iter()
-            .any(|value| value["assistantMessageEvent"]["type"] == "error"));
+        assert!(values[..retry_start].iter().any(|value| {
+            value["type"] == "message_end" && value["message"]["stopReason"] == "error"
+        }));
         assert!(values[..retry_start]
             .iter()
             .any(|value| value["assistantMessageEvent"]["type"] == "text_delta"));
-        assert!(values[retry_start..retry_end]
-            .iter()
-            .any(|value| value["assistantMessageEvent"]["type"] == "done"));
+        assert!(values[retry_start..retry_end].iter().any(|value| {
+            value["type"] == "message_end" && value["message"]["stopReason"] == "stop"
+        }));
     }
 
     #[tokio::test]
@@ -2766,6 +3022,197 @@ mod tests {
         let result = run_bash("echo hello-rpc", "/tmp", abort).await;
         assert_eq!(result["output"], "hello-rpc\n");
         assert_eq!(result["exitCode"], 0);
+    }
+
+    #[tokio::test]
+    async fn abort_bash_interrupts_silent_process_and_abort_does_not_target_it() {
+        let mut runtime = runtime_for_test().await;
+        let bash_abort = runtime.abort_bash.clone();
+        let cwd = runtime.cwd.clone();
+        let bash = tokio::spawn(async move { run_bash("sleep 10", &cwd, bash_abort).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let mut store = Vec::new();
+        runtime
+            .handle_command(
+                RpcCommand::parse(serde_json::json!({"type": "abort"})).unwrap(),
+                &mut store,
+            )
+            .await
+            .unwrap();
+        assert!(!runtime.abort_bash.load(Ordering::SeqCst));
+
+        let mut store = Vec::new();
+        runtime
+            .handle_command(
+                RpcCommand::parse(serde_json::json!({"type": "abort_bash"})).unwrap(),
+                &mut store,
+            )
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), bash)
+            .await
+            .expect("abort_bash should interrupt a silent process")
+            .unwrap();
+        assert_eq!(result["cancelled"], true);
+        assert!(result["exitCode"].is_null());
+    }
+
+    #[tokio::test]
+    async fn standalone_bash_result_is_persisted_with_context_flag() {
+        let mut runtime = runtime_for_test().await;
+        let mut store = Vec::new();
+        runtime
+            .handle_command(
+                RpcCommand::parse(serde_json::json!({
+                    "id": "bash-1",
+                    "type": "bash",
+                    "command": "echo recorded",
+                    "excludeFromContext": true
+                }))
+                .unwrap(),
+                &mut store,
+            )
+            .await
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(store[0].trim()).unwrap();
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"]["output"], "recorded\n");
+
+        let entries = runtime.get_entries().await.unwrap();
+        assert!(entries.iter().any(|entry| {
+            matches!(
+                entry.as_message(),
+                Some(pi_agent::types::AgentMessage::Custom(
+                    pi_agent::types::CustomAgentMessage::BashExecution {
+                        exclude_from_context: Some(true),
+                        ..
+                    }
+                ))
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn bash_records_defer_until_prompt_settles() {
+        let mut runtime = runtime_for_test().await;
+        runtime.is_streaming = true;
+        runtime
+            .record_bash_result(
+                "echo deferred",
+                &serde_json::json!({
+                    "output": "deferred\n",
+                    "exitCode": 0,
+                    "cancelled": false,
+                    "truncated": false
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(runtime.messages.is_empty());
+        assert_eq!(runtime.pending_bash_messages.len(), 1);
+
+        runtime.is_streaming = false;
+        runtime.flush_pending_bash_messages().await.unwrap();
+        assert!(runtime.pending_bash_messages.is_empty());
+        assert!(matches!(
+            runtime.messages.first(),
+            Some(pi_agent::types::AgentMessage::Custom(
+                pi_agent::types::CustomAgentMessage::BashExecution { .. }
+            ))
+        ));
+        assert_eq!(runtime.get_entries().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn detached_prompt_emits_lifecycle_and_tool_terminal_events() {
+        let root = std::env::temp_dir().join(format!("pi-rpc-tool-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let core = pi_ai::providers::FauxProviderCore::new(
+            &pi_ai::providers::RegisterFauxProviderOptions::default(),
+        );
+        core.set_responses(vec![
+            pi_ai::providers::FauxResponseStep::Message(pi_ai::providers::faux_assistant_message(
+                vec![pi_ai::types::ContentBlock::tool_call(
+                    "tool-1",
+                    "bash",
+                    serde_json::json!({"command": "echo from-rpc"}),
+                )],
+                pi_ai::providers::FauxAssistantOptions {
+                    stop_reason: Some(pi_ai::types::StopReason::ToolUse),
+                    ..Default::default()
+                },
+            )),
+            pi_ai::providers::FauxResponseStep::Message(pi_ai::providers::faux_assistant_message(
+                vec![pi_ai::types::ContentBlock::text("finished")],
+                pi_ai::providers::FauxAssistantOptions::default(),
+            )),
+        ]);
+        let model = core.get_model(None).unwrap().clone();
+        let stream_core = core.clone();
+        let stream_fn: pi_agent::agent::StreamFn =
+            Arc::new(move |model, context| stream_core.stream(model, context, None));
+        let context = AgentContext::new(
+            Some("test".to_string()),
+            vec![pi_agent::tools::bash_tool(
+                root.to_string_lossy().into_owned(),
+            )],
+        );
+        let config = RichAgentLoopConfig::new(model, stream_fn, None);
+        let run = RpcPromptRun {
+            prompts: vec![pi_agent::agent::user_text_prompt("hello", 1)],
+            context,
+            config,
+        };
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        run_rpc_prompt(run, sender).await;
+
+        let mut lines = Vec::new();
+        let mut result = None;
+        while let Some(message) = receiver.recv().await {
+            match message {
+                RpcPromptTaskMessage::Event(line) => lines.push(line),
+                RpcPromptTaskMessage::Finished(value) => {
+                    result = Some(value);
+                    break;
+                }
+            }
+        }
+        let result = result.expect("prompt should settle");
+        assert!(
+            result.persisted_messages.len() >= 4,
+            "persisted messages: {:?}",
+            result.persisted_messages
+        );
+        let values: Vec<serde_json::Value> = lines
+            .iter()
+            .map(|line| serde_json::from_str(line.trim()).unwrap())
+            .collect();
+        for event_type in [
+            "agent_start",
+            "turn_start",
+            "message_start",
+            "message_end",
+            "tool_execution_start",
+            "tool_execution_end",
+            "turn_end",
+            "agent_end",
+        ] {
+            assert!(
+                values.iter().any(|value| value["type"] == event_type),
+                "missing {event_type} in {values:?}"
+            );
+        }
+        assert!(values.iter().any(|value| {
+            value["type"] == "tool_execution_start"
+                && value["toolCallId"] == "tool-1"
+                && value["toolName"] == "bash"
+        }));
+        assert!(values.iter().any(|value| {
+            value["type"] == "message_end" && value["message"]["role"] == "toolResult"
+        }));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
@@ -3314,18 +3761,14 @@ mod tests {
     fn last_assistant_text(store: &[String]) -> String {
         for line in store.iter().rev() {
             let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-            if v["type"] == "message_update" {
-                // The done event carries the full assistant message.
-                let event = &v["assistantMessageEvent"];
-                if event["type"] == "done" {
-                    if let Some(text) = event["message"]["content"].as_array() {
-                        let joined: String = text
-                            .iter()
-                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                            .collect();
-                        if !joined.is_empty() {
-                            return joined;
-                        }
+            if v["type"] == "message_end" {
+                if let Some(text) = v["message"]["content"].as_array() {
+                    let joined: String = text
+                        .iter()
+                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                        .collect();
+                    if !joined.is_empty() {
+                        return joined;
                     }
                 }
             }

@@ -5,6 +5,8 @@
 use super::truncate::{format_size, truncate_tail, DEFAULT_MAX_BYTES};
 use crate::types::FileError;
 use pi_ai::types::ToolResultMessage;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 const MAX_TIMEOUT_SECONDS: f64 = 2_147_483_647.0 / 1000.0;
 
@@ -15,6 +17,7 @@ pub struct BashCapture {
     pub truncated: bool,
     pub truncation_message: String,
     pub timed_out: bool,
+    pub aborted: bool,
 }
 
 /// Validates a bash timeout (seconds). Mirrors upstream `validateTimeout`.
@@ -40,6 +43,7 @@ pub async fn run_bash(
     command: &str,
     cwd: &str,
     timeout_secs: Option<f64>,
+    abort: Option<Arc<AtomicBool>>,
 ) -> Result<BashCapture, FileError> {
     let mut child = tokio::process::Command::new("/bin/bash")
         .arg("-c")
@@ -54,83 +58,55 @@ pub async fn run_bash(
     let mut stderr = child.stderr.take().expect("stderr piped");
     use tokio::io::AsyncReadExt;
 
-    // Drain both pipes concurrently, racing the deadline so partial output is
-    // preserved when the command times out.
+    // Drain both pipes concurrently, racing the deadline and agent abort so
+    // partial output is preserved without allowing a full stderr pipe to
+    // deadlock stdout or cancellation.
     let deadline = timeout_secs
         .map(|secs| tokio::time::Instant::now() + std::time::Duration::from_secs_f64(secs));
+    let polling_deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_secs(3_153_600_000);
     let mut so: Vec<u8> = Vec::new();
     let mut se: Vec<u8> = Vec::new();
     let mut so_eof = false;
     let mut se_eof = false;
     let mut timed_out = false;
+    let mut aborted = false;
     let mut buf_so = [0u8; 8192];
     let mut buf_se = [0u8; 8192];
     while !(so_eof && se_eof) {
-        let mut saw_progress = false;
-        if !so_eof {
-            match deadline {
-                Some(d) => {
-                    let read = stdout.read(&mut buf_so);
-                    tokio::pin!(read);
-                    if tokio::select! {
-                        _ = tokio::time::sleep_until(d) => { timed_out = true; true }
-                        r = &mut read => {
-                            match r {
-                                Ok(0) => so_eof = true,
-                                Ok(n) => { so.extend_from_slice(&buf_so[..n]); saw_progress = true; }
-                                Err(_) => so_eof = true,
-                            }
-                            false
-                        }
-                    } {
-                        break;
-                    }
-                }
-                None => match stdout.read(&mut buf_so).await {
+        if abort
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            aborted = true;
+            let _ = child.kill().await;
+            break;
+        }
+
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline.unwrap_or(polling_deadline)), if deadline.is_some() => {
+                timed_out = true;
+                let _ = child.kill().await;
+                break;
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+            result = stdout.read(&mut buf_so), if !so_eof => {
+                match result {
                     Ok(0) => so_eof = true,
-                    Ok(n) => {
-                        so.extend_from_slice(&buf_so[..n]);
-                        saw_progress = true;
-                    }
+                    Ok(n) => so.extend_from_slice(&buf_so[..n]),
                     Err(_) => so_eof = true,
-                },
-            }
-        }
-        if !se_eof {
-            match deadline {
-                Some(d) => {
-                    let read = stderr.read(&mut buf_se);
-                    tokio::pin!(read);
-                    if tokio::select! {
-                        _ = tokio::time::sleep_until(d) => { timed_out = true; true }
-                        r = &mut read => {
-                            match r {
-                                Ok(0) => se_eof = true,
-                                Ok(n) => { se.extend_from_slice(&buf_se[..n]); saw_progress = true; }
-                                Err(_) => se_eof = true,
-                            }
-                            false
-                        }
-                    } {
-                        break;
-                    }
                 }
-                None => match stderr.read(&mut buf_se).await {
-                    Ok(0) => se_eof = true,
-                    Ok(n) => {
-                        se.extend_from_slice(&buf_se[..n]);
-                        saw_progress = true;
-                    }
-                    Err(_) => se_eof = true,
-                },
             }
-        }
-        if !saw_progress && timeout_secs.is_some() {
-            // Sleep-bound child: still allow the deadline to fire.
-            tokio::task::yield_now().await;
+            result = stderr.read(&mut buf_se), if !se_eof => {
+                match result {
+                    Ok(0) => se_eof = true,
+                    Ok(n) => se.extend_from_slice(&buf_se[..n]),
+                    Err(_) => se_eof = true,
+                }
+            }
         }
     }
-    if timed_out {
+    if timed_out || aborted {
         let _ = child.kill().await;
     }
     let exit_code = child.wait().await.ok().and_then(|s| s.code());
@@ -170,10 +146,15 @@ pub async fn run_bash(
 
     Ok(BashCapture {
         output: truncation.content,
-        exit_code: if timed_out { None } else { exit_code },
+        exit_code: if timed_out || aborted {
+            None
+        } else {
+            exit_code
+        },
         truncated: truncation.truncated,
         truncation_message,
         timed_out,
+        aborted,
     })
 }
 
@@ -184,8 +165,18 @@ pub async fn execute_bash(
     timeout: Option<f64>,
     cwd: &str,
 ) -> Result<ToolResultMessage, String> {
+    execute_bash_with_abort(command, timeout, cwd, None).await
+}
+
+/// Execute bash with the agent-loop cancellation flag attached.
+pub async fn execute_bash_with_abort(
+    command: &str,
+    timeout: Option<f64>,
+    cwd: &str,
+    abort: Option<Arc<AtomicBool>>,
+) -> Result<ToolResultMessage, String> {
     validate_timeout(timeout)?;
-    let capture = run_bash(command, cwd, timeout)
+    let capture = run_bash(command, cwd, timeout, abort)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -198,6 +189,9 @@ pub async fn execute_bash(
         }
     };
 
+    if capture.aborted {
+        return Err(append_status("Operation aborted".to_string()));
+    }
     if capture.timed_out {
         return Err(append_status(format!(
             "Command timed out after {} seconds",

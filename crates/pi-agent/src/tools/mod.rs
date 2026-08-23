@@ -259,7 +259,7 @@ pub fn bash_tool(cwd: String) -> AgentTool {
             }),
         ),
         "Bash",
-        Arc::new(move |_tool_call_id, args, _signal, _on_update| {
+        Arc::new(move |_tool_call_id, args, signal, _on_update| {
             let cwd = cwd.clone();
             Box::pin(async move {
                 let command = args
@@ -267,7 +267,7 @@ pub fn bash_tool(cwd: String) -> AgentTool {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "bash: missing required argument command".to_string())?;
                 let timeout = args.get("timeout").and_then(|v| v.as_f64());
-                let result = bash::execute_bash(command, timeout, &cwd).await?;
+                let result = bash::execute_bash_with_abort(command, timeout, &cwd, signal).await?;
                 Ok(AgentToolResult::from_tool_result_message(&result))
             })
         }),
