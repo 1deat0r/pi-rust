@@ -131,11 +131,98 @@ pub trait ApiKeyAuth: Send + Sync {
 
 /// OAuth auth. Login/refresh flows run against the OAuth provider; the
 /// `to_auth` step derives request auth from a stored credential.
+#[async_trait::async_trait]
 pub trait OAuthAuth: Send + Sync {
     fn name(&self) -> &str;
     fn is_subscription(&self) -> bool;
     fn login_label(&self) -> Option<&str>;
+    /// Run the interactive login flow (device code / callback server).
+    /// Rejects on cancel/abort (upstream `login(interaction)`).
+    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String>;
+    /// Exchange the refresh token for a fresh credential. Network call;
+    /// errors on failure (invalid_grant etc.). Runs under the store lock
+    /// (upstream `refresh(credential, signal)`).
+    async fn refresh(
+        &self,
+        credential: &OAuthCredential,
+        signal: &std::sync::atomic::AtomicBool,
+    ) -> Result<OAuthCredential, String>;
     fn to_auth(&self, credential: &OAuthCredential) -> Option<ModelAuth>;
+}
+
+// ---------------------------------------------------------------------------
+// Login interaction (upstream `auth/types.ts` AuthPrompt/AuthEvent/
+// AuthInteraction)
+// ---------------------------------------------------------------------------
+
+/// One prompt shown to the user during login.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AuthPrompt {
+    Text { message: String, placeholder: Option<String> },
+    Secret { message: String, placeholder: Option<String> },
+    Select { message: String, options: Vec<AuthSelectOption> },
+    ManualCode { message: String, placeholder: Option<String> },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthSelectOption {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+/// A link shown alongside an info/auth_url event.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthInfoLink {
+    pub url: String,
+    pub label: Option<String>,
+}
+
+/// Out-of-band event notified to the UI during login.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AuthEvent {
+    Info { message: String, links: Vec<AuthInfoLink> },
+    AuthUrl { url: String, instructions: Option<String> },
+    DeviceCode {
+        user_code: String,
+        verification_uri: String,
+        interval_seconds: Option<f64>,
+        expires_in_seconds: Option<u64>,
+    },
+    Progress { message: String },
+}
+
+/// Login interaction callbacks serving both api-key and OAuth flows.
+/// `prompt` returns the entered/selected string (`select` returns the option
+/// id). Rejects on cancel/abort.
+pub trait AuthInteraction: Send + Sync {
+    fn prompt(&self, prompt: &AuthPrompt) -> Result<String, String>;
+    fn notify(&self, event: &AuthEvent);
+}
+
+/// A no-op interaction for headless flows (tests, non-interactive login).
+/// `prompt` always errors with `message`.
+pub struct NoopAuthInteraction {
+    pub error_message: String,
+}
+
+impl NoopAuthInteraction {
+    pub fn new() -> Self {
+        Self { error_message: "login requires an interactive prompt".to_string() }
+    }
+}
+
+impl Default for NoopAuthInteraction {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AuthInteraction for NoopAuthInteraction {
+    fn prompt(&self, _prompt: &AuthPrompt) -> Result<String, String> {
+        Err(self.error_message.clone())
+    }
+    fn notify(&self, _event: &AuthEvent) {}
 }
 
 /// Provider auth. At least one of apiKey/oauth is present.

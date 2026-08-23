@@ -226,9 +226,6 @@ fn entry_type_label(entry: &pi_agent::session::types::Entry) -> &'static str {
 /// `gh gist create --public=false` -> viewer URL. Returns the final status
 /// message or an error. All gh calls are spawn_blocking + timeout so a
 /// hanging gh never blocks the UI loop.
-/// Run a `gh` subcommand with a timeout (spawn_blocking so a hanging gh
-/// never blocks the UI loop). The timeout/JoinHandle/io results are unwrapped
-/// into a single `Result<Output, String>`.
 async fn run_gh(args: Vec<String>) -> Result<std::process::Output, String> {
     let layered = tokio::time::timeout(
         std::time::Duration::from_secs(60),
@@ -286,6 +283,113 @@ async fn run_share(runtime: &InteractiveRuntime, dry_run: bool) -> Result<String
     let gist_id = gist_url.rsplit('/').next().unwrap_or("").to_string();
     let viewer = std::env::var("PI_SHARE_VIEWER_URL").unwrap_or_else(|_| "https://pi.dev/session/".to_string());
     Ok(format!("Share URL: {viewer}#{gist_id}\nGist: {gist_url}"))
+}
+
+/// TUI-backed auth interaction (upstream `AuthInteraction`): notifications go
+/// to the status banner; prompts temporarily leave raw mode to read a line
+/// from stdin, then re-enter raw mode.
+struct TuiAuthInteraction {
+    banner: Arc<Mutex<String>>,
+    terminal: Arc<Mutex<TerminalBackend>>,
+}
+
+impl pi_ai::auth::AuthInteraction for TuiAuthInteraction {
+    fn prompt(&self, prompt: &pi_ai::auth::AuthPrompt) -> Result<String, String> {
+        let message = match prompt {
+            pi_ai::auth::AuthPrompt::Text { message, placeholder } => {
+                let mut m = message.clone();
+                if let Some(p) = placeholder {
+                    m.push_str(&format!(" ({p})"));
+                }
+                m
+            }
+            pi_ai::auth::AuthPrompt::Secret { message, .. } => message.clone(),
+            pi_ai::auth::AuthPrompt::ManualCode { message, placeholder } => {
+                let mut m = message.clone();
+                if let Some(p) = placeholder {
+                    m.push_str(&format!(" ({p})"));
+                }
+                m
+            }
+            pi_ai::auth::AuthPrompt::Select { message, options } => {
+                let mut m = message.clone();
+                for (i, opt) in options.iter().enumerate() {
+                    m.push_str(&format!("\n  {}. {}", i + 1, opt.label));
+                }
+                m
+            }
+        };
+        let mut terminal = self.terminal.lock().unwrap();
+        terminal.leave_raw().map_err(|e| format!("leave raw: {e}"))?;
+        println!("\n{message}");
+        let mut line = String::new();
+        std::io::stdin()
+            .read_line(&mut line)
+            .map_err(|e| format!("read input: {e}"))?;
+        terminal.enter_raw().map_err(|e| format!("enter raw: {e}"))?;
+        Ok(line.trim().to_string())
+    }
+
+    fn notify(&self, event: &pi_ai::auth::AuthEvent) {
+        let msg = match event {
+            pi_ai::auth::AuthEvent::DeviceCode { user_code, verification_uri, .. } => {
+                format!("Open {verification_uri} and enter code: {user_code}")
+            }
+            pi_ai::auth::AuthEvent::AuthUrl { url, .. } => format!("Open this URL to sign in: {url}"),
+            pi_ai::auth::AuthEvent::Progress { message } => message.clone(),
+            pi_ai::auth::AuthEvent::Info { message, .. } => message.clone(),
+        };
+        *self.banner.lock().unwrap() = msg;
+    }
+}
+
+/// Run the upstream `/login <provider>` OAuth flow: find the provider in the
+/// models registry, run its OAuth login, store the credential. Returns the
+/// final status message or an error.
+async fn run_oauth_login(
+    models: &pi_ai::models::Models,
+    provider_ref: Option<&str>,
+    banner: Arc<Mutex<String>>,
+    terminal: Arc<Mutex<TerminalBackend>>,
+) -> Result<String, String> {
+    let providers: Vec<pi_ai::models::Provider> = models
+        .get_providers()
+        .into_iter()
+        .filter(|p| p.auth.oauth.is_some())
+        .filter(|p| match provider_ref {
+            Some(r) => p.id == r || p.name.as_str() == r,
+            None => true,
+        })
+        .collect();
+    if providers.is_empty() {
+        return Err(match provider_ref {
+            Some(r) => format!("no OAuth login available for provider {r:?}"),
+            None => "no OAuth-capable providers registered".to_string(),
+        });
+    }
+    let provider = &providers[0];
+    let oauth = provider.auth.oauth.as_ref().expect("filtered for oauth");
+    let interaction = TuiAuthInteraction { banner, terminal };
+    let credential = oauth.login(&interaction).await?;
+    let auth = crate::core::auth_storage::AuthStorage::create(config::get_auth_path());
+    let opts = crate::core::auth_storage::AuthOperationOptions::default();
+    let cred = crate::core::auth_storage::Credential::OAuth {
+        access: credential.access,
+        refresh: credential.refresh,
+        expires: credential.expires,
+        extra: credential.extra,
+    };
+    let provider_id = provider.id.clone();
+    auth.modify(
+        &provider_id,
+        move |_| {
+            let cred = cred.clone();
+            Box::pin(async move { Ok(Some(cred)) })
+        },
+        &opts,
+    )
+    .await?;
+    Ok(format!("logged in to {provider_id} via OAuth"))
 }
 
 /// Wrap a modal in a renderable SharedComponent for the frame.
@@ -969,23 +1073,12 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     }
                                 }
                                 "login" => {
-                                    let auth = crate::core::auth_storage::AuthStorage::create(config::get_auth_path());
-                                    let opts = crate::core::auth_storage::AuthOperationOptions::default();
-                                    match auth.list(&opts).await {
-                                        Ok(infos) => {
-                                            if infos.is_empty() {
-                                                status_banner = "no stored credentials; use `pi auth` to configure a provider".to_string();
-                                            } else {
-                                                let list: Vec<String> = infos
-                                                    .iter()
-                                                    .map(|i| format!("{} ({})", i.provider_id, i.credential_type))
-                                                    .collect();
-                                                status_banner = format!("logged in: {}", list.join(", "));
-                                            }
-                                        }
-                                        Err(e) => {
-                                            status_banner = format!("auth list failed: {e}");
-                                        }
+                                    let provider_ref = _arg.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+                                    let banner = Arc::new(Mutex::new(String::new()));
+                                    let term = tree.terminal_handle();
+                                    match run_oauth_login(&runtime.models, provider_ref, banner.clone(), term).await {
+                                        Ok(message) => status_banner = message,
+                                        Err(e) => status_banner = e,
                                     }
                                 }
                                 "logout" => {

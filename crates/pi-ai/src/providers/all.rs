@@ -315,7 +315,17 @@ pub fn opencode_go_provider() -> Provider {
         crate::models::ProviderApiSpec::ByApi(streams),
     )
 }
-env_provider!(openrouter_provider, "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", ["OPENROUTER_API_KEY"]);
+pub fn openrouter_provider() -> Provider {
+    let mut provider = provider_with_env_auth(
+        "openrouter",
+        "OpenRouter",
+        Some("https://openrouter.ai/api/v1"),
+        &["OPENROUTER_API_KEY"],
+        crate::models::ProviderApiSpec::Single(openai_completions_streams("https://openrouter.ai/api/v1".to_string())),
+    );
+    provider.auth.oauth = Some(crate::auth_flows::OpenRouterOAuth::new());
+    provider
+}
 env_provider!(qwen_token_plan_provider, "qwen-token-plan", "Qwen Token Plan", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", ["QWEN_TOKEN_PLAN_API_KEY"]);
 env_provider!(qwen_token_plan_cn_provider, "qwen-token-plan-cn", "Qwen Token Plan (CN)", "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", ["QWEN_TOKEN_PLAN_CN_API_KEY"]);
 env_provider!(qwen_token_plan_individual_provider, "qwen-token-plan-individual", "Qwen Token Plan (Individual)", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", ["QWEN_TOKEN_PLAN_API_KEY"]);
@@ -350,7 +360,7 @@ pub fn anthropic_provider() -> Provider {
         headers: None,
         auth: ProviderAuth {
             api_key: Some(env_api_key_auth("Anthropic API key", vec!["ANTHROPIC_API_KEY".to_string()])),
-            oauth: None,
+            oauth: Some(crate::auth_flows::AnthropicOAuth::new()),
         },
         models,
         api: crate::models::ProviderApiSpec::Single(anthropic_streams()),
@@ -467,7 +477,7 @@ pub fn github_copilot_provider() -> Provider {
         headers: None,
         auth: ProviderAuth {
             api_key: Some(env_api_key_auth("GitHub Copilot token", vec!["COPILOT_GITHUB_TOKEN".to_string()])),
-            oauth: None,
+            oauth: Some(crate::auth_flows::GitHubCopilotOAuth::new()),
         },
         models: catalog_models("github-copilot"),
         api: crate::models::ProviderApiSpec::ByApi(streams),

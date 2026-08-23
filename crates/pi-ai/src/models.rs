@@ -393,6 +393,31 @@ impl Models {
     pub fn get_auth(&self, provider_id: &str, model: Option<&Model>) -> Option<AuthResult> {
         let provider = self.get_provider(provider_id)?;
         let credential = self.credentials.read(provider_id);
+        // OAuth credentials derive request auth through the provider's OAuth
+        // flow (upstream `getAuth` OAuth branch).
+        if let Some(Credential::OAuth(oauth_cred)) = credential.as_ref() {
+            if let Some(oauth) = provider.auth.oauth.as_ref() {
+                if let Some(auth) = oauth.to_auth(oauth_cred) {
+                    let mut result = AuthResult {
+                        auth,
+                        env: None,
+                        source: Some("OAuth".to_string()),
+                    };
+                    if let Some(model) = model {
+                        if let Some(headers) = &model.headers {
+                            let headers_with_options: ProviderHeaders = headers
+                                .iter()
+                                .map(|(k, v)| (k.clone(), Some(v.clone())))
+                                .collect();
+                            let mut auth = result.auth.clone();
+                            auth.headers = merge_headers(auth.headers.as_ref(), Some(&headers_with_options));
+                            result.auth = auth;
+                        }
+                    }
+                    return Some(result);
+                }
+            }
+        }
         let api_key_cred = match credential.as_ref() {
             Some(Credential::ApiKey(c)) => Some(c),
             _ => None,
@@ -881,5 +906,126 @@ mod tests {
         assert_eq!(merged.get("X-Test"), Some(&Some("2".to_string())));
         assert_eq!(merged.get("keep"), Some(&Some("y".to_string())));
         assert!(!merged.contains_key("x-test"));
+    }
+}
+
+#[cfg(test)]
+mod oauth_auth_tests {
+    use super::*;
+    use crate::auth::{AuthEvent, AuthInteraction, AuthPrompt, ModelAuth, OAuthAuth, OAuthCredential};
+
+    struct TestOAuthAuth;
+    #[async_trait::async_trait]
+    impl OAuthAuth for TestOAuthAuth {
+        fn name(&self) -> &str { "Test OAuth" }
+        fn is_subscription(&self) -> bool { true }
+        fn login_label(&self) -> Option<&str> { None }
+        async fn login(&self, _interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
+            Ok(OAuthCredential {
+                refresh: "refresh-1".into(),
+                access: "access-1".into(),
+                expires: 1_800_000_000_000,
+                extra: Default::default(),
+            })
+        }
+        async fn refresh(&self, _credential: &OAuthCredential, _signal: &std::sync::atomic::AtomicBool) -> Result<OAuthCredential, String> {
+            Err("not implemented".into())
+        }
+        fn to_auth(&self, credential: &OAuthCredential) -> Option<ModelAuth> {
+            Some(ModelAuth {
+                api_key: Some(credential.access.clone()),
+                base_url: Some("https://oauth-proxy.test".to_string()),
+                headers: None,
+            })
+        }
+    }
+
+    fn oauth_provider() -> Provider {
+        let stream = Arc::new(
+            |_model: &Model, _ctx: &Context, _options: Option<&StreamOptions>| {
+                crate::event_stream::create_error_stream("test", "test", "m1", "unused".to_string())
+            },
+        );
+        let stream_simple = Arc::new(
+            |_model: &Model, _ctx: &Context, _options: Option<&SimpleStreamOptions>| {
+                crate::event_stream::create_error_stream("test", "test", "m1", "unused".to_string())
+            },
+        );
+        create_provider(CreateProviderOptions {
+            id: "oauth-test".to_string(),
+            name: Some("OAuth Test".to_string()),
+            base_url: None,
+            headers: None,
+            auth: ProviderAuth {
+                api_key: None,
+                oauth: Some(Arc::new(TestOAuthAuth)),
+            },
+            models: vec![Model::new("m1", "M1", "test-api", "oauth-test")],
+            api: ProviderApiSpec::Single(ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }),
+            filter_models: None,
+        })
+    }
+
+    #[test]
+    fn get_auth_derives_request_auth_from_oauth_credential() {
+        let models = create_models(CreateModelsOptions::default());
+        models.set_provider(oauth_provider());
+        let cred = OAuthCredential {
+            refresh: "refresh-1".into(),
+            access: "access-1".into(),
+            expires: 1_800_000_000_000,
+            extra: Default::default(),
+        };
+        models.credentials.modify("oauth-test", &|_| Some(Credential::OAuth(cred.clone())));
+
+        let auth = models.get_auth("oauth-test", None).expect("oauth auth resolves");
+        assert_eq!(auth.source.as_deref(), Some("OAuth"));
+        assert_eq!(auth.auth.api_key.as_deref(), Some("access-1"));
+        assert_eq!(auth.auth.base_url.as_deref(), Some("https://oauth-proxy.test"));
+    }
+
+    #[test]
+    fn check_auth_reports_oauth_type() {
+        let models = create_models(CreateModelsOptions::default());
+        models.set_provider(oauth_provider());
+        let cred = OAuthCredential {
+            refresh: "r".into(),
+            access: "a".into(),
+            expires: 1_800_000_000_000,
+            extra: Default::default(),
+        };
+        models.credentials.modify("oauth-test", &|_| Some(Credential::OAuth(cred.clone())));
+        let check = models.check_auth("oauth-test").expect("auth check");
+        assert_eq!(check.auth_type, "oauth");
+        assert_eq!(check.source.as_deref(), Some("OAuth"));
+    }
+
+    #[test]
+    fn get_available_includes_oauth_provider() {
+        let models = create_models(CreateModelsOptions::default());
+        models.set_provider(oauth_provider());
+        let cred = OAuthCredential {
+            refresh: "r".into(),
+            access: "a".into(),
+            expires: 1_800_000_000_000,
+            extra: Default::default(),
+        };
+        models.credentials.modify("oauth-test", &|_| Some(Credential::OAuth(cred.clone())));
+        let available = models.get_available(Some("oauth-test"));
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].id, "m1");
+    }
+
+    #[test]
+    fn auth_prompt_and_event_shapes() {
+        let prompt = AuthPrompt::Text { message: "hi".into(), placeholder: None };
+        assert!(matches!(prompt, AuthPrompt::Text { .. }));
+        let event = AuthEvent::DeviceCode {
+            user_code: "ABCD".into(),
+            verification_uri: "https://x".into(),
+            interval_seconds: None,
+            expires_in_seconds: Some(60),
+        };
+        assert!(matches!(event, AuthEvent::DeviceCode { .. }));
     }
 }

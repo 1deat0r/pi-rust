@@ -23,6 +23,7 @@ regex = { workspace = true }
 sha2 = "0.10"
 ring = "0.17"
 crc32fast = "1"
+async-trait = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
