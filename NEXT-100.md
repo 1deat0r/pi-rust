@@ -256,8 +256,19 @@ Recut of the remaining work by user impact + risk:
 - [ ] 60. ConfigSelector snapshot tests.
 - [ ] 61. Full alt-screen screen-swap parity (save/restore around overlays).
 - [ ] 62. Alt-screen swap tmux probe.
-- [ ] 63. ICU word segmentation (replace regex word-nav with unicode parity).
-- [ ] 64. Word-segmentation tests (upstream cases).
+- [x] 63. ICU word segmentation (replace regex word-nav with unicode parity).
+      `word_navigation.rs` now segments each CJK ideograph as its own
+      word-like segment, matching upstream `Intl.Segmenter(undefined,
+      {granularity:"word"})` per-character ideographic stepping (the previous
+      port jumped the whole CJK run, a real backward-nav divergence from the
+      upstream oracle). Editor Ctrl+arrow word nav (editor.rs
+      find_word_backward/forward) picks this up automatically. Locale-aware
+      dictionary grouping (zh/ja word sense) remains non-reproducible and is
+      documented as such.
+- [x] 64. Word-segmentation tests (upstream cases). 18 word_navigation tests,
+      incl. the upstream CJK oracle translated to byte offsets: backward steps
+      17→13→9→6→3→0 through "你好世界 test"; forward steps per-char
+      0→3→6→9→12→17. Full pi-tui suite green.
 - [ ] 65. tmux `client_termfeatures` probe (feature detection parity).
 - [ ] 66. Terminal feature probe tests.
 - [x] 67. Token-total footer reads (usage totals → footer parity). Ported

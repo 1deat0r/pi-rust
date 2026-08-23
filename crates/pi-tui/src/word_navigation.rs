@@ -1,9 +1,13 @@
 //! Word navigation — port of `packages/tui/src/word-navigation.ts`.
 //!
 //! A Rust approximation of the upstream `Intl.Segmenter` word segmentation:
-//! whitespace runs, punctuation runs, CJK runs, and other word-like runs
-//! (letters/digits/script chars) each form one segment. `option::segment`
-//! can override segmentation (the editor uses it for paste-marker atomicity).
+//! whitespace runs, punctuation runs, and word-like runs each form one
+//! segment; each CJK ideograph forms its own word-like segment (upstream
+//! `Intl.Segmenter(undefined, {granularity: "word"})` steps ideographic text
+//! per character). Locale-aware dictionary grouping (e.g. `zh`/`ja` grouping
+//! 你好世界 into words) is locale/data-dependent and not reproduced here.
+//! `option::segment` can override segmentation (the editor uses it for
+//! paste-marker atomicity).
 
 use std::collections::VecDeque;
 
@@ -70,7 +74,9 @@ pub fn segment_text(text: &str) -> Vec<Segment> {
                     }
                 }
                 2 => {
-                    if !is_cjk_char(c) {
+                    // Each CJK ideograph forms its own word-like segment
+                    // (matches upstream per-character ideographic stepping).
+                    if i > start || !is_cjk_char(c) {
                         break;
                     }
                 }
@@ -317,16 +323,19 @@ mod tests {
     #[test]
     fn backward_cjk_mixed() {
         let text = "你好世界 test";
-        // Documented divergence: upstream uses ICU dictionary word
-        // segmentation (e.g. grouping "你好" and "世界"), which cannot be
-        // reproduced exactly. We group each contiguous CJK run as one
-        // word-like segment, so one backward move skips the whole run.
+        // Upstream `Intl.Segmenter(undefined, {granularity: "word"})` steps
+        // ideographic text per character (its oracle: "each CJK char a
+        // separate word-like segment"). Our byte offsets here:
+        //   你@0 好@3 世@6 界@9 space@12 test@13..16  (len 17)
         //
-        // text.len() is 17 bytes ("你好世界" = 12 bytes + " " + "test").
-        // "test" is one word-like segment: 17 -> 13.
+        // From the end, "test" is one word-like segment: 17 -> 13.
         assert_eq!(find_word_backward(text, text.len(), &opts()), 13);
-        // Backward again skips the trailing space and then the CJK run: 0.
-        assert_eq!(find_word_backward(text, 13, &opts()), 0);
+        // Backward then skips the trailing space and one ideograph at a time.
+        assert_eq!(find_word_backward(text, 13, &opts()), 9);
+        assert_eq!(find_word_backward(text, 9, &opts()), 6);
+        assert_eq!(find_word_backward(text, 6, &opts()), 3);
+        assert_eq!(find_word_backward(text, 3, &opts()), 0);
+        // A cursor mid-way inside an ideograph rounds down to the run start.
         assert_eq!(find_word_backward(text, 2, &opts()), 0);
     }
 
@@ -395,6 +404,20 @@ mod tests {
             pos = next;
         }
         assert_eq!(pos, text.len());
+    }
+
+    #[test]
+    fn forward_cjk_stepping_per_char() {
+        let text = "你好世界 test";
+        // Each ideograph steps one char: 你@0 -> 好@3 -> 世@6 -> 界@9 -> @12.
+        // From the run end, a forward move skips the space and "test" in one
+        // bound to @17.
+        assert_eq!(find_word_forward(text, 0, &opts()), 3);
+        assert_eq!(find_word_forward(text, 3, &opts()), 6);
+        assert_eq!(find_word_forward(text, 6, &opts()), 9);
+        assert_eq!(find_word_forward(text, 9, &opts()), 12);
+        assert_eq!(find_word_forward(text, 12, &opts()), 17);
+        assert_eq!(find_word_forward(text, 13, &opts()), 17);
     }
 
     #[test]
