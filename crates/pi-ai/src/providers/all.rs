@@ -678,7 +678,7 @@ mod tests {
     }
 
     #[cfg(test)]
-    static KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 
     #[test]
     fn anthropic_provider_streams_error_without_key() {
@@ -717,7 +717,7 @@ mod tests {
         // completions fallback or "no API implementation".
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
-            let _guard = KEY_LOCK.lock().unwrap();
+            let _guard = crate::utils::env_lock();
             std::env::remove_var("GEMINI_API_KEY");
             let provider = google_provider();
             let model = provider.models.first().cloned().unwrap();
@@ -741,7 +741,7 @@ mod tests {
         // completions adaptor's or "no API implementation".
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
-            let _guard = KEY_LOCK.lock().unwrap();
+            let _guard = crate::utils::env_lock();
             std::env::remove_var("OPENAI_API_KEY");
             let provider = openai_provider();
             let model = provider.models.first().cloned().unwrap();
@@ -759,6 +759,7 @@ mod tests {
     fn azure_provider_routes_through_azure_adaptor() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
+            let _guard = crate::utils::env_lock();
             std::env::remove_var("AZURE_OPENAI_API_KEY");
             let provider = azure_openai_responses_provider();
             let model = provider.models.first().cloned().unwrap();
@@ -777,7 +778,7 @@ mod tests {
         // error, not the openai-completions fallback or "no API implementation".
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
-            let _guard = KEY_LOCK.lock().unwrap();
+            let _guard = crate::utils::env_lock();
             std::env::remove_var("MISTRAL_API_KEY");
             let provider = mistral_provider();
             let model = provider.models.first().cloned().unwrap();
@@ -843,7 +844,7 @@ mod tests {
     fn amazon_bedrock_routes_through_bedrock_adaptor() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
-            let _guard = KEY_LOCK.lock().unwrap();
+            let _guard = crate::utils::env_lock();
             std::env::remove_var("AWS_ACCESS_KEY_ID");
             std::env::remove_var("AWS_SECRET_ACCESS_KEY");
             std::env::remove_var("AWS_BEARER_TOKEN_BEDROCK");
@@ -864,7 +865,7 @@ mod tests {
     fn google_vertex_routes_through_vertex_adaptor() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
-            let _guard = KEY_LOCK.lock().unwrap();
+            let _guard = crate::utils::env_lock();
             std::env::remove_var("GCLOUD_PROJECT");
             std::env::remove_var("GOOGLE_CLOUD_PROJECT");
             std::env::remove_var("GOOGLE_CLOUD_LOCATION");
@@ -883,7 +884,7 @@ mod tests {
     fn cloudflare_providers_require_account_credentials() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
-            let _guard = KEY_LOCK.lock().unwrap();
+            let _guard = crate::utils::env_lock();
             std::env::remove_var("CLOUDFLARE_API_KEY");
             std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
             std::env::remove_var("CLOUDFLARE_GATEWAY_ID");
@@ -919,7 +920,7 @@ mod tests {
     fn github_copilot_dispatches_by_model_api_and_streams() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
-            let _guard = KEY_LOCK.lock().unwrap();
+            let _guard = crate::utils::env_lock();
             std::env::remove_var("COPILOT_GITHUB_TOKEN");
             let provider = github_copilot_provider();
             let mut apis = std::collections::BTreeSet::new();
@@ -983,6 +984,7 @@ mod tests {
 
     #[test]
     fn builtin_models_facade_auth_gating() {
+        let _guard = crate::utils::env_lock();
         unsafe {
             std::env::remove_var("GEMINI_API_KEY");
         }

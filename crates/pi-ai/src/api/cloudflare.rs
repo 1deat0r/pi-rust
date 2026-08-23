@@ -306,6 +306,7 @@ mod tests {
 
     #[test]
     fn workers_ai_auth_resolves_key_and_account_env() {
+        let _guard = crate::utils::env_lock();
         let auth = CloudflareAuth { kind: CloudflareAuthKind::WorkersAi };
         let ctx = AuthContext::default();
         // Simulate ambient env with an injected AuthContext.
@@ -320,6 +321,7 @@ mod tests {
 
     #[test]
     fn workers_ai_auth_fails_without_account_id() {
+        let _guard = crate::utils::env_lock();
         let auth = CloudflareAuth { kind: CloudflareAuthKind::WorkersAi };
         let ctx = AuthContext::default();
         unsafe { std::env::set_var("CLOUDFLARE_API_KEY", "k"); std::env::remove_var("CLOUDFLARE_ACCOUNT_ID"); }
@@ -330,6 +332,7 @@ mod tests {
 
     #[test]
     fn ai_gateway_auth_sets_cf_aig_authorization_headers() {
+        let _guard = crate::utils::env_lock();
         let auth = CloudflareAuth { kind: CloudflareAuthKind::AiGateway };
         let ctx = AuthContext::default();
         unsafe {
@@ -355,6 +358,7 @@ mod tests {
 
     #[test]
     fn stored_credential_wins_over_ambient_env() {
+        let _guard = crate::utils::env_lock();
         let auth = CloudflareAuth { kind: CloudflareAuthKind::WorkersAi };
         let ctx = AuthContext::default();
         unsafe { std::env::set_var("CLOUDFLARE_API_KEY", "ambient"); }

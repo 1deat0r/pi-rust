@@ -2191,7 +2191,7 @@ mod tests {
 
     #[test]
     fn endpoint_resolution_prefers_custom_and_region() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::utils::env_lock();
         let model = base_model();
         let options = BedrockOptions::default();
         let config = resolve_config(&model, &options, None).unwrap();
@@ -2205,11 +2205,9 @@ mod tests {
         assert_eq!(config.endpoint, "https://bedrock-vpc.example.com");
     }
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn endpoint_resolution_uses_configured_region_for_standard_endpoint() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::utils::env_lock();
         let model = base_model();
         unsafe { std::env::set_var("AWS_REGION", "us-east-2"); }
         let config = resolve_config(&model, &BedrockOptions::default(), None).unwrap();
@@ -2242,6 +2240,7 @@ mod tests {
 
     #[test]
     fn ambient_credentials_loaded() {
+        let _guard = crate::utils::env_lock();
         let model = base_model();
         unsafe {
             std::env::set_var("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE");
@@ -2547,6 +2546,7 @@ mod profile_credentials_tests {
 
     #[test]
     fn reads_default_profile_without_profile_arg() {
+        let _guard = crate::utils::env_lock();
         let file = write_credentials("default",
             "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n",
         );
@@ -2561,6 +2561,7 @@ mod profile_credentials_tests {
 
     #[test]
     fn reads_named_profile_and_session_token() {
+        let _guard = crate::utils::env_lock();
         let file = write_credentials("staging",
             "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n\n[staging]\naws_access_key_id = AKIASTAGING\naws_secret_access_key = stagingsecret\naws_session_token = tok123\n",
         );
@@ -2575,6 +2576,7 @@ mod profile_credentials_tests {
 
     #[test]
     fn returns_none_for_unknown_profile() {
+        let _guard = crate::utils::env_lock();
         let file = write_credentials("unknown", "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n");
         unsafe { std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file) };
         assert!(aws_profile_credentials(Some("missing"), None).is_none());
@@ -2584,6 +2586,7 @@ mod profile_credentials_tests {
 
     #[test]
     fn env_keys_win_over_profile_file() {
+        let _guard = crate::utils::env_lock();
         let file = write_credentials("unknown", "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n");
         unsafe {
             std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file);
