@@ -192,7 +192,23 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         (model, stream_fn)
     };
 
-    let system_prompt = args.system_prompt.clone().unwrap_or_default();
+    let system_prompt = args
+        .system_prompt
+        .clone()
+        .unwrap_or_default();
+
+    // Assemble the run-path system prompt from the loaded resources: the base
+    // `--system-prompt`, the `<available_skills>` block, and any appended
+    // system-prompt inputs (upstream `DefaultResourceLoader.reload` +
+    // `system-prompt.ts` wiring).
+    let skills_block = build_skills_block(args, &cwd, &agent_dir, &settings);
+    let mut system_prompt = format!("{system_prompt}\n{skills_block}");
+    let system_prompt_trimmed = system_prompt.trim().to_string();
+    system_prompt = system_prompt_trimmed;
+    for append in &args.append_system_prompt {
+        let resolved = resolve_prompt_input(append, "append system prompt");
+        system_prompt = format!("{system_prompt}\n{resolved}");
+    }
 
     // Register built-in tools (bash/read/write/edit + ls/find/grep) unless
     // --no-tools.
@@ -220,13 +236,17 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     };
 
     let mut events: Vec<pi_agent::agent::AgentEvent> = Vec::new();
+    // Expand `/template` prompt-template invocations in positional messages
+    // (upstream `expandPromptTemplate`).
+    let prompt_templates = load_prompt_templates_for_run(args, &cwd, &agent_dir);
     // Print mode prompts each positional message as its own sequential turn
     // (upstream `runPrintMode`: `for (const message of messages) { await
     // session.prompt(message); }`). Each turn's messages fold into the agent
     // context so a later prompt observes earlier turns.
     let mut all_messages: Vec<pi_agent::types::AgentMessage> = Vec::new();
     for text in &args.messages {
-        let prompt = pi_agent::agent::user_text_prompt(text.clone(), pi_ai::types::now_ms());
+        let expanded = crate::core::prompt_templates::expand_prompt_template(text, &prompt_templates);
+        let prompt = pi_agent::agent::user_text_prompt(expanded, pi_ai::types::now_ms());
         let turn_messages =
             run_agent_loop(vec![prompt], &mut context, &cfg, &mut |e| events.push(e)).await;
         context.messages.extend(turn_messages.iter().cloned());
@@ -319,6 +339,72 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     Ok(RunOutcome { final_text, session_path })
 }
 
+/// If `input` is an existing file path, read its contents (stripping a BOM);
+/// otherwise return the input verbatim (upstream `resolvePromptInput`).
+fn resolve_prompt_input(input: &str, description: &str) -> String {
+    let expanded = config::expand_tilde_path(input);
+    let path = std::path::Path::new(&expanded);
+    if path.is_file() {
+        match std::fs::read_to_string(path) {
+            Ok(content) => return content.trim_start_matches('\u{feff}').to_string(),
+            Err(e) => {
+                tracing::warn!("could not read {description} file {input}: {e}");
+                return input.to_string();
+            }
+        }
+    }
+    input.to_string()
+}
+
+/// Load skills (user + project + `--skill`) and render the `<available_skills>`
+/// system-prompt block, marking `-ns` disabled. Surfaces load diagnostics as
+/// warnings.
+fn build_skills_block(args: &Args, cwd: &str, agent_dir: &std::path::Path, settings: &SettingsManager) -> String {
+    if args.no_skills {
+        return String::new();
+    }
+    // Settings `skills` key provides additional custom skill dirs (upstream
+    // `settings.skills` → skill paths).
+    let mut skill_paths: Vec<String> = settings.get_skill_paths();
+    skill_paths.extend(args.skills.iter().cloned());
+    let result = crate::core::skills::load_skills(crate::core::skills::LoadSkillsOptions {
+        cwd: cwd.to_string(),
+        agent_dir: agent_dir.display().to_string(),
+        skill_paths,
+    });
+    for diagnostic in &result.1 {
+        tracing::warn!(
+            path = ?diagnostic.path,
+            message = %diagnostic.message,
+            "skill load diagnostic"
+        );
+    }
+    crate::core::skills::format_skills_for_prompt(&result.0)
+}
+
+/// Load prompt templates (user + project + `--prompt-template`) for run-path
+/// expansion, marking `-np` / `-npt` disabled.
+fn load_prompt_templates_for_run(args: &Args, cwd: &str, agent_dir: &std::path::Path) -> Vec<crate::core::prompt_templates::PromptTemplate> {
+    if args.no_prompt_templates {
+        return Vec::new();
+    }
+    let (templates, diagnostics) = crate::core::prompt_templates::load_prompt_templates(
+        cwd,
+        &agent_dir.display().to_string(),
+        &args.prompt_templates,
+        true,
+        args.no_prompt_templates,
+    );
+    for diagnostic in &diagnostics {
+        tracing::warn!(
+            path = ?diagnostic.path,
+            message = %diagnostic.message,
+            "prompt template load diagnostic"
+        );
+    }
+    templates
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -374,6 +460,52 @@ mod tests {
         assert_eq!(model, None);
         let model = resolve_run_model(Some("faux-2"), &settings, false);
         assert_eq!(model.as_deref(), Some("faux-2"));
+    }
+
+    #[test]
+    fn build_skills_block_lists_loaded_skills() {
+        let root = std::env::temp_dir().join(format!("pi-run-skills-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let agent = root.join("agent");
+        std::fs::create_dir_all(agent.join("skills/my-skill")).unwrap();
+        std::fs::write(
+            agent.join("skills/my-skill/SKILL.md"),
+            "---\nname: my-skill\ndescription: A test skill\n---\nbody",
+        )
+        .unwrap();
+        let cwd = root.to_string_lossy().into_owned();
+        let settings = SettingsManager::in_memory(SettingsMap::new());
+        let args = Args::default();
+        let block = build_skills_block(&args, &cwd, &agent, &settings);
+        assert!(block.contains("<available_skills>"));
+        assert!(block.contains("<name>my-skill</name>"));
+        assert!(!block.contains("disabled"), "no disabled skill");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn build_skills_block_empty_on_no_skills() {
+        let root = std::env::temp_dir().join(format!("pi-run-noskills-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let settings = SettingsManager::in_memory(SettingsMap::new());
+        let mut args = Args::default();
+        args.no_skills = true;
+        let block = build_skills_block(&args, &root.to_string_lossy(), &root, &settings);
+        assert_eq!(block, "");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn resolve_prompt_input_reads_file_or_passes_through() {
+        let root = std::env::temp_dir().join(format!("pi-run-promptin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("append.md");
+        std::fs::write(&file, "appended content").unwrap();
+        assert_eq!(resolve_prompt_input(&file.to_string_lossy(), "append system prompt"), "appended content");
+        assert_eq!(resolve_prompt_input("inline text", "append system prompt"), "inline text");
+        std::fs::remove_dir_all(&root).ok();
     }
 }
 

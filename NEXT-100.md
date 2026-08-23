@@ -69,6 +69,37 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
 - T8  Evals, packaging, parity suite
 - T9  Final 100% verification pass
 
+## Recut (2026-08-23) — priority + goal framing (by operator request)
+
+Goal: **behavioral 1:1 parity of the `pi` CLI product** (what a user of `pi`
+experiences), not crate-for-crate structural copying.
+
+Decisive evidence from a live audit:
+- The real binary (`pi-coding-agent`, `bin = "pi"`) does **not** depend on
+  `pi-server`/`pi-client`; `run.rs:231` runs `pi_agent::agent::run_agent_loop`
+  **in-process**. This is a deliberate, behaviorally-faithful divergence.
+- Upstream only uses `@earendil-works/pi-client` from `extensions/llama/*` and
+  `client/remote-session.ts` — the Llama extension + remote-session driver,
+  **not** the core CLI loop. So pi-rust's in-process loop matches the real CLI.
+- Therefore `pi-server`/`pi-client` is an **auxiliary subsystem** (no shipped
+  binary links it; only pi-server's own dev-deps test it). `T4` hardens it.
+
+Recut of the remaining work by user impact + risk:
+1. **T6 gap-audit first** (highest value): convert to *verify-then-port* — many
+   listed modules already exist in `pi-agent`/`pi-coding-agent` (skills, system-
+   prompt, prompt-templates, project-trust, settings, rpc). Real deliverable is
+   **wiring** them into the run path, not re-porting the loaders.
+2. **T5 TUI polish** second: config selector, alt-screen full swap, word-nav,
+   feature probes, footer totals, editor IME, slash-command E2E.
+3. **T7 product surfaces** third: `pi update`, session tree, export_html,
+   negative-usage edge. RPC-edge audits after the visible surfaces.
+4. **T4 #52-58 reclassified: OPTIONAL/DEFERRED auxiliary** — a separate
+   "server/client as a library" milestone, clearly off the CLI path. Only
+   restart if the goal becomes structural parity (i.e. wire `pi-coding-agent` →
+   `pi-client`), which is a distinct prerequisite the plan never listed.
+5. **T8/T9 stay last**: ledger, parity-suite, release-build, final 100% audit
+   (many of #100's criteria are already true today).
+
 ---
 
 ## T0 — Land the in-flight working tree (fix first — it's red)
@@ -200,7 +231,12 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
       tracing-subscriber span instrumentation (orthogonal to upstream's
       actual `PI_TELEMETRY` semantics).
 
-## T4 — Server/client completion (P6 concurrency)
+## T4 — Server/client completion (P6 concurrency) — OPTIONAL / DEFERRED auxiliary
+
+> Reclassified 2026-08-23: `pi-server`/`pi-client` is an auxiliary subsystem the
+> `pi` binary does not link (run loop is in-process). These harden that path but
+> advance no user-facing CLI parity. Defer behind T6/T5/T7 unless the goal
+> becomes structural parity (see "Recut" preamble). Items kept as-is for tracking.
 
 - [x] 49. `LiveSessionManager`: acquire/release exclusivity + attach/detach
       validation on server.
@@ -233,14 +269,29 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
 
 - [ ] 71. Audit `core/bash-executor.ts` + `exec.ts` vs agent bash tool; port
       shell-capture/output-truncation parity where missing.
-- [ ] 72. Port `core/system-prompt.ts` wiring into run context.
-- [ ] 73. Port `core/skills.ts` loader into run path (`--skill`, `-ns`, `.pi/skills`).
-- [ ] 74. Port `core/prompt-templates.ts` + `resource-loader.ts` into run path.
+- [x] 72. Port `core/system-prompt.ts` wiring into run context — run.rs now
+      assembles the system prompt from `--system-prompt` base + the skills
+      `<available_skills>` block + `--append-system-prompt` inputs (files read
+      verbatim, inline text used as-is).
+- [x] 73. Port `core/skills.ts` loader into run path (`--skill`, `-ns`,
+      `.pi/skills`, `<agentDir>/skills`, settings `skills` key). New
+      `core/skills.rs`: recursive dir loader honoring `.gitignore`/`.ignore`/
+      `.fdignore`, name/description validation, name-collision dedup with
+      winner/loser diagnostics, `formatSkillsForPrompt` `<available_skills>`
+      block (the `-ns`/`-s` flips gate loading).
+- [x] 74. Port `core/prompt-templates.ts` + `resource-loader.ts` into run path
+      (`--prompt-template`, `-np`, `.pi/prompts`, `<agentDir>/prompts`). New
+      `core/prompt_templates.rs`: `loadPromptTemplates`, `parseCommandArgs`,
+      `substituteArgs` (`$1`/`$@`/`${N:-d}`/`${@:N[:L]}`), and
+      `expandPromptTemplate` — run.rs expands `/template` positional messages.
 - [ ] 75. Port `core/http-dispatcher.ts` / proxy behavior if not covered.
 - [ ] 76. Port `core/session-cwd.ts` semantics (interactive + RPC).
 - [ ] 77. Port `core/cache-stats.ts` + `timings.ts` into usage totals/footer.
 - [ ] 78. Port `core/auth-guidance.ts` messages parity.
-- [ ] 79. Port `core/settings-diagnostics.ts` + `diagnostics.ts`.
+- [x] 79. Port `core/settings-diagnostics.ts` + `diagnostics.ts` — the
+      `ResourceDiagnostic`/`ResourceCollision` types landed in new
+      `core/diagnostics.rs` (warning/error/collision kinds); skills +
+      prompt-template loaders emit them and run.rs surfaces them as warnings.
 - [ ] 80. Extended-messages + provider-composer edge audits with tests.
 
 ## T7 — Data model, session tree, export, RPC edge parity
