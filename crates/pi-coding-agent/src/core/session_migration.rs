@@ -259,3 +259,256 @@ mod tests {
         assert!(assert_valid_session_id("a b").is_err());
     }
 }
+
+// ---------------------------------------------------------------------------
+// v3 → v4 conversion (legacy session file -> harness JSONL repo format)
+// ---------------------------------------------------------------------------
+
+/// Parse an ISO-8601 timestamp (e.g. "2026-08-22T00:00:01.000Z") into epoch
+/// milliseconds. Falls back to `now_ms` when unparseable.
+fn iso_timestamp_to_ms(value: &Value, now_ms: u64) -> u64 {
+    let Some(s) = value.as_str() else { return now_ms };
+    let s = s.trim();
+    // Bare epoch-seconds / epoch-ms numbers.
+    if let Ok(ms) = s.parse::<u64>() {
+        return ms;
+    }
+    // YYYY-MM-DDTHH:MM:SS[.fff]Z (UTC only; the legacy format is always Z).
+    let digits: Vec<u64> = s
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .map(|c| c.to_digit(10).unwrap_or(0) as u64)
+        .collect();
+    if digits.len() < 14 {
+        return now_ms;
+    }
+    let y = digits[0] * 1000 + digits[1] * 100 + digits[2] * 10 + digits[3];
+    let mo = digits[4] * 10 + digits[5];
+    let d = digits[6] * 10 + digits[7];
+    let h = digits[8] * 10 + digits[9];
+    let mi = digits[10] * 10 + digits[11];
+    let se = digits[12] * 10 + digits[13];
+    let millis = if digits.len() > 14 { digits[14] * 100 + digits.get(15).copied().unwrap_or(0) * 10 + digits.get(16).copied().unwrap_or(0) } else { 0 };
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+        return now_ms;
+    }
+    // Days since epoch for the given date (proleptic Gregorian).
+    let days = days_from_civil(y, mo, d);
+    let secs = days * 86_400 + h as i64 * 3_600 + mi as i64 * 60 + se as i64;
+    (secs as u64).saturating_mul(1000).saturating_add(millis)
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
+/// algorithm).
+fn days_from_civil(y: u64, m: u64, d: u64) -> i64 {
+    let y = y as i64;
+    let m = m as i64;
+    let d = d as i64;
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Convert a legacy (v1–v3) session file into the v4 harness JSONL format.
+/// Returns the v4 file content (header + entries). The legacy header's
+/// `type:"session"` becomes `kind:"header"`; message entries gain
+/// `kind:"entry"`, `lane:"main"`, and a `seq`; ISO timestamps become epoch
+/// ms. Non-message entries (model_change, thinking_level_change, ...) are
+/// carried through with the same shape.
+pub fn convert_legacy_to_v4(content: &str) -> Result<String, String> {
+    let mut entries = parse_session_entries(content);
+    if entries.is_empty() {
+        return Err("session file is empty".to_string());
+    }
+    migrate_session_entries(&mut entries);
+
+    let now_ms = pi_ai::types::now_ms();
+    let header = entries.remove(0);
+    let id = header
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "session header is missing id".to_string())?
+        .to_string();
+    let cwd = header
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let created_at = iso_timestamp_to_ms(header.get("timestamp").unwrap_or(&Value::Null), now_ms);
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{}\n",
+        serde_json::json!({
+            "kind": "header",
+            "version": 4,
+            "id": id,
+            "createdAt": created_at,
+            "cwd": cwd,
+        })
+    ));
+
+    let mut seq = 0u64;
+    for entry in entries {
+        seq += 1;
+        let entry_type = entry
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("message")
+            .to_string();
+        let entry_id = entry
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("m-{}", uuid::Uuid::new_v4()));
+        let parent_id = entry.get("parentId").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let timestamp = iso_timestamp_to_ms(entry.get("timestamp").unwrap_or(&Value::Null), now_ms);
+
+        let mut v4_entry = serde_json::Map::new();
+        v4_entry.insert("kind".to_string(), serde_json::json!("entry"));
+        v4_entry.insert("lane".to_string(), serde_json::json!("main"));
+        v4_entry.insert("type".to_string(), serde_json::json!(entry_type));
+        v4_entry.insert("id".to_string(), serde_json::json!(entry_id));
+        v4_entry.insert("seq".to_string(), serde_json::json!(seq));
+        match parent_id {
+            Some(pid) => {
+                v4_entry.insert("parentId".to_string(), serde_json::json!(pid));
+            }
+            None => {
+                v4_entry.insert("parentId".to_string(), Value::Null);
+            }
+        }
+        v4_entry.insert("timestamp".to_string(), serde_json::json!(timestamp));
+        // Carry the message payload (or custom data) through. The v4 message
+        // payload requires a `timestamp` (epoch ms) on user/assistant/toolResult
+        // messages; legacy files may omit it, so inject the entry timestamp.
+        for key in ["message", "customType", "data", "summary", "retainedTail", "tokensBefore", "details", "usage", "provider", "modelId", "thinkingLevel", "activeToolNames"] {
+            if let Some(value) = entry.get(key) {
+                let mut value = value.clone();
+                if key == "message" {
+                    if let Some(obj) = value.as_object_mut() {
+                        if !obj.contains_key("timestamp") {
+                            obj.insert("timestamp".to_string(), serde_json::json!(timestamp));
+                        }
+                    }
+                }
+                v4_entry.insert(key.to_string(), value);
+            }
+        }
+        out.push_str(&format!("{}\n", serde_json::Value::Object(v4_entry)));
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod v4_conversion_tests {
+    use super::*;
+
+    fn v3_file() -> String {
+        [
+            r#"{"type":"session","version":3,"id":"sess-legacy","timestamp":"2026-08-22T00:00:00.000Z","cwd":"/tmp"}"#,
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-08-22T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#,
+            r#"{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-08-22T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}"#,
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn converts_v3_header_and_entries_to_v4() {
+        let v4 = convert_legacy_to_v4(&v3_file()).unwrap();
+        let lines: Vec<&str> = v4.trim().split('\n').collect();
+        assert_eq!(lines.len(), 3);
+        let header: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(header["kind"], "header");
+        assert_eq!(header["version"], 4);
+        assert_eq!(header["id"], "sess-legacy");
+        assert_eq!(header["createdAt"].as_u64().unwrap(), 1_787_356_800_000);
+        let entry1: Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(entry1["kind"], "entry");
+        assert_eq!(entry1["lane"], "main");
+        assert_eq!(entry1["seq"], 1);
+        assert_eq!(entry1["type"], "message");
+        assert_eq!(entry1["message"]["content"][0]["text"], "hello");
+        let entry2: Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(entry2["seq"], 2);
+        assert_eq!(entry2["parentId"], "m1");
+    }
+
+    #[test]
+    fn migrates_v1_entries_before_conversion() {
+        let v1 = [
+            r#"{"type":"session","id":"s1","timestamp":"2026-08-22T00:00:00.000Z","cwd":"/tmp"}"#,
+            r#"{"type":"message","timestamp":"2026-08-22T00:00:01.000Z","message":{"role":"user","content":"hi"}}"#,
+        ]
+        .join("\n");
+        let v4 = convert_legacy_to_v4(&v1).unwrap();
+        let lines: Vec<&str> = v4.trim().split('\n').collect();
+        let header: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(header["version"], 4);
+        let entry: Value = serde_json::from_str(lines[1]).unwrap();
+        assert!(entry["id"].as_str().is_some(), "v1 entries gain ids");
+        assert_eq!(entry["kind"], "entry");
+    }
+
+    #[test]
+    fn empty_file_errors() {
+        assert!(convert_legacy_to_v4("").is_err());
+    }
+}
+
+#[cfg(test)]
+mod repo_integration_tests {
+    use super::*;
+    use pi_agent::fs::StdFileSystem;
+    use pi_agent::session::jsonl::repo::JsonlSessionRepo;
+
+    #[tokio::test]
+    async fn converted_v4_file_opens_in_the_repo() {
+        let root = std::env::temp_dir().join(format!("pi-migrate-repo-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let v3 = [
+            r#"{"type":"session","version":3,"id":"sess-legacy","timestamp":"2026-08-22T00:00:00.000Z","cwd":"/tmp"}"#,
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-08-22T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#,
+            r#"{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-08-22T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}"#,
+        ]
+        .join("\n");
+        let v4 = convert_legacy_to_v4(&v3).unwrap();
+        let session_root = root.join("sessions");
+        std::fs::create_dir_all(&session_root).unwrap();
+        let path = session_root.join("imported-sess-legacy.jsonl");
+        std::fs::write(&path, &v4).unwrap();
+
+        let mut repo = JsonlSessionRepo::new(StdFileSystem::new("/tmp"), session_root.to_string_lossy().into_owned());
+        let metadata = pi_agent::session::types::SessionMetadata {
+            id: "sess-legacy".to_string(),
+            created_at: 0,
+            cwd: "/tmp".to_string(),
+            path: path.to_string_lossy().into_owned(),
+            modified_at: 0,
+            source_format: 4,
+            parent_session_id: None,
+            legacy_parent_session_path: None,
+            metadata: None,
+        };
+        let session = repo.open(&metadata).await.expect("repo opens converted v4 file");
+        let entries = session
+            .find_entries(&pi_agent::session::state::EntryQuery {
+                order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
+                id: None,
+                entry_type: None,
+                custom_type: None,
+                cursor: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 2, "both messages imported");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

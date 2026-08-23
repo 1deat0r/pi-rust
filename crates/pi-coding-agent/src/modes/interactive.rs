@@ -959,12 +959,48 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                         status_banner = format!("invalid session file: {path}");
                                                     }
                                                     Some(header_id) => {
-                                                        import_path = Some(path.to_string());
+                                                        // Legacy (v1-v3) files are converted to the v4
+                                                        // harness JSONL format and written into the
+                                                        // session dir before opening (upstream
+                                                        // session-manager migration path).
+                                                        let first_line = content.lines().next().unwrap_or("");
+                                                        let is_v4 = serde_json::from_str::<serde_json::Value>(first_line)
+                                                            .ok()
+                                                            .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string()))
+                                                            == Some("header".to_string());
+                                                        let resolved_path: Option<String> = if is_v4 {
+                                                            Some(path.to_string())
+                                                        } else {
+                                                            match crate::core::session_migration::convert_legacy_to_v4(&content) {
+                                                                Ok(v4_content) => {
+                                                                    let session_root = config::get_session_dir().to_string_lossy().into_owned();
+                                                                    let _ = std::fs::create_dir_all(&session_root);
+                                                                    let converted = std::path::Path::new(&session_root)
+                                                                        .join(format!("imported-{header_id}.jsonl"));
+                                                                    match std::fs::write(&converted, v4_content) {
+                                                                        Ok(()) => Some(converted.to_string_lossy().into_owned()),
+                                                                        Err(e) => {
+                                                                            status_banner = format!("import failed: {e}");
+                                                                            None
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Err(e) => {
+                                                                    status_banner = format!("import failed: {e}");
+                                                                    None
+                                                                }
+                                                            }
+                                                        };
+                                                        let Some(resolved_path) = resolved_path else {
+                                                            import_path = None;
+                                                            return Ok(());
+                                                        };
+                                                        import_path = Some(resolved_path.clone());
                                                         let metadata = pi_agent::session::types::SessionMetadata {
                                                             id: header_id,
                                                             created_at: 0,
                                                             cwd: runtime.cwd.clone(),
-                                                            path: path.to_string(),
+                                                            path: resolved_path,
                                                             modified_at: 0,
                                                             source_format: 4,
                                                             parent_session_id: None,
