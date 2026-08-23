@@ -5,5 +5,6 @@
 
 pub mod interactive;
 pub mod jsonl;
+pub mod json_event;
 pub mod rpc;
 pub mod rpc_types;

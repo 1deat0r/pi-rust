@@ -51,6 +51,21 @@ async fn main() {
                 }
                 return;
             }
+            // --mode json: JSON event stream over stdout.
+            if args.mode.as_deref() == Some("json") {
+                let cwd = pi_coding_agent::config::cwd();
+                let agent_dir = pi_coding_agent::config::get_agent_dir();
+                let settings = pi_coding_agent::core::settings::SettingsManager::create(
+                    &cwd,
+                    &agent_dir.display().to_string(),
+                    pi_coding_agent::core::settings::SettingsManagerCreateOptions::default(),
+                );
+                if let Err(err) = pi_coding_agent::modes::json_event::run_json_mode(&args, settings).await {
+                    eprintln!("Error: {err}");
+                    std::process::exit(1);
+                }
+                return;
+            }
             // --mode rpc: headless JSONL protocol over stdio.
             if args.mode.as_deref() == Some("rpc") {
                 let cwd = pi_coding_agent::config::cwd();

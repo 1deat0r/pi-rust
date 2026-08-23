@@ -446,9 +446,11 @@ mod tests {
         let lines: Vec<String> = out.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect();
         assert_eq!(lines.len(), 2, "got: {out:?}");
         // rg traversal order across matching files is not contractual; with
-        // limit=1 the single hit may be either main.rs or lib.rs.
+        // limit=1 the single hit may be any of the three TODO files.
         assert!(
-            lines[0] == "src/main.rs:1: TODO: add feature" || lines[0] == "src/lib.rs:1: const TODO: u32 = 1;",
+            lines[0] == "src/main.rs:1: TODO: add feature"
+                || lines[0] == "src/lib.rs:1: const TODO: u32 = 1;"
+                || lines[0] == "notes.md:1: TODO in markdown",
             "unexpected first match: {:?}; got: {out:?}",
             lines[0]
         );

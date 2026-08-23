@@ -452,12 +452,9 @@ mod tests {
         }
     }
 
-    // Env-mutating tests must not race in the parallel test harness.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn deployment_name_from_map_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::utils::env_lock();
         unsafe { std::env::set_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP", "gpt-5=my-deploy-1, gpt-5-mini = my-mini"); }
         let m = model("gpt-5");
         let name = resolve_deployment_name(&m, &AzureOpenAIResponsesOptions::default());
@@ -467,7 +464,7 @@ mod tests {
 
     #[test]
     fn deployment_name_defaults_to_model_id() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::utils::env_lock();
         unsafe { std::env::remove_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP"); }
         let m = model("gpt-5");
         let name = resolve_deployment_name(&m, &AzureOpenAIResponsesOptions::default());
@@ -493,6 +490,7 @@ mod tests {
 
     #[test]
     fn params_shape_uses_deployment() {
+        let _guard = crate::utils::env_lock();
         let m = model("gpt-5");
         unsafe { std::env::remove_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP"); }
         let params = build_params(&m, &ctx(), &AzureOpenAIResponsesOptions::default(), "gpt-5");
@@ -504,6 +502,7 @@ mod tests {
 
     #[test]
     fn stream_missing_key_is_terminal_error() {
+        let _guard = crate::utils::env_lock();
         let m = model("gpt-5");
         unsafe { std::env::remove_var("AZURE_OPENAI_API_KEY"); }
         let s = stream(&m, &Context::default(), reqwest::Client::new(), None, &AzureOpenAIResponsesOptions::default());

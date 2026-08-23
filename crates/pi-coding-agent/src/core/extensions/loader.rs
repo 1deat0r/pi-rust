@@ -485,31 +485,26 @@ mod tests {
 
     #[test]
     fn execute_extension_with_fake_node() {
-        // Fake `node` on PATH: a script that records its argv and exits 0.
+        // Fake `node`: a script that records its argv and exits 0.
         let dir = sandbox("fake");
         let entry = dir.join("index.ts");
         fs::write(&entry, "export default () => {}").unwrap();
         let bin = sandbox("bin");
         let node_path = bin.join("node");
-        fs::write(
-            &node_path,
-            "#!/bin/sh\nprintf '%s' \"$1\" > \"$FAKE_NODE_LOG\"\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&node_path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
         let log_path = bin.join("log");
         let script = format!(
             "#!/bin/sh\nprintf '%s' \"$1\" > \"{}\"\n",
             log_path.display()
         );
         fs::write(&node_path, &script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&node_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
 
         let result = run_external_extension("index.ts", &entry, Some(node_path.to_str().unwrap()), None);
-        assert!(result.is_ok(), "result was an error");
+        assert!(result.is_ok(), "result was an error: {result:?}");
         let extension = result.unwrap();
         assert_eq!(extension.path, "index.ts");
         // The arg protocol is `node <resolved entry>`.

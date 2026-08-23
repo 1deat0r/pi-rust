@@ -133,26 +133,26 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
 
 ## T3 — coding-agent run-path parity
 
-- [ ] 33. Wire auto-compaction into run path (settings threshold → compact →
+- [x] 33. Wire auto-compaction into run path (settings threshold → compact →
       continue; upstream `core/compaction/` loop).
-- [ ] 34. Binary-level auto-compaction test (JSONL gains compaction entry). (mock)
-- [ ] 35. Port `core/messages.ts` extended-message wiring
+- [x] 34. Binary-level auto-compaction test (JSONL gains compaction entry). (mock)
+- [x] 35. Port `core/messages.ts` extended-message wiring
       (BashExecutionMessage/CustomMessage reach provider in run.rs).
-- [ ] 36. v3→v4 legacy session import in coding-agent session runtime
+- [x] 36. v3→v4 legacy session import in coding-agent session runtime
       (upstream `session-manager.ts`); `/import` conversion parity.
-- [ ] 37. v3→v4 migration tests using fixture v3 JSONL files.
-- [ ] 38. models.json runtime merge: file-backed `models_store.rs` load merged
+- [x] 37. v3→v4 migration tests using fixture v3 JSONL files.
+- [x] 38. models.json runtime merge: file-backed `models_store.rs` load merged
       over bundled catalog; `applyModelsJson` wiring in run path.
-- [ ] 39. models.json merge tests (override, compat, bad-json error).
-- [ ] 40. Port `core/project-trust.ts` + `trust-manager.ts` into CLI path
+- [x] 39. models.json merge tests (override, compat, bad-json error).
+- [x] 40. Port `core/project-trust.ts` + `trust-manager.ts` into CLI path
       (`-a/-na`, defaultProjectTrust, `.pi/trust`).
-- [ ] 41. Project-trust binary tests (untrusted dir tool gating). (mock)
+- [x] 41. Project-trust binary tests (untrusted dir tool gating). (mock)
 - [ ] 42. Print-mode parity audit (`modes/print-mode.ts`): `--steer`,
       `--follow-up`, `--compact`, quietStartup, initialMessage.
 - [ ] 43. Port missing print-mode flags + output-formatting parity.
-- [ ] 44. Port JSON-event mode `modes/json-event.ts` → `modes/json_event.rs`
+- [x] 44. Port JSON-event mode `modes/json-event.ts` → `modes/json_event.rs`
       (`--mode json`), event-envelope parity.
-- [ ] 45. JSON-event tests (fixture transcripts).
+- [x] 45. JSON-event tests (fixture transcripts).
 - [ ] 46. Remaining CLI flags: `-nbt`, `-e/--extension`, `-ne/--no-extensions`,
       `--skill`, `-ns`, `--prompt-template`, `-np`, `--theme`, `--use-theme`,
       `--no-themes`, `-nc`, `-a/--approve`, `-na`, `--fork`.
