@@ -701,21 +701,35 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             it::selectors::SelectorAction::Select(Some(idx)) if idx < guard.count() => {
                                 if let Some(item) = guard.selected_item() {
                                     if let Some(meta) = sessions.iter().find(|s| s.id == item.value) {
-                                        match runtime.repo.open(&meta.metadata).await {
-                                            Ok(session) => {
-                                                runtime.session = session;
-                                                runtime.session_id = meta.id.clone();
-                                                runtime.session_name = None;
-                                                runtime.messages = rehydrate_transcript(&runtime, &transcript_md, hide_thinking).await;
-                                                runtime.persisted_until = runtime.messages.len();
-                                                status_banner = format!(
-                                                    "resumed session {} ({} prior messages)",
-                                                    meta.id.get(..8).unwrap_or(&meta.id),
-                                                    runtime.messages.len()
-                                                );
-                                            }
-                                            Err(e) => {
-                                                status_banner = format!("resume failed: {e}");
+                                        // Refuse to resume a session whose stored cwd
+                                        // no longer exists (upstream session-cwd.ts).
+                                        let cwd_now = std::env::current_dir()
+                                            .map(|p| p.to_string_lossy().into_owned())
+                                            .unwrap_or_default();
+                                        let issue = crate::core::session_cwd::get_missing_session_cwd_issue(
+                                            Some(&meta.metadata.path),
+                                            &meta.metadata.cwd,
+                                            &cwd_now,
+                                        );
+                                        if let Some(issue) = issue {
+                                            status_banner = crate::core::session_cwd::format_missing_session_cwd_error(&issue);
+                                        } else {
+                                            match runtime.repo.open(&meta.metadata).await {
+                                                Ok(session) => {
+                                                    runtime.session = session;
+                                                    runtime.session_id = meta.id.clone();
+                                                    runtime.session_name = None;
+                                                    runtime.messages = rehydrate_transcript(&runtime, &transcript_md, hide_thinking).await;
+                                                    runtime.persisted_until = runtime.messages.len();
+                                                    status_banner = format!(
+                                                        "resumed session {} ({} prior messages)",
+                                                        meta.id.get(..8).unwrap_or(&meta.id),
+                                                        runtime.messages.len()
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    status_banner = format!("resume failed: {e}");
+                                                }
                                             }
                                         }
                                     }

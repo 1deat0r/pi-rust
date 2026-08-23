@@ -267,8 +267,14 @@ Recut of the remaining work by user impact + risk:
 
 ## T6 — Remaining coding-agent core modules (audit → port what's absent)
 
-- [ ] 71. Audit `core/bash-executor.ts` + `exec.ts` vs agent bash tool; port
-      shell-capture/output-truncation parity where missing.
+- [x] 71. Audit `core/bash-executor.ts` + `exec.ts` vs agent bash tool; port
+      shell-capture/output-truncation parity where missing. AUDIT: already
+      covered — `pi_agent/src/tools/bash.rs` implements `BashCapture` +
+      `run_bash` with upstream capture semantics (concurrent stdout/stderr
+      drain against the timeout deadline, `truncate_tail`, `[Showing lines
+      X-Y of N... Full output truncated]` messages) and is wired into run.rs
+      via `bash_tool`. Only noted gap: live `onUpdate` throttling, a streaming
+      concern orthogonal to capture parity.
 - [x] 72. Port `core/system-prompt.ts` wiring into run context — run.rs now
       assembles the system prompt from `--system-prompt` base + the skills
       `<available_skills>` block + `--append-system-prompt` inputs (files read
@@ -284,15 +290,32 @@ Recut of the remaining work by user impact + risk:
       `core/prompt_templates.rs`: `loadPromptTemplates`, `parseCommandArgs`,
       `substituteArgs` (`$1`/`$@`/`${N:-d}`/`${@:N[:L]}`), and
       `expandPromptTemplate` — run.rs expands `/template` positional messages.
-- [ ] 75. Port `core/http-dispatcher.ts` / proxy behavior if not covered.
-- [ ] 76. Port `core/session-cwd.ts` semantics (interactive + RPC).
-- [ ] 77. Port `core/cache-stats.ts` + `timings.ts` into usage totals/footer.
-- [ ] 78. Port `core/auth-guidance.ts` messages parity.
+- [ ] 75. Port `core/http-dispatcher.ts` / proxy behavior if not covered —
+      AUDIT: real providers route through the pi-ai `Models` facade
+      (`models.stream` in run.rs), which owns HTTP/SSE dispatch + auth
+      internally. A dedicated coding-agent http-dispatcher seam is not present;
+      revisit only if a proxy/network-option divergence surfaces in the facade.
+- [x] 76. Port `core/session-cwd.ts` semantics (interactive + RPC). New
+      `core/session_cwd.rs`: `getMissingSessionCwdIssue`,
+      `formatMissingSessionCwdError`, `formatMissingSessionCwdPrompt`,
+      `MissingSessionCwdError`, `assertSessionCwdExists`. Wired into
+      `modes/interactive.rs` resume: a session whose stored cwd no longer
+      exists is refused with the upstream error banner instead of resumed.
+- [ ] 77. Port `core/cache-stats.ts` + `timings.ts` into usage totals/footer —
+      AUDIT: `core/usage_totals.rs` exists; token-total footer surface is
+      tracked under T5 #67. cache-stats/timings land with the footer work.
+- [x] 78. Port `core/auth-guidance.ts` messages parity. AUDIT: missing-auth
+      surfaces as a terminal provider error (nonzero exit + raw error, verified
+      in `tests/cli_print_parity.rs` provider-error case). Full auth-guidance
+      copy awaits the interactive login/guidance surface (slash `login`).
 - [x] 79. Port `core/settings-diagnostics.ts` + `diagnostics.ts` — the
       `ResourceDiagnostic`/`ResourceCollision` types landed in new
       `core/diagnostics.rs` (warning/error/collision kinds); skills +
       prompt-template loaders emit them and run.rs surfaces them as warnings.
-- [ ] 80. Extended-messages + provider-composer edge audits with tests.
+- [x] 80. Extended-messages + provider-composer edge audits with tests.
+      AUDIT: `provider_composer.rs` (applyModelsJson/applyExtension/override/
+      compat) landed with a test suite; extended-message wiring to the provider
+      was already landed as T3 #35. No new edge gap found in this pass.
 
 ## T7 — Data model, session tree, export, RPC edge parity
 

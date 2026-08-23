@@ -18,6 +18,7 @@ pub mod provider_attribution;
 pub mod provider_composer;
 pub mod remote_catalog_provider;
 pub mod resolve_config_value;
+pub mod session_cwd;
 pub mod session_migration;
 pub mod settings;
 pub mod skills;
