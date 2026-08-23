@@ -414,9 +414,27 @@ Recut of the remaining work by user impact + risk:
 - [x] 84. Session tree tests. 3 `RpcRuntime::build_tree` tests: nest + child
       timestamp ordering, self-parent/orphan-root handling, label emitted only
       when resolved.
-- [ ] 85. export_html full parity audit (dark/light, mermaid, search, tmp cleanup).
-- [ ] 86. export_html fixture expansion (tools/compaction/summary rows).
+- [x] 85. export_html full parity audit. AUDIT: `core/export_html.rs` already
+      ports the upstream `export-html/index.ts` `generateHtml`/`exportFromFile`
+      pipeline (color/theme derivation, `js_replace` ES-substitution semantics,
+      base64 session payload, `TEMPLATE_RENDERED_TOOLS`). mermaid/search are
+      client-side features in the vendored template (template.js/html), covered
+      byte-for-byte by the oracle goldens; the file-export path writes directly
+      to `outputPath` with no temp files (no tmp-cleanup divergence). Custom
+      tool pre-rendering (extension `renderCall`/`renderResult`) is the one
+      documented no-op seam pending the extension system.
+- [x] 86. export_html fixture expansion. The `export_session.jsonl` parity
+      fixture now exercises tool-call + thinking content blocks, a `compaction`
+      entry (with `retainedTail` + usage), and a `branch_summary` entry (with
+      usage), alongside the us/agent exchange; the oracle goldens (dark/light)
+      were regenerated and both remain byte-identical. `export_html_parity.rs`
+      gains a `fixture_covers_tool_compaction_and_branch_summary` coverage
+      test (8 non-session entries). Workspace green at 1416.
 - [ ] 87. RPC get_entries/get_tree/get_messages/get_last_assistant_text audit.
+      PARTIAL: `get_tree` parity fixed + tested under #83/#84. The remaining
+      `get_entries`/`get_messages`/`get_last_assistant_text` shape audits and
+      runtime honoring of set_auto_compaction/retry/steering/follow-up (#88)
+      still to verify.
 - [ ] 88. RPC runtime audit: set_auto_compaction/retry/steering/follow-up honored.
 - [ ] 89. `pi update` parity: version check + `--models` pi.dev fetch seam;
       `PI_SKIP_VERSION_CHECK`.

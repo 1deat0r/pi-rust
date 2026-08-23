@@ -764,6 +764,13 @@ executed from the NEXT-100 tracker against the T6 verify-then-port recut.
   label, left children unsorted, and took stale clone snapshots). 3 tree
   build tests; workspace green at 1415. The interactive entry-tree banner
   remains PTY-bound. Recorded in NEXT-100 #83/#84.
+- **Addendum (T7 #85/#86):** export-html parity audited (mermaid/search are
+  client-side template features covered by the byte-identical oracle goldens;
+  no tmp divergence in the file path; extension tool pre-rendering remains a
+  documented no-op seam). The export parity fixture was expanded to cover
+  tool-call + thinking blocks, a `compaction` entry, and a `branch_summary`
+  entry; goldens regenerated (still byte-identical) + a coverage test. 1 new
+  test; workspace green at 1416. Recorded in NEXT-100 #85/#86.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

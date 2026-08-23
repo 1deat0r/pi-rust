@@ -79,3 +79,50 @@ fn export_matches_oracle_golden_light() {
     assert_eq!(ours, golden, "light export differs from oracle golden");
     let _ = std::fs::remove_dir_all(&out_dir);
 }
+
+fn entry_type(v: &serde_json::Value) -> Option<&str> {
+    v.get("type").and_then(|t| t.as_str())
+}
+
+fn msg_has_content_block(v: &serde_json::Value, block_type: &str) -> bool {
+    v.get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+        .is_some_and(|c| {
+            c.iter().any(|b| b.get("type").and_then(|t| t.as_str()) == Some(block_type))
+        })
+}
+
+#[test]
+fn fixture_covers_tool_compaction_and_branch_summary() {
+    // The parity fixture (regenerated from scripts/oracle_export_html.mjs)
+    // exercises the entry rows #86 calls out: tool calls, compaction, and
+    // branch summaries — so the byte-identical golden covers them too.
+    let session = fixture_dir().join("export_session.jsonl");
+    let loaded =
+        pi_coding_agent::core::export_html::load_session_file(session.to_str().unwrap()).unwrap();
+    let entries = &loaded.entries;
+    assert_eq!(entries.len(), 8, "expected the 8 expanded non-session entries");
+    assert_eq!(loaded.leaf_id.as_deref(), Some("msg_6"));
+
+    assert!(
+        entries
+            .iter()
+            .any(|e| entry_type(e) == Some("message") && msg_has_content_block(e, "toolCall")),
+        "fixture must include an assistant tool-call block"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| entry_type(e) == Some("message") && msg_has_content_block(e, "thinking")),
+        "fixture must include a thinking block"
+    );
+    assert!(
+        entries.iter().any(|e| entry_type(e) == Some("compaction")),
+        "fixture must include a compaction entry"
+    );
+    assert!(
+        entries.iter().any(|e| entry_type(e) == Some("branch_summary")),
+        "fixture must include a branch_summary entry"
+    );
+}
