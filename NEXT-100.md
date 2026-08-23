@@ -4,6 +4,22 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 83e55cb (1240 tests at last clean revision).
 
+## Current status (last updated 2026-08-23)
+
+- HEAD `244fff6` on main; workspace test suite **1415 tests, 0 failures**
+  (`cargo test --workspace`), held clippy-clean for new-code regions.
+- The audit snapshot below ("Current state", before these tasks) is the
+  historical baseline the tracker was built from. Nearly all of its listed
+  gaps are now closed and recorded as completed items in the tracks below:
+  OAuth flows (T1), codex WebSocket transport (T1), `/share` gist + `--export`
+  (T0/T7), the full CLI flag surface + auto-compaction + tools + json/jsonl/
+  RPC modes (T2/T3/T6), models.json merge + provider composer (T3/T6), and
+  the T5/T6/T7 item surfaces closed per-item in their tracks.
+- Still open (all bracketed `[ ]` below): T5 interactive render surfaces
+  (PTY-bound), T7 edge parity (negative usage, `pi update`, export_html
+  fixtures, remaining RPC runtime audits), and the T8/T9 packaging/parity/
+  final-verification passes.
+
 ## Current state (verified 2026-08-23, before these tasks)
 
 - HEAD `83e55cb` on main; last clean revision was 1240 tests / 0 warnings.
