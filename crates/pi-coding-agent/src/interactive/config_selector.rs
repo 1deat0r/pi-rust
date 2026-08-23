@@ -1339,4 +1339,64 @@ mod tests {
             .map_or(&[][..], |value| value.as_slice());
         assert!(paths.is_empty(), "inherit should remove project overrides");
     }
+
+    #[test]
+    fn render_snapshots_cover_global_and_project_override_rows() {
+        let resource = ResolvedResource {
+            path: "/agent/extensions/alpha.md".into(),
+            enabled: true,
+            metadata: PathMetadata::synthetic(
+                "auto",
+                SourceScope::User,
+                ResourceOrigin::TopLevel,
+                Some("/agent".into()),
+            ),
+        };
+        let mut selector = ConfigSelectorComponent::new(
+            ResolvedPaths {
+                extensions: vec![resource.clone()],
+                ..Default::default()
+            },
+            ResolvedPaths {
+                extensions: vec![resource],
+                ..Default::default()
+            },
+            settings_with_global_extensions(&["extensions/alpha.md"]),
+            "/project".into(),
+            "/agent".into(),
+            "global",
+        );
+
+        assert_eq!(
+            selector.render(100),
+            vec![
+                "Global Resources",
+                "~/.pi/agent/settings.json",
+                "Search: ",
+                "",
+                "  User (/agent/)",
+                "    Extensions",
+                ">       [x] alpha.md",
+                "",
+                "↑/↓ select · PgUp/PgDn page · Space toggle · Tab switch scope · Esc close",
+            ]
+        );
+
+        selector.handle_input(&pi_tui::TuiKey::simple("tab"));
+        selector.handle_input(&pi_tui::TuiKey::simple(" "));
+        assert_eq!(
+            selector.render(100),
+            vec![
+                "Project Local Resources",
+                ".pi/settings.json",
+                "Search: ",
+                "",
+                "  User (/agent/) · inherited global",
+                "    Extensions",
+                ">       [-] alpha.md  project unload",
+                "",
+                "↑/↓ select · PgUp/PgDn page · Space toggle · Tab switch scope · Esc close",
+            ]
+        );
+    }
 }

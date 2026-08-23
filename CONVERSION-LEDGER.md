@@ -307,12 +307,12 @@ Recut of the remaining work by user impact + risk:
       interactive::config_selector` passes 7 tests. The underlying data model
       and `PackageManager::resolve()` producer remain covered by the prior
       5+8+integration tests. PTY/snapshot coverage stays in #60/S-056.
-- [ ] 60. ConfigSelector snapshot tests. PARTIAL: 5 unit tests cover the
-      buildGroups ordering/labels/display-name behavior + 8 resolve() producer
-      tests (collection/filter/precedence/scopes) + `resolve_feeds_build_groups`
-      integration + 2 interactive component tests cover filtering/toggles and
-      project override cycling; deterministic render snapshots and PTY tests
-      remain.
+- [x] 60. ConfigSelector snapshot tests. (mock) Five buildGroups tests, eight
+      resolve() producer tests, `resolve_feeds_build_groups` integration, two
+      interactive behavior tests, and a deterministic global/project render
+      snapshot test now cover the selector surface. Verified with `cargo test
+      -p pi-coding-agent --offline interactive::config_selector`; PTY exercise
+      remains separately tracked by S-056.
 - [ ] 61. Full alt-screen screen-swap parity (save/restore around overlays).
 - [ ] 62. Alt-screen swap tmux probe.
 - [x] 63. ICU word segmentation (replace regex word-nav with unicode parity).

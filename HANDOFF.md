@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-47.59% = 79 completed / 166 total tasks
-87 tasks remain open
+48.19% = 80 completed / 166 total tasks
+86 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -47,7 +47,7 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, no cargo/rustc process still running,
-progress checker reports `47.59% (79/166; 87 open)`, with the local client and
+progress checker reports `48.19% (80/166; 86 open)`, with the local client and
 selector checkpoints ahead of the remote and no cargo/rustc process running.
 
 ## Verification already completed
@@ -115,10 +115,11 @@ The ConfigSelector interactive milestone (#59) is the latest local checkpoint:
 - The selector now supports search/filtering, circular/page navigation, global
   toggles, project inherit/load/unload cycling, inherited-resource indicators,
   package/top-level override persistence, and synchronous settings flushes.
-- The focused selector suite has 7 passing tests; the full coding-agent suite
+- The focused selector suite has 8 passing tests, including deterministic
+  global/project render snapshots; the full coding-agent suite
   has 436 unit tests plus its integration targets, and the full pi-tui suite
-  has 186 passing tests. #60 remains open for deterministic render snapshots
-  and PTY coverage; #61/#62 and the remaining terminal probes are next.
+  has 186 passing tests. #59/#60 are complete; PTY coverage remains S-056,
+  followed by #61/#62 and the remaining terminal probes.
 
 ## Major parity work already present
 
@@ -147,9 +148,8 @@ items just because a similarly named Rust module exists.
 
 1. Retry `git push origin main` after credentials are available; the current
    client/selector checkpoint is local and is not remote yet.
-2. Add
-   deterministic render snapshots/PTY coverage for #60 before the remaining
-   alt-screen and terminal-probe work.
+2. Add PTY coverage for S-056, then continue with the remaining alt-screen and
+   terminal-probe work.
 3. Keep `CONVERSION-LEDGER.md`, `PLAN.md`, and this handoff synchronized;
    only mark a task complete with an evidence tier and exact command/fixture.
 

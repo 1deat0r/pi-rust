@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 47.59% (79/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 48.19% (80/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -903,8 +903,8 @@ claiming the remaining lease, transport-factory, or full conformance work.
   work is the ConfigSelector snapshot/PTY coverage and remaining TUI gaps.
 
 ### Session 22 — 2026-08-24 — ConfigSelector interactive behavior
-Scope: T5 #59 interactive selector behavior; deterministic render snapshots
-and PTY lifecycle coverage remain separately tracked by #60/S-056.
+Scope: T5 #59–60 interactive selector behavior and deterministic snapshots;
+PTY lifecycle coverage remains separately tracked by S-056.
 
 - Completed the Rust `ConfigSelectorComponent` behavior over the existing
   resolved-resource producer: search input/filtering by name/path/type,
@@ -915,10 +915,11 @@ and PTY lifecycle coverage remain separately tracked by #60/S-056.
   close, preventing queued settings changes from being lost when `pi config`
   exits.
 - Evidence (mock): `cargo test -p pi-coding-agent --offline
-  interactive::config_selector` (7 passed); `cargo test -p pi-coding-agent
+  interactive::config_selector` (8 passed, including global/project render
+  snapshots); `cargo test -p pi-coding-agent
   --offline` (436 unit tests plus all integration targets); `cargo test -p
-  pi-tui --offline` (186 passed). #59 is marked done; #60 remains partial
-  pending deterministic render snapshots and PTY exercise.
+  pi-tui --offline` (186 passed). #59 and #60 are marked done; PTY exercise
+  remains in S-056.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
@@ -930,10 +931,9 @@ and PTY lifecycle coverage remain separately tracked by #60/S-056.
   templates, context files, session-cwd, auth-guidance, model registry/
   resolver/runtime, config/auth/list-models commands, RPC/json/jsonl modes,
   `/share`, `--export`). Tracked forward in NEXT-100.md, not here.
-- **T5 remaining (tracked in NEXT-100):** ConfigSelector deterministic render
-  snapshots/PTY exercise (#60), alt-screen full swap (#61/62), terminal
-  feature probes (#65/66), editor IME edge (#69), and interactive E2E tmux
-  coverage (#70).
+- **T5 remaining (tracked in NEXT-100):** ConfigSelector PTY exercise
+  (S-056), alt-screen full swap (#61/62), terminal feature probes (#65/66),
+  editor IME edge (#69), and interactive E2E tmux coverage (#70).
 - Signed usage adjustments are closed in Session 16: pi-ai `Usage` and session
   ledger stats preserve negative token/cost corrections, with C-neg conformance
   coverage in both backends.
