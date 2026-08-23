@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use pi_protocol::{Command, CommandResult, ModelRef, ServerEvent, ThinkingLevel};
 
-use crate::{PiClient, PiClientError};
+use crate::{ClientConnectionState, ConnectionStateUnsubscribe, PiClient, PiClientError};
 
 /// Lease mode for acquiring a session handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +49,7 @@ pub struct SessionHandle {
     snapshot_listeners: Arc<Mutex<Vec<Option<SnapshotListener>>>>,
     event_listeners: Arc<Mutex<Vec<Option<ServerEventListener>>>>,
     disposed: Arc<AtomicBool>,
+    connection_unsubscribe: Arc<Mutex<Option<ConnectionStateUnsubscribe>>>,
 }
 
 impl SessionHandle {
@@ -107,6 +108,11 @@ impl SessionHandle {
         &self,
         command: Command,
     ) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
+        if self.disposed.load(Ordering::SeqCst) || !self.attached() {
+            return Err(PiClientError {
+                message: format!("Session {} is detached", self.id),
+            });
+        }
         let result = self.client.request(command).await?;
         match result {
             CommandResult::Prompt { session }
@@ -211,6 +217,9 @@ impl SessionHandle {
                 *slot = None;
             }
         }
+        if let Some(unsubscribe) = self.connection_unsubscribe.lock().unwrap().take() {
+            unsubscribe();
+        }
         (self.forwarder)();
         self.attached.store(false, Ordering::SeqCst);
         Ok(())
@@ -291,6 +300,15 @@ impl PiClient {
         let live = Arc::new(AtomicBool::new(true));
         let sid = session_id.to_string();
 
+        let connection_unsubscribe = self.subscribe_connection_state({
+            let attached = attached.clone();
+            move |change| {
+                if change.state == ClientConnectionState::Disconnected {
+                    attached.store(false, Ordering::SeqCst);
+                }
+            }
+        });
+
         // One global client listener fans out this session's snapshots and
         // events to the handle's subscribers; gated by `live` so disposed
         // handles stop forwarding (the client prunes dead listeners).
@@ -335,6 +353,7 @@ impl PiClient {
             snapshot_listeners,
             event_listeners,
             disposed: Arc::new(AtomicBool::new(false)),
+            connection_unsubscribe: Arc::new(Mutex::new(Some(connection_unsubscribe))),
         })
     }
 }

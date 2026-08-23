@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 45.78% (76/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 46.99% (78/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -876,6 +876,31 @@ Scope: #33–34 and S-025, settings-driven compaction in print mode.
   --offline` and `git diff --check`.
 - #33, #34, and S-025 marked done. Next planned work is client
   reconnect/timeouts and the remaining TUI/config-selector interactive gaps.
+
+### Session 21 — 2026-08-24 — client reconnect, timeout, and disposal hardening
+Scope: optional/deferred T4 client library hardening (#54 and #56), without
+claiming the remaining lease, transport-factory, or full conformance work.
+
+- `pi-client` now has explicit `Disconnected`/`Connecting`/`Connected` state,
+  connection-state listeners with unsubscribe handles, reconnect epochs, fresh
+  handshake snapshots, and session-handle invalidation after disconnect.
+- Handshake and request operations accept deterministic timeout bounds. A
+  timed-out request is removed from the pending map and retains a tombstone so
+  a late response is ignored rather than misclassified as a protocol error.
+- Added permanent `PiClient::dispose()` alongside reconnectable `close()`;
+  disposal releases listeners/snapshots and prevents future requests or
+  reconnects.
+- Evidence (mock): `cargo test -p pi-client --offline` (4 tests, including
+  fake-Unix reconnect/lifecycle, handshake timeout, request timeout with late
+  response, and disposal); `cargo test -p pi-server --offline`; `cargo check
+  --workspace --offline`; `git diff --check`.
+- Line-by-line audit against `upstream_pi/packages/client/src/{connection,client,
+  state}.ts` leaves #55 lease reconciliation, #57 transport factories, and
+  #58 lease-churn E2E open. Supplemental S-045/S-047 remain open because
+  reconnect backoff/replay, transport-factory options, and the full upstream
+  error/conformance matrix are not implemented.
+- #54 and #56 marked done. T4 remains optional/deferred; the next user-facing
+  work is the ConfigSelector interactive component and remaining TUI gaps.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

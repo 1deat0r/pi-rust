@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **43.98% (73/166)**. Run
+- The exhaustive checker reports **45.78% (76/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -19,9 +19,9 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the local image/read checkpoint followed by the one-shot compaction
-  implementation on `main`; the HTTPS remote is still behind because GitHub
-  credentials are unavailable.
+- HEAD is the local image/read checkpoint followed by one-shot compaction and
+  the client reconnect/timeout checkpoint on `main`; the HTTPS remote is still
+  behind because GitHub credentials are unavailable.
 - The workspace is green under `cargo test --workspace --offline`; the focused
   RPC suite, image/read suite, and print-mode compaction suite pass.
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
@@ -50,8 +50,10 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   - pi-agent: AgentTool contract not upgraded to upstream shape
     (label / prepareArguments / execute(toolCallId, params, signal, onUpdate)
     -> AgentToolResult); `validateToolArguments` not ported/wired.
-  - pi-client: no reconnect state machine, lease/reconcile parity partial
-    (session_handle.rs landed), dispose/promise-timeout/transport-factory gaps.
+  - pi-client: reconnect state/listeners, handshake/request timeout bounds,
+    late-response suppression, and permanent dispose now land with fake-socket
+    coverage; lease/reconcile parity remains partial, as do transport-factory
+    and full conformance gaps.
   - pi-server: no LiveSessionManager exclusivity, session lock/terminal-close
     semantics, command queuing, subscription segment control,
     testing/service.ts parity harness.
@@ -278,9 +280,18 @@ Recut of the remaining work by user impact + risk:
 - [x] 51. Subscription segment control for prompt/steer concurrency.
 - [ ] 52. Port `testing/service.ts` parity harness + conformance suite.
 - [ ] 53. Server conformance tests (30+ cases). (unit)
-- [ ] 54. Client reconnect state machine + connection-state listeners.
+- [x] 54. Client reconnect state machine + connection-state listeners. (mock)
+      `PiClient` now exposes `Disconnected`/`Connecting`/`Connected`, reconnects
+      through a fresh Unix handshake with connection epochs, invalidates
+      attached session handles on disconnect, and returns lifecycle callbacks.
+      `cargo test -p pi-client --offline` covers snapshot refresh and the full
+      lifecycle sequence over a fake Unix socket.
 - [ ] 55. Client lease/exclusive-attach parity (reconcile, detach-on-close).
-- [ ] 56. Client dispose semantics + promise timeouts.
+- [x] 56. Client dispose semantics + promise timeouts. (mock)
+      Requests have configurable handshake/request bounds; timed-out request
+      ids are tombstoned so late responses do not tear down a healthy client;
+      `dispose()` permanently releases state/listeners while `close()` remains
+      reconnectable. Covered by `cargo test -p pi-client --offline`.
 - [ ] 57. Transport factory abstraction beyond unix (async-trait).
 - [ ] 58. Client↔server E2E under reconnect + lease churn. (unit/mock)
 
