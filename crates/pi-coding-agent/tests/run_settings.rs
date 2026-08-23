@@ -119,7 +119,26 @@ fn pi_run_project_settings_override_global() {
         json!({ "defaultProvider": "faux", "defaultModel": "faux-1" }),
     );
 
-    let stdout = sandbox.pi(&project, "project wins");
+    // Project settings are trust-gated (upstream resolveProjectTrusted):
+    // --approve loads them so the project default wins.
+    let out = Command::new(env!("CARGO_BIN_EXE_pi"))
+        .current_dir(&project)
+        .env("HOME", &sandbox.home)
+        .env("PI_CODING_AGENT_SESSION_DIR", &sandbox.sessions)
+        .env_remove("PI_PROVIDER")
+        .env_remove("PI_MODEL")
+        .env_remove("PI_KEY")
+        .args(["-p", "--approve", "project wins"])
+        .output()
+        .expect("spawn pi");
+    assert!(
+        out.status.success(),
+        "pi exited with {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(
         stdout.contains("faux response to: project wins"),
         "unexpected stdout: {stdout}"

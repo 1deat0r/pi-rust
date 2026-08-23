@@ -7,6 +7,13 @@ use std::fs;
 use std::path::PathBuf;
 
 use indexmap::IndexMap;
+
+/// Serializes tests that mutate the process-global VISUAL/EDITOR env vars.
+fn editor_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::OnceLock;
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap()
+}
 use pi_coding_agent::core::settings::{
     deep_merge, migrate_settings, parse_http_idle_timeout_ms, strip_bom, InMemorySettingsStorage,
     SettingsManager, SettingsScope, SettingsStorage,
@@ -608,6 +615,7 @@ fn set_editor_env(visual: Option<&str>, editor: Option<&str>) {
 
 #[test]
 fn d_external_editor_resolves_by_precedence() {
+    let _guard = editor_env_lock();
     set_editor_env(Some("vim"), Some("nano"));
     let m = SettingsManager::in_memory(map(json!({ "externalEditor": "code --wait" })));
     assert_eq!(m.get_external_editor_command(), "code --wait");
@@ -623,6 +631,7 @@ fn d_external_editor_resolves_by_precedence() {
 
 #[test]
 fn d_external_editor_falls_back_to_platform_defaults() {
+    let _guard = editor_env_lock();
     set_editor_env(None, None);
     let m = SettingsManager::in_memory(map(json!({})));
     let cmd = m.get_external_editor_command();

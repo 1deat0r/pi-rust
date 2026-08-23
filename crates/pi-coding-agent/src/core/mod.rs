@@ -9,6 +9,7 @@ pub mod model_runtime;
 pub mod model_registry;
 pub mod model_resolver;
 pub mod models_store;
+pub mod project_trust;
 pub mod package_manager;
 pub mod pi_manifest;
 pub mod provider_attribution;

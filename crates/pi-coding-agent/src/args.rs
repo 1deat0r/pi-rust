@@ -30,6 +30,10 @@ pub struct Args {
     pub list_models: Option<String>,
     pub mode: Option<String>,
     pub export: Option<String>,
+    /// --approve/-a: trust project-local files for this run.
+    pub approve: bool,
+    /// --no-approve/-na: ignore project-local files for this run.
+    pub no_approve: bool,
     pub unknown_flags: Vec<String>,
 }
 
@@ -144,6 +148,8 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
             "--resume" | "-r" => args.resume = true,
             "--no-session" => args.no_session = true,
             "--no-tools" | "-nt" => args.no_tools = true,
+            "--approve" | "-a" => args.approve = true,
+            "--no-approve" | "-na" => args.no_approve = true,
             "--offline" => args.offline = true,
             "--verbose" | "-v" => args.verbose = true,
             "--help" | "-h" => return ParseOutcome::Help,
@@ -186,6 +192,8 @@ pub fn print_help() {
     println!("  --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable");
     println!("  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max");
     println!("  --no-tools, -nt                Disable all tools by default (built-in and extension)");
+    println!("  --approve, -a                  Trust project-local files for this run");
+    println!("  --no-approve, -na              Ignore project-local files for this run");
     println!("  --offline                      Disable startup network operations (same as PI_OFFLINE=1)");
     println!("  --export <file>                Export session file to HTML and exit");
     println!("  --list-models [search]         List available models (with optional fuzzy search)");

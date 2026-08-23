@@ -65,13 +65,42 @@ pub fn has_explicit_provider(cli_provider: Option<&str>) -> bool {
     cli_provider.is_some() || config::env(config::ENV_PROVIDER).is_some()
 }
 
+/// Read the global `defaultProjectTrust` setting (allow/deny/ask) without
+/// loading project settings (which are themselves trust-gated).
+fn settings_default_project_trust(agent_dir: &std::path::Path) -> Option<String> {
+    let path = agent_dir.join("settings.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+    value
+        .get("defaultProjectTrust")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
 pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     let cwd = config::cwd();
     let agent_dir = config::get_agent_dir();
+    // Project trust: -a/--approve and -na/--no-approve override the stored
+    // decision / settings default (upstream resolveProjectTrusted).
+    let trust_override = if args.approve {
+        Some(true)
+    } else if args.no_approve {
+        Some(false)
+    } else {
+        None
+    };
+    let trust_store = crate::core::project_trust::ProjectTrustStore::new(&agent_dir.display().to_string());
+    let default_project_trust = settings_default_project_trust(&agent_dir);
+    let project_trusted = crate::core::project_trust::resolve_project_trusted(
+        &cwd,
+        &trust_store,
+        trust_override,
+        default_project_trust.as_deref(),
+    );
     let mut settings = SettingsManager::create(
         &cwd,
         &agent_dir.display().to_string(),
-        crate::core::settings::SettingsManagerCreateOptions::default(),
+        crate::core::settings::SettingsManagerCreateOptions { project_trusted },
     );
     // Surface settings load errors as diagnostics (never silently ignore a
     // malformed settings.json that the user expects to take effect).
