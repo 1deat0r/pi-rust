@@ -192,7 +192,12 @@ impl PiSessionRuntime for TestSession {
         self.service.snapshot_for(&self.session_id, 1)
     }
     fn get_phase(&self) -> SessionPhase {
-        SessionPhase::Idle
+        let inner = self.service.inner.lock().unwrap();
+        inner
+            .sessions
+            .get(&self.session_id)
+            .map(|s| s.phase.clone())
+            .unwrap_or(SessionPhase::Idle)
     }
     fn prompt(&mut self, _input: crate::types::PromptInput) -> Result<(), PiServerError> {
         let id = uuid::Uuid::new_v4().to_string();

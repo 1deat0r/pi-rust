@@ -10,6 +10,7 @@
 pub mod connection;
 pub mod errors;
 pub mod listener;
+pub mod live_session;
 pub mod server;
 pub mod service;
 pub mod snapshots;
