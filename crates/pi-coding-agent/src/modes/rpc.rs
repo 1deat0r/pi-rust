@@ -262,6 +262,75 @@ impl RpcRuntime {
         Arc::new(move |model, ctx| models.stream(model, ctx, Some(&stream_options)))
     }
 
+    /// Auto-compaction (upstream `core/compaction/` loop): after a turn, if
+    /// auto-compaction is enabled and the estimated context tokens exceed the
+    /// model's window minus the reserve, summarize history through the facade
+    /// and replace the in-memory context with the summary + retained tail.
+    /// Returns true when compaction ran.
+    async fn maybe_auto_compact(&mut self) -> Result<bool, String> {
+        if !self.auto_compaction_enabled {
+            return Ok(false);
+        }
+        let settings = pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS;
+        let estimate = pi_agent::harness::compaction::estimate_context_tokens(&self.messages);
+        if !pi_agent::harness::compaction::should_compact(estimate.tokens, self.model.context_window, &settings) {
+            return Ok(false);
+        }
+        let entries = self.get_entries().await?;
+        let Some(preparation) = pi_agent::harness::compaction::prepare_compaction(&entries, &settings)
+            .map_err(|e| format!("auto-compact: prepare: {e}"))?
+        else {
+            return Ok(false);
+        };
+        let models = self.models.clone();
+        let complete_simple_fn: pi_agent::harness::CompleteSimpleFn =
+            Arc::new(move |model, ctx, opts| {
+                let models = models.clone();
+                let opts = opts.clone();
+                let model = model.clone();
+                let ctx = ctx.clone();
+                Box::pin(async move { models.complete_simple(&model, &ctx, Some(&opts)).await })
+            });
+        let options = pi_agent::harness::SimpleModels { complete_simple_fn };
+        let retry = pi_ai::utils::retry::RetryPolicy { enabled: false, max_retries: 0, base_delay_ms: 0 };
+        let result = pi_agent::harness::compaction::compact(
+            &preparation,
+            &options,
+            &self.model,
+            None,
+            None,
+            None,
+            Some(&retry),
+            None,
+        )
+        .await
+        .map_err(|e| format!("auto-compact: {e}"))?;
+
+        let summary_msg = pi_agent::agent::user_text_prompt(
+            format!("[Compaction summary]\n{}", result.summary),
+            pi_ai::types::now_ms(),
+        );
+        let mut replaced = vec![summary_msg];
+        replaced.extend(result.retained_tail.clone());
+        self.messages = replaced;
+
+        self.session
+            .append_entry(
+                EntryNoStats::Compaction {
+                    id: format!("c-{}", pi_agent::session::new_id()),
+                    summary: result.summary.clone(),
+                    retained_tail: result.retained_tail,
+                    tokens_before: result.tokens_before,
+                    details: None,
+                    usage: result.usage,
+                },
+                "main",
+            )
+            .await
+            .map_err(|e| format!("auto-compact: persist: {e}"))?;
+        Ok(true)
+    }
+
     async fn persist_messages(&mut self, new_messages: &[pi_agent::types::AgentMessage]) -> Result<(), String> {
         for message in new_messages {
             self.session
@@ -431,6 +500,10 @@ impl RpcRuntime {
                 {
                     let mut lock = self.run_lock.lock().unwrap();
                     *lock = false;
+                }
+                // Auto-compaction after the turn settles (upstream loop).
+                if self.maybe_auto_compact().await.unwrap_or(false) {
+                    store.push(serialize_json_line(&serde_json::json!({"type": "compacted"})));
                 }
                 store.push(serialize_json_line(&serde_json::json!({"type": "agent_settled"})));
                 Ok(())
@@ -1567,6 +1640,35 @@ mod tests {
             }
         }
         String::new()
+    }
+
+    #[tokio::test]
+    async fn auto_compaction_triggers_and_persists_entry() {
+        let mut runtime = runtime_for_test().await;
+        // Tiny window so the threshold triggers; register faux in the facade
+        // (runtime_for_test already does) and set the env key for auth.
+        std::env::set_var("FAUX_API_KEY", "test");
+        runtime.model.context_window = 1000;
+        let mut store = Vec::new();
+        // A long prompt pushes the estimate over window - reserve.
+        let long = format!("hello {}", "x".repeat(2000));
+        runtime
+            .handle_command(RpcCommand::parse(serde_json::json!({"type": "prompt", "message": long})).unwrap(), &mut store)
+            .await
+            .unwrap();
+        let compacted = store.iter().any(|l| {
+            serde_json::from_str::<serde_json::Value>(l.trim())
+                .map(|v| v["type"] == "compacted")
+                .unwrap_or(false)
+        });
+        assert!(compacted, "expected a compacted event: {store:?}");
+        // The session file gains a compaction entry.
+        let entries = runtime.get_entries().await.unwrap();
+        assert!(
+            entries.iter().any(|e| matches!(e, pi_agent::session::types::Entry::Compaction { .. })),
+            "expected a compaction entry"
+        );
+        std::env::remove_var("FAUX_API_KEY");
     }
 
 }
