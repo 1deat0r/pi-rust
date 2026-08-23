@@ -153,9 +153,14 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
 - [x] 44. Port JSON-event mode `modes/json-event.ts` → `modes/json_event.rs`
       (`--mode json`), event-envelope parity.
 - [x] 45. JSON-event tests (fixture transcripts).
-- [ ] 46. Remaining CLI flags: `-nbt`, `-e/--extension`, `-ne/--no-extensions`,
+- [x] 46. Remaining CLI flags: `-nbt`, `-e/--extension`, `-ne/--no-extensions`,
       `--skill`, `-ns`, `--prompt-template`, `-np`, `--theme`, `--use-theme`,
-      `--no-themes`, `-nc`, `-a/--approve`, `-na`, `--fork`.
+      `--no-themes`, `-nc`, `-a/--approve`, `-na`, `--fork` — **plus** the
+      `--append-system-prompt`, `--models`, `--tui-mode` surface and
+      upstream `Args.diagnostics` (error→exit 1, warning→continue). Parsing
+      landed; run-path honoring of `--fork` (fork-session-and-continue) sits
+      with the session-tree parity (#83/#88) and the
+      skill/prompt-template/extension/theme loaders with T6 (#73/#74).
 - [ ] 47. Flag-matrix golden test: fire every flag; diff `--help` vs upstream.
 - [ ] 48. Telemetry wiring: `PI_TELEMETRY` env → subscriber + span emission in
       run path; in-memory capture test.

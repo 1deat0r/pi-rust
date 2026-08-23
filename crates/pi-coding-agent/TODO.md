@@ -30,7 +30,12 @@ Settings manager (full upstream surface) landed.
 - args.rs: CLI parser with upstream flag surface (commands via flags; value
   flags support `--flag value` and `--flag=value` incl. short aliases;
   positional messages, `@file` args, `--` terminator, unknown-flag capture,
-  --help/--version). 7 unit tests.
+  --help/--version). Full flag surface covered incl. `--fork`,
+  `--no-builtin-tools/-nbt`, `--extension/-e`, `--no-extensions/-ne`,
+  `--skill`, `--no-skills/-ns`, `--prompt-template`, `--no-prompt-templates/-np`,
+  `--theme`, `--use-theme`, `--no-themes`, `--no-context-files/-nc`, plus
+  `--append-system-prompt`, `--models`, `--tui-mode`, and upstream
+  `Args.diagnostics` (error → exit 1, warning → continue). 20 unit tests.
 - config.rs: APP_NAME/TITLE/VERSION, config dir name, env var names
   (PI_CODING_AGENT_DIR/SESSION_DIR/MODEL/PROVIDER/KEY/SESSION_ID/...),
   expandTildePath, getAgentDir/getSessionDir/settings/auth paths, provider
@@ -105,6 +110,21 @@ Settings manager (full upstream surface) landed.
 - Remaining: ConfigSelector full TUI port, several slash commands pending core plumbing
   (export/import/share/trust/login/new/resume), update --models pi.dev fetch, TS in-process extension
   execution.
+## Done (Session 12/13 — full CLI flag surface + diagnostics)
+- args.rs: complete the upstream flag surface (T3 #46): `--fork`, `-nbt`,
+  `-e/--extension`, `-ne`, `--skill`, `-ns`, `--prompt-template`, `-np`,
+  `--theme`, `--use-theme`, `--no-themes`, `-nc`, plus `--append-system-prompt`,
+  `--models`, `--tui-mode`. Repeatable flags accumulate; `--use-theme` /
+  `--tui-mode` validate their value; `--thinking` validation moved from
+  silent-store to upstream-readable `Args.diagnostics` (error → main exits 1,
+  warning → continues). 20 unit tests; live-verified the error (missing
+  --use-theme value → "Error: ..." + exit 1), warning (invalid thinking) and
+  clean-parse paths.
+- main.rs: surface parse diagnostics per upstream main.ts (Error/Warning
+  labels; exit 1 on error diagnostics).
+- Run-path honoring of `--fork` and the skill/extension/prompt-template/theme
+  loaders lands with T6 (#73/#74) and the session-tree fork parity (#83/#88).
+
 ## Remaining (upstream mapping — big items first)
 - Wire SettingsManager into run/main (currently standalone; P4 criterion
   "settings round-trip" is satisfied by the module tests, session wiring is

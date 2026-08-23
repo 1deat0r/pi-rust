@@ -633,6 +633,37 @@ Agent: pi (Claude)   HEAD: 83e55cb (planning only, no code)
 - Next session: T0 task 1 (fix cli_export.rs) then land the /share + --export
   diff, then T0.4 finish the real /share flow.
 
+### Session 14 — 2026-08-23 — land in-flight JSON mode + full CLI flag surface (T3 #44–#46)
+Agent: pi (Claude)   HEAD: f3ae75f
+
+- **Landed the in-flight working tree**: committed `--mode json` event stream
+  (`modes/json_event.rs` from `modes/json-event.ts`, T3 #44) + its binary tests
+  (`tests/cli_json_mode.rs`, T3 #45) + test-flake hardening (shared
+  `crate::utils::env_lock` for env-mutating ai tests; poisoning-resistant env
+  lock; extension-loader + grep test expectation fixes). JSON events reuse the
+  RPC `to_json_message_update` envelope (the Rust port of upstream
+  `toJsonEvent`). 2 binary tests pass; workspace +8 tests over the last clean
+  revision.
+- **Closed the CLI flag-surface gap (T3 #46)**: `args.rs` now parses the full
+  upstream `args.ts` surface — added `--fork`, `--no-builtin-tools/-nbt`,
+  `--extension/-e`, `--no-extensions/-ne`, `--skill`, `--no-skills/-ns`,
+  `--prompt-template`, `--no-prompt-templates/-np`, `--theme`, `--use-theme`,
+  `--no-themes`, `--no-context-files/-nc`, **plus** `--append-system-prompt`,
+  `--models`, `--tui-mode`. Repeatable flags accumulate into Vecs; `--use-theme`
+  and `--tui-mode` validate their value token; `--thinking` validation now
+  produces an upstream-shaped `Args.diagnostics` entry instead of being silently
+  stored. `Diagnostics` carries an Error/Warning kind, and `main.rs` surfaces it
+  per upstream main.ts (error → `Error:` + exit 1; warning → `Warning:` +
+  continue). 8 new unit tests (20 total in the args module); live-verified the
+  error, warning, and clean-parse paths against the built binary.
+- **Scope note**: `--fork`, `-e`, `--skill`, `--prompt-template`, `--theme`
+  parsing is done; run-path *honoring* of these flags lands with the T6 loaders
+  (#73/#74) and the session-tree fork parity (#83/#88) — not half-wired here.
+- Workspace: **1318 tests passing** (was 1310); 0 lib warnings; clippy-clean for
+  the touched files.
+- Docs: NEXT-100.md (#46 done, #44/#45 already done last commit),
+  pi-coding-agent/TODO.md updated. Repo pushed after every commit.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration
