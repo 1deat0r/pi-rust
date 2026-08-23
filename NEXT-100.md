@@ -290,6 +290,11 @@ Recut of the remaining work by user impact + risk:
       `core/prompt_templates.rs`: `loadPromptTemplates`, `parseCommandArgs`,
       `substituteArgs` (`$1`/`$@`/`${N:-d}`/`${@:N[:L]}`), and
       `expandPromptTemplate` — run.rs expands `/template` positional messages.
+      Plus new `core/context_files.rs`: port of `loadProjectContextFiles` +
+      `findShadowedContextFile` + `footer-data-provider.ts findGitPaths`
+      (AGENTS.md/CLAUDE.md + AGENTS.override.md ancestor walk with BOM strip,
+      worktree-shadow dedup) — run.rs injects the `<project_context>` section
+      and `-nc/--no-context-files` disables it (previously a dead flag).
 - [ ] 75. Port `core/http-dispatcher.ts` / proxy behavior if not covered —
       AUDIT: real providers route through the pi-ai `Models` facade
       (`models.stream` in run.rs), which owns HTTP/SSE dispatch + auth

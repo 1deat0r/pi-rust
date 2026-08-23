@@ -1,6 +1,7 @@
 //! Coding-agent core modules (port of `packages/coding-agent/src/core/`).
 
 pub mod auth_storage;
+pub mod context_files;
 pub mod diagnostics;
 pub mod event_bus;
 pub mod extensions;

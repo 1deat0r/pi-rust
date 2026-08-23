@@ -192,24 +192,8 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         (model, stream_fn)
     };
 
-    let system_prompt = args
-        .system_prompt
-        .clone()
-        .unwrap_or_default();
-
-    // Assemble the run-path system prompt from the loaded resources: the base
-    // `--system-prompt`, the `<available_skills>` block, and any appended
-    // system-prompt inputs (upstream `DefaultResourceLoader.reload` +
-    // `system-prompt.ts` wiring).
-    let skills_block = build_skills_block(args, &cwd, &agent_dir, &settings);
-    let mut system_prompt = format!("{system_prompt}\n{skills_block}");
-    let system_prompt_trimmed = system_prompt.trim().to_string();
-    system_prompt = system_prompt_trimmed;
-    for append in &args.append_system_prompt {
-        let resolved = resolve_prompt_input(append, "append system prompt");
-        system_prompt = format!("{system_prompt}\n{resolved}");
-    }
-
+    let system_prompt = assemble_run_system_prompt(args, &cwd, &agent_dir, &settings);
+    
     // Register built-in tools (bash/read/write/edit + ls/find/grep) unless
     // --no-tools.
     let mut tools: Vec<pi_agent::tools::AgentTool> = Vec::new();
@@ -337,6 +321,33 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     }
 
     Ok(RunOutcome { final_text, session_path })
+}
+
+/// Assemble the run-path system prompt from loaded resources: the base
+/// `--system-prompt`, the `<available_skills>` block, the `<project_context>`
+/// section (disabled by `-nc`), and `--append-system-prompt` inputs (existing
+/// files read verbatim, inline text used as-is).
+fn assemble_run_system_prompt(args: &Args, cwd: &str, agent_dir: &std::path::Path, settings: &SettingsManager) -> String {
+    let base = args.system_prompt.clone().unwrap_or_default();
+    let skills_block = build_skills_block(args, cwd, agent_dir, settings);
+    let mut prompt = format!("{base}\n{skills_block}");
+    let trimmed = prompt.trim().to_string();
+    prompt = trimmed;
+    if !args.no_context_files {
+        let context_files = crate::core::context_files::load_project_context_files(
+            cwd,
+            &agent_dir.display().to_string(),
+        );
+        prompt = format!(
+            "{prompt}\n{}",
+            crate::core::context_files::format_project_context(&context_files)
+        );
+    }
+    for append in &args.append_system_prompt {
+        let resolved = resolve_prompt_input(append, "append system prompt");
+        prompt = format!("{prompt}\n{resolved}");
+    }
+    prompt
 }
 
 /// If `input` is an existing file path, read its contents (stripping a BOM);
@@ -505,6 +516,30 @@ mod tests {
         std::fs::write(&file, "appended content").unwrap();
         assert_eq!(resolve_prompt_input(&file.to_string_lossy(), "append system prompt"), "appended content");
         assert_eq!(resolve_prompt_input("inline text", "append system prompt"), "inline text");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn assemble_system_prompt_injects_context_and_skips_on_nc() {
+        let root = std::env::temp_dir().join(format!("pi-run-assemble-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let agent = root.join("agent");
+        let cwd = root.join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(cwd.join("AGENTS.md"), "project ctx line").unwrap();
+        let settings = SettingsManager::in_memory(SettingsMap::new());
+
+        let mut args = Args::default();
+        args.append_system_prompt = vec!["tail".to_string()];
+        let prompt = assemble_run_system_prompt(&args, &cwd.to_string_lossy(), &agent, &settings);
+        assert!(prompt.contains("<project_instructions"));
+        assert!(prompt.contains("project ctx line"));
+        assert!(prompt.ends_with("tail"), "append prompt is last");
+
+        let mut args_nc = Args::default();
+        args_nc.no_context_files = true;
+        let prompt_nc = assemble_run_system_prompt(&args_nc, &cwd.to_string_lossy(), &agent, &settings);
+        assert!(!prompt_nc.contains("<project_instructions"), "-nc must skip context files");
         std::fs::remove_dir_all(&root).ok();
     }
 }
