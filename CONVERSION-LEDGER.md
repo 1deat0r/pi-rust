@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **42.77% (71/166)**. Run
+- The exhaustive checker reports **43.98% (73/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -180,8 +180,19 @@ Recut of the remaining work by user impact + risk:
 - [x] 30. Wire validation into `prepare_tool_call` with upstream errors.
 - [x] 31. Tool-args validation tests (schema errors, unknown keys,
       partial-JSON args).
-- [ ] 32. Image tool parity audit + register model-facing `image` in run.rs
-      (7 → 8 built-in tools), match `/images` toggle.
+- [x] 32. Image/read processing parity and model-facing image behavior in
+      `run.rs`. (unit) The pinned upstream source has no separate
+      `AgentTool` named `image`: `harness/tools/image.ts` is the shared MIME
+      detector/base64 helper used by `read`. Rust now ports the detector,
+      BMP→PNG normalization, 2000x2000/4.5MB resize policy, JPEG fallback,
+      conversion/dimension hints, `@file` image attachments, and the
+      provider-boundary `blockImages` filter. Verified with
+      `cargo test -p pi-agent --offline tools::image` (6 passed),
+      `cargo test -p pi-coding-agent --offline
+      run::tests::file_arguments_attach_images_and_tag_text_references`, and
+      `cargo check --workspace --offline`. The existing `/images` setting
+      remains a terminal-display toggle; `images.blockImages` controls model
+      delivery as upstream.
 
 ## T3 — coding-agent run-path parity
 

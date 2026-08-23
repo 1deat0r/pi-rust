@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 43.37% (72/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 43.98% (73/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -834,8 +834,27 @@ Scope: S-042, the RPC command/event wire contract and error lifecycle.
   and malformed-line test passed; live `--mode rpc` bash smoke emitted
   `bash_execution_update` before the final response; `cargo test --workspace
   --offline` passed.
-- S-042 marked complete. Next planned audit is image/read processing parity
-  and model-facing image registration (#32 / S-020).
+- S-042 marked complete. The next image/read audit is recorded in Session 19.
+
+### Session 19 — 2026-08-24 — image/read processing and prompt attachments
+Scope: #32, the model-facing image path used by `read` and `@file` prompts.
+
+- Audited the pinned source and corrected the stale “8th image tool” premise:
+  upstream `harness/tools/image.ts` is a shared detector/encoder, not a
+  separately registered `AgentTool`.
+- Added the provider-facing image pipeline: content sniffing, BMP→PNG
+  normalization, 2000x2000 and 4.5MB limits, JPEG quality fallback,
+  conversion/dimension hints, and graceful omission errors. `read` uses the
+  configured auto-resize setting in one-shot, interactive, and RPC modes.
+- Implemented `@file` processing for the one-shot path, including tagged text
+  references and image content blocks, and applied upstream `blockImages`
+  filtering at the provider boundary while preserving the transcript.
+- Evidence: `cargo test -p pi-agent --offline tools::image` (6 passed),
+  `cargo test -p pi-coding-agent --offline
+  run::tests::file_arguments_attach_images_and_tag_text_references`,
+  `cargo check --workspace --offline`, and `git diff --check`.
+- #32 marked done. Next planned work is one-shot auto-compaction (#33–34 /
+  S-025).
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

@@ -139,6 +139,11 @@ impl AgentTool {
 
 /// Builds the unified `read` tool bound to a working directory.
 pub fn read_tool(cwd: String) -> AgentTool {
+    read_tool_with_options(cwd, image::ProcessImageOptions::default())
+}
+
+/// Builds `read` with coding-agent image processing settings.
+pub fn read_tool_with_options(cwd: String, image_options: image::ProcessImageOptions) -> AgentTool {
     AgentTool::new(
         json_tool(
             "read",
@@ -163,7 +168,15 @@ pub fn read_tool(cwd: String) -> AgentTool {
                     .ok_or_else(|| "read: missing required argument path".to_string())?;
                 let offset = args.get("offset").and_then(|v| v.as_f64());
                 let limit = args.get("limit").and_then(|v| v.as_f64());
-                let result = read::execute_read(&tool_call_id, path, offset, limit, &cwd).await?;
+                let result = read::execute_read_with_options(
+                    &tool_call_id,
+                    path,
+                    offset,
+                    limit,
+                    &cwd,
+                    image_options,
+                )
+                .await?;
                 Ok(AgentToolResult::from_tool_result_message(&result))
             })
         }),

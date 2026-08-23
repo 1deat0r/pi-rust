@@ -22,6 +22,9 @@ pub struct AgentContext {
     pub system_prompt: Option<String>,
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<AgentTool>,
+    /// Replace model-facing image blocks with the upstream placeholder while
+    /// retaining the original transcript for UI/session rendering.
+    pub block_images: bool,
 }
 
 impl AgentContext {
@@ -30,6 +33,7 @@ impl AgentContext {
             system_prompt,
             messages: Vec::new(),
             tools,
+            block_images: false,
         }
     }
 }
@@ -216,9 +220,13 @@ async fn stream_assistant_response(
     // `convertToLlm`): custom agent messages are rendered into user messages
     // (bash executions, custom content, compaction/branch summaries) instead
     // of being dropped at the provider boundary.
+    let mut llm_messages = crate::messages::convert_to_llm(current_messages);
+    if context.block_images {
+        llm_messages = crate::messages::filter_images_for_provider(llm_messages);
+    }
     let llm_context = Context {
         system_prompt: context.system_prompt.clone(),
-        messages: crate::messages::convert_to_llm(current_messages),
+        messages: llm_messages,
         tools: context.tools.iter().map(|t| t.tool.clone()).collect(),
     };
     let stream = (config.stream_fn)(&config.model, &llm_context);
@@ -259,6 +267,7 @@ pub fn is_aborted(signal: Option<&Arc<AtomicBool>>) -> bool {
 mod tests {
     use super::*;
     use crate::types::CustomAgentMessage;
+    use pi_ai::types::{ContentBlock, UserContent};
 
     fn bash_message() -> AgentMessage {
         AgentMessage::Custom(CustomAgentMessage::BashExecution {
@@ -315,5 +324,41 @@ mod tests {
         }
         let llm = crate::messages::convert_to_llm(&[message]);
         assert_eq!(llm.len(), 0);
+    }
+
+    #[test]
+    fn block_images_replaces_consecutive_provider_blocks_only() {
+        let message = AgentMessage::Core(Message::User(UserContent::blocks(
+            vec![
+                ContentBlock::text("before"),
+                ContentBlock::image("one", "image/png"),
+                ContentBlock::image("two", "image/png"),
+                ContentBlock::text("after"),
+            ],
+            1,
+        )));
+        let filtered =
+            crate::messages::filter_images_for_provider(crate::messages::convert_to_llm(&[
+                message,
+            ]));
+        let Message::User(UserContent::RoleUser { content, .. }) = &filtered[0] else {
+            panic!("expected user message");
+        };
+        let UserContentBody::Blocks(blocks) = content else {
+            panic!("expected block content");
+        };
+        assert_eq!(
+            blocks
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["before", "Image reading is disabled.", "after"]
+        );
+        assert!(!blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Image { .. })));
     }
 }

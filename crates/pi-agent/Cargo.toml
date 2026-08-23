@@ -24,6 +24,7 @@ serde_yaml = "0.9"
 async-trait = { workspace = true }
 reqwest = { workspace = true }
 futures-util = { workspace = true }
+image = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

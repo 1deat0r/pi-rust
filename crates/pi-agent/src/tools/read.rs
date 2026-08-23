@@ -1,28 +1,13 @@
 //! Read tool — port of `packages/agent/src/harness/tools/read.ts` (text
 //! path with offset/limit + truncation; image path returns base64 blocks).
 
+use super::image::{process_image, ProcessImageOptions};
 use super::path_utils::resolve_read_tool_path_existing;
 use super::truncate::{format_size, truncate_head, DEFAULT_MAX_BYTES};
 use pi_ai::types::ContentBlock;
 use pi_ai::types::ToolResultMessage;
 
-/// Detect supported image mime types from magic bytes; matches upstream
-/// `detectSupportedImageMimeType` for the common set.
-pub fn detect_supported_image_mime_type(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.len() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff {
-        Some("image/jpeg")
-    } else if bytes.len() >= 8 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("image/png")
-    } else if bytes.len() >= 6 && bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if bytes.len() >= 12 && bytes[0..4] == *b"RIFF" && &bytes[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else if bytes.len() >= 2 && bytes.starts_with(b"BM") {
-        Some("image/bmp")
-    } else {
-        None
-    }
-}
+pub use super::image::detect_supported_image_mime_type;
 
 /// Tool execute handler for `read`: text truncation messages ported from
 /// upstream; images pass through as base64 content blocks.
@@ -33,28 +18,55 @@ pub async fn execute_read(
     limit: Option<f64>,
     cwd: &str,
 ) -> Result<ToolResultMessage, String> {
+    execute_read_with_options(
+        tool_call_id,
+        path,
+        offset,
+        limit,
+        cwd,
+        ProcessImageOptions::default(),
+    )
+    .await
+}
+
+pub async fn execute_read_with_options(
+    tool_call_id: &str,
+    path: &str,
+    offset: Option<f64>,
+    limit: Option<f64>,
+    cwd: &str,
+    image_options: ProcessImageOptions,
+) -> Result<ToolResultMessage, String> {
     let absolute = resolve_read_tool_path_existing(cwd, path);
     let bytes = std::fs::read(&absolute).map_err(|e| format!("Failed to read {path}: {e}"))?;
 
     if let Some(mime_type) = detect_supported_image_mime_type(&bytes) {
-        if mime_type == "image/bmp" {
-            return Ok(ToolResultMessage::text(
-                tool_call_id,
-                "read",
-                "Read image file [image/bmp]\n[Image omitted: configure an imageProcessor to convert BMP images.]",
-                false,
-            ));
+        match process_image(&bytes, mime_type, image_options) {
+            Ok(processed) => {
+                let mut text = format!("Read image file [{}]", processed.mime_type);
+                if !processed.hints.is_empty() {
+                    text.push('\n');
+                    text.push_str(&processed.hints.join("\n"));
+                }
+                return Ok(ToolResultMessage::new(
+                    tool_call_id,
+                    "read",
+                    vec![
+                        ContentBlock::text(text),
+                        ContentBlock::image(processed.data, processed.mime_type),
+                    ],
+                    false,
+                ));
+            }
+            Err(message) => {
+                return Ok(ToolResultMessage::text(
+                    tool_call_id,
+                    "read",
+                    format!("Read image file [{mime_type}]\n{message}"),
+                    false,
+                ));
+            }
         }
-        let data = base64_std(&bytes);
-        return Ok(ToolResultMessage::new(
-            tool_call_id,
-            "read",
-            vec![
-                ContentBlock::text(format!("Read image file [{mime_type}]")),
-                ContentBlock::image(data, mime_type),
-            ],
-            false,
-        ));
     }
 
     let text_content = String::from_utf8_lossy(&bytes).into_owned();
@@ -134,9 +146,4 @@ pub async fn execute_read(
 
 fn utf8_len(s: &str) -> usize {
     s.len()
-}
-
-fn base64_std(bytes: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
 }

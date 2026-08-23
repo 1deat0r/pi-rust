@@ -903,9 +903,13 @@ impl RpcRuntime {
             context
                 .tools
                 .push(pi_agent::tools::bash_tool(self.cwd.clone()));
-            context
-                .tools
-                .push(pi_agent::tools::read_tool(self.cwd.clone()));
+            context.tools.push(pi_agent::tools::read_tool_with_options(
+                self.cwd.clone(),
+                pi_agent::tools::image::ProcessImageOptions {
+                    auto_resize_images: self.settings.get_image_auto_resize(),
+                    ..Default::default()
+                },
+            ));
             context
                 .tools
                 .push(pi_agent::tools::write_tool(self.cwd.clone()));
@@ -953,6 +957,7 @@ impl RpcRuntime {
             model: self.model.clone(),
             stream_fn: self.make_stream_fn(message),
             signal: Some(self.abort_signal.clone()),
+            block_images: self.settings.get_block_images(),
             get_steering_messages: steering_hook,
             get_follow_up_messages: follow_up_hook,
             retry_policy,

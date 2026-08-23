@@ -59,6 +59,10 @@ async fn main() {
             if !args.unknown_flags.is_empty() {
                 eprintln!("unknown flags: {}", args.unknown_flags.join(", "));
             }
+            if args.mode.as_deref() == Some("rpc") && !args.file_args.is_empty() {
+                eprintln!("Error: @file arguments are not supported in RPC mode");
+                std::process::exit(1);
+            }
             // Interactive TUI mode: no --print/--mode and a TTY stdin+mount.
             if args.mode.is_none()
                 && !args.print

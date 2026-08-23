@@ -142,3 +142,44 @@ fn terminal_provider_error_exits_nonzero_with_raw_message() {
         "no reply expected on stdout"
     );
 }
+
+#[test]
+fn image_file_argument_is_attached_and_normalized() {
+    let sandbox = Sandbox::new("image-file");
+    let cwd = sandbox.root.clone();
+    let mut bmp = vec![0u8; 58];
+    bmp[0..2].copy_from_slice(b"BM");
+    let bmp_len = bmp.len() as u32;
+    bmp[2..6].copy_from_slice(&bmp_len.to_le_bytes());
+    bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+    bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+    bmp[18..22].copy_from_slice(&1i32.to_le_bytes());
+    bmp[22..26].copy_from_slice(&1i32.to_le_bytes());
+    bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+    bmp[34..38].copy_from_slice(&4u32.to_le_bytes());
+    bmp[56] = 0xff;
+    fs::write(cwd.join("pixel.bmp"), bmp).unwrap();
+
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "@pixel.bmp",
+            "inspect",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    let session = walk_jsonl(&sandbox.sessions)
+        .into_iter()
+        .find_map(|path| fs::read_to_string(path).ok())
+        .expect("session JSONL");
+    assert!(session.contains("\"type\":\"image\""));
+    assert!(session.contains("\"mimeType\":\"image/png\""));
+    // The tag is JSON-escaped in the persisted session transcript.
+    assert!(session.contains("<file name=\\\""));
+}

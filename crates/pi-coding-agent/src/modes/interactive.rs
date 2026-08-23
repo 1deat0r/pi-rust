@@ -45,6 +45,8 @@ struct InteractiveRuntime {
     session_name: Option<String>,
     system_prompt: Option<String>,
     tools_enabled: bool,
+    auto_resize_images: bool,
+    block_images: bool,
     /// Number of in-memory messages already persisted into the current
     /// session. Session-switch operations (resume/fork/clone) advance it so
     /// the exit persist only appends messages added after the switch.
@@ -60,6 +62,7 @@ async fn stream_turn(
     let prompt = pi_agent::agent::user_text_prompt(message.clone(), pi_ai::types::now_ms());
     runtime.messages.push(prompt.clone());
     let mut context = AgentContext::new(runtime.system_prompt.clone(), Vec::new());
+    context.block_images = runtime.block_images;
     // Seed the model context with prior history (the current prompt is passed
     // separately below); without this each turn would only see its own prompt.
     context.messages = runtime.messages[..runtime.messages.len() - 1].to_vec();
@@ -67,9 +70,13 @@ async fn stream_turn(
         context
             .tools
             .push(pi_agent::tools::bash_tool(runtime.cwd.clone()));
-        context
-            .tools
-            .push(pi_agent::tools::read_tool(runtime.cwd.clone()));
+        context.tools.push(pi_agent::tools::read_tool_with_options(
+            runtime.cwd.clone(),
+            pi_agent::tools::image::ProcessImageOptions {
+                auto_resize_images: runtime.auto_resize_images,
+                ..Default::default()
+            },
+        ));
         context
             .tools
             .push(pi_agent::tools::write_tool(runtime.cwd.clone()));
@@ -628,6 +635,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         session_name: None,
         system_prompt: args.system_prompt.clone(),
         tools_enabled: !args.no_tools,
+        auto_resize_images: settings.get_image_auto_resize(),
+        block_images: settings.get_block_images(),
         persisted_until: 0,
     };
 
@@ -1576,6 +1585,8 @@ mod tests {
             session_name: None,
             system_prompt: None,
             tools_enabled: true,
+            auto_resize_images: true,
+            block_images: false,
             persisted_until: 0,
         }
     }

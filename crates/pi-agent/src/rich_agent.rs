@@ -231,6 +231,9 @@ pub struct RichAgentLoopConfig {
     /// Convert `AgentMessage[]` to LLM `Message[]` before each call. Defaults
     /// to the harness converter (custom messages rendered for the provider).
     pub convert_to_llm: Option<ConvertToLlmFn>,
+    /// Replace image blocks at the provider boundary while keeping them in
+    /// the durable transcript/UI result.
+    pub block_images: bool,
     /// Optional transform applied at the AgentMessage level before conversion.
     pub transform_context:
         Option<AsyncHook<(Vec<AgentMessage>, Option<Arc<AtomicBool>>), Vec<AgentMessage>>>,
@@ -274,6 +277,7 @@ impl RichAgentLoopConfig {
             stream_fn,
             signal,
             convert_to_llm: None,
+            block_images: false,
             transform_context: None,
             get_api_key: None,
             reasoning: None,
@@ -944,10 +948,13 @@ where
     }
 
     // Convert to LLM-compatible messages.
-    let llm_messages: Vec<Message> = match &config.convert_to_llm {
+    let mut llm_messages: Vec<Message> = match &config.convert_to_llm {
         Some(convert) => convert(&messages),
         None => crate::messages::convert_to_llm(&messages),
     };
+    if config.block_images {
+        llm_messages = crate::messages::filter_images_for_provider(llm_messages);
+    }
 
     let llm_context = Context {
         system_prompt: context.system_prompt.clone(),

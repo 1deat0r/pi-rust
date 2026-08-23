@@ -13,6 +13,10 @@ use std::sync::Arc;
 use pi_agent::agent::{run_agent_loop, AgentContext, AgentLoopConfig};
 use pi_agent::session::types::EntryNoStats;
 use pi_agent::session::{CreateOptions, JsonlSessionRepo};
+use pi_agent::tools::image::{
+    detect_supported_image_mime_type, process_image, ProcessImageOptions,
+};
+use pi_ai::types::{ContentBlock, Message, UserContent};
 
 use crate::args::Args;
 use crate::config;
@@ -218,7 +222,13 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     let mut tools: Vec<pi_agent::tools::AgentTool> = Vec::new();
     if !args.no_tools {
         tools.push(pi_agent::tools::bash_tool(cwd.clone()));
-        tools.push(pi_agent::tools::read_tool(cwd.clone()));
+        tools.push(pi_agent::tools::read_tool_with_options(
+            cwd.clone(),
+            ProcessImageOptions {
+                auto_resize_images: settings.get_image_auto_resize(),
+                ..Default::default()
+            },
+        ));
         tools.push(pi_agent::tools::write_tool(cwd.clone()));
         tools.push(pi_agent::tools::edit_tool(cwd.clone()));
         tools.push(crate::core::tools::ls_tool(cwd.clone()));
@@ -229,6 +239,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         system_prompt: Some(system_prompt),
         messages: Vec::new(),
         tools,
+        block_images: settings.get_block_images(),
     };
     let cfg = AgentLoopConfig {
         model,
@@ -247,10 +258,33 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     // session.prompt(message); }`). Each turn's messages fold into the agent
     // context so a later prompt observes earlier turns.
     let mut all_messages: Vec<pi_agent::types::AgentMessage> = Vec::new();
-    for text in &args.messages {
+    let prepared_files =
+        prepare_file_arguments(&args.file_args, &cwd, settings.get_image_auto_resize())?;
+    let mut prompts: Vec<(String, Vec<ContentBlock>)> = Vec::new();
+    if let Some((file_text, images)) = prepared_files {
+        let first_message = args.messages.first().cloned().unwrap_or_default();
+        let initial_text = format!("{file_text}{first_message}");
+        if !initial_text.is_empty() || !images.is_empty() {
+            prompts.push((initial_text, images));
+        }
+        prompts.extend(
+            args.messages
+                .iter()
+                .skip(usize::from(!args.messages.is_empty()))
+                .map(|text| (text.clone(), Vec::new())),
+        );
+    } else {
+        prompts.extend(args.messages.iter().map(|text| (text.clone(), Vec::new())));
+    }
+    for (text, images) in prompts {
         let expanded =
-            crate::core::prompt_templates::expand_prompt_template(text, &prompt_templates);
-        let prompt = pi_agent::agent::user_text_prompt(expanded, pi_ai::types::now_ms());
+            crate::core::prompt_templates::expand_prompt_template(&text, &prompt_templates);
+        let mut blocks = vec![ContentBlock::text(expanded)];
+        blocks.extend(images);
+        let prompt = pi_agent::types::AgentMessage::Core(Message::User(UserContent::blocks(
+            blocks,
+            pi_ai::types::now_ms(),
+        )));
         let turn_messages =
             run_agent_loop(vec![prompt], &mut context, &cfg, &mut |e| events.push(e)).await;
         context.messages.extend(turn_messages.iter().cloned());
@@ -344,6 +378,62 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         final_text,
         session_path,
     })
+}
+
+/// Process `@file` arguments using the coding-agent image pipeline. Text
+/// files become tagged prompt text; image files become model-facing image
+/// blocks plus the same `<file>` reference used by upstream.
+pub(crate) fn prepare_file_arguments(
+    file_args: &[String],
+    cwd: &str,
+    auto_resize_images: bool,
+) -> Result<Option<(String, Vec<ContentBlock>)>, String> {
+    if file_args.is_empty() {
+        return Ok(None);
+    }
+
+    let mut text = String::new();
+    let mut images = Vec::new();
+    for file_arg in file_args {
+        let absolute = pi_agent::tools::path_utils::resolve_read_tool_path_existing(cwd, file_arg);
+        let metadata = std::fs::metadata(&absolute)
+            .map_err(|_| format!("Error: File not found: {absolute}"))?;
+        if metadata.len() == 0 {
+            continue;
+        }
+        let bytes = std::fs::read(&absolute)
+            .map_err(|error| format!("Error: Could not read file {absolute}: {error}"))?;
+        if let Some(mime_type) = detect_supported_image_mime_type(&bytes) {
+            match process_image(
+                &bytes,
+                mime_type,
+                ProcessImageOptions {
+                    auto_resize_images,
+                    ..Default::default()
+                },
+            ) {
+                Ok(processed) => {
+                    images.push(ContentBlock::image(processed.data, processed.mime_type));
+                    if processed.hints.is_empty() {
+                        text.push_str(&format!("<file name=\"{absolute}\"></file>\n"));
+                    } else {
+                        text.push_str(&format!(
+                            "<file name=\"{absolute}\">{}</file>\n",
+                            processed.hints.join("\n")
+                        ));
+                    }
+                }
+                Err(message) => {
+                    text.push_str(&format!("<file name=\"{absolute}\">{message}</file>\n"));
+                }
+            }
+        } else {
+            let content = String::from_utf8_lossy(&bytes);
+            let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+            text.push_str(&format!("<file name=\"{absolute}\">\n{content}\n</file>\n"));
+        }
+    }
+    Ok(Some((text, images)))
 }
 
 /// Assemble the run-path system prompt from loaded resources: the base
@@ -592,6 +682,41 @@ mod tests {
             !prompt_nc.contains("<project_instructions"),
             "-nc must skip context files"
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn file_arguments_attach_images_and_tag_text_references() {
+        let root = std::env::temp_dir().join(format!("pi-run-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("prompt.md"), "inspect this").unwrap();
+
+        let mut bmp = vec![0u8; 58];
+        bmp[0..2].copy_from_slice(b"BM");
+        let bmp_len = bmp.len() as u32;
+        bmp[2..6].copy_from_slice(&bmp_len.to_le_bytes());
+        bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+        bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bmp[18..22].copy_from_slice(&1i32.to_le_bytes());
+        bmp[22..26].copy_from_slice(&1i32.to_le_bytes());
+        bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+        bmp[34..38].copy_from_slice(&4u32.to_le_bytes());
+        bmp[56] = 0xff;
+        std::fs::write(root.join("pixel.bmp"), bmp).unwrap();
+
+        let cwd = root.to_string_lossy().to_string();
+        let files = vec!["prompt.md".to_string(), "pixel.bmp".to_string()];
+        let (text, images) = prepare_file_arguments(&files, &cwd, false)
+            .unwrap()
+            .expect("file arguments should produce an initial prompt");
+        assert!(text.contains("<file name=\"") && text.contains("inspect this"));
+        assert!(text.contains("pixel.bmp"));
+        assert!(matches!(
+            images.as_slice(),
+            [ContentBlock::Image { mime_type, .. }] if mime_type == "image/png"
+        ));
         std::fs::remove_dir_all(&root).ok();
     }
 }

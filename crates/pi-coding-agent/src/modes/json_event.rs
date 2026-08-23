@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use pi_agent::agent::{run_agent_loop, AgentContext, AgentLoopConfig};
+use pi_ai::types::{ContentBlock, Message, UserContent};
 
 use crate::args::Args;
 use crate::config;
@@ -95,9 +96,16 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
     };
 
     let mut context = AgentContext::new(args.system_prompt.clone(), Vec::new());
+    context.block_images = settings.get_block_images();
     if !args.no_tools {
         context.tools.push(pi_agent::tools::bash_tool(cwd.clone()));
-        context.tools.push(pi_agent::tools::read_tool(cwd.clone()));
+        context.tools.push(pi_agent::tools::read_tool_with_options(
+            cwd.clone(),
+            pi_agent::tools::image::ProcessImageOptions {
+                auto_resize_images: settings.get_image_auto_resize(),
+                ..Default::default()
+            },
+        ));
         context.tools.push(pi_agent::tools::write_tool(cwd.clone()));
         context.tools.push(pi_agent::tools::edit_tool(cwd.clone()));
         context.tools.push(crate::core::tools::ls_tool(cwd.clone()));
@@ -109,10 +117,37 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
             .push(crate::core::tools::grep_tool(cwd.clone()));
     }
 
-    let prompts: Vec<pi_agent::types::AgentMessage> = args
-        .messages
-        .iter()
-        .map(|m| pi_agent::agent::user_text_prompt(m.clone(), pi_ai::types::now_ms()))
+    let prepared_files = crate::run::prepare_file_arguments(
+        &args.file_args,
+        &cwd,
+        settings.get_image_auto_resize(),
+    )?;
+    let mut prompt_inputs: Vec<(String, Vec<ContentBlock>)> = Vec::new();
+    if let Some((file_text, images)) = prepared_files {
+        let first_message = args.messages.first().cloned().unwrap_or_default();
+        let initial_text = format!("{file_text}{first_message}");
+        if !initial_text.is_empty() || !images.is_empty() {
+            prompt_inputs.push((initial_text, images));
+        }
+        prompt_inputs.extend(
+            args.messages
+                .iter()
+                .skip(usize::from(!args.messages.is_empty()))
+                .map(|text| (text.clone(), Vec::new())),
+        );
+    } else {
+        prompt_inputs.extend(args.messages.iter().map(|text| (text.clone(), Vec::new())));
+    }
+    let prompts: Vec<pi_agent::types::AgentMessage> = prompt_inputs
+        .into_iter()
+        .map(|(text, images)| {
+            let mut blocks = vec![ContentBlock::text(text)];
+            blocks.extend(images);
+            pi_agent::types::AgentMessage::Core(Message::User(UserContent::blocks(
+                blocks,
+                pi_ai::types::now_ms(),
+            )))
+        })
         .collect();
 
     let cfg = AgentLoopConfig {

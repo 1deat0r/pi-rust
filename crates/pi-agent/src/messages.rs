@@ -157,6 +157,55 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<Message> {
         .collect()
 }
 
+/// Apply coding-agent's `blockImages` provider-boundary filter. The stored
+/// transcript remains unchanged; only user and tool-result messages sent to
+/// the provider are rewritten.
+pub fn filter_images_for_provider(messages: Vec<Message>) -> Vec<Message> {
+    messages
+        .into_iter()
+        .map(|message| match message {
+            Message::User(UserContent::RoleUser { content, timestamp }) => {
+                let content = match content {
+                    pi_ai::types::UserContentBody::String(text) => {
+                        pi_ai::types::UserContentBody::String(text)
+                    }
+                    pi_ai::types::UserContentBody::Blocks(blocks) => {
+                        pi_ai::types::UserContentBody::Blocks(replace_image_blocks(blocks))
+                    }
+                };
+                Message::User(UserContent::RoleUser { content, timestamp })
+            }
+            Message::ToolResult(mut result) => {
+                let pi_ai::types::ToolResultMessage::ToolResult { content, .. } = &mut result;
+                let blocks = std::mem::take(content);
+                *content = replace_image_blocks(blocks);
+                Message::ToolResult(result)
+            }
+            other => other,
+        })
+        .collect()
+}
+
+fn replace_image_blocks(blocks: Vec<ContentBlock>) -> Vec<ContentBlock> {
+    let mut filtered = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        if matches!(block, ContentBlock::Image { .. }) {
+            let is_duplicate = filtered.last().is_some_and(|previous| {
+                matches!(
+                    previous,
+                    ContentBlock::Text { text, .. } if text == "Image reading is disabled."
+                )
+            });
+            if !is_duplicate {
+                filtered.push(ContentBlock::text("Image reading is disabled."));
+            }
+        } else {
+            filtered.push(block);
+        }
+    }
+    filtered
+}
+
 impl CustomAgentMessage {
     /// `excludeFromContext` getter for bash execution messages.
     pub fn exclude_from_context(&self) -> Option<bool> {
