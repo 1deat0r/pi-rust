@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **45.78% (76/166)**. Run
+- The exhaustive checker reports **47.59% (79/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -28,7 +28,8 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   device-code flows, codex WebSocket transport (SSE fallback today),
   `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
   full TUI component, `update --models` pi.dev fetch seam, models.json runtime
-  merge seam, TUI alt-screen full swap + ICU word segmentation, server/client
+  merge seam, ConfigSelector render snapshots/PTY coverage, TUI alt-screen full
+  swap + terminal feature probes, server/client
   concurrency surfaces (leases, reconnect, queuing). Signed usage adjustment
   parity is closed in Session 16.
 - **Additional gaps found in this audit** (not in any TODO file):
@@ -297,29 +298,21 @@ Recut of the remaining work by user impact + risk:
 
 ## T5 — TUI completion
 
-- [ ] 59. ConfigSelector full TUI component (config command interactive).
-      DATA LAYER DONE (model + producer + buildGroups): `interactive/
-      config_selector.rs` ports the upstream config-selector.ts data model
-      (`PathMetadata`/`ResolvedResource`/`ResolvedPaths`, `build_groups`,
-      `format_base_dir`) with 5 tests. `core/package_manager.rs` now ports the
-      full `resolve()` **producer**: on-disk resource collection (recursive
-      `collect_files`, `collect_skill_entries` pi/agents modes, auto
-      extension/prompt/theme collectors, ancestor `.agents/skills` discovery),
-      include/`!exclude`/`+force`/`-force` pattern filtering + autoload-disabled
-      deltas, precedence-ranked first-wins collision resolution with canonical
-      dedup, project-over-global package dedupe, and install-on-missing via an
-      `on_missing` seam — 8 fixture-based tests (auto/user/project discovery,
-      filtering, ignore-file exclusion, precedence ranking, npm missing
-      skip/error, resolve→build_groups integration). Wired into
-      `commands/config.rs` (`summarize_resources` now renders `resolve()` →
-      `build_groups` groups). STILL PENDING: the interactive
-      render/`handleInput` component (PTY-bound; needs pi-tui Input/Container
-      equivalents and glyph-probe setup).
+- [x] 59. ConfigSelector full TUI component (config command interactive).
+      (mock) `interactive/config_selector.rs` now covers searchable resource
+      rows, circular/page navigation, scope switching, global toggles,
+      project inherit/load/unload cycling, inherited-resource rendering, and
+      synchronous settings flushes before exit. The component is wired through
+      `commands/config.rs`; `cargo test -p pi-coding-agent --offline
+      interactive::config_selector` passes 7 tests. The underlying data model
+      and `PackageManager::resolve()` producer remain covered by the prior
+      5+8+integration tests. PTY/snapshot coverage stays in #60/S-056.
 - [ ] 60. ConfigSelector snapshot tests. PARTIAL: 5 unit tests cover the
       buildGroups ordering/labels/display-name behavior + 8 resolve() producer
       tests (collection/filter/precedence/scopes) + `resolve_feeds_build_groups`
-      integration; full interactive-component snapshot tests await the render
-      surface.
+      integration + 2 interactive component tests cover filtering/toggles and
+      project override cycling; deterministic render snapshots and PTY tests
+      remain.
 - [ ] 61. Full alt-screen screen-swap parity (save/restore around overlays).
 - [ ] 62. Alt-screen swap tmux probe.
 - [x] 63. ICU word segmentation (replace regex word-nav with unicode parity).

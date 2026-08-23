@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-46.99% = 78 completed / 166 total tasks
-88 tasks remain open
+47.59% = 79 completed / 166 total tasks
+87 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,11 +26,11 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is the current `HEAD` (client reconnect/timeout
-hardening after `feat(run): add print-mode auto-compaction`). The one-shot
-auto-compaction and the two covered client criteria are implemented, verified,
-and committed locally. The immediate push is blocked because the HTTPS remote
-requires GitHub credentials.
+The latest local checkpoint is the current `HEAD` (`feat(config): complete
+selector interaction`) after the client reconnect/timeout hardening. The
+one-shot auto-compaction, covered client criteria, and selector behavior are
+implemented, verified, and committed locally. Pushes are blocked because the
+HTTPS remote requires GitHub credentials.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
 
@@ -47,8 +47,8 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, no cargo/rustc process still running,
-progress checker reports `46.99% (78/166; 88 open)`, with the client checkpoint
-ahead of the remote.
+progress checker reports `47.59% (79/166; 87 open)`, with the local client and
+selector checkpoints ahead of the remote and no cargo/rustc process running.
 
 ## Verification already completed
 
@@ -64,6 +64,9 @@ These checks passed during the session:
 /home/mustbearnold/.cargo/bin/cargo test -p pi-client --offline
 /home/mustbearnold/.cargo/bin/cargo test -p pi-server --offline
 /home/mustbearnold/.cargo/bin/cargo check --workspace --offline
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline interactive::config_selector
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+/home/mustbearnold/.cargo/bin/cargo test -p pi-tui --offline
 /home/mustbearnold/.cargo/bin/cargo test -p pi-tui terminal_image --offline
 /home/mustbearnold/.cargo/bin/cargo test -p pi-tui terminal::tests::cell_size_query_and_response_update_image_dimensions --offline
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent modes::rpc::tests --offline
@@ -107,6 +110,16 @@ working tree:
   supplemental S-045/S-047 remain open; this is auxiliary T4 hardening, not a
   claim that the full upstream client library is complete.
 
+The ConfigSelector interactive milestone (#59) is the latest local checkpoint:
+
+- The selector now supports search/filtering, circular/page navigation, global
+  toggles, project inherit/load/unload cycling, inherited-resource indicators,
+  package/top-level override persistence, and synchronous settings flushes.
+- The focused selector suite has 7 passing tests; the full coding-agent suite
+  has 436 unit tests plus its integration targets, and the full pi-tui suite
+  has 186 passing tests. #60 remains open for deterministic render snapshots
+  and PTY coverage; #61/#62 and the remaining terminal probes are next.
+
 ## Major parity work already present
 
 The current source includes substantial ports beyond the original baseline:
@@ -133,10 +146,10 @@ items just because a similarly named Rust module exists.
 ## Recommended next sequence
 
 1. Retry `git push origin main` after credentials are available; the current
-   compaction checkpoint is local and is not remote yet.
-2. Audit the remaining TUI/config-selector interactive behavior; client
-   reconnect/timeouts are now covered for #54/#56, with the residual auxiliary
-   gaps explicitly left open in the ledger.
+   client/selector checkpoint is local and is not remote yet.
+2. Add
+   deterministic render snapshots/PTY coverage for #60 before the remaining
+   alt-screen and terminal-probe work.
 3. Keep `CONVERSION-LEDGER.md`, `PLAN.md`, and this handoff synchronized;
    only mark a task complete with an evidence tier and exact command/fixture.
 
