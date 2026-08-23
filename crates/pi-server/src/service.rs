@@ -121,6 +121,19 @@ impl InMemoryService {
             listener(event.clone());
         }
     }
+
+    /// Settle a running session back to Idle and emit a `Snapshot` (used by
+    /// tests to simulate a streaming turn finishing so the manager's
+    /// dispose-on-idle logic can be exercised).
+    pub fn settle_idle(&self, session_id: &str) -> Result<(), PiServerError> {
+        let mut inner = self.inner.lock().unwrap();
+        let snap = inner
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| PiServerError::new(pi_protocol::ProtocolErrorCode::NotFound, "Session not found".to_string()))?;
+        snap.phase = SessionPhase::Idle;
+        Ok(())
+    }
 }
 
 impl PiServerService for InMemoryService {

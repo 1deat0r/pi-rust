@@ -205,7 +205,7 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
 - [x] 49. `LiveSessionManager`: acquire/release exclusivity + attach/detach
       validation on server.
 - [x] 50. Session lock + terminal-close semantics + command queuing.
-- [ ] 51. Subscription segment control for prompt/steer concurrency.
+- [x] 51. Subscription segment control for prompt/steer concurrency.
 - [ ] 52. Port `testing/service.ts` parity harness + conformance suite.
 - [ ] 53. Server conformance tests (30+ cases). (unit)
 - [ ] 54. Client reconnect state machine + connection-state listeners.

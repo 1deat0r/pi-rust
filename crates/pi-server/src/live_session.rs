@@ -22,8 +22,10 @@
 //! The async promise arbitration is intentionally collapsed: commands here run
 //! synchronously under the service lock, so a concurrent open of the same id
 //! is serialized rather than coalesced. Transport-level connection closure on
-//! terminal sessions and subscription segment control (per-request progress
-//! scoping) remain outside this manager and are #51 concerns.
+//! terminal sessions and per-request progress scoping beyond the attached-session
+//! segment (#51) remain outside this manager; per-connection progress delivery is
+//! scoped to the connection's attached session segment, and dispose-on-idle is
+//! driven by runtime snapshot/progress events so idle sessions do not leak.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -491,6 +493,56 @@ fn metadata_of(snap: &SessionSnapshot) -> SessionMetadata {
     }
 }
 
+/// Dispose an idle, unattached live session in response to a runtime
+/// `Snapshot`/`Progress` event (upstream `LiveSessionManager.handleRuntimeEvent`
+/// calls `scheduleMaybeDispose(live)` after every event). Without this a session
+/// that becomes idle with no attached connections after a concurrent prompt/steer
+/// would leak in the live map. Runs from event context, so it must not block on a
+/// runtime guard it may already hold: the phase check uses `try_lock` (busy → skip,
+/// a later event retries).
+fn maybe_dispose_event(
+    live: &Arc<Mutex<HashMap<String, LiveSession>>>,
+    snapshots: &Arc<ServerSnapshotPublisher>,
+    service: &Arc<Mutex<dyn PiServerService>>,
+    id: &str,
+) {
+    let should_dispose = {
+        let mut guard = live.lock().unwrap();
+        let Some(sess) = guard.get_mut(id) else { return };
+        if !sess.ready || sess.disposing || !sess.connections.is_empty() || sess.operation_count > 0 {
+            return;
+        }
+        // If the runtime guard is held on this thread (the very event tripping
+        // us mid-op), skip; an idle session's disposal retries on a later event.
+        let Ok(rg) = sess.runtime.try_lock() else { return };
+        if sess.terminal || rg.get_phase() == SessionPhase::Idle {
+            sess.disposing = true;
+            true
+        } else {
+            false
+        }
+    };
+    if !should_dispose {
+        return;
+    }
+    // Remove + unsubscribe, then drop the live guard before touching the runtime
+    // or recomputing metadata (compute_metadata_event re-locks `live`).
+    let runtime = {
+        let mut guard = live.lock().unwrap();
+        let Some(mut sess) = guard.remove(id) else { return };
+        if let Some(unsub) = sess.unsubscribe.take() {
+            unsub();
+        }
+        sess.runtime
+    };
+    // The try_lock above proved the runtime guard is free on this thread, so a
+    // blocking lock is safe here (dispose never re-enters a held guard).
+    let _ = runtime.lock().unwrap().dispose();
+    if let Some(meta) = compute_metadata_event(service, live) {
+        snapshots.refresh(meta);
+    }
+}
+
 /// Merge stored sessions with live snapshot overrides (upstream `listMetadata`).
 fn compute_metadata(
     service: &Arc<Mutex<dyn PiServerService>>,
@@ -547,6 +599,10 @@ fn manager_handle_event(
             if let Some(meta) = compute_metadata_event(service, live) {
                 snapshots.refresh(meta);
             }
+            // A snapshot may carry an idle+unattached session after a concurrent
+            // prompt/steer; dispose it so it does not leak (upstream
+            // scheduleMaybeDispose).
+            maybe_dispose_event(live, snapshots, service, id);
         }
         crate::service::PiSessionRuntimeEvent::Progress(progress) => {
             let sinks: Vec<ProgressSink> = {
@@ -559,6 +615,7 @@ fn manager_handle_event(
             for sink in sinks {
                 sink(&progress);
             }
+            maybe_dispose_event(live, snapshots, service, id);
         }
         crate::service::PiSessionRuntimeEvent::Error(_error) => {
             // Mark terminal + dispose. The synchronous manager closes the
@@ -939,5 +996,107 @@ mod tests {
         assert!(m.live.lock().unwrap().contains_key(&id));
         m.close();
         assert!(m.live.lock().unwrap().is_empty(), "close should dispose every live session");
+    }
+
+    fn progress_delta(delta: &str) -> TranscriptProgress {
+        TranscriptProgress::AssistantDelta {
+            message_id: "m1".to_string(),
+            content_index: 0,
+            kind: TranscriptDeltaKind::Text,
+            delta: delta.to_string(),
+        }
+    }
+
+    /// Segment control: progress on session A reaches only connections whose
+    /// subscription segment is A; a connection attached only to B must not see
+    /// A's progress (even though it shares the manager).
+    #[test]
+    fn progress_is_scoped_to_the_attached_session_segment() {
+        let (m, service) = manager_with_service();
+        let a_received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut conn_a = ConnectionHandle::new("a".to_string());
+        conn_a.progress = Some(Arc::new({
+            let a_received = a_received.clone();
+            move |p: &TranscriptProgress| {
+                if let TranscriptProgress::AssistantDelta { delta, .. } = p {
+                    a_received.lock().unwrap().push(delta.clone());
+                }
+            }
+        }));
+        let a_id = create_live(&m, &mut conn_a);
+
+        // A second, unrelated session on a second, only-B connection.
+        let b_received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut conn_b = ConnectionHandle::new("b".to_string());
+        conn_b.progress = Some(Arc::new({
+            let b_received = b_received.clone();
+            move |p: &TranscriptProgress| {
+                if let TranscriptProgress::AssistantDelta { delta, .. } = p {
+                    b_received.lock().unwrap().push(delta.clone());
+                }
+            }
+        }));
+        let b_id = create_live(&m, &mut conn_b);
+        assert_ne!(a_id, b_id);
+
+        // Only session A emits; B's segment (session B) receives nothing.
+        service.emit(&a_id, crate::service::PiSessionRuntimeEvent::Progress(progress_delta("alpha")));
+        assert_eq!(*a_received.lock().unwrap(), vec!["alpha".to_string()]);
+        assert!(b_received.lock().unwrap().is_empty(), "cross-session segment leakage");
+    }
+
+    /// Detaching mid-turn unsubscribes the connection's progress segment: no
+    /// further progress for that session reaches it (upstream per-connection
+    /// attach exclusivity).
+    #[test]
+    fn detach_unsubscribes_progress_segment() {
+        let (m, service) = manager_with_service();
+        let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink: ProgressSink = Arc::new({
+            let received = received.clone();
+            move |p: &TranscriptProgress| {
+                if let TranscriptProgress::AssistantDelta { delta, .. } = p {
+                    received.lock().unwrap().push(delta.clone());
+                }
+            }
+        });
+        let mut conn = ConnectionHandle::new("c1".to_string());
+        conn.progress = Some(sink);
+        let id = create_live(&m, &mut conn);
+
+        service.emit(&id, crate::service::PiSessionRuntimeEvent::Progress(progress_delta("pre")));
+        assert_eq!(*received.lock().unwrap(), vec!["pre".to_string()]);
+
+        // Detach: the connection's progress segment is removed.
+        m.execute_command(&mut conn, Command::Detach { session_id: id.clone() }).unwrap();
+        service.emit(&id, crate::service::PiSessionRuntimeEvent::Progress(progress_delta("post")));
+        assert_eq!(*received.lock().unwrap(), vec!["pre".to_string()], "post-detach progress leaked");
+    }
+
+    /// A session left idle + unattached after a concurrent turn must be disposed
+    /// when the runtime's idle snapshot arrives (no live-map leak).
+    #[test]
+    fn idle_and_unattached_session_is_disposed_on_snapshot() {
+        let (m, service) = manager_with_service();
+        let mut conn = ConnectionHandle::new("c1".to_string());
+        conn.progress = None;
+        let id = create_live(&m, &mut conn);
+
+        // Start a turn (phase -> Turn) then drop the only attachment.
+        let CommandResult::Prompt { .. } = m
+            .execute_command(&mut conn, Command::Prompt { session_id: id.clone(), text: "go".to_string() })
+            .unwrap()
+        else { panic!("expected Prompt") };
+        m.execute_command(&mut conn, Command::Detach { session_id: id.clone() }).unwrap();
+        // Still live: phase is Turn, not idle.
+        assert!(m.live.lock().unwrap().contains_key(&id));
+
+        // The turn finishes: the runtime settles to Idle and emits a Snapshot.
+        service.settle_idle(&id).unwrap();
+        service.emit(&id, crate::service::PiSessionRuntimeEvent::Snapshot);
+        assert!(
+            !m.live.lock().unwrap().contains_key(&id),
+            "idle + unattached session should be disposed on snapshot (no leak)"
+        );
     }
 }
