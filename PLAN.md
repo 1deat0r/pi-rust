@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 41.57% (69/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 42.17% (70/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;

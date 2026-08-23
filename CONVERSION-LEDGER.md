@@ -6,25 +6,23 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **41.57% (69/166)**. Run
+- The exhaustive checker reports **42.17% (70/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
-- The workspace currently checks successfully (`cargo check --workspace
-  --offline`), and the focused TUI/config/RPC suites pass. The full workspace
-  test result is re-run at the verification gates rather than inferred from a
-  historical session count.
+- The workspace currently checks and tests successfully offline, including the
+  focused RPC suite after S-040. The full workspace test result is re-run at
+  verification gates rather than inferred from a historical session count.
 - The original 100 entries remain the historical work queue. The supplemental
   S1 section is authoritative for residual provider, harness, runtime, TUI,
   RPC, auxiliary client/server, evaluation, and final-audit work.
 
-## Current state (verified 2026-08-23, before these tasks)
+## Current state (verified 2026-08-24)
 
-- HEAD `83e55cb` on main; last clean revision was 1240 tests / 0 warnings.
-- **Working tree is RED and uncommitted**: in-flight `/share` + `--export` +
-  editor-autocomplete diff (5 modified files + `tests/cli_export.rs` untracked).
-  `cli_export.rs:15` has an unterminated char literal (the `"data-session="`
-  string on line 13 is broken) — the test target does not compile. The lib/
-  bin target builds.
+- HEAD `7bace4f` on `main` contains the prior conversion checkpoint. The
+  S-040 RPC settings implementation is the current uncommitted change until
+  its dedicated checkpoint is created.
+- The workspace is green under `cargo test --workspace --offline`; the focused
+  RPC settings suite passes all 30 tests.
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
   device-code flows, codex WebSocket transport (SSE fallback today),
   `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
@@ -613,9 +611,16 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       (7 passed), `cargo test -p pi-coding-agent --offline
       modes::rpc::tests -- --nocapture` (29 passed), and
       `cargo test --workspace --offline`.
-- [ ] S-040 Apply all settings values (reserve/keep tokens, retry provider
+- [x] S-040 Apply all settings values (reserve/keep tokens, retry provider
       options, queue modes, transport, model) in RPC runtime behavior instead
-      of using only defaults or approximations.
+      of using only defaults or approximations. (unit; mock) RPC runtime
+      construction now derives configured compaction reserve/retention,
+      provider timeout/retry/delay settings, HTTP/WebSocket transport
+      settings, thinking budgets/levels, model selection, and queue modes;
+      prompt and compaction requests receive the same provider defaults while
+      preserving request-local overrides. Verified with `cargo test
+      -p pi-coding-agent --offline modes::rpc::tests -- --nocapture` (30
+      passed) and `cargo test --workspace --offline`.
 - [ ] S-041 Audit RPC abort vs abort-bash lifecycle, terminal events, and
       session records under simultaneous prompt/tool activity.
 - [ ] S-042 Produce golden transcripts for every RPC command and event type,

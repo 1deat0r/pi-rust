@@ -21,14 +21,12 @@ use pi_agent::rich_agent::{
 use pi_agent::session::jsonl::repo::CreateOptions;
 use pi_agent::session::session::Session as JsonlSession;
 
-use pi_agent::harness::{BoxFuture, CompleteSimpleFn, SimpleModels};
+use pi_agent::harness::SimpleModels;
 use pi_agent::session::state::{BranchBounds, EntryOrder, EntryQuery, ForkOptions};
 use pi_agent::session::types::{EntryNoStats, SessionMetadata};
 use pi_agent::session::JsonlSessionRepo;
 use pi_ai::model::Model;
 use pi_ai::models::Models;
-use pi_ai::types::AssistantMessage;
-use pi_ai::types::SimpleStreamOptions;
 use pi_ai::types::{AssistantMessageEvent, DoneReason, Message};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -87,12 +85,94 @@ fn queue_mode(value: &str) -> QueueMode {
     }
 }
 
+fn normalized_queue_mode(value: &str) -> String {
+    match value {
+        "all" => "all".to_string(),
+        "one-at-a-time" => "one-at-a-time".to_string(),
+        _ => "one-at-a-time".to_string(),
+    }
+}
+
+fn configured_thinking_level(
+    settings: &SettingsManager,
+    model: &Model,
+) -> pi_ai::types::ModelThinkingLevel {
+    let raw = settings
+        .get_model_thinking_level(&model.provider, &model.id)
+        .or_else(|| settings.get_default_thinking_level())
+        .unwrap_or("off");
+    let requested = raw
+        .parse::<pi_ai::types::ModelThinkingLevel>()
+        .unwrap_or(pi_ai::types::ModelThinkingLevel::Off);
+    pi_ai::model::clamp_thinking_level(model, requested)
+}
+
+fn thinking_level_for_request(
+    level: pi_ai::types::ModelThinkingLevel,
+) -> Option<pi_ai::types::ThinkingLevel> {
+    match level {
+        pi_ai::types::ModelThinkingLevel::Off => None,
+        pi_ai::types::ModelThinkingLevel::Minimal => Some(pi_ai::types::ThinkingLevel::Minimal),
+        pi_ai::types::ModelThinkingLevel::Low => Some(pi_ai::types::ThinkingLevel::Low),
+        pi_ai::types::ModelThinkingLevel::Medium => Some(pi_ai::types::ThinkingLevel::Medium),
+        pi_ai::types::ModelThinkingLevel::High => Some(pi_ai::types::ThinkingLevel::High),
+        pi_ai::types::ModelThinkingLevel::Xhigh => Some(pi_ai::types::ThinkingLevel::Xhigh),
+        pi_ai::types::ModelThinkingLevel::Max => Some(pi_ai::types::ThinkingLevel::Max),
+    }
+}
+
+fn thinking_budgets(settings: &SettingsManager) -> Option<pi_ai::types::ThinkingBudgets> {
+    let values = settings.get_thinking_budgets()?;
+    let budget = |name: &str| values.get(name).and_then(serde_json::Value::as_u64);
+    Some(pi_ai::types::ThinkingBudgets {
+        minimal: budget("minimal"),
+        low: budget("low"),
+        medium: budget("medium"),
+        high: budget("high"),
+    })
+}
+
+/// Merge the coding-agent runtime's provider settings into a request-specific
+/// simple-stream option set. Compaction supplies request-local values such as
+/// max tokens and a fresh session id; those values must win over the runtime
+/// defaults.
+fn apply_provider_defaults(
+    defaults: &pi_ai::types::SimpleStreamOptions,
+    options: &mut pi_ai::types::SimpleStreamOptions,
+) {
+    if options.base.base.api_key.is_none() {
+        options.base.base.api_key = defaults.base.base.api_key.clone();
+    }
+    if options.base.base.timeout_ms.is_none() {
+        options.base.base.timeout_ms = defaults.base.base.timeout_ms;
+    }
+    if options.base.base.max_retries.is_none() {
+        options.base.base.max_retries = defaults.base.base.max_retries;
+    }
+    if options.base.base.max_retry_delay_ms.is_none() {
+        options.base.base.max_retry_delay_ms = defaults.base.base.max_retry_delay_ms;
+    }
+    if options.base.transport.is_none() {
+        options.base.transport = defaults.base.transport.clone();
+    }
+    if options.base.session_id.is_none() {
+        options.base.session_id = defaults.base.session_id.clone();
+    }
+    if options.base.websocket_connect_timeout_ms.is_none() {
+        options.base.websocket_connect_timeout_ms = defaults.base.websocket_connect_timeout_ms;
+    }
+    if options.thinking_budgets.is_none() {
+        options.thinking_budgets = defaults.thinking_budgets.clone();
+    }
+}
+
 /// The RPC runtime: owns the current model/session and executes commands.
 pub struct RpcRuntime {
     pub cwd: String,
     pub agent_dir: String,
     pub settings: SettingsManager,
     pub models: Models,
+    api_key: Option<String>,
     pub provider: String,
     pub model: Model,
     pub thinking_level: pi_ai::types::ModelThinkingLevel,
@@ -258,8 +338,12 @@ impl RpcRuntime {
         let cwd = config::cwd();
         let agent_dir = config::get_agent_dir().display().to_string();
         let models = crate::core::model_registry::builtin_models();
-        let steering_mode = settings.get_steering_mode().to_string();
-        let follow_up_mode = settings.get_follow_up_mode().to_string();
+        let api_key = args
+            .api_key
+            .clone()
+            .or_else(|| std::env::var(config::ENV_KEY).ok());
+        let steering_mode = normalized_queue_mode(settings.get_steering_mode());
+        let follow_up_mode = normalized_queue_mode(settings.get_follow_up_mode());
         let auto_compaction_enabled = settings.get_compaction_enabled();
         let auto_retry_enabled = settings.get_retry_enabled();
 
@@ -336,6 +420,7 @@ impl RpcRuntime {
                 model_hint.as_deref(),
             )?
         };
+        let thinking_level = configured_thinking_level(&settings, &model);
 
         // Session repo + initial session.
         let session_root = args
@@ -369,9 +454,10 @@ impl RpcRuntime {
             agent_dir,
             settings,
             models,
+            api_key,
             provider,
             model,
-            thinking_level: pi_ai::types::ModelThinkingLevel::Off,
+            thinking_level,
             is_streaming: false,
             is_compacting: false,
             steering_mode: steering_mode.clone(),
@@ -405,19 +491,85 @@ impl RpcRuntime {
         self.models.get_models(None)
     }
 
+    fn runtime_simple_stream_options(&self) -> pi_ai::types::SimpleStreamOptions {
+        let (provider_timeout_ms, provider_max_retries, max_retry_delay_ms) =
+            self.settings.get_provider_retry_settings();
+        let http_idle_timeout_ms = self.settings.get_http_idle_timeout_ms().unwrap_or(300_000);
+        // Upstream maps a zero HTTP idle timeout to a large SDK timeout rather
+        // than passing zero, which most SDKs interpret as an immediate timeout.
+        let effective_idle_timeout_ms = if http_idle_timeout_ms == 0 {
+            i32::MAX as u64
+        } else {
+            http_idle_timeout_ms
+        };
+        let websocket_connect_timeout_ms = self
+            .settings
+            .get_websocket_connect_timeout_ms()
+            .ok()
+            .flatten();
+
+        pi_ai::types::SimpleStreamOptions {
+            base: pi_ai::types::StreamOptions {
+                base: pi_ai::types::ProviderRequestOptions {
+                    api_key: self.api_key.clone(),
+                    timeout_ms: Some(provider_timeout_ms.unwrap_or(effective_idle_timeout_ms)),
+                    max_retries: provider_max_retries
+                        .map(|retries| u32::try_from(retries).unwrap_or(u32::MAX)),
+                    max_retry_delay_ms: Some(max_retry_delay_ms),
+                    ..Default::default()
+                },
+                transport: Some(self.settings.get_transport().to_string()),
+                session_id: Some(self.session_id.clone()),
+                websocket_connect_timeout_ms,
+                ..Default::default()
+            },
+            reasoning: thinking_level_for_request(self.thinking_level),
+            thinking_budgets: thinking_budgets(&self.settings),
+            ..Default::default()
+        }
+    }
+
+    fn compaction_settings(&self) -> pi_agent::harness::compaction::CompactionSettings {
+        let (_, reserve_tokens, keep_recent_tokens) = self.settings.get_compaction_settings();
+        pi_agent::harness::compaction::CompactionSettings {
+            enabled: self.auto_compaction_enabled,
+            reserve_tokens,
+            keep_recent_tokens,
+        }
+    }
+
+    fn retry_policy(&self) -> pi_ai::utils::retry::RetryPolicy {
+        let (enabled, max_retries, base_delay_ms) = self.settings.get_retry_settings();
+        pi_ai::utils::retry::RetryPolicy {
+            enabled,
+            max_retries: u32::try_from(max_retries).unwrap_or(u32::MAX),
+            base_delay_ms,
+        }
+    }
+
+    fn simple_models(&self) -> SimpleModels {
+        let models = self.models.clone();
+        let defaults = self.runtime_simple_stream_options();
+        SimpleModels::new(move |model, context, request_options| {
+            let models = models.clone();
+            let model = model.clone();
+            let context = context.clone();
+            let mut request_options = request_options.clone();
+            apply_provider_defaults(&defaults, &mut request_options);
+            Box::pin(async move {
+                models
+                    .complete_simple(&model, &context, Some(&request_options))
+                    .await
+            })
+        })
+    }
+
     /// The stream function used by the agent loop (facade-backed dispatch;
     /// faux has its scripted path echoing the prompt).
     fn make_stream_fn(&self, reply: &str) -> crate::run::StreamFn {
         let models = self.models.clone();
         let provider = self.provider.clone();
-        let api_key = std::env::var(config::ENV_KEY).ok();
-        let stream_options = pi_ai::types::StreamOptions {
-            base: pi_ai::types::ProviderRequestOptions {
-                api_key,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let stream_options = self.runtime_simple_stream_options();
         if provider == "faux" {
             let core = pi_ai::providers::FauxProviderCore::new(
                 &pi_ai::providers::RegisterFauxProviderOptions::default(),
@@ -457,9 +609,9 @@ impl RpcRuntime {
                 pi_ai::providers::FauxResponseStep::Factory(factory)
             };
             core.set_responses((0..32).map(|_| make_response(reply.clone())).collect());
-            return Arc::new(move |model, ctx| core.stream(model, ctx, None));
+            return Arc::new(move |model, ctx| core.stream(model, ctx, Some(&stream_options)));
         }
-        Arc::new(move |model, ctx| models.stream(model, ctx, Some(&stream_options)))
+        Arc::new(move |model, ctx| models.stream_simple(model, ctx, Some(&stream_options)))
     }
 
     fn prepare_prompt_run(&self, message: &str) -> RpcPromptRun {
@@ -631,7 +783,7 @@ impl RpcRuntime {
         if !self.auto_compaction_enabled {
             return Ok(false);
         }
-        let settings = pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS;
+        let settings = self.compaction_settings();
         let estimate = pi_agent::harness::compaction::estimate_context_tokens(&self.messages);
         if !pi_agent::harness::compaction::should_compact(
             estimate.tokens,
@@ -647,28 +799,16 @@ impl RpcRuntime {
         else {
             return Ok(false);
         };
-        let models = self.models.clone();
-        let complete_simple_fn: pi_agent::harness::CompleteSimpleFn =
-            Arc::new(move |model, ctx, opts| {
-                let models = models.clone();
-                let opts = opts.clone();
-                let model = model.clone();
-                let ctx = ctx.clone();
-                Box::pin(async move { models.complete_simple(&model, &ctx, Some(&opts)).await })
-            });
-        let options = pi_agent::harness::SimpleModels { complete_simple_fn };
-        let retry = pi_ai::utils::retry::RetryPolicy {
-            enabled: false,
-            max_retries: 0,
-            base_delay_ms: 0,
-        };
+        let options = self.simple_models();
+        let retry = self.retry_policy();
+        let thinking_level = self.thinking_level.as_str().to_string();
         let result = pi_agent::harness::compaction::compact(
             &preparation,
             &options,
             &self.model,
             None,
             None,
-            None,
+            Some(&thinking_level),
             Some(&retry),
             None,
         )
@@ -1033,8 +1173,10 @@ impl RpcRuntime {
                 let model = self.models.get_model(&provider_name, &model_id);
                 match model {
                     Some(model) => {
+                        let thinking_level = configured_thinking_level(&self.settings, &model);
                         self.provider = provider_name.clone();
                         self.model = model.clone();
+                        self.thinking_level = thinking_level;
                         respond(
                             store,
                             success(
@@ -1067,11 +1209,13 @@ impl RpcRuntime {
                 match current {
                     Some(idx) if !available.is_empty() => {
                         let next = available[(idx + 1) % available.len()].clone();
+                        let thinking_level = configured_thinking_level(&self.settings, &next);
                         self.provider = next.provider.clone();
                         self.model = next.clone();
+                        self.thinking_level = thinking_level;
                         let data = serde_json::json!({
                             "model": next,
-                            "thinkingLevel": self.thinking_level.as_str(),
+                            "thinkingLevel": thinking_level.as_str(),
                             "isScoped": false,
                         });
                         respond(store, success(id.as_deref(), &cmd, Some(data)));
@@ -1110,7 +1254,7 @@ impl RpcRuntime {
                 let parsed = level
                     .parse::<pi_ai::types::ModelThinkingLevel>()
                     .unwrap_or(pi_ai::types::ModelThinkingLevel::Off);
-                self.thinking_level = parsed;
+                self.thinking_level = pi_ai::model::clamp_thinking_level(&self.model, parsed);
                 respond(store, success(id.as_deref(), &cmd, None));
                 Ok(())
             }
@@ -1236,7 +1380,7 @@ impl RpcRuntime {
                 };
                 let prepared = match pi_agent::harness::compaction::prepare_compaction(
                     &entries,
-                    &pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS,
+                    &self.compaction_settings(),
                 ) {
                     Ok(p) => p,
                     Err(e) => {
@@ -1262,35 +1406,17 @@ impl RpcRuntime {
                         return Ok(());
                     }
                     Some(preparation) => {
-                        let models = self.models.clone();
-                        let complete_simple_fn: CompleteSimpleFn = Arc::new(
-                            move |model: &Model,
-                                  ctx: &pi_ai::types::Context,
-                                  opts: &SimpleStreamOptions| {
-                                let models = models.clone();
-                                let opts = opts.clone();
-                                let model = model.clone();
-                                let ctx = ctx.clone();
-                                Box::pin(async move {
-                                    models.complete_simple(&model, &ctx, Some(&opts)).await
-                                })
-                                    as BoxFuture<'static, AssistantMessage>
-                            },
-                        );
-                        let options = SimpleModels { complete_simple_fn };
+                        let options = self.simple_models();
                         let model = self.model.clone();
-                        let retry = pi_ai::utils::retry::RetryPolicy {
-                            enabled: false,
-                            max_retries: 0,
-                            base_delay_ms: 0,
-                        };
+                        let retry = self.retry_policy();
+                        let thinking_level = self.thinking_level.as_str().to_string();
                         let result = match pi_agent::harness::compaction::compact(
                             &preparation,
                             &options,
                             &model,
                             command.str_field("customInstructions").as_deref(),
                             None,
-                            None,
+                            Some(&thinking_level),
                             Some(&retry),
                             None,
                         )
@@ -2185,6 +2311,10 @@ mod tests {
     use super::*;
 
     async fn runtime_for_test() -> RpcRuntime {
+        runtime_for_test_with_settings(SettingsManager::in_memory(Default::default())).await
+    }
+
+    async fn runtime_for_test_with_settings(settings: SettingsManager) -> RpcRuntime {
         // Fully hermetic: pin an explicit faux model and a fresh session id/dir
         // so host-shell env (PI_MODEL / PI_SESSION_ID / PI_PROVIDER) cannot
         // leak into the runtime construction.
@@ -2202,7 +2332,6 @@ mod tests {
             "--no-tools".to_string(),
         ])
         .expect_run();
-        let settings = SettingsManager::in_memory(Default::default());
         RpcRuntime::new(&args, settings).await.unwrap()
     }
 
@@ -2548,7 +2677,87 @@ mod tests {
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(store[0].trim()).unwrap();
-        assert_eq!(v["data"]["thinkingLevel"], "high");
+        // The faux model does not advertise reasoning, so the upstream
+        // session clamps an unsupported requested level to `off`.
+        assert_eq!(v["data"]["thinkingLevel"], "off");
+    }
+
+    #[tokio::test]
+    async fn rpc_applies_settings_to_stream_compaction_retry_and_queues() {
+        let mut values = crate::core::settings::SettingsMap::new();
+        values.insert("transport".to_string(), serde_json::json!("sse"));
+        values.insert(
+            "websocketConnectTimeoutMs".to_string(),
+            serde_json::json!(333),
+        );
+        values.insert(
+            "compaction".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "reserveTokens": 1234,
+                "keepRecentTokens": 5678
+            }),
+        );
+        values.insert(
+            "retry".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "maxRetries": 4,
+                "baseDelayMs": 17,
+                "provider": {
+                    "timeoutMs": 777,
+                    "maxRetries": 5,
+                    "maxRetryDelayMs": 888
+                }
+            }),
+        );
+        values.insert("steeringMode".to_string(), serde_json::json!("all"));
+        values.insert(
+            "followUpMode".to_string(),
+            serde_json::json!("one-at-a-time"),
+        );
+        values.insert(
+            "thinkingBudgets".to_string(),
+            serde_json::json!({"minimal": 111, "low": 222, "medium": 333, "high": 444}),
+        );
+        let mut runtime = runtime_for_test_with_settings(SettingsManager::in_memory(values)).await;
+
+        assert_eq!(runtime.steering_mode, "all");
+        assert_eq!(runtime.follow_up_mode, "one-at-a-time");
+        assert_eq!(runtime.steering_queue.lock().unwrap().mode, QueueMode::All);
+        assert_eq!(
+            runtime.follow_up_queue.lock().unwrap().mode,
+            QueueMode::OneAtATime
+        );
+
+        // Faux is intentionally non-reasoning, so make the request model
+        // reasoning-capable to inspect the configured request-level effort.
+        runtime.model.reasoning = true;
+        runtime.thinking_level = pi_ai::types::ModelThinkingLevel::High;
+        let options = runtime.runtime_simple_stream_options();
+        assert_eq!(options.base.transport.as_deref(), Some("sse"));
+        assert_eq!(options.base.base.timeout_ms, Some(777));
+        assert_eq!(options.base.base.max_retries, Some(5));
+        assert_eq!(options.base.base.max_retry_delay_ms, Some(888));
+        assert_eq!(options.base.websocket_connect_timeout_ms, Some(333));
+        assert_eq!(options.reasoning, Some(pi_ai::types::ThinkingLevel::High));
+        assert_eq!(
+            options.thinking_budgets,
+            Some(pi_ai::types::ThinkingBudgets {
+                minimal: Some(111),
+                low: Some(222),
+                medium: Some(333),
+                high: Some(444),
+            })
+        );
+
+        let compaction = runtime.compaction_settings();
+        assert_eq!(compaction.reserve_tokens, 1234);
+        assert_eq!(compaction.keep_recent_tokens, 5678);
+        let retry = runtime.retry_policy();
+        assert!(retry.enabled);
+        assert_eq!(retry.max_retries, 4);
+        assert_eq!(retry.base_delay_ms, 17);
     }
 
     #[tokio::test]

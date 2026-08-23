@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-41.57% = 69 completed / 166 total tasks
-97 tasks remain open
+42.17% = 70 completed / 166 total tasks
+96 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,8 +26,10 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-Everything is uncommitted. Preserve the existing changes; do not use
-`git reset --hard`, `git checkout --`, or broad revert commands.
+The earlier large port is checkpointed locally in commit `7bace4f`. The current
+S-040 implementation and its documentation are still uncommitted at this
+handoff point. Preserve existing changes; do not use `git reset --hard`,
+`git checkout --`, or broad revert commands.
 
 The worktree is very large because the baseline was already heavily changed
 and `cargo fmt --all` reformatted many Rust files. The meaningful current
@@ -42,7 +44,7 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, no cargo/rustc process still running,
-progress checker reports `41.57% (69/166; 97 open)`.
+progress checker reports `42.17% (70/166; 96 open)`.
 
 ## Verification already completed
 
@@ -57,20 +59,18 @@ These checks passed during the session:
 node scripts/conversion-progress.mjs
 ```
 
-A full `cargo test --workspace --offline` passed after the S-039 retry parity
+A full `cargo test --workspace --offline` passed after the S-040 RPC settings
 changes, including all workspace unit, integration, and doctest targets.
 
 ## Last code change
 
-The latest change completed RPC retry parity:
+The latest change completed RPC settings parity:
 
-- `rich_agent.rs`: preserves every retry attempt's stream lifecycle and emits
-  retry start/end events while keeping retry cancellation semantics aligned.
-- `rpc.rs`: maps retry status and terminal events to the upstream JSON wire
-  shape, keeps failed retry messages out of live context, and persists them
-  durably.
-- Focused coverage: 7 rich-agent tests and 29 RPC tests; the full workspace
-  suite also passes offline.
+- `rpc.rs`: applies configured compaction, retry/provider, transport, thinking,
+  model, and queue settings to normal prompt and compaction execution while
+  preserving request-local overrides.
+- Focused coverage: 30 RPC tests; the full workspace suite also passes
+  offline.
 
 ## Major parity work already present
 
@@ -97,20 +97,17 @@ items just because a similarly named Rust module exists.
 
 ## Recommended next sequence
 
-1. Apply all settings values in RPC runtime behavior (S-040), especially
-   reserve/keep tokens, retry provider options, queue modes, transport, and
-   model selection.
-2. Audit RPC abort vs abort-bash lifecycle, terminal events, and session
+1. Audit RPC abort vs abort-bash lifecycle, terminal events, and session
    records under simultaneous prompt/tool activity (S-041).
-3. Produce golden transcripts for every RPC command and event type (S-042),
+2. Produce golden transcripts for every RPC command and event type (S-042),
    including switch/fork/clone, queue modes, compaction, export, and errors.
-4. Complete image/read processing parity and register the model-facing image
+3. Complete image/read processing parity and register the model-facing image
    behavior in the run path (#32 / S-020-related audit).
-5. Finish one-shot print-path auto-compaction and its binary/session fixture
+4. Finish one-shot print-path auto-compaction and its binary/session fixture
    tests (#33–34 / S-025).
-6. Audit client reconnect/timeouts and the remaining TUI/config-selector
+5. Audit client reconnect/timeouts and the remaining TUI/config-selector
    interactive behavior.
-7. Keep `CONVERSION-LEDGER.md` and the percentage in `PLAN.md` synchronized;
+6. Keep `CONVERSION-LEDGER.md` and the percentage in `PLAN.md` synchronized;
    only mark a task complete with an evidence tier and exact command/fixture.
 
 ## Useful source references
