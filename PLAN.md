@@ -656,12 +656,17 @@ Agent: pi (Claude)   HEAD: f3ae75f
   per upstream main.ts (error → `Error:` + exit 1; warning → `Warning:` +
   continue). 8 new unit tests (20 total in the args module); live-verified the
   error, warning, and clean-parse paths against the built binary.
+- **Flag-matrix golden test (T3 #47)**: `tests/cli_flag_matrix.rs` fires the
+  full upstream `args.ts` flag surface against the built binary — recognized
+  flags produce no "unknown flags" diagnostic, `--help` lists the complete
+  surface, error-valued diagnostics (missing `--use-theme` value) exit nonzero
+  with an `Error:` line, and invalid `--thinking` warns-but-continues. 5 tests.
 - **Scope note**: `--fork`, `-e`, `--skill`, `--prompt-template`, `--theme`
   parsing is done; run-path *honoring* of these flags lands with the T6 loaders
   (#73/#74) and the session-tree fork parity (#83/#88) — not half-wired here.
-- Workspace: **1318 tests passing** (was 1310); 0 lib warnings; clippy-clean for
+- Workspace: **1323 tests passing** (was 1310); 0 lib warnings; clippy-clean for
   the touched files.
-- Docs: NEXT-100.md (#46 done, #44/#45 already done last commit),
+- Docs: NEXT-100.md (#46/#47 done, #44/#45 already done last commit),
   pi-coding-agent/TODO.md updated. Repo pushed after every commit.
 
 ### Open (carry-forward)

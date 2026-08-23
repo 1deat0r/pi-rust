@@ -161,7 +161,12 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
       landed; run-path honoring of `--fork` (fork-session-and-continue) sits
       with the session-tree parity (#83/#88) and the
       skill/prompt-template/extension/theme loaders with T6 (#73/#74).
-- [ ] 47. Flag-matrix golden test: fire every flag; diff `--help` vs upstream.
+- [x] 47. Flag-matrix golden test: `tests/cli_flag_matrix.rs` fires the full
+      upstream `args.ts` flag surface against the built binary — every flag
+      parses without an "unknown flags" diagnostic, `--help` lists the full
+      surface, error-valued diagnostics (missing `--use-theme` value) exit
+      nonzero with an `Error:` line, and invalid `--thinking` warns-but-runs.
+      5 binary tests.
 - [ ] 48. Telemetry wiring: `PI_TELEMETRY` env → subscriber + span emission in
       run path; in-memory capture test.
 

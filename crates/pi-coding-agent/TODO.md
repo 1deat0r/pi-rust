@@ -124,6 +124,10 @@ Settings manager (full upstream surface) landed.
   labels; exit 1 on error diagnostics).
 - Run-path honoring of `--fork` and the skill/extension/prompt-template/theme
   loaders lands with T6 (#73/#74) and the session-tree fork parity (#83/#88).
+- tests/cli_flag_matrix.rs (T3 #47): fires the full upstream args.ts flag
+  surface against the built binary — no "unknown flags" for recognized flags,
+  `--help` lists the full surface, error diagnostics exit 1, invalid
+  `--thinking` warns-and-continues. 5 binary tests.
 
 ## Remaining (upstream mapping — big items first)
 - Wire SettingsManager into run/main (currently standalone; P4 criterion
