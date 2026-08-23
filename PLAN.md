@@ -685,6 +685,30 @@ Agent: pi (Claude)   HEAD: f3ae75f
   commit), pi-coding-agent/TODO.md updated. **T3 (coding-agent run-path
   parity) is now complete.** Repo pushed after every commit.
 
+### Session 14 addendum — independent reviewer gate (T1 #22)
+Agent: independent reviewer session (fresh context, not the implementing agent)
+
+- Ran the PLAN.md §0.3 reviewer gate over the T0+T1/T3 completion increment
+  (f3ae75f..5c3f64c). Verdict: **APPROVE WITH CONDITIONS**.
+- **C1 (blocking)**: json mode must not exit nonzero / write stderr on a
+  streamed model error — upstream `runPrintMode` only turns Error/Aborted into
+  a nonzero exit in text mode; json mode emits the error as an event and exits
+  0. Fix: removed the `Err("model error: …")` path from json_event.rs and
+  corrected the codifying test. **RESOLVED (commit b42050c).**
+- **C2 (blocking)**: `--tui-mode` diagnostics diverged — invalid values now
+  carry the quoted value (`Invalid TUI mode "bogus". …`), and a flag-like or
+  missing value reports `--tui-mode requires regular or fullscreen` without
+  swallowing the token. **RESOLVED (b42050c).**
+- **C3 (minor)**: main.rs exits inside the diagnostic loop; upstream prints
+  all diagnostics first then exits once if any is an error. **RESOLVED
+  (b42050c).**
+- Non-blocking notes: N1 provider attribution env override has no production
+  caller yet (real providers land T6); N3 json events buffered after the loop
+  (matches the codebase RPC pattern); N4 json_event.rs duplicates run.rs setup
+  (consolidation follow-up). **N2 resolved post-review** — `-v` now maps to
+  version per upstream args.ts (was verbose); `--verbose` remains long-form
+  only; unit test `short_v_is_version_not_verbose` added.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

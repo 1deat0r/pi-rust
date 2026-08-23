@@ -303,9 +303,9 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
             "--approve" | "-a" => args.approve = true,
             "--no-approve" | "-na" => args.no_approve = true,
             "--offline" => args.offline = true,
-            "--verbose" | "-v" => args.verbose = true,
+            "--verbose" => args.verbose = true,
             "--help" | "-h" => return ParseOutcome::Help,
-            "--version" => return ParseOutcome::Version,
+            "--version" | "-v" => return ParseOutcome::Version,
             _ => args.unknown_flags.push(arg.clone()),
         }
         i += 1;
@@ -385,6 +385,13 @@ mod tests {
     #[test]
     fn version_wins() {
         let argv: Vec<String> = vec!["--version".into()];
+        assert!(matches!(parse_args(&argv), ParseOutcome::Version));
+    }
+
+    #[test]
+    fn short_v_is_version_not_verbose() {
+        // Upstream args.ts maps `-v` to version (there is no short verbose).
+        let argv: Vec<String> = vec!["-v".into()];
         assert!(matches!(parse_args(&argv), ParseOutcome::Version));
     }
 

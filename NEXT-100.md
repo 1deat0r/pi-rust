@@ -111,7 +111,17 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
 - [x] 19. Port WebSocket client transport (`pi-ai/src/transports/ws.rs`).
 - [x] 20. Route codex to WS when settings `transport: websocket`; SSE fallback.
 - [x] 21. WS tests (fixture-driven + local ws echo server). (unit/mock)
-- [ ] 22. Reviewer gate: multi-session diff review of T0+T1 before continuing.
+- [x] 22. Reviewer gate: multi-session diff review of T0+T1 (and T3
+      completion) — independent reviewer session signed off. Verdict:
+      **APPROVE WITH CONDITIONS**, all three conditions (C1 json-mode terminal
+      error exit-0 parity, C2 `--tui-mode` diagnostics + token consumption,
+      C3 main.rs diagnostic-print-then-exit ordering) resolved in commit
+      b42050c. Non-blocking notes: N1 attribution not yet wired end-to-end
+      (real providers land in T6); N3 json events buffered (matches codebase
+      RPC pattern); N4 json_event.rs duplicates run.rs setup (consolidation
+      follow-up). **N2 (`-v` verbose-vs-version) resolved** — `-v` now maps to
+      version per upstream args.ts (was verbose); `--verbose` remains the long
+      form.
 
 ## T2 — Tool contract + validation
 
