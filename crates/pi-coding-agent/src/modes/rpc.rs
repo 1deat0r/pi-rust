@@ -241,12 +241,22 @@ impl RpcRuntime {
         if provider == "faux" {
             let core = pi_ai::providers::FauxProviderCore::new(&pi_ai::providers::RegisterFauxProviderOptions::default());
             let reply = if reply.is_empty() { "Hello from pi-rust".to_string() } else { reply.to_string() };
-            core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
-                pi_ai::providers::faux_assistant_message(
-                    vec![pi_ai::types::ContentBlock::text(format!("faux response to: {reply}"))],
-                    pi_ai::providers::FauxAssistantOptions::default(),
-                ),
-            )]);
+            // Factory step so tests can observe the context the model receives
+            // (e.g. multi-turn history seeding).
+            core.set_responses(vec![pi_ai::providers::FauxResponseStep::Factory(Box::new(
+                move |ctx: &pi_ai::types::Context,
+                      _options: Option<&pi_ai::types::SimpleStreamOptions>,
+                      _state: &pi_ai::providers::FauxProviderState,
+                      _model: &pi_ai::model::Model| {
+                    let history = ctx.messages.len();
+                    pi_ai::providers::faux_assistant_message(
+                        vec![pi_ai::types::ContentBlock::text(format!(
+                            "faux response to: {reply} (context messages: {history})"
+                        ))],
+                        pi_ai::providers::FauxAssistantOptions::default(),
+                    )
+                },
+            ))]);
             return Arc::new(move |model, ctx| core.stream(model, ctx, None));
         }
         Arc::new(move |model, ctx| models.stream(model, ctx, Some(&stream_options)))
@@ -369,8 +379,10 @@ impl RpcRuntime {
                 // Persist the user message.
                 let _ = self.persist_messages(&[prompt.clone()]).await;
 
-                // Stream events.
+                // Stream events. Seed the model context with prior history
+                // (the current prompt is passed separately below).
                 let mut agent_context = AgentContext::new(self.system_prompt.clone(), Vec::new());
+                agent_context.messages = self.messages[..self.messages.len() - 1].to_vec();
                 if self.tools_enabled {
                     agent_context.tools.push(pi_agent::tools::bash_tool(self.cwd.clone()));
                     agent_context.tools.push(pi_agent::tools::read_tool(self.cwd.clone()));
@@ -1512,6 +1524,49 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(store[0].trim()).unwrap();
         assert_eq!(v["success"], false);
         assert_eq!(v["error"], "Cannot export in-memory session to HTML");
+    }
+
+    #[tokio::test]
+    async fn second_turn_sees_first_turn_history() {
+        let mut runtime = runtime_for_test().await;
+        let mut store = Vec::new();
+        runtime
+            .handle_command(RpcCommand::parse(serde_json::json!({"type": "prompt", "message": "first"})).unwrap(), &mut store)
+            .await
+            .unwrap();
+        let first_text = last_assistant_text(&store);
+        assert!(first_text.contains("context messages: 1"), "first turn should see 1 context message (its own prompt): {first_text}");
+
+        let mut store = Vec::new();
+        runtime
+            .handle_command(RpcCommand::parse(serde_json::json!({"type": "prompt", "message": "second"})).unwrap(), &mut store)
+            .await
+            .unwrap();
+        let second_text = last_assistant_text(&store);
+        // Turn 2 context = [user(first), assistant(first), user(second)] = 3.
+        assert!(second_text.contains("context messages: 3"), "second turn should see accumulated history: {second_text}");
+    }
+
+    fn last_assistant_text(store: &[String]) -> String {
+        for line in store.iter().rev() {
+            let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            if v["type"] == "message_update" {
+                // The done event carries the full assistant message.
+                let event = &v["assistantMessageEvent"];
+                if event["type"] == "done" {
+                    if let Some(text) = event["message"]["content"].as_array() {
+                        let joined: String = text
+                            .iter()
+                            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                            .collect();
+                        if !joined.is_empty() {
+                            return joined;
+                        }
+                    }
+                }
+            }
+        }
+        String::new()
     }
 
 }

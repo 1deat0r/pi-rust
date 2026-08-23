@@ -115,20 +115,20 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
 
 ## T2 — Tool contract + validation
 
-- [ ] 23. Audit upstream AgentTool shape vs current `pi-agent/src/tools/`
+- [x] 23. Audit upstream AgentTool shape vs current `pi-agent/src/tools/`
       trait; per-tool deltas. (unit)
-- [ ] 24. Upgrade tool trait to upstream shape.
-- [ ] 25. `prepareArguments` for bash/read/write/edit/edit-diff/ls/find/grep/
+- [x] 24. Upgrade tool trait to upstream shape.
+- [x] 25. `prepareArguments` for bash/read/write/edit/edit-diff/ls/find/grep/
       image.
-- [ ] 26. `execute` upstream signature + `onUpdate` → rich loop emits
+- [x] 26. `execute` upstream signature + `onUpdate` → rich loop emits
       `tool_execution_update`.
-- [ ] 27. Terminate-hint plumbing in `rich_agent.rs`.
-- [ ] 28. Migrate every tool constructor + run.rs call sites.
-- [ ] 29. Port `validateToolArguments` (tool-args JSON-schema validation).
-- [ ] 30. Wire validation into `prepare_tool_call` with upstream errors.
-- [ ] 31. Tool-args validation tests (schema errors, unknown keys,
+- [x] 27. Terminate-hint plumbing in `rich_agent.rs`.
+- [x] 28. Migrate every tool constructor + run.rs call sites.
+- [x] 29. Port `validateToolArguments` (tool-args JSON-schema validation).
+- [x] 30. Wire validation into `prepare_tool_call` with upstream errors.
+- [x] 31. Tool-args validation tests (schema errors, unknown keys,
       partial-JSON args).
-- [ ] 32. Image tool parity audit + register model-facing `image` in run.rs
+- [x] 32. Image tool parity audit + register model-facing `image` in run.rs
       (7 → 8 built-in tools), match `/images` toggle.
 
 ## T3 — coding-agent run-path parity

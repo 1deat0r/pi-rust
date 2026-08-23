@@ -60,6 +60,9 @@ async fn stream_turn(
     let prompt = pi_agent::agent::user_text_prompt(message.clone(), pi_ai::types::now_ms());
     runtime.messages.push(prompt.clone());
     let mut context = AgentContext::new(runtime.system_prompt.clone(), Vec::new());
+    // Seed the model context with prior history (the current prompt is passed
+    // separately below); without this each turn would only see its own prompt.
+    context.messages = runtime.messages[..runtime.messages.len() - 1].to_vec();
     if runtime.tools_enabled {
         context.tools.push(pi_agent::tools::bash_tool(runtime.cwd.clone()));
         context.tools.push(pi_agent::tools::read_tool(runtime.cwd.clone()));
