@@ -105,6 +105,88 @@ async fn stream_turn(
     new_messages
 }
 
+/// Auto-compaction (upstream `core/compaction/` loop): after a turn, if the
+/// estimated context tokens exceed the model's window minus the reserve,
+/// summarize the history through the models facade and replace the in-memory
+/// context with the summary plus the retained tail. Returns true when
+/// compaction ran.
+async fn maybe_auto_compact(runtime: &mut InteractiveRuntime) -> Result<bool, String> {
+    let settings = pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS;
+    let estimate = pi_agent::harness::compaction::estimate_context_tokens(&runtime.messages);
+    if !pi_agent::harness::compaction::should_compact(estimate.tokens, runtime.model.context_window, &settings) {
+        return Ok(false);
+    }
+    let entries = runtime
+        .session
+        .find_entries(&pi_agent::session::state::EntryQuery {
+            order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
+            id: None,
+            entry_type: None,
+            custom_type: None,
+            cursor: None,
+            limit: None,
+        })
+        .await
+        .map_err(|e| format!("auto-compact: read entries: {e}"))?;
+    let Some(preparation) = pi_agent::harness::compaction::prepare_compaction(&entries, &settings)
+        .map_err(|e| format!("auto-compact: prepare: {e}"))?
+    else {
+        return Ok(false);
+    };
+    // Summarize through the models facade (same seam as the RPC compact).
+    let models = runtime.models.clone();
+    let complete_simple_fn: pi_agent::harness::CompleteSimpleFn =
+        Arc::new(move |model, ctx, opts| {
+            let models = models.clone();
+            let opts = opts.clone();
+            let model = model.clone();
+            let ctx = ctx.clone();
+            Box::pin(async move { models.complete_simple(&model, &ctx, Some(&opts)).await })
+        });
+    let options = pi_agent::harness::SimpleModels { complete_simple_fn };
+    let retry = pi_ai::utils::retry::RetryPolicy { enabled: false, max_retries: 0, base_delay_ms: 0 };
+    let result = pi_agent::harness::compaction::compact(
+        &preparation,
+        &options,
+        &runtime.model,
+        None,
+        None,
+        None,
+        Some(&retry),
+        None,
+    )
+    .await
+    .map_err(|e| format!("auto-compact: {e}"))?;
+
+    // Replace the in-memory context: summary message + retained tail.
+    let summary_msg = pi_agent::agent::user_text_prompt(
+        format!("[Compaction summary]\n{}", result.summary),
+        pi_ai::types::now_ms(),
+    );
+    let mut replaced = vec![summary_msg];
+    replaced.extend(result.retained_tail.clone());
+    runtime.messages = replaced;
+
+    // Persist a compaction entry so the session file records the summary.
+    runtime
+        .session
+        .append_entry(
+            EntryNoStats::Compaction {
+                id: format!("c-{}", pi_agent::session::new_id()),
+                summary: result.summary.clone(),
+                retained_tail: result.retained_tail,
+                tokens_before: result.tokens_before,
+                details: None,
+                usage: result.usage,
+            },
+            "main",
+        )
+        .await
+        .map_err(|e| format!("auto-compact: persist: {e}"))?;
+    runtime.persisted_until = runtime.messages.len();
+    Ok(true)
+}
+
 /// Short cwd for banners (home-relative like the footer).
 fn meta_short_cwd(cwd: &str) -> String {
     if let Some(home) = std::env::var("HOME").ok() {
@@ -717,6 +799,13 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         streaming = false;
                         pending_text = String::new();
                         *stream_buffer.lock().unwrap() = String::new();
+                        // Auto-compaction: summarize history when the context
+                        // approaches the model window (upstream compaction loop).
+                        match maybe_auto_compact(&mut runtime).await {
+                            Ok(true) => status_banner = "context compacted (auto)".to_string(),
+                            Ok(false) => {}
+                            Err(e) => status_banner = e,
+                        }
                     }
                     SubmitAction::Command(command, _arg) => {
                         match command.kind {
@@ -1380,4 +1469,103 @@ mod tests {
         assert_eq!(msg, "PI_SHARE_DRY_RUN=1: /share skipped");
         let _ = std::fs::remove_dir_all(&root);
     }
+    #[tokio::test]
+    async fn auto_compact_replaces_context_when_over_threshold() {
+        let _env = env_lock();
+        let root = std::env::temp_dir().join(format!("pi-compact-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        // Register faux in the models facade so complete_simple resolves
+        // (mirrors RpcRuntime::new's scripted faux registration).
+        {
+            use pi_ai::models::{create_provider, CreateProviderOptions, ProviderApiSpec, ProviderStreams};
+            use pi_ai::providers::{
+                faux_assistant_message, FauxAssistantOptions, FauxProviderCore, FauxResponseStep,
+                RegisterFauxProviderOptions,
+            };
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
+                vec![pi_ai::types::ContentBlock::text("Compaction summary: history retained")],
+                FauxAssistantOptions::default(),
+            ))]);
+            let stream_core = core.clone();
+            let stream = Arc::new(move |model: &pi_ai::model::Model,
+                                        ctx: &pi_ai::types::Context,
+                                        _options: Option<&pi_ai::types::StreamOptions>| {
+                stream_core.stream(model, ctx, None)
+            });
+            let simple_core = core.clone();
+            let stream_simple = Arc::new(move |model: &pi_ai::model::Model,
+                                               ctx: &pi_ai::types::Context,
+                                               options: Option<&pi_ai::types::SimpleStreamOptions>| {
+                simple_core.stream(model, ctx, options)
+            });
+            runtime.models.set_provider(create_provider(CreateProviderOptions {
+                id: "faux".to_string(),
+                name: Some("Faux".to_string()),
+                base_url: None,
+                headers: None,
+                auth: pi_ai::auth::ProviderAuth {
+                    api_key: Some(pi_ai::auth::env_api_key_auth("Faux API key", vec!["FAUX_API_KEY"])),
+                    oauth: None,
+                },
+                models: core.models.clone(),
+                api: ProviderApiSpec::Single(ProviderStreams { stream, stream_simple, fetch_deferred: None, cancel_deferred: None }),
+                filter_models: None,
+            }));
+        }
+        // The env-key auth resolves when FAUX_API_KEY is set.
+        std::env::set_var("FAUX_API_KEY", "test");
+        // Tiny context window so the threshold triggers immediately.
+        runtime.model.context_window = 1000;
+        // A few long messages push the estimate over window - reserve.
+        for i in 0..8 {
+            let text = format!("message {i}: {}", "x".repeat(400));
+            runtime.messages.push(pi_agent::agent::user_text_prompt(text, pi_ai::types::now_ms()));
+        }
+        // prepare_compaction reads session entries, so persist the messages.
+        persist_messages(&mut runtime.session, &runtime.messages).await;
+        runtime.persisted_until = runtime.messages.len();
+        let estimate = pi_agent::harness::compaction::estimate_context_tokens(&runtime.messages);
+        assert!(
+            pi_agent::harness::compaction::should_compact(estimate.tokens, runtime.model.context_window, &pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS),
+            "test setup: context should be over threshold (tokens={})",
+            estimate.tokens
+        );
+        let compacted = maybe_auto_compact(&mut runtime).await.expect("auto-compact");
+        assert!(compacted, "compaction should have run");
+        // The context is now the summary message + retained tail.
+        assert!(runtime.messages.len() >= 1, "context replaced");
+        let first = &runtime.messages[0];
+        let text: String = match first {
+            pi_agent::types::AgentMessage::Core(pi_ai::types::Message::User(u)) => match u.content() {
+                pi_ai::types::UserContentBody::Blocks(blocks) => blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        pi_ai::types::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect(),
+                pi_ai::types::UserContentBody::String(s) => s.clone(),
+            },
+            _ => String::new(),
+        };
+        assert!(text.contains("Compaction summary"), "summary message: {text}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn auto_compact_skips_when_under_threshold() {
+        let _env = env_lock();
+        let root = std::env::temp_dir().join(format!("pi-compact-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        runtime.model.context_window = 1_000_000;
+        runtime.messages.push(pi_agent::agent::user_text_prompt("hi".to_string(), pi_ai::types::now_ms()));
+        let compacted = maybe_auto_compact(&mut runtime).await.expect("auto-compact");
+        assert!(!compacted, "no compaction under threshold");
+        assert_eq!(runtime.messages.len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
 }
