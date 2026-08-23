@@ -14,6 +14,17 @@ use serde_json::Value;
 
 use crate::core::settings::strip_bom;
 
+/// Path to the user models.json (upstream `getModelsJsonPath`).
+pub fn models_json_path() -> Option<std::path::PathBuf> {
+    let agent_dir = crate::config::get_agent_dir();
+    let path = agent_dir.join("models.json");
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
 // ---------------------------------------------------------------------------
 // models.json schema (typebox schemas from model-config.ts)
 // ---------------------------------------------------------------------------

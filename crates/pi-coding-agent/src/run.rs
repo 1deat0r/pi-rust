@@ -122,9 +122,15 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         let stream_fn: StreamFn = Arc::new(move |model, ctx| core.stream(model, ctx, None));
         (model, stream_fn)
     } else {
+        // models.json runtime merge: the registry overlays the bundled
+        // catalog with ~/.pi/agent/models.json (upstream applyModelsJson).
         let models = {
             let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
-            models
+            let config = crate::core::model_config::ModelConfig::load(
+                crate::core::model_config::models_json_path().as_deref(),
+            );
+            let registry = crate::core::model_registry::ModelRegistry::new(models, config);
+            registry.into_models()
         };
         if models.get_provider(&provider).is_none() {
             return Err(format!("provider {provider:?} is not registered in the model registry"));

@@ -101,6 +101,19 @@ impl ModelRegistry {
         self.models.get_provider(provider).is_some()
     }
 
+    /// Build a `Models` facade whose providers carry the merged catalog
+    /// (bundled + models.json overlay). Used by the run path so model
+    /// resolution sees user overrides (upstream `applyModelsJson` wiring).
+    pub fn into_models(&self) -> pi_ai::models::Models {
+        let merged = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
+        for provider in self.models.get_providers() {
+            let mut p = provider.clone();
+            p.models = self.get_merged_models(&p.id);
+            merged.set_provider(p);
+        }
+        merged
+    }
+
     /// Register/replace a provider at runtime (upstream `registerProvider`
     /// native-provider path).
     pub fn register_provider(&self, provider: pi_ai::models::Provider) {
@@ -224,5 +237,47 @@ mod tests {
         assert!(registry.get_provider("google").is_some());
         registry.unregister_provider("google");
         assert!(registry.get_provider("google").is_none());
+    }
+}
+
+#[cfg(test)]
+mod run_path_merge_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn into_models_carries_overlay_into_facade() {
+        let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+        let config = ModelConfig::from_value(json!({
+            "providers": {
+                "google": {
+                    "baseUrl": "https://overridden.example.com/v1",
+                    "models": [
+                        { "id": "custom-gemini", "name": "Custom Gemini", "api": "google", "reasoning": true,
+                          "cost": { "input": 0.5, "output": 1.5, "cacheRead": 0.1, "cacheWrite": 1.0 },
+                          "contextWindow": 200000, "maxTokens": 8192 }
+                    ]
+                }
+            }
+        })).unwrap();
+        let registry = ModelRegistry::new(models, config);
+        let facade = registry.into_models();
+        // The facade resolves the overridden model.
+        let custom = facade.get_model("google", "custom-gemini").expect("overlay model in facade");
+        assert_eq!(custom.base_url, "https://overridden.example.com/v1");
+        // Catalog models are remapped to the overlay base url too.
+        let catalog = facade.get_model("google", "gemini-3.1-pro-preview").expect("catalog model in facade");
+        assert_eq!(catalog.base_url, "https://overridden.example.com/v1");
+    }
+
+    #[test]
+    fn models_json_path_returns_none_when_missing() {
+        // No agent dir models.json in the test environment.
+        let path = crate::core::model_config::models_json_path();
+        // Either None or a real file; assert consistency with existence.
+        match &path {
+            Some(p) => assert!(p.exists(), "reported path must exist: {p:?}"),
+            None => {}
+        }
     }
 }

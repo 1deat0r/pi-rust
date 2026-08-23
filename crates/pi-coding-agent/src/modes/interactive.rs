@@ -992,7 +992,6 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                             }
                                                         };
                                                         let Some(resolved_path) = resolved_path else {
-                                                            import_path = None;
                                                             return Ok(());
                                                         };
                                                         import_path = Some(resolved_path.clone());
