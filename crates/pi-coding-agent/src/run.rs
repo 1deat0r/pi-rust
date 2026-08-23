@@ -136,17 +136,24 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             }
             None => core.models.first().cloned().ok_or_else(|| "no faux model".to_string())?,
         };
-        let reply = args
-            .messages
-            .last()
-            .cloned()
-            .unwrap_or_else(|| "Hello from pi-rust".to_string());
-        core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
-            pi_ai::providers::faux_assistant_message(
-                vec![pi_ai::types::ContentBlock::text(format!("faux response to: {reply}"))],
-                pi_ai::providers::FauxAssistantOptions::default(),
-            ),
-        )]);
+        // Queue one scripted faux response per prompt so sequential
+        // print-mode turns (one assistant turn per positional message,
+        // upstream `runPrintMode`) each pop a reply.
+        let prompts: Vec<String> = if args.messages.is_empty() {
+            vec!["Hello from pi-rust".to_string()]
+        } else {
+            args.messages.clone()
+        };
+        let responses: Vec<pi_ai::providers::FauxResponseStep> = prompts
+            .into_iter()
+            .map(|text| {
+                pi_ai::providers::FauxResponseStep::Message(pi_ai::providers::faux_assistant_message(
+                    vec![pi_ai::types::ContentBlock::text(format!("faux response to: {text}"))],
+                    pi_ai::providers::FauxAssistantOptions::default(),
+                ))
+            })
+            .collect();
+        core.set_responses(responses);
         let core = core.clone();
         let stream_fn: StreamFn = Arc::new(move |model, ctx| core.stream(model, ctx, None));
         (model, stream_fn)
@@ -204,12 +211,6 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         messages: Vec::new(),
         tools,
     };
-    let prompts: Vec<pi_agent::types::AgentMessage> = args
-        .messages
-        .iter()
-        .map(|m| pi_agent::agent::user_text_prompt(m.clone(), pi_ai::types::now_ms()))
-        .collect();
-
     let cfg = AgentLoopConfig {
         model,
         stream_fn,
@@ -219,39 +220,56 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     };
 
     let mut events: Vec<pi_agent::agent::AgentEvent> = Vec::new();
-    let new_messages = run_agent_loop(prompts, &mut context, &cfg, &mut |event| events.push(event)).await;
+    // Print mode prompts each positional message as its own sequential turn
+    // (upstream `runPrintMode`: `for (const message of messages) { await
+    // session.prompt(message); }`). Each turn's messages fold into the agent
+    // context so a later prompt observes earlier turns.
+    let mut all_messages: Vec<pi_agent::types::AgentMessage> = Vec::new();
+    for text in &args.messages {
+        let prompt = pi_agent::agent::user_text_prompt(text.clone(), pi_ai::types::now_ms());
+        let turn_messages =
+            run_agent_loop(vec![prompt], &mut context, &cfg, &mut |e| events.push(e)).await;
+        context.messages.extend(turn_messages.iter().cloned());
+        all_messages.extend(turn_messages);
+    }
 
-    // Extract final assistant text; surface a provider error message as a
-    // top-level error (upstream prints the error and exits nonzero).
-    let final_text = new_messages
-        .iter()
-        .rev()
-        .find_map(|m| match m {
-            pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(a)) => {
-                let text: Vec<String> = a
-                    .content()
-                    .iter()
-                    .filter_map(|b| match b {
-                        pi_ai::types::ContentBlock::Text { text, .. } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if text.is_empty() { None } else { Some(text.join("")) }
-            }
-            _ => None,
-        })
-        .unwrap_or_default();
-    // A terminal assistant error with no visible text must surface on stderr.
-    if final_text.is_empty() {
-        if let Some(err) = new_messages.iter().rev().find_map(|m| match m {
-            pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(a)) => {
-                a.error_message().map(|s| s.to_string())
-            }
-            _ => None,
-        }) {
-            return Err(format!("model error: {err}"));
+    // The last assistant message drives output (upstream print-mode.ts reads
+    // `state.messages[state.messages.length - 1]`).
+    let last_assistant = all_messages.iter().rev().find_map(|m| match m {
+        pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(a)) => Some(a),
+        _ => None,
+    });
+
+    // Terminal error/abort: print `errorMessage` or `Request {stopReason}` to
+    // stderr and exit nonzero (upstream sets exitCode = 1).
+    if let Some(a) = last_assistant {
+        if matches!(
+            a.stop_reason(),
+            Some(pi_ai::types::StopReason::Error) | Some(pi_ai::types::StopReason::Aborted)
+        ) {
+            let msg = a
+                .error_message()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("Request {}", a.stop_reason().unwrap().as_str()));
+            return Err(msg);
         }
     }
+
+    // Text-mode output: each text content block printed with a trailing newline
+    // (upstream `writeRawStdout(`${content.text}\n`)`), so blocks are joined
+    // with `\n` rather than concatenated.
+    let final_text: String = last_assistant
+        .map(|a| {
+            a.content()
+                .iter()
+                .filter_map(|b| match b {
+                    pi_ai::types::ContentBlock::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
 
     // Persist the session unless --no-session.
     let mut session_path = None;
@@ -278,7 +296,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             })
             .await
             .map_err(|e| format!("create session: {e}"))?;
-        for message in &new_messages {
+        for message in &all_messages {
             session
                 .append_entry(
                     EntryNoStats::Message {

@@ -670,11 +670,20 @@ Agent: pi (Claude)   HEAD: f3ae75f
   to the `enableInstallTelemetry` setting) and wired it into
   `provider_attribution.rs`, which previously checked only the setting and
   ignored the env. Emits the observable §2.2 env-surface contract.
-- Workspace: **1328 tests passing** (was 1310); 0 lib warnings; clippy-clean for
-  the touched files.
-- Docs: NEXT-100.md (#46/#47/#48 done, #44/#45 already done last commit),
-  pi-coding-agent/TODO.md updated. T3 remaining: #42–#43 (print-mode parity).
-  Repo pushed after every commit.
+- **Print-mode output parity (T3 #42/#43)**: `run.rs` now prompts each
+  positional message as its own sequential turn (upstream `runPrintMode`
+  `for message of messages { session.prompt(message) }`), folds prior turns
+  into the agent context, surfaces a terminal Error/Aborted stop-reason to
+  stderr with `errorMessage || "Request {stopReason}"` and exits nonzero, and
+  joins text content blocks with `\n`. The faux path queues one response per
+  prompt so sequential turns work. `tests/cli_print_parity.rs` (2 tests).
+  Audit note: `--steer`/`--follow-up`/`--compact` are RPC commands, not
+  print-mode flags.
+- Workspace: **1330 tests passing** (was 1310); 0 lib warnings; clippy-clean
+  for the touched files.
+- Docs: NEXT-100.md (#42/#43/#46/#47/#48 done, #44/#45 already done last
+  commit), pi-coding-agent/TODO.md updated. **T3 (coding-agent run-path
+  parity) is now complete.** Repo pushed after every commit.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

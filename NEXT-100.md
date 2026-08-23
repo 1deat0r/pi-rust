@@ -147,9 +147,22 @@ Base revision: HEAD 83e55cb (1240 tests at last clean revision).
 - [x] 40. Port `core/project-trust.ts` + `trust-manager.ts` into CLI path
       (`-a/-na`, defaultProjectTrust, `.pi/trust`).
 - [x] 41. Project-trust binary tests (untrusted dir tool gating). (mock)
-- [ ] 42. Print-mode parity audit (`modes/print-mode.ts`): `--steer`,
-      `--follow-up`, `--compact`, quietStartup, initialMessage.
-- [ ] 43. Port missing print-mode flags + output-formatting parity.
+- [x] 42. Print-mode parity audit (`modes/print-mode.ts`): audit found the
+      `--steer`/`--follow-up`/`--compact` items are **RPC commands**, not
+      print-mode flags (no such flags exist in upstream `args.ts` /
+      `print-mode.ts`); the real print-mode contract is sequential multi-turn
+      prompting, `initialMessage` handling, quietStartup, and terminal
+      error/abort exit semantics.
+- [x] 43. Port print-mode output-formatting parity: `run.rs` now prompts each
+      positional message as its own sequential turn (upstream
+      `for message of messages { session.prompt(message) }`), folds prior
+      turns into the agent context, surfaces a terminal Error/Aborted
+      stop-reason on stderr with `errorMessage || "Request {stopReason}"` and
+      exits nonzero, and joins text content blocks with `\n` (upstream
+      ``writeRawStdout(`${content.text}\n`)``). Faux path queues one response
+      per prompt. `tests/cli_print_parity.rs` (2 binary tests).
+      `initialMessage` equals the leading positional prompt in the current
+      single-shot path; quietStartup is TUI/startup-output scoped.
 - [x] 44. Port JSON-event mode `modes/json-event.ts` → `modes/json_event.rs`
       (`--mode json`), event-envelope parity.
 - [x] 45. JSON-event tests (fixture transcripts).

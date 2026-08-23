@@ -134,6 +134,13 @@ Settings manager (full upstream surface) landed.
   Wired into provider_attribution.rs (previously it only checked the setting,
   ignoring the env). 4 telemetry tests + provider_attribution env-override
   test.
+- run.rs print-mode output parity (T3 #42/#43): sequential multi-turn
+  prompting (one assistant turn per positional message, upstream
+  runPrintMode), terminal Error/Aborted stop-reason → stderr `errorMessage ||
+  "Request {stopReason}"` + exit 1, and text content blocks joined with `\n`.
+  Faux path queues one response per prompt. tests/cli_print_parity.rs (2
+  binary tests). Audit note: `--steer`/`--follow-up`/`--compact` are RPC
+  commands, not print-mode flags.
 
 ## Remaining (upstream mapping — big items first)
 - Wire SettingsManager into run/main (currently standalone; P4 criterion
