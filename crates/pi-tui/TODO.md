@@ -18,8 +18,15 @@ uses this subset and is tmux-verified.
 - coding-agent interactive mode: Editor-driven loop with autocomplete, slash-commands registry +
   dispatch, selectors (model/thinking/theme/settings), footer, streaming markdown, tmux-verified.
 - pi-tui 176 lib tests; pi-coding-agent 142 (6 interactive).
-- Remaining: full alt-screen screen-swap, ICU word segmentation, tmux client_termfeatures probe,
-  ConfigSelector full TUI component, token-total footer reads.
+- ICU-style word segmentation landed (Session 15, T5 #63/64): `word_navigation.rs`
+  steps each CJK ideograph as its own word-like segment to match upstream
+  `Intl.Segmenter`; the Editor's Ctrl+arrow word nav adopts it. 18 tests.
+- Token-total footer reads landed (Session 15, T5 #67/68): `formatTokens` +
+  `render_usage_stats` (`↑input ↓output Rcache Wcache CH{rate}% $cost`) driven by
+  cumulative transcript usage + per-turn cache-hit-rate. 5 footer tests.
+- Remaining: full alt-screen screen-swap, tmux client_termfeatures probe,
+  ConfigSelector full TUI component (its data layer + resolve producer are
+  landed in `pi-coding-agent`; the interactive render surface is PTY-bound).
 
 ## Not yet ported (upstream mapping)
 - Editor component (multi-line editing with selection/IME), Markdown

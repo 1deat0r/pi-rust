@@ -709,22 +709,66 @@ Agent: independent reviewer session (fresh context, not the implementing agent)
   version per upstream args.ts (was verbose); `--verbose` remains long-form
   only; unit test `short_v_is_version_not_verbose` added.
 
+### Session 15 — 2026-08-23 — T6 audit-driven core wiring, T4 #49–51, T5 word-nav/footer/ConfigSelector
+Scope: contiguous work after the Session 14 reviewer gate (commit `1e35f72`),
+executed from the NEXT-100 tracker against the T6 verify-then-port recut.
+
+- **T6 remaining core modules** (verify-then-port; most loaders already existed —
+  the real deliverable was wiring into the run path):
+  - `#71` bash-executor/exec audit — already covered by `pi_agent` bash tool
+    (BashCapture + `run_bash`, truncate-tail + `[Showing lines X-Y of N...]`
+    messages). Live `onUpdate` throttling noted as the only gap.
+  - `#72` system-prompt assembly (`--system-prompt` base + skills block +
+    `--append-system-prompt`); `#73` skills loader (`--skill`/`-ns`/
+    `.pi/skills`/`<agentDir>/skills`/settings key) + `<available_skills>`
+    block; `#74` prompt-templates + resource-loader (`/template` expansion)
+    + `core/context_files.rs` `<project_context>` injection with `-nc`;
+    `#76` session-cwd resume guard (refuses resumed sessions whose stored cwd
+    vanished); `#78` auth-guidance messages in list-models; `#79`
+    settings-diagnostics + diagnostics ResourceDiagnostic kinds; `#80`
+    extended-messages/provider-composer edge audits. Commits
+    cb89e93/a1c9675/ee7ef97/84f8693.
+- **T4 #49–51** (LiveSessionManager completion, auxiliary subsystem):
+  sync adaptation, runtime-event fan-out + terminal-close, subscription
+  segment control + dispose-on-idle. Commits 6831f49/71bcce6/fe54def.
+- **T5 TUI completion:**
+  - `#63/#64` ICU-style word segmentation — each CJK ideograph steps as its
+    own word-like segment (`word_navigation.rs`), matching upstream
+    `Intl.Segmenter`; editor Ctrl+arrow word nav adopts it. commit 6262abc.
+  - `#67/#68` footer token-total reads — `formatTokens` + `render_usage_stats`
+    (`↑input ↓output Rcache Wcache CH{rate}% $cost`) wired from transcript
+    usage aggregation. commit f3f4d8b.
+  - `#59` ConfigSelector — data layer (model + `build_groups`, 5 tests) then
+    the `packageManager.resolve()` → `ResolvedPaths` **producer** (on-disk
+    collection, pattern filtering, precedence-ranked collision dedup,
+    package dedupe, install-on-missing seam; 9 tests), wired into
+    `commands/config.rs`. Commits 38f9428 + e8f5b3a. The interactive
+    render/`handleInput` component remains deferred (PTY-bound).
+- Evidence: full `cargo test --workspace` green at 1405 tests / 0 failures
+  (baseline 1240 → 1405 across this working revision); new-code regions of
+  `package_manager.rs`, config.rs, model_resolver.rs clippy-clean (`cargo
+  clippy -p pi-coding-agent --no-deps`). Docs updated in NEXT-100.md (#59/#60)
+  and pi-coding-agent/TODO.md.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration
   LANDED (Session 8); the remaining P3/P4 harness work (image tool,
   file-mutation-queue, tool-context, agent loop, harness env, telemetry
   wiring) continues per §6 without a phase gate (the P3 criterion is met).
-- P4 continuing: model registry/catalog (models-store, model-resolver, model
-  registry over the Models facade), openai/google providers + api adaptors,
-  wiring buildSessionContext + compaction into the coding-agent run path,
-  project-trust CLI wiring, remaining `pi` commands (config/auth/list-models),
-  v3→v4 legacy session import path. Auth storage + config-value resolution
-  + resolve-config-value landed (Session 8). P5 (RPC) not started.
+- Core coding-agent run path + CLI surface is complete (skills, prompt
+  templates, context files, session-cwd, auth-guidance, model registry/
+  resolver/runtime, config/auth/list-models commands, RPC/json/jsonl modes,
+  `/share`, `--export`). Tracked forward in NEXT-100.md, not here.
+- **T5 remaining (tracked in NEXT-100):** ConfigSelector interactive
+  render/`handleInput` component (the data layer + resolve producer are
+  landed; the TUI surface is PTY-bound and deferred), alt-screen full
+  swap (#61/62), terminal feature probes (#65/66), editor IME edge (#69),
+  interactive E2E tmux script (#70).
 - Known documented divergence: usage records cannot carry negative token
   adjustments (pi-ai Usage counts are u64); decide whether to widen to i64.
 - Governance §0(3): before the next MAJOR phase, a fresh independent
-  reviewer session must sign off on this increment (Sessions 1–8).
+  reviewer session must sign off on this increment.
 
 ### Docs
 - PLAN.md updated: yes (this revision).
