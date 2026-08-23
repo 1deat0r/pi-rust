@@ -168,22 +168,44 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
             continue;
         }
 
-        // --tui-mode: regular | fullscreen.
+        // --tui-mode: regular | fullscreen. Mirrors upstream args.ts token
+        // handling: a flag-like or missing value reports
+        // "--tui-mode requires ..." without consuming the token; an invalid
+        // non-flag value reports the quoted value and is consumed.
         if flag == "--tui-mode" {
-            let v = take_value(&mut args, &mut i, "--tui-mode", inline_value);
-            match v.as_deref() {
-                Some("regular") | Some("fullscreen") => args.tui_mode = v,
-                Some(other) => {
-                    let _ = other;
-                    args.diagnostics.push(Diagnostic::error(
-                        "Invalid TUI mode. Valid values: regular, fullscreen",
-                    ));
+            if let Some(inline) = inline_value {
+                if inline == "regular" || inline == "fullscreen" {
+                    args.tui_mode = Some(inline);
+                } else {
+                    args.diagnostics.push(Diagnostic::error(format!(
+                        "Invalid TUI mode \"{inline}\". Valid values: regular, fullscreen"
+                    )));
                 }
-                None => args
-                    .diagnostics
-                    .push(Diagnostic::error("--tui-mode requires regular or fullscreen")),
+                i += 1;
+                continue;
             }
-            i += 1;
+            match argv.get(i + 1).map(String::as_str) {
+                Some("regular") | Some("fullscreen") => {
+                    args.tui_mode = argv.get(i + 1).cloned();
+                    i += 2; // past --tui-mode and its value
+                }
+                Some(v) if v.starts_with('-') => {
+                    args.diagnostics
+                        .push(Diagnostic::error("--tui-mode requires regular or fullscreen"));
+                    i += 1; // do not consume the flag-like token
+                }
+                None => {
+                    args.diagnostics
+                        .push(Diagnostic::error("--tui-mode requires regular or fullscreen"));
+                    i += 1;
+                }
+                Some(other) => {
+                    args.diagnostics.push(Diagnostic::error(format!(
+                        "Invalid TUI mode \"{other}\". Valid values: regular, fullscreen"
+                    )));
+                    i += 2; // consume the invalid value (upstream i++)
+                }
+            }
             continue;
         }
 
@@ -489,12 +511,21 @@ mod tests {
     fn tui_mode_parsed_and_invalid_value_diag() {
         let args = parse(&["--tui-mode", "fullscreen"]);
         assert_eq!(args.tui_mode.as_deref(), Some("fullscreen"));
-        let args = parse(&["--tui-mode", "bogus"]);
+        // Invalid non-flag value: quoted in the message (upstream), consumed.
+        let args = parse(&["--tui-mode", "bogus", "--verbose"]);
         assert!(args.tui_mode.is_none());
-        assert!(args
-            .diagnostics
-            .iter()
-            .any(|d| d.message == "Invalid TUI mode. Valid values: regular, fullscreen"));
+        assert!(args.diagnostics.iter().any(|d| d.message == "Invalid TUI mode \"bogus\". Valid values: regular, fullscreen"));
+        // The invalid value was consumed; the trailing --verbose parsed.
+        assert!(args.verbose);
+        // Flag-like value: "--tui-mode requires ..." and the token is NOT
+        // consumed (upstream parses it normally).
+        let args = parse(&["--tui-mode", "--verbose"]);
+        assert!(args.tui_mode.is_none());
+        assert!(args.diagnostics.iter().any(|d| d.message == "--tui-mode requires regular or fullscreen"));
+        assert!(args.verbose, "the flag-like token must not be swallowed");
+        // Missing value: same diagnostic.
+        let args = parse(&["--tui-mode"]);
+        assert!(args.diagnostics.iter().any(|d| d.message == "--tui-mode requires regular or fullscreen"));
     }
 }
 

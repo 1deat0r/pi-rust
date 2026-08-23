@@ -75,17 +75,29 @@ fn json_mode_emits_event_lines() {
 }
 
 #[test]
-fn json_mode_surfaces_model_error() {
+fn json_mode_streams_terminal_error_as_event_and_exits_zero() {
     let sandbox = Sandbox::new("error");
-    // A provider with no key errors; the error must surface on stderr.
+    // A provider with no key terminates the stream in an error. Upstream
+    // `runPrintMode` in *json* mode delivers the error as a JSON event line
+    // on stdout and exits 0 (only text mode turns Error/Aborted into a
+    // nonzero exit).
     let out = sandbox.pi(
         &sandbox.root,
         &["--mode", "json", "--provider", "openai", "--model", "gpt-5.4", "hi"],
     );
-    assert!(!out.status.success(), "expected failure");
-    assert!(
-        sandbox.stderr(&out).contains("Error"),
-        "stderr: {}",
-        sandbox.stderr(&out)
-    );
+    assert!(out.status.success(), "json mode must exit 0, stderr: {}", sandbox.stderr(&out));
+    let stdout = sandbox.stdout(&out);
+    // Every line is valid JSON carrying a type.
+    let mut seen_update = false;
+    for line in stdout.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).expect("valid JSON line");
+        assert!(v.get("type").is_some(), "event must carry a type: {line}");
+        if v["type"] == "message_update" {
+            seen_update = true;
+        }
+    }
+    // A terminal error still reaches the stream as a message_update event
+    // (the falsey text is not required; the event envelope is the contract).
+    assert!(!stdout.trim().is_empty(), "expected JSON event lines on stdout");
+    assert!(seen_update, "expected a message_update event on the wire: {stdout}");
 }

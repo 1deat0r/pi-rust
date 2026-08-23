@@ -117,44 +117,17 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
     let mut cfg = cfg;
     cfg.on_stream_event = Some(observer);
 
-    let new_messages = run_agent_loop(prompts, &mut context, &cfg, &mut |_| {}).await;
+    run_agent_loop(prompts, &mut context, &cfg, &mut |_| {}).await;
 
-    // Emit the captured events in wire order.
+    // Emit the captured events in wire order. A streamed terminal model error
+    // is delivered as a JSON event line and the process exits 0 — upstream
+    // `runPrintMode` only treats Error/Aborted as a nonzero exit in *text*
+    // mode, never in json mode.
     let captured = events.lock().unwrap().drain(..).collect::<Vec<String>>();
     for line in captured {
         println!("{line}");
     }
 
-    // Surface a terminal assistant error on stderr (upstream prints and
-    // exits nonzero).
-    let final_text: String = new_messages
-        .iter()
-        .rev()
-        .find_map(|m| match m {
-            pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(a)) => {
-                let text: Vec<String> = a
-                    .content()
-                    .iter()
-                    .filter_map(|b| match b {
-                        pi_ai::types::ContentBlock::Text { text, .. } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if text.is_empty() { None } else { Some(text.join("")) }
-            }
-            _ => None,
-        })
-        .unwrap_or_default();
-    if final_text.is_empty() {
-        if let Some(err) = new_messages.iter().rev().find_map(|m| match m {
-            pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(a)) => {
-                a.error_message().map(|s| s.to_string())
-            }
-            _ => None,
-        }) {
-            return Err(format!("model error: {err}"));
-        }
-    }
     let _ = agent_dir;
     Ok(())
 }

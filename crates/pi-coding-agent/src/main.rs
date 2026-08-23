@@ -27,18 +27,24 @@ async fn main() {
             print_version();
         }
         ParseOutcome::Run(args) => {
-            // Surface parse diagnostics (upstream main.ts): errors print "Error:"
-            // and exit 1; warnings print "Warning:" and continue.
+            // Surface parse diagnostics (upstream main.ts): errors print
+            // "Error:" and warnings "Warning:" to stderr — ALL are printed
+            // first, then we exit 1 if any was an error (upstream prints the
+            // full set before `process.exit(1)`).
             if !args.diagnostics.is_empty() {
+                let any_error = args
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.kind == pi_coding_agent::args::DiagnosticKind::Error);
                 for d in &args.diagnostics {
-                    let (label, has_error) = match d.kind {
-                        pi_coding_agent::args::DiagnosticKind::Error => ("Error", true),
-                        pi_coding_agent::args::DiagnosticKind::Warning => ("Warning", false),
+                    let label = match d.kind {
+                        pi_coding_agent::args::DiagnosticKind::Error => "Error",
+                        pi_coding_agent::args::DiagnosticKind::Warning => "Warning",
                     };
                     eprintln!("{label}: {}", d.message);
-                    if has_error {
-                        std::process::exit(1);
-                    }
+                }
+                if any_error {
+                    std::process::exit(1);
                 }
             }
             if !args.unknown_flags.is_empty() {
