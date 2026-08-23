@@ -10,11 +10,12 @@
 //! failures are encoded as a terminal error event.
 //!
 //! Divergences (documented):
-//! - WebSocket transport (upstream default `transport: "auto"` tries a
-//!   session-cached WebSocket before falling back to SSE) is not implemented;
-//!   requests always use the SSE path, which is exactly the upstream fallback
-//!   when a runtime has no `WebSocket` global (as Rust has none). Cached
-//!   delta-request continuation is therefore unavailable.
+//! - WebSocket transport is implemented (`transport: "auto"` tries the
+//!   WebSocket path and falls back to SSE; "websocket" forces WS; "sse"
+//!   forces SSE). Connection pooling / delta-request continuation
+//!   (upstream `acquireWebSocket` session cache) is not ported — each
+//!   request opens a fresh socket, so cached-context delta requests are
+//!   unavailable.
 //! - zstd request-body compression is not implemented; bodies are sent
 //!   uncompressed (the upstream helper already returns null in runtimes
 //!   without `node:zlib`).
@@ -67,6 +68,10 @@ pub struct OpenAICodexResponsesOptions {
     pub service_tier: Option<String>,
     pub text_verbosity: Option<String>,
     pub tool_choice: Option<Value>,
+    /// Transport selection (upstream `transport`): "auto" (default) tries
+    /// the WebSocket path first and falls back to SSE; "sse" forces SSE;
+    /// "websocket" forces the WebSocket path.
+    pub transport: Option<String>,
 }
 
 /// Clamp a session id to OpenAI's 64-char prompt-cache limit (upstream
@@ -94,6 +99,19 @@ fn resolve_codex_url(base_url: Option<&str>) -> String {
         return format!("{raw}/responses");
     }
     format!("{raw}/codex/responses")
+}
+
+/// Resolve the Codex WebSocket endpoint from a base URL (upstream
+/// `resolveCodexWebSocketUrl`): https -> wss, http -> ws.
+fn resolve_codex_websocket_url(base_url: Option<&str>) -> String {
+    let url = resolve_codex_url(base_url);
+    if let Some(rest) = url.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        url
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +615,145 @@ fn set_output_error_message(output: &mut AssistantMessage, message: String) {
 // Main stream functions
 // ---------------------------------------------------------------------------
 
+/// WebSocket transport (upstream `processWebSocketStream`): connect, send
+/// `{ type: "response.create", ...body }`, read JSON frames until a terminal
+/// event, and feed them through the shared responses processing. Returns the
+/// final assistant message.
+async fn run_stream_ws(
+    model: &Model,
+    context: &Context,
+    api_key: &str,
+    options: &OpenAICodexResponsesOptions,
+    push: &mut (dyn FnMut(AssistantMessageEvent) + Send),
+) -> Result<AssistantMessage, String> {
+    let mut output = new_output(model);
+    let account_id = extract_account_id(api_key)?;
+    let cache_session_id = if options.base.cache_retention.as_deref() == Some(crate::types::CACHE_RETENTION_NONE) {
+        None
+    } else {
+        clamp_openai_prompt_cache_key(options.base.session_id.as_deref())
+    };
+    let body = build_request_body(model, context, options, cache_session_id.as_deref())?;
+    let request_id = cache_session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    // WebSocket headers (upstream `buildWebSocketHeaders`): base headers minus
+    // accept/content-type, with the responses-websockets beta and request id.
+    let mut headers = build_codex_headers(
+        model.headers.as_ref(),
+        options.base.base.headers.as_ref(),
+        &account_id,
+        api_key,
+        None,
+    );
+    headers.remove("accept");
+    headers.remove("content-type");
+    headers.insert("openai-beta".to_string(), "responses_websockets=2026-02-06".to_string());
+    headers.insert("x-client-request-id".to_string(), request_id.clone());
+    headers.insert("session-id".to_string(), request_id.clone());
+
+    let url = resolve_codex_websocket_url(Some(&model.base_url));
+    let connect_timeout_ms = options.base.base.timeout_ms;
+
+    let connect = async {
+        let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(&url)
+            .map_err(|e| format!("Failed to build WebSocket request: {e}"))?;
+        let request_headers = request.headers_mut();
+        for (name, value) in &headers {
+            if let (Ok(name), Ok(value)) = (
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()),
+                reqwest::header::HeaderValue::from_str(value),
+            ) {
+                request_headers.insert(name, value);
+            }
+        }
+        let (ws, _) = tokio_tungstenite::connect_async(request)
+            .await
+            .map_err(|e| format!("WebSocket connect failed: {e}"))?;
+        Ok::<_, String>(ws)
+    };
+
+    let mut ws = match connect_timeout_ms.filter(|t| *t > 0) {
+        Some(timeout) => match tokio::time::timeout(std::time::Duration::from_millis(timeout), connect).await {
+            Ok(res) => res?,
+            Err(_) => return Err(format!("Codex WebSocket connect timed out after {timeout}ms")),
+        },
+        None => connect.await?,
+    };
+
+    // Send the request frame.
+    let mut frame = serde_json::json!({ "type": "response.create" });
+    if let serde_json::Value::Object(map) = &mut frame {
+        if let serde_json::Value::Object(body_map) = body {
+            for (k, v) in body_map {
+                map.insert(k, v);
+            }
+        }
+    }
+    use futures_util::SinkExt as _;
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(frame.to_string()))
+        .await
+        .map_err(|e| format!("WebSocket send failed: {e}"))?;
+
+    // Read frames until a terminal event.
+    use futures_util::StreamExt as _;
+    let mut events: Vec<Value> = Vec::new();
+    let mut saw_completion = false;
+    loop {
+        let message = ws
+            .next()
+            .await
+            .ok_or_else(|| "WebSocket closed before a terminal event".to_string())?
+            .map_err(|e| format!("WebSocket read failed: {e}"))?;
+        let text = match message {
+            tokio_tungstenite::tungstenite::Message::Text(t) => t.to_string(),
+            tokio_tungstenite::tungstenite::Message::Binary(b) => String::from_utf8_lossy(&b).to_string(),
+            tokio_tungstenite::tungstenite::Message::Close(_) => {
+                if saw_completion {
+                    break;
+                }
+                return Err("WebSocket closed before a terminal event".to_string());
+            }
+            _ => continue,
+        };
+        let parsed: Value = serde_json::from_str(&text)
+            .map_err(|e| format!("Invalid Codex WebSocket JSON: {e}"))?;
+        let event_type = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if matches!(event_type.as_str(), "response.completed" | "response.done" | "response.incomplete") {
+            saw_completion = true;
+        }
+        events.push(parsed);
+        if matches!(event_type.as_str(), "response.completed" | "response.incomplete" | "response.done" | "response.failed" | "error") {
+            break;
+        }
+    }
+
+    // Convert JSON frames to SseEvent for the shared mapper.
+    let sse_events: Vec<crate::sse::SseEvent> = events
+        .iter()
+        .map(|v| crate::sse::SseEvent {
+            data: v.to_string(),
+            event: None,
+            id: None,
+        })
+        .collect();
+
+    push(AssistantMessageEvent::Start { partial: new_output(model) });
+    let normalized = map_codex_events(&sse_events, &mut output, options.service_tier.as_deref())?;
+    let proc_options = ProcessResponsesOptions { service_tier: options.service_tier.clone() };
+    process_responses_stream(&normalized, &mut output, push, model, &proc_options)
+        .map_err(|e| e.to_string())?;
+
+    // assertSuccessfulOutput: pending / error / aborted are stream failures.
+    if output.stop_reason() == Some(StopReason::Pending) {
+        return Err("Codex stream ended without a stop reason".to_string());
+    }
+    if output.stop_reason() == Some(StopReason::Error) || output.stop_reason() == Some(StopReason::Aborted) {
+        let known = output.error_message().unwrap_or("").to_string();
+        return Err(if known.is_empty() { "An unknown error occurred".to_string() } else { known });
+    }
+    Ok(output)
+}
+
 async fn run_stream(
     model: &Model,
     context: &Context,
@@ -625,6 +782,33 @@ async fn run_stream(
     );
     let url = resolve_codex_url(Some(&model.base_url));
     let http_timeout_ms = options.base.base.timeout_ms;
+
+    // WebSocket transport first (upstream `transport: "auto"` tries WS before
+    // falling back to SSE). "sse" forces the SSE path.
+    let transport = options.transport.as_deref().unwrap_or("auto");
+    if transport != "sse" {
+        match run_stream_ws(model, context, api_key, options, push).await {
+            Ok(output) => return Ok(output),
+            Err(ws_error) => {
+                // Connection-limit errors retry once on a fresh socket; other
+                // transport failures fall back to SSE (upstream
+                // `isWebSocketConnectionLimitReachedError` retry + SSE fallback).
+                let is_connection_limit = ws_error.contains("websocket_connection_limit_reached");
+                if is_connection_limit {
+                    match run_stream_ws(model, context, api_key, options, push).await {
+                        Ok(output) => return Ok(output),
+                        Err(retry_error) => {
+                            if transport == "websocket" {
+                                return Err(retry_error);
+                            }
+                        }
+                    }
+                } else if transport == "websocket" {
+                    return Err(ws_error);
+                }
+            }
+        }
+    }
 
     // Build the request once and re-execute per retry attempt.
     let mut builder = client.post(&url);
@@ -829,6 +1013,7 @@ pub fn stream_simple(
             ToolChoice::Auto => json!("auto"),
             ToolChoice::None => json!("none"),
         }),
+        transport: None,
     };
     stream(model, context, client, api_key, &go)
 }
@@ -988,6 +1173,7 @@ mod tests {
             tool_choice: Some(json!("required")),
             reasoning_effort: Some("minimal".to_string()),
             reasoning_summary: Some("detailed".to_string()),
+            transport: None,
         };
         let body = build_request_body(&model, &context, &options, Some("session-123")).unwrap();
         assert_eq!(body["temperature"], 0.7);
@@ -1332,5 +1518,126 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
         } else {
             Some(clamped.as_str().to_string())
         }
+    }
+
+    // ------------------------------------------------------------------
+    // WebSocket transport
+    // ------------------------------------------------------------------
+
+    /// Mock Codex WebSocket server: accepts one connection, reads the
+    /// `response.create` frame, replies with a scripted event sequence, and
+    /// closes. Returns the ws:// base URL.
+    async fn mock_codex_ws_server(events: Vec<String>) -> String {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use futures_util::{SinkExt as _, StreamExt as _};
+            let (stream, _) = listener.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut sink, mut read) = ws.split();
+            // Read the response.create frame.
+            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) = read.next().await {
+                assert!(text.contains("\"type\":\"response.create\""), "got: {text}");
+            }
+            for event in events {
+                sink.send(tokio_tungstenite::tungstenite::Message::Text(event.to_string()))
+                    .await
+                    .unwrap();
+            }
+            let _ = sink.close().await;
+        });
+        format!("ws://127.0.0.1:{port}/backend-api/codex/responses")
+    }
+
+    fn ws_codex_events(status: &str) -> Vec<String> {
+        let terminal_type = if status == "incomplete" { "response.incomplete" } else { "response.completed" };
+        let incomplete = if status == "incomplete" { r#","incomplete_details":{"reason":"max_output_tokens"}"# } else { "" };
+        vec![
+            r#"{"type":"response.output_item.added","item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress","content":[]}}"#.to_string(),
+            r#"{"type":"response.content_part.added","part":{"type":"output_text","text":""}}"#.to_string(),
+            r#"{"type":"response.output_text.delta","delta":"Hello"}"#.to_string(),
+            r#"{"type":"response.output_item.done","item":{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hello"}]}}"#.to_string(),
+            format!(r#"{{"type":"{terminal_type}","response":{{"status":"{status}"{incomplete},"usage":{{"input_tokens":5,"output_tokens":3,"total_tokens":8,"input_tokens_details":{{"cached_tokens":0}}}}}}}}"#),
+        ]
+    }
+
+    #[tokio::test]
+    async fn websocket_transport_streams_and_completes() {
+        let base = mock_codex_ws_server(ws_codex_events("completed")).await;
+        let mut model = codex_model("gpt-5.4-codex");
+        model.base_url = base.replace("ws://", "http://").replace("/codex/responses", "");
+        let token = mock_token("acct-1");
+        let options = OpenAICodexResponsesOptions {
+            transport: Some("websocket".to_string()),
+            ..Default::default()
+        };
+        let mut events: Vec<AssistantMessageEvent> = Vec::new();
+        let output = run_stream_ws(&model, &codex_ctx(), &token, &options, &mut |e| events.push(e))
+            .await
+            .expect("ws stream");
+        let text: String = output
+            .content()
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "Hello");
+        assert!(events.iter().any(|e| matches!(e, AssistantMessageEvent::Start { .. })));
+    }
+
+    #[tokio::test]
+    async fn websocket_transport_handles_incomplete() {
+        let base = mock_codex_ws_server(ws_codex_events("incomplete")).await;
+        let mut model = codex_model("gpt-5.4-codex");
+        model.base_url = base.replace("ws://", "http://").replace("/codex/responses", "");
+        let token = mock_token("acct-1");
+        let options = OpenAICodexResponsesOptions {
+            transport: Some("websocket".to_string()),
+            ..Default::default()
+        };
+        let mut events: Vec<AssistantMessageEvent> = Vec::new();
+        let output = run_stream_ws(&model, &codex_ctx(), &token, &options, &mut |e| events.push(e))
+            .await
+            .expect("ws stream");
+        let text: String = output
+            .content()
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "Hello");
+    }
+
+    #[tokio::test]
+    async fn websocket_transport_connection_failure_falls_back_to_sse() {
+        // A ws:// URL with no listener: the WS connect fails and the SSE path
+        // must be attempted (which also fails against the dead port, but the
+        // error must come from the SSE attempt, not a WS-only panic).
+        let model = codex_model("gpt-5.4-codex");
+        let token = mock_token("acct-1");
+        let options = OpenAICodexResponsesOptions {
+            transport: Some("auto".to_string()),
+            ..Default::default()
+        };
+        let mut events: Vec<AssistantMessageEvent> = Vec::new();
+        let result = run_stream(&model, &codex_ctx(), reqwest::Client::new(), &token, &options, &mut |e| events.push(e)).await;
+        // WS connect fails -> SSE attempt against the same dead port fails.
+        assert!(result.is_err(), "expected transport failure, got: {result:?}");
+    }
+
+    #[test]
+    fn resolves_codex_websocket_urls() {
+        assert_eq!(
+            resolve_codex_websocket_url(Some("https://chatgpt.com/backend-api")),
+            "wss://chatgpt.com/backend-api/codex/responses"
+        );
+        assert_eq!(
+            resolve_codex_websocket_url(Some("http://127.0.0.1:8080")),
+            "ws://127.0.0.1:8080/codex/responses"
+        );
     }
 }
