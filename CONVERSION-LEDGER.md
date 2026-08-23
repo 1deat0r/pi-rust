@@ -10,19 +10,20 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
-  focused RPC suite after S-040. The full workspace test result is re-run at
-  verification gates rather than inferred from a historical session count.
+  focused RPC suite and the one-shot compaction/image parity tests. The full
+  workspace test result is re-run at verification gates rather than inferred
+  from a historical session count.
 - The original 100 entries remain the historical work queue. The supplemental
   S1 section is authoritative for residual provider, harness, runtime, TUI,
   RPC, auxiliary client/server, evaluation, and final-audit work.
 
 ## Current state (verified 2026-08-24)
 
-- HEAD `358c30d` on `main` contains the S-040 conversion checkpoint. The
-  S-041 RPC/lifecycle implementation is the current uncommitted change until
-  its dedicated checkpoint is created.
+- HEAD is the local image/read checkpoint followed by the one-shot compaction
+  implementation on `main`; the HTTPS remote is still behind because GitHub
+  credentials are unavailable.
 - The workspace is green under `cargo test --workspace --offline`; the focused
-  RPC suite passes 34 tests and the focused rich-agent suite passes 8 tests.
+  RPC suite, image/read suite, and print-mode compaction suite pass.
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
   device-code flows, codex WebSocket transport (SSE fallback today),
   `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
@@ -196,9 +197,20 @@ Recut of the remaining work by user impact + risk:
 
 ## T3 — coding-agent run-path parity
 
-- [ ] 33. Wire auto-compaction into run path (settings threshold → compact →
-      continue; upstream `core/compaction/` loop).
-- [ ] 34. Binary-level auto-compaction test (JSONL gains compaction entry). (mock)
+- [x] 33. Wire auto-compaction into run path (settings threshold → compact →
+      continue; upstream `core/compaction/` loop). (mock) The one-shot path
+      now provisions its session entries while running, evaluates the model
+      context against `compaction.enabled`, `reserveTokens`, and
+      `keepRecentTokens`, invokes the existing harness compactor, rebuilds the
+      provider context from the compaction entry plus retained tail, and keeps
+      processing later print turns. Verified with
+      `cargo test -p pi-coding-agent --offline run::tests` and the binary
+      compaction test below.
+- [x] 34. Binary-level auto-compaction test (JSONL gains compaction entry).
+      (mock) `cargo test -p pi-coding-agent --offline --test
+      cli_print_parity` passes the forced-settings test
+      `print_mode_auto_compaction_persists_and_continues`, including the
+      continued second response and persisted `"type":"compaction"` entry.
 - [x] 35. Port `core/messages.ts` extended-message wiring
       (BashExecutionMessage/CustomMessage reach provider in run.rs).
 - [x] 36. v3→v4 legacy session import in coding-agent session runtime
@@ -562,9 +574,12 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 
 ### S1-D — coding-agent product/runtime parity
 
-- [ ] S-025 Add automatic compaction/context rebuilding to the one-shot print
+- [x] S-025 Add automatic compaction/context rebuilding to the one-shot print
       path, including settings thresholds, retained-tail entries, and
-      continuation after compaction.
+      continuation after compaction. (mock) Evidence: `cargo test -p
+      pi-coding-agent --offline --test cli_print_parity` (4 passed), including
+      the forced JSONL compaction/continuation test; `cargo check --workspace
+      --offline`.
 - [ ] S-026 Complete legacy v1/v2/v3-to-v4 import integration for every resume,
       switch, fork, and `/import` path, not only the standalone converter.
 - [ ] S-027 Port TypeScript extension execution semantics or provide a proven

@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 43.98% (73/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 45.78% (76/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -851,10 +851,31 @@ Scope: #32, the model-facing image path used by `read` and `@file` prompts.
   filtering at the provider boundary while preserving the transcript.
 - Evidence: `cargo test -p pi-agent --offline tools::image` (6 passed),
   `cargo test -p pi-coding-agent --offline
-  run::tests::file_arguments_attach_images_and_tag_text_references`,
-  `cargo check --workspace --offline`, and `git diff --check`.
+  run::tests::file_arguments_attach_images_and_tag_text_references`, the
+  binary image attachment test in `cli_print_parity`, `cargo check
+  --workspace --offline`, and `git diff --check`.
 - #32 marked done. Next planned work is one-shot auto-compaction (#33–34 /
   S-025).
+
+### Session 20 — 2026-08-24 — one-shot auto-compaction
+Scope: #33–34 and S-025, settings-driven compaction in print mode.
+
+- The one-shot run path now provisions an in-memory session path while turns
+  execute, evaluates the existing harness token estimate against model window
+  and `compaction` settings, runs the harness summary compactor, rebuilds the
+  provider context from the compaction entry plus retained tail, and appends
+  the same compaction entry to JSONL persistence.
+- Faux summary completions use an isolated scripted queue, so compaction never
+  consumes a later normal print response. This gives the binary parity test a
+  deterministic provider boundary while real providers reuse the configured
+  stream path.
+- Evidence (mock): `cargo test -p pi-coding-agent --offline --test
+  cli_print_parity` (4 passed), including
+  `print_mode_auto_compaction_persists_and_continues`; `cargo test -p
+  pi-coding-agent --offline run::tests` (8 passed); `cargo check --workspace
+  --offline` and `git diff --check`.
+- #33, #34, and S-025 marked done. Next planned work is client
+  reconnect/timeouts and the remaining TUI/config-selector interactive gaps.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

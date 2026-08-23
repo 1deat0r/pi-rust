@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-43.98% = 73 completed / 166 total tasks
-93 tasks remain open
+45.78% = 76 completed / 166 total tasks
+90 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,9 +26,9 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is `13da24c` (`feat(images): align read
-processing and file attachments`). The image/read milestone is implemented,
-verified, and committed. The immediate push was blocked because the HTTPS
+The latest local checkpoint is the current `HEAD` (`feat(run): add print-mode
+auto-compaction`). The one-shot auto-compaction milestone is implemented,
+verified, and committed. Its immediate push was blocked because the HTTPS
 remote requires GitHub credentials.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
@@ -46,8 +46,8 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, no cargo/rustc process still running,
-progress checker reports `43.98% (73/166; 93 open)`, with the image checkpoint
-ahead of the remote.
+progress checker reports `45.78% (76/166; 90 open)`, with the compaction
+checkpoint ahead of the remote.
 
 ## Verification already completed
 
@@ -59,6 +59,7 @@ These checks passed during the session:
 /home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline tools::image
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline run::tests
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline image_file_argument_is_attached_and_normalized
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test cli_print_parity
 /home/mustbearnold/.cargo/bin/cargo test -p pi-tui terminal_image --offline
 /home/mustbearnold/.cargo/bin/cargo test -p pi-tui terminal::tests::cell_size_query_and_response_update_image_dimensions --offline
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent modes::rpc::tests --offline
@@ -73,22 +74,18 @@ including 162 `pi-agent` unit tests, the coding-agent integration targets, 186
 
 ## Last code change
 
-The image/read parity milestone (#32 / S-020 audit) is complete:
+The one-shot auto-compaction milestone (#33–34 / S-025) is complete in the
+working tree:
 
-- Source audit confirmed that upstream has no separate model-facing `image`
-  tool: `harness/tools/image.ts` is the shared detector/base64 helper used by
-  `read`.
-- `pi-agent` now ports the shared detector, BMP→PNG normalization, 2000×2000
-  and 4.5 MB processing policy, JPEG fallback, conversion/dimension hints,
-  and the `blockImages` provider filter.
-- `read` uses the processing settings in one-shot, JSON, interactive, and RPC
-  paths. `@file` arguments now attach processed image blocks and tagged text
-  references in one-shot and JSON modes; RPC rejects them with the upstream
-  unsupported-mode diagnostic.
-- Focused coverage includes six image tests, run-path helper coverage, and a
-  binary CLI session test proving BMP input is persisted as `image/png` with
-  its file reference. The full workspace test suite is green.
-- The earlier RPC checkpoint remains in `a5e161c`; its fixtures are under
+- The run path now provisions messages and compaction entries in memory,
+  evaluates configured thresholds, calls the existing harness summarizer,
+  rebuilds provider context from the retained compaction tail, and persists
+  the compaction entry in JSONL.
+- A binary faux-provider test forces the setting, verifies the second print
+  turn continues, and verifies a `"type":"compaction"` JSONL entry. The
+  focused print parity file has four passing tests.
+- #33, #34, and S-025 are marked complete. The previous image/read checkpoint
+  remains in `333ad84`; the earlier RPC fixtures are under
   `crates/pi-coding-agent/tests/fixtures/rpc/`.
 
 ## Major parity work already present
@@ -117,12 +114,10 @@ items just because a similarly named Rust module exists.
 ## Recommended next sequence
 
 1. Retry `git push origin main` after credentials are available; the current
-   image/read checkpoint is `13da24c` locally and is not remote yet.
-2. Finish one-shot print-path auto-compaction and its binary/session fixture
-   tests (#33–34 / S-025).
-3. Audit client reconnect/timeouts and the remaining TUI/config-selector
+   compaction checkpoint is local and is not remote yet.
+2. Audit client reconnect/timeouts and the remaining TUI/config-selector
    interactive behavior.
-4. Keep `CONVERSION-LEDGER.md`, `PLAN.md`, and this handoff synchronized;
+3. Keep `CONVERSION-LEDGER.md`, `PLAN.md`, and this handoff synchronized;
    only mark a task complete with an evidence tier and exact command/fixture.
 
 ## Useful source references
@@ -137,9 +132,9 @@ items just because a similarly named Rust module exists.
 
 ## Session discipline
 
-The operator has requested commit + push after each checkpoint. The image/read
-commit was made and its push was retried; GitHub rejected it because no HTTPS
-username is available. Retry the push whenever credentials are available and
-report the blocker honestly. Before continuing, inspect `git status`, read
-this handoff, run the progress checker, and treat all existing dirty changes
-as user-owned work.
+The operator has requested commit + push after each checkpoint. The
+auto-compaction commit was made and its push was retried; GitHub rejected it
+because no HTTPS username is available. Retry the push whenever credentials
+are available and report the blocker honestly. Before continuing, inspect
+`git status`, read this handoff, run the progress checker, and treat all
+existing dirty changes as user-owned work.

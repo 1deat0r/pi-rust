@@ -183,3 +183,44 @@ fn image_file_argument_is_attached_and_normalized() {
     // The tag is JSON-escaped in the persisted session transcript.
     assert!(session.contains("<file name=\\\""));
 }
+
+#[test]
+fn print_mode_auto_compaction_persists_and_continues() {
+    let sandbox = Sandbox::new("auto-compaction");
+    fs::write(
+        sandbox.home.join(".pi/agent/settings.json"),
+        r#"{"compaction":{"enabled":true,"reserveTokens":127999,"keepRecentTokens":1}}"#,
+    )
+    .unwrap();
+
+    let cwd = sandbox.root.clone();
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "first",
+            "second",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    assert!(
+        sandbox.stdout(&out).contains("faux response to: second"),
+        "print mode did not continue after compaction"
+    );
+    let session = walk_jsonl(&sandbox.sessions)
+        .into_iter()
+        .find_map(|path| fs::read_to_string(path).ok())
+        .expect("session JSONL");
+    assert!(
+        session.contains("\"type\":\"compaction\""),
+        "session JSONL did not persist a compaction entry: {session}"
+    );
+    assert!(
+        session.matches("\"type\":\"message\"").count() >= 4,
+        "expected both turns to remain in session history"
+    );
+}

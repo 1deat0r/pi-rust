@@ -11,11 +11,17 @@
 use std::sync::Arc;
 
 use pi_agent::agent::{run_agent_loop, AgentContext, AgentLoopConfig};
-use pi_agent::session::types::EntryNoStats;
+use pi_agent::harness::compaction::{
+    compact, estimate_context_tokens, prepare_compaction, should_compact, CompactionSettings,
+};
+use pi_agent::harness::SimpleModels;
+use pi_agent::session::context::{build_session_context, SessionContextBuildOptions};
+use pi_agent::session::types::{Entry, EntryNoStats};
 use pi_agent::session::{CreateOptions, JsonlSessionRepo};
 use pi_agent::tools::image::{
     detect_supported_image_mime_type, process_image, ProcessImageOptions,
 };
+use pi_agent::types::AgentMessage;
 use pi_ai::types::{ContentBlock, Message, UserContent};
 
 use crate::args::Args;
@@ -133,87 +139,109 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     // providers route through the pi-ai Models facade (catalog-backed model
     // resolution + auth application + api dispatch). `faux` keeps its
     // scripted path for tests.
-    let (model, stream_fn): (pi_ai::model::Model, StreamFn) = if provider == "faux" {
-        let core = pi_ai::providers::FauxProviderCore::new(
-            &pi_ai::providers::RegisterFauxProviderOptions::default(),
-        );
-        let model = match model_hint.as_deref() {
-            Some(hint) => {
-                let id = hint.rsplit('/').next().unwrap_or(hint);
-                core.get_model(Some(id))
-                    .cloned()
-                    .ok_or_else(|| format!("unknown faux model {id:?}"))?
-            }
-            None => core
-                .models
-                .first()
-                .cloned()
-                .ok_or_else(|| "no faux model".to_string())?,
-        };
-        // Queue one scripted faux response per prompt so sequential
-        // print-mode turns (one assistant turn per positional message,
-        // upstream `runPrintMode`) each pop a reply.
-        let prompts: Vec<String> = if args.messages.is_empty() {
-            vec!["Hello from pi-rust".to_string()]
-        } else {
-            args.messages.clone()
-        };
-        let responses: Vec<pi_ai::providers::FauxResponseStep> = prompts
-            .into_iter()
-            .map(|text| {
-                pi_ai::providers::FauxResponseStep::Message(
-                    pi_ai::providers::faux_assistant_message(
-                        vec![pi_ai::types::ContentBlock::text(format!(
-                            "faux response to: {text}"
-                        ))],
-                        pi_ai::providers::FauxAssistantOptions::default(),
-                    ),
-                )
-            })
-            .collect();
-        core.set_responses(responses);
-        let core = core.clone();
-        let stream_fn: StreamFn = Arc::new(move |model, ctx| core.stream(model, ctx, None));
-        (model, stream_fn)
-    } else {
-        // models.json runtime merge: the registry overlays the bundled
-        // catalog with ~/.pi/agent/models.json (upstream applyModelsJson).
-        let models = {
-            let models = crate::core::model_registry::builtin_models();
-            let config = crate::core::model_config::ModelConfig::load(
-                crate::core::model_config::models_json_path().as_deref(),
+    let (model, stream_fn, summary_stream_fn): (pi_ai::model::Model, StreamFn, StreamFn) =
+        if provider == "faux" {
+            let core = pi_ai::providers::FauxProviderCore::new(
+                &pi_ai::providers::RegisterFauxProviderOptions::default(),
             );
-            let registry = crate::core::model_registry::ModelRegistry::new(models, config);
-            registry.into_models()
-        };
-        if models.get_provider(&provider).is_none() {
-            return Err(format!(
-                "provider {provider:?} is not registered in the model registry"
-            ));
-        }
-        let model = crate::core::model_runtime::resolve_run_model_for_provider(
-            &models,
-            &provider,
-            model_hint.as_deref(),
-        )?;
-        // Stream options carry the explicit --api-key / PI_KEY (the facade
-        // applies env-key auth when absent).
-        let api_key = args
-            .api_key
-            .clone()
-            .or_else(|| std::env::var(config::ENV_KEY).ok());
-        let stream_options = pi_ai::types::StreamOptions {
-            base: pi_ai::types::ProviderRequestOptions {
-                api_key,
+            let model = match model_hint.as_deref() {
+                Some(hint) => {
+                    let id = hint.rsplit('/').next().unwrap_or(hint);
+                    core.get_model(Some(id))
+                        .cloned()
+                        .ok_or_else(|| format!("unknown faux model {id:?}"))?
+                }
+                None => core
+                    .models
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| "no faux model".to_string())?,
+            };
+            // Queue one scripted faux response per prompt so sequential
+            // print-mode turns (one assistant turn per positional message,
+            // upstream `runPrintMode`) each pop a reply.
+            let prompts: Vec<String> = if args.messages.is_empty() {
+                vec!["Hello from pi-rust".to_string()]
+            } else {
+                args.messages.clone()
+            };
+            let responses: Vec<pi_ai::providers::FauxResponseStep> = prompts
+                .into_iter()
+                .map(|text| {
+                    pi_ai::providers::FauxResponseStep::Message(
+                        pi_ai::providers::faux_assistant_message(
+                            vec![pi_ai::types::ContentBlock::text(format!(
+                                "faux response to: {text}"
+                            ))],
+                            pi_ai::providers::FauxAssistantOptions::default(),
+                        ),
+                    )
+                })
+                .collect();
+            core.set_responses(responses);
+            let core = core.clone();
+            let stream_fn: StreamFn = Arc::new(move |model, ctx| core.stream(model, ctx, None));
+            // Keep compaction completions off the scripted user-response queue.
+            // The real provider uses the same stream path for both calls; faux is
+            // deliberately split so a summary cannot consume a later print turn.
+            let summary_core = pi_ai::providers::FauxProviderCore::new(
+                &pi_ai::providers::RegisterFauxProviderOptions::default(),
+            );
+            let summary_responses = (0..64)
+                .map(|_| {
+                    pi_ai::providers::FauxResponseStep::Message(
+                        pi_ai::providers::faux_assistant_message(
+                            vec![pi_ai::types::ContentBlock::text("faux compaction summary")],
+                            pi_ai::providers::FauxAssistantOptions::default(),
+                        ),
+                    )
+                })
+                .collect();
+            summary_core.set_responses(summary_responses);
+            let summary_core = summary_core.clone();
+            let summary_stream_fn: StreamFn =
+                Arc::new(move |model, ctx| summary_core.stream(model, ctx, None));
+            (model, stream_fn, summary_stream_fn)
+        } else {
+            // models.json runtime merge: the registry overlays the bundled
+            // catalog with ~/.pi/agent/models.json (upstream applyModelsJson).
+            let models = {
+                let models = crate::core::model_registry::builtin_models();
+                let config = crate::core::model_config::ModelConfig::load(
+                    crate::core::model_config::models_json_path().as_deref(),
+                );
+                let registry = crate::core::model_registry::ModelRegistry::new(models, config);
+                registry.into_models()
+            };
+            if models.get_provider(&provider).is_none() {
+                return Err(format!(
+                    "provider {provider:?} is not registered in the model registry"
+                ));
+            }
+            let model = crate::core::model_runtime::resolve_run_model_for_provider(
+                &models,
+                &provider,
+                model_hint.as_deref(),
+            )?;
+            // Stream options carry the explicit --api-key / PI_KEY (the facade
+            // applies env-key auth when absent).
+            let api_key = args
+                .api_key
+                .clone()
+                .or_else(|| std::env::var(config::ENV_KEY).ok());
+            let stream_options = pi_ai::types::StreamOptions {
+                base: pi_ai::types::ProviderRequestOptions {
+                    api_key,
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
+            };
+            let models = models.clone();
+            let stream_fn: StreamFn =
+                Arc::new(move |_model, ctx| models.stream(_model, ctx, Some(&stream_options)));
+            let summary_stream_fn = stream_fn.clone();
+            (model, stream_fn, summary_stream_fn)
         };
-        let models = models.clone();
-        let stream_fn: StreamFn =
-            Arc::new(move |_model, ctx| models.stream(_model, ctx, Some(&stream_options)));
-        (model, stream_fn)
-    };
 
     let system_prompt = assemble_run_system_prompt(args, &cwd, &agent_dir, &settings);
 
@@ -242,7 +270,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         block_images: settings.get_block_images(),
     };
     let cfg = AgentLoopConfig {
-        model,
+        model: model.clone(),
         stream_fn,
         signal: None,
         stop_after_turn: true,
@@ -258,6 +286,18 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     // session.prompt(message); }`). Each turn's messages fold into the agent
     // context so a later prompt observes earlier turns.
     let mut all_messages: Vec<pi_agent::types::AgentMessage> = Vec::new();
+    // Keep a provisioned in-memory session path while print mode is running.
+    // The compaction harness consumes full entries (not just provider
+    // messages), and the same provisioned entries are persisted below.
+    let mut history_entries: Vec<Entry> = Vec::new();
+    let mut session_entries: Vec<EntryNoStats> = Vec::new();
+    let summarizer = SimpleModels::new({
+        let summary_stream_fn = summary_stream_fn.clone();
+        move |model, context, _options| {
+            let stream = (summary_stream_fn)(model, context);
+            Box::pin(async move { stream.collect().await.1 })
+        }
+    });
     let prepared_files =
         prepare_file_arguments(&args.file_args, &cwd, settings.get_image_auto_resize())?;
     let mut prompts: Vec<(String, Vec<ContentBlock>)> = Vec::new();
@@ -288,7 +328,22 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         let turn_messages =
             run_agent_loop(vec![prompt], &mut context, &cfg, &mut |e| events.push(e)).await;
         context.messages.extend(turn_messages.iter().cloned());
+        for message in &turn_messages {
+            append_run_message(&mut history_entries, &mut session_entries, message.clone());
+        }
         all_messages.extend(turn_messages);
+
+        if let Some(compaction) = maybe_auto_compact(
+            &mut context,
+            &mut history_entries,
+            &model,
+            &settings,
+            &summarizer,
+        )
+        .await
+        {
+            session_entries.push(compaction);
+        }
     }
 
     // The last assistant message drives output (upstream print-mode.ts reads
@@ -354,16 +409,9 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             })
             .await
             .map_err(|e| format!("create session: {e}"))?;
-        for message in &all_messages {
+        for entry in session_entries {
             session
-                .append_entry(
-                    EntryNoStats::Message {
-                        id: format!("m-{}", pi_agent::session::new_id()),
-                        message: message.clone(),
-                        terminate: None,
-                    },
-                    "main",
-                )
+                .append_entry(entry, "main")
                 .await
                 .map_err(|e| format!("append entry: {e}"))?;
         }
@@ -377,6 +425,120 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     Ok(RunOutcome {
         final_text,
         session_path,
+    })
+}
+
+/// Provision a print-mode message in both the in-memory compaction path and
+/// the eventual JSONL session. Keeping one id for both views preserves the
+/// session tree shape when a compaction entry is inserted between turns.
+fn append_run_message(
+    history_entries: &mut Vec<Entry>,
+    session_entries: &mut Vec<EntryNoStats>,
+    message: AgentMessage,
+) {
+    let id = pi_agent::session::new_id();
+    let seq = history_entries.last().map_or(1, |entry| entry.seq() + 1);
+    let parent_id = history_entries.last().map(|entry| entry.id().to_string());
+    let timestamp = message.timestamp();
+    history_entries.push(Entry::Message {
+        id: id.clone(),
+        seq,
+        parent_id,
+        timestamp,
+        message: message.clone(),
+        terminate: None,
+    });
+    session_entries.push(EntryNoStats::Message {
+        id,
+        message,
+        terminate: None,
+    });
+}
+
+/// Apply one threshold compaction to the print-mode context and return the
+/// provisioned JSONL entry to append after the turn's messages.
+async fn maybe_auto_compact(
+    context: &mut AgentContext,
+    history_entries: &mut Vec<Entry>,
+    model: &pi_ai::model::Model,
+    settings: &SettingsManager,
+    summarizer: &SimpleModels,
+) -> Option<EntryNoStats> {
+    let (enabled, reserve_tokens, keep_recent_tokens) = settings.get_compaction_settings();
+    let compaction_settings = CompactionSettings {
+        enabled,
+        reserve_tokens,
+        keep_recent_tokens,
+    };
+    let estimate = estimate_context_tokens(&context.messages);
+    if !should_compact(estimate.tokens, model.context_window, &compaction_settings) {
+        return None;
+    }
+
+    let preparation = match prepare_compaction(history_entries, &compaction_settings) {
+        Ok(preparation) => preparation,
+        Err(error) => {
+            tracing::warn!(%error, "automatic print-mode compaction preparation failed");
+            return None;
+        }
+    };
+    let Some(preparation) = preparation else {
+        return None;
+    };
+    let result = match compact(
+        &preparation,
+        summarizer,
+        model,
+        None,
+        None,
+        Some("off"),
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::warn!(%error, "automatic print-mode compaction failed");
+            return None;
+        }
+    };
+
+    let id = pi_agent::session::new_id();
+    let seq = history_entries.last().map_or(1, |entry| entry.seq() + 1);
+    let parent_id = history_entries.last().map(|entry| entry.id().to_string());
+    let timestamp = pi_ai::types::now_ms();
+    let details = result.details.as_ref().map(|details| {
+        serde_json::json!({
+            "readFiles": details.read_files,
+            "modifiedFiles": details.modified_files,
+        })
+    });
+    let retained_tail = result.retained_tail.clone();
+    let summary = result.summary.clone();
+    let tokens_before = result.tokens_before;
+    let usage = result.usage.clone();
+    history_entries.push(Entry::Compaction {
+        id: id.clone(),
+        seq,
+        parent_id,
+        timestamp,
+        summary: summary.clone(),
+        retained_tail: retained_tail.clone(),
+        tokens_before,
+        details: details.clone(),
+        usage: usage.clone(),
+    });
+    context.messages =
+        build_session_context(history_entries, &SessionContextBuildOptions::default()).messages;
+
+    Some(EntryNoStats::Compaction {
+        id,
+        summary,
+        retained_tail,
+        tokens_before,
+        details,
+        usage,
     })
 }
 
