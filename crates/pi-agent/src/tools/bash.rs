@@ -366,14 +366,14 @@ pub async fn execute_bash_with_updates(
                 },
             )],
             details: if capture.truncated {
-                bash_progress_details(&ShellCaptureProgress {
+                Some(bash_progress_details(&ShellCaptureProgress {
                     output: capture.output.clone(),
                     truncation: capture.truncation.clone(),
                     full_output_path: capture.full_output_path.clone(),
                     last_line_bytes: capture.last_line_bytes,
-                })
+                }))
             } else {
-                serde_json::json!({})
+                None
             },
             usage: None,
             added_tool_names: Vec::new(),
@@ -454,7 +454,7 @@ fn truncation_to_json(truncation: &TruncationResult) -> serde_json::Value {
 fn emit_bash_partial(on_update: &ToolUpdateCallback, output: String, details: serde_json::Value) {
     on_update(&AgentToolResult {
         content: vec![pi_ai::types::ContentBlock::text(output)],
-        details,
+        details: Some(details),
         usage: None,
         added_tool_names: Vec::new(),
         terminate: false,

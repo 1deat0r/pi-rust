@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 52.41% (87/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 53.61% (89/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1035,6 +1035,32 @@ fetch contract.
   `cargo test --workspace --offline`, and `cargo fmt --all -- --check`.
 - #89 and #90 are complete. S-016/S-017 remain open for atomic-write and
   provider-shape/runtime-merge fixture expansion beyond this update command.
+
+### Session 29 — 2026-08-24 — AgentTool harness fixture and lifecycle parity
+Scope: supplemental S-018/S-020 closure for built-in update payloads, tool
+execution ordering, mutation serialization, and malformed-call behavior.
+
+- Normal `AgentToolResult` text output now omits optional `details`; error text
+  retains the upstream empty-object details shape. `read`, `write`, `edit`,
+  `bash`, `ls`, `find`, and `grep` are covered through the registered tool
+  contract, with abort checks and canonical-path file-mutation serialization.
+- The rich loop now runs prepared parallel tools through a completion-aware
+  update sink: `tool_execution_end` follows actual completion order while
+  model-facing result messages remain in source order. Immediate preparation
+  failures are emitted, mutable before-hooks can replace validated arguments,
+  after-hooks can override results, and callbacks after settlement are ignored.
+- Bash fixtures cover coalesced progress, final truncation/full-output detail,
+  and timeout after output. The coding-agent integration fixture invokes all
+  seven registered built-ins with malformed arguments and verifies error
+  payloads, event coverage, source-order results, and no file mutation.
+- Evidence (unit/mock/integration):
+  `cargo test -p pi-agent --offline --quiet`,
+  `cargo test -p pi-coding-agent --offline --test tool_contract -- --nocapture`,
+  `cargo test --workspace --offline --quiet`,
+  `cargo fmt --all -- --check`, and `git diff --check`.
+- S-018 and S-020 are complete. S-019 remains open for model-facing/session/RPC
+  termination semantics; S-024 remains open for broader schema-validator
+  parity.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

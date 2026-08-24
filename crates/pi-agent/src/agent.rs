@@ -163,7 +163,7 @@ pub async fn run_agent_loop(
                                                 tool_call_id: id.clone(),
                                                 tool_name: name.clone(),
                                                 content,
-                                                details: Some(details),
+                                                details,
                                                 usage,
                                                 added_tool_names,
                                                 is_error: false,

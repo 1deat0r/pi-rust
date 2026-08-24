@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **52.41% (87/166)**. Run
+- The exhaustive checker reports **53.61% (89/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -19,11 +19,12 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the local ConfigSelector PTY/resize checkpoint followed by the
-  alt-screen screen-epoch redraw hardening on `main`; the HTTPS remote is
-  still behind because GitHub credentials are unavailable.
+- HEAD is the local AgentTool harness fixture/lifecycle checkpoint on `main`,
+  after the update/version and model-catalog work; the HTTPS remote is still
+  behind because GitHub credentials are unavailable.
 - The workspace is green under `cargo test --workspace --offline`; the focused
-  tool-contract, RPC, image/read, and print-mode compaction suites pass.
+  tool-contract, RPC, image/read, print-mode compaction, and malformed-call
+  suites pass.
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
   device-code flows, codex WebSocket transport (SSE fallback today),
   `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
@@ -51,10 +52,10 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
     `session-cwd`, `cache-stats`, `timings`, `auth-guidance`,
     `settings-diagnostics`, `diagnostics`, `project-trust`/
     `trust-manager`, `messages` (extended), `footer-data-provider`.
-  - pi-agent: the remaining contract work is built-in harness integration and
-    exact malformed-call/update fixture coverage; the core AgentTool shape,
-    prepareArguments seam, schema validation, terminate-batch handling, and
-    update-event sink now land locally.
+- pi-agent: the core AgentTool shape, prepareArguments seam, optional-details
+      payloads, mutable before/after hooks, parallel completion ordering,
+      built-in update sink, mutation queue, and malformed-call matrix are now
+      covered; broader schema-validator parity remains S-024.
   - pi-client: reconnect state/listeners, handshake/request timeout bounds,
     late-response suppression, and permanent dispose now land with fake-socket
     coverage; lease/reconcile parity remains partial, as do transport-factory
@@ -588,14 +589,24 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 
 ### S1-C — pi-agent contract and harness integration
 
-- [ ] S-018 Emit upstream `tool_execution_update` events from built-in tools
+- [x] S-018 Emit upstream `tool_execution_update` events from built-in tools
       through the `onUpdate` callback, including throttling and final-update
-      ordering.
+      ordering. Evidence (unit): `cargo test -p pi-agent --offline --test
+      tools --quiet` covers coalesced progress, final truncation metadata,
+      timeout output/full-file preservation, and normal/error output; rich-loop
+      tests cover live parallel updates, final ordering, and late-callback
+      suppression.
 - [ ] S-019 Preserve and apply tool `terminate` hints in the model-facing
       result/session/RPC event contract, including mixed parallel batches.
-- [ ] S-020 Verify exact `AgentTool` prepare/execute/error semantics for every
+- [x] S-020 Verify exact `AgentTool` prepare/execute/error semantics for every
       built-in and coding-agent tool against upstream malformed-call fixtures;
-      close any remaining signature or payload drift.
+      close any remaining signature or payload drift. Evidence (unit):
+      `cargo test -p pi-agent --offline rich_agent::tests --quiet`,
+      `cargo test -p pi-agent --offline --test tools --quiet`, and
+      `cargo test -p pi-coding-agent --offline --test tool_contract` cover
+      mutable before-hook arguments, edit preparation, optional details,
+      parallel immediate errors/after-hook overrides, and malformed read,
+      write, edit, bash, ls, find, and grep calls.
 - [ ] S-021 Integrate the `AgentHarness` lane/session abstraction into the
       coding-agent run path instead of maintaining a parallel direct-loop
       implementation.

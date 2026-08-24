@@ -25,8 +25,10 @@ use pi_ai::types::{json_tool, Tool};
 pub struct AgentToolResult {
     /// Text or image content returned to the model.
     pub content: Vec<pi_ai::types::ContentBlock>,
-    /// Arbitrary structured details for logs or UI rendering.
-    pub details: serde_json::Value,
+    /// Arbitrary structured details for logs or UI rendering. Normal tool
+    /// results omit this field; error results use an empty object, matching
+    /// upstream's optional `AgentToolResult.details` shape.
+    pub details: Option<serde_json::Value>,
     /// Usage from the final tool execution itself, if available.
     pub usage: Option<pi_ai::types::Usage>,
     /// Names of tools introduced by this result and available from this
@@ -39,11 +41,22 @@ pub struct AgentToolResult {
 }
 
 impl AgentToolResult {
-    /// Build a text-only result (upstream `createErrorToolResult` shape).
+    /// Build a successful text-only result.
+    pub fn output(text: impl Into<String>) -> Self {
+        Self {
+            content: vec![pi_ai::types::ContentBlock::text(text)],
+            details: None,
+            usage: None,
+            added_tool_names: Vec::new(),
+            terminate: false,
+        }
+    }
+
+    /// Build an error text result (upstream `createErrorToolResult` shape).
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             content: vec![pi_ai::types::ContentBlock::text(text)],
-            details: serde_json::json!({}),
+            details: Some(serde_json::json!({})),
             usage: None,
             added_tool_names: Vec::new(),
             terminate: false,
@@ -62,7 +75,7 @@ impl AgentToolResult {
         } = result;
         Self {
             content: content.clone(),
-            details: details.clone().unwrap_or(serde_json::json!({})),
+            details: details.clone(),
             usage: usage.clone(),
             added_tool_names: added_tool_names.clone().unwrap_or_default(),
             terminate: false,
@@ -159,9 +172,12 @@ pub fn read_tool_with_options(cwd: String, image_options: image::ProcessImageOpt
             }),
         ),
         "Read file",
-        Arc::new(move |tool_call_id, args, _signal, _on_update| {
+        Arc::new(move |tool_call_id, args, signal, _on_update| {
             let cwd = cwd.clone();
             Box::pin(async move {
+                if crate::agent::is_aborted(signal.as_ref()) {
+                    return Err("Operation aborted".to_string());
+                }
                 let path = args
                     .get("path")
                     .and_then(|v| v.as_str())
@@ -177,6 +193,9 @@ pub fn read_tool_with_options(cwd: String, image_options: image::ProcessImageOpt
                     image_options,
                 )
                 .await?;
+                if crate::agent::is_aborted(signal.as_ref()) {
+                    return Err("Operation aborted".to_string());
+                }
                 Ok(AgentToolResult::from_tool_result_message(&result))
             })
         }),
@@ -198,9 +217,12 @@ pub fn write_tool(cwd: String) -> AgentTool {
             }),
         ),
         "Write file",
-        Arc::new(move |tool_call_id, args, _signal, _on_update| {
+        Arc::new(move |tool_call_id, args, signal, _on_update| {
             let cwd = cwd.clone();
             Box::pin(async move {
+                if crate::agent::is_aborted(signal.as_ref()) {
+                    return Err("Operation aborted".to_string());
+                }
                 let path = args
                     .get("path")
                     .and_then(|v| v.as_str())
@@ -210,6 +232,9 @@ pub fn write_tool(cwd: String) -> AgentTool {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let result = write::execute_write(&tool_call_id, path, content, &cwd).await?;
+                if crate::agent::is_aborted(signal.as_ref()) {
+                    return Err("Operation aborted".to_string());
+                }
                 Ok(AgentToolResult::from_tool_result_message(&result))
             })
         }),
@@ -242,15 +267,21 @@ pub fn edit_tool(cwd: String) -> AgentTool {
             }),
         ),
         "Edit file",
-        Arc::new(move |tool_call_id, args, _signal, _on_update| {
+        Arc::new(move |tool_call_id, args, signal, _on_update| {
             let cwd = cwd.clone();
             Box::pin(async move {
+                if crate::agent::is_aborted(signal.as_ref()) {
+                    return Err("Operation aborted".to_string());
+                }
                 let path = args
                     .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "edit: missing required argument path".to_string())?;
                 let edits = edit::extract_edits(&args)?;
                 let result = edit::execute_edit(&tool_call_id, path, edits, &cwd).await?;
+                if crate::agent::is_aborted(signal.as_ref()) {
+                    return Err("Operation aborted".to_string());
+                }
                 Ok(AgentToolResult::from_tool_result_message(&result))
             })
         }),

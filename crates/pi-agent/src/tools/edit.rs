@@ -18,42 +18,47 @@ pub async fn execute_edit(
     cwd: &str,
 ) -> Result<ToolResultMessage, String> {
     let absolute = resolve_tool_path(cwd, path);
+    let key = crate::harness::tools::resolve_mutation_key(cwd, path);
+    let path = path.to_string();
+    let tool_call_id = tool_call_id.to_string();
+    crate::harness::tools::with_file_mutation_queue(key, async move {
+        let metadata = std::fs::metadata(&absolute)
+            .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
+        if !metadata.is_file() {
+            return Err(format!("Could not edit file: {path}. Path is not a file."));
+        }
 
-    let metadata = std::fs::metadata(&absolute)
-        .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
-    if !metadata.is_file() {
-        return Err(format!("Could not edit file: {path}. Path is not a file."));
-    }
+        let content = std::fs::read_to_string(&absolute)
+            .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
 
-    let content = std::fs::read_to_string(&absolute)
-        .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
+        let (bom, text) = strip_bom(&content);
+        let original_ending = detect_line_ending(&text);
+        let normalized_content = normalize_to_lf(&text);
+        let result = apply_edits_to_normalized_content(&normalized_content, &edits, &path)?;
 
-    let (bom, text) = strip_bom(&content);
-    let original_ending = detect_line_ending(&text);
-    let normalized_content = normalize_to_lf(&text);
-    let result = apply_edits_to_normalized_content(&normalized_content, &edits, path)?;
+        let final_content = bom + &restore_line_endings(&result.new_content, original_ending);
+        std::fs::write(&absolute, final_content)
+            .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
 
-    let final_content = bom + &restore_line_endings(&result.new_content, original_ending);
-    std::fs::write(&absolute, final_content)
-        .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
+        let (diff, first_changed_line) =
+            generate_diff_string(&result.base_content, &result.new_content, 4);
+        let patch = generate_unified_patch(&path, &result.base_content, &result.new_content, 4);
 
-    let (diff, first_changed_line) =
-        generate_diff_string(&result.base_content, &result.new_content, 4);
-    let patch = generate_unified_patch(path, &result.base_content, &result.new_content, 4);
+        let details = serde_json::json!({
+            "diff": diff,
+            "patch": patch,
+            "firstChangedLine": first_changed_line,
+        });
 
-    let details = serde_json::json!({
-        "diff": diff,
-        "patch": patch,
-        "firstChangedLine": first_changed_line,
-    });
-
-    Ok(ToolResultMessage::text(
-        tool_call_id,
-        "edit",
-        format!("Successfully replaced {} block(s) in {path}.", edits.len()),
-        false,
-    )
-    .with_details_usage_timestamp(None, Some(details), pi_ai::types::now_ms()))
+        Ok(ToolResultMessage::text(
+            tool_call_id,
+            "edit",
+            format!("Successfully replaced {} block(s) in {path}.", edits.len()),
+            false,
+        )
+        .with_details_usage_timestamp(None, Some(details), pi_ai::types::now_ms()))
+    })
+    .await
 }
 
 /// Normalize the raw arguments accepted by the upstream edit tool before

@@ -105,7 +105,7 @@ pub fn ls_tool(cwd: String) -> AgentTool {
                 let path = args.get("path").and_then(|v| v.as_str());
                 let limit = args.get("limit").and_then(|v| v.as_u64());
                 match ls_execute(&cwd, path, limit).await {
-                    Ok(output) => Ok(AgentToolResult::text(output)),
+                    Ok(output) => Ok(AgentToolResult::output(output)),
                     Err(e) => Err(e),
                 }
             })

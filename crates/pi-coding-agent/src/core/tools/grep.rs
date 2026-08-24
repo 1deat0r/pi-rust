@@ -309,7 +309,7 @@ pub fn grep_tool(cwd: String) -> AgentTool {
                 let context = args.get("context").and_then(|v| v.as_u64());
                 let limit = args.get("limit").and_then(|v| v.as_u64());
                 match grep_execute(&cwd, pattern, path, glob, ignore_case, literal, context, limit).await {
-                    Ok(output) => Ok(AgentToolResult::text(output)),
+                    Ok(output) => Ok(AgentToolResult::output(output)),
                     Err(e) => Err(e),
                 }
             })

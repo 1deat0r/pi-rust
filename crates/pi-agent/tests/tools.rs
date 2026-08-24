@@ -127,13 +127,90 @@ fn bash_tool_preserves_full_output_details_when_truncated() {
         .await
         .unwrap();
 
-        let full_output_path = result.details["fullOutputPath"]
+        let full_output_path = result.details.as_ref().unwrap()["fullOutputPath"]
             .as_str()
             .expect("full output path in tool details");
         assert!(std::path::Path::new(full_output_path).is_file());
         assert!(result.content.iter().any(|content| {
             matches!(content, ContentBlock::Text { text, .. } if text.contains("Full output:"))
         }));
+    });
+}
+
+#[test]
+fn bash_tool_coalesces_updates_and_keeps_final_truncation_snapshot() {
+    let rt = rt();
+    rt.block_on(async {
+        let dir = tmpdir("bash-coalesced");
+        let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = updates.clone();
+        let on_update: ToolUpdateCallback = std::sync::Arc::new(move |partial| {
+            received.lock().unwrap().push(partial.clone());
+        });
+
+        let result = pi_agent::tools::bash::execute_bash_with_updates(
+            "i=1; while [ $i -le 3000 ]; do echo line-$i; i=$((i + 1)); done",
+            None,
+            &dir.to_string_lossy(),
+            None,
+            Some(on_update),
+        )
+        .await
+        .unwrap();
+
+        let updates = updates.lock().unwrap();
+        assert!(
+            updates.len() < 25,
+            "expected throttled updates, got {}",
+            updates.len()
+        );
+        let details = result.details.as_ref().unwrap();
+        assert_eq!(details["truncation"]["totalLines"], 3000);
+        assert!(result.content.iter().any(|content| {
+            matches!(content, ContentBlock::Text { text, .. } if text.contains("line-3000"))
+        }));
+        let final_update = updates.last().expect("final progress update");
+        assert!(final_update.content.iter().any(|content| {
+            matches!(content, ContentBlock::Text { text, .. } if text.contains("line-3000"))
+        }));
+        assert_eq!(
+            final_update.details.as_ref().unwrap()["fullOutputPath"],
+            details["fullOutputPath"]
+        );
+        let full_output =
+            std::fs::read_to_string(details["fullOutputPath"].as_str().unwrap()).unwrap();
+        assert!(full_output.contains("line-1\nline-2"));
+        assert!(full_output.contains("line-2999\nline-3000"));
+    });
+}
+
+#[test]
+fn bash_tool_preserves_output_and_full_file_when_timeout_follows_output() {
+    let rt = rt();
+    rt.block_on(async {
+        let dir = tmpdir("bash-timeout-output");
+        let error = pi_agent::tools::bash::execute_bash_with_updates(
+            "yes line | head -n 15000; sleep 1",
+            Some(0.05),
+            &dir.to_string_lossy(),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("Command timed out after 0.05 seconds"),
+            "got: {error}"
+        );
+        let full_output_path = error
+            .split("Full output: ")
+            .nth(1)
+            .and_then(|path| path.lines().next())
+            .map(|path| path.trim_end_matches(']'))
+            .expect("full output path in timeout error");
+        let full_output = std::fs::read_to_string(full_output_path)
+            .unwrap_or_else(|e| panic!("path={full_output_path:?} error={error:?}: {e}"));
+        assert!(full_output.contains("line\n"));
     });
 }
 

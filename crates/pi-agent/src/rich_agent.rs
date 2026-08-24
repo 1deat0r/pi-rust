@@ -20,7 +20,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use futures_util::FutureExt;
+use futures_util::{FutureExt, StreamExt};
 use pi_ai::types::{
     AssistantMessage, AssistantMessageEvent, Context, Message, StopReason, ThinkingLevel,
     ToolResultMessage,
@@ -163,7 +163,11 @@ pub struct BeforeToolCallResult {
 #[derive(Debug, Clone, Default)]
 pub struct AfterToolCallResult {
     pub content: Option<Vec<pi_ai::types::ContentBlock>>,
+    pub details: Option<serde_json::Value>,
+    pub usage: Option<pi_ai::types::Usage>,
+    pub added_tool_names: Option<Vec<String>>,
     pub is_error: Option<bool>,
+    pub terminate: Option<bool>,
 }
 
 /// Context passed to `beforeToolCall`.
@@ -193,10 +197,11 @@ pub type AsyncHook<Args, Out> =
 pub type ConvertToLlmFn = Arc<dyn Fn(&[AgentMessage]) -> Vec<Message> + Send + Sync>;
 
 pub type BeforeToolCallHook = Arc<
-    dyn Fn(
-            BeforeToolCallContext,
+    dyn for<'a> Fn(
+            &'a mut BeforeToolCallContext,
             Option<Arc<AtomicBool>>,
-        ) -> Pin<Box<dyn Future<Output = Option<BeforeToolCallResult>> + Send>>
+        )
+            -> Pin<Box<dyn Future<Output = Option<BeforeToolCallResult>> + Send + 'a>>
         + Send
         + Sync,
 >;
@@ -334,7 +339,16 @@ fn create_error_tool_result(
     tool_name: &str,
     message: &str,
 ) -> ToolResultMessage {
-    ToolResultMessage::text(tool_call_id, tool_name, message, true)
+    agent_tool_result_to_message(
+        tool_call_id,
+        tool_name,
+        &crate::tools::AgentToolResult::text(message),
+        true,
+    )
+}
+
+fn create_error_agent_tool_result(message: &str) -> crate::tools::AgentToolResult {
+    crate::tools::AgentToolResult::text(message)
 }
 
 /// Convert an `AgentToolResult` into a `ToolResultMessage` (upstream
@@ -349,7 +363,7 @@ fn agent_tool_result_to_message(
         tool_call_id: tool_call_id.to_string(),
         tool_name: tool_name.to_string(),
         content: result.content.clone(),
-        details: Some(result.details.clone()),
+        details: result.details.clone(),
         usage: result.usage.clone(),
         added_tool_names: if result.added_tool_names.is_empty() {
             None
@@ -370,7 +384,9 @@ fn agent_tool_result_to_partial_json(result: &crate::tools::AgentToolResult) -> 
         "content".to_string(),
         serde_json::to_value(&result.content).unwrap_or(serde_json::Value::Null),
     );
-    object.insert("details".to_string(), result.details.clone());
+    if let Some(details) = &result.details {
+        object.insert("details".to_string(), details.clone());
+    }
     if let Some(usage) = &result.usage {
         object.insert(
             "usage".to_string(),
@@ -490,7 +506,18 @@ where
     F: FnMut(RichAgentEvent) + Send,
 {
     let tool_calls = tool_calls_of(message);
-    if config.tool_execution == ToolExecutionMode::Sequential || tool_calls.len() <= 1 {
+    let has_sequential_tool = tool_calls.iter().any(|tc| {
+        context
+            .tools
+            .iter()
+            .find(|tool| tool.tool.name == tc.name)
+            .and_then(|tool| tool.execution_mode)
+            == Some(crate::tools::ToolExecutionMode::Sequential)
+    });
+    if config.tool_execution == ToolExecutionMode::Sequential
+        || has_sequential_tool
+        || tool_calls.len() <= 1
+    {
         return execute_tool_calls_sequential(message, context, config, emit).await;
     }
     execute_tool_calls_parallel(message, context, config, emit).await
@@ -517,14 +544,17 @@ where
         });
         match prepare_tool_call(message, &tc, context, config).await {
             PreparedToolCall::Immediate { result, is_error } => {
+                let terminate = result.terminate;
+                let message_result =
+                    agent_tool_result_to_message(tc.id, tc.name, &result, is_error);
                 emit(RichAgentEvent::ToolExecutionEnd {
                     tool_call_id: tc.id.to_string(),
                     tool_name: tc.name.to_string(),
-                    result: result.clone(),
+                    result: message_result.clone(),
                     is_error,
                 });
-                emit_tool_result_messages(&mut messages, result, emit);
-                terminate_flags.push(false);
+                emit_tool_result_messages(&mut messages, message_result, emit);
+                terminate_flags.push(terminate);
             }
             PreparedToolCall::Prepared { tool, args } => {
                 let execution = start_tool_execution(
@@ -536,9 +566,9 @@ where
                 );
                 let (result, is_error) =
                     await_tool_execution(execution, &mut update_receiver, emit).await;
-                let terminate = result.terminate;
                 let (result, is_error) =
-                    finalize_tool_call(message, &tc, args, result, is_error, config, emit).await;
+                    finalize_tool_call(message, &tc, args, result, is_error, config).await;
+                let terminate = result.terminate;
                 let message_result =
                     agent_tool_result_to_message(&tc.id, &tc.name, &result, is_error);
                 emit(RichAgentEvent::ToolExecutionEnd {
@@ -572,138 +602,131 @@ where
     F: FnMut(RichAgentEvent) + Send,
 {
     // Phase 1: prepare each call sequentially (upstream preflights).
-    let mut prepared: Vec<Option<PreparedToolCall>> = Vec::new();
-    for tc in tool_calls_of(message) {
+    let tool_calls = tool_calls_of(message);
+    type Finalized = (String, String, crate::tools::AgentToolResult, bool);
+    let mut prepared: Vec<Option<PreparedToolCall>> = (0..tool_calls.len()).map(|_| None).collect();
+    let mut finalized: Vec<Option<Finalized>> = (0..tool_calls.len()).map(|_| None).collect();
+    for (index, tc) in tool_calls.iter().enumerate() {
         emit(RichAgentEvent::ToolExecutionStart {
             tool_call_id: tc.id.to_string(),
             tool_name: tc.name.to_string(),
             args: tc.arguments.clone(),
         });
-        prepared.push(Some(prepare_tool_call(message, &tc, context, config).await));
+        match prepare_tool_call(message, tc, context, config).await {
+            PreparedToolCall::Immediate { result, is_error } => {
+                let id = tc.id.to_string();
+                let name = tc.name.to_string();
+                let message_result = agent_tool_result_to_message(&id, &name, &result, is_error);
+                emit(RichAgentEvent::ToolExecutionEnd {
+                    tool_call_id: id.clone(),
+                    tool_name: name.clone(),
+                    result: message_result,
+                    is_error,
+                });
+                finalized[index] = Some((id, name, result, is_error));
+            }
+            preparation @ PreparedToolCall::Prepared { .. } => {
+                prepared[index] = Some(preparation);
+            }
+        }
         if is_aborted(config.signal.as_ref()) {
             break;
         }
     }
 
-    // Phase 2: execute prepared calls concurrently, then finalize in order.
-    let calls: Vec<(String, String, serde_json::Value, usize)> = tool_calls_of(message)
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, tc)| match &prepared.get(i) {
-            Some(Some(PreparedToolCall::Prepared { .. })) => Some((
-                tc.id.to_string(),
-                tc.name.to_string(),
-                tc.arguments.clone(),
-                i,
-            )),
-            _ => None,
-        })
-        .collect();
-
-    let tools: Vec<AgentTool> = context.tools.clone();
+    // Phase 2: execute prepared calls concurrently. End events are emitted as
+    // each call is finalized, while result-message artifacts are emitted in
+    // assistant source order below (upstream `executeToolCallsParallel`).
     let signal = config.signal.clone();
 
-    let mut finalized: Vec<(usize, (crate::tools::AgentToolResult, bool))> = Vec::new();
-    if !calls.is_empty() {
-        let (update_sender, mut update_receiver) =
-            tokio::sync::mpsc::unbounded_channel::<ToolUpdateEvent>();
-        let futures: Vec<_> = calls
-            .iter()
-            .map(|(id, name, args, i)| {
-                let id = id.clone();
-                let name = name.clone();
-                let args = args.clone();
-                let i = *i;
-                let tools = tools.clone();
-                let signal = signal.clone();
+    let (update_sender, mut update_receiver) =
+        tokio::sync::mpsc::unbounded_channel::<ToolUpdateEvent>();
+    let mut running = futures_util::stream::FuturesUnordered::new();
+
+    for (index, tc) in tool_calls.iter().enumerate() {
+        let Some(preparation) = prepared.get_mut(index).and_then(Option::take) else {
+            continue;
+        };
+        match preparation {
+            PreparedToolCall::Prepared { tool, args } => {
+                let id = tc.id.to_string();
+                let name = tc.name.to_string();
+                let raw_args = tc.arguments.clone();
+                let assistant_message = message.clone();
                 let update_sender = update_sender.clone();
-                async move {
-                    let tool = tools.iter().find(|t| t.tool.name == name).cloned();
-                    let (result, is_error) = match tool {
-                        Some(tool) => {
-                            let tc = ToolCallRef {
-                                id: &id,
-                                name: &name,
-                                arguments: &args,
-                            };
-                            start_tool_execution(
-                                &tc,
-                                tool,
-                                args.clone(),
-                                signal.as_ref(),
-                                update_sender,
-                            )
-                            .await
-                        }
-                        None => (
-                            crate::tools::AgentToolResult::text(format!("Tool {name} not found")),
-                            true,
-                        ),
-                    };
-                    (i, (result, is_error))
-                }
-                .boxed()
-            })
-            .collect();
-        let mut all = futures_util::future::join_all(futures).boxed();
-        loop {
-            tokio::select! {
-                update = update_receiver.recv() => {
-                    if let Some(update) = update {
-                        emit_tool_update(update, emit);
+                let signal = signal.clone();
+                let config = config;
+                running.push(
+                    async move {
+                        let tool_call = ToolCallRef {
+                            id: &id,
+                            name: &name,
+                            arguments: &raw_args,
+                        };
+                        let (result, is_error) = start_tool_execution(
+                            &tool_call,
+                            tool,
+                            args.clone(),
+                            signal.as_ref(),
+                            update_sender,
+                        )
+                        .await;
+                        let (result, is_error) = finalize_tool_call(
+                            &assistant_message,
+                            &tool_call,
+                            args,
+                            result,
+                            is_error,
+                            config,
+                        )
+                        .await;
+                        (index, id, name, result, is_error)
                     }
-                }
-                outputs = &mut all => {
-                    finalized.extend(outputs);
-                    break;
-                }
+                    .boxed(),
+                );
             }
+            PreparedToolCall::Immediate { .. } => unreachable!(
+                "immediate tool calls are emitted during the parallel preparation phase"
+            ),
         }
-        drain_queued_tool_updates(&mut update_receiver, emit);
     }
 
-    // Emit tool_execution_end + tool-result messages in assistant source order.
-    let mut messages: Vec<ToolResultMessage> = Vec::new();
-    let mut emitted: Vec<(String, String)> = Vec::new();
-    let mut terminate_flags: Vec<bool> = Vec::new();
-    for (i, (result, is_error)) in finalized {
-        let (id, name) = calls
-            .get(i)
-            .map(|c| (c.0.clone(), c.1.clone()))
-            .unwrap_or_default();
-        if emitted.iter().any(|(eid, _)| eid == &id) {
-            continue;
-        }
-        emitted.push((id.clone(), name.clone()));
-        terminate_flags.push(result.terminate);
-        let message_result = agent_tool_result_to_message(&id, &name, &result, is_error);
-        emit(RichAgentEvent::ToolExecutionEnd {
-            tool_call_id: id,
-            tool_name: name,
-            result: message_result.clone(),
-            is_error,
-        });
-        emit_tool_result_messages(&mut messages, message_result, emit);
-    }
-    // Immediate (error) preparations in source order too.
-    for (i, entry) in prepared.iter().enumerate() {
-        if let Some(PreparedToolCall::Immediate { result, is_error }) = entry {
-            let Some((id, name, _, _)) = calls.iter().find(|(_, _, _, idx)| *idx == i) else {
-                // Immediate from a call that wasn't executed (aborted mid-batch).
-                continue;
-            };
-            if emitted.iter().any(|(eid, _)| eid == id) {
-                continue;
+    drop(update_sender);
+    let mut updates_open = true;
+    while !running.is_empty() {
+        tokio::select! {
+            update = update_receiver.recv(), if updates_open => {
+                match update {
+                    Some(update) => emit_tool_update(update, emit),
+                    None => updates_open = false,
+                }
             }
-            emitted.push((id.clone(), name.clone()));
-            emit(RichAgentEvent::ToolExecutionEnd {
-                tool_call_id: id.clone(),
-                tool_name: name.clone(),
-                result: result.clone(),
-                is_error: *is_error,
-            });
-            emit_tool_result_messages(&mut messages, result.clone(), emit);
+            output = running.next() => {
+                if let Some((index, id, name, result, is_error)) = output {
+                    let message_result = agent_tool_result_to_message(&id, &name, &result, is_error);
+                    emit(RichAgentEvent::ToolExecutionEnd {
+                        tool_call_id: id.clone(),
+                        tool_name: name.clone(),
+                        result: message_result,
+                        is_error,
+                    });
+                    finalized[index] = Some((id, name, result, is_error));
+                }
+            }
         }
+    }
+    drain_queued_tool_updates(&mut update_receiver, emit);
+
+    let mut messages: Vec<ToolResultMessage> = Vec::new();
+    let mut terminate_flags: Vec<bool> = Vec::new();
+    // Keep this pass separate from completion event emission above: result
+    // messages are the durable/model-facing artifacts and retain assistant
+    // source order even when execution completes out of order.
+    for entry in finalized.into_iter().flatten() {
+        let (id, name, result, is_error) = entry;
+        let message_result = agent_tool_result_to_message(&id, &name, &result, is_error);
+        emit_tool_result_messages(&mut messages, message_result, emit);
+        terminate_flags.push(result.terminate);
     }
     let terminate = !terminate_flags.is_empty() && terminate_flags.iter().all(|t| *t);
     ExecutedToolBatch {
@@ -718,7 +741,7 @@ enum PreparedToolCall {
         args: serde_json::Value,
     },
     Immediate {
-        result: ToolResultMessage,
+        result: crate::tools::AgentToolResult,
         is_error: bool,
     },
 }
@@ -733,11 +756,7 @@ async fn prepare_tool_call(
 ) -> PreparedToolCall {
     let Some(tool) = context.tools.iter().find(|t| t.tool.name == tc.name) else {
         return PreparedToolCall::Immediate {
-            result: create_error_tool_result(
-                tc.id,
-                tc.name,
-                &format!("Tool {} not found", tc.name),
-            ),
+            result: create_error_agent_tool_result(&format!("Tool {} not found", tc.name)),
             is_error: true,
         };
     };
@@ -751,7 +770,7 @@ async fn prepare_tool_call(
     }
     // validateToolArguments: schema validation with coercion (upstream
     // `validateToolArguments`). Failures become immediate error results.
-    let validated = match crate::tools::validation::validate_tool_arguments(
+    let mut validated = match crate::tools::validation::validate_tool_arguments(
         tc.name,
         &tool.tool.parameters,
         &args,
@@ -759,25 +778,23 @@ async fn prepare_tool_call(
         Ok(validated) => validated,
         Err(e) => {
             return PreparedToolCall::Immediate {
-                result: create_error_tool_result(tc.id, tc.name, &e),
+                result: create_error_agent_tool_result(&e),
                 is_error: true,
             };
         }
     };
     if let Some(hook) = &config.before_tool_call {
-        let before = hook(
-            BeforeToolCallContext {
-                assistant_message: message.clone(),
-                tool_call_id: tc.id.to_string(),
-                tool_name: tc.name.to_string(),
-                args: validated.clone(),
-            },
-            config.signal.clone(),
-        )
-        .await;
+        let mut before_context = BeforeToolCallContext {
+            assistant_message: message.clone(),
+            tool_call_id: tc.id.to_string(),
+            tool_name: tc.name.to_string(),
+            args: validated.clone(),
+        };
+        let before = hook(&mut before_context, config.signal.clone()).await;
+        validated = before_context.args;
         if is_aborted(config.signal.as_ref()) {
             return PreparedToolCall::Immediate {
-                result: create_error_tool_result(tc.id, tc.name, "Operation aborted"),
+                result: create_error_agent_tool_result("Operation aborted"),
                 is_error: true,
             };
         }
@@ -786,8 +803,10 @@ async fn prepare_tool_call(
                 let reason = before
                     .reason
                     .unwrap_or_else(|| "Tool execution was blocked".to_string());
+                let mut result = create_error_agent_tool_result(&reason);
+                result.terminate = before.terminate;
                 return PreparedToolCall::Immediate {
-                    result: create_error_tool_result(tc.id, tc.name, &reason),
+                    result,
                     is_error: true,
                 };
             }
@@ -795,7 +814,7 @@ async fn prepare_tool_call(
     }
     if is_aborted(config.signal.as_ref()) {
         return PreparedToolCall::Immediate {
-            result: create_error_tool_result(tc.id, tc.name, "Operation aborted"),
+            result: create_error_agent_tool_result("Operation aborted"),
             is_error: true,
         };
     }
@@ -873,19 +892,14 @@ where
 }
 
 /// afterToolCall merge (upstream `finalizeExecutedToolCall`).
-async fn finalize_tool_call<F>(
+async fn finalize_tool_call(
     message: &AssistantMessage,
     tc: &ToolCallRef<'_>,
     args: serde_json::Value,
     result: crate::tools::AgentToolResult,
     is_error: bool,
     config: &RichAgentLoopConfig,
-    emit: &mut F,
-) -> (crate::tools::AgentToolResult, bool)
-where
-    F: FnMut(RichAgentEvent) + Send,
-{
-    let _ = emit;
+) -> (crate::tools::AgentToolResult, bool) {
     let Some(hook) = &config.after_tool_call else {
         return (result, is_error);
     };
@@ -907,6 +921,18 @@ where
     let mut result = result;
     if let Some(content) = after.content {
         result.content = content;
+    }
+    if let Some(details) = after.details {
+        result.details = Some(details);
+    }
+    if let Some(usage) = after.usage {
+        result.usage = Some(usage);
+    }
+    if let Some(added_tool_names) = after.added_tool_names {
+        result.added_tool_names = added_tool_names;
+    }
+    if let Some(terminate) = after.terminate {
+        result.terminate = terminate;
     }
     let is_error = after.is_error.unwrap_or(is_error);
     (result, is_error)
@@ -1832,6 +1858,294 @@ mod tests {
                         is_error: false,
                         ..
                     }
+                )
+            }));
+        });
+    }
+
+    fn value_tool(name: &str) -> AgentTool {
+        let name = name.to_string();
+        AgentTool::new(
+            pi_ai::types::json_tool(
+                &name,
+                "test value tool",
+                &serde_json::json!({
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"]
+                }),
+            ),
+            name.clone(),
+            Arc::new(move |_, args, _, _| {
+                let value = args
+                    .get("value")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                Box::pin(async move {
+                    Ok(crate::tools::AgentToolResult {
+                        content: vec![ContentBlock::text(format!("value:{value}"))],
+                        details: Some(serde_json::json!({"value": value})),
+                        ..Default::default()
+                    })
+                })
+            }),
+        )
+    }
+
+    #[test]
+    fn parallel_tool_events_finish_in_completion_order_and_results_stay_in_source_order() {
+        let rt = rt();
+        rt.block_on(async {
+            let name = "delayed".to_string();
+            let tool = AgentTool::new(
+                pi_ai::types::json_tool(
+                    &name,
+                    "test delayed tool",
+                    &serde_json::json!({
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                        "required": ["value"]
+                    }),
+                ),
+                name.clone(),
+                Arc::new(move |_, args, _, on_update| {
+                    let value = args["value"].as_str().unwrap().to_string();
+                    Box::pin(async move {
+                        let delay = if value == "slow" { 40 } else { 5 };
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        if let Some(on_update) = on_update {
+                            on_update(&crate::tools::AgentToolResult::text(format!(
+                                "update:{value}"
+                            )));
+                        }
+                        Ok(crate::tools::AgentToolResult {
+                            content: vec![ContentBlock::text(format!("done:{value}"))],
+                            details: Some(serde_json::json!({"value": value})),
+                            ..Default::default()
+                        })
+                    })
+                }),
+            );
+            let context = AgentContext::new(Some("test".into()), vec![tool]);
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            let model = core.get_model(None).unwrap().clone();
+            let cfg = RichAgentLoopConfig::new(model, scripted_stream(core), None);
+            let message = faux_assistant_message(
+                vec![
+                    ContentBlock::tool_call(
+                        "call-slow",
+                        "delayed",
+                        serde_json::json!({"value": "slow"}),
+                    ),
+                    ContentBlock::tool_call(
+                        "call-fast",
+                        "delayed",
+                        serde_json::json!({"value": "fast"}),
+                    ),
+                ],
+                FauxAssistantOptions {
+                    stop_reason: Some(pi_ai::types::StopReason::ToolUse),
+                    ..Default::default()
+                },
+            );
+            let mut events = Vec::new();
+            let batch =
+                execute_tool_batch(&message, &context, &cfg, &mut |event| events.push(event)).await;
+
+            let end_ids: Vec<String> = events
+                .iter()
+                .filter_map(|event| match event {
+                    RichAgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
+                        Some(tool_call_id.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            let result_ids: Vec<String> = events
+                .iter()
+                .filter_map(|event| match event {
+                    RichAgentEvent::MessageEnd {
+                        message: AgentMessage::Core(Message::ToolResult(result)),
+                    } => Some(result.tool_call_id().to_string()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(end_ids, vec!["call-fast", "call-slow"]);
+            assert_eq!(result_ids, vec!["call-slow", "call-fast"]);
+            assert_eq!(batch.messages.len(), 2);
+            assert!(events.iter().any(|event| {
+                matches!(
+                    event,
+                    RichAgentEvent::ToolExecutionUpdate { partial_result, .. }
+                        if partial_result["content"].as_array().is_some()
+                )
+            }));
+        });
+    }
+
+    #[test]
+    fn parallel_preparation_errors_are_emitted_and_after_hook_overrides_results() {
+        let rt = rt();
+        rt.block_on(async {
+            let tool = value_tool("echo");
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            let model = core.get_model(None).unwrap().clone();
+            let mut cfg = RichAgentLoopConfig::new(model, scripted_stream(core), None);
+            cfg.after_tool_call = Some(Arc::new(|context, _| {
+                Box::pin(async move {
+                    assert_eq!(context.tool_name, "echo");
+                    Some(AfterToolCallResult {
+                        content: Some(vec![ContentBlock::text("overridden")]),
+                        terminate: Some(true),
+                        ..Default::default()
+                    })
+                })
+            }));
+            let context = AgentContext::new(Some("test".into()), vec![tool]);
+            let message = faux_assistant_message(
+                vec![
+                    ContentBlock::tool_call("invalid", "echo", serde_json::json!({})),
+                    ContentBlock::tool_call("valid", "echo", serde_json::json!({"value": "ok"})),
+                ],
+                FauxAssistantOptions {
+                    stop_reason: Some(pi_ai::types::StopReason::ToolUse),
+                    ..Default::default()
+                },
+            );
+            let mut events = Vec::new();
+            let batch =
+                execute_tool_batch(&message, &context, &cfg, &mut |event| events.push(event)).await;
+
+            let ends: Vec<(String, bool)> = events
+                .iter()
+                .filter_map(|event| match event {
+                    RichAgentEvent::ToolExecutionEnd {
+                        tool_call_id,
+                        is_error,
+                        ..
+                    } => Some((tool_call_id.clone(), *is_error)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(ends.len(), 2);
+            assert!(ends
+                .iter()
+                .any(|(id, is_error)| id == "invalid" && *is_error));
+            assert!(ends
+                .iter()
+                .any(|(id, is_error)| id == "valid" && !*is_error));
+            assert!(!batch.terminate);
+            assert_eq!(batch.messages[0].tool_call_id(), "invalid");
+            assert_eq!(batch.messages[1].tool_call_id(), "valid");
+            assert!(matches!(
+                &batch.messages[1],
+                ToolResultMessage::ToolResult { content, .. }
+                    if content.iter().any(|block| matches!(
+                        block,
+                        ContentBlock::Text { text, .. } if text == "overridden"
+                    ))
+            ));
+        });
+    }
+
+    #[test]
+    fn before_tool_call_can_mutate_validated_args_without_revalidation() {
+        let rt = rt();
+        rt.block_on(async {
+            let observed = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+            let observed_by_tool = observed.clone();
+            let tool = AgentTool::new(
+                pi_ai::types::json_tool(
+                    "echo",
+                    "test mutable args tool",
+                    &serde_json::json!({
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                        "required": ["value"]
+                    }),
+                ),
+                "echo",
+                Arc::new(move |_, args, _, _| {
+                    observed_by_tool.lock().unwrap().push(args["value"].clone());
+                    Box::pin(async { Ok(crate::tools::AgentToolResult::text("ok")) })
+                }),
+            );
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            let model = core.get_model(None).unwrap().clone();
+            let mut cfg = RichAgentLoopConfig::new(model, scripted_stream(core), None);
+            cfg.before_tool_call = Some(Arc::new(|context, _| {
+                context.args["value"] = serde_json::json!(123);
+                Box::pin(async { None })
+            }));
+            let context = AgentContext::new(Some("test".into()), vec![tool]);
+            let message = faux_assistant_message(
+                vec![ContentBlock::tool_call(
+                    "mutable",
+                    "echo",
+                    serde_json::json!({"value": "hello"}),
+                )],
+                FauxAssistantOptions {
+                    stop_reason: Some(pi_ai::types::StopReason::ToolUse),
+                    ..Default::default()
+                },
+            );
+            let _ = execute_tool_batch(&message, &context, &cfg, &mut |_| {}).await;
+            assert_eq!(*observed.lock().unwrap(), vec![serde_json::json!(123)]);
+        });
+    }
+
+    #[test]
+    fn late_tool_updates_after_settlement_are_ignored() {
+        let rt = rt();
+        rt.block_on(async {
+            let tool = AgentTool::new(
+                pi_ai::types::json_tool(
+                    "late",
+                    "test late update tool",
+                    &serde_json::json!({"type": "object", "properties": {}}),
+                ),
+                "late",
+                Arc::new(move |_, _, _, on_update| {
+                    Box::pin(async move {
+                        if let Some(on_update) = on_update {
+                            tokio::spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                                on_update(&crate::tools::AgentToolResult::text("late"));
+                            });
+                        }
+                        Ok(crate::tools::AgentToolResult::text("done"))
+                    })
+                }),
+            );
+            let context = AgentContext::new(Some("test".into()), vec![tool]);
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            let model = core.get_model(None).unwrap().clone();
+            let cfg = RichAgentLoopConfig::new(model, scripted_stream(core), None);
+            let message = faux_assistant_message(
+                vec![ContentBlock::tool_call(
+                    "late-call",
+                    "late",
+                    serde_json::json!({}),
+                )],
+                FauxAssistantOptions {
+                    stop_reason: Some(pi_ai::types::StopReason::ToolUse),
+                    ..Default::default()
+                },
+            );
+            let mut events = Vec::new();
+            let _ =
+                execute_tool_batch(&message, &context, &cfg, &mut |event| events.push(event)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            assert!(!events.iter().any(|event| {
+                matches!(
+                    event,
+                    RichAgentEvent::ToolExecutionUpdate { partial_result, .. }
+                        if partial_result["content"]
+                            .as_array()
+                            .and_then(|content| content.first())
+                            .and_then(|content| content.get("text"))
+                            == Some(&serde_json::Value::String("late".to_string()))
                 )
             }));
         });
