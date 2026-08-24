@@ -38,10 +38,7 @@ impl SseParser {
 
     fn drain(&mut self) -> Vec<SseEvent> {
         let mut events = Vec::new();
-        loop {
-            let Some(newline) = self.buffer.iter().position(|&b| b == b'\n') else {
-                break; // no complete line yet; a multibyte char may still be split
-            };
+        while let Some(newline) = self.buffer.iter().position(|&b| b == b'\n') {
             let line_bytes: Vec<u8> = self.buffer.drain(..=newline).collect();
             let line = line_bytes.strip_suffix(b"\n").unwrap_or(&line_bytes);
             let line = line.strip_suffix(b"\r").unwrap_or(line);

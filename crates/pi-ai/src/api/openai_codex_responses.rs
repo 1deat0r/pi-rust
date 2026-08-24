@@ -1174,16 +1174,10 @@ mod tests {
             "response.completed"
         };
         let mut events = vec![
-            format!(
-                r#"data: {{"type":"response.output_item.added","item":{{"type":"message","id":"msg_1","role":"assistant","status":"in_progress","content":[]}}}}"#
-            ),
-            format!(
-                r#"data: {{"type":"response.content_part.added","part":{{"type":"output_text","text":""}}}}"#
-            ),
-            format!(r#"data: {{"type":"response.output_text.delta","delta":"Hello"}}"#),
-            format!(
-                r#"data: {{"type":"response.output_item.done","item":{{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{{"type":"output_text","text":"Hello"}}]}}}}"#
-            ),
+            r#"data: {"type":"response.output_item.added","item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress","content":[]}}"#.to_string(),
+            r#"data: {"type":"response.content_part.added","part":{"type":"output_text","text":""}}"#.to_string(),
+            r#"data: {"type":"response.output_text.delta","delta":"Hello"}"#.to_string(),
+            r#"data: {"type":"response.output_item.done","item":{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hello"}]}}"#.to_string(),
         ];
         let end_turn_json = end_turn
             .map(|v| format!(",\"end_turn\":{v}"))

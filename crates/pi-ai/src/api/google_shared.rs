@@ -587,11 +587,13 @@ mod tests {
     #[test]
     fn convert_messages_basic_roundtrip() {
         let m = model("gemini-2.5-pro");
-        let mut ctx = Context::default();
-        ctx.messages = vec![
-            Message::User(UserContent::string("hello", 1)),
-            Message::Assistant(assistant_with_text("hi there")),
-        ];
+        let ctx = Context {
+            messages: vec![
+                Message::User(UserContent::string("hello", 1)),
+                Message::Assistant(assistant_with_text("hi there")),
+            ],
+            ..Default::default()
+        };
         let contents = convert_messages(&m, &ctx);
         assert_eq!(contents.len(), 2);
         assert_eq!(contents[0]["role"], "user");
@@ -610,16 +612,18 @@ mod tests {
     #[test]
     fn convert_messages_tool_result_merges_and_images() {
         let m = model("gemini-2.5-pro"); // < 3 -> images separate
-        let mut ctx = Context::default();
-        ctx.messages = vec![Message::ToolResult(ToolResultMessage::new(
-            "call_1",
-            "bash",
-            vec![
-                ContentBlock::text("out"),
-                ContentBlock::image("aGk=", "image/png"),
-            ],
-            false,
-        ))];
+        let ctx = Context {
+            messages: vec![Message::ToolResult(ToolResultMessage::new(
+                "call_1",
+                "bash",
+                vec![
+                    ContentBlock::text("out"),
+                    ContentBlock::image("aGk=", "image/png"),
+                ],
+                false,
+            ))],
+            ..Default::default()
+        };
         let contents = convert_messages(&m, &ctx);
         // Function response user turn + separate image user turn for <3.
         assert_eq!(contents.len(), 2);

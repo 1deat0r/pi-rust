@@ -952,6 +952,9 @@ pub fn builtin_models(options: crate::models::CreateModelsOptions) -> Models {
 pub use crate::model_catalog::get_builtin_model;
 
 #[cfg(test)]
+// Keep the large catalog-dispatch fixture adjacent to its registration tests;
+// production provider constructors follow in this module by design.
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -1054,16 +1057,18 @@ mod tests {
             .build()
             .unwrap();
         rt.block_on(async {
-            let _guard = crate::utils::env_lock();
-            std::env::remove_var("GEMINI_API_KEY");
-            let provider = google_provider();
-            let model = provider.models.first().cloned().unwrap();
-            assert_eq!(
-                model.api, "google-generative-ai",
-                "google catalog models must declare the google api"
-            );
-            let ctx = crate::types::Context::default();
-            let stream = provider.stream(&model, &ctx, None);
+            let stream = {
+                let _guard = crate::utils::env_lock();
+                std::env::remove_var("GEMINI_API_KEY");
+                let provider = google_provider();
+                let model = provider.models.first().cloned().unwrap();
+                assert_eq!(
+                    model.api, "google-generative-ai",
+                    "google catalog models must declare the google api"
+                );
+                let ctx = crate::types::Context::default();
+                provider.stream(&model, &ctx, None)
+            };
             let msg = stream.for_each(|_| {}).await;
             let err = msg.error_message().unwrap_or("").to_string();
             let acceptable = err.contains("No API key")
@@ -1084,13 +1089,15 @@ mod tests {
             .build()
             .unwrap();
         rt.block_on(async {
-            let _guard = crate::utils::env_lock();
-            std::env::remove_var("OPENAI_API_KEY");
-            let provider = openai_provider();
-            let model = provider.models.first().cloned().unwrap();
-            assert_eq!(model.provider, "openai");
-            let ctx = crate::types::Context::default();
-            let stream = provider.stream(&model, &ctx, None);
+            let stream = {
+                let _guard = crate::utils::env_lock();
+                std::env::remove_var("OPENAI_API_KEY");
+                let provider = openai_provider();
+                let model = provider.models.first().cloned().unwrap();
+                assert_eq!(model.provider, "openai");
+                let ctx = crate::types::Context::default();
+                provider.stream(&model, &ctx, None)
+            };
             let msg = stream.for_each(|_| {}).await;
             let err = msg.error_message().unwrap_or("").to_string();
             assert!(
@@ -1108,12 +1115,14 @@ mod tests {
             .build()
             .unwrap();
         rt.block_on(async {
-            let _guard = crate::utils::env_lock();
-            std::env::remove_var("AZURE_OPENAI_API_KEY");
-            let provider = azure_openai_responses_provider();
-            let model = provider.models.first().cloned().unwrap();
-            let ctx = crate::types::Context::default();
-            let stream = provider.stream(&model, &ctx, None);
+            let stream = {
+                let _guard = crate::utils::env_lock();
+                std::env::remove_var("AZURE_OPENAI_API_KEY");
+                let provider = azure_openai_responses_provider();
+                let model = provider.models.first().cloned().unwrap();
+                let ctx = crate::types::Context::default();
+                provider.stream(&model, &ctx, None)
+            };
             let msg = stream.for_each(|_| {}).await;
             let err = msg.error_message().unwrap_or("").to_string();
             assert!(
@@ -1133,16 +1142,18 @@ mod tests {
             .build()
             .unwrap();
         rt.block_on(async {
-            let _guard = crate::utils::env_lock();
-            std::env::remove_var("MISTRAL_API_KEY");
-            let provider = mistral_provider();
-            let model = provider.models.first().cloned().unwrap();
-            assert_eq!(
-                model.api, "mistral-conversations",
-                "mistral catalog models must declare the mistral api"
-            );
-            let ctx = crate::types::Context::default();
-            let stream = provider.stream(&model, &ctx, None);
+            let stream = {
+                let _guard = crate::utils::env_lock();
+                std::env::remove_var("MISTRAL_API_KEY");
+                let provider = mistral_provider();
+                let model = provider.models.first().cloned().unwrap();
+                assert_eq!(
+                    model.api, "mistral-conversations",
+                    "mistral catalog models must declare the mistral api"
+                );
+                let ctx = crate::types::Context::default();
+                provider.stream(&model, &ctx, None)
+            };
             let msg = stream.for_each(|_| {}).await;
             let err = msg.error_message().unwrap_or("").to_string();
             assert!(
@@ -1195,7 +1206,7 @@ mod tests {
         assert!(apis.len() >= 2, "expected mixed apis, got {apis:?}");
         for m in models.iter().take(5) {
             let streams = provider.streams.clone();
-            let has_entry = streams.get(&m.api).is_some();
+            let has_entry = streams.contains_key(&m.api);
             assert!(
                 has_entry,
                 "model {} api {} missing provider stream",
@@ -1313,7 +1324,7 @@ mod tests {
         assert!(apis.contains("openai-completions"), "{apis:?}");
         assert!(apis.contains("openai-responses"), "{apis:?}");
         for m in provider.models.iter() {
-            let has = provider.streams.get(&m.api).is_some();
+            let has = provider.streams.contains_key(&m.api);
             assert!(has, "model {} api {} missing stream", m.id, m.api);
         }
     }

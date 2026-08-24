@@ -1646,6 +1646,24 @@ Azure, Google, faux, partial-JSON, event-stream, and core content helpers.
 - Checkpoint: adapter cleanup commit `8aba4db` is pushed and hash-verified;
   this documentation refresh records that synchronized checkpoint.
 
+### Session 52 — 2026-08-24 — Full pi-ai strict-clippy restoration
+
+Scope: finish the remaining structural and test-target clippy findings after
+the adapter cleanup.
+
+- Added a named faux factory type, retained the public unboxed message-step
+  API with documented `large_enum_variant` compatibility exceptions, and
+  consolidated Anthropic model pricing into one `ModelCost` argument.
+- Reordered the stream sink adapter, corrected SSE fixture strings and loops,
+  initialized test contexts directly, scoped provider environment locks before
+  awaits, and fixed the remaining integration-test lint.
+- Evidence (unit/build): `cargo clippy -p pi-ai --offline --all-targets -- -D
+  warnings`, `cargo test -p pi-ai --offline --quiet` (290 library, 4 + 8 + 2
+  integration tests), `cargo check -p pi-coding-agent --offline`, telemetry
+  clippy, formatting, diff, and progress gates all pass.
+- G28 is now met. The ledger remains 62.65% (104/166) because this closes a
+  verification baseline rather than a new parity task.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

@@ -798,6 +798,9 @@ impl ToolResultMessage {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
+// Boxing these variants would alter the public construction/matching surface
+// throughout the agent crates without changing the serialized contract.
+#[allow(clippy::large_enum_variant)]
 pub enum Message {
     User(UserContent),
     Assistant(AssistantMessage),

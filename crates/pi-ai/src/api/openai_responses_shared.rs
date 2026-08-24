@@ -1118,9 +1118,11 @@ mod tests {
     #[test]
     fn messages_system_prompt_developer_for_reasoning() {
         let m = model("gpt-5");
-        let mut ctx = Context::default();
-        ctx.system_prompt = Some("be good".into());
-        ctx.messages = vec![Message::User(UserContent::string("hi", 1))];
+        let ctx = Context {
+            system_prompt: Some("be good".into()),
+            messages: vec![Message::User(UserContent::string("hi", 1))],
+            ..Default::default()
+        };
         let out = convert_responses_messages(
             &m,
             &ctx,
@@ -1135,13 +1137,15 @@ mod tests {
     #[test]
     fn tool_result_converted_flat() {
         let m = model("gpt-5");
-        let mut ctx = Context::default();
-        ctx.messages = vec![Message::ToolResult(ToolResultMessage::new(
-            "call_1|fc_1",
-            "bash",
-            vec![ContentBlock::text("out")],
-            false,
-        ))];
+        let ctx = Context {
+            messages: vec![Message::ToolResult(ToolResultMessage::new(
+                "call_1|fc_1",
+                "bash",
+                vec![ContentBlock::text("out")],
+                false,
+            ))],
+            ..Default::default()
+        };
         let out = convert_responses_messages(
             &m,
             &ctx,
@@ -1156,16 +1160,18 @@ mod tests {
     #[test]
     fn tool_result_with_image_uses_data_url() {
         let m = model("gpt-5");
-        let mut ctx = Context::default();
-        ctx.messages = vec![Message::ToolResult(ToolResultMessage::new(
-            "call_1",
-            "bash",
-            vec![
-                ContentBlock::text("out"),
-                ContentBlock::image("aGk=", "image/png"),
-            ],
-            false,
-        ))];
+        let ctx = Context {
+            messages: vec![Message::ToolResult(ToolResultMessage::new(
+                "call_1",
+                "bash",
+                vec![
+                    ContentBlock::text("out"),
+                    ContentBlock::image("aGk=", "image/png"),
+                ],
+                false,
+            ))],
+            ..Default::default()
+        };
         let out = convert_responses_messages(
             &m,
             &ctx,
@@ -1240,7 +1246,7 @@ mod tests {
             .any(|e| matches!(e, AssistantMessageEvent::TextEnd { .. })));
         assert!(pushes
             .iter()
-            .any(|e| matches!(e, AssistantMessageEvent::Done { .. }) == false));
+            .any(|e| !matches!(e, AssistantMessageEvent::Done { .. })));
         // Message phase stop from final_answer item.
     }
 

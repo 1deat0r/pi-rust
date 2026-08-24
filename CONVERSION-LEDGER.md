@@ -92,9 +92,9 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 The follow-on telemetry verification cleanup releases the in-memory span mutex
 before async callback admission and restores strict clippy for `pi-telemetry`;
-its focused tests and crate gate pass. Full `pi-ai` strict clippy remains open
-with 23 diagnostics after the adapter cleanup, so this cleanup does not change
-the ledger count.
+its focused tests and crate gate pass. Full `pi-ai` strict clippy now passes
+with zero diagnostics after the adapter and structural cleanup; this cleanup
+does not change the ledger count.
 
 The adapter cleanup checkpoint is committed as `8aba4db` on `main`; local and
 remote hashes were verified equal immediately after its push.

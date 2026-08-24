@@ -78,21 +78,15 @@ pub struct FauxProviderState {
     pub cancelled_deferred: Vec<DeferredHandle>,
 }
 
+pub type FauxResponseFactory = dyn Fn(&Context, Option<&SimpleStreamOptions>, &FauxProviderState, &Model) -> AssistantMessage
+    + Send
+    + Sync;
+
 /// Scripted response step: either a fixed message or a factory.
+#[allow(clippy::large_enum_variant)]
 pub enum FauxResponseStep {
     Message(AssistantMessage),
-    Factory(
-        Box<
-            dyn Fn(
-                    &Context,
-                    Option<&SimpleStreamOptions>,
-                    &FauxProviderState,
-                    &Model,
-                ) -> AssistantMessage
-                + Send
-                + Sync,
-        >,
-    ),
+    Factory(Box<FauxResponseFactory>),
 }
 
 impl std::fmt::Debug for FauxResponseStep {

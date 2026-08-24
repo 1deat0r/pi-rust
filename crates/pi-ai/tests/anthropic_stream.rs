@@ -197,7 +197,9 @@ fn assembles_thinking_and_redacted_thinking_blocks() {
     let message = process_anthropic_events(&model(), &events, |_| {}).unwrap();
     assert!(
         matches!(&message.content()[0], ContentBlock::Thinking { thinking, thinking_signature, redacted }
-        if thinking == "Let me think" && thinking_signature.as_deref() == Some("sig1") && redacted == &None)
+        if thinking == "Let me think"
+            && thinking_signature.as_deref() == Some("sig1")
+            && redacted.is_none())
     );
     assert!(
         matches!(&message.content()[1], ContentBlock::Thinking { thinking, thinking_signature, redacted }

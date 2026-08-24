@@ -16,10 +16,13 @@ pub fn anthropic_models() -> Vec<Model> {
     models.push(claude_model(
         "claude-opus-4-8",
         "Claude Opus 4.8",
-        5.0,
-        25.0,
-        0.3,
-        6.25,
+        ModelCost {
+            input: 5.0,
+            output: 25.0,
+            cache_read: 0.3,
+            cache_write: 6.25,
+            tiers: None,
+        },
         200_000,
         64_000,
         true,
@@ -27,10 +30,13 @@ pub fn anthropic_models() -> Vec<Model> {
     models.push(claude_model(
         "claude-sonnet-4-6",
         "Claude Sonnet 4.6",
-        3.0,
-        15.0,
-        0.3,
-        3.75,
+        ModelCost {
+            input: 3.0,
+            output: 15.0,
+            cache_read: 0.3,
+            cache_write: 3.75,
+            tiers: None,
+        },
         200_000,
         64_000,
         true,
@@ -38,10 +44,13 @@ pub fn anthropic_models() -> Vec<Model> {
     models.push(claude_model(
         "claude-haiku-4-5",
         "Claude Haiku 4.5",
-        0.8,
-        4.0,
-        0.08,
-        1.0,
+        ModelCost {
+            input: 0.8,
+            output: 4.0,
+            cache_read: 0.08,
+            cache_write: 1.0,
+            tiers: None,
+        },
         200_000,
         16_384,
         false,
@@ -50,10 +59,13 @@ pub fn anthropic_models() -> Vec<Model> {
     let mut opus_5 = claude_model(
         "claude-opus-5",
         "Claude Opus 5",
-        8.0,
-        40.0,
-        0.5,
-        10.0,
+        ModelCost {
+            input: 8.0,
+            output: 40.0,
+            cache_read: 0.5,
+            cache_write: 10.0,
+            tiers: None,
+        },
         1_000_000,
         128_000,
         true,
@@ -72,10 +84,7 @@ pub fn anthropic_models() -> Vec<Model> {
 fn claude_model(
     id: &str,
     name: &str,
-    input: f64,
-    output: f64,
-    cache_read: f64,
-    cache_write: f64,
+    cost: ModelCost,
     context_window: u64,
     max_tokens: u64,
     reasoning: bool,
@@ -84,13 +93,7 @@ fn claude_model(
     model.base_url = default_base_url();
     model.reasoning = reasoning;
     model.input = vec![ModelInput::Text, ModelInput::Image];
-    model.cost = ModelCost {
-        input,
-        output,
-        cache_read,
-        cache_write,
-        tiers: None,
-    };
+    model.cost = cost;
     model.context_window = context_window;
     model.max_tokens = max_tokens;
     if reasoning {
