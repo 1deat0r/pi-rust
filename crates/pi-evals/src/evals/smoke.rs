@@ -8,6 +8,7 @@
 use serde_json::json;
 
 use crate::harness::{PiCliRunnerOptions, PiRunOutput};
+use crate::session_usage::SessionUsage;
 
 pub const EVAL_SET: &str = "Pi Coding Agent smoke";
 pub const FILE: &str = "src/smoke.eval.ts";
@@ -20,6 +21,8 @@ pub struct SmokeOutcome {
     pub output: String,
     pub errors: Vec<String>,
     pub exit_code: i32,
+    pub session_jsonl: Option<String>,
+    pub usage: SessionUsage,
 }
 
 /// Runs the smoke prompt through the real `pi` binary.
@@ -30,6 +33,8 @@ pub fn run_smoke(runner: &PiCliRunnerOptions, cwd: &std::path::Path, prompt: &st
             stdout,
             stderr,
             exit_code,
+            session_jsonl,
+            usage,
         }) => SmokeOutcome {
             output: crate::harness::extract_response_text(&stdout),
             errors: if exit_code == 0 {
@@ -41,11 +46,15 @@ pub fn run_smoke(runner: &PiCliRunnerOptions, cwd: &std::path::Path, prompt: &st
                 )]
             },
             exit_code,
+            session_jsonl,
+            usage,
         },
         Err(error) => SmokeOutcome {
             output: String::new(),
             errors: vec![error],
             exit_code: -1,
+            session_jsonl: None,
+            usage: SessionUsage::default(),
         },
     }
 }
@@ -59,6 +68,12 @@ pub fn assert_smoke_result(
     let mut failures = Vec::new();
     if !outcome.errors.is_empty() {
         failures.extend(outcome.errors.iter().cloned());
+    }
+    if outcome.usage.total_tokens <= 0 {
+        failures.push(format!(
+            "session usage did not report billed tokens: {}",
+            outcome.usage.total_tokens
+        ));
     }
     let output = outcome.output.trim();
     if runner.provider == "faux" {

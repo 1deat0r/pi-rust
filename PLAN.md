@@ -4,17 +4,17 @@
 
 The existing conversion goal is resumed under the scoped unlazy contract
 `.unlazy/full-conversion-20260825/`. The current authoritative checker output
-is **Conversion progress: 68.67% (114/166; 52 open)**. The source inventory
-and claim-reconciliation audit is complete; five behavior tasks were checked
+is **Conversion progress: 69.88% (116/166; 50 open)**. The source inventory
+and claim-reconciliation audit is complete; seven behavior tasks were checked
 with exact unit/mock evidence during the first implementation wave.
 
 The first implementation wave completed the audit (`leaf-A1`), Copilot OAuth
 fixtures (`leaf-B1`), Anthropic fixtures (`leaf-B2`), model-catalog fixtures
 (`leaf-B3`), the proxy seam (#75), the Rust-native extension fixture slice
 (`leaf-C2`), server lifecycle fixes (`leaf-D1`), protocol strict-clippy
-cleanup, and TUI static/test cleanup (`leaf-E1`). The active wave is now
-harness/mode (`leaf-C1`), auxiliary client (`leaf-D2`), full PTY (`leaf-E2`),
-and eval metrics (`leaf-F1`); provider matrix, parity, and final-audit leaves
+cleanup, TUI static/test cleanup (`leaf-E1`), and eval metrics (`leaf-F1`).
+The active wave is now harness/mode (`leaf-C1`), auxiliary client (`leaf-D2`),
+and full PTY (`leaf-E2`); provider matrix, parity, and final-audit leaves
 remain dependency-gated. The driver owns the conversion ledger and
 synchronized documentation.
 
@@ -38,8 +38,21 @@ Evidence accepted in this checkpoint:
 Known issues carried forward: pi-agent and coding-agent strict clippy still
 have pre-existing warnings outside the completed leaf slices; the upstream
 extension runtime is not embedded; server/client remains auxiliary; and the
-full harness, PTY, provider matrix, eval, parity, and final source/TODO
+full harness, PTY, provider matrix, parity, and final source/TODO
 reconciliation are not yet complete.
+
+## Checkpoint 2026-08-25 — eval metrics integrated
+
+- S-058 usage/cost accounting now reads subprocess session JSONL and reports
+  deterministic input `1246`, output `20`, total `1266` fixture values.
+- S-059 extension evaluation now has deterministic score/diagnostic handling:
+  faux unsupported behavior is an explicit schema-1 fixture contract.
+- `cargo test -p pi-evals --offline --quiet`, the session-usage and extension
+  suites, strict all-target clippy, and formatting all pass.
+
+The next dependency-safe actions are to finish C1/D2/E2, dispatch the provider
+matrix leaf, then clear workspace clippy/test/parity/release and final-audit
+gates.
 
 Shared contracts: upstream oracle `upstream_pi/` at commit
 `5cd93f688aaab89dbb6dfa4aca535f21796ae185`; `/bin/sh`; offline Cargo by

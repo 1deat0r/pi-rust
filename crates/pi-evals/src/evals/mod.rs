@@ -9,6 +9,7 @@ use serde_json::json;
 
 use crate::harness::{Harness, HarnessContext, HarnessResult, HarnessUsage, PiCliRunnerOptions};
 use crate::harness_table::{derive_eval_group_key, EVAL_HARNESS_ITERATION_ARTIFACT};
+use crate::session_usage::SessionUsage;
 use crate::summary::{HarnessObservation, Outcome};
 
 /// One eval-set declaration consumed by the CLI runner.
@@ -87,6 +88,8 @@ pub fn run_pi_case(
     let started = std::time::Instant::now();
     let mut errors = Vec::new();
     let mut final_output = String::new();
+    let mut session_usage = SessionUsage::default();
+    let mut latest_session_jsonl = None;
     let cwd = crate::harness::create_eval_root().join("workspace");
     std::fs::create_dir_all(&cwd).ok();
 
@@ -107,6 +110,8 @@ pub fn run_pi_case(
                     break;
                 }
                 final_output = crate::harness::extract_response_text(&output.stdout);
+                session_usage.merge(&output.usage);
+                latest_session_jsonl = output.session_jsonl;
             }
             Err(error) => {
                 errors.push(error);
@@ -127,17 +132,17 @@ pub fn run_pi_case(
         None
     };
 
+    if let Some(session_jsonl) = latest_session_jsonl {
+        set_artifact(
+            crate::artifacts::PI_SESSION_SNAPSHOT_ARTIFACT,
+            json!(session_jsonl),
+        );
+    }
+
     // Expose the final response for assertions and artifacts.
     let mut artifacts = BTreeMap::new();
     artifacts.insert("response".to_string(), json!(final_output));
     set_artifact("runId", json!(crate::harness_table::short_id()));
-
-    let mut metadata = BTreeMap::new();
-    // The subprocess runner cannot observe model usage; only providers that
-    // report a price for the selected model would have an estimate here.
-    if runner.provider != "faux" {
-        metadata.insert("estimatedCostUsd".to_string(), json!(0.0));
-    }
 
     HarnessResult {
         output: json!({ "response": final_output }),
@@ -152,13 +157,7 @@ pub fn run_pi_case(
                 content: final_output.clone(),
             },
         ],
-        usage: HarnessUsage {
-            provider: runner.provider.clone(),
-            model: runner.model.clone(),
-            total_tokens: 0,
-            metadata,
-            ..Default::default()
-        },
+        usage: HarnessUsage::from_session_usage(&session_usage, &runner.provider, &runner.model),
         artifacts,
         timings: Some(crate::harness::HarnessTimings {
             total_ms: started.elapsed().as_secs_f64() * 1000.0,

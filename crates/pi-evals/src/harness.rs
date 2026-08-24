@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::session_usage::{read_latest_session_snapshot, SessionUsage};
+
 /// JSON value used throughout harness results.
 pub type JsonValue = serde_json::Value;
 
@@ -74,14 +76,52 @@ pub enum TranscriptEvent {
 
 /// Harness usage (port of the upstream `usage` block).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HarnessUsage {
     pub provider: String,
     pub model: String,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub total_tokens: u64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
     pub tool_calls: u64,
     pub metadata: BTreeMap<String, JsonValue>,
+}
+
+impl HarnessUsage {
+    /// Converts session-file totals into the upstream harness usage shape.
+    pub fn from_session_usage(
+        usage: &SessionUsage,
+        fallback_provider: &str,
+        fallback_model: &str,
+    ) -> Self {
+        let mut metadata = BTreeMap::new();
+        metadata.insert(
+            "cacheReadTokens".to_string(),
+            serde_json::json!(usage.cache_read_tokens),
+        );
+        metadata.insert(
+            "cacheWriteTokens".to_string(),
+            serde_json::json!(usage.cache_write_tokens),
+        );
+        if let Some(cost) = usage.estimated_cost_usd {
+            metadata.insert("estimatedCostUsd".to_string(), serde_json::json!(cost));
+        }
+        Self {
+            provider: usage
+                .provider
+                .clone()
+                .unwrap_or_else(|| fallback_provider.to_string()),
+            model: usage
+                .model
+                .clone()
+                .unwrap_or_else(|| fallback_model.to_string()),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens,
+            tool_calls: usage.tool_calls,
+            metadata,
+        }
+    }
 }
 
 /// Harness result (subset of `SimpleHarnessResult<TOutput>`).
@@ -183,6 +223,8 @@ pub struct PiRunOutput {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+    pub session_jsonl: Option<String>,
+    pub usage: SessionUsage,
 }
 
 /// Runs the real `pi` binary once with a prompt in the given working
@@ -192,6 +234,15 @@ pub fn run_pi_binary(
     cwd: &std::path::Path,
     prompt: &str,
 ) -> Result<PiRunOutput, String> {
+    let session_root = cwd
+        .join(".pi")
+        .join("eval-sessions")
+        .join(crate::harness_table::short_id());
+    std::fs::create_dir_all(&session_root)
+        .map_err(|error| format!("failed to create eval session directory: {error}"))?;
+    let agent_dir = cwd.join(".pi").join("agent");
+    std::fs::create_dir_all(&agent_dir)
+        .map_err(|error| format!("failed to create eval agent directory: {error}"))?;
     let mut command = std::process::Command::new(&options.binary);
     command.current_dir(cwd);
     command.arg("-p");
@@ -205,6 +256,9 @@ pub fn run_pi_binary(
     }
     command.arg(prompt);
     command.env("PI_EVAL_TIMEOUT", "1");
+    command.env("PI_CODING_AGENT_DIR", &agent_dir);
+    command.env("PI_CODING_AGENT_SESSION_DIR", &session_root);
+    command.env("PI_SKIP_VERSION_CHECK", "1");
     command.stdin(std::process::Stdio::null());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -241,10 +295,17 @@ pub fn run_pi_binary(
         ));
     }
     let exit_code = output.status.code().unwrap_or(-1);
+    let snapshot = read_latest_session_snapshot(&session_root)?;
+    let (session_jsonl, usage) = match snapshot {
+        Some(snapshot) => (Some(snapshot.jsonl), snapshot.usage),
+        None => (None, SessionUsage::default()),
+    };
     Ok(PiRunOutput {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         exit_code,
+        session_jsonl,
+        usage,
     })
 }
 

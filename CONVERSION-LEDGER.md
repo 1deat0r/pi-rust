@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **68.67% (114/166; 52 open)**. Run
+- The exhaustive checker reports **69.88% (116/166; 50 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -1103,10 +1103,17 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 
 ### S1-H — evals, fixtures, packaging, and final evidence
 
-- [ ] S-058 Capture usage/cost tokens from subprocess session JSONL in pi-evals
-      so evaluation metrics match the upstream harness.
-- [ ] S-059 Make the extension scenario scorable under faux, or provide the
+- [x] S-058 Capture usage/cost tokens from subprocess session JSONL in pi-evals
+      so evaluation metrics match the upstream harness. Evidence: mock/unit —
+      `/home/mustbearnold/.cargo/bin/cargo test -p pi-evals --offline --quiet`,
+      `--test session_usage`, and the faux smoke fixture recorded input 1246,
+      output 20, total 1266 in `runs.jsonl`.
+- [x] S-059 Make the extension scenario scorable under faux, or provide the
       same deterministic extension fixture/diagnostic contract as upstream.
+      Evidence: unit/mock —
+      `/home/mustbearnold/.cargo/bin/cargo test -p pi-evals --offline --test extensions --quiet`
+      and the faux extension fixture test/diagnostic contract (`schema 1:
+      extension-authoring`) passed.
 - [ ] S-060 Add provider/CLI exit-code and output-format matrix checks to the
       parity suite, not only smoke checks.
 - [ ] S-061 Add golden RPC transcript fixtures and byte-level session fixtures

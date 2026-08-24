@@ -12,6 +12,7 @@ pub mod artifacts;
 pub mod harness;
 pub mod harness_table;
 pub mod reporter;
+pub mod session_usage;
 pub mod summary;
 
 pub mod evals;

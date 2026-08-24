@@ -8,7 +8,8 @@ use pi_evals::artifacts::{record_eval_session_artifact, EvalArtifact, TestRecord
 use pi_evals::evals::extensions;
 use pi_evals::evals::{observation_from_run, EvalSet};
 use pi_evals::harness::{
-    create_eval_root, resolve_model_selection, HarnessContext, ModelSelection, PiCliRunnerOptions,
+    create_eval_root, resolve_model_selection, HarnessContext, HarnessUsage, ModelSelection,
+    PiCliRunnerOptions,
 };
 use pi_evals::harness_table::eval_harness_table;
 use pi_evals::reporter::{append_harness_run_report, ReporterOptions};
@@ -211,7 +212,6 @@ fn run_smoke_eval(options: &CliOptions) {
 
     record_run(
         options,
-        &root,
         TestRecord {
             id: "smoke".to_string(),
             file: pi_evals::evals::smoke::FILE.to_string(),
@@ -223,16 +223,28 @@ fn run_smoke_eval(options: &CliOptions) {
         &serde_json::json!({
             "provider": options.runner.provider,
             "model": options.runner.model,
-            "totalTokens": 0,
-            "toolCalls": 0,
+            "inputTokens": outcome.usage.input_tokens,
+            "outputTokens": outcome.usage.output_tokens,
+            "totalTokens": outcome.usage.total_tokens,
+            "toolCalls": outcome.usage.tool_calls,
+            "metadata": HarnessUsage::from_session_usage(
+                &outcome.usage,
+                &options.runner.provider,
+                &options.runner.model,
+            )
+            .metadata,
         }),
-        &outcome.output,
+        outcome.session_jsonl.as_deref(),
     );
 }
 
 fn run_extensions_eval(options: &CliOptions) -> Vec<HarnessObservation> {
     let Some(runner) = (options.runner.provider != "faux").then_some(&options.runner) else {
-        eprintln!("— Pi extension authoring system prompt: skipped (faux provider cannot author extensions)");
+        let boundary = extensions::unsupported_boundary(&options.runner)
+            .unwrap_or_else(|| "extension authoring is unsupported".to_string());
+        eprintln!(
+            "— Pi extension authoring system prompt: skipped (unsupported: {boundary}; fixture-backed)"
+        );
         // Record skipped observations for both harnesses so the summary
         // reports them honestly as unscorable diagnostics.
         return skipped_extension_observations(options);
@@ -285,7 +297,7 @@ fn extension_harness(
     _candidate: bool,
 ) -> pi_evals::harness::Harness<serde_json::Value> {
     let runner = runner.clone();
-    pi_evals::harness::Harness::new(name, move |input, _context| {
+    pi_evals::harness::Harness::new(name, move |input, context| {
         let create_prompt = input
             .get("prompt")
             .and_then(|v| v.as_str())
@@ -301,29 +313,28 @@ fn extension_harness(
             use_prompt: use_prompt.to_string(),
         };
         let outcome = extensions::run_extension_scenario(&runner, &cwd, &steps);
-        let assertion = extensions::assert_extension_result(&runner, &outcome);
-        let mut errors = outcome.errors.clone();
-        let score = match assertion {
-            Ok(score) => Some(score),
-            Err(error) => {
-                errors.push(error);
-                None
-            }
-        };
+        if let Some(session_jsonl) = &outcome.session_jsonl {
+            context.set_artifact(
+                pi_evals::artifacts::PI_SESSION_SNAPSHOT_ARTIFACT,
+                serde_json::json!(session_jsonl),
+            );
+        }
+        let errors = outcome.errors.clone();
+        let (score, rationale) = extensions::score_extension_result(&runner, &outcome);
         pi_evals::harness::HarnessResult {
             output: serde_json::json!({
                 "response": outcome.final_response,
                 "extensionSource": outcome.extension_source,
                 "score": score,
+                "rationale": rationale,
             }),
             errors,
             events: Vec::new(),
-            usage: pi_evals::harness::HarnessUsage {
-                provider: runner.provider.clone(),
-                model: runner.model.clone(),
-                total_tokens: 0,
-                ..Default::default()
-            },
+            usage: pi_evals::harness::HarnessUsage::from_session_usage(
+                &outcome.usage,
+                &runner.provider,
+                &runner.model,
+            ),
             artifacts: Default::default(),
             timings: None,
         }
@@ -358,16 +369,17 @@ fn skipped_extension_observations(options: &CliOptions) -> Vec<HarnessObservatio
 }
 
 /// Appends a run record for a single-harness eval.
-#[allow(clippy::too_many_arguments)]
 fn record_run(
     options: &CliOptions,
-    root: &std::path::Path,
     test: TestRecord,
     harness: &str,
     usage: &serde_json::Value,
-    session_body: &str,
+    session_body: Option<&str>,
 ) {
     let Some(artifact_dir) = &options.artifact_dir else {
+        return;
+    };
+    let Some(session_body) = session_body else {
         return;
     };
     let run_id = pi_evals::harness_table::short_id();
@@ -379,10 +391,7 @@ fn record_run(
     );
     let session_artifact = match record_eval_session_artifact(&artifacts) {
         Ok(Some(artifact)) => artifact,
-        _ => {
-            let _ = root;
-            return;
-        }
+        _ => return,
     };
     let report_options = ReporterOptions {
         artifact_directory: Some(artifact_dir.clone()),

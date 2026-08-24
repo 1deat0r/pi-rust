@@ -9,9 +9,11 @@
 //! table (the two harnesses differ only in the prompts they run, mirroring
 //! the upstream intent of comparing prompt configurations).
 
+use serde::Deserialize;
 use serde_json::json;
 
-use crate::harness::{PiCliRunnerOptions, PiRunOutput};
+use crate::harness::PiCliRunnerOptions;
+use crate::session_usage::SessionUsage;
 
 pub const EVAL_SET: &str = "Pi extension authoring system prompt";
 pub const FILE: &str = "src/extensions.eval.ts";
@@ -24,6 +26,48 @@ const CREATE_PROMPT: &str =
     "Create a Pi extension with a hello tool that takes a name and returns a greeting. For example, passing Bob should return `Hello, Bob!`.";
 const USE_PROMPT: &str =
     "Use the hello tool to greet Bob. Respond with exactly the tool's greeting and nothing else.";
+
+pub const FAUX_UNSUPPORTED_FIXTURE: &str =
+    include_str!("fixtures/extensions-faux-unsupported.json");
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FauxExtensionFixture {
+    pub schema_version: u32,
+    pub scenario: String,
+    pub provider: String,
+    pub supported: bool,
+    pub reason: String,
+    pub expected: FauxExtensionExpected,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FauxExtensionExpected {
+    pub generated_extension_source: Option<String>,
+    pub loaded_tools: Vec<String>,
+    pub successful_hello_calls: u64,
+    pub response_prefix: String,
+}
+
+/// The faux provider is intentionally a scripted text fixture. It cannot
+/// produce the tool call needed to author and reload an extension, so the
+/// extension eval reports this exact versioned boundary instead of pretending
+/// that a skipped run is a model score.
+pub fn faux_extension_fixture() -> FauxExtensionFixture {
+    serde_json::from_str(FAUX_UNSUPPORTED_FIXTURE).expect("valid faux extension fixture")
+}
+
+pub fn unsupported_boundary(runner: &PiCliRunnerOptions) -> Option<String> {
+    if !is_skippable(runner) {
+        return None;
+    }
+    let fixture = faux_extension_fixture();
+    Some(format!(
+        "{} (fixture schema {}: {})",
+        fixture.reason, fixture.schema_version, fixture.scenario
+    ))
+}
 
 pub struct ExtensionSteps {
     pub create_prompt: String,
@@ -45,6 +89,8 @@ pub struct ExtensionOutcome {
     pub final_response: String,
     pub extension_source: Option<String>,
     pub errors: Vec<String>,
+    pub session_jsonl: Option<String>,
+    pub usage: SessionUsage,
 }
 
 /// Runs the create + use prompts through the real `pi` binary in `cwd` and
@@ -56,23 +102,20 @@ pub fn run_extension_scenario(
 ) -> ExtensionOutcome {
     let mut errors = Vec::new();
     let mut final_response = String::new();
+    let mut usage = SessionUsage::default();
+    let mut session_jsonl = None;
 
     let run = |prompt: &str| crate::harness::run_pi_binary(runner, cwd, prompt);
     match run(&steps.create_prompt) {
-        Ok(PiRunOutput {
-            stdout: _stdout,
-            stderr,
-            exit_code,
-        }) if exit_code == 0 => {
+        Ok(first) if first.exit_code == 0 => {
+            usage.merge(&first.usage);
+            session_jsonl = first.session_jsonl.clone();
             // reload step: a second invocation picks up any authored files
             match run(&steps.use_prompt) {
-                Ok(PiRunOutput {
-                    stdout: second_stdout,
-                    stderr: second_stderr,
-                    exit_code: 0,
-                }) => {
-                    final_response = crate::harness::extract_response_text(&second_stdout);
-                    let _ = second_stderr;
+                Ok(second) if second.exit_code == 0 => {
+                    usage.merge(&second.usage);
+                    session_jsonl = second.session_jsonl;
+                    final_response = crate::harness::extract_response_text(&second.stdout);
                 }
                 Ok(second) => {
                     errors.push(format!(
@@ -82,9 +125,6 @@ pub fn run_extension_scenario(
                     ));
                 }
                 Err(error) => errors.push(error),
-            }
-            if final_response.is_empty() && exit_code == 0 {
-                let _ = stderr;
             }
         }
         Ok(first) => {
@@ -108,6 +148,8 @@ pub fn run_extension_scenario(
         final_response,
         extension_source,
         errors,
+        session_jsonl,
+        usage,
     }
 }
 
@@ -125,21 +167,11 @@ pub fn assert_extension_result(
         None => failures.push("generated extension source is unavailable".to_string()),
         Some(source) => {
             let mut imports = Vec::new();
-            for captures in source
-                .match_indices("from")
-                .map(|(idx, _)| &source[idx..])
-                .take(100)
-            {
-                let rest = captures.trim_start_matches("from").trim();
-                if let Some(spec) = rest
-                    .strip_prefix('"')
-                    .and_then(|rest| rest.split('"').next())
-                    .or_else(|| {
-                        rest.strip_prefix('\'')
-                            .and_then(|rest| rest.split('\'').next())
-                    })
-                {
-                    imports.push(spec.to_string());
+            let import_pattern = regex::Regex::new(r#"\b(?:from|import)\s*[\"']([^\"']+)[\"']"#)
+                .expect("static extension import pattern");
+            for captures in import_pattern.captures_iter(source).take(100) {
+                if let Some(spec) = captures.get(1) {
+                    imports.push(spec.as_str().to_string());
                 }
             }
             if !imports
@@ -163,6 +195,9 @@ pub fn assert_extension_result(
                         .to_string(),
                 );
             }
+            if !source.contains("hello") {
+                failures.push("generated extension does not declare the hello tool".to_string());
+            }
         }
     }
     let response = outcome.final_response.trim();
@@ -174,6 +209,22 @@ pub fn assert_extension_result(
         Ok(1.0)
     } else {
         Err(failures.join("; "))
+    }
+}
+
+/// Maps the upstream judge contract to a harness observation. Harness
+/// failures are unscorable, while assertion failures are deterministic score
+/// zeroes with their rationale retained for the report.
+pub fn score_extension_result(
+    runner: &PiCliRunnerOptions,
+    outcome: &ExtensionOutcome,
+) -> (Option<f64>, Option<String>) {
+    if !outcome.errors.is_empty() {
+        return (None, None);
+    }
+    match assert_extension_result(runner, outcome) {
+        Ok(score) => (Some(score), None),
+        Err(error) => (Some(0.0), Some(error)),
     }
 }
 

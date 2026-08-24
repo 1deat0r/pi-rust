@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"legacy-session","timestamp":"2023-11-14T22:13:20.000Z","cwd":"/tmp/eval"}
+{"type":"message","id":"assistant-1","parentId":null,"timestamp":"2023-11-14T22:13:21.000Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"provider":"openai","model":"gpt-4o","usage":{"input":7,"output":8,"cacheRead":2,"cacheWrite":1,"totalTokens":18,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}}

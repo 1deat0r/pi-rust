@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "scenario": "extension-authoring",
+  "provider": "faux",
+  "supported": false,
+  "reason": "faux is a scripted text provider and does not emit extension-authoring tool calls",
+  "expected": {
+    "generatedExtensionSource": null,
+    "loadedTools": [],
+    "successfulHelloCalls": 0,
+    "responsePrefix": "faux response to:"
+  }
+}

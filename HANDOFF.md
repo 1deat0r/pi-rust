@@ -934,7 +934,7 @@ S-012 implementation and documentation are committed as
 `origin/main` hashes matched in the required verification. The next
 dependency-safe action is S-013 GitHub Copilot OAuth refresh and
 enterprise-domain/token-exchange parity.
-## Active checkpoint — 2026-08-25 — full-conversion tree established
+## Historical checkpoint — 2026-08-25 — full-conversion tree established
 
 The existing full-conversion goal is active and is being resumed with scoped
 sub-agent work under `.unlazy/full-conversion-20260825/`. Startup documents
@@ -957,7 +957,7 @@ The working tree retains the pre-existing untracked `AGENTS.md`; `.unlazy/`
 runtime state is ignored. Next action: inspect and approve the scoped gate
 oracles, claim the first-wave leases, then dispatch the ready leaves.
 
-## Active checkpoint — 2026-08-25 — implementation wave integrated
+## Historical checkpoint — 2026-08-25 — implementation wave integrated
 
 Repository state at handoff: branch `main`; `HEAD` and `origin/main` both
 `6f243b9a0083d5d6e8edf7f05943f3dbeb0fec88` before this dirty working-tree
@@ -1010,3 +1010,39 @@ Next dependency-safe action: finish the active C1/D2/E2/F1 leaves, then
 dispatch provider-matrix and independent final reviewers. Do not claim full
 conversion completion until pi-agent/coding-agent clippy, the full workspace
 tests, parity suite, release matrix, and S-065/S-066 audit gates pass.
+
+## Active checkpoint — 2026-08-25 — eval metrics and pushed wave synchronized
+
+The completed implementation wave is pushed at commit
+`ebe1f9259829dad24411718e54ee11d29bce8d9d`; `git rev-parse HEAD` and
+`git ls-remote origin refs/heads/main` both return that hash. The worktree now
+contains only the uncommitted F1 eval implementation plus active C1/D2/E2
+changes; the pre-existing untracked `AGENTS.md` remains untouched.
+
+Progress checker:
+
+```text
+Conversion progress: 69.88% (116/166; 50 open)
+```
+
+S-058 and S-059 are now ledger-checked with unit/mock evidence. F1 reports
+the exact pi-evals test, formatting, clippy, and faux fixture commands passed;
+session JSONL accounting recorded input 1246, output 20, total 1266, and the
+faux extension boundary is an explicit schema-1 diagnostic fixture. The F1
+lease was released after verification.
+
+Exact additional validation commands:
+
+```text
+/home/mustbearnold/.cargo/bin/cargo test -p pi-evals --offline --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-evals --offline --test session_usage --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-evals --offline --test extensions --quiet
+/home/mustbearnold/.cargo/bin/cargo clippy -p pi-evals --offline --all-targets -- -D warnings
+/home/mustbearnold/.cargo/bin/cargo fmt -p pi-evals -- --check
+git diff --check
+node scripts/conversion-progress.mjs
+```
+
+Next dependency-safe action: finish C1/D2/E2, dispatch provider-matrix
+fixtures, then run the full workspace tests/clippy, parity suite, release
+matrix, and independent final-audit review. Full conversion remains open.
