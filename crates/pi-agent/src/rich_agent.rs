@@ -1263,8 +1263,8 @@ where
                     });
                 }
             }
-            AssistantMessageEvent::Done { message, .. }
-            | AssistantMessageEvent::Error {
+            AssistantMessageEvent::Done { .. } => {}
+            AssistantMessageEvent::Error {
                 error_message: message,
                 ..
             } => {
@@ -1328,8 +1328,8 @@ async fn stream_assistant_attempt(
                         });
                 }
             }
-            AssistantMessageEvent::Done { message, .. }
-            | AssistantMessageEvent::Error {
+            AssistantMessageEvent::Done { .. } => {}
+            AssistantMessageEvent::Error {
                 error_message: message,
                 ..
             } => {
