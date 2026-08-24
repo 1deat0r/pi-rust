@@ -104,9 +104,10 @@ code failure: the linker was killed with SIGKILL 9 while linking the unrelated
 is green; rerun the workspace test gate when host linker pressure permits.
 
 The S-008 implementation commit `7a72f2fe104cf660f946f29a822c88da556a37d1`
-was pushed to `origin/main`; `git rev-parse HEAD` and `git ls-remote origin
-refs/heads/main` matched exactly. Next dependency-safe work is S-009 Codex
-WebSocket session caching/reuse.
+was pushed to `origin/main`; the final documentation-sync commit is
+`3f649fec8ea6a33860e5acfe50d96e92b02a09ad`. Current `git rev-parse HEAD` and
+`git ls-remote origin refs/heads/main` both resolve to the documentation-sync
+hash. Next dependency-safe work is S-009 Codex WebSocket session caching/reuse.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 
