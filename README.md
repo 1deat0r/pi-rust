@@ -22,9 +22,10 @@ compaction, RPC controls, TUI components, and client/server support. Remaining
 work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
 
-The last verified local and GitHub `main` checkpoint is `514cca9`. GitHub CLI
-authentication is configured for the HTTPS remote, so implementation
-checkpoints are pushed and hash-verified immediately.
+The last verified implementation checkpoint is `e890f09`; the synchronized
+documentation follow-up is pushed with it. GitHub CLI authentication is
+configured for the HTTPS remote, so implementation checkpoints are pushed and
+hash-verified immediately.
 
 The shared `AgentHarness` now exposes durable main and secondary lane views:
 lanes branch from session leaves, seed independent provider context, persist

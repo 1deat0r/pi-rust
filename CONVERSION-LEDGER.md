@@ -19,8 +19,9 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- The latest committed interactive manual-compaction checkpoint is `514cca9`
-  on `main`, containing the ConfigSelector implementation checkpoint
+- The latest committed interactive slash-command PTY fixture checkpoint is
+  `e890f09` on `main`, containing the interactive manual-compaction checkpoint
+  `514cca9`, the ConfigSelector implementation checkpoint
   `974bd1b` and the partial S-021/S-022 secondary-lane checkpoint `d8b589f`,
   after the S-026 CLI session-routing checkpoint `711a25e`,
   the startup-timing compatibility and compiled-binary self-update contracts,
@@ -28,7 +29,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   schema-validator, panic-safe telemetry, install telemetry, update/version,
   and model-catalog work. GitHub authentication is configured through `gh
   auth setup-git`, and `origin/main` matched local `HEAD` at
-  `514cca9` immediately after the implementation push. This documentation
+  `e890f09` immediately after the implementation push. This documentation
   refresh is the follow-up commit.
 - The focused tool-contract, RPC, image/read, print-mode compaction,
   malformed-call, harness-owned print-path, and secondary-lane suites pass.
