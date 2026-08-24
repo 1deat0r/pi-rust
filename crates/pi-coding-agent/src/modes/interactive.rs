@@ -852,6 +852,25 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         ))
     };
 
+    // The Rust port does not yet carry the upstream changelog catalogue, so
+    // the persisted last-changelog version is the compatible update boundary:
+    // report once on a fresh install and once when the shipped version moves.
+    // The transport is backgrounded and independently honors PI_OFFLINE and
+    // the PI_TELEMETRY/settings opt-out.
+    let should_report_install_telemetry =
+        settings.get_last_changelog_version() != Some(config::VERSION);
+    if should_report_install_telemetry {
+        settings.set_last_changelog_version(config::VERSION.to_string());
+        let telemetry_enabled =
+            crate::core::telemetry::is_install_telemetry_enabled_from_env(&settings);
+        if telemetry_enabled && std::env::var_os("PI_OFFLINE").is_none() {
+            tokio::spawn(crate::core::telemetry::report_install_telemetry(
+                config::VERSION,
+                telemetry_enabled,
+            ));
+        }
+    }
+
     // Terminal + components.
     let mut terminal = TerminalBackend::new();
     terminal
@@ -1116,6 +1135,9 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 }
                                 "cache-miss-notices" => {
                                     settings.set_show_cache_miss_notices(value == "true");
+                                }
+                                "install-telemetry" => {
+                                    settings.set_enable_install_telemetry(value == "true");
                                 }
                                 _ => {}
                             }

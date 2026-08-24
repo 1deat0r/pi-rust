@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **57.23% (95/166)**. Run
+- The exhaustive checker reports **57.83% (96/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -19,10 +19,11 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the local cache-notice interactive checkpoint on `main`, after
+- HEAD is the local install-telemetry checkpoint on `main`, after
   the startup-timing compatibility and compiled-binary self-update contracts,
   the print-path harness ownership, AgentTool harness/termination,
-  schema-validator, panic-safe telemetry, update/version, and model-catalog
+  schema-validator, panic-safe telemetry, install telemetry, update/version,
+  and model-catalog
   work; the HTTPS remote is still behind because GitHub credentials are
   unavailable.
 - The workspace is green under `cargo test --workspace --offline`; the focused
@@ -695,8 +696,21 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       commands::package::tests::self_update_fallback_instruction_matches_distribution_contract`,
       `cargo test -p pi-coding-agent --offline --test cli_commands update_`,
       and `cargo test --workspace --offline --quiet`.
-- [ ] S-029 Complete install-telemetry report transport, opt-out, retry, and
+- [x] S-029 Complete install-telemetry report transport, opt-out, retry, and
       offline behavior where the upstream CLI performs the network ping.
+      `core/telemetry.rs` now sends the upstream version query with a Rust
+      Pi user-agent, uses a bounded five-second best-effort transport, retries
+      transient network/429/5xx failures, and never surfaces report failure to
+      the interactive UI. `PI_OFFLINE` short-circuits before transport;
+      `PI_TELEMETRY` overrides the default-on `enableInstallTelemetry` setting;
+      the interactive settings selector persists that opt-out; and the
+      startup path records the last shipped version and launches the report
+      only on a fresh/version-changed interactive install boundary. The
+      endpoint has a test-only `PI_INSTALL_TELEMETRY_URL` seam. Evidence
+      (unit/mock): `cargo test -p pi-coding-agent --offline --lib
+      core::telemetry::` (7 passed), `cargo test -p pi-coding-agent
+      --offline --quiet` (458 coding-agent unit tests plus integration
+      targets), and the workspace check/test gates.
 - [x] S-030 Wire cache-miss notices and “cache re-billed” display data into the
       interactive transcript/footer, including setting gates and reset events.
       `modes/interactive.rs` maintains a serialized shadow of deferred

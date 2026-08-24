@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 57.23% — 95 of 166 ledger tasks complete; 71 open.**
+**Conversion progress: 57.83% — 96 of 166 ledger tasks complete; 70 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -50,6 +50,14 @@ significant cache-miss notices into the transcript; `/session` reports
 cumulative `Cache Re-billed` tokens, cost, and miss count. Auto-compaction,
 `/clear`, new sessions, resume, and import boundaries reset or reload the
 cache segment so notices stay attached to the correct prompt history.
+
+### Install telemetry
+
+Interactive startup sends the anonymous version/update ping only on a fresh or
+version-changed install boundary. It is best-effort and backgrounded, with a
+bounded retry/timeout policy. Set `PI_TELEMETRY=0` (or disable `Install
+telemetry` in `/settings`) to opt out; `PI_OFFLINE=1` disables the transport
+before any network request.
 
 ### Startup timing
 

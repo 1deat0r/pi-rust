@@ -229,6 +229,11 @@ pub fn settings_selector_items(
     } else {
         "false"
     };
+    let install_telemetry = if settings.get_enable_install_telemetry() {
+        "true"
+    } else {
+        "false"
+    };
     vec![
         SettingEntry::cycle(
             "theme",
@@ -261,6 +266,13 @@ pub fn settings_selector_items(
             vec!["true".to_string(), "false".to_string()],
         )
         .describe("Show transcript notices for significant prompt-cache misses"),
+        SettingEntry::cycle(
+            "install-telemetry",
+            "Install telemetry",
+            install_telemetry.to_string(),
+            vec!["true".to_string(), "false".to_string()],
+        )
+        .describe("Send an anonymous version/update ping after changelog-detected updates"),
         SettingEntry::info("model", "Default model", model_id),
     ]
 }

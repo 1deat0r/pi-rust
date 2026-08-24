@@ -8,7 +8,7 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-57.23% = 95 completed / 166 total tasks
+57.83% = 96 completed / 166 total tasks
 72 tasks remain open
 ```
 
@@ -26,8 +26,9 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is the committed S-030 interactive cache-notice
-slice `7356dd3`, after `ef640ce`, the partial legacy-session
+The latest local checkpoint is the working-tree S-029 install-telemetry slice,
+after the committed S-030 interactive cache-notice slice `7356dd3`, `ef640ce`,
+the partial legacy-session
 integration slice, after committed startup timing (`869ae6d`) and
 the committed compiled-binary self-update contract (`db97b89`) and interactive
 turn harness ownership
@@ -54,9 +55,9 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`57.23% (95/166; 71 open)`. Preserve the pre-existing untracked `AGENTS.md`.
-The README now records the legacy-session integration, startup-timing
-compatibility, and interactive cache-notice contracts and the
+`57.83% (96/166; 70 open)`. Preserve the pre-existing untracked `AGENTS.md`.
+The README now records the legacy-session integration, startup-timing,
+interactive cache-notice, and install-telemetry contracts and the
 synchronized-doc workflow. All staged checkpoint changes are intentional local
 work ahead of the remote; the pre-existing `AGENTS.md` remains untouched.
 
@@ -152,8 +153,28 @@ The S-030 interactive cache-notice checkpoint is complete in the working tree:
   `cargo check --workspace --offline`, `cargo test --workspace --offline
   --quiet`, `cargo fmt --all`, and `git diff --check`.
 
-S-030 is closed. S-029, the remaining CLI session-routing audit (S-026), and
-the remaining S-021/S-022 harness ownership work are still open.
+S-030 is closed. The remaining CLI session-routing audit (S-026) and
+S-021/S-022 harness ownership work are still open.
+
+The S-029 install-telemetry checkpoint is complete in the working tree:
+
+- `core::telemetry::report_install_telemetry` sends the upstream version query
+  and Pi user-agent through a bounded five-second best-effort transport, with
+  transient transport/429/5xx retries. `PI_OFFLINE` short-circuits; the
+  `PI_TELEMETRY` environment override and default-on `enableInstallTelemetry`
+  setting gate the report.
+- Interactive startup records the shipped version and launches the report in
+  the background only for a fresh/version-changed install boundary. The
+  settings selector now exposes `Install telemetry`; the endpoint has a
+  `PI_INSTALL_TELEMETRY_URL` test seam.
+- Evidence: `cargo test -p pi-coding-agent --offline --lib
+  core::telemetry::` (7 passed), `cargo test -p pi-coding-agent --offline
+  --quiet` (458 coding-agent unit tests plus integration targets),
+  `cargo check --workspace --offline`, and `cargo test --workspace --offline
+  --quiet`.
+
+S-029 is closed. The remaining CLI session-routing audit (S-026) and
+S-021/S-022 harness ownership work are still open.
 
 A full `cargo test --workspace --offline` passed after the image/read changes,
 including 162 `pi-agent` unit tests, the coding-agent integration targets, 186

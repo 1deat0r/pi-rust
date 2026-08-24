@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 57.23% (95/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 57.83% (96/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1242,8 +1242,7 @@ distribution where the running executable cannot replace itself.
   `cargo check --workspace --offline`, `cargo test --workspace --offline
   --quiet`, `cargo fmt --all`, and `git diff --check`.
 - S-028 is complete with an explicit distribution-level divergence; S-026,
-  S-027, S-029, and the remaining S-021/S-022 harness ownership work remain
-  open.
+  S-027, and the remaining S-021/S-022 harness ownership work remain open.
 
 ### Session 37 — 2026-08-24 — Startup timing compatibility (S-031)
 Scope: preserve the upstream `PI_TIMING=1` gate while documenting the Rust
@@ -1259,9 +1258,9 @@ distribution's intentional lack of startup timing namespaces.
   `PI_TIMING=1 ./target/debug/pi --version` (mock binary smoke) prints the
   warning before `pi 0.84.2`; the full workspace check/test and documentation
   gate are green before the checkpoint commit (448 coding-agent tests).
-- S-031 is complete as an explicit, user-visible non-port. S-029,
-  session migration integration, and the remaining harness ownership work
-  remain open.
+- S-031 is complete as an explicit, user-visible non-port. At this point in
+  the sequence S-029, session migration integration, and the remaining
+  harness ownership work remained open; S-029 is closed in Session 40.
 
 ### Session 38 — 2026-08-24 — Legacy session integration (partial S-026)
 Scope: connect the existing v1/v2/v3-to-v4 converter to session inventory and
@@ -1309,8 +1308,29 @@ transcript, footer/session usage, settings selector, and context reset paths.
   --quiet` (455 coding-agent unit tests plus integration targets),
   `cargo check --workspace --offline`, `cargo test --workspace --offline
   --quiet`, `cargo fmt --all`, and `git diff --check`.
-- S-030 is complete. S-029, the remaining S-026 CLI routing audit, and
+- S-030 is complete. The remaining S-026 CLI routing audit and
   S-021/S-022 harness ownership work remain open.
+
+### Session 40 — 2026-08-24 — Install telemetry transport and startup gate (S-029)
+Scope: finish the upstream interactive install/update ping with explicit
+offline, opt-out, retry, timeout, and settings-selector behavior.
+
+- Added `core::telemetry::report_install_telemetry`, which sends the
+  `/api/report-install?version=` request with a Rust Pi user-agent. The
+  background report uses a five-second overall bound and retries transient
+  transport/429/5xx failures without delaying or surfacing errors in the TUI.
+- Interactive startup persists the last shipped version and launches the
+  report only on a fresh or version-changed install boundary. `PI_OFFLINE`
+  short-circuits transport; `PI_TELEMETRY` overrides the default-on
+  `enableInstallTelemetry` setting; and `/settings` now exposes the setting.
+  `PI_INSTALL_TELEMETRY_URL` is a test-only endpoint seam.
+- Evidence (unit/mock): `cargo test -p pi-coding-agent --offline --lib
+  core::telemetry::` (7 passed), `cargo test -p pi-coding-agent --offline
+  --quiet` (458 coding-agent unit tests plus integration targets),
+  `cargo check --workspace --offline`, `cargo test --workspace --offline
+  --quiet`, `cargo fmt --all`, and `git diff --check`.
+- S-029 is complete. The remaining S-026 CLI routing audit and S-021/S-022
+  harness ownership work remain open.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
