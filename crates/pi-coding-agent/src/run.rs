@@ -87,7 +87,7 @@ fn settings_default_project_trust(agent_dir: &std::path::Path) -> Option<String>
     let path = agent_dir.join("settings.json");
     let raw = std::fs::read_to_string(path).ok()?;
     let content = crate::core::settings::strip_bom(&raw);
-    let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
     value
         .get("defaultProjectTrust")
         .and_then(|v| v.as_str())
@@ -502,7 +502,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
 /// source. Keeping that decision here means the harness can append directly to
 /// the selected durable file instead of replaying a fresh in-memory transcript
 /// into a second session at shutdown.
-async fn prepare_run_session(
+pub(crate) async fn prepare_run_session(
     args: &Args,
     cwd: &str,
 ) -> Result<(Session<StdFileSystem>, Option<String>), String> {
@@ -553,7 +553,7 @@ async fn prepare_run_session(
             .list(Some(cwd))
             .await
             .map_err(|error| format!("list sessions: {error}"))?;
-        sessions.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.modified_at));
         Some(sessions.into_iter().next().ok_or_else(|| {
             if args.resume {
                 "no sessions found to resume in this directory".to_string()
@@ -661,7 +661,7 @@ pub(crate) async fn resolve_session_metadata(
         return Err(format!("session not found: {selector}"));
     }
     if matches.len() > 1 {
-        matches.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
+        matches.sort_by_key(|metadata| std::cmp::Reverse(metadata.modified_at));
         let ids = matches
             .iter()
             .map(|metadata| metadata.id.as_str())
@@ -754,9 +754,7 @@ async fn maybe_auto_compact(
             return None;
         }
     };
-    let Some(preparation) = preparation else {
-        return None;
-    };
+    let preparation = preparation?;
     let result = match compact(
         &preparation,
         summarizer,
@@ -977,6 +975,27 @@ fn load_prompt_templates_for_run(
     templates
 }
 
+/// Build the faux model for the scripted test provider (shared by the run
+/// and RPC paths).
+pub fn build_faux_model(model_hint: Option<&str>) -> Result<pi_ai::model::Model, String> {
+    let core = pi_ai::providers::FauxProviderCore::new(
+        &pi_ai::providers::RegisterFauxProviderOptions::default(),
+    );
+    match model_hint {
+        Some(hint) => {
+            let id = hint.rsplit('/').next().unwrap_or(hint);
+            core.get_model(Some(id))
+                .cloned()
+                .ok_or_else(|| format!("unknown faux model {id:?}"))
+        }
+        None => core
+            .models
+            .first()
+            .cloned()
+            .ok_or_else(|| "no faux model".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1066,8 +1085,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let settings = SettingsManager::in_memory(SettingsMap::new());
-        let mut args = Args::default();
-        args.no_skills = true;
+        let args = Args {
+            no_skills: true,
+            ..Default::default()
+        };
         let block = build_skills_block(&args, &root.to_string_lossy(), &root, &settings);
         assert_eq!(block, "");
         std::fs::remove_dir_all(&root).ok();
@@ -1101,15 +1122,19 @@ mod tests {
         std::fs::write(cwd.join("AGENTS.md"), "project ctx line").unwrap();
         let settings = SettingsManager::in_memory(SettingsMap::new());
 
-        let mut args = Args::default();
-        args.append_system_prompt = vec!["tail".to_string()];
+        let args = Args {
+            append_system_prompt: vec!["tail".to_string()],
+            ..Default::default()
+        };
         let prompt = assemble_run_system_prompt(&args, &cwd.to_string_lossy(), &agent, &settings);
         assert!(prompt.contains("<project_instructions"));
         assert!(prompt.contains("project ctx line"));
         assert!(prompt.ends_with("tail"), "append prompt is last");
 
-        let mut args_nc = Args::default();
-        args_nc.no_context_files = true;
+        let args_nc = Args {
+            no_context_files: true,
+            ..Default::default()
+        };
         let prompt_nc =
             assemble_run_system_prompt(&args_nc, &cwd.to_string_lossy(), &agent, &settings);
         assert!(
@@ -1180,26 +1205,5 @@ mod tests {
             assert!(streams.fetch_deferred.is_some(), "{mode} fetch hook");
             assert!(streams.cancel_deferred.is_some(), "{mode} cancel hook");
         }
-    }
-}
-
-/// Build the faux model for the scripted test provider (shared by the run
-/// and RPC paths).
-pub fn build_faux_model(model_hint: Option<&str>) -> Result<pi_ai::model::Model, String> {
-    let core = pi_ai::providers::FauxProviderCore::new(
-        &pi_ai::providers::RegisterFauxProviderOptions::default(),
-    );
-    match model_hint {
-        Some(hint) => {
-            let id = hint.rsplit('/').next().unwrap_or(hint);
-            core.get_model(Some(id))
-                .cloned()
-                .ok_or_else(|| format!("unknown faux model {id:?}"))
-        }
-        None => core
-            .models
-            .first()
-            .cloned()
-            .ok_or_else(|| "no faux model".to_string()),
     }
 }

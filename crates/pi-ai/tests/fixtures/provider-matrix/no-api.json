@@ -1,0 +1,10 @@
+{
+  "evidence_tier": "unit",
+  "controls": [
+    {"provider": "cloudflare-ai-gateway", "api": "unsupported-matrix-api", "expected": "Provider cloudflare-ai-gateway has no API implementation for \"unsupported-matrix-api\""},
+    {"provider": "github-copilot", "api": "unsupported-matrix-api", "expected": "Provider github-copilot has no API implementation for \"unsupported-matrix-api\""},
+    {"provider": "opencode", "api": "unsupported-matrix-api", "expected": "Provider opencode has no API implementation for \"unsupported-matrix-api\""},
+    {"provider": "opencode-go", "api": "unsupported-matrix-api", "expected": "Provider opencode-go has no API implementation for \"unsupported-matrix-api\""},
+    {"provider": "opencode-go", "api": "anthropic-messages", "expected": "Provider opencode-go has no API implementation for \"anthropic-messages\""}
+  ]
+}

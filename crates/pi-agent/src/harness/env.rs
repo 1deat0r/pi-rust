@@ -292,19 +292,10 @@ impl Default for CreateDirOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct RemoveOptions {
     pub recursive: bool,
     pub force: bool,
-}
-
-impl Default for RemoveOptions {
-    fn default() -> Self {
-        Self {
-            recursive: false,
-            force: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1167,25 +1158,20 @@ impl Shell for StdExecutionEnv {
         let mut aborted = false;
         {
             let mut wait = Box::pin(child.wait());
-            loop {
-                tokio::select! {
-                    _ = wait_for_abort(abort_flag.as_deref()) => {
-                        kill_process_group(pid);
-                        aborted = true;
-                        break;
-                    }
-                    _ = wait_for_deadline(deadline) => {
-                        kill_process_group(pid);
-                        timed_out = true;
-                        break;
-                    }
-                    status = &mut wait => {
-                        exit_status = Some(status.map_err(|e| {
-                            self.active_child_pids.lock().unwrap().remove(&pid);
-                            ExecutionError::new(ExecutionErrorCode::SpawnError, format!("wait failed: {e}"))
-                        })?);
-                        break;
-                    }
+            tokio::select! {
+                _ = wait_for_abort(abort_flag.as_deref()) => {
+                    kill_process_group(pid);
+                    aborted = true;
+                }
+                _ = wait_for_deadline(deadline) => {
+                    kill_process_group(pid);
+                    timed_out = true;
+                }
+                status = &mut wait => {
+                    exit_status = Some(status.map_err(|e| {
+                        self.active_child_pids.lock().unwrap().remove(&pid);
+                        ExecutionError::new(ExecutionErrorCode::SpawnError, format!("wait failed: {e}"))
+                    })?);
                 }
             }
         }
@@ -1329,18 +1315,16 @@ mod tests {
             assert_eq!(entry.size, 5);
             assert!(entry.mtime_ms > 0);
 
-            assert_eq!(
-                get_or_throw(env.exists("nested/child/file.txt", None).await),
-                true
-            );
+            assert!(get_or_throw(
+                env.exists("nested/child/file.txt", None).await
+            ));
             get_or_throw(
                 env.remove("nested/child/file.txt", RemoveOptions::default())
                     .await,
             );
-            assert_eq!(
-                get_or_throw(env.exists("nested/child/file.txt", None).await),
-                false
-            );
+            assert!(!get_or_throw(
+                env.exists("nested/child/file.txt", None).await
+            ));
         });
     }
 
@@ -1455,7 +1439,7 @@ mod tests {
             let err = info.unwrap_err();
             assert_eq!(err.code, FileErrorCode::NotFound);
             assert_eq!(err.path, Some(format!("{root}/missing.txt")));
-            assert_eq!(get_or_throw(env.exists("missing.txt", None).await), false);
+            assert!(!get_or_throw(env.exists("missing.txt", None).await));
         });
     }
 
@@ -1493,7 +1477,7 @@ mod tests {
             get_or_throw(env.write_file("source.txt", "new".into(), None).await);
             get_or_throw(env.write_file("destination.txt", "old".into(), None).await);
             get_or_throw(env.rename_file("source.txt", "destination.txt", None).await);
-            assert_eq!(get_or_throw(env.exists("source.txt", None).await), false);
+            assert!(!get_or_throw(env.exists("source.txt", None).await));
             assert_eq!(
                 get_or_throw(env.read_text_file("destination.txt", None).await),
                 "new"
@@ -1577,7 +1561,7 @@ mod tests {
                 )
                 .await,
             );
-            assert_eq!(get_or_throw(env.exists("dir", None).await), false);
+            assert!(!get_or_throw(env.exists("dir", None).await));
 
             let remove_missing = env
                 .remove(
@@ -1655,11 +1639,13 @@ mod tests {
                 .to_string_lossy()
                 .into_owned();
             let env = StdExecutionEnv::new(root.clone());
-            let mut opts = ShellExecOptions::default();
-            opts.env = Some(BTreeMap::from([(
-                "NODE_ENV_TEST".to_string(),
-                "ok".to_string(),
-            )]));
+            let opts = ShellExecOptions {
+                env: Some(BTreeMap::from([(
+                    "NODE_ENV_TEST".to_string(),
+                    "ok".to_string(),
+                )])),
+                ..Default::default()
+            };
             let result = get_or_throw(
                 env.exec("printf '%s:%s' \"$PWD\" \"$NODE_ENV_TEST\"", &opts)
                     .await,
@@ -1687,8 +1673,10 @@ mod tests {
                     ("PI_NODE_ENV_PRESERVED_TEST".to_string(), "preserved".to_string()),
                 ]),
             );
-            let mut opts = ShellExecOptions::default();
-            opts.env = Some(BTreeMap::from([("PI_SESSION_FILE".to_string(), String::new())]));
+            let opts = ShellExecOptions {
+                env: Some(BTreeMap::from([("PI_SESSION_FILE".to_string(), String::new())])),
+                ..Default::default()
+            };
             let result = get_or_throw(
                 env.exec(
                     "printf '%s:%s|%s|%s' \"${PI_SESSION_FILE+x}\" \"${PI_SESSION_FILE-}\" \"$PI_CODING_AGENT\" \"$PI_NODE_ENV_PRESERVED_TEST\"",
@@ -1718,9 +1706,14 @@ mod tests {
         rt().block_on(async {
             let root = temp_root();
             let env = StdExecutionEnv::with_shell_env(root.clone(), BTreeMap::from([("PI_CONFIGURED".to_string(), "configured".to_string())]));
-            let mut opts = ShellExecOptions::default();
-            opts.inherit_env = false;
-            opts.env = Some(BTreeMap::from([("PI_EXPLICIT".to_string(), "explicit".to_string())]));
+            let opts = ShellExecOptions {
+                env: Some(BTreeMap::from([(
+                    "PI_EXPLICIT".to_string(),
+                    "explicit".to_string(),
+                )])),
+                inherit_env: false,
+                ..Default::default()
+            };
             let result = get_or_throw(
                 env.exec(
                     "printf '%s:%s:%s' \"${PI_INHERITED-}\" \"${PI_CONFIGURED-}\" \"${PI_EXPLICIT-}\"",
@@ -1798,8 +1791,10 @@ mod tests {
         rt().block_on(async {
             let root = temp_root();
             let env = StdExecutionEnv::new(root.clone());
-            let mut opts = ShellExecOptions::default();
-            opts.timeout = Some(0.05);
+            let opts = ShellExecOptions {
+                timeout: Some(0.05),
+                ..Default::default()
+            };
             let result = env.exec("sleep 5", &opts).await;
             assert!(result.is_err());
             assert_eq!(result.unwrap_err().code, ExecutionErrorCode::Timeout);
@@ -1811,8 +1806,10 @@ mod tests {
         rt().block_on(async {
             let root = temp_root();
             let env = StdExecutionEnv::new(root.clone());
-            let mut opts = ShellExecOptions::default();
-            opts.on_stdout = Some(Arc::new(|_| Err("callback failed".to_string())));
+            let opts = ShellExecOptions {
+                on_stdout: Some(Arc::new(|_| Err("callback failed".to_string()))),
+                ..Default::default()
+            };
             let result = env.exec("printf out", &opts).await;
             let err = result.unwrap_err();
             assert_eq!(err.code, ExecutionErrorCode::CallbackError);
@@ -1852,8 +1849,10 @@ mod tests {
             let flag = Arc::new(AtomicBool::new(false));
             let abort_flag = flag.clone();
             let handle = tokio::spawn(async move {
-                let mut opts = ShellExecOptions::default();
-                opts.abort = Some(abort_flag.clone());
+                let opts = ShellExecOptions {
+                    abort: Some(abort_flag.clone()),
+                    ..Default::default()
+                };
                 env.exec("sleep 5", &opts).await
             });
             tokio::time::sleep(Duration::from_millis(30)).await;
@@ -1881,7 +1880,7 @@ mod tests {
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            assert_eq!(get_or_throw(env.exists("started", None).await), true);
+            assert!(get_or_throw(env.exists("started", None).await));
             FileSystem::cleanup(&env).await;
             let result = tokio::time::timeout(Duration::from_secs(3), handle)
                 .await

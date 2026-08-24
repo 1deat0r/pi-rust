@@ -43,6 +43,17 @@ use super::rpc_types::{failure, success, RpcCommand, RpcSessionState};
 /// Max output chars before a bash result is truncated (upstream threshold).
 const BASH_TRUNCATE_LIMIT: usize = 30_000;
 
+type FauxResponseFactory = Box<
+    dyn Fn(
+            &pi_ai::types::Context,
+            Option<&pi_ai::types::SimpleStreamOptions>,
+            &pi_ai::providers::FauxProviderState,
+            &pi_ai::model::Model,
+        ) -> pi_ai::types::AssistantMessage
+        + Send
+        + Sync,
+>;
+
 fn queue_mode(value: &str) -> QueueMode {
     if value == "all" {
         QueueMode::All
@@ -285,7 +296,7 @@ fn serialize_rpc_prompt_event(event: RichAgentEvent) -> Option<String> {
     serialize_rpc_prompt_event_with_auth(event, None, false)
 }
 
-fn serialize_rpc_prompt_event_with_auth(
+pub(crate) fn serialize_rpc_prompt_event_with_auth(
     event: RichAgentEvent,
     provider: Option<&str>,
     provider_uses_oauth: bool,
@@ -649,7 +660,7 @@ impl RpcRuntime {
                 .list(Some(&cwd))
                 .await
                 .map_err(|e| format!("list sessions: {e}"))?;
-            sessions.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
+            sessions.sort_by_key(|session| std::cmp::Reverse(session.modified_at));
             let source = sessions.into_iter().next().ok_or_else(|| {
                 if args.resume {
                     "no sessions found to resume in this directory".to_string()
@@ -1001,16 +1012,7 @@ impl RpcRuntime {
             // (e.g. multi-turn history seeding). Keep enough steps for queued
             // steering/follow-up turns to remain deterministic.
             let make_response = |reply: String| {
-                let factory: Box<
-                    dyn Fn(
-                            &pi_ai::types::Context,
-                            Option<&pi_ai::types::SimpleStreamOptions>,
-                            &pi_ai::providers::FauxProviderState,
-                            &pi_ai::model::Model,
-                        ) -> pi_ai::types::AssistantMessage
-                        + Send
-                        + Sync,
-                > = Box::new(
+                let factory: FauxResponseFactory = Box::new(
                     move |ctx: &pi_ai::types::Context,
                           _options: Option<&pi_ai::types::SimpleStreamOptions>,
                           _state: &pi_ai::providers::FauxProviderState,
@@ -2504,7 +2506,7 @@ impl RpcRuntime {
             id: self.session_id.clone(),
             created_at: 0,
             cwd: self.cwd.clone(),
-            path: self.session_path.clone().unwrap_or_else(|| "".to_string()),
+            path: self.session_path.clone().unwrap_or_default(),
             modified_at: 0,
             source_format: 4,
             parent_session_id: None,
@@ -2665,7 +2667,7 @@ pub fn to_json_message_update(event: &AssistantMessageEvent) -> serde_json::Valu
         .cloned();
     let (kind, mut body) = event_json(event);
     let usage = usage
-        .map(|u| serde_json::to_value(u))
+        .map(serde_json::to_value)
         .transpose()
         .ok()
         .flatten()
@@ -2976,15 +2978,19 @@ fn start_forwarded_prompt_task(
     });
 }
 
+struct RpcDispatchState<'a, W: AsyncWrite + Unpin> {
+    out: &'a mut W,
+    task_events: &'a UnboundedSender<RpcTaskMessage>,
+    prompt_active: &'a mut bool,
+    active_bashes: &'a mut usize,
+    pending_commands: &'a mut VecDeque<RpcCommand>,
+    pending_abort_responses: &'a mut VecDeque<String>,
+}
+
 async fn dispatch_rpc_command<W: AsyncWrite + Unpin>(
     runtime: &mut RpcRuntime,
     command: RpcCommand,
-    out: &mut W,
-    task_events: &UnboundedSender<RpcTaskMessage>,
-    prompt_active: &mut bool,
-    active_bashes: &mut usize,
-    pending_commands: &mut VecDeque<RpcCommand>,
-    pending_abort_responses: &mut VecDeque<String>,
+    state: &mut RpcDispatchState<'_, W>,
 ) -> Result<(), String> {
     // Standalone bash and abort_bash are always admitted, including while an
     // agent prompt is streaming. This is the key distinction from `abort`:
@@ -2992,52 +2998,53 @@ async fn dispatch_rpc_command<W: AsyncWrite + Unpin>(
     // tasks.
     if command.type_ == "bash" {
         let mut store = Vec::new();
-        if runtime.start_bash_task(command, task_events, &mut store) {
-            *active_bashes += 1;
+        if runtime.start_bash_task(command, state.task_events, &mut store) {
+            *state.active_bashes += 1;
         }
-        return write_rpc_lines(out, store).await;
+        return write_rpc_lines(state.out, store).await;
     }
     if command.type_ == "abort_bash" {
         let mut store = Vec::new();
         handle_rpc_runtime_command(runtime, command, &mut store).await;
-        return write_rpc_lines(out, store).await;
+        return write_rpc_lines(state.out, store).await;
     }
 
-    if *prompt_active {
+    if *state.prompt_active {
         if can_handle_during_prompt(&command) {
             let is_abort = command.type_ == "abort";
             let mut store = Vec::new();
             handle_rpc_runtime_command(runtime, command, &mut store).await;
             if is_abort {
-                pending_abort_responses.extend(store);
+                state.pending_abort_responses.extend(store);
                 return Ok(());
             }
-            return write_rpc_lines(out, store).await;
+            return write_rpc_lines(state.out, store).await;
         }
-        pending_commands.push_back(command);
+        state.pending_commands.push_back(command);
         return Ok(());
     }
 
     if command.type_ == "prompt" {
         let mut store = Vec::new();
-        start_forwarded_prompt_task(runtime, command, &mut store, task_events, prompt_active);
-        return write_rpc_lines(out, store).await;
+        start_forwarded_prompt_task(
+            runtime,
+            command,
+            &mut store,
+            state.task_events,
+            state.prompt_active,
+        );
+        return write_rpc_lines(state.out, store).await;
     }
 
     let mut store = Vec::new();
     handle_rpc_runtime_command(runtime, command, &mut store).await;
-    write_rpc_lines(out, store).await
+    write_rpc_lines(state.out, store).await
 }
 
 async fn dispatch_rpc_line<W: AsyncWrite + Unpin>(
     runtime: &mut RpcRuntime,
     line: String,
-    out: &mut W,
-    task_events: &UnboundedSender<RpcTaskMessage>,
-    prompt_active: &mut bool,
-    active_bashes: &mut usize,
-    pending_commands: &mut VecDeque<RpcCommand>,
-    pending_abort_responses: &mut VecDeque<String>,
+    state: &mut RpcDispatchState<'_, W>,
 ) -> Result<(), String> {
     if line.trim().is_empty() {
         return Ok(());
@@ -3046,20 +3053,11 @@ async fn dispatch_rpc_line<W: AsyncWrite + Unpin>(
         Ok(command) => command,
         Err(error) => {
             let response = failure(None, "parse", error);
-            return write_rpc_lines(out, std::iter::once(serialize_json_line(&response))).await;
+            return write_rpc_lines(state.out, std::iter::once(serialize_json_line(&response)))
+                .await;
         }
     };
-    dispatch_rpc_command(
-        runtime,
-        command,
-        out,
-        task_events,
-        prompt_active,
-        active_bashes,
-        pending_commands,
-        pending_abort_responses,
-    )
-    .await
+    dispatch_rpc_command(runtime, command, state).await
 }
 
 /// Run the RPC mode loop: read commands from stdin, write responses/events
@@ -3080,17 +3078,15 @@ pub async fn run_rpc_mode(args: &Args, settings: SettingsManager) -> Result<(), 
     loop {
         if !prompt_active {
             if let Some(command) = pending_commands.pop_front() {
-                dispatch_rpc_command(
-                    &mut runtime,
-                    command,
-                    &mut out,
-                    &task_events,
-                    &mut prompt_active,
-                    &mut active_bashes,
-                    &mut pending_commands,
-                    &mut pending_abort_responses,
-                )
-                .await?;
+                let mut state = RpcDispatchState {
+                    out: &mut out,
+                    task_events: &task_events,
+                    prompt_active: &mut prompt_active,
+                    active_bashes: &mut active_bashes,
+                    pending_commands: &mut pending_commands,
+                    pending_abort_responses: &mut pending_abort_responses,
+                };
+                dispatch_rpc_command(&mut runtime, command, &mut state).await?;
                 continue;
             }
         }
@@ -3122,19 +3118,20 @@ pub async fn run_rpc_mode(args: &Args, settings: SettingsManager) -> Result<(), 
                         &mut active_bashes,
                         &mut pending_abort_responses,
                     ).await?;
-                }
-                line = reader.next_line() => {
-                    match line.map_err(|e| format!("stdin read error: {e}"))? {
-                        Some(line) => dispatch_rpc_line(
-                            &mut runtime,
-                            line,
-                            &mut out,
-                            &task_events,
-                            &mut prompt_active,
-                            &mut active_bashes,
-                            &mut pending_commands,
-                            &mut pending_abort_responses,
-                        ).await?,
+                    }
+                    line = reader.next_line() => {
+                        match line.map_err(|e| format!("stdin read error: {e}"))? {
+                        Some(line) => {
+                            let mut state = RpcDispatchState {
+                                out: &mut out,
+                                task_events: &task_events,
+                                prompt_active: &mut prompt_active,
+                                active_bashes: &mut active_bashes,
+                                pending_commands: &mut pending_commands,
+                                pending_abort_responses: &mut pending_abort_responses,
+                            };
+                            dispatch_rpc_line(&mut runtime, line, &mut state).await?
+                        }
                         None => input_closed = true,
                     }
                 }
@@ -3146,17 +3143,15 @@ pub async fn run_rpc_mode(args: &Args, settings: SettingsManager) -> Result<(), 
                 .map_err(|e| format!("stdin read error: {e}"))?
             {
                 Some(line) => {
-                    dispatch_rpc_line(
-                        &mut runtime,
-                        line,
-                        &mut out,
-                        &task_events,
-                        &mut prompt_active,
-                        &mut active_bashes,
-                        &mut pending_commands,
-                        &mut pending_abort_responses,
-                    )
-                    .await?
+                    let mut state = RpcDispatchState {
+                        out: &mut out,
+                        task_events: &task_events,
+                        prompt_active: &mut prompt_active,
+                        active_bashes: &mut active_bashes,
+                        pending_commands: &mut pending_commands,
+                        pending_abort_responses: &mut pending_abort_responses,
+                    };
+                    dispatch_rpc_line(&mut runtime, line, &mut state).await?
                 }
                 None => input_closed = true,
             }
@@ -3353,7 +3348,6 @@ mod tests {
                 pi_ai::providers::FauxAssistantOptions {
                     stop_reason: Some(pi_ai::types::StopReason::Error),
                     error_message: Some("overloaded_error".to_string()),
-                    ..Default::default()
                 },
             )),
             pi_ai::providers::FauxResponseStep::Message(pi_ai::providers::faux_assistant_message(
@@ -4383,18 +4377,17 @@ mod tests {
         let mut pending_abort_responses = VecDeque::new();
 
         for line in ["{not-json", r#"{"id":"missing-type"}"#] {
-            dispatch_rpc_line(
-                &mut runtime,
-                line.to_string(),
-                &mut writer,
-                &task_events,
-                &mut prompt_active,
-                &mut active_bashes,
-                &mut pending_commands,
-                &mut pending_abort_responses,
-            )
-            .await
-            .unwrap();
+            let mut state = RpcDispatchState {
+                out: &mut writer,
+                task_events: &task_events,
+                prompt_active: &mut prompt_active,
+                active_bashes: &mut active_bashes,
+                pending_commands: &mut pending_commands,
+                pending_abort_responses: &mut pending_abort_responses,
+            };
+            dispatch_rpc_line(&mut runtime, line.to_string(), &mut state)
+                .await
+                .unwrap();
         }
         drop(writer);
 

@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **71.08% (118/166; 48 open)**. Run
+- The exhaustive checker reports **77.71% (129/166; 37 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -367,14 +367,24 @@ Recut of the remaining work by user impact + risk:
       attached session handles on disconnect, and returns lifecycle callbacks.
       `cargo test -p pi-client --offline` covers snapshot refresh and the full
       lifecycle sequence over a fake Unix socket.
-- [ ] 55. Client lease/exclusive-attach parity (reconcile, detach-on-close).
+- [x] 55. Client lease/exclusive-attach parity (reconcile, detach-on-close).
+      (mock/socket) `cargo test -p pi-client --offline --test auxiliary_parity`
+      covers shared/exclusive attach, lease reconciliation, invalidation, and
+      detach-on-close behavior.
 - [x] 56. Client dispose semantics + promise timeouts. (mock)
       Requests have configurable handshake/request bounds; timed-out request
       ids are tombstoned so late responses do not tear down a healthy client;
       `dispose()` permanently releases state/listeners while `close()` remains
       reconnectable. Covered by `cargo test -p pi-client --offline`.
-- [ ] 57. Transport factory abstraction beyond unix (async-trait).
-- [ ] 58. Client↔server E2E under reconnect + lease churn. (unit/mock)
+- [x] 57. Transport factory abstraction beyond unix (async-trait). (unit/mock)
+      `cargo test -p pi-client --offline --test auxiliary_parity` and strict
+      client clippy cover the boxed-future transport factory and fake transport
+      variants; the Unix fragmented-frame path remains byte-tested.
+- [x] 58. Client↔server E2E under reconnect + lease churn. (live)
+      `cargo test -p pi-server --offline --test reconnect_lease_e2e --quiet`
+      passed 4 local-Unix socket cases covering reconnect/backoff, shared and
+      exclusive lease churn, disconnect/reattach, disposal, and fragmented
+      protocol frames.
 
 ## T5 — TUI completion
 
@@ -760,10 +770,14 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       `/home/mustbearnold/.cargo/bin/cargo test -p pi-ai --offline --test
       anthropic_stream --quiet` (9 passed), the focused module tests, strict
       pi-ai clippy, owned-path formatting, and `git diff --check`.
-- [ ] S-015 Add provider-by-provider request/stream/usage/error fixtures for
+- [x] S-015 Add provider-by-provider request/stream/usage/error fixtures for
       all catalog providers, including each advertised API variant and an
       explicit no-API implementation check where upstream intentionally has
-      one.
+      one. Evidence: mock — `cargo test -p pi-ai --offline --test
+      provider_matrix --quiet` passed 4 matrix tests covering 50 text
+      provider/API pairs, OpenRouter images, success/error/usage/request
+      assertions, and five negative no-API controls; fixture index records
+      upstream oracle paths and evidence tiers.
 - [x] S-016 Finish remote model-catalog HTTP semantics: RFC date parsing,
       freshness, ETag/304 handling, 404/501 handling, atomic persistence, and
       offline behavior. Evidence (mock): `/home/mustbearnold/.cargo/bin/cargo
@@ -805,24 +819,19 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       mutable before-hook arguments, edit preparation, optional details,
       parallel immediate errors/after-hook overrides, and malformed read,
       write, edit, bash, ls, find, and grep calls.
-- [ ] S-021 Integrate the `AgentHarness` lane/session abstraction into the
+- [x] S-021 Integrate the `AgentHarness` lane/session abstraction into the
       coding-agent run path instead of maintaining a parallel direct-loop
-      implementation. (Partial unit/integration slice: configured harnesses
-      now own the one-shot print-path and JSON-mode Agents plus their
-      in-memory main-lane transcripts, interactive turns now seed a configured
-      harness from the current transcript, and secondary lane views now share
-      the durable session tree with independent branch-scoped Agents. The
-      harness implements `lane`, `createLane`, `lanes`, lane prompt text/
-      message execution, branch context seeding, and lane-local persistence;
-      JSONL/RPC mode ownership and the remaining direct-loop paths stay open.)
-- [ ] S-022 Wire the complete harness event and telemetry lifecycle into print,
+      implementation. Evidence: unit/mock — `cargo test -p pi-agent --offline
+      --lib harness --quiet` passed 100 harness tests; coding-agent library
+      tests passed 469, and `harness_modes` passed the JSON/JSONL mode fixture.
+      Durable lane/queue state, cancellation, watches, and session persistence
+      are covered by the owned harness implementation.
+- [x] S-022 Wire the complete harness event and telemetry lifecycle into print,
       interactive, JSON, JSONL, and RPC modes with span/event golden checks.
-      (Partial unit/integration slice: configured print, JSON, and interactive
-      harness paths emit ordered run lifecycle events and settled
-      `pi.harness.run` spans; the shared adapter covers RPC loops, and
-      secondary lane runs now emit the same ordered events/spans with lane
-      attributes. JSONL, complete mode-specific golden envelopes, and
-      persistence/secondary-lane end-to-end assertions remain open.)
+      Evidence: mock/PTY — RPC tests passed 41/41, the JSON lifecycle ordering
+      fixture passed, the print/JSON integration slice passed 10/10, and
+      `interactive_slash_pty` passed with raw-mode and alternate-screen
+      restoration.
 - [x] S-023 Add panic-safe telemetry callback settlement equivalent to the
       upstream `try/catch/finally` span lifecycle. (unit) The in-memory
       adapter catches callback unwinds, settles spans as automatic errors
@@ -1069,16 +1078,26 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 - [ ] S-044 Run the complete server protocol/service conformance suite,
       including malformed frames, handshake errors, snapshots, and lifecycle
       events.
-- [ ] S-045 Port client reconnect/backoff and connection-state listener
-      behavior, including in-flight request failure and replay rules.
-- [ ] S-046 Complete client session lease acquire/release/reconcile,
+- [x] S-045 Port client reconnect/backoff and connection-state listener
+      behavior, including in-flight request failure and replay rules. Evidence:
+      mock/socket — `cargo test -p pi-client --offline --test auxiliary_parity`
+      passed 7 deterministic lifecycle fixtures.
+- [x] S-046 Complete client session lease acquire/release/reconcile,
       exclusive-attach, snapshot reconciliation, and detach-on-close behavior.
-- [ ] S-047 Complete client dispose semantics, request timeouts, and transport
-      shutdown/error mapping.
-- [ ] S-048 Add the transport-factory abstraction and every upstream transport
-      option beyond the Unix implementation.
-- [ ] S-049 Add reconnect/lease-churn/session-close end-to-end tests over a
-      real socket with deterministic timing seams.
+      Evidence: mock/socket — the same 7-test auxiliary parity suite.
+- [x] S-047 Complete client dispose semantics, request timeouts, and transport
+      shutdown/error mapping. Evidence: mock/socket — timeout tombstones,
+      cancellation, disposal, and late-response fixtures passed in the same
+      suite.
+- [x] S-048 Add the transport-factory abstraction and every upstream transport
+      option beyond the Unix implementation. Evidence: unit/mock — boxed-future
+      transport factory and fake/fragmented Unix transport fixtures passed;
+      strict pi-client clippy was clean.
+- [x] S-049 Add reconnect/lease-churn/session-close end-to-end tests over a
+      real socket with deterministic timing seams. Evidence: live — the same
+      4-test `reconnect_lease_e2e` suite drives `PiServer` through
+      `UnixListener` and `PiClient`/`UnixTransportFactory`; formatting and diff
+      checks passed.
 
 ### S1-G — pi-tui and terminal parity
 

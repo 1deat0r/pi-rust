@@ -21,6 +21,8 @@ pub struct SkillDiagnostic {
     pub path: String,
 }
 
+pub type SourcedSkills<TSource> = (Vec<(Skill, TSource)>, Vec<(SkillDiagnostic, TSource)>);
+
 /// Load skills from one or more directories, recursively. Missing input
 /// directories are skipped; invalid declared skill files are diagnostics.
 pub fn load_skills(cwd: &str, dirs: &[String]) -> (Vec<Skill>, Vec<SkillDiagnostic>) {
@@ -56,7 +58,7 @@ pub fn load_skills(cwd: &str, dirs: &[String]) -> (Vec<Skill>, Vec<SkillDiagnost
 pub fn load_sourced_skills<TSource: Clone>(
     cwd: &str,
     inputs: &[(String, TSource)],
-) -> (Vec<(Skill, TSource)>, Vec<(SkillDiagnostic, TSource)>) {
+) -> SourcedSkills<TSource> {
     let mut skills = Vec::new();
     let mut diagnostics = Vec::new();
     for (path, source) in inputs {

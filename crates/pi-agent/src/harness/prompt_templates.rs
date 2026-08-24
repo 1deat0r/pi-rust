@@ -16,6 +16,11 @@ pub struct PromptTemplateDiagnostic {
     pub path: String,
 }
 
+pub type SourcedPromptTemplates<TSource> = (
+    Vec<(PromptTemplate, TSource)>,
+    Vec<(PromptTemplateDiagnostic, TSource)>,
+);
+
 /// Load prompt templates from one or more paths (directories load direct
 /// `.md` children non-recursively; files load explicit `.md` files). Missing
 /// paths and non-markdown files are skipped; read/parse failures are returned
@@ -58,10 +63,7 @@ pub fn load_prompt_templates(
 pub fn load_sourced_prompt_templates<TSource: Clone>(
     cwd: &str,
     inputs: &[(String, TSource)],
-) -> (
-    Vec<(PromptTemplate, TSource)>,
-    Vec<(PromptTemplateDiagnostic, TSource)>,
-) {
+) -> SourcedPromptTemplates<TSource> {
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
     for (path, source) in inputs {

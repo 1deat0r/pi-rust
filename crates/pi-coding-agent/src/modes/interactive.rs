@@ -28,7 +28,7 @@ use crate::interactive::slash::SlashKind;
 use crate::interactive::{Modal, SubmitAction};
 
 use pi_tui::components::{Editor, Markdown, Text};
-use pi_tui::keys::parse_key;
+use pi_tui::keys::{parse_key, TuiKey};
 
 use pi_tui::terminal::TerminalBackend;
 use pi_tui::tui::{Component, SharedComponent, Tree};
@@ -62,12 +62,44 @@ struct InteractiveRuntime {
     cache_entries: Vec<Value>,
 }
 
+/// Own raw/alternate-screen cleanup for every exit after the TUI activates.
+/// The explicit cleanup at the normal loop boundary remains useful for prompt
+/// handoff, while this guard covers startup failures, input errors, and early
+/// returns without leaving the parent shell in raw mode.
+struct InteractiveTerminalGuard {
+    terminal: Arc<Mutex<TerminalBackend>>,
+}
+
+impl Drop for InteractiveTerminalGuard {
+    fn drop(&mut self) {
+        let mut terminal = match self.terminal.lock() {
+            Ok(terminal) => terminal,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let _ = terminal.leave_raw();
+    }
+}
+
+fn should_exit_on_key(key: &TuiKey, editor_text: &str) -> bool {
+    key.ctrl && key.base == "d" && editor_text.is_empty()
+}
+
+fn resumable_sessions(
+    sessions: Vec<pi_agent::session::types::SessionMetadata>,
+    current_id: &str,
+) -> Vec<pi_agent::session::types::SessionMetadata> {
+    sessions
+        .into_iter()
+        .filter(|session| session.id != current_id)
+        .collect()
+}
+
 /// Stream a prompt through the agent loop, observing raw events.
 async fn stream_turn(
     runtime: &mut InteractiveRuntime,
     message: String,
     on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync>,
-) -> Vec<pi_agent::types::AgentMessage> {
+) -> Result<Vec<pi_agent::types::AgentMessage>, String> {
     let prompt = pi_agent::agent::user_text_prompt(message.clone(), pi_ai::types::now_ms());
     runtime.messages.push(prompt.clone());
     let tools: Vec<pi_agent::tools::AgentTool> = if runtime.tools_enabled {
@@ -134,20 +166,20 @@ async fn stream_turn(
     options.system_prompt = runtime.system_prompt.clone();
     options.block_images = runtime.block_images;
     options.tools = Some(tools.iter().map(HarnessTool::from_agent_tool).collect());
-    let Ok((mut harness, _suspended)) = AgentHarness::create(options).await else {
-        return Vec::new();
-    };
+    let (mut harness, _suspended) = AgentHarness::create(options)
+        .await
+        .map_err(|error| error.to_string())?;
     if harness
         .set_agent_messages(runtime.messages[..runtime.messages.len() - 1].to_vec())
         .await
         .is_err()
     {
-        return Vec::new();
+        return Err("failed to seed interactive harness transcript".to_string());
     }
-    let Ok((mut new_messages, rich_events)) = harness.run_prompt_with_events(vec![prompt]).await
-    else {
-        return Vec::new();
-    };
+    let (mut new_messages, rich_events) = harness
+        .run_prompt_with_events(vec![prompt])
+        .await
+        .map_err(|error| error.to_string())?;
     for event in rich_events {
         if let pi_agent::rich_agent::RichAgentEvent::MessageUpdate {
             mut assistant_message_event,
@@ -174,10 +206,12 @@ async fn stream_turn(
             );
         }
     }
+    persist_messages_checked(&mut runtime.session, &new_messages).await?;
     for m in new_messages.iter().skip(1) {
         runtime.messages.push(m.clone());
     }
-    new_messages
+    runtime.persisted_until = runtime.messages.len();
+    Ok(new_messages)
 }
 
 /// Run the shared interactive compaction path. Automatic compaction observes
@@ -294,7 +328,7 @@ async fn maybe_auto_compact(runtime: &mut InteractiveRuntime) -> Result<bool, St
 
 /// Short cwd for banners (home-relative like the footer).
 fn meta_short_cwd(cwd: &str) -> String {
-    if let Some(home) = std::env::var("HOME").ok() {
+    if let Ok(home) = std::env::var("HOME") {
         if let Some(rest) = cwd.strip_prefix(&home) {
             if rest.is_empty() {
                 return "~".to_string();
@@ -541,12 +575,12 @@ fn session_status(runtime: &InteractiveRuntime) -> String {
 }
 
 /// Append in-memory messages to a session's main lane (idempotent per call).
-async fn persist_messages(
+async fn persist_messages_checked(
     session: &mut JsonlSession<pi_agent::fs::StdFileSystem>,
     messages: &[pi_agent::types::AgentMessage],
-) {
+) -> Result<(), String> {
     for message in messages {
-        let _ = session
+        session
             .append_entry(
                 EntryNoStats::Message {
                     id: format!("m-{}", pi_agent::session::new_id()),
@@ -555,8 +589,17 @@ async fn persist_messages(
                 },
                 "main",
             )
-            .await;
+            .await
+            .map_err(|error| format!("persist interactive turn: {error}"))?;
     }
+    Ok(())
+}
+
+async fn persist_messages(
+    session: &mut JsonlSession<pi_agent::fs::StdFileSystem>,
+    messages: &[pi_agent::types::AgentMessage],
+) {
+    let _ = persist_messages_checked(session, messages).await;
 }
 
 /// Compact text for a message entry (upstream truncates in tree labels).
@@ -924,7 +967,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             .list(Some(&cwd))
             .await
             .map_err(|e| format!("list sessions: {e}"))?;
-        sessions.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.modified_at));
         let source = sessions.into_iter().next().ok_or_else(|| {
             if args.resume {
                 "no sessions found to resume in this directory".to_string()
@@ -1023,10 +1066,15 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     }
 
     // Terminal + components.
-    let mut terminal = TerminalBackend::new();
+    let terminal = Arc::new(Mutex::new(TerminalBackend::new()));
     terminal
+        .lock()
+        .unwrap()
         .enter_raw()
         .map_err(|e| format!("enter raw: {e}"))?;
+    let _terminal_guard = InteractiveTerminalGuard {
+        terminal: terminal.clone(),
+    };
 
     it::tui_theme::load_theme(
         settings
@@ -1040,7 +1088,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         .unwrap_or_else(|| "off".to_string());
 
     let mut editor = it::create_editor(cwd.clone());
-    editor.set_terminal_rows(terminal.height());
+    editor.set_terminal_rows(terminal.lock().unwrap().height());
     let editor: Arc<Mutex<Editor>> = Arc::new(Mutex::new(editor));
 
     let transcript_md: Arc<Mutex<Markdown>> = Arc::new(Mutex::new(Markdown::new(
@@ -1064,7 +1112,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         runtime.persisted_until = runtime.messages.len();
     }
 
-    let mut tree = Tree::new(Arc::new(Mutex::new(terminal)));
+    let mut tree = Tree::new(terminal);
 
     let footer_text: Arc<Mutex<Text>> = Arc::new(Mutex::new(Text::new(String::new(), 0, 0, None)));
 
@@ -1165,6 +1213,10 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 }
                 return Ok(());
             }
+            let editor_text = editor.lock().unwrap().get_text();
+            if should_exit_on_key(&key, &editor_text) {
+                return Ok(());
+            }
 
             // Modal input handling.
             if let Some(active_modal) = &mut modal {
@@ -1226,53 +1278,59 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         }
                     }
                     Modal::Resume(sel, sessions) => {
-                        let mut guard = sel.lock().unwrap();
-                        match guard.handle(&key) {
-                            it::selectors::SelectorAction::Select(Some(idx)) if idx < guard.count() => {
-                                if let Some(item) = guard.selected_item() {
-                                    if let Some(meta) = sessions.iter().find(|s| s.id == item.value) {
-                                        // Refuse to resume a session whose stored cwd
-                                        // no longer exists (upstream session-cwd.ts).
-                                        let cwd_now = std::env::current_dir()
-                                            .map(|p| p.to_string_lossy().into_owned())
-                                            .unwrap_or_default();
-                                        let issue = crate::core::session_cwd::get_missing_session_cwd_issue(
-                                            Some(&meta.metadata.path),
-                                            &meta.metadata.cwd,
-                                            &cwd_now,
-                                        );
-                                        if let Some(issue) = issue {
-                                            status_banner = crate::core::session_cwd::format_missing_session_cwd_error(&issue);
-                                        } else {
-                                            match runtime.repo.open(&meta.metadata).await {
-                                                Ok(session) => {
-                                                    runtime.session = session;
-                                                    runtime.session_id = meta.id.clone();
-                                                    runtime.session_name = None;
-                                                    let (messages, cache_entries) =
-                                                        rehydrate_transcript(&runtime, &transcript_md, hide_thinking).await;
-                                                    runtime.messages = messages;
-                                                    runtime.cache_entries = cache_entries;
-                                                    runtime.persisted_until = runtime.messages.len();
-                                                    status_banner = format!(
-                                                        "resumed session {} ({} prior messages)",
-                                                        meta.id.get(..8).unwrap_or(&meta.id),
-                                                        runtime.messages.len()
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    status_banner = format!("resume failed: {e}");
-                                                }
-                                            }
+                        let (close_resume, selected_session_id) = {
+                            let mut guard = sel.lock().unwrap();
+                            match guard.handle(&key) {
+                                it::selectors::SelectorAction::Select(Some(idx))
+                                    if idx < guard.count() =>
+                                {
+                                    (true, guard.selected_item().map(|item| item.value))
+                                }
+                                it::selectors::SelectorAction::Cancel
+                                | it::selectors::SelectorAction::Select(_) => (true, None),
+                                _ => (false, None),
+                            }
+                        };
+                        if let Some(session_id) = selected_session_id {
+                            if let Some(meta) = sessions.iter().find(|s| s.id == session_id) {
+                                // Refuse to resume a session whose stored cwd
+                                // no longer exists (upstream session-cwd.ts).
+                                let cwd_now = std::env::current_dir()
+                                    .map(|p| p.to_string_lossy().into_owned())
+                                    .unwrap_or_default();
+                                let issue = crate::core::session_cwd::get_missing_session_cwd_issue(
+                                    Some(&meta.metadata.path),
+                                    &meta.metadata.cwd,
+                                    &cwd_now,
+                                );
+                                if let Some(issue) = issue {
+                                    status_banner = crate::core::session_cwd::format_missing_session_cwd_error(&issue);
+                                } else {
+                                    match runtime.repo.open(&meta.metadata).await {
+                                        Ok(session) => {
+                                            runtime.session = session;
+                                            runtime.session_id = meta.id.clone();
+                                            runtime.session_name = None;
+                                            let (messages, cache_entries) =
+                                                rehydrate_transcript(&runtime, &transcript_md, hide_thinking).await;
+                                            runtime.messages = messages;
+                                            runtime.cache_entries = cache_entries;
+                                            runtime.persisted_until = runtime.messages.len();
+                                            status_banner = format!(
+                                                "resumed session {} ({} prior messages)",
+                                                meta.id.get(..8).unwrap_or(&meta.id),
+                                                runtime.messages.len()
+                                            );
+                                        }
+                                        Err(e) => {
+                                            status_banner = format!("resume failed: {e}");
                                         }
                                     }
                                 }
-                                close_modal = true;
                             }
-                            it::selectors::SelectorAction::Cancel | it::selectors::SelectorAction::Select(_) => {
-                                close_modal = true;
-                            }
-                            _ => {}
+                        }
+                        if close_resume {
+                            close_modal = true;
                         }
                     }
                     Modal::Settings(panel) => {
@@ -1349,7 +1407,10 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 }
                             })
                         };
-                        let _ = stream_turn(&mut runtime, prompt, on_event).await;
+                        let turn_result = stream_turn(&mut runtime, prompt, on_event).await;
+                        if let Err(error) = turn_result {
+                            status_banner = error;
+                        }
                         let new_messages = runtime.messages[message_start..].to_vec();
                         append_cache_entries_from_messages(&mut runtime.cache_entries, &new_messages);
                         streaming = false;
@@ -1470,16 +1531,21 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                             Ok(sessions) if !sessions.is_empty() => {
                                                 // Exclude the current session so the picker offers
                                                 // other sessions (newest-first default).
-                                                let sessions: Vec<_> = sessions
-                                                    .into_iter()
-                                                    .filter(|s| s.id != runtime.session_id)
-                                                    .collect();
-                                                let picker = it::session_picker_items(sessions);
-                                                let items = it::picker_select_items(&picker);
-                                                modal = Some(Modal::Resume(
-                                                    Arc::new(Mutex::new(ListSelector::new(items, 10))),
-                                                    picker,
-                                                ));
+                                                let sessions = resumable_sessions(sessions, &runtime.session_id);
+                                                if sessions.is_empty() {
+                                                    status_banner =
+                                                        "no sessions found to resume in this directory"
+                                                            .to_string();
+                                                } else {
+                                                    let picker = it::session_picker_items(sessions);
+                                                    let items = it::picker_select_items(&picker);
+                                                    modal = Some(Modal::Resume(
+                                                        Arc::new(Mutex::new(ListSelector::new(
+                                                            items, 10,
+                                                        ))),
+                                                        picker,
+                                                    ));
+                                                }
                                             }
                                             Ok(_) => {
                                                 status_banner =
@@ -1728,19 +1794,19 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     // clipboard binary the text is surfaced in the banner instead.
                                     let mut text = String::new();
                                     for message in runtime.messages.iter().rev() {
-                                        match message {
-                                            pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(a)) => {
-                                                for block in a.content() {
-                                                    if let pi_ai::types::ContentBlock::Text { text: t, .. } = block {
-                                                        if !t.is_empty() {
-                                                            text = t.clone();
-                                                            break;
-                                                        }
+                                        if let pi_agent::types::AgentMessage::Core(
+                                            pi_ai::types::Message::Assistant(a),
+                                        ) = message
+                                        {
+                                            for block in a.content() {
+                                                if let pi_ai::types::ContentBlock::Text { text: t, .. } = block {
+                                                    if !t.is_empty() {
+                                                        text = t.clone();
+                                                        break;
                                                     }
                                                 }
-                                                break;
                                             }
-                                            _ => {}
+                                            break;
                                         }
                                     }
                                     if text.is_empty() {
@@ -1921,15 +1987,31 @@ mod tests {
     use pi_agent::session::state::ForkOptions;
     use pi_agent::session::JsonlSessionRepo;
 
+    #[test]
+    fn ctrl_d_exits_only_for_an_empty_editor() {
+        let ctrl_d = parse_key("\x04");
+        assert!(should_exit_on_key(&ctrl_d, ""));
+        assert!(!should_exit_on_key(&ctrl_d, "draft"));
+        assert!(!should_exit_on_key(&parse_key("ctrl+c"), ""));
+    }
+
+    #[tokio::test]
+    async fn resume_candidates_exclude_the_current_session() {
+        let root =
+            std::env::temp_dir().join(format!("pi-resume-empty-selector-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let runtime = test_runtime(&root).await;
+        let sessions = runtime.repo.list(Some(&runtime.cwd)).await.unwrap();
+        assert!(resumable_sessions(sessions, &runtime.session_id).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Serializes tests that mutate the process-global PATH /
     /// PI_SHARE_VIEWER_URL so parallel executions cannot race on the env.
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    fn env_lock() -> &'static tokio::sync::Mutex<()> {
         use std::sync::OnceLock;
-        static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-        // Poisoning-resistant: a panicked sibling test must not cascade.
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     /// Restores PATH / PI_SHARE_VIEWER_URL on drop. `replace_path` swaps PATH
@@ -2041,7 +2123,9 @@ mod tests {
             }
         });
 
-        let new_messages = stream_turn(&mut runtime, "hello".to_string(), on_event).await;
+        let new_messages = stream_turn(&mut runtime, "hello".to_string(), on_event)
+            .await
+            .unwrap();
 
         assert_eq!(new_messages.len(), 2, "prompt plus assistant response");
         assert_eq!(runtime.messages.len(), 2);
@@ -2057,6 +2141,16 @@ mod tests {
             )
         }));
         assert!(!deltas.lock().unwrap().is_empty());
+        let entries = runtime
+            .session
+            .find_entries(&pi_agent::session::state::EntryQuery {
+                order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 2, "a completed turn is durable immediately");
+        assert_eq!(runtime.persisted_until, runtime.messages.len());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2086,7 +2180,7 @@ mod tests {
     async fn share_creates_secret_gist_and_prints_viewer_url() {
         let root = std::env::temp_dir().join(format!("pi-share-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
-        let _env = env_lock();
+        let _env = env_lock().lock().await;
         let runtime = test_runtime(&root).await;
         install_fake_gh(
             &root.join("bin"),
@@ -2108,7 +2202,7 @@ mod tests {
     async fn share_requires_gh_auth() {
         let root = std::env::temp_dir().join(format!("pi-share-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
-        let _env = env_lock();
+        let _env = env_lock().lock().await;
         let runtime = test_runtime(&root).await;
         install_fake_gh(&root.join("bin"), 1, None);
         let _guard = EnvGuard::install(&root.join("bin"), "https://pi.dev/session/");
@@ -2124,7 +2218,7 @@ mod tests {
     async fn share_reports_missing_gh() {
         let root = std::env::temp_dir().join(format!("pi-share-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
-        let _env = env_lock();
+        let _env = env_lock().lock().await;
         let runtime = test_runtime(&root).await;
         // PATH pointing at an empty dir only: no gh binary anywhere.
         let empty = root.join("empty-bin");
@@ -2142,7 +2236,7 @@ mod tests {
     async fn share_dry_run_skips_gh() {
         let root = std::env::temp_dir().join(format!("pi-share-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
-        let _env = env_lock();
+        let _env = env_lock().lock().await;
         let runtime = test_runtime(&root).await;
         let msg = run_share(&runtime, true).await.unwrap();
         assert_eq!(msg, "PI_SHARE_DRY_RUN=1: /share skipped");
@@ -2150,7 +2244,7 @@ mod tests {
     }
     #[tokio::test]
     async fn auto_compact_replaces_context_when_over_threshold() {
-        let _env = env_lock();
+        let _env = env_lock().lock().await;
         let root = std::env::temp_dir().join(format!("pi-compact-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let mut runtime = test_runtime(&root).await;
@@ -2241,7 +2335,7 @@ mod tests {
             .expect("auto-compact");
         assert!(compacted, "compaction should have run");
         // The context is now the summary message + retained tail.
-        assert!(runtime.messages.len() >= 1, "context replaced");
+        assert!(!runtime.messages.is_empty(), "context replaced");
         let first = &runtime.messages[0];
         let text: String = match first {
             pi_agent::types::AgentMessage::Core(pi_ai::types::Message::User(u)) => {
@@ -2267,7 +2361,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_compact_skips_when_under_threshold() {
-        let _env = env_lock();
+        let _env = env_lock().lock().await;
         let root = std::env::temp_dir().join(format!("pi-compact-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let mut runtime = test_runtime(&root).await;
@@ -2286,7 +2380,7 @@ mod tests {
 
     #[tokio::test]
     async fn manual_compact_is_a_noop_without_session_history() {
-        let _env = env_lock();
+        let _env = env_lock().lock().await;
         let root = std::env::temp_dir().join(format!("pi-compact-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let mut runtime = test_runtime(&root).await;

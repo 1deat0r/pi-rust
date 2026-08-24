@@ -27,7 +27,7 @@
 //!   (`HarnessNotImplemented("create.restore")`) exactly like upstream.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
 use tokio::sync::Mutex as AsyncMutex;
@@ -54,7 +54,7 @@ use crate::harness::result::TaggedError;
 use crate::rich_agent::Agent;
 use crate::session::session::Session;
 use crate::session::state::{BranchBounds, EntryOrder, EntryQuery, RecordQuery};
-use crate::session::types::{Entry, EntryNoStats};
+use crate::session::types::{Entry, EntryNoStats, NewRecord};
 use crate::tools::{AgentTool, ToolExecuteFn, ToolPrepareArgumentsFn};
 use crate::types::{AgentHarnessResources, AgentMessage, SessionError};
 use pi_ai::types::{ModelThinkingLevel, Tool};
@@ -1094,6 +1094,8 @@ pub struct AgentHarness<F: FileSystem> {
     tool_execution: Option<ToolExecution>,
     telemetry_context: HarnessTelemetryContext,
     event_bus: Arc<std::sync::Mutex<HarnessEventBus>>,
+    queue_state: Arc<Mutex<BTreeMap<String, LaneQueues>>>,
+    active_operations: Arc<Mutex<BTreeMap<String, OperationInfo>>>,
     pub hooks: UnavailableRegistry,
     pub events: UnavailableRegistry,
     closed: Arc<RwLock<bool>>,
@@ -1121,6 +1123,38 @@ fn build_harness_agent(
         }
         Arc::new(agent)
     })
+}
+
+fn lifecycle_outcome(messages: &[AgentMessage]) -> EventOutcome {
+    messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            AgentMessage::Core(pi_ai::types::Message::Assistant(assistant)) => {
+                Some(match assistant.stop_reason() {
+                    Some(pi_ai::types::StopReason::Aborted) => EventOutcome::Aborted,
+                    Some(pi_ai::types::StopReason::Error) => EventOutcome::Failed,
+                    _ => EventOutcome::Completed,
+                })
+            }
+            _ => None,
+        })
+        .unwrap_or(EventOutcome::Completed)
+}
+
+fn lifecycle_error_message(messages: &[AgentMessage]) -> String {
+    messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            AgentMessage::Core(pi_ai::types::Message::Assistant(assistant))
+                if assistant.stop_reason() == Some(pi_ai::types::StopReason::Error) =>
+            {
+                assistant.error_message().map(str::to_string)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| "provider request failed".to_string())
 }
 
 impl<F: FileSystem + 'static> std::fmt::Debug for AgentHarness<F> {
@@ -1216,6 +1250,11 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
             tool_execution: options.tool_execution,
             telemetry_context,
             event_bus: Arc::new(std::sync::Mutex::new(HarnessEventBus::new())),
+            queue_state: Arc::new(Mutex::new(BTreeMap::from([(
+                "main".to_string(),
+                LaneQueues::default(),
+            )]))),
+            active_operations: Arc::new(Mutex::new(BTreeMap::new())),
             hooks: UnavailableRegistry::new("hooks.on", closed.clone()),
             events: UnavailableRegistry::new("events.on", closed.clone()),
             closed,
@@ -1297,6 +1336,14 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
         };
         let run_id = crate::session::new_id();
         let session_id = self.session.lock().await.get_metadata().await.id;
+        self.active_operations.lock().unwrap().insert(
+            self.name.clone(),
+            OperationInfo {
+                id: run_id.clone(),
+                kind: OperationKind::Run,
+                status: OperationStatus::Running,
+            },
+        );
         self.event_bus
             .lock()
             .unwrap()
@@ -1357,19 +1404,50 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
                                     message: error.to_string(),
                                 }),
                             });
+                            span.set_attributes(BTreeMap::from([(
+                                "pi.operation.outcome".to_string(),
+                                serde_json::json!(EventOutcome::Failed.as_str()),
+                            )]));
+                            span.add_event(
+                                "run_end",
+                                Some(BTreeMap::from([(
+                                    "pi.operation.outcome".to_string(),
+                                    serde_json::json!(EventOutcome::Failed.as_str()),
+                                )])),
+                            );
                             return Err(HarnessError::from(error));
                         }
                     }
+                    let outcome = lifecycle_outcome(&messages);
+                    if outcome == EventOutcome::Failed {
+                        span.set_status(SpanStatus::Error {
+                            error: Some(SpanError {
+                                name: "ProviderError".to_string(),
+                                message: lifecycle_error_message(&messages),
+                            }),
+                        });
+                    }
                     span.set_attributes(BTreeMap::from([(
                         "pi.operation.outcome".to_string(),
-                        serde_json::json!("completed"),
+                        serde_json::json!(outcome.as_str()),
                     )]));
-                    span.add_event("run_end", None);
+                    span.add_event(
+                        "run_end",
+                        Some(BTreeMap::from([(
+                            "pi.operation.outcome".to_string(),
+                            serde_json::json!(outcome.as_str()),
+                        )])),
+                    );
                     Ok((messages, events))
                 },
             )
             .await;
 
+        let outcome = match &run_result {
+            Ok((messages, _)) => lifecycle_outcome(messages),
+            Err(_) => EventOutcome::Failed,
+        };
+        self.active_operations.lock().unwrap().remove(&self.name);
         let leaf_id = self.lane_leaf_id().await.ok().flatten().unwrap_or_default();
         self.event_bus
             .lock()
@@ -1377,11 +1455,7 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
             .emit(&HarnessEvent::RunEnd(RunEndEvent {
                 lane: self.name.clone(),
                 run_id: run_id.clone(),
-                outcome: if run_result.is_ok() {
-                    EventOutcome::Completed
-                } else {
-                    EventOutcome::Failed
-                },
+                outcome,
                 leaf_id,
             }));
         run_result.map(|(messages, events)| (run_id, messages, events))
@@ -1447,6 +1521,11 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
     }
 
     async fn make_lane(&self, name: &str) -> Result<AgentHarness<F>, HarnessError> {
+        self.queue_state
+            .lock()
+            .unwrap()
+            .entry(name.to_string())
+            .or_default();
         let agent = if name == self.name {
             self.agent.clone()
         } else {
@@ -1479,6 +1558,8 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
             tool_execution: self.tool_execution,
             telemetry_context: self.telemetry_context.clone(),
             event_bus: self.event_bus.clone(),
+            queue_state: self.queue_state.clone(),
+            active_operations: self.active_operations.clone(),
             hooks: UnavailableRegistry::new("hooks.on", self.closed.clone()),
             events: UnavailableRegistry::new("events.on", self.closed.clone()),
             closed: self.closed.clone(),
@@ -1551,6 +1632,7 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
         if self.is_closed() {
             return Err(HarnessError::closed());
         }
+        let operations = self.active_operations.lock().unwrap().clone();
         Ok(self
             .session
             .lock()
@@ -1559,11 +1641,111 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
             .await
             .into_iter()
             .map(|lane| LaneInfo {
+                operation: operations.get(&lane.lane).cloned(),
                 name: lane.lane,
                 leaf_id: lane.leaf_id,
-                operation: None,
             })
             .collect())
+    }
+
+    async fn enqueue_message(&self, queue: &str, message: &AgentMessage) -> QueueResult {
+        if self.is_closed() {
+            return Err(HarnessError::closed());
+        }
+        let operation = self
+            .active_operations
+            .lock()
+            .unwrap()
+            .get(&self.name)
+            .cloned()
+            .ok_or_else(|| HarnessError::no_active_run(&self.name))?;
+        let entry_id = crate::session::new_id();
+        let target = serde_json::to_value(EntryNoStats::Message {
+            id: entry_id.clone(),
+            message: message.clone(),
+            terminate: None,
+        })
+        .map_err(|error| HarnessError::fault(format!("serialize queue item: {error}")))?;
+        self.session
+            .lock()
+            .await
+            .append_record(NewRecord::QueueEnqueued {
+                id: crate::session::new_id(),
+                lane: self.name.clone(),
+                queue: queue.to_string(),
+                run_id: operation.id,
+                target,
+            })
+            .await
+            .map_err(HarnessError::from)?;
+
+        let mut queues = self.queue_state.lock().unwrap();
+        let lane_queues = queues.entry(self.name.clone()).or_default();
+        let item = QueuedItem {
+            entry_id: entry_id.clone(),
+            message: message.clone(),
+        };
+        match queue {
+            "steer" => lane_queues.steer.push(item),
+            "followUp" => lane_queues.follow_up.push(item),
+            "nextRun" => lane_queues.next_run.push(item),
+            _ => unreachable!("internal queue name: {queue}"),
+        }
+        Ok(entry_id)
+    }
+
+    async fn cancel_queue_item(&self, entry_id: &str) -> CancelQueuedResult {
+        if self.is_closed() {
+            return Err(HarnessError::closed());
+        }
+        let removed = {
+            let mut queues = self.queue_state.lock().unwrap();
+            let lane_queues = queues.entry(self.name.clone()).or_default();
+            let mut removed = None;
+            for (queue, items) in [
+                ("steer", &mut lane_queues.steer),
+                ("followUp", &mut lane_queues.follow_up),
+                ("nextRun", &mut lane_queues.next_run),
+            ] {
+                if let Some(index) = items.iter().position(|item| item.entry_id == entry_id) {
+                    removed = Some((queue, items.remove(index)));
+                    break;
+                }
+            }
+            removed
+        };
+        let Some((queue, item)) = removed else {
+            return Err(HarnessError::unknown_queue_item(&self.name, entry_id));
+        };
+        let run_id = self
+            .active_operations
+            .lock()
+            .unwrap()
+            .get(&self.name)
+            .map(|operation| operation.id.clone());
+        let record = self
+            .session
+            .lock()
+            .await
+            .append_record(NewRecord::QueueCancelled {
+                id: crate::session::new_id(),
+                lane: self.name.clone(),
+                run_id,
+                entry_id: entry_id.to_string(),
+            })
+            .await;
+        if let Err(error) = record {
+            let mut queues = self.queue_state.lock().unwrap();
+            let lane_queues = queues.entry(self.name.clone()).or_default();
+            match queue {
+                "steer" => lane_queues.steer.push(item),
+                "followUp" => lane_queues.follow_up.push(item),
+                "nextRun" => lane_queues.next_run.push(item),
+                _ => unreachable!("internal queue name: {queue}"),
+            }
+            return Err(HarnessError::from(error));
+        }
+        Ok(CancelQueuedOutcome::Cancelled)
     }
 
     fn prompt_with_images(text: &str, images: &[ImageContent]) -> AgentMessage {
@@ -1687,50 +1869,80 @@ impl<F: FileSystem + 'static> AgentLane for AgentHarness<F> {
 
     async fn steer_text(
         &self,
-        _text: &str,
-        _images: &[ImageContent],
+        text: &str,
+        images: &[ImageContent],
     ) -> Result<String, HarnessError> {
-        self.unavailable("steer")
+        self.enqueue_message("steer", &Self::prompt_with_images(text, images))
+            .await
     }
 
-    async fn steer_message(&self, _message: &AgentMessage) -> Result<String, HarnessError> {
-        self.unavailable("steer")
+    async fn steer_message(&self, message: &AgentMessage) -> Result<String, HarnessError> {
+        self.enqueue_message("steer", message).await
     }
 
     async fn follow_up_text(
         &self,
-        _text: &str,
-        _images: &[ImageContent],
+        text: &str,
+        images: &[ImageContent],
     ) -> Result<String, HarnessError> {
-        self.unavailable("followUp")
+        self.enqueue_message("followUp", &Self::prompt_with_images(text, images))
+            .await
     }
 
-    async fn follow_up_message(&self, _message: &AgentMessage) -> Result<String, HarnessError> {
-        self.unavailable("followUp")
+    async fn follow_up_message(&self, message: &AgentMessage) -> Result<String, HarnessError> {
+        self.enqueue_message("followUp", message).await
     }
 
     async fn next_run_text(
         &self,
-        _text: &str,
-        _images: &[ImageContent],
+        text: &str,
+        images: &[ImageContent],
     ) -> Result<String, HarnessError> {
-        self.unavailable("nextRun")
+        self.enqueue_message("nextRun", &Self::prompt_with_images(text, images))
+            .await
     }
 
-    async fn next_run_message(&self, _message: &AgentMessage) -> Result<String, HarnessError> {
-        self.unavailable("nextRun")
+    async fn next_run_message(&self, message: &AgentMessage) -> Result<String, HarnessError> {
+        self.enqueue_message("nextRun", message).await
     }
 
-    async fn cancel_queued(&self, _entry_id: &str) -> Result<CancelQueuedOutcome, HarnessError> {
-        self.unavailable("cancelQueued")
+    async fn cancel_queued(&self, entry_id: &str) -> Result<CancelQueuedOutcome, HarnessError> {
+        self.cancel_queue_item(entry_id).await
     }
 
     async fn record_usage(
         &self,
-        _usage: &Usage,
-        _options: Option<&RecordUsageOptions>,
+        usage: &Usage,
+        options: Option<&RecordUsageOptions>,
     ) -> Result<(), HarnessError> {
-        self.unavailable("recordUsage")
+        if self.is_closed() {
+            return Err(HarnessError::closed());
+        }
+        let options = options.cloned().unwrap_or_default();
+        let run_id = self
+            .active_operations
+            .lock()
+            .unwrap()
+            .get(&self.name)
+            .map(|operation| operation.id.clone());
+        self.session
+            .lock()
+            .await
+            .append_record(NewRecord::Usage {
+                id: crate::session::new_id(),
+                lane: self.name.clone(),
+                cause: "manual".to_string(),
+                run_id,
+                entry_id: options.entry_id,
+                attempt: None,
+                stop_reason: None,
+                tool_call_id: None,
+                details: options.details,
+                usage: usage.clone(),
+            })
+            .await
+            .map_err(HarnessError::from)?;
+        Ok(())
     }
 
     async fn wait_for_idle(&self) -> Result<(), HarnessError> {
@@ -1836,11 +2048,57 @@ impl<F: FileSystem + 'static> AgentLane for AgentHarness<F> {
     }
 
     async fn watch(&self) -> Result<WatchHandle<LaneSnapshot>, HarnessError> {
-        self.unavailable("watch")
+        if self.is_closed() {
+            return Err(HarnessError::closed());
+        }
+        let snapshot = LaneSnapshot {
+            lane: self.name.clone(),
+            transcript: self.transcript().await?,
+            leaf_id: self.lane_leaf_id().await.map_err(HarnessError::from)?,
+            operation: self
+                .active_operations
+                .lock()
+                .unwrap()
+                .get(&self.name)
+                .cloned(),
+            queues: self
+                .queue_state
+                .lock()
+                .unwrap()
+                .get(&self.name)
+                .cloned()
+                .unwrap_or_default(),
+            pending_writes: Vec::new(),
+            faulted: false,
+        };
+        let event_watch = self.event_bus.lock().unwrap().watch(());
+        Ok(WatchHandle::new(
+            snapshot,
+            Some(Box::new(move || event_watch.unsubscribe())),
+        ))
     }
 
     async fn watch_session(&self) -> Result<WatchHandle<SessionSnapshot>, HarnessError> {
-        self.unavailable("watchSession")
+        if self.is_closed() {
+            return Err(HarnessError::closed());
+        }
+        let lanes = self
+            .lanes()
+            .await?
+            .into_iter()
+            .map(|info| LaneInfoWithSuspended {
+                info,
+                suspended: None,
+            })
+            .collect();
+        let event_watch = self.event_bus.lock().unwrap().watch(());
+        Ok(WatchHandle::new(
+            SessionSnapshot {
+                lanes,
+                faulted: false,
+            },
+            Some(Box::new(move || event_watch.unsubscribe())),
+        ))
     }
 
     async fn close(&mut self) {
@@ -1864,9 +2122,13 @@ mod tests {
         faux_assistant_message, FauxAssistantOptions, FauxProviderCore, FauxResponseStep,
         RegisterFauxProviderOptions,
     };
-    use pi_ai::types::{ContentBlock, Cost, Message, UserContent};
+    use pi_ai::types::{
+        AssistantMessageEvent, ContentBlock, Cost, DoneReason, Message, UserContent,
+    };
+    use pi_ai::AssistantMessageEventStream;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
 
     type MemSession = Session<MemoryFs>;
 
@@ -2000,6 +2262,193 @@ mod tests {
                     .collect::<Vec<_>>(),
                 vec!["run_start", "run_end"]
             );
+        });
+    }
+
+    #[test]
+    fn terminal_provider_error_marks_lifecycle_failed() {
+        rt().block_on(async {
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
+                vec![ContentBlock::text("provider failed")],
+                FauxAssistantOptions {
+                    stop_reason: Some(pi_ai::types::StopReason::Error),
+                    error_message: Some("overloaded".to_string()),
+                },
+            ))]);
+            let stream_fn: crate::agent::StreamFn =
+                Arc::new(move |model, context| core.stream(model, context, None));
+            let telemetry = Arc::new(InMemoryTelemetryContext::new());
+            let mut options =
+                AgentHarnessOptions::new(create_session("provider-error"), test_model());
+            options.stream_fn = Some(stream_fn);
+            options.context = Some(HarnessTelemetryContext::InMemory(telemetry.clone()));
+            let (mut harness, _) = AgentHarness::create(options).await.unwrap();
+            let lifecycle = Arc::new(Mutex::new(Vec::new()));
+            let seen = lifecycle.clone();
+            harness.subscribe_event(
+                "run_end",
+                Box::new(move |event| {
+                    seen.lock()
+                        .unwrap()
+                        .push(event.as_run_end().unwrap().outcome);
+                }),
+            );
+
+            let messages = harness
+                .run_prompt(vec![user_message("hello")])
+                .await
+                .unwrap();
+
+            assert!(messages.iter().any(|message| {
+                matches!(
+                    message,
+                    AgentMessage::Core(Message::Assistant(assistant))
+                        if assistant.stop_reason() == Some(pi_ai::types::StopReason::Error)
+                )
+            }));
+            assert_eq!(*lifecycle.lock().unwrap(), vec![EventOutcome::Failed]);
+            let spans = telemetry.get_spans();
+            assert_eq!(spans.len(), 1);
+            assert_eq!(
+                spans[0].status,
+                SpanStatus::Error {
+                    error: Some(SpanError {
+                        name: "ProviderError".to_string(),
+                        message: "overloaded".to_string(),
+                    })
+                }
+            );
+            assert_eq!(spans[0].attributes["pi.operation.outcome"], "failed");
+            assert_eq!(
+                spans[0].events.last().map(|event| event.name.as_str()),
+                Some("run_end")
+            );
+            assert_eq!(
+                spans[0].events.last().unwrap().attributes["pi.operation.outcome"],
+                "failed"
+            );
+        });
+    }
+
+    #[test]
+    fn active_lane_queues_persist_and_cancel_items() {
+        rt().block_on(async {
+            let started = Arc::new(Notify::new());
+            let release = Arc::new(Notify::new());
+            let stream_fn: crate::agent::StreamFn = {
+                let started = started.clone();
+                let release = release.clone();
+                Arc::new(move |_model, _context| {
+                    let stream = AssistantMessageEventStream::new();
+                    let sender = stream.sender().expect("stream sender");
+                    let started = started.clone();
+                    let release = release.clone();
+                    tokio::spawn(async move {
+                        started.notify_one();
+                        release.notified().await;
+                        let message = faux_assistant_message(
+                            vec![ContentBlock::text("queued run")],
+                            FauxAssistantOptions::default(),
+                        );
+                        let _ = sender.send(AssistantMessageEvent::Done {
+                            reason: DoneReason::Stop,
+                            message,
+                        });
+                    });
+                    stream
+                })
+            };
+            let mut options = AgentHarnessOptions::new(create_session("queue-state"), test_model());
+            options.stream_fn = Some(stream_fn);
+            let (harness, _) = AgentHarness::create(options).await.unwrap();
+
+            let runner = harness.lane("main").await.unwrap();
+            let run_task = tokio::spawn(async move {
+                let prompts = vec![user_message("run")];
+                runner.prompt_messages(&prompts).await
+            });
+            started.notified().await;
+
+            let lane = harness.lane("main").await.unwrap();
+            let queued_id = lane
+                .steer_message(&user_message("steer while running"))
+                .await
+                .unwrap();
+            let snapshot = lane.watch().await.unwrap().snapshot;
+            assert_eq!(snapshot.queues.steer.len(), 1);
+            assert_eq!(snapshot.queues.steer[0].entry_id, queued_id);
+            assert_eq!(snapshot.operation.unwrap().status, OperationStatus::Running);
+            assert!(harness.lanes().await.unwrap()[0].operation.is_some());
+
+            release.notify_one();
+            run_task.await.unwrap().unwrap();
+            assert_eq!(
+                lane.cancel_queued(&queued_id).await.unwrap(),
+                CancelQueuedOutcome::Cancelled
+            );
+            assert!(lane.watch().await.unwrap().snapshot.queues.steer.is_empty());
+
+            let records = harness
+                .session()
+                .lock()
+                .await
+                .find_records(&RecordQuery {
+                    order: Some(EntryOrder::OldestFirst),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert!(records.iter().any(|record| matches!(
+                record,
+                crate::session::types::LaneRecord::QueueEnqueued { queue, .. }
+                    if queue == "steer"
+            )));
+            assert!(records.iter().any(|record| matches!(
+                record,
+                crate::session::types::LaneRecord::QueueCancelled { entry_id, .. }
+                    if entry_id == &queued_id
+            )));
+        });
+    }
+
+    #[test]
+    fn record_usage_persists_usage_telemetry() {
+        rt().block_on(async {
+            let harness = create_harness().await;
+            harness
+                .record_usage(
+                    &usage(),
+                    Some(&RecordUsageOptions {
+                        entry_id: Some("assistant-entry".to_string()),
+                        details: Some(serde_json::json!({"source": "test"})),
+                    }),
+                )
+                .await
+                .unwrap();
+            let records = harness
+                .session()
+                .lock()
+                .await
+                .find_records(&RecordQuery {
+                    record_type: Some("usage".to_string()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert!(matches!(
+                records.as_slice(),
+                [crate::session::types::LaneRecord::Usage {
+                    cause,
+                    entry_id,
+                    details: Some(details),
+                    usage: recorded_usage,
+                    ..
+                }] if cause == "manual"
+                    && entry_id == "assistant-entry"
+                    && details["source"] == "test"
+                    && recorded_usage == &usage()
+            ));
         });
     }
 
@@ -2371,7 +2820,6 @@ mod tests {
             let harness = create_harness().await;
             let callback_called = Arc::new(AtomicBool::new(false));
             let message = user_message("hello");
-            let usage = usage();
             let mut error_by_op: std::collections::BTreeMap<String, HarnessError> =
                 Default::default();
 
@@ -2421,31 +2869,20 @@ mod tests {
                 &mut error_by_op,
                 harness.abort().await.unwrap_err(),
             );
-            capture(
-                "steer",
-                &mut error_by_op,
-                harness.steer_message(&message).await.unwrap_err(),
-            );
-            capture(
-                "followUp",
-                &mut error_by_op,
-                harness.follow_up_message(&message).await.unwrap_err(),
-            );
-            capture(
-                "nextRun",
-                &mut error_by_op,
-                harness.next_run_message(&message).await.unwrap_err(),
-            );
-            capture(
-                "cancelQueued",
-                &mut error_by_op,
-                harness.cancel_queued("queued").await.unwrap_err(),
-            );
-            capture(
-                "recordUsage",
-                &mut error_by_op,
-                harness.record_usage(&usage, None).await.unwrap_err(),
-            );
+            for result in [
+                harness.steer_message(&message).await,
+                harness.follow_up_message(&message).await,
+                harness.next_run_message(&message).await,
+            ] {
+                assert!(
+                    matches!(result, Err(HarnessError::Tagged(tag)) if tag.tag == "NoActiveRun")
+                );
+            }
+            assert!(matches!(
+                harness.cancel_queued("queued").await,
+                Err(HarnessError::Tagged(tag)) if tag.tag == "UnknownQueueItem"
+            ));
+            assert!(harness.record_usage(&usage(), None).await.is_ok());
             capture(
                 "waitForIdle",
                 &mut error_by_op,
@@ -2477,20 +2914,15 @@ mod tests {
                 &mut error_by_op,
                 harness.run_to_completion().await.unwrap_err(),
             );
-            {
-                let err = match harness.watch().await {
-                    Err(e) => e,
-                    Ok(_) => panic!("watch unexpectedly implemented"),
-                };
-                capture("watch", &mut error_by_op, err);
-            }
-            {
-                let err = match harness.watch_session().await {
-                    Err(e) => e,
-                    Ok(_) => panic!("watchSession unexpectedly implemented"),
-                };
-                capture("watchSession", &mut error_by_op, err);
-            }
+            let lane_snapshot = harness.watch().await.unwrap().snapshot;
+            assert_eq!(lane_snapshot.lane, "main");
+            assert!(!harness
+                .watch_session()
+                .await
+                .unwrap()
+                .snapshot
+                .lanes
+                .is_empty());
 
             let checks: Vec<&str> = vec![
                 "prompt",
@@ -2500,18 +2932,11 @@ mod tests {
                 "navigateTree",
                 "resume",
                 "abort",
-                "steer",
-                "followUp",
-                "nextRun",
-                "cancelQueued",
-                "recordUsage",
                 "waitForIdle",
                 "runWhenIdle",
                 "peekAction",
                 "executeAction",
                 "runToCompletion",
-                "watch",
-                "watchSession",
             ];
             for key in checks {
                 let err = error_by_op

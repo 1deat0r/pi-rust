@@ -1011,7 +1011,7 @@ dispatch provider-matrix and independent final reviewers. Do not claim full
 conversion completion until pi-agent/coding-agent clippy, the full workspace
 tests, parity suite, release matrix, and S-065/S-066 audit gates pass.
 
-## Active checkpoint — 2026-08-25 — eval metrics and pushed wave synchronized
+## Historical checkpoint — 2026-08-25 — eval metrics and pushed wave synchronized
 
 The completed implementation/eval wave is pushed at commit
 `b95f3b4c3b049c83f877f02eba15b4396c596b9a`; `git rev-parse HEAD` and
@@ -1046,3 +1046,48 @@ node scripts/conversion-progress.mjs
 Next dependency-safe action: finish C1/D2/E2, dispatch provider-matrix
 fixtures, then run the full workspace tests/clippy, parity suite, release
 matrix, and independent final-audit review. Full conversion remains open.
+
+## Active checkpoint — 2026-08-25 — provider/client/harness/reconnect wave
+
+The last synchronized pushed baseline before this worktree wave is
+`486a5bb50ce1444d3ab3086f6753e0a549ba8864` on `main`; local/remote hashes
+matched at that checkpoint. The worktree contains completed B4/D2/C1/D3
+changes plus active D1b/E3/R3/F2 work. The pre-existing untracked `AGENTS.md`
+remains untouched.
+
+Progress checker:
+
+```text
+Conversion progress: 77.71% (129/166; 37 open)
+```
+
+Completed evidence in this wave:
+
+- B4: `cargo test -p pi-ai --offline --test provider_matrix --quiet` — 4
+  tests passed; 50 text provider/API pairs, images, errors, usage, and five
+  no-API controls are fixture-indexed.
+- D2: `cargo test -p pi-client --offline --all-targets --quiet` — 7
+  integration tests passed; strict client clippy, formatting, and the live
+  server session-handle compatibility test (2 passed) are green.
+- C1: `cargo test -p pi-agent --offline --lib harness --quiet` — 100 passed;
+  `cargo test -p pi-coding-agent --offline --lib --quiet` — 469 passed;
+  `harness_modes` passed; cargo check and owned rustfmt/diff checks passed.
+- D3: `cargo test -p pi-server --offline --test reconnect_lease_e2e --quiet`
+  — 4 live local-Unix tests passed.
+
+Exact commands additionally run:
+
+```text
+/home/mustbearnold/.cargo/bin/cargo clippy -p pi-client --offline --all-targets -- -D warnings
+/home/mustbearnold/.cargo/bin/cargo fmt -p pi-client -- --check
+/home/mustbearnold/.cargo/bin/cargo test -p pi-server --offline --test session_handle_e2e -- --nocapture
+/home/mustbearnold/.cargo/bin/cargo check -p pi-agent -p pi-coding-agent --offline
+node scripts/conversion-progress.mjs
+git diff --check
+```
+
+Active work: D1b must reach the 30-plus server conformance matrix; E3 owns
+remaining TUI behavior; R3 owns the measured pi-agent/coding-agent clippy
+backlog; F2 owns CLI/RPC/session/settings/provider/telemetry parity fixtures.
+After those leaves, rerun the PTY matrix, full workspace tests/clippy, release
+build, and independent final audit. Full conversion remains open.

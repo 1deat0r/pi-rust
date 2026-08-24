@@ -1,0 +1,22 @@
+{
+  "api": "mistral-conversations",
+  "model_field": "model",
+  "path_fragment": "/v1/chat/completions",
+  "success": {
+    "content_type": "text/event-stream",
+    "sse": [
+      {"event": null, "data": {"id": "mistral-matrix", "model": "matrix-model", "choices": [{"index": 0, "finish_reason": null, "delta": {"content": "hello"}}]}},
+      {"event": null, "data": {"id": "mistral-matrix", "model": "matrix-model", "choices": [{"index": 0, "finish_reason": "stop", "delta": {"content": " matrix"}}], "usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9}}},
+      {"event": null, "data": "[DONE]"}
+    ],
+    "text": "hello matrix",
+    "response_id": "mistral-matrix",
+    "usage": {"input": 7, "output": 2, "cache_read": 0, "cache_write": 0, "total_tokens": 9}
+  },
+  "error": {
+    "status": 429,
+    "content_type": "application/json",
+    "body": {"error": {"message": "matrix quota"}},
+    "contains": "matrix quota"
+  }
+}

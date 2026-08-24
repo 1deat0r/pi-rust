@@ -24,16 +24,13 @@ pub fn format_skills_for_system_prompt(skills: &[Skill]) -> String {
     if visible.is_empty() {
         return String::new();
     }
-    let mut lines: Vec<String> = Vec::new();
-    lines.push(
+    let mut lines = vec![
         "The following skills provide specialized instructions for specific tasks.".to_string(),
-    );
-    lines.push("Read the full skill file when the task matches its description.".to_string());
-    lines.push(
+        "Read the full skill file when the task matches its description.".to_string(),
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
-    );
-    lines.push(String::new());
-    lines.push("<available_skills>".to_string());
+        String::new(),
+        "<available_skills>".to_string(),
+    ];
     for skill in &visible {
         lines.push("  <skill>".to_string());
         lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));

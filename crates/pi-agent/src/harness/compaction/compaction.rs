@@ -1177,10 +1177,11 @@ mod tests {
 
     #[test]
     fn find_cut_point_does_not_split_between_user_and_assistant() {
-        let mut entries = Vec::new();
-        entries.push(user_text("u1", 0));
-        entries.push(assistant_text("a1", 1));
-        entries.push(user_text("u2", 2));
+        let entries = vec![
+            user_text("u1", 0),
+            assistant_text("a1", 1),
+            user_text("u2", 2),
+        ];
         let cut = find_cut_point(&entries, 0, 3, 1);
         // Small budget: cut after first user+assistant pair, on the turn start (u2)
         assert_eq!(cut.first_kept_entry_index, 2);

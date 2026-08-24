@@ -1,0 +1,24 @@
+{
+  "api": "azure-openai-responses",
+  "model_field": null,
+  "path_fragment": "/deployments/matrix-deployment/responses",
+  "success": {
+    "content_type": "text/event-stream",
+    "sse": [
+      {"event": null, "data": {"type": "response.created", "response": {"id": "azure-resp-matrix"}}},
+      {"event": null, "data": {"type": "response.output_item.added", "output_index": 0, "item": {"type": "message", "id": "azure-msg-matrix", "status": "in_progress", "role": "assistant", "content": []}}},
+      {"event": null, "data": {"type": "response.output_text.delta", "output_index": 0, "delta": "hello matrix"}},
+      {"event": null, "data": {"type": "response.output_item.done", "output_index": 0, "item": {"type": "message", "id": "azure-msg-matrix", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "hello matrix", "annotations": []}]}}},
+      {"event": null, "data": {"type": "response.completed", "response": {"id": "azure-resp-matrix", "status": "completed", "usage": {"input_tokens": 7, "output_tokens": 2, "total_tokens": 9}}}}
+    ],
+    "text": "hello matrix",
+    "response_id": "azure-resp-matrix",
+    "usage": {"input": 7, "output": 2, "cache_read": 0, "cache_write": 0, "total_tokens": 9}
+  },
+  "error": {
+    "status": 429,
+    "content_type": "application/json",
+    "body": {"error": {"message": "matrix quota"}},
+    "contains": "matrix quota"
+  }
+}

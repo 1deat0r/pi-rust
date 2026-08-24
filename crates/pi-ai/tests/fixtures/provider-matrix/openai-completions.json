@@ -1,0 +1,23 @@
+{
+  "api": "openai-completions",
+  "model_field": "model",
+  "path_fragment": "/chat/completions",
+  "success": {
+    "content_type": "text/event-stream",
+    "sse": [
+      {"event": null, "data": {"id": "cmpl-matrix", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "hello"}, "finish_reason": null}]}},
+      {"event": null, "data": {"id": "cmpl-matrix", "choices": [{"index": 0, "delta": {"content": " matrix"}, "finish_reason": null}]}},
+      {"event": null, "data": {"id": "cmpl-matrix", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9}}},
+      {"event": null, "data": "[DONE]"}
+    ],
+    "text": "hello matrix",
+    "response_id": "cmpl-matrix",
+    "usage": {"input": 7, "output": 2, "cache_read": 0, "cache_write": 0, "total_tokens": 9}
+  },
+  "error": {
+    "status": 429,
+    "content_type": "application/json",
+    "body": {"error": {"message": "matrix quota"}},
+    "contains": "matrix quota"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "api": "anthropic-messages",
+  "model_field": "model",
+  "path_fragment": "/v1/messages",
+  "success": {
+    "content_type": "text/event-stream",
+    "sse": [
+      {"event": "message_start", "data": {"type": "message_start", "message": {"id": "msg-matrix", "type": "message", "role": "assistant", "model": "matrix-model", "content": [], "usage": {"input_tokens": 7, "output_tokens": 0}}}},
+      {"event": "content_block_start", "data": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}},
+      {"event": "content_block_delta", "data": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hello matrix"}}},
+      {"event": "content_block_stop", "data": {"type": "content_block_stop", "index": 0}},
+      {"event": "message_delta", "data": {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null}, "usage": {"output_tokens": 2}}},
+      {"event": "message_stop", "data": {"type": "message_stop"}}
+    ],
+    "text": "hello matrix",
+    "response_id": "msg-matrix",
+    "usage": {"input": 7, "output": 2, "cache_read": 0, "cache_write": 0, "total_tokens": 9}
+  },
+  "error": {
+    "status": 429,
+    "content_type": "application/json",
+    "body": {"error": {"message": "matrix quota"}},
+    "contains": "matrix quota"
+  }
+}

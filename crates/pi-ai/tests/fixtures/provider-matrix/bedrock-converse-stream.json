@@ -1,0 +1,25 @@
+{
+  "api": "bedrock-converse-stream",
+  "model_field": "modelId",
+  "path_fragment": ":converse-stream",
+  "success": {
+    "content_type": "application/vnd.amazon.eventstream",
+    "frames": [
+      {"event_type": "messageStart", "payload": {"messageStart": {"role": "assistant"}}},
+      {"event_type": "contentBlockStart", "payload": {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}}},
+      {"event_type": "contentBlockDelta", "payload": {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "hello matrix"}}}},
+      {"event_type": "contentBlockStop", "payload": {"contentBlockStop": {"contentBlockIndex": 0}}},
+      {"event_type": "metadata", "payload": {"metadata": {"usage": {"inputTokens": 7, "outputTokens": 2, "totalTokens": 9}}}},
+      {"event_type": "messageStop", "payload": {"messageStop": {"stopReason": "end_turn"}}}
+    ],
+    "text": "hello matrix",
+    "response_id": null,
+    "usage": {"input": 7, "output": 2, "cache_read": 0, "cache_write": 0, "total_tokens": 9}
+  },
+  "error": {
+    "status": 429,
+    "content_type": "application/json",
+    "body": {"message": "matrix quota"},
+    "contains": "matrix quota"
+  }
+}

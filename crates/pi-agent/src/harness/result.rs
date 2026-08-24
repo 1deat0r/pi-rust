@@ -7,6 +7,8 @@
 
 use std::collections::BTreeMap;
 
+pub type ErrorMatchers<TValue> = BTreeMap<String, Box<dyn Fn(&TaggedError) -> TValue>>;
+
 /// A tagged error: an error value carrying a stable `_tag` string alongside
 /// its message and arbitrary payload (upstream `TaggedErrorValue`).
 #[derive(Debug, Clone)]
@@ -57,10 +59,7 @@ impl std::fmt::Display for TaggedError {
 impl std::error::Error for TaggedError {}
 
 /// Dispatches on an error's tag, mirroring upstream `matchError`.
-pub fn match_error<TValue>(
-    error: &TaggedError,
-    matchers: &BTreeMap<String, Box<dyn Fn(&TaggedError) -> TValue>>,
-) -> TValue {
+pub fn match_error<TValue>(error: &TaggedError, matchers: &ErrorMatchers<TValue>) -> TValue {
     match matchers.get(&error.tag) {
         Some(matcher) => matcher(error),
         None => panic!("no matcher for error tag {}", error.tag),
@@ -83,7 +82,7 @@ mod tests {
 
     #[test]
     fn match_error_dispatches_by_tag() {
-        let mut matchers: BTreeMap<String, Box<dyn Fn(&TaggedError) -> String>> = BTreeMap::new();
+        let mut matchers: ErrorMatchers<String> = BTreeMap::new();
         matchers.insert(
             "not_found".to_string(),
             Box::new(|e| format!("nf:{}", e.message)),

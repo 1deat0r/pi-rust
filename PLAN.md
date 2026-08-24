@@ -4,19 +4,21 @@
 
 The existing conversion goal is resumed under the scoped unlazy contract
 `.unlazy/full-conversion-20260825/`. The current authoritative checker output
-is **Conversion progress: 71.08% (118/166; 48 open)**. The source inventory
-and claim-reconciliation audit is complete; seven behavior tasks were checked
-with exact unit/mock evidence during the first implementation wave.
+is **Conversion progress: 77.71% (129/166; 37 open)**. The source inventory
+and claim-reconciliation audit is complete; the current wave has unit, mock,
+and live evidence across providers, client/server, harness, and reconnects.
 
 The first implementation wave completed the audit (`leaf-A1`), Copilot OAuth
 fixtures (`leaf-B1`), Anthropic fixtures (`leaf-B2`), model-catalog fixtures
 (`leaf-B3`), the proxy seam (#75), the Rust-native extension fixture slice
 (`leaf-C2`), server lifecycle fixes (`leaf-D1`), protocol strict-clippy
-cleanup, TUI static/test cleanup (`leaf-E1`), and eval metrics (`leaf-F1`).
-The active wave is now harness/mode (`leaf-C1`), auxiliary client (`leaf-D2`),
-and full PTY (`leaf-E2`); provider matrix, parity, and final-audit leaves
-remain dependency-gated. The driver owns the conversion ledger and
-synchronized documentation.
+cleanup, TUI static/test cleanup (`leaf-E1`), eval metrics (`leaf-F1`),
+provider matrix (`leaf-B4`), auxiliary client (`leaf-D2`), harness/mode
+(`leaf-C1`), and reconnect E2E (`leaf-D3`). The active wave is expanded server
+conformance (`leaf-D1b`), remaining TUI behavior (`leaf-E3`), strict clippy
+(`leaf-R3`), and parity/release fixtures (`leaf-F2`); final audit remains
+dependency-gated. The driver owns the conversion ledger and synchronized
+documentation.
 
 ## Checkpoint 2026-08-25 — first implementation wave
 
@@ -51,9 +53,9 @@ reconciliation are not yet complete.
 - `cargo test -p pi-evals --offline --quiet`, the session-usage and extension
   suites, strict all-target clippy, and formatting all pass.
 
-The next dependency-safe actions are to finish C1/D2/E2, dispatch the provider
-matrix leaf, then clear workspace clippy/test/parity/release and final-audit
-gates.
+The next dependency-safe actions are to finish D1b/E3/R3/F2, rerun the PTY
+matrix, then clear full-workspace tests/clippy, release verification, and the
+final source/TODO audit.
 
 Shared contracts: upstream oracle `upstream_pi/` at commit
 `5cd93f688aaab89dbb6dfa4aca535f21796ae185`; `/bin/sh`; offline Cargo by

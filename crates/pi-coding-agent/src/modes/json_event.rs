@@ -5,10 +5,10 @@
 //! JSON line on stdout (the session header first, when a session is written),
 //! using the same event envelope as the RPC protocol.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use pi_agent::harness::{AgentHarness, AgentHarnessOptions, HarnessTool};
-use pi_agent::rich_agent::RichAgentEvent;
+use pi_agent::session::context::{build_session_context, SessionContextBuildOptions};
 use pi_ai::types::{ContentBlock, Message, UserContent};
 
 use crate::args::Args;
@@ -155,12 +155,7 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         })
         .collect();
 
-    let storage = Arc::new(Mutex::new(
-        pi_agent::session::memory::InMemorySessionStorage::new(
-            pi_agent::session::memory::in_memory_metadata("json-mode", None),
-        ),
-    ));
-    let session = pi_agent::session::Session::<pi_agent::fs::MemoryFs>::from_in_memory(storage);
+    let (session, _) = crate::run::prepare_run_session(args, &cwd).await?;
     let mut options = AgentHarnessOptions::new(session, model);
     options.stream_fn = Some(stream_fn);
     options.system_prompt = args.system_prompt.clone();
@@ -169,6 +164,18 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
     let (mut harness, _) = AgentHarness::create(options)
         .await
         .map_err(|error| error.to_string())?;
+    let existing_entries = harness
+        .transcript()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !existing_entries.is_empty() {
+        let context =
+            build_session_context(&existing_entries, &SessionContextBuildOptions::default());
+        harness
+            .set_agent_messages(context.messages)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     let (_, rich_events) = harness
         .run_prompt_with_events(prompts)
         .await
@@ -179,22 +186,12 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
     // `runPrintMode` only treats Error/Aborted as a nonzero exit in *text*
     // mode, never in json mode.
     for event in rich_events {
-        if let RichAgentEvent::MessageUpdate {
-            mut assistant_message_event,
-            ..
-        } = event
-        {
-            if let pi_ai::types::AssistantMessageEvent::Error { error_message, .. } =
-                &mut assistant_message_event
-            {
-                crate::core::auth_guidance::rewrite_assistant_error(
-                    error_message,
-                    &provider,
-                    selected_provider_uses_oauth,
-                );
-            }
-            let update = crate::modes::rpc::to_json_message_update(&assistant_message_event);
-            println!("{}", serialize_json_line(&update));
+        if let Some(line) = crate::modes::rpc::serialize_rpc_prompt_event_with_auth(
+            event,
+            Some(&provider),
+            selected_provider_uses_oauth,
+        ) {
+            print!("{line}");
         }
     }
 

@@ -788,7 +788,7 @@ pub fn validate_record_log(input: &RecordLogSlice) -> Result<(), RecordLogCorrup
     Ok(())
 }
 
-fn by_sequence<'a, T>(values: &'a [T], seq_of: impl Fn(&T) -> u64) -> Vec<&'a T> {
+fn by_sequence<T>(values: &[T], seq_of: impl Fn(&T) -> u64) -> Vec<&T> {
     let mut v: Vec<&T> = values.iter().collect();
     v.sort_by_key(|x| seq_of(x));
     v
@@ -894,9 +894,7 @@ fn derive_tool_batch(
     let Entry::Message { message, .. } = assistant_entry else {
         return None;
     };
-    let Some(assistant) = as_assistant(message) else {
-        return None;
-    };
+    let assistant = as_assistant(message)?;
     let tool_calls: Vec<&ContentBlock> = assistant
         .content()
         .iter()
@@ -947,7 +945,7 @@ fn derive_tool_batch(
                         .unwrap_or(false)
             )
         });
-        let result = started_result.or(blocked_result.map(|r| *r));
+        let result = started_result.or(blocked_result.copied());
         let result_exists = result.is_some();
         let terminate = matches!(
             result,
@@ -1104,8 +1102,8 @@ pub fn reduce_lane_state(
 
     let newest_attempt = operation_records
         .iter()
-        .filter(|r| matches!(r, LaneRecord::StepAttempt { .. }))
-        .last()
+        .rev()
+        .find(|r| matches!(r, LaneRecord::StepAttempt { .. }))
         .copied();
     let step = match newest_attempt {
         Some(LaneRecord::StepAttempt {
@@ -1182,14 +1180,14 @@ pub fn reduce_lane_state(
             targets.result = entries_by_id.contains_key(result_entry_id.as_str());
         }
         LaneRecord::OperationStarted {
-            intent: OperationIntent::Navigation {
-                summary_entry_id, ..
-            },
+            intent:
+                OperationIntent::Navigation {
+                    summary_entry_id: Some(summary_id),
+                    ..
+                },
             ..
         } => {
-            if let Some(summary_id) = summary_entry_id {
-                targets.summary = entries_by_id.contains_key(summary_id.as_str());
-            }
+            targets.summary = entries_by_id.contains_key(summary_id.as_str());
         }
         _ => {}
     }
@@ -1251,7 +1249,7 @@ pub fn reduce_lane_state(
             leaf_id: input.leaf_id.map(|s| s.to_string()),
             operation: Some(Box::new(LaneOperationState {
                 id: started_id.to_string(),
-                kind: intent_kind(&started).to_string(),
+                kind: intent_kind(started).to_string(),
                 aborting,
                 step,
                 tool_batch,

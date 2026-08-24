@@ -1,0 +1,20 @@
+{
+  "api": "google-vertex",
+  "model_field": null,
+  "path_fragment": "/publishers/google/models/",
+  "success": {
+    "content_type": "text/event-stream",
+    "sse": [
+      {"event": null, "data": {"responseId": "vertex-matrix", "candidates": [{"content": {"parts": [{"text": "hello matrix"}], "role": "model"}, "finishReason": "STOP"}], "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 2, "totalTokenCount": 9}}}
+    ],
+    "text": "hello matrix",
+    "response_id": "vertex-matrix",
+    "usage": {"input": 7, "output": 2, "cache_read": 0, "cache_write": 0, "total_tokens": 9}
+  },
+  "error": {
+    "status": 429,
+    "content_type": "application/json",
+    "body": {"error": {"message": "matrix quota"}},
+    "contains": "matrix quota"
+  }
+}

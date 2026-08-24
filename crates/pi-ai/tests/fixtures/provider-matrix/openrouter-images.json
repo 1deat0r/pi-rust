@@ -1,0 +1,18 @@
+{
+  "api": "openrouter-images",
+  "model_field": "model",
+  "path_fragment": "/chat/completions",
+  "success": {
+    "content_type": "application/json",
+    "body": {"id": "image-matrix", "choices": [{"message": {"content": "hello matrix", "images": [{"image_url": {"url": "data:image/png;base64,AA=="}}]}}], "usage": {"prompt_tokens": 7, "completion_tokens": 2}},
+    "text": "hello matrix",
+    "response_id": "image-matrix",
+    "usage": {"input": 7, "output": 2, "cache_read": 0, "cache_write": 0, "total_tokens": 9}
+  },
+  "error": {
+    "status": 429,
+    "content_type": "application/json",
+    "body": {"error": {"message": "matrix quota"}},
+    "contains": "matrix quota"
+  }
+}

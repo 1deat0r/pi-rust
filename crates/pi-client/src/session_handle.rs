@@ -1,16 +1,11 @@
-//! Session handle — port of `packages/client/src/session-handle.ts`.
-//!
-//! A `SessionHandle` is a small lease object scoped to one session: it wraps
-//! the protocol commands (`prompt`, `steer`, `abort`, `set_model`,
-//! `set_thinking`) and exposes snapshot subscription + attach/detach, exactly
-//! like upstream's `SessionHandle implements SessionLease`.
+//! Session leases and the command surface for one attached session.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pi_protocol::{Command, CommandResult, ModelRef, ServerEvent, ThinkingLevel};
+use tokio::sync::Notify;
 
-use crate::{ClientConnectionState, ConnectionStateUnsubscribe, PiClient, PiClientError};
+use crate::{ConnectionStateUnsubscribe, PiClient, PiClientError, SessionLeaseToken};
 
 /// Lease mode for acquiring a session handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,7 +14,7 @@ pub enum SessionLeaseMode {
     Exclusive,
 }
 
-/// Options for `PiClient::start_session` / `acquire_session`.
+/// Options for acquiring an existing session or starting a new one.
 #[derive(Debug, Clone, Copy)]
 pub struct AcquireSessionOptions {
     pub mode: SessionLeaseMode,
@@ -33,103 +28,160 @@ impl Default for AcquireSessionOptions {
     }
 }
 
-/// Unsubscribe handle (upstream `Unsubscribe`).
+/// A callback removal function.
 pub type Unsubscribe = Box<dyn Fn() + Send + Sync>;
 
-type SnapshotListener = Box<dyn Fn(&pi_protocol::SessionSnapshot) + Send + Sync>;
-type ServerEventListener = Box<dyn Fn(&ServerEvent) + Send + Sync>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeaseStatus {
+    Active,
+    Releasing,
+    Released,
+    Invalidated,
+}
 
-/// A handle to one session on the connected server.
+struct ReleaseCompletion {
+    result: Mutex<Option<Result<(), PiClientError>>>,
+    notify: Notify,
+}
+
+impl ReleaseCompletion {
+    fn new() -> Self {
+        Self {
+            result: Mutex::new(None),
+            notify: Notify::new(),
+        }
+    }
+
+    fn complete(&self, result: Result<(), PiClientError>) {
+        *self.result.lock().unwrap() = Some(result);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait(&self) -> Result<(), PiClientError> {
+        loop {
+            let notified = self.notify.notified();
+            if let Some(result) = self.result.lock().unwrap().clone() {
+                return result;
+            }
+            notified.await;
+        }
+    }
+}
+
+struct Subscription {
+    unsubscribe: Mutex<Option<ConnectionStateUnsubscribe>>,
+}
+
+impl Subscription {
+    fn new(unsubscribe: ConnectionStateUnsubscribe) -> Arc<Self> {
+        Arc::new(Self {
+            unsubscribe: Mutex::new(Some(unsubscribe)),
+        })
+    }
+
+    fn unsubscribe(&self) {
+        if let Some(unsubscribe) = self.unsubscribe.lock().unwrap().take() {
+            unsubscribe();
+        }
+    }
+}
+
+/// A lease-backed handle to one session on the server.
 #[derive(Clone)]
 pub struct SessionHandle {
     id: String,
     client: PiClient,
-    attached: Arc<AtomicBool>,
-    forwarder: Arc<dyn Fn() + Send + Sync>,
-    snapshot_listeners: Arc<Mutex<Vec<Option<SnapshotListener>>>>,
-    event_listeners: Arc<Mutex<Vec<Option<ServerEventListener>>>>,
-    disposed: Arc<AtomicBool>,
-    connection_unsubscribe: Arc<Mutex<Option<ConnectionStateUnsubscribe>>>,
+    token: SessionLeaseToken,
+    status: Arc<Mutex<LeaseStatus>>,
+    release_completion: Arc<Mutex<Option<Arc<ReleaseCompletion>>>>,
+    subscriptions: Arc<Mutex<Vec<Arc<Subscription>>>>,
 }
 
 impl SessionHandle {
+    pub(crate) fn new(client: PiClient, token: SessionLeaseToken) -> Self {
+        Self {
+            id: token.session_id.clone(),
+            client,
+            token,
+            status: Arc::new(Mutex::new(LeaseStatus::Active)),
+            release_completion: Arc::new(Mutex::new(None)),
+            subscriptions: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// True while the underlying session is attached (mirror of upstream `active`/`attached`).
     pub fn attached(&self) -> bool {
-        self.attached.load(Ordering::SeqCst)
+        self.refresh_status();
+        matches!(&*self.status.lock().unwrap(), LeaseStatus::Active)
+            && self.client.is_session_attached(&self.id)
     }
 
     pub fn active(&self) -> bool {
         self.attached()
     }
 
-    /// Most recent session snapshot observed by the client (may be stale).
     pub fn snapshot(&self) -> Option<pi_protocol::SessionSnapshot> {
-        self.client.session_snapshot(&self.id)
+        self.attached()
+            .then(|| self.client.session_snapshot(&self.id))
+            .flatten()
     }
 
-    /// Subscribe to session snapshots. Returns an `Unsubscribe`.
+    /// Subscribe to snapshots while this lease remains active.
+    ///
+    /// The historical Rust surface returns an unsubscribe callback rather than
+    /// a `Result`; an inactive handle therefore returns a harmless no-op.
     pub fn subscribe(
         &self,
         listener: impl Fn(&pi_protocol::SessionSnapshot) + Send + Sync + 'static,
     ) -> Unsubscribe {
-        self.subscribe_boxed(Box::new(listener))
+        if !self.is_active() {
+            return Box::new(|| {});
+        }
+        let client = self.client.clone();
+        let id = self.id.clone();
+        let status = self.status.clone();
+        let token = self.token.clone();
+        let callback_client = client.clone();
+        let subscription =
+            Subscription::new(client.subscribe_session_snapshots(&id, move |snapshot| {
+                if handle_is_active(&callback_client, &token, &status) {
+                    listener(snapshot);
+                }
+            }));
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .push(subscription.clone());
+        Box::new(move || subscription.unsubscribe())
     }
 
-    fn subscribe_boxed(&self, listener: SnapshotListener) -> Unsubscribe {
-        let mut listeners = self.snapshot_listeners.lock().unwrap();
-        listeners.push(Some(listener));
-        let idx = listeners.len() - 1;
-        let listeners = self.snapshot_listeners.clone();
-        Box::new(move || {
-            listeners.lock().unwrap()[idx] = None;
-        })
-    }
-
-    /// Subscribe to raw server events funneled for this session.
+    /// Subscribe to events associated with this session.
     pub fn on_event(&self, listener: impl Fn(&ServerEvent) + Send + Sync + 'static) -> Unsubscribe {
-        self.on_event_boxed(Box::new(listener))
-    }
-
-    fn on_event_boxed(&self, listener: ServerEventListener) -> Unsubscribe {
-        let mut listeners = self.event_listeners.lock().unwrap();
-        listeners.push(Some(listener));
-        let idx = listeners.len() - 1;
-        let listeners = self.event_listeners.clone();
-        Box::new(move || {
-            listeners.lock().unwrap()[idx] = None;
-        })
-    }
-
-    async fn request(
-        &self,
-        command: Command,
-    ) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
-        if self.disposed.load(Ordering::SeqCst) || !self.attached() {
-            return Err(PiClientError {
-                message: format!("Session {} is detached", self.id),
-            });
+        if !self.is_active() {
+            return Box::new(|| {});
         }
-        let result = self.client.request(command).await?;
-        match result {
-            CommandResult::Prompt { session }
-            | CommandResult::Steer { session }
-            | CommandResult::Abort { session }
-            | CommandResult::SetModel { session }
-            | CommandResult::SetThinking { session }
-            | CommandResult::Attach { session } => Ok(session),
-            CommandResult::Detach { .. }
-            | CommandResult::Create { .. }
-            | CommandResult::List { .. } => Err(PiClientError {
-                message: "unexpected command result for session command".into(),
-            }),
-        }
+        let client = self.client.clone();
+        let id = self.id.clone();
+        let status = self.status.clone();
+        let token = self.token.clone();
+        let callback_client = client.clone();
+        let subscription = Subscription::new(client.subscribe_session_events(&id, move |event| {
+            if handle_is_active(&callback_client, &token, &status)
+                || matches!(event, ServerEvent::SessionRemoved { .. })
+            {
+                listener(event);
+            }
+        }));
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .push(subscription.clone());
+        Box::new(move || subscription.unsubscribe())
     }
 
-    /// Send a prompt and return the resulting session snapshot.
     pub async fn prompt(&self, text: &str) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
         self.request(Command::Prompt {
             session_id: self.id.clone(),
@@ -175,63 +227,143 @@ impl SessionHandle {
         .await
     }
 
-    /// Detach from the session (upstream `detach`).
-    pub async fn detach(&self) -> Result<(), PiClientError> {
-        let result = self
-            .client
-            .request(Command::Detach {
-                session_id: self.id.clone(),
-            })
-            .await?;
+    async fn request(
+        &self,
+        command: Command,
+    ) -> Result<pi_protocol::SessionSnapshot, PiClientError> {
+        self.assert_active()?;
+        let result = self.client.request(command).await?;
         match result {
-            CommandResult::Detach { session_id } => {
-                if session_id == self.id {
-                    self.attached.store(false, Ordering::SeqCst);
-                    Ok(())
-                } else {
-                    Err(PiClientError {
-                        message: format!("detach returned wrong session {session_id}"),
-                    })
-                }
-            }
+            CommandResult::Prompt { session }
+            | CommandResult::Steer { session }
+            | CommandResult::Abort { session }
+            | CommandResult::SetModel { session }
+            | CommandResult::SetThinking { session }
+            | CommandResult::Attach { session } => Ok(session),
             _ => Err(PiClientError {
-                message: "unexpected command result for detach".into(),
+                message: "unexpected command result for session command".into(),
             }),
         }
     }
 
-    /// Dispose the handle: unsubscribe all listeners and mark released.
+    /// Explicitly detach this lease. A failed detach keeps the lease active so
+    /// callers can retry; a successful final detach releases the server lease.
+    pub async fn detach(&self) -> Result<(), PiClientError> {
+        self.release(false).await
+    }
+
+    /// Dispose the handle and relinquish the lease even if cleanup fails.
     pub async fn dispose(&self) -> Result<(), PiClientError> {
-        if self.disposed.swap(true, Ordering::SeqCst) {
-            return Ok(());
+        let result = self.release(true).await;
+        if result.is_ok() || !self.is_active() {
+            self.clear_subscriptions();
         }
-        {
-            let mut listeners = self.snapshot_listeners.lock().unwrap();
-            for slot in listeners.iter_mut() {
-                *slot = None;
-            }
+        result
+    }
+
+    fn is_active(&self) -> bool {
+        self.refresh_status();
+        matches!(&*self.status.lock().unwrap(), LeaseStatus::Active)
+            && self.client.is_connected()
+            && self.client.is_session_attached(&self.id)
+    }
+
+    fn refresh_status(&self) {
+        let current = self.client.lease_generation_is_current(&self.token);
+        let mut status = self.status.lock().unwrap();
+        if current {
+            return;
         }
-        {
-            let mut listeners = self.event_listeners.lock().unwrap();
-            for slot in listeners.iter_mut() {
-                *slot = None;
-            }
+        if matches!(*status, LeaseStatus::Active | LeaseStatus::Releasing) {
+            *status = LeaseStatus::Invalidated;
         }
-        if let Some(unsubscribe) = self.connection_unsubscribe.lock().unwrap().take() {
-            unsubscribe();
+    }
+
+    fn assert_active(&self) -> Result<(), PiClientError> {
+        self.refresh_status();
+        if self.client.is_disposed() {
+            return Err(PiClientError {
+                message: "PiClient is disposed".into(),
+            });
         }
-        (self.forwarder)();
-        self.attached.store(false, Ordering::SeqCst);
+        if !self.client.is_connected() {
+            return Err(PiClientError {
+                message: "client is disconnected".into(),
+            });
+        }
+        if !self.is_active() {
+            return Err(PiClientError {
+                message: format!("Session {} is detached", self.id),
+            });
+        }
         Ok(())
+    }
+
+    async fn release(&self, relinquish_on_failure: bool) -> Result<(), PiClientError> {
+        let (completion, owner) = loop {
+            self.refresh_status();
+            let current = *self.status.lock().unwrap();
+            match current {
+                LeaseStatus::Released | LeaseStatus::Invalidated => return Ok(()),
+                LeaseStatus::Releasing => {
+                    if let Some(completion) = self.release_completion.lock().unwrap().clone() {
+                        break (completion, false);
+                    }
+                    tokio::task::yield_now().await;
+                }
+                LeaseStatus::Active => {
+                    self.assert_active()?;
+                    let mut status = self.status.lock().unwrap();
+                    if !matches!(*status, LeaseStatus::Active) {
+                        continue;
+                    }
+                    let completion = Arc::new(ReleaseCompletion::new());
+                    *status = LeaseStatus::Releasing;
+                    *self.release_completion.lock().unwrap() = Some(completion.clone());
+                    break (completion, true);
+                }
+            }
+        };
+
+        if !owner {
+            return completion.wait().await;
+        }
+        let result = self
+            .client
+            .release_lease_once(&self.token, relinquish_on_failure)
+            .await;
+        {
+            let mut status = self.status.lock().unwrap();
+            match &result {
+                Ok(()) => *status = LeaseStatus::Released,
+                Err(_) if relinquish_on_failure => *status = LeaseStatus::Released,
+                Err(_) => *status = LeaseStatus::Active,
+            }
+        }
+        completion.complete(result.clone());
+        result
+    }
+
+    fn clear_subscriptions(&self) {
+        let subscriptions = std::mem::take(&mut *self.subscriptions.lock().unwrap());
+        for subscription in subscriptions {
+            subscription.unsubscribe();
+        }
     }
 }
 
-// ---------------------------------------------------------------------------
-// PiClient surface
-// ---------------------------------------------------------------------------
+fn handle_is_active(
+    client: &PiClient,
+    token: &SessionLeaseToken,
+    status: &Arc<Mutex<LeaseStatus>>,
+) -> bool {
+    let current = client.lease_generation_is_current(token);
+    let active = matches!(&*status.lock().unwrap(), LeaseStatus::Active);
+    current && active && client.is_connected() && client.is_session_attached(&token.session_id)
+}
 
 impl PiClient {
-    /// Create a session and return an attached handle (`startSession`).
+    /// Create a session and return a handle for the already-attached result.
     pub async fn start_session(
         &self,
         cwd: Option<String>,
@@ -256,104 +388,149 @@ impl PiClient {
                 })
             }
         };
-        self.attach_session(&session.id, options).await
+        let token = self.reserve_session_lease(&session.id, options.mode)?;
+        self.note_session_snapshot(session);
+        let session_id = token.session_id.clone();
+        let operation = self.session_operation(&session_id);
+        let result = async {
+            let _guard = operation.lock().await;
+            if !self.is_session_attached(&session_id) {
+                let previous = self.forget_session_snapshot(&session_id);
+                let attach = self
+                    .request(Command::Attach {
+                        session_id: session_id.clone(),
+                    })
+                    .await;
+                match attach {
+                    Ok(CommandResult::Attach { session }) if session.id == session_id => {
+                        self.note_session_snapshot(session);
+                    }
+                    Ok(CommandResult::Attach { session }) => {
+                        if let Some(previous) = previous {
+                            self.restore_session_snapshot(previous);
+                        }
+                        return Err(PiClientError {
+                            message: format!("attach returned session {}", session.id),
+                        });
+                    }
+                    Ok(_) => {
+                        if let Some(previous) = previous {
+                            self.restore_session_snapshot(previous);
+                        }
+                        return Err(PiClientError {
+                            message: "unexpected command result for attach".into(),
+                        });
+                    }
+                    Err(error) => {
+                        if let Some(previous) = previous {
+                            self.restore_session_snapshot(previous);
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            Ok(SessionHandle::new(self.clone(), token.clone()))
+        }
+        .await;
+        if result.is_err() {
+            self.release_session_lease(&token);
+        }
+        result
     }
 
-    /// Acquire a handle to an existing session (`acquireSession`).
+    /// Acquire a shared lease for an existing session.
+    pub async fn attach_session(&self, session_id: &str) -> Result<SessionHandle, PiClientError> {
+        self.acquire_session(session_id, AcquireSessionOptions::default())
+            .await
+    }
+
+    /// Acquire a shared or exclusive lease, reconciling failed disposal before
+    /// issuing a new attach.
     pub async fn acquire_session(
         &self,
         session_id: &str,
         options: AcquireSessionOptions,
     ) -> Result<SessionHandle, PiClientError> {
-        self.attach_session(session_id, options).await
+        if self.is_disposed() {
+            return Err(PiClientError {
+                message: "PiClient is disposed".into(),
+            });
+        }
+        let token = self.reserve_session_lease(session_id, options.mode)?;
+        let operation = self.session_operation(session_id);
+        let result = async {
+            let _guard = operation.lock().await;
+            let reconciled = self.reconcile_cleanup(session_id).await?;
+            if reconciled || !self.is_session_attached(session_id) {
+                let previous = self.forget_session_snapshot(session_id);
+                let attach = self
+                    .request(Command::Attach {
+                        session_id: session_id.to_string(),
+                    })
+                    .await;
+                match attach {
+                    Ok(CommandResult::Attach { session }) if session.id == session_id => {
+                        self.note_session_snapshot(session);
+                    }
+                    Ok(CommandResult::Attach { session }) => {
+                        if let Some(previous) = previous {
+                            self.restore_session_snapshot(previous);
+                        }
+                        return Err(PiClientError {
+                            message: format!("attach returned session {}", session.id),
+                        });
+                    }
+                    Ok(_) => {
+                        if let Some(previous) = previous {
+                            self.restore_session_snapshot(previous);
+                        }
+                        return Err(PiClientError {
+                            message: "unexpected command result for attach".into(),
+                        });
+                    }
+                    Err(error) => {
+                        if let Some(previous) = previous {
+                            self.restore_session_snapshot(previous);
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            Ok(SessionHandle::new(self.clone(), token.clone()))
+        }
+        .await;
+        if result.is_err() {
+            self.release_session_lease(&token);
+        }
+        result
     }
 
-    async fn attach_session(
-        &self,
-        session_id: &str,
-        _options: AcquireSessionOptions,
-    ) -> Result<SessionHandle, PiClientError> {
+    async fn reconcile_cleanup(&self, session_id: &str) -> Result<bool, PiClientError> {
+        if !self.take_cleanup_required(session_id) {
+            return Ok(false);
+        }
         let result = self
-            .request(Command::Attach {
+            .request(Command::Detach {
                 session_id: session_id.to_string(),
             })
-            .await?;
-        let session = match result {
-            CommandResult::Attach { session } if session.id == session_id => session,
-            CommandResult::Attach { session } => {
-                return Err(PiClientError {
-                    message: format!("attach returned session {}", session.id),
-                })
-            }
-            _ => {
-                return Err(PiClientError {
-                    message: "unexpected command result for attach".into(),
-                })
-            }
-        };
-        self.note_session_snapshot(session.clone());
-        let attached = Arc::new(AtomicBool::new(true));
-        let snapshot_listeners: Arc<Mutex<Vec<Option<SnapshotListener>>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let event_listeners: Arc<Mutex<Vec<Option<ServerEventListener>>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let live = Arc::new(AtomicBool::new(true));
-        let sid = session_id.to_string();
-
-        let connection_unsubscribe = self.subscribe_connection_state({
-            let attached = attached.clone();
-            move |change| {
-                if change.state == ClientConnectionState::Disconnected {
-                    attached.store(false, Ordering::SeqCst);
-                }
-            }
-        });
-
-        // One global client listener fans out this session's snapshots and
-        // events to the handle's subscribers; gated by `live` so disposed
-        // handles stop forwarding (the client prunes dead listeners).
-        let global_live = live.clone();
-        let snap = snapshot_listeners.clone();
-        let evt = event_listeners.clone();
-        self.subscribe(Arc::new(move |event: &ServerEvent| {
-            if !global_live.load(Ordering::SeqCst) {
-                return;
-            }
-            match event {
-                ServerEvent::SessionSnapshot { snapshot } if snapshot.id == sid => {
-                    let listeners = snap.lock().unwrap();
-                    for some in listeners.iter().flatten() {
-                        some(snapshot);
-                    }
-                }
-                ServerEvent::SessionProgress {
-                    session_id: eid, ..
-                }
-                | ServerEvent::SessionRemoved { session_id: eid }
-                    if *eid == sid =>
-                {
-                    let listeners = evt.lock().unwrap();
-                    for some in listeners.iter().flatten() {
-                        some(event);
-                    }
-                }
-                _ => {}
-            }
-        }));
-
-        let forwarder: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            live.store(false, Ordering::SeqCst);
-        });
-
-        Ok(SessionHandle {
-            id: session_id.to_string(),
-            client: self.clone(),
-            attached,
-            forwarder,
-            snapshot_listeners,
-            event_listeners,
-            disposed: Arc::new(AtomicBool::new(false)),
-            connection_unsubscribe: Arc::new(Mutex::new(Some(connection_unsubscribe))),
-        })
+            .await
+            .and_then(|result| match result {
+                CommandResult::Detach {
+                    session_id: detached,
+                } if detached == session_id => Ok(()),
+                CommandResult::Detach {
+                    session_id: detached,
+                } => Err(PiClientError {
+                    message: format!("detach returned wrong session {detached}"),
+                }),
+                _ => Err(PiClientError {
+                    message: "unexpected command result for detach".into(),
+                }),
+            });
+        if let Err(error) = result {
+            self.mark_cleanup_required(session_id);
+            return Err(error);
+        }
+        Ok(true)
     }
 }

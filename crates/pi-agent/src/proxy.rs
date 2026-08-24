@@ -676,6 +676,7 @@ mod tests {
             sampling_params: None,
             headers: None,
             compat: None,
+            extra: Default::default(),
             authenticated: false,
         }
     }
