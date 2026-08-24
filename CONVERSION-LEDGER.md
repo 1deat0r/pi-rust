@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **54.22% (90/166)**. Run
+- The exhaustive checker reports **54.82% (91/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -19,9 +19,9 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the local AgentTool harness and termination-contract checkpoint on
-  `main`, after the update/version and model-catalog work; the HTTPS remote is
-  still behind because GitHub credentials are unavailable.
+- HEAD is the local schema-validator parity checkpoint on `main`, after the
+  AgentTool harness/termination, update/version, and model-catalog work; the
+  HTTPS remote is still behind because GitHub credentials are unavailable.
 - The workspace is green under `cargo test --workspace --offline`; the focused
   tool-contract, RPC, image/read, print-mode compaction, and malformed-call
   suites pass.
@@ -621,9 +621,16 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       interactive, JSON, JSONL, and RPC modes with span/event golden checks.
 - [ ] S-023 Add panic-safe telemetry callback settlement equivalent to the
       upstream `try/catch/finally` span lifecycle.
-- [ ] S-024 Complete JSON-schema validation parity for unions, arrays, numeric
+- [x] S-024 Complete JSON-schema validation parity for unions, arrays, numeric
       bounds, formats, additional properties, and partial tool-call arguments;
-      compare all diagnostics with upstream.
+      compare all diagnostics with upstream. (unit) Validation now resolves
+      local refs, validates `allOf`/`anyOf`/`oneOf`/`not`, tuple and constrained
+      arrays, enums/consts, object property rules, numeric/string bounds,
+      common formats, and nullable optional fields while retaining upstream
+      primitive coercion. Evidence: `cargo test -p pi-agent --offline
+      tools::validation -- --nocapture` (12 passed),
+      `cargo test -p pi-agent --offline --quiet` (174 passed), and
+      `cargo test --workspace --offline --quiet`.
 
 ### S1-D — coding-agent product/runtime parity
 
