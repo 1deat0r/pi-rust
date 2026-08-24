@@ -3,11 +3,13 @@
 use crate::tui::Component;
 use crate::utils::{apply_background_to_line, visible_width, wrap_text_with_ansi};
 
+type BackgroundFn = Box<dyn Fn(&str) -> String + Send + Sync>;
+
 pub struct Text {
     text: String,
     padding_x: usize,
     padding_y: usize,
-    bg: Option<Box<dyn Fn(&str) -> String + Send + Sync>>,
+    bg: Option<BackgroundFn>,
     cache: std::sync::Mutex<Option<(String, usize, Vec<String>)>>,
 }
 
@@ -16,7 +18,7 @@ impl Text {
         text: impl Into<String>,
         padding_x: usize,
         padding_y: usize,
-        bg: Option<Box<dyn Fn(&str) -> String + Send + Sync>>,
+        bg: Option<BackgroundFn>,
     ) -> Self {
         Self {
             text: text.into(),
@@ -104,8 +106,8 @@ mod tests {
     fn renders_content_with_padding() {
         let text = Text::new("hello", 1, 0, None);
         let lines = text.render(10);
-        assert_eq!(visible_width(&lines[0]) >= 7, true);
-        assert_eq!(visible_width(&lines[0]) <= 10, true);
+        assert!(visible_width(&lines[0]) >= 7);
+        assert!(visible_width(&lines[0]) <= 10);
     }
 
     #[test]

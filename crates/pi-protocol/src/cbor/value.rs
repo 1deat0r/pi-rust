@@ -34,7 +34,7 @@ pub enum Value {
 
 impl Value {
     pub fn is_safe_int(v: i64) -> bool {
-        v >= MIN_SAFE_INTEGER && v <= MAX_SAFE_INTEGER
+        (MIN_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&v)
     }
 
     pub fn is_safe_int_f64(v: f64) -> bool {

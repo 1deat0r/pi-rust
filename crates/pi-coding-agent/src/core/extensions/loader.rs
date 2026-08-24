@@ -13,16 +13,216 @@
 //! replaced with per-cwd path deduplication.
 
 use std::collections::BTreeSet;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use crate::config::CONFIG_DIR_NAME;
 use crate::core::extensions::types::{
-    Extension, ExtensionLoadError, ExtensionRuntime, LoadExtensionsResult,
-    PendingNativeProviderRegistration, PendingProviderRegistration, SourceInfo,
+    EntryRenderer, Extension, ExtensionFlag, ExtensionLoadError, ExtensionRuntime,
+    ExtensionShortcut, FlagType, HandlerFn, LoadExtensionsResult, MarkdownTransformer,
+    MessageRenderer, PendingNativeProviderRegistration, PendingProviderRegistration,
+    RegisteredCommand, RegisteredTool, RegistrationKind, SourceInfo,
 };
 use crate::core::pi_manifest::read_pi_manifest;
+
+/// Rust-native equivalent of upstream `ExtensionAPI`. It is intentionally
+/// scoped to registration: runtime actions are supplied by the runner after
+/// loading and remain unavailable while a factory is evaluated.
+pub struct ExtensionApi<'a> {
+    extension: &'a mut Extension,
+    runtime: Arc<Mutex<ExtensionRuntime>>,
+    extension_path: String,
+}
+
+impl<'a> ExtensionApi<'a> {
+    fn new(
+        extension: &'a mut Extension,
+        runtime: Arc<Mutex<ExtensionRuntime>>,
+        extension_path: &str,
+    ) -> Self {
+        Self {
+            extension,
+            runtime,
+            extension_path: extension_path.to_string(),
+        }
+    }
+
+    fn assert_active(&self) -> Result<(), String> {
+        self.runtime
+            .lock()
+            .map_err(|_| "Extension runtime lock poisoned".to_string())?
+            .assert_active()
+    }
+
+    fn source_info(&self) -> SourceInfo {
+        self.extension.source_info.clone()
+    }
+
+    pub fn on(&mut self, event: &str, handler: HandlerFn) -> Result<(), String> {
+        self.assert_active()?;
+        self.extension
+            .handlers
+            .entry(event.to_string())
+            .or_default()
+            .push(handler);
+        self.extension
+            .record_registration(RegistrationKind::Handler, Some(event.to_string()));
+        Ok(())
+    }
+
+    pub fn register_tool(&mut self, tool: RegisteredTool) -> Result<(), String> {
+        self.assert_active()?;
+        let name = tool.name.clone();
+        self.extension.tools.insert(name.clone(), tool);
+        self.extension
+            .record_registration(RegistrationKind::Tool, Some(name));
+        Ok(())
+    }
+
+    pub fn register_command(
+        &mut self,
+        name: &str,
+        description: Option<String>,
+        handler: HandlerFn,
+    ) -> Result<(), String> {
+        self.assert_active()?;
+        let name = name.to_string();
+        self.extension.commands.insert(
+            name.clone(),
+            RegisteredCommand {
+                name: name.clone(),
+                source_info: self.source_info(),
+                description,
+                handler,
+            },
+        );
+        self.extension
+            .record_registration(RegistrationKind::Command, Some(name));
+        Ok(())
+    }
+
+    pub fn register_shortcut(
+        &mut self,
+        shortcut: &str,
+        description: Option<String>,
+        handler: HandlerFn,
+    ) -> Result<(), String> {
+        self.assert_active()?;
+        let shortcut_name = shortcut.to_string();
+        self.extension.shortcuts.insert(
+            shortcut_name.clone(),
+            ExtensionShortcut {
+                shortcut: shortcut_name.clone(),
+                description,
+                handler,
+                extension_path: self.extension_path.clone(),
+            },
+        );
+        self.extension
+            .record_registration(RegistrationKind::Shortcut, Some(shortcut_name));
+        Ok(())
+    }
+
+    pub fn register_flag(
+        &mut self,
+        name: &str,
+        description: Option<String>,
+        flag_type: FlagType,
+        default: Option<serde_json::Value>,
+    ) -> Result<(), String> {
+        self.assert_active()?;
+        if let Some(value) = &default {
+            let valid = match flag_type {
+                FlagType::Boolean => value.is_boolean(),
+                FlagType::String => value.is_string(),
+            };
+            if !valid {
+                let expected = match flag_type {
+                    FlagType::Boolean => "boolean",
+                    FlagType::String => "string",
+                };
+                let actual = match value {
+                    serde_json::Value::Null => "object",
+                    serde_json::Value::Bool(_) => "boolean",
+                    serde_json::Value::Number(_) => "number",
+                    serde_json::Value::String(_) => "string",
+                    serde_json::Value::Array(_) | serde_json::Value::Object(_) => "object",
+                };
+                return Err(format!(
+                    "Invalid default for flag \"{name}\": expected {expected}, got {actual}"
+                ));
+            }
+        }
+        let name = name.to_string();
+        self.extension.flags.insert(
+            name.clone(),
+            ExtensionFlag {
+                name: name.clone(),
+                description,
+                flag_type,
+                default,
+                extension_path: self.extension_path.clone(),
+            },
+        );
+        self.extension
+            .record_registration(RegistrationKind::Flag, Some(name));
+        Ok(())
+    }
+
+    pub fn register_message_renderer(
+        &mut self,
+        message_type: &str,
+        renderer: MessageRenderer,
+    ) -> Result<(), String> {
+        self.assert_active()?;
+        let name = message_type.to_string();
+        self.extension
+            .message_renderers
+            .insert(name.clone(), renderer);
+        self.extension
+            .record_registration(RegistrationKind::MessageRenderer, Some(name));
+        Ok(())
+    }
+
+    pub fn register_markdown_transformer(
+        &mut self,
+        transformer: MarkdownTransformer,
+    ) -> Result<(), String> {
+        self.assert_active()?;
+        self.extension.markdown_transformer = Some(transformer);
+        self.extension
+            .record_registration(RegistrationKind::MarkdownTransformer, None);
+        Ok(())
+    }
+
+    pub fn register_entry_renderer(
+        &mut self,
+        entry_type: &str,
+        renderer: EntryRenderer,
+    ) -> Result<(), String> {
+        self.assert_active()?;
+        let name = entry_type.to_string();
+        self.extension
+            .entry_renderers
+            .insert(name.clone(), renderer);
+        self.extension
+            .record_registration(RegistrationKind::EntryRenderer, Some(name));
+        Ok(())
+    }
+
+    pub fn get_flag(&self, name: &str) -> Result<Option<serde_json::Value>, String> {
+        self.assert_active()?;
+        Ok(self
+            .runtime
+            .lock()
+            .map_err(|_| "Extension runtime lock poisoned".to_string())?
+            .flag_values
+            .get(name)
+            .cloned())
+    }
+}
 
 /// Entry file extensions accepted by the loader (upstream `isExtensionFile`).
 pub fn is_extension_file(name: &str) -> bool {
@@ -74,7 +274,9 @@ pub fn discover_extensions_in_dir(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
-    for entry in entries.flatten() {
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
         let entry_path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         let file_type = entry.file_type().ok();
@@ -134,19 +336,21 @@ pub fn run_external_extension(
         .spawn()
         .map_err(|e| format!("Failed to load extension: {e}"))?;
     if let Some(timeout_ms) = timeout_ms {
-        let pid = child.id();
         let start = std::time::Instant::now();
         loop {
-            if let Some(status) = child
+            if let Some(_status) = child
                 .try_wait()
                 .map_err(|e| format!("Failed to load extension: {e}"))?
             {
-                return finish_child(status.code(), child, extension_path, resolved_path);
+                let output = child
+                    .wait_with_output()
+                    .map_err(|e| format!("Failed to load extension: {e}"))?;
+                return finish_child_output(output, extension_path)
+                    .map(|_| make_extension(extension_path, resolved_path));
             }
             if start.elapsed().as_millis() >= timeout_ms as u128 {
-                let _ = Command::new("kill")
-                    .args([pid.to_string().as_str()])
-                    .status();
+                let _ = child.kill();
+                let _ = child.wait();
                 return Err(format!(
                     "Failed to load extension: extension runner timed out for {extension_path}"
                 ));
@@ -157,46 +361,28 @@ pub fn run_external_extension(
         let output = child
             .wait_with_output()
             .map_err(|e| format!("Failed to load extension: {e}"))?;
-        if output.status.success() {
-            Ok(make_extension(extension_path, resolved_path))
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let summary = stderr.trim();
-            let error = if summary.is_empty() {
-                format!(
-                    "Failed to load extension: runner exited with code {}",
-                    output
-                        .status
-                        .code()
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "unknown".to_string())
-                )
-            } else {
-                format!("Failed to load extension: {summary}")
-            };
-            Err(error)
-        }
+        finish_child_output(output, extension_path)
+            .map(|_| make_extension(extension_path, resolved_path))
     }
 }
 
-fn finish_child(
-    code: Option<i32>,
-    mut child: std::process::Child,
-    extension_path: &str,
-    resolved_path: &Path,
-) -> Result<Extension, String> {
-    if code == Some(0) {
-        // Drain remaining pipes.
-        let _ = child.wait_with_output();
-        Ok(make_extension(extension_path, resolved_path))
-    } else {
-        let _ = child.kill();
-        let _ = child.wait();
+fn finish_child_output(output: std::process::Output, _extension_path: &str) -> Result<(), String> {
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let summary = stderr.trim();
+    if summary.is_empty() {
         Err(format!(
             "Failed to load extension: runner exited with code {}",
-            code.map(|c| c.to_string())
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         ))
+    } else {
+        Err(format!("Failed to load extension: {summary}"))
     }
 }
 
@@ -219,6 +405,51 @@ fn make_extension(extension_path: &str, resolved_path: &Path) -> Extension {
         hidden: false,
         source_info: SourceInfo::synthetic(extension_path, &source, base_dir),
         ..Default::default()
+    }
+}
+
+/// Load a Rust-native extension factory with the same failure boundary as the
+/// upstream in-process loader. Registration is atomic from the caller's
+/// perspective: a factory error or panic returns an error and no extension is
+/// added to the loaded set.
+pub fn load_extension_from_factory<F>(
+    factory: F,
+    cwd: &str,
+    runtime: Arc<Mutex<ExtensionRuntime>>,
+    extension_path: &str,
+) -> Result<Extension, ExtensionLoadError>
+where
+    F: FnOnce(&mut ExtensionApi<'_>) -> Result<(), String>,
+{
+    let resolved = resolve_relative_path(extension_path, cwd);
+    let mut extension = make_extension(extension_path, &resolved);
+    let factory_result = catch_unwind(AssertUnwindSafe(|| {
+        let mut api = ExtensionApi::new(&mut extension, runtime, extension_path);
+        factory(&mut api)
+    }));
+    match factory_result {
+        Ok(Ok(())) => Ok(extension),
+        Ok(Err(error)) => Err(ExtensionLoadError {
+            path: extension_path.to_string(),
+            error: format!("Failed to load extension: {error}"),
+        }),
+        Err(payload) => Err(ExtensionLoadError {
+            path: extension_path.to_string(),
+            error: format!(
+                "Failed to load extension: extension factory panicked: {}",
+                panic_message(payload)
+            ),
+        }),
+    }
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }
 
@@ -381,22 +612,24 @@ pub fn queue_provider_registration(
     runtime: &Arc<Mutex<ExtensionRuntime>>,
     registration: PendingProviderRegistration,
 ) {
-    runtime
-        .lock()
-        .unwrap()
-        .pending_provider_registrations
-        .push(registration);
+    if let Ok(mut guard) = runtime.lock() {
+        if guard.assert_active().is_ok() {
+            guard.pending_provider_registrations.push(registration);
+        }
+    }
 }
 
 pub fn queue_native_provider_registration(
     runtime: &Arc<Mutex<ExtensionRuntime>>,
     registration: PendingNativeProviderRegistration,
 ) {
-    runtime
-        .lock()
-        .unwrap()
-        .pending_native_provider_registrations
-        .push(registration);
+    if let Ok(mut guard) = runtime.lock() {
+        if guard.assert_active().is_ok() {
+            guard
+                .pending_native_provider_registrations
+                .push(registration);
+        }
+    }
 }
 
 /// Serialize the runtime's queued provider registrations (upstream flush).
@@ -406,7 +639,9 @@ pub fn take_pending_provider_registrations(
     Vec<PendingProviderRegistration>,
     Vec<PendingNativeProviderRegistration>,
 ) {
-    let mut guard = runtime.lock().unwrap();
+    let Ok(mut guard) = runtime.lock() else {
+        return (Vec::new(), Vec::new());
+    };
     (
         std::mem::take(&mut guard.pending_provider_registrations),
         std::mem::take(&mut guard.pending_native_provider_registrations),
@@ -416,13 +651,15 @@ pub fn take_pending_provider_registrations(
 /// Build the `VirtualModule`-style flag map from registered extension flags:
 /// defaults are applied when no CLI value exists (upstream `registerFlag`).
 pub fn apply_flag_defaults(runtime: &Arc<Mutex<ExtensionRuntime>>, extensions: &[Extension]) {
-    let mut guard = runtime.lock().unwrap();
+    let Ok(mut guard) = runtime.lock() else {
+        return;
+    };
     for extension in extensions {
         for (name, flag) in &extension.flags {
-            if flag.default.is_some() && !guard.flag_values.contains_key(name) {
-                guard
-                    .flag_values
-                    .insert(name.clone(), flag.default.clone().unwrap());
+            if let Some(default) = &flag.default {
+                if !guard.flag_values.contains_key(name) {
+                    guard.flag_values.insert(name.clone(), default.clone());
+                }
             }
         }
     }

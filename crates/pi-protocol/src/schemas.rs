@@ -43,7 +43,7 @@ fn require_integer(value: &JsonValue, field: &str, minimum: i64) -> VResult<i64>
 }
 
 /// Collects unknown keys on a strict object.
-fn strict_object<'a>(map: &'a serde_json::Map<String, JsonValue>, allowed: &[&str]) -> VResult<()> {
+fn strict_object(map: &serde_json::Map<String, JsonValue>, allowed: &[&str]) -> VResult<()> {
     for key in map.keys() {
         if !allowed.contains(&key.as_str()) {
             return Err(format!("unexpected property {key:?}"));

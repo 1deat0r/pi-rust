@@ -2,8 +2,8 @@
 
 use pi_protocol::ProtocolErrorCode;
 
-pub const INTERNAL_SERVER_ERROR_MESSAGE: &str = "The Pi server encountered an internal error";
-pub const NOT_IMPLEMENTED_MESSAGE: &str = "The requested operation is not implemented";
+pub const INTERNAL_SERVER_ERROR_MESSAGE: &str = "Internal server error";
+pub const NOT_IMPLEMENTED_MESSAGE: &str = "Operation is not implemented";
 
 #[derive(Debug, Clone)]
 pub struct PiServerError {

@@ -149,7 +149,7 @@ async fn session_handle_subscribe_gets_snapshot_events() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let _ = handle.prompt("sub test").await.unwrap();
     for _ in 0..20 {
-        if received.lock().unwrap().len() >= 1 {
+        if !received.lock().unwrap().is_empty() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;

@@ -9,17 +9,9 @@ pub const PAYLOAD_BLOCK_SIZE: usize = 64 * 1024;
 /// Default upper bound for one framed CBOR payload.
 pub const DEFAULT_MAX_FRAME_LENGTH: usize = 16 * 1024 * 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FrameDecoderOptions {
     pub max_frame_length: Option<usize>,
-}
-
-impl Default for FrameDecoderOptions {
-    fn default() -> Self {
-        Self {
-            max_frame_length: None,
-        }
-    }
 }
 
 fn resolve_max_frame_length(options: &FrameDecoderOptions) -> Result<usize, FrameError> {

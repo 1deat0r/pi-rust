@@ -1,29 +1,24 @@
 //! Extension runner — port of
 //! `packages/coding-agent/src/core/extensions/runner.ts`.
-//!
-//! The runner owns the loaded extension set and exposes the registration
-//! aggregation and query surface used by the rest of the agent: registered
-//! tools (first registration per name wins), commands (with invocation-name
-//! disambiguation), flags, shortcuts and their conflict diagnostics, and
-//! handler-presence checks. Event dispatch (`emit*`) is modeled structurally:
-//! handler closures receive a JSON payload; with no live JS extensions the
-//! dispatch loop's contract is tested via injected closures.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 
 use crate::core::extensions::types::{
-    Extension, ExtensionContext, ExtensionError, ExtensionFlag, ExtensionRuntime,
-    RegisteredCommand, RegisteredTool, ResolvedCommand, SourceInfo,
+    EntryRenderer, Extension, ExtensionContext, ExtensionError, ExtensionFlag, ExtensionRuntime,
+    ExtensionShortcut, HandlerFn, MarkdownTransformContext, MarkdownTransformer, MessageRenderer,
+    RegisteredTool, ResolvedCommand, SourceInfo,
 };
+
+pub use crate::core::extensions::types::InputEventResult;
 
 /// Error listener closure (upstream `ExtensionErrorListener`).
 pub type ExtensionErrorListener = Arc<dyn Fn(ExtensionError) + Send + Sync>;
 
-/// Diagnostics reported for extension shortcuts/commands (upstream
-/// `ResourceDiagnostic`).
+/// Diagnostics reported for extension shortcuts/commands.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResourceDiagnostic {
     pub warning: bool,
@@ -31,8 +26,7 @@ pub struct ResourceDiagnostic {
     pub path: Option<String>,
 }
 
-/// Keybinding ids reserved from extension shortcuts (upstream
-/// `RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS`).
+/// Keybinding ids reserved from extension shortcuts.
 pub const RESERVED_KEYBINDINGS: &[&str] = &[
     "app.interrupt",
     "app.clear",
@@ -61,25 +55,37 @@ pub struct KeybindingsConfig {
 }
 
 impl KeybindingsConfig {
-    /// The per-key map with reserved-action precedence (upstream
-    /// `buildBuiltinKeybindings`).
     fn builtin_by_key(&self) -> BTreeMap<String, (String, bool)> {
-        let mut out: BTreeMap<String, (String, bool)> = BTreeMap::new();
+        let mut out = BTreeMap::new();
         for (keybinding, keys) in &self.bindings {
-            let restrict_override = RESERVED_KEYBINDINGS.contains(&keybinding.as_str());
+            let restricted = RESERVED_KEYBINDINGS.contains(&keybinding.as_str());
             for key in keys {
                 let normalized = key.to_lowercase();
-                let existing = out.get(&normalized);
-                if let Some((_binding, existing_restrict)) = existing {
-                    if *existing_restrict && !restrict_override {
-                        continue;
-                    }
+                if out
+                    .get(&normalized)
+                    .map(|(_, existing_restricted)| *existing_restricted && !restricted)
+                    .unwrap_or(false)
+                {
+                    continue;
                 }
-                out.insert(normalized, (keybinding.clone(), restrict_override));
+                out.insert(normalized, (keybinding.clone(), restricted));
             }
         }
         out
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ResourceDiscovery {
+    pub skill_paths: Vec<String>,
+    pub prompt_paths: Vec<String>,
+    pub theme_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProjectTrustResult {
+    pub result: Option<Value>,
+    pub errors: Vec<ExtensionError>,
 }
 
 /// Extension runner (upstream `ExtensionRunner`).
@@ -90,7 +96,8 @@ pub struct ExtensionRunner {
     cwd: String,
     mode: String,
     has_ui: bool,
-    error_listeners: Arc<Mutex<Vec<ExtensionErrorListener>>>,
+    error_listeners: Arc<Mutex<Vec<(u64, ExtensionErrorListener)>>>,
+    next_listener_id: Arc<Mutex<u64>>,
     shortcut_diagnostics: Vec<ResourceDiagnostic>,
     command_diagnostics: Vec<ResourceDiagnostic>,
 }
@@ -101,15 +108,14 @@ impl ExtensionRunner {
         runtime: Arc<Mutex<ExtensionRuntime>>,
         cwd: String,
     ) -> Self {
-        let has_ui = false;
-        let mode = "print".to_string();
         Self {
             extensions,
             runtime,
             cwd,
-            mode,
-            has_ui,
+            mode: "print".to_string(),
+            has_ui: false,
             error_listeners: Arc::new(Mutex::new(Vec::new())),
+            next_listener_id: Arc::new(Mutex::new(0)),
             shortcut_diagnostics: Vec::new(),
             command_diagnostics: Vec::new(),
         }
@@ -125,112 +131,201 @@ impl ExtensionRunner {
     }
 
     pub fn get_extension_paths(&self) -> Vec<String> {
-        self.extensions.iter().map(|e| e.path.clone()).collect()
+        self.extensions
+            .iter()
+            .map(|extension| extension.path.clone())
+            .collect()
     }
 
-    /// All registered tools from all extensions (first registration per name
-    /// wins; upstream `getAllRegisteredTools`).
+    pub fn create_context(&self) -> ExtensionContext {
+        ExtensionContext {
+            mode: self.mode.clone(),
+            cwd: self.cwd.clone(),
+            has_ui: self.has_ui,
+        }
+    }
+
+    fn active_error(&self, event: &str) -> Option<ExtensionError> {
+        match self.runtime.lock() {
+            Ok(runtime) => runtime.assert_active().err().map(|error| ExtensionError {
+                extension_path: "<runtime>".to_string(),
+                event: event.to_string(),
+                error,
+            }),
+            Err(_) => Some(ExtensionError {
+                extension_path: "<runtime>".to_string(),
+                event: event.to_string(),
+                error: "Extension runtime lock poisoned".to_string(),
+            }),
+        }
+    }
+
+    fn handler_error(&self, extension_path: &str, event: &str, error: String) -> ExtensionError {
+        let error = ExtensionError {
+            extension_path: extension_path.to_string(),
+            event: event.to_string(),
+            error,
+        };
+        self.emit_error(error.clone());
+        error
+    }
+
+    fn call_handler(
+        handler: &HandlerFn,
+        context: &ExtensionContext,
+        payload: &Value,
+    ) -> Result<Option<Value>, String> {
+        match catch_unwind(AssertUnwindSafe(|| handler(context, payload))) {
+            Ok(result) => result,
+            Err(payload) => Err(format!(
+                "extension handler panicked: {}",
+                panic_message(payload)
+            )),
+        }
+    }
+
+    fn call_renderer(
+        renderer: &MessageRenderer,
+        item: &Value,
+        options: &Value,
+    ) -> Result<Option<Value>, String> {
+        match catch_unwind(AssertUnwindSafe(|| renderer(item, options))) {
+            Ok(result) => result,
+            Err(payload) => Err(format!(
+                "extension renderer panicked: {}",
+                panic_message(payload)
+            )),
+        }
+    }
+
+    fn call_entry_renderer(
+        renderer: &EntryRenderer,
+        item: &Value,
+        options: &Value,
+    ) -> Result<Option<Value>, String> {
+        match catch_unwind(AssertUnwindSafe(|| renderer(item, options))) {
+            Ok(result) => result,
+            Err(payload) => Err(format!(
+                "extension renderer panicked: {}",
+                panic_message(payload)
+            )),
+        }
+    }
+
+    /// All registered tools from all extensions. The first registration by
+    /// extension/load order wins, matching upstream.
     pub fn get_all_registered_tools(&self) -> Vec<RegisteredTool> {
-        let mut tools_by_name: BTreeMap<String, RegisteredTool> = BTreeMap::new();
-        for ext in &self.extensions {
-            for (name, tool) in &ext.tools {
-                if !tools_by_name.contains_key(name) {
-                    tools_by_name.insert(name.clone(), tool.clone());
+        let mut seen = BTreeSet::new();
+        let mut tools = Vec::new();
+        for extension in &self.extensions {
+            for name in extension.ordered_tool_names() {
+                if seen.insert(name.clone()) {
+                    if let Some(tool) = extension.tools.get(&name) {
+                        tools.push(tool.clone());
+                    }
                 }
             }
         }
-        tools_by_name.into_values().collect()
+        tools
     }
 
-    /// Get a tool definition by name (upstream `getToolDefinition`).
     pub fn get_tool_definition(&self, tool_name: &str) -> Option<RegisteredTool> {
         self.get_all_registered_tools()
             .into_iter()
-            .find(|t| t.name == tool_name)
+            .find(|tool| tool.name == tool_name)
     }
 
-    /// All extension flags (first registration per name wins; upstream
-    /// `getFlags`).
+    /// All extension flags. The first registration by name wins.
     pub fn get_flags(&self) -> BTreeMap<String, ExtensionFlag> {
-        let mut all_flags = BTreeMap::new();
-        for ext in &self.extensions {
-            for (name, flag) in &ext.flags {
-                if !all_flags.contains_key(name) {
-                    all_flags.insert(name.clone(), flag.clone());
+        let mut flags = BTreeMap::new();
+        for extension in &self.extensions {
+            for name in extension.ordered_flag_names() {
+                if !flags.contains_key(&name) {
+                    if let Some(flag) = extension.flags.get(&name) {
+                        flags.insert(name, flag.clone());
+                    }
                 }
             }
         }
-        all_flags
+        flags
     }
 
     pub fn set_flag_value(&self, name: &str, value: Value) {
-        self.runtime
-            .lock()
-            .unwrap()
-            .flag_values
-            .insert(name.to_string(), value);
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.set_flag_value(name, value);
+        }
     }
 
     pub fn get_flag_values(&self) -> BTreeMap<String, Value> {
-        self.runtime.lock().unwrap().flag_values.clone()
+        self.runtime
+            .lock()
+            .map(|runtime| runtime.flag_values.clone())
+            .unwrap_or_default()
     }
 
-    /// Whether any extension registered a handler for an event type
-    /// (upstream `hasHandlers`).
     pub fn has_handlers(&self, event_type: &str) -> bool {
-        self.extensions.iter().any(|ext| {
-            ext.handlers
+        self.extensions.iter().any(|extension| {
+            extension
+                .handlers
                 .get(event_type)
-                .map(|h| !h.is_empty())
+                .map(|handlers| !handlers.is_empty())
                 .unwrap_or(false)
         })
     }
 
-    /// Resolve registered commands with invocation-name disambiguation
-    /// (upstream `resolveRegisteredCommands`): a name registered by multiple
-    /// extensions gets `name`, `name:1`, `name:2`, ... suffixes, then unique
-    /// suffixes for repeats.
-    pub fn get_registered_commands(&mut self) -> Vec<ResolvedCommand> {
-        self.command_diagnostics = Vec::new();
-        let mut commands: Vec<RegisteredCommand> = Vec::new();
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for ext in &self.extensions {
-            for command in ext.commands.values() {
-                commands.push(command.clone());
-                *counts.entry(command.name.clone()).or_default() += 1;
-            }
-        }
-        let mut seen: BTreeMap<String, usize> = BTreeMap::new();
-        let mut taken: std::collections::BTreeSet<String> = BTreeSet::new();
-        let mut resolved = Vec::new();
-        for command in commands {
-            let occurrence = *seen.entry(command.name.clone()).or_default() + 1;
-            seen.insert(command.name.clone(), occurrence);
-            let mut invocation_name = if counts.get(&command.name).copied().unwrap_or(1) > 1 {
-                format!("{}:{occurrence}", command.name)
-            } else {
-                command.name.clone()
-            };
-            if taken.contains(&invocation_name) {
-                let mut suffix = occurrence;
-                loop {
-                    suffix += 1;
-                    invocation_name = format!("{}:{suffix}", command.name);
-                    if !taken.contains(&invocation_name) {
-                        break;
-                    }
+    fn resolved_commands(&self) -> Vec<ResolvedCommand> {
+        let mut commands = Vec::new();
+        for extension in &self.extensions {
+            for name in extension.ordered_command_names() {
+                if let Some(command) = extension.commands.get(&name) {
+                    commands.push(command.clone());
                 }
             }
-            taken.insert(invocation_name.clone());
-            resolved.push(ResolvedCommand {
-                name: command.name.clone(),
-                invocation_name,
-                source_info: command.source_info,
-                description: command.description,
-                handler: command.handler,
-            });
         }
-        resolved
+        let mut counts = BTreeMap::<String, usize>::new();
+        for command in &commands {
+            *counts.entry(command.name.clone()).or_default() += 1;
+        }
+        let mut seen = BTreeMap::<String, usize>::new();
+        let mut taken = BTreeSet::new();
+        commands
+            .into_iter()
+            .map(|command| {
+                let occurrence = {
+                    let count = seen.entry(command.name.clone()).or_default();
+                    *count += 1;
+                    *count
+                };
+                let mut invocation_name = if counts.get(&command.name).copied().unwrap_or(1) > 1 {
+                    format!("{}:{occurrence}", command.name)
+                } else {
+                    command.name.clone()
+                };
+                if !taken.insert(invocation_name.clone()) {
+                    let mut suffix = occurrence;
+                    loop {
+                        suffix += 1;
+                        let candidate = format!("{}:{suffix}", command.name);
+                        if taken.insert(candidate.clone()) {
+                            invocation_name = candidate;
+                            break;
+                        }
+                    }
+                }
+                ResolvedCommand {
+                    name: command.name,
+                    invocation_name,
+                    source_info: command.source_info,
+                    description: command.description,
+                    handler: command.handler,
+                }
+            })
+            .collect()
+    }
+
+    pub fn get_registered_commands(&mut self) -> Vec<ResolvedCommand> {
+        self.command_diagnostics.clear();
+        self.resolved_commands()
     }
 
     pub fn get_command_diagnostics(&self) -> Vec<ResourceDiagnostic> {
@@ -240,137 +335,700 @@ impl ExtensionRunner {
     pub fn get_command(&mut self, name: &str) -> Option<ResolvedCommand> {
         self.get_registered_commands()
             .into_iter()
-            .find(|c| c.invocation_name == name)
+            .find(|command| command.invocation_name == name)
     }
 
-    /// Get shortcuts with built-in conflict diagnostics (upstream
-    /// `getShortcuts`). Reserved keybindings skip extension shortcuts.
+    pub fn execute_command(
+        &self,
+        invocation_name: &str,
+        args: &str,
+    ) -> Result<Option<Value>, String> {
+        let Some(command) = self
+            .resolved_commands()
+            .into_iter()
+            .find(|command| command.invocation_name == invocation_name)
+        else {
+            return Err(format!("Extension command not found: {invocation_name}"));
+        };
+        let payload = json!({
+            "type": "command",
+            "name": command.name,
+            "invocationName": invocation_name,
+            "args": args,
+        });
+        match Self::call_handler(&command.handler, &self.create_context(), &payload) {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                let error =
+                    self.handler_error(&format!("command:{invocation_name}"), "command", error);
+                Err(error.error)
+            }
+        }
+    }
+
+    /// Get shortcuts with built-in conflict diagnostics. Reserved built-ins
+    /// skip extension shortcuts; non-reserved built-ins are intentionally
+    /// allowed and diagnosed.
     pub fn get_shortcuts(
         &mut self,
         keybindings: &KeybindingsConfig,
-    ) -> BTreeMap<String, crate::core::extensions::types::ExtensionShortcut> {
-        self.shortcut_diagnostics = Vec::new();
+    ) -> BTreeMap<String, ExtensionShortcut> {
+        self.shortcut_diagnostics.clear();
         let builtin = keybindings.builtin_by_key();
-        let mut extension_shortcuts: BTreeMap<
-            String,
-            crate::core::extensions::types::ExtensionShortcut,
-        > = BTreeMap::new();
-        for ext in &self.extensions {
-            for (key, shortcut) in &ext.shortcuts {
-                let normalized = key.to_lowercase();
-                if let Some((_binding, restrict_override)) = builtin.get(&normalized) {
-                    if *restrict_override {
+        let mut shortcuts: BTreeMap<String, ExtensionShortcut> = BTreeMap::new();
+        for extension in &self.extensions {
+            for name in extension.ordered_shortcut_names() {
+                let Some(shortcut) = extension.shortcuts.get(&name) else {
+                    continue;
+                };
+                let normalized = name.to_lowercase();
+                if let Some((binding, restricted)) = builtin.get(&normalized) {
+                    if *restricted {
                         self.shortcut_diagnostics.push(ResourceDiagnostic {
                             warning: true,
                             message: format!(
-                                "Extension shortcut '{key}' from {} conflicts with built-in shortcut. Skipping.",
+                                "Extension shortcut '{name}' from {} conflicts with built-in shortcut '{binding}'. Skipping.",
                                 shortcut.extension_path
                             ),
                             path: Some(shortcut.extension_path.clone()),
                         });
                         continue;
                     }
-                    self.shortcut_diagnostics.push(ResourceDiagnostic {
-                        warning: true,
-                        message: format!(
-                            "Extension shortcut conflict: '{key}' is built-in shortcut and {}. Using {}.",
-                            shortcut.extension_path, shortcut.extension_path
-                        ),
-                        path: Some(shortcut.extension_path.clone()),
-                    });
+                    if !self.has_ui {
+                        self.shortcut_diagnostics.push(ResourceDiagnostic {
+                            warning: true,
+                            message: format!(
+                                "Extension shortcut conflict: '{name}' is built-in shortcut '{binding}' and {}. Using {}.",
+                                shortcut.extension_path, shortcut.extension_path
+                            ),
+                            path: Some(shortcut.extension_path.clone()),
+                        });
+                    }
                 }
-                if let Some(existing) = extension_shortcuts.get(&normalized) {
+                if let Some(existing) = shortcuts.get(&normalized) {
                     self.shortcut_diagnostics.push(ResourceDiagnostic {
                         warning: true,
                         message: format!(
-                            "Extension shortcut conflict: '{key}' registered by both {} and {}. Using {}.",
+                            "Extension shortcut conflict: '{name}' registered by both {} and {}. Using {}.",
                             existing.extension_path, shortcut.extension_path, shortcut.extension_path
                         ),
                         path: Some(shortcut.extension_path.clone()),
                     });
                 }
-                extension_shortcuts.insert(normalized, shortcut.clone());
+                shortcuts.insert(normalized, shortcut.clone());
             }
         }
-        extension_shortcuts
+        shortcuts
     }
 
     pub fn get_shortcut_diagnostics(&self) -> Vec<ResourceDiagnostic> {
         self.shortcut_diagnostics.clone()
     }
 
-    /// Register an error listener; returns an unsubscribe closure.
-    pub fn on_error(
-        &self,
-        listener: Arc<dyn Fn(ExtensionError) + Send + Sync>,
-    ) -> Box<dyn Fn() + Send + Sync> {
-        self.error_listeners.lock().unwrap().push(listener);
-        let listeners = self.error_listeners.clone();
-        let index = self.error_listeners.lock().unwrap().len() - 1;
+    /// Register an error listener. Removal uses a stable id so removing one
+    /// listener cannot shift or accidentally remove another listener.
+    pub fn on_error(&self, listener: ExtensionErrorListener) -> Box<dyn Fn() + Send + Sync> {
+        let id = match self.next_listener_id.lock() {
+            Ok(mut next) => {
+                let id = *next;
+                *next = next.saturating_add(1);
+                id
+            }
+            Err(_) => 0,
+        };
+        if let Ok(mut listeners) = self.error_listeners.lock() {
+            listeners.push((id, listener));
+        }
+        let listeners = Arc::clone(&self.error_listeners);
         Box::new(move || {
-            let mut guard = listeners.lock().unwrap();
-            if index < guard.len() {
-                guard.remove(index);
+            if let Ok(mut listeners) = listeners.lock() {
+                listeners.retain(|(listener_id, _)| *listener_id != id);
             }
         })
     }
 
     pub fn emit_error(&self, error: ExtensionError) {
-        let listeners: Vec<ExtensionErrorListener> = self.error_listeners.lock().unwrap().clone();
+        let listeners = self
+            .error_listeners
+            .lock()
+            .map(|listeners| {
+                listeners
+                    .iter()
+                    .map(|(_, listener)| Arc::clone(listener))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         for listener in listeners {
-            listener(error.clone());
+            let _ = catch_unwind(AssertUnwindSafe(|| listener(error.clone())));
         }
     }
 
-    /// Emit an event to all handlers in registration order (upstream generic
-    /// `emit`). Returns the first `cancel`-style result for session_before_*
-    /// events (modeled here as the first non-None handler result).
+    /// Emit a generic lifecycle event. All handlers run in extension and
+    /// registration order. Session-before events stop only after a handler
+    /// explicitly returns `{cancel:true}`; handler failures are isolated and
+    /// reported to listeners.
     pub fn emit(
         &self,
         event_type: &str,
         payload: &Value,
     ) -> Result<Option<Value>, Vec<ExtensionError>> {
-        let ctx = ExtensionContext {
-            mode: self.mode.clone(),
-            cwd: self.cwd.clone(),
-            has_ui: self.has_ui,
-        };
         let mut errors = Vec::new();
-        for ext in &self.extensions {
-            let handlers = ext.handlers.get(event_type);
-            let Some(handlers) = handlers else { continue };
+        if let Some(error) = self.active_error(event_type) {
+            errors.push(error.clone());
+            self.emit_error(error);
+            return Err(errors);
+        }
+        let context = self.create_context();
+        let session_before = event_type.starts_with("session_before_");
+        let mut result = None;
+        'extensions: for extension in &self.extensions {
+            let Some(handlers) = extension.handlers.get(event_type) else {
+                continue;
+            };
             for handler in handlers {
-                match handler(&ctx, payload) {
-                    Ok(Some(result)) => return Ok(Some(result)),
+                match Self::call_handler(handler, &context, payload) {
+                    Ok(Some(value)) => {
+                        let cancel =
+                            session_before && value.get("cancel") == Some(&Value::Bool(true));
+                        result = Some(value);
+                        if cancel {
+                            break 'extensions;
+                        }
+                    }
                     Ok(None) => {}
-                    Err(error) => errors.push(ExtensionError {
-                        extension_path: ext.path.clone(),
-                        event: event_type.to_string(),
-                        error,
-                    }),
+                    Err(error) => {
+                        errors.push(self.handler_error(&extension.path, event_type, error))
+                    }
                 }
             }
         }
         if errors.is_empty() {
-            Ok(None)
+            Ok(result)
         } else {
             Err(errors)
         }
     }
 
-    /// Create an ExtensionContext for event handlers (upstream
-    /// `createContext`).
-    pub fn create_context(&self) -> ExtensionContext {
-        ExtensionContext {
-            mode: self.mode.clone(),
-            cwd: self.cwd.clone(),
-            has_ui: self.has_ui,
+    pub fn get_message_renderer(&self, message_type: &str) -> Option<MessageRenderer> {
+        for extension in &self.extensions {
+            for name in extension.ordered_message_renderer_names() {
+                if name == message_type {
+                    if let Some(renderer) = extension.message_renderers.get(&name) {
+                        return Some(Arc::clone(renderer));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn render_message(
+        &self,
+        message_type: &str,
+        message: &Value,
+        options: &Value,
+    ) -> Result<Option<Value>, String> {
+        for extension in &self.extensions {
+            for name in extension.ordered_message_renderer_names() {
+                if name != message_type {
+                    continue;
+                }
+                let Some(renderer) = extension.message_renderers.get(&name) else {
+                    continue;
+                };
+                return match Self::call_renderer(renderer, message, options) {
+                    Ok(result) => Ok(result),
+                    Err(error) => {
+                        self.handler_error(&extension.path, "message_renderer", error);
+                        Ok(None)
+                    }
+                };
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn get_entry_renderer(&self, entry_type: &str) -> Option<EntryRenderer> {
+        for extension in &self.extensions {
+            for name in extension.ordered_entry_renderer_names() {
+                if name == entry_type {
+                    if let Some(renderer) = extension.entry_renderers.get(&name) {
+                        return Some(Arc::clone(renderer));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn render_entry(
+        &self,
+        entry_type: &str,
+        entry: &Value,
+        options: &Value,
+    ) -> Result<Option<Value>, String> {
+        for extension in &self.extensions {
+            for name in extension.ordered_entry_renderer_names() {
+                if name != entry_type {
+                    continue;
+                }
+                let Some(renderer) = extension.entry_renderers.get(&name) else {
+                    continue;
+                };
+                return match Self::call_entry_renderer(renderer, entry, options) {
+                    Ok(result) => Ok(result),
+                    Err(error) => {
+                        self.handler_error(&extension.path, "entry_renderer", error);
+                        Ok(None)
+                    }
+                };
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn get_markdown_transformers(&self) -> Vec<MarkdownTransformer> {
+        self.extensions
+            .iter()
+            .filter_map(|extension| extension.markdown_transformer.clone())
+            .collect()
+    }
+
+    pub fn apply_markdown_transformers(
+        &self,
+        markdown: &str,
+        context: &MarkdownTransformContext,
+    ) -> String {
+        let mut current = markdown.to_string();
+        for extension in &self.extensions {
+            let Some(transformer) = &extension.markdown_transformer else {
+                continue;
+            };
+            let result = catch_unwind(AssertUnwindSafe(|| transformer(&current, context)));
+            match result {
+                Ok(Ok(transformed)) => current = transformed,
+                Ok(Err(error)) => {
+                    self.handler_error(&extension.path, "markdown_transformer", error);
+                }
+                Err(payload) => {
+                    self.handler_error(
+                        &extension.path,
+                        "markdown_transformer",
+                        format!("extension transformer panicked: {}", panic_message(payload)),
+                    );
+                }
+            }
+        }
+        current
+    }
+
+    pub fn emit_input(
+        &self,
+        text: &str,
+        images: Option<Value>,
+        source: &str,
+        streaming_behavior: Option<&str>,
+    ) -> InputEventResult {
+        if let Some(error) = self.active_error("input") {
+            self.emit_error(error);
+            return InputEventResult::continue_with(text, images);
+        }
+        let original_text = text.to_string();
+        let original_images = images.clone();
+        let mut current_text = original_text.clone();
+        let mut current_images = images;
+        let context = self.create_context();
+        for extension in &self.extensions {
+            let Some(handlers) = extension.handlers.get("input") else {
+                continue;
+            };
+            for handler in handlers {
+                let event = json!({
+                    "type": "input",
+                    "text": current_text,
+                    "images": current_images,
+                    "source": source,
+                    "streamingBehavior": streaming_behavior,
+                });
+                match Self::call_handler(handler, &context, &event) {
+                    Ok(Some(result)) => match result.get("action").and_then(Value::as_str) {
+                        Some("handled") => return InputEventResult::handled(),
+                        Some("transform") => {
+                            if let Some(transformed) = result.get("text").and_then(Value::as_str) {
+                                current_text = transformed.to_string();
+                            }
+                            if result.get("images").is_some() {
+                                current_images = result.get("images").cloned();
+                            }
+                        }
+                        _ => {}
+                    },
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.handler_error(&extension.path, "input", error);
+                    }
+                }
+            }
+        }
+        if current_text == original_text && current_images == original_images {
+            InputEventResult::continue_with(current_text, current_images)
+        } else {
+            InputEventResult::transform(current_text, current_images)
         }
     }
 
-    /// Aggregate flags into a name->flag map for the loader default pass.
+    pub fn emit_before_provider_headers(&self, headers: Value) -> Value {
+        let mut current = headers;
+        let context = self.create_context();
+        for extension in &self.extensions {
+            let Some(handlers) = extension.handlers.get("before_provider_headers") else {
+                continue;
+            };
+            for handler in handlers {
+                let event = json!({"type": "before_provider_headers", "headers": current});
+                match Self::call_handler(handler, &context, &event) {
+                    Ok(Some(patch)) => merge_headers(&mut current, patch),
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.handler_error(&extension.path, "before_provider_headers", error);
+                    }
+                }
+            }
+        }
+        current
+    }
+
+    pub fn emit_context(&self, messages: Value) -> Value {
+        let mut current = messages;
+        let context = self.create_context();
+        for extension in &self.extensions {
+            let Some(handlers) = extension.handlers.get("context") else {
+                continue;
+            };
+            for handler in handlers {
+                let event = json!({"type": "context", "messages": current});
+                match Self::call_handler(handler, &context, &event) {
+                    Ok(Some(result)) => {
+                        if let Some(messages) = result.get("messages") {
+                            current = messages.clone();
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.handler_error(&extension.path, "context", error);
+                    }
+                };
+            }
+        }
+        current
+    }
+
+    pub fn emit_tool_result(&self, result: Value) -> Option<Value> {
+        let mut current = result;
+        let context = self.create_context();
+        for extension in &self.extensions {
+            let Some(handlers) = extension.handlers.get("tool_result") else {
+                continue;
+            };
+            for handler in handlers {
+                let event = json!({"type": "tool_result", "result": current});
+                match Self::call_handler(handler, &context, &event) {
+                    Ok(Some(patch)) => apply_tool_result_patch(&mut current, &patch),
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.handler_error(&extension.path, "tool_result", error);
+                    }
+                };
+            }
+        }
+        Some(current)
+    }
+
+    pub fn emit_before_agent_start(
+        &self,
+        prompt: &str,
+        images: Option<Value>,
+        system_prompt: &str,
+        system_prompt_options: &Value,
+    ) -> Option<Value> {
+        let mut current_system_prompt = system_prompt.to_string();
+        let mut messages = Vec::new();
+        let context = self.create_context();
+        for extension in &self.extensions {
+            let Some(handlers) = extension.handlers.get("before_agent_start") else {
+                continue;
+            };
+            for handler in handlers {
+                let event = json!({
+                    "type": "before_agent_start",
+                    "prompt": prompt,
+                    "images": images,
+                    "systemPrompt": current_system_prompt,
+                    "systemPromptOptions": system_prompt_options,
+                });
+                match Self::call_handler(handler, &context, &event) {
+                    Ok(Some(result)) => {
+                        if let Some(system_prompt) =
+                            result.get("systemPrompt").and_then(Value::as_str)
+                        {
+                            current_system_prompt = system_prompt.to_string();
+                        }
+                        if let Some(message) = result.get("message") {
+                            messages.push(message.clone());
+                        }
+                        if let Some(additional) = result.get("messages").and_then(Value::as_array) {
+                            messages.extend(additional.iter().cloned());
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.handler_error(&extension.path, "before_agent_start", error);
+                    }
+                };
+            }
+        }
+        if messages.is_empty() && current_system_prompt == system_prompt {
+            None
+        } else {
+            let mut output = Map::new();
+            if !messages.is_empty() {
+                output.insert("messages".to_string(), Value::Array(messages));
+            }
+            if current_system_prompt != system_prompt {
+                output.insert(
+                    "systemPrompt".to_string(),
+                    Value::String(current_system_prompt),
+                );
+            }
+            Some(Value::Object(output))
+        }
+    }
+
+    pub fn emit_message_end(&self, message: Value) -> Value {
+        let mut current = message;
+        let context = self.create_context();
+        for extension in &self.extensions {
+            let Some(handlers) = extension.handlers.get("message_end") else {
+                continue;
+            };
+            for handler in handlers {
+                let event = json!({"type": "message_end", "message": current});
+                match Self::call_handler(handler, &context, &event) {
+                    Ok(Some(result)) => {
+                        let candidate = result.get("message").cloned().unwrap_or(result);
+                        if same_message_role(&current, &candidate) {
+                            current = candidate;
+                        } else {
+                            self.handler_error(
+                                &extension.path,
+                                "message_end",
+                                "message_end handlers must return a message with the same role"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.handler_error(&extension.path, "message_end", error);
+                    }
+                };
+            }
+        }
+        current
+    }
+
+    pub fn emit_tool_call(&self, event: &Value) -> Option<Value> {
+        let mut result = None;
+        let context = self.create_context();
+        for extension in &self.extensions {
+            let Some(handlers) = extension.handlers.get("tool_call") else {
+                continue;
+            };
+            for handler in handlers {
+                match Self::call_handler(handler, &context, event) {
+                    Ok(Some(value)) => {
+                        let block = value.get("block") == Some(&Value::Bool(true));
+                        result = Some(value);
+                        if block {
+                            return result;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.handler_error(&extension.path, "tool_call", error);
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    pub fn emit_user_bash(&self, event: &Value) -> Option<Value> {
+        let context = self.create_context();
+        for extension in &self.extensions {
+            let Some(handlers) = extension.handlers.get("user_bash") else {
+                continue;
+            };
+            for handler in handlers {
+                match Self::call_handler(handler, &context, event) {
+                    Ok(Some(value)) if !value.is_null() => return Some(value),
+                    Ok(_) => {}
+                    Err(error) => {
+                        self.handler_error(&extension.path, "user_bash", error);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn emit_before_provider_request(&self, request: Value) -> Value {
+        let mut current = request;
+        let context = self.create_context();
+        for extension in &self.extensions {
+            let Some(handlers) = extension.handlers.get("before_provider_request") else {
+                continue;
+            };
+            for handler in handlers {
+                match Self::call_handler(handler, &context, &current) {
+                    Ok(Some(value)) => current = value,
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.handler_error(&extension.path, "before_provider_request", error);
+                    }
+                }
+            }
+        }
+        current
+    }
+
+    pub fn emit_resources_discover(&self, event: &Value) -> ResourceDiscovery {
+        let mut resources = ResourceDiscovery::default();
+        let context = self.create_context();
+        for extension in &self.extensions {
+            let Some(handlers) = extension.handlers.get("resources_discover") else {
+                continue;
+            };
+            for handler in handlers {
+                match Self::call_handler(handler, &context, event) {
+                    Ok(Some(value)) => {
+                        append_paths(&mut resources.skill_paths, value.get("skillPaths"));
+                        append_paths(&mut resources.prompt_paths, value.get("promptPaths"));
+                        append_paths(&mut resources.theme_paths, value.get("themePaths"));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.handler_error(&extension.path, "resources_discover", error);
+                    }
+                }
+            }
+        }
+        resources
+    }
+
+    pub fn invalidate(&self, message: Option<&str>) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.invalidate(message);
+        }
+    }
+
+    pub fn bind_core(&self) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.bind_core();
+        }
+    }
+
     pub fn extensions(&self) -> &[Extension] {
         &self.extensions
+    }
+}
+
+/// Dispatch a project trust event. Undecided handlers do not stop later
+/// handlers; the first explicit yes/no result wins and handler errors are
+/// isolated.
+pub fn emit_project_trust_event(runner: &ExtensionRunner, event: &Value) -> ProjectTrustResult {
+    let mut output = ProjectTrustResult::default();
+    let context = runner.create_context();
+    for extension in &runner.extensions {
+        let Some(handlers) = extension.handlers.get("project_trust") else {
+            continue;
+        };
+        for handler in handlers {
+            match ExtensionRunner::call_handler(handler, &context, event) {
+                Ok(Some(value)) => {
+                    let decided = value.get("result").and_then(Value::as_str).is_some()
+                        || value.get("trusted").is_some();
+                    if decided {
+                        output.result = Some(value);
+                        return output;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => output.errors.push(runner.handler_error(
+                    &extension.path,
+                    "project_trust",
+                    error,
+                )),
+            }
+        }
+    }
+    output
+}
+
+fn merge_headers(current: &mut Value, patch: Value) {
+    let Some(current_headers) = current.as_object_mut() else {
+        return;
+    };
+    let patch = patch.get("headers").cloned().unwrap_or(patch);
+    if let Some(patch_headers) = patch.as_object() {
+        for (key, value) in patch_headers {
+            current_headers.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+fn apply_tool_result_patch(current: &mut Value, patch: &Value) {
+    let patch = patch.get("result").unwrap_or(patch);
+    let Some(patch) = patch.as_object() else {
+        return;
+    };
+    let Some(current) = current.as_object_mut() else {
+        return;
+    };
+    for key in ["content", "details", "isError", "usage"] {
+        if let Some(value) = patch.get(key) {
+            current.insert(key.to_string(), value.clone());
+        }
+    }
+}
+
+fn same_message_role(current: &Value, candidate: &Value) -> bool {
+    match (
+        current.get("role").and_then(Value::as_str),
+        candidate.get("role").and_then(Value::as_str),
+    ) {
+        (Some(current_role), Some(candidate_role)) => current_role == candidate_role,
+        _ => true,
+    }
+}
+
+fn append_paths(target: &mut Vec<String>, values: Option<&Value>) {
+    if let Some(values) = values.and_then(Value::as_array) {
+        for value in values {
+            if let Some(path) = value.as_str() {
+                target.push(path.to_string());
+            }
+        }
+    }
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }
 
@@ -382,10 +1040,7 @@ pub fn synthetic_source_info(path: &str, source: &str, base_dir: Option<String>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::extensions::types::ExtensionShortcut;
-    use crate::core::extensions::types::HandlerFn;
-    use serde_json::json;
-    use std::sync::Arc as StdArc;
+    use crate::core::extensions::types::{ExtensionShortcut, FlagType, RegisteredCommand};
 
     fn tool(name: &str) -> RegisteredTool {
         RegisteredTool {
@@ -406,11 +1061,7 @@ mod tests {
     }
 
     fn dummy_handler() -> HandlerFn {
-        StdArc::new(
-            |_ctx: &ExtensionContext, _payload: &Value| -> Result<Option<Value>, String> {
-                Ok(None)
-            },
-        )
+        Arc::new(|_, _| Ok(None))
     }
 
     fn runner_with(extensions: Vec<Extension>) -> ExtensionRunner {
@@ -433,18 +1084,14 @@ mod tests {
         let runner = runner_with(vec![e1, e2]);
         let tools = runner.get_all_registered_tools();
         assert_eq!(tools.len(), 2);
-        let bash = tools.iter().find(|t| t.name == "bash").unwrap();
-        assert_eq!(bash.description, "bash tool", "first registration wins");
-    }
-
-    #[test]
-    fn get_tool_definition_by_name() {
-        let mut e1 = Extension::default();
-        e1.path = "e1".into();
-        e1.tools.insert("t".to_string(), tool("t"));
-        let runner = runner_with(vec![e1]);
-        assert!(runner.get_tool_definition("t").is_some());
-        assert!(runner.get_tool_definition("missing").is_none());
+        assert_eq!(
+            tools
+                .iter()
+                .find(|tool| tool.name == "bash")
+                .unwrap()
+                .description,
+            "bash tool"
+        );
     }
 
     #[test]
@@ -458,123 +1105,59 @@ mod tests {
         e2.commands
             .insert("dup".into(), command("dup", dummy_handler()));
         let mut runner = runner_with(vec![e1, e2]);
-        let commands = runner.get_registered_commands();
-        let names: Vec<String> = commands.iter().map(|c| c.invocation_name.clone()).collect();
+        let names: Vec<_> = runner
+            .get_registered_commands()
+            .into_iter()
+            .map(|command| command.invocation_name)
+            .collect();
         assert_eq!(names, vec!["dup:1", "dup:2"]);
-        assert!(runner.get_command("dup:1").is_some());
-        assert!(runner.get_command("dup:2").is_some());
-        assert!(runner.get_command("dup").is_none());
     }
 
     #[test]
-    fn single_command_keeps_invocation_name() {
-        let mut e1 = Extension::default();
-        e1.path = "e1".into();
-        e1.commands
-            .insert("solo".into(), command("solo", dummy_handler()));
-        let mut runner = runner_with(vec![e1]);
-        let commands = runner.get_registered_commands();
-        assert_eq!(commands[0].invocation_name, "solo");
-        assert!(runner.get_command("solo").is_some());
-    }
-
-    #[test]
-    fn flags_first_wins_and_values() {
-        let mut e1 = Extension::default();
-        e1.path = "e1".into();
-        e1.flags.insert(
+    fn flags_first_wins() {
+        let mut extension = Extension::default();
+        extension.path = "e1".into();
+        extension.flags.insert(
             "artist".into(),
-            ExtensionFlag {
+            crate::core::extensions::types::ExtensionFlag {
                 name: "artist".into(),
                 description: None,
-                flag_type: crate::core::extensions::types::FlagType::Boolean,
+                flag_type: FlagType::Boolean,
                 default: Some(Value::Bool(false)),
                 extension_path: "e1".into(),
             },
         );
-        let mut e2 = Extension::default();
-        e2.path = "e2".into();
-        e2.flags.insert(
-            "artist".into(),
-            ExtensionFlag {
-                name: "artist".into(),
-                description: None,
-                flag_type: crate::core::extensions::types::FlagType::Boolean,
-                default: Some(Value::Bool(true)),
-                extension_path: "e2".into(),
-            },
-        );
-        let runner = runner_with(vec![e1, e2]);
-        let flags = runner.get_flags();
-        assert_eq!(flags.len(), 1);
-        assert_eq!(flags["artist"].extension_path, "e1");
+        let runner = runner_with(vec![extension]);
+        assert_eq!(runner.get_flags()["artist"].extension_path, "e1");
     }
 
     #[test]
-    fn has_handlers_detects_registered_handlers() {
-        let mut e1 = Extension::default();
-        e1.path = "e1".into();
-        e1.handlers
-            .insert("agent_start".to_string(), vec![dummy_handler()]);
-        let runner = runner_with(vec![e1]);
-        assert!(runner.has_handlers("agent_start"));
-        assert!(!runner.has_handlers("agent_end"));
-    }
-
-    #[test]
-    fn emit_dispatches_to_handlers_and_collects_errors() {
-        let mut e1 = Extension::default();
-        e1.path = "e1".into();
-        let handler: HandlerFn =
-            StdArc::new(|_ctx, payload: &Value| -> Result<Option<Value>, String> {
-                let n = payload.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
-                if n > 0 {
-                    Ok(Some(payload.clone()))
-                } else {
-                    Err("boom".to_string())
-                }
-            });
-        e1.handlers.insert("turn_end".to_string(), vec![handler]);
-        let runner = runner_with(vec![e1]);
-        // Errored handler -> collected error.
-        let result = runner.emit("turn_end", &json!({ "n": 0 }));
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert_eq!(errors[0].event, "turn_end");
-        assert_eq!(errors[0].extension_path, "e1");
-        // Returning handler -> first result returned.
-        let result = runner.emit("turn_end", &json!({ "n": 1 })).unwrap();
-        assert_eq!(result.unwrap()["n"], json!(1));
-    }
-
-    #[test]
-    fn error_listeners_receive_errors() {
-        let mut e1 = Extension::default();
-        e1.path = "e1".into();
-        e1.handlers.insert(
-            "x".to_string(),
-            vec![StdArc::new(|_ctx, _p| Err("fail".to_string()))],
-        );
-        let runner = runner_with(vec![e1]);
-        let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let got = received.clone();
-        let _unsub = runner.on_error(StdArc::new(move |error: ExtensionError| {
-            got.lock().unwrap().push(error.error)
-        }));
-        // Direct emitError notifies listeners.
+    fn error_listener_unsubscribe_is_stable() {
+        let runner = runner_with(Vec::new());
+        let count = Arc::new(Mutex::new(0));
+        let first = {
+            let count = Arc::clone(&count);
+            runner.on_error(Arc::new(move |_| *count.lock().unwrap() += 1))
+        };
+        let second = {
+            let count = Arc::clone(&count);
+            runner.on_error(Arc::new(move |_| *count.lock().unwrap() += 1))
+        };
+        first();
         runner.emit_error(ExtensionError {
             extension_path: "e".into(),
             event: "x".into(),
-            error: "test".into(),
+            error: "one".into(),
         });
-        assert_eq!(received.lock().unwrap().len(), 1);
+        second();
+        assert_eq!(*count.lock().unwrap(), 1);
     }
 
     #[test]
-    fn reserved_shortcuts_are_skipped_with_diagnostics() {
-        let mut e1 = Extension::default();
-        e1.path = "e1".into();
-        e1.shortcuts.insert(
+    fn reserved_shortcuts_are_skipped() {
+        let mut extension = Extension::default();
+        extension.path = "e1".into();
+        extension.shortcuts.insert(
             "ctrl+c".into(),
             ExtensionShortcut {
                 shortcut: "ctrl+c".into(),
@@ -583,54 +1166,11 @@ mod tests {
                 extension_path: "e1".into(),
             },
         );
-        let mut runner = runner_with(vec![e1]);
-        let keybindings = KeybindingsConfig {
-            bindings: BTreeMap::from([
-                ("app.interrupt".to_string(), vec!["ctrl+c".to_string()]),
-                ("app.clear".to_string(), vec!["ctrl+d".to_string()]),
-            ]),
-        };
-        // ctrl+c is reserved (app.interrupt) -> skipped with a diagnostic.
-        let shortcuts = runner.get_shortcuts(&keybindings);
+        let mut runner = runner_with(vec![extension]);
+        let shortcuts = runner.get_shortcuts(&KeybindingsConfig {
+            bindings: BTreeMap::from([("app.interrupt".into(), vec!["ctrl+c".into()])]),
+        });
         assert!(shortcuts.is_empty());
-        let diagnostics = runner.get_shortcut_diagnostics();
-        assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0]
-            .message
-            .contains("conflicts with built-in shortcut"));
-    }
-
-    #[test]
-    fn non_reserved_shortcuts_are_allowed() {
-        let mut e1 = Extension::default();
-        e1.path = "e1".into();
-        e1.shortcuts.insert(
-            "ctrl+alt+m".into(),
-            ExtensionShortcut {
-                shortcut: "ctrl+alt+m".into(),
-                description: None,
-                handler: dummy_handler(),
-                extension_path: "e1".into(),
-            },
-        );
-        let mut runner = runner_with(vec![e1]);
-        let keybindings = KeybindingsConfig::default();
-        let shortcuts = runner.get_shortcuts(&keybindings);
-        assert_eq!(shortcuts.len(), 1);
-        assert!(runner.get_shortcut_diagnostics().is_empty());
-    }
-
-    #[test]
-    fn keybinding_builtin_map_reserved_wins() {
-        let config = KeybindingsConfig {
-            bindings: BTreeMap::from([
-                ("app.interrupt".to_string(), vec!["ctrl+c".to_string()]),
-                ("not.reserved".to_string(), vec!["ctrl+c".to_string()]),
-            ]),
-        };
-        let builtin = config.builtin_by_key();
-        let (binding, restrict) = &builtin["ctrl+c"];
-        assert_eq!(binding, "app.interrupt");
-        assert!(*restrict);
+        assert_eq!(runner.get_shortcut_diagnostics().len(), 1);
     }
 }

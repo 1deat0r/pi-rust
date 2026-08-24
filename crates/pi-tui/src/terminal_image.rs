@@ -444,7 +444,7 @@ pub fn encode_kitty(
 
 pub fn encode_iterm2(base64_data: &str, columns: usize, preserve_aspect_ratio: bool) -> String {
     let size = base64_data.len();
-    let mut params = vec![format!("inline=1"), format!("size={size}")];
+    let mut params = vec!["inline=1".to_string(), format!("size={size}")];
     if columns > 0 {
         params.push(format!("width={columns}"));
     }

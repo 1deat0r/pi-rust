@@ -53,7 +53,7 @@ async fn client_server_roundtrip() {
     server.start().await.unwrap();
 
     // Client connects + handshakes.
-    let mut client = pi_client::PiClient::connect(&socket_path).await.unwrap();
+    let client = pi_client::PiClient::connect(&socket_path).await.unwrap();
     let snapshot = client.snapshot().unwrap();
     assert_eq!(snapshot.server_id, "e2e-server");
     assert_eq!(snapshot.sessions.len(), 0);
@@ -156,7 +156,7 @@ async fn client_server_roundtrip() {
         "expected snapshot broadcast events"
     );
 
-    let _ = (&mut client).close().await;
+    let _ = client.close().await;
     drop(client);
     let _ = server.close().await;
     let _ = tokio::fs::remove_dir_all(&dir).await;

@@ -77,7 +77,7 @@ impl CborWriter {
 }
 
 fn write_argument(writer: &mut CborWriter, major_type: u8, value: u64) -> Result<(), CborError> {
-    let prefix = (major_type as u8) << 5;
+    let prefix = major_type << 5;
     if value < 24 {
         writer.write_byte(prefix | value as u8)
     } else if value <= 0xff {

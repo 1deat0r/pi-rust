@@ -447,12 +447,19 @@ impl SettingsManager {
     /// Load from files at `<agent_dir>/settings.json` and `<cwd>/.pi/settings.json`.
     pub fn create(cwd: &str, agent_dir: &str, options: SettingsManagerCreateOptions) -> Self {
         let storage = Arc::new(FileSettingsStorage::new(cwd, agent_dir));
-        Self::from_storage_with_paths(
+        let manager = Self::from_storage_with_paths(
             storage,
             options,
             Some(agent_dir.to_string()),
             Some(cwd.to_string()),
-        )
+        );
+        crate::core::http_dispatcher::apply_http_proxy_settings(
+            manager
+                .global_settings
+                .get("httpProxy")
+                .and_then(Value::as_str),
+        );
+        manager
     }
 
     /// Load from an arbitrary storage backend.
@@ -1170,6 +1177,15 @@ impl SettingsManager {
         Ok(self
             .parse_timeout_setting("httpIdleTimeoutMs", "httpIdleTimeoutMs")?
             .unwrap_or(300_000))
+    }
+
+    /// Global proxy configuration applied during startup before managed HTTP
+    /// clients are created. Project settings intentionally do not override the
+    /// upstream bootstrap behavior, which reads the global setting.
+    pub fn get_http_proxy(&self) -> Option<&str> {
+        self.global_settings
+            .get("httpProxy")
+            .and_then(Value::as_str)
     }
 
     pub fn set_http_idle_timeout_ms(&mut self, timeout_ms: f64) -> Result<(), String> {

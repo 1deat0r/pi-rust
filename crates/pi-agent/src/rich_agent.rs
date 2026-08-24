@@ -1417,6 +1417,7 @@ fn default_model() -> pi_ai::model::Model {
         headers: None,
         compat: None,
         authenticated: false,
+        extra: Default::default(),
     }
 }
 

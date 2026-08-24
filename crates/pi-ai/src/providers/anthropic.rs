@@ -3,10 +3,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::api::anthropic_messages::{default_base_url, stream, AnthropicOptions};
+use crate::api::anthropic_messages::{default_base_url, stream, stream_simple, AnthropicOptions};
 use crate::model::ModelInput;
 use crate::model::{Model, ModelCost, ModelCostTier};
-use crate::types::ModelThinkingLevel;
+use crate::types::{ModelThinkingLevel, SimpleStreamOptions};
 use crate::AssistantMessageEventStream;
 
 /// Minimal bundled model catalog for first-party Anthropic models. Fields
@@ -107,6 +107,9 @@ fn claude_model(
             (ModelThinkingLevel::Max, Some("max".into())),
         ]));
     }
+    model.compat = Some(serde_json::json!({
+        "supportsStrictTools": true,
+    }));
     model
 }
 
@@ -115,6 +118,7 @@ fn claude_model(
 pub fn resolve_api_key(api_key: Option<&str>) -> Option<String> {
     api_key
         .map(|s| s.to_string())
+        .or_else(|| std::env::var("ANTHROPIC_OAUTH_TOKEN").ok())
         .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
 }
 
@@ -148,6 +152,23 @@ impl AnthropicProvider {
         options: &AnthropicOptions,
     ) -> AssistantMessageEventStream {
         stream(
+            model,
+            context,
+            self.client.clone(),
+            &self.base_url,
+            api_key,
+            options,
+        )
+    }
+
+    pub fn stream_simple_with_options(
+        &self,
+        model: &Model,
+        context: &crate::types::Context,
+        api_key: Option<&str>,
+        options: &SimpleStreamOptions,
+    ) -> AssistantMessageEventStream {
+        stream_simple(
             model,
             context,
             self.client.clone(),

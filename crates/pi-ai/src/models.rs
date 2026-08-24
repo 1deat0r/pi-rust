@@ -8,7 +8,10 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+
+use futures_util::future::join_all;
 
 use crate::auth::{
     AuthCheck, AuthContext, AuthResult, Credential, CredentialStore, InMemoryCredentialStore,
@@ -20,6 +23,13 @@ use crate::types::{
     AssistantMessage, Context, DeferredHandle, ProviderHeaders, ProviderRequestOptions,
     SimpleStreamOptions, StreamOptions,
 };
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 /// Error codes for the Models facade (upstream `ModelsError`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +95,81 @@ pub trait ModelsStore: Send + Sync {
     fn read(&self, provider_id: &str) -> Option<ModelsStoreEntry>;
     fn write(&self, provider_id: &str, entry: &ModelsStoreEntry);
     fn delete(&self, provider_id: &str);
+}
+
+/// A persistence mutation selected by a provider refresh. Keeping the
+/// mutation separate from the in-memory update lets the Models facade commit
+/// the file/store change before publishing a new synchronous model list.
+#[derive(Debug, Clone)]
+pub enum ModelsPersistence {
+    Write(ModelsStoreEntry),
+    Delete,
+}
+
+pub type ModelsUpdateFn = Arc<dyn Fn() + Send + Sync>;
+#[derive(Default)]
+pub struct ModelsPublication {
+    pub persist: Option<ModelsPersistence>,
+    pub update: Option<ModelsUpdateFn>,
+}
+
+type ModelsPublishFuture = Pin<Box<dyn Future<Output = Result<bool, String>> + Send>>;
+type ModelsPublishFn =
+    Arc<dyn Fn(ModelsPublication) -> ModelsPublishFuture + Send + Sync + 'static>;
+
+/// Context passed to a dynamic provider's model refresh callback. The atomic
+/// flag is the Rust equivalent of the upstream `AbortSignal` and is shared by
+/// the HTTP provider and the publication gate.
+#[derive(Clone)]
+pub struct RefreshModelsContext {
+    pub credential: Option<Credential>,
+    pub stored: Option<ModelsStoreEntry>,
+    publish_fn: ModelsPublishFn,
+    pub allow_network: bool,
+    pub force: bool,
+    pub signal: Arc<AtomicBool>,
+}
+
+impl RefreshModelsContext {
+    pub async fn publish(&self, publication: ModelsPublication) -> Result<bool, String> {
+        (self.publish_fn)(publication).await
+    }
+
+    pub fn aborted(&self) -> bool {
+        self.signal.load(Ordering::SeqCst)
+    }
+}
+
+pub type RefreshModelsFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+pub type RefreshModelsFn =
+    Arc<dyn Fn(RefreshModelsContext) -> RefreshModelsFuture + Send + Sync + 'static>;
+
+pub type FetchModelsFuture = Pin<Box<dyn Future<Output = Result<Vec<Model>, String>> + Send>>;
+pub type FetchModelsFn = Arc<dyn Fn(RefreshModelsContext) -> FetchModelsFuture + Send + Sync>;
+
+#[derive(Debug, Clone)]
+pub struct ModelsRefreshOptions {
+    pub allow_network: bool,
+    pub providers: Option<Vec<String>>,
+    pub force: bool,
+    pub signal: Option<Arc<AtomicBool>>,
+}
+
+impl Default for ModelsRefreshOptions {
+    fn default() -> Self {
+        Self {
+            allow_network: true,
+            providers: None,
+            force: false,
+            signal: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModelsRefreshResult {
+    pub aborted: bool,
+    pub errors: BTreeMap<String, ModelsError>,
 }
 
 /// In-memory models store (upstream `InMemoryModelsStore`).
@@ -166,12 +251,100 @@ pub struct Provider {
     /// Optional primary stream/simple pair when all models share one api.
     pub single_streams: Option<ProviderStreams>,
     pub filter_models: Option<FilterModelsFn>,
+    /// Optional provider-owned dynamic catalog refresh. This field is kept on
+    /// the provider so custom providers and built-ins share the same runtime
+    /// merge semantics without a second registry.
+    pub refresh_models: Option<RefreshModelsFn>,
+    dynamic_models: Arc<RwLock<Vec<Model>>>,
 }
 
 impl Provider {
     /// Current known models, sync (mirrors upstream `currentModels`).
     pub fn get_models(&self) -> Vec<Model> {
-        self.models.clone()
+        let dynamic = self.dynamic_models.read().unwrap().clone();
+        crate::model_catalog::merge_model_lists(&self.models, &dynamic)
+    }
+
+    /// Replace the provider-owned dynamic overlay after a successful refresh.
+    pub fn set_dynamic_models(&self, models: Vec<Model>) {
+        *self.dynamic_models.write().unwrap() = models;
+    }
+
+    /// Return only the provider-owned dynamic overlay. This is useful to
+    /// callers that need to distinguish a bundled model from a refreshed one.
+    pub fn get_dynamic_models(&self) -> Vec<Model> {
+        self.dynamic_models.read().unwrap().clone()
+    }
+
+    /// Attach an upstream-shaped refresh callback to a provider constructed by
+    /// the existing `CreateProviderOptions` API.
+    pub fn with_refresh_models(mut self, refresh_models: RefreshModelsFn) -> Self {
+        self.refresh_models = Some(refresh_models);
+        self
+    }
+
+    /// Attach a fetch callback. Cached entries are restored before the fetch;
+    /// successful results are persisted and then published atomically.
+    pub fn with_fetch_models(mut self, fetch_models: FetchModelsFn) -> Self {
+        let dynamic_models = self.dynamic_models.clone();
+        let provider_id = self.id.clone();
+        self.refresh_models = Some(Arc::new(move |context| {
+            let dynamic_models = dynamic_models.clone();
+            let fetch_models = fetch_models.clone();
+            let provider_id = provider_id.clone();
+            Box::pin(async move {
+                let restored = context
+                    .stored
+                    .as_ref()
+                    .map(|stored| {
+                        stored
+                            .models
+                            .iter()
+                            .filter(|model| model.provider == provider_id)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let restored_for_update = restored.clone();
+                let restored_dynamic_models = dynamic_models.clone();
+                if !context
+                    .publish(ModelsPublication {
+                        persist: None,
+                        update: Some(Arc::new(move || {
+                            *restored_dynamic_models.write().unwrap() = restored_for_update.clone();
+                        })),
+                    })
+                    .await?
+                {
+                    return Ok(());
+                }
+                if !context.allow_network || context.aborted() {
+                    return Ok(());
+                }
+                let refreshed = fetch_models(context.clone()).await?;
+                if context.aborted() {
+                    return Ok(());
+                }
+                let refreshed_for_update = refreshed.clone();
+                let refreshed_dynamic_models = dynamic_models.clone();
+                context
+                    .publish(ModelsPublication {
+                        persist: Some(ModelsPersistence::Write(ModelsStoreEntry {
+                            models: refreshed.clone(),
+                            last_modified: None,
+                            checked_at: Some(now_ms()),
+                            etag: None,
+                        })),
+                        update: Some(Arc::new(move || {
+                            *refreshed_dynamic_models.write().unwrap() =
+                                refreshed_for_update.clone();
+                        })),
+                    })
+                    .await?;
+                Ok(())
+            })
+        }));
+        self
     }
 
     /// Stream dispatcher: single implementation wins; otherwise dispatch on
@@ -261,7 +434,25 @@ pub fn create_provider(input: CreateProviderOptions) -> Provider {
         streams,
         single_streams,
         filter_models: input.filter_models,
+        refresh_models: None,
+        dynamic_models: Arc::new(RwLock::new(Vec::new())),
     }
+}
+
+/// Build a provider with an upstream-shaped dynamic catalog fetch callback.
+/// This additive constructor keeps existing provider registrations source
+/// compatible while giving custom providers the same refresh/runtime merge
+/// behavior as built-in dynamic providers.
+pub fn create_provider_with_fetch_models<F, Fut>(
+    input: CreateProviderOptions,
+    fetch_models: F,
+) -> Provider
+where
+    F: Fn(RefreshModelsContext) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Vec<Model>, String>> + Send + 'static,
+{
+    let fetch_models: FetchModelsFn = Arc::new(move |context| Box::pin(fetch_models(context)));
+    create_provider(input).with_fetch_models(fetch_models)
 }
 
 /// Merge provider headers with per-field case-insensitive override
@@ -298,17 +489,19 @@ pub struct CreateModelsOptions {
 /// convenience. Mirrors upstream `MutableModels`.
 #[derive(Clone)]
 pub struct Models {
-    providers: Arc<std::sync::RwLock<BTreeMap<String, Provider>>>,
+    providers: Arc<RwLock<BTreeMap<String, Provider>>>,
     credentials: Arc<dyn CredentialStore>,
-    #[allow(dead_code)] // refresh machinery (P8) reads persistence
     models_store: Arc<dyn ModelsStore>,
     auth_context: AuthContext,
+    refresh_generations: Arc<Mutex<BTreeMap<String, u64>>>,
+    refresh_signals: Arc<Mutex<BTreeMap<String, Arc<AtomicBool>>>>,
+    publication_locks: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
 }
 
 /// Build a Models collection (upstream `createModels`).
 pub fn create_models(options: CreateModelsOptions) -> Models {
     Models {
-        providers: Arc::new(std::sync::RwLock::new(BTreeMap::new())),
+        providers: Arc::new(RwLock::new(BTreeMap::new())),
         credentials: options
             .credentials
             .unwrap_or_else(|| Arc::new(InMemoryCredentialStore::new())),
@@ -316,11 +509,15 @@ pub fn create_models(options: CreateModelsOptions) -> Models {
             .models_store
             .unwrap_or_else(|| Arc::new(InMemoryModelsStore::new())),
         auth_context: options.auth_context.unwrap_or_default(),
+        refresh_generations: Arc::new(Mutex::new(BTreeMap::new())),
+        refresh_signals: Arc::new(Mutex::new(BTreeMap::new())),
+        publication_locks: Arc::new(Mutex::new(BTreeMap::new())),
     }
 }
 
 impl Models {
     pub fn set_provider(&self, provider: Provider) {
+        self.supersede_provider_refresh(&provider.id);
         self.providers
             .write()
             .unwrap()
@@ -328,10 +525,22 @@ impl Models {
     }
 
     pub fn delete_provider(&self, id: &str) {
+        self.supersede_provider_refresh(id);
         self.providers.write().unwrap().remove(id);
     }
 
     pub fn clear_providers(&self) {
+        let ids = self
+            .providers
+            .read()
+            .unwrap()
+            .keys()
+            .cloned()
+            .chain(self.refresh_signals.lock().unwrap().keys().cloned())
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.supersede_provider_refresh(&id);
+        }
         self.providers.write().unwrap().clear();
     }
 
@@ -348,6 +557,201 @@ impl Models {
     /// and runtime model overrides do not silently fall back to a new store.
     pub fn models_store(&self) -> Arc<dyn ModelsStore> {
         self.models_store.clone()
+    }
+
+    fn supersede_provider_refresh(&self, provider_id: &str) -> u64 {
+        let mut generations = self.refresh_generations.lock().unwrap();
+        let generation = generations.get(provider_id).copied().unwrap_or(0) + 1;
+        generations.insert(provider_id.to_string(), generation);
+        if let Some(signal) = self.refresh_signals.lock().unwrap().remove(provider_id) {
+            signal.store(true, Ordering::SeqCst);
+        }
+        generation
+    }
+
+    fn begin_provider_refresh(&self, provider_id: &str) -> (u64, Arc<AtomicBool>) {
+        let generation = self.supersede_provider_refresh(provider_id);
+        let signal = Arc::new(AtomicBool::new(false));
+        self.refresh_signals
+            .lock()
+            .unwrap()
+            .insert(provider_id.to_string(), signal.clone());
+        (generation, signal)
+    }
+
+    fn refresh_is_current(&self, provider_id: &str, generation: u64, signal: &AtomicBool) -> bool {
+        !signal.load(Ordering::SeqCst)
+            && self
+                .refresh_generations
+                .lock()
+                .unwrap()
+                .get(provider_id)
+                .copied()
+                == Some(generation)
+    }
+
+    fn publication_lock(&self, provider_id: &str) -> Arc<Mutex<()>> {
+        self.publication_locks
+            .lock()
+            .unwrap()
+            .entry(provider_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    async fn publish_provider_models(
+        &self,
+        provider_id: &str,
+        generation: u64,
+        signal: Arc<AtomicBool>,
+        publication: ModelsPublication,
+    ) -> Result<bool, String> {
+        let lock = self.publication_lock(provider_id);
+        let _guard = lock.lock().unwrap();
+        if !self.refresh_is_current(provider_id, generation, &signal) {
+            return Ok(false);
+        }
+        if let Some(persist) = publication.persist {
+            match persist {
+                ModelsPersistence::Write(entry) => self.models_store.write(provider_id, &entry),
+                ModelsPersistence::Delete => self.models_store.delete(provider_id),
+            }
+        }
+        if !self.refresh_is_current(provider_id, generation, &signal) {
+            return Ok(false);
+        }
+        if let Some(update) = publication.update {
+            update();
+        }
+        Ok(true)
+    }
+
+    async fn wait_for_abort(signal: Arc<AtomicBool>) {
+        while !signal.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
+    async fn refresh_one_provider(
+        &self,
+        provider: Provider,
+        options: ModelsRefreshOptions,
+        caller_signal: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let Some(refresh_models) = provider.refresh_models.clone() else {
+            return Ok(());
+        };
+        let provider_id = provider.id.clone();
+        let (generation, signal) = self.begin_provider_refresh(&provider_id);
+        let models = self.clone();
+        let operation_signal = signal.clone();
+        let operation_caller_signal = caller_signal.clone();
+        let operation = async move {
+            let stored = models.models_store.read(&provider_id);
+            let publish_models = models.clone();
+            let publish_provider_id = provider_id.clone();
+            let publish_signal = operation_signal.clone();
+            let publish_fn: ModelsPublishFn = Arc::new(move |publication| {
+                let models = publish_models.clone();
+                let provider_id = publish_provider_id.clone();
+                let signal = publish_signal.clone();
+                Box::pin(async move {
+                    models
+                        .publish_provider_models(&provider_id, generation, signal, publication)
+                        .await
+                })
+            });
+            let cache_context = RefreshModelsContext {
+                credential: None,
+                stored: stored.clone(),
+                publish_fn: publish_fn.clone(),
+                allow_network: false,
+                force: false,
+                signal: operation_signal.clone(),
+            };
+            refresh_models(cache_context).await?;
+            if !options.allow_network
+                || operation_caller_signal.load(Ordering::SeqCst)
+                || !models.refresh_is_current(&provider_id, generation, &operation_signal)
+            {
+                return Ok(());
+            }
+            let network_context = RefreshModelsContext {
+                credential: models.credentials.read(&provider_id),
+                stored,
+                publish_fn,
+                allow_network: true,
+                force: options.force,
+                signal: operation_signal.clone(),
+            };
+            refresh_models(network_context).await
+        };
+        tokio::pin!(operation);
+        tokio::select! {
+            result = &mut operation => result,
+            _ = Self::wait_for_abort(caller_signal.clone()) => {
+                signal.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+    }
+
+    /// Refresh all selected dynamic providers concurrently. Cache restoration
+    /// always runs first; network refresh is optional and provider failures are
+    /// returned per provider without discarding already-published models.
+    pub async fn refresh(&self, options: ModelsRefreshOptions) -> ModelsRefreshResult {
+        let caller_signal = options
+            .signal
+            .clone()
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        let selected = options.providers.as_ref().map(|ids| {
+            ids.iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+        });
+        let providers = self
+            .get_providers()
+            .into_iter()
+            .filter(|provider| provider.refresh_models.is_some())
+            .filter(|provider| {
+                selected
+                    .as_ref()
+                    .map(|ids| ids.contains(&provider.id))
+                    .unwrap_or(true)
+            })
+            .collect::<Vec<_>>();
+        let results = join_all(providers.into_iter().map(|provider| {
+            let provider_id = provider.id.clone();
+            let provider_options = options.clone();
+            let provider_signal = caller_signal.clone();
+            async move {
+                (
+                    provider_id,
+                    self.refresh_one_provider(provider, provider_options, provider_signal)
+                        .await,
+                )
+            }
+        }))
+        .await;
+        let mut errors = BTreeMap::new();
+        for (provider_id, result) in results {
+            if let Err(message) = result {
+                errors.insert(
+                    provider_id,
+                    ModelsError::new(ModelsErrorCode::ModelSource, message),
+                );
+            }
+        }
+        ModelsRefreshResult {
+            aborted: caller_signal.load(Ordering::SeqCst),
+            errors,
+        }
+    }
+
+    /// Explicitly named alias for callers that prefer the operation name over
+    /// the upstream `Models.refresh` spelling.
+    pub async fn refresh_models(&self, options: ModelsRefreshOptions) -> ModelsRefreshResult {
+        self.refresh(options).await
     }
 
     pub fn get_models(&self, provider: Option<&str>) -> Vec<Model> {

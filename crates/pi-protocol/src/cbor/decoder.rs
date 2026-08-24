@@ -37,7 +37,7 @@ impl<'a> CborReader<'a> {
             0 => Ok(Value::Int(self.read_argument(additional_information)?)),
             1 => {
                 let value = -1 - self.read_argument(additional_information)?;
-                if value < -MAX_SAFE || value > MAX_SAFE {
+                if !(-MAX_SAFE..=MAX_SAFE).contains(&value) {
                     return Err(CborError::new(
                         "Decoded CBOR integer is outside the safe range".to_string(),
                     ));

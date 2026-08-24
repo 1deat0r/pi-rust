@@ -31,8 +31,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use pi_protocol::{
-    Command, CommandResult, ProtocolErrorCode, SessionMetadata, SessionPhase, SessionSnapshot,
-    TranscriptProgress,
+    Command, CommandResult, ProtocolErrorCode, ServerEvent, SessionMetadata, SessionPhase,
+    SessionSnapshot, TranscriptProgress,
 };
 
 use crate::errors::PiServerError;
@@ -43,6 +43,14 @@ use crate::snapshots::ServerSnapshotPublisher;
 /// layer installs one to forward `SessionProgress` envelopes; unit tests may
 /// leave it `None` (progress is dropped).
 pub type ProgressSink = Arc<dyn Fn(&TranscriptProgress) + Send + Sync>;
+type ErrorReporter = Arc<Mutex<Option<Arc<dyn Fn(&PiServerError) + Send + Sync>>>>;
+
+/// Sends a server event to one connection. The transport adapter owns the
+/// actual encoding and write queue; the manager only controls session scope.
+pub type EventSink = Arc<dyn Fn(ServerEvent) + Send + Sync>;
+
+/// Closes a transport after a runtime reports a terminal error.
+pub type CloseSink = Arc<dyn Fn() + Send + Sync>;
 
 /// The minimal connection state the manager needs to enforce attach/detach
 /// exclusivity (upstream `ConnectionState`). `session_ids` is the set of live
@@ -57,6 +65,8 @@ pub struct ConnectionHandle {
     /// Best-effort broadcast sink for runtime `Progress` events on this
     /// connection (see [`ProgressSink`]).
     pub progress: Option<ProgressSink>,
+    pub events: Option<EventSink>,
+    pub close: Option<CloseSink>,
 }
 
 impl Clone for ConnectionHandle {
@@ -68,6 +78,8 @@ impl Clone for ConnectionHandle {
             disconnected: self.disconnected,
             closed: self.closed,
             progress: self.progress.clone(),
+            events: self.events.clone(),
+            close: self.close.clone(),
         }
     }
 }
@@ -81,6 +93,8 @@ impl ConnectionHandle {
             disconnected: false,
             closed: false,
             progress: None,
+            events: None,
+            close: None,
         }
     }
 
@@ -96,6 +110,8 @@ struct LiveSession {
     connections: HashSet<String>,
     /// Per-attached-connection progress sink (only those that installed one).
     progress_sinks: HashMap<String, ProgressSink>,
+    event_sinks: HashMap<String, EventSink>,
+    close_sinks: HashMap<String, CloseSink>,
     operation_count: usize,
     ready: bool,
     terminal: bool,
@@ -109,6 +125,8 @@ pub struct LiveSessionManager {
     service: Arc<Mutex<dyn PiServerService>>,
     snapshots: Arc<ServerSnapshotPublisher>,
     live: Arc<Mutex<HashMap<String, LiveSession>>>,
+    closing: Arc<std::sync::atomic::AtomicBool>,
+    error_reporter: ErrorReporter,
 }
 
 impl LiveSessionManager {
@@ -120,7 +138,25 @@ impl LiveSessionManager {
             service,
             snapshots,
             live: Arc::new(Mutex::new(HashMap::new())),
+            closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            error_reporter: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn set_closing_flag(&self, closing: Arc<std::sync::atomic::AtomicBool>) {
+        self.closing.store(
+            closing.load(std::sync::atomic::Ordering::SeqCst),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
+    pub fn mark_closing(&self) {
+        self.closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn set_error_reporter(&self, reporter: Arc<dyn Fn(&PiServerError) + Send + Sync>) {
+        *self.error_reporter.lock().unwrap() = Some(reporter);
     }
 
     /// Disconnect a connection: detach it from every live session and dispose
@@ -134,6 +170,8 @@ impl LiveSessionManager {
                 if let Some(live) = guard.get_mut(id) {
                     live.connections.remove(&conn.id);
                     live.progress_sinks.remove(&conn.id);
+                    live.event_sinks.remove(&conn.id);
+                    live.close_sinks.remove(&conn.id);
                 }
             }
             self.maybe_dispose(id);
@@ -196,6 +234,8 @@ impl LiveSessionManager {
                         if let Some(live) = guard.get_mut(&session_id) {
                             live.connections.remove(&conn.id);
                             live.progress_sinks.remove(&conn.id);
+                            live.event_sinks.remove(&conn.id);
+                            live.close_sinks.remove(&conn.id);
                         }
                     }
                     // If live and no remaining connections/ops and idle, dispose.
@@ -233,6 +273,165 @@ impl LiveSessionManager {
                 .run_operation(conn, &session_id, |r| r.set_thinking(thinking_level))
                 .map(|session| CommandResult::SetThinking { session }),
         }
+    }
+
+    /// Async wire-path command execution. The service traits remain
+    /// synchronous for embedders, but a runtime may return a [`RuntimeWait`]
+    /// after a prompt setup. The wait happens after the runtime mutex is
+    /// released so another request can steer or abort that prompt.
+    pub async fn execute_command_async(
+        &self,
+        conn: Arc<Mutex<ConnectionHandle>>,
+        command: Command,
+    ) -> Result<CommandResult, PiServerError> {
+        match command {
+            Command::List => Ok(CommandResult::List {
+                sessions: self.list_metadata()?,
+            }),
+            Command::Create {
+                cwd,
+                name,
+                model,
+                thinking_level,
+            } => {
+                let id = uuid::Uuid::new_v4().to_string();
+                let create_id = id.clone();
+                let runtime = self.acquire(&id, move || {
+                    self.service.lock().unwrap().create_session(
+                        crate::types::CreateSessionOptions {
+                            id: create_id,
+                            cwd,
+                            name,
+                            model,
+                            thinking_level,
+                        },
+                    )
+                })?;
+                {
+                    let mut connection = conn.lock().unwrap();
+                    self.attach(&mut connection, &runtime)?;
+                }
+                let view = conn.lock().unwrap().clone();
+                Ok(CommandResult::Create {
+                    session: self.broadcast_snapshot(&runtime, &view)?,
+                })
+            }
+            Command::Attach { session_id } => {
+                let runtime = self.acquire(&session_id, || {
+                    self.service
+                        .lock()
+                        .unwrap()
+                        .open_session(session_id.clone())
+                })?;
+                {
+                    let mut connection = conn.lock().unwrap();
+                    self.attach(&mut connection, &runtime)?;
+                }
+                let view = conn.lock().unwrap().clone();
+                Ok(CommandResult::Attach {
+                    session: self.broadcast_snapshot(&runtime, &view)?,
+                })
+            }
+            Command::Detach { session_id } => {
+                let mut connection = conn.lock().unwrap();
+                if connection.session_ids.remove(&session_id) {
+                    {
+                        let mut guard = self.live.lock().unwrap();
+                        if let Some(live) = guard.get_mut(&session_id) {
+                            live.connections.remove(&connection.id);
+                            live.progress_sinks.remove(&connection.id);
+                            live.event_sinks.remove(&connection.id);
+                            live.close_sinks.remove(&connection.id);
+                        }
+                    }
+                    self.maybe_dispose(&session_id);
+                }
+                Ok(CommandResult::Detach { session_id })
+            }
+            Command::Prompt { session_id, text } => {
+                let conn_for_op = conn.clone();
+                self.run_operation_async(&conn, &session_id, move |runtime| {
+                    runtime.prompt(crate::types::PromptInput { text })
+                })
+                .await
+                .map(|session| {
+                    let _ = conn_for_op;
+                    CommandResult::Prompt { session }
+                })
+            }
+            Command::Steer { session_id, text } => self
+                .run_operation_async(&conn, &session_id, move |runtime| {
+                    runtime.steer(crate::types::SteerInput { text })
+                })
+                .await
+                .map(|session| CommandResult::Steer { session }),
+            Command::Abort { session_id } => self
+                .run_operation_async(&conn, &session_id, |runtime| runtime.abort())
+                .await
+                .map(|session| CommandResult::Abort { session }),
+            Command::SetModel { session_id, model } => self
+                .run_operation_async(&conn, &session_id, move |runtime| runtime.set_model(model))
+                .await
+                .map(|session| CommandResult::SetModel { session }),
+            Command::SetThinking {
+                session_id,
+                thinking_level,
+            } => self
+                .run_operation_async(&conn, &session_id, move |runtime| {
+                    runtime.set_thinking(thinking_level)
+                })
+                .await
+                .map(|session| CommandResult::SetThinking { session }),
+        }
+    }
+
+    async fn run_operation_async<F>(
+        &self,
+        conn: &Arc<Mutex<ConnectionHandle>>,
+        session_id: &str,
+        op: F,
+    ) -> Result<SessionSnapshot, PiServerError>
+    where
+        F: FnOnce(&mut dyn PiSessionRuntime) -> Result<(), PiServerError> + Send + 'static,
+    {
+        let view = conn.lock().unwrap().clone();
+        let runtime = self.require_attached(&view, session_id)?;
+        {
+            let mut guard = self.live.lock().unwrap();
+            if let Some(live) = guard.get_mut(session_id) {
+                live.operation_count += 1;
+            }
+        }
+
+        let (result, pending) = {
+            let mut runtime_guard = runtime.lock().unwrap();
+            let result = op(&mut *runtime_guard);
+            let pending = if result.is_ok() {
+                runtime_guard.take_pending_operation()
+            } else {
+                None
+            };
+            (result, pending)
+        };
+
+        let outcome = async {
+            result?;
+            if let Some(wait) = pending {
+                wait.wait().await?;
+            }
+            let current = conn.lock().unwrap().clone();
+            self.broadcast_snapshot(&runtime, &current)
+        }
+        .await;
+
+        {
+            let mut guard = self.live.lock().unwrap();
+            if let Some(live) = guard.get_mut(session_id) {
+                live.operation_count = live.operation_count.saturating_sub(1);
+            }
+        }
+        self.maybe_dispose(session_id);
+        outcome
     }
 
     /// `requireAttached`: the connection must be attached and the session live
@@ -314,6 +513,8 @@ impl LiveSessionManager {
             runtime: runtime.clone(),
             connections: HashSet::new(),
             progress_sinks: HashMap::new(),
+            event_sinks: HashMap::new(),
+            close_sinks: HashMap::new(),
             operation_count: 0,
             ready: true,
             terminal: false,
@@ -379,6 +580,12 @@ impl LiveSessionManager {
             live.connections.insert(conn.id.clone());
             if let Some(sink) = conn.progress.as_ref() {
                 live.progress_sinks.insert(conn.id.clone(), sink.clone());
+            }
+            if let Some(sink) = conn.events.as_ref() {
+                live.event_sinks.insert(conn.id.clone(), sink.clone());
+            }
+            if let Some(sink) = conn.close.as_ref() {
+                live.close_sinks.insert(conn.id.clone(), sink.clone());
             }
         }
         Ok(())
@@ -1138,8 +1345,8 @@ mod tests {
             "terminal session should be disposed out of the live set"
         );
         assert!(
-            !m.list_metadata().unwrap().iter().any(|s| s.id == id),
-            "terminal session should be removed from metadata"
+            m.list_metadata().unwrap().iter().any(|s| s.id == id),
+            "terminal runtime disposal must preserve durable session metadata"
         );
     }
 

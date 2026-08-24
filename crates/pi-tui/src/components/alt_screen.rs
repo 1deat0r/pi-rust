@@ -259,7 +259,7 @@ impl Component for AltScreenSearchComponent {
         let padding = " ".repeat(safe_width.saturating_sub(visible_width(&title)));
         vec![
             format!("\x1b[7m{title}{padding}\x1b[27m"),
-            format!("{}", self.input.render(safe_width)[0]),
+            self.input.render(safe_width)[0].to_string(),
         ]
     }
 

@@ -1,12 +1,10 @@
 //! Latex renderer tests — ported from `packages/tui/test/latex.test.ts` \
 //! (extracted defineCases table).
 
-#[cfg(test)]
-mod latex_tests {
-    use crate::latex::render_latex;
+use crate::latex::render_latex;
 
-    fn cases() -> Vec<(&'static str, &'static str)> {
-        vec![
+fn cases() -> Vec<(&'static str, &'static str)> {
+    vec![
             ("\\mathbb{C}^3 \\to \\mathbb{C}^3", "ℂ³ → ℂ³"),
             ("\\{3x+2y,\\; 27x^2-4z-1,\\; x(x-1)(x+1)\\} \\quad\\Rightarrow\\quad x \\in \\{0, \\pm 1\\},", "{3x+2y, 27x²-4z-1, x(x-1)(x+1)} ⇒ x ∈ {0, ± 1},"),
             ("F_1 = -\\frac{1}{4x^2}.", "F₁ = -1/(4x²)."),
@@ -99,41 +97,40 @@ mod latex_tests {
             ("\\frac{\n  1+\\displaystyle\\frac{1}{1+\\frac{1}{x}}\n}{\n  1-\\displaystyle\\frac{1}{1-\\frac{1}{x}}\n}", "(1+1/(1+1/x))/(1-1/(1-1/x))"),
             ("\\sum_{n=1}^{\\infty}\n\\frac{\n  \\displaystyle \\frac{1}{n}-\\frac{1}{n+1}\n}{\n  \\displaystyle 1+\\frac{1}{n^2}\n}", "∑ₙ₌₁^∞ (1/n-1/(n+1))/(1+1/(n²))"),
         ]
-    }
+}
 
-    #[test]
-    fn renders_latex_cases() {
-        let cases = cases();
-        let mut failed = 0;
-        for (i, (source, expected)) in cases.iter().enumerate() {
-            let actual = render_latex(source, false);
-            if actual.as_deref() != Some(*expected) {
-                failed += 1;
-                eprintln!(
-                    "[{}] source: {:?}\n  expected: {:?}\n  actual:   {:?}",
-                    i, source, expected, actual
-                );
-            }
+#[test]
+fn renders_latex_cases() {
+    let cases = cases();
+    let mut failed = 0;
+    for (i, (source, expected)) in cases.iter().enumerate() {
+        let actual = render_latex(source, false);
+        if actual.as_deref() != Some(*expected) {
+            failed += 1;
+            eprintln!(
+                "[{}] source: {:?}\n  expected: {:?}\n  actual:   {:?}",
+                i, source, expected, actual
+            );
         }
-        assert_eq!(failed, 0, "{failed} latex cases mismatched");
     }
+    assert_eq!(failed, 0, "{failed} latex cases mismatched");
+}
 
-    #[test]
-    fn display_mode_stacks_fractions_and_limits() {
-        // Stacked fraction in display mode.
-        let stacked = render_latex("\\frac{1}{2}", true);
-        assert!(stacked.as_deref().unwrap_or("").contains("─"));
-        // Inline frac is not stacked.
-        let inline = render_latex("\\frac{1}{2}", false).unwrap();
-        assert_eq!(inline, "1/2");
-        // Operator limits in display mode produce a layout block.
-        let limit = render_latex("\\sum_{n=1}^{\\infty}", true).unwrap();
-        assert!(limit.contains("∑"));
-    }
+#[test]
+fn display_mode_stacks_fractions_and_limits() {
+    // Stacked fraction in display mode.
+    let stacked = render_latex("\\frac{1}{2}", true);
+    assert!(stacked.as_deref().unwrap_or("").contains("─"));
+    // Inline frac is not stacked.
+    let inline = render_latex("\\frac{1}{2}", false).unwrap();
+    assert_eq!(inline, "1/2");
+    // Operator limits in display mode produce a layout block.
+    let limit = render_latex("\\sum_{n=1}^{\\infty}", true).unwrap();
+    assert!(limit.contains("∑"));
+}
 
-    #[test]
-    fn unsupported_syntax_returns_none() {
-        assert!(render_latex("\\unknowncmd", false).is_none());
-        assert!(render_latex("\\frac{1", false).is_none());
-    }
+#[test]
+fn unsupported_syntax_returns_none() {
+    assert!(render_latex("\\unknowncmd", false).is_none());
+    assert!(render_latex("\\frac{1", false).is_none());
 }

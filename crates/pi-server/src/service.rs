@@ -2,6 +2,8 @@
 //! `packages/server/src/types.ts` + `packages/server/src/testing/service.ts`.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use pi_protocol::{
@@ -10,6 +12,80 @@ use pi_protocol::{
 };
 
 use crate::errors::PiServerError;
+
+/// A one-shot deferred value used by deterministic server fixtures and by
+/// runtimes that need to keep an operation pending until a test releases it.
+/// Resolving more than once is intentionally a no-op, matching a settled
+/// JavaScript promise.
+#[derive(Clone)]
+pub struct Deferred<T> {
+    state: Arc<DeferredState<T>>,
+}
+
+struct DeferredState<T> {
+    value: Mutex<Option<T>>,
+    notify: tokio::sync::Notify,
+}
+
+impl<T> Deferred<T> {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(DeferredState {
+                value: Mutex::new(None),
+                notify: tokio::sync::Notify::new(),
+            }),
+        }
+    }
+
+    pub fn resolve(&self, value: T) {
+        let mut slot = self.state.value.lock().unwrap();
+        if slot.is_none() {
+            *slot = Some(value);
+            self.state.notify.notify_waiters();
+        }
+    }
+
+    pub fn is_resolved(&self) -> bool {
+        self.state.value.lock().unwrap().is_some()
+    }
+
+    pub async fn wait(&self) -> T {
+        loop {
+            if let Some(value) = self.state.value.lock().unwrap().take() {
+                return value;
+            }
+            self.state.notify.notified().await;
+        }
+    }
+
+    pub fn promise(&self) -> impl Future<Output = T> + '_ {
+        self.wait()
+    }
+}
+
+impl<T> Default for Deferred<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A pending runtime operation. The server awaits this after releasing the
+/// runtime mutex, which lets steer/abort commands reach a pending prompt.
+pub struct RuntimeWait {
+    future: Pin<Box<dyn Future<Output = Result<(), PiServerError>> + Send>>,
+}
+
+impl RuntimeWait {
+    pub fn new(future: impl Future<Output = Result<(), PiServerError>> + Send + 'static) -> Self {
+        Self {
+            future: Box::pin(future),
+        }
+    }
+
+    pub async fn wait(self) -> Result<(), PiServerError> {
+        self.future.await
+    }
+}
 
 /// One acquired durable session. Conflicting operations reject rather than queue.
 pub trait PiSessionRuntime: Send {
@@ -22,11 +98,18 @@ pub trait PiSessionRuntime: Send {
     fn set_thinking(&mut self, thinking_level: ThinkingLevel) -> Result<(), PiServerError>;
     fn subscribe(&mut self, listener: EventListener) -> Result<Unsubscribe, PiServerError>;
     fn dispose(&mut self) -> Result<(), PiServerError>;
+
+    /// Return a pending operation created by the preceding mutating call.
+    /// Implementations that complete synchronously keep the default.
+    fn take_pending_operation(&mut self) -> Option<RuntimeWait> {
+        None
+    }
 }
 
 pub type EventListener = Arc<dyn Fn(PiSessionRuntimeEvent) + Send + Sync>;
 pub type Unsubscribe = Box<dyn Fn() + Send + Sync>;
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum PiSessionRuntimeEvent {
     Snapshot,
@@ -81,7 +164,7 @@ pub struct InMemoryService {
 struct InMemoryServiceInner {
     _next_id: u64,
     sessions: BTreeMap<String, SessionSnapshot>,
-    listeners: BTreeMap<String, Vec<EventListener>>,
+    listeners: BTreeMap<String, Vec<Option<EventListener>>>,
     models: Vec<ModelMetadata>,
 }
 
@@ -97,21 +180,14 @@ impl InMemoryService {
         }
     }
 
-    fn snapshot_for(
-        &self,
-        session_id: &str,
-        revision: i64,
-    ) -> Result<SessionSnapshot, PiServerError> {
+    fn snapshot_for(&self, session_id: &str) -> Result<SessionSnapshot, PiServerError> {
         let inner = self.inner.lock().unwrap();
-        let snap = inner.sessions.get(session_id).cloned().ok_or_else(|| {
+        inner.sessions.get(session_id).cloned().ok_or_else(|| {
             PiServerError::new(
                 pi_protocol::ProtocolErrorCode::NotFound,
                 format!("Session not found: {session_id}"),
             )
-        })?;
-        let mut snap = snap;
-        snap.revision = revision;
-        Ok(snap)
+        })
     }
 
     /// Fire a runtime event at all live listeners for `session_id` (used to
@@ -122,7 +198,7 @@ impl InMemoryService {
             let inner = self.inner.lock().unwrap();
             inner.listeners.get(session_id).cloned().unwrap_or_default()
         };
-        for listener in listeners {
+        for listener in listeners.into_iter().flatten() {
             listener(event.clone());
         }
     }
@@ -224,6 +300,7 @@ struct TestSession {
 }
 
 impl TestSession {
+    #[allow(clippy::new_ret_no_self)]
     fn new(service: InMemoryService, session_id: String) -> Arc<Mutex<dyn PiSessionRuntime>> {
         Arc::new(Mutex::new(Self {
             service,
@@ -234,7 +311,7 @@ impl TestSession {
 
 impl PiSessionRuntime for TestSession {
     fn snapshot(&mut self) -> Result<SessionSnapshot, PiServerError> {
-        self.service.snapshot_for(&self.session_id, 1)
+        self.service.snapshot_for(&self.session_id)
     }
     fn get_phase(&self) -> SessionPhase {
         let inner = self.service.inner.lock().unwrap();
@@ -244,13 +321,19 @@ impl PiSessionRuntime for TestSession {
             .map(|s| s.phase.clone())
             .unwrap_or(SessionPhase::Idle)
     }
-    fn prompt(&mut self, _input: crate::types::PromptInput) -> Result<(), PiServerError> {
+    fn prompt(&mut self, input: crate::types::PromptInput) -> Result<(), PiServerError> {
+        if self.get_phase() != SessionPhase::Idle {
+            return Err(PiServerError::new(
+                pi_protocol::ProtocolErrorCode::Busy,
+                "A prompt is already running",
+            ));
+        }
         let id = uuid::Uuid::new_v4().to_string();
         let item = UserTranscriptItem {
             id,
             role: "user".to_string(),
             content: vec![UserContent::Text(pi_protocol::TextContent::Text {
-                text: _input.text.clone(),
+                text: input.text.clone(),
             })],
             timestamp: pi_ai::types::now_ms() as i64,
         };
@@ -260,12 +343,18 @@ impl PiSessionRuntime for TestSession {
         })?;
         Ok(())
     }
-    fn steer(&mut self, _input: crate::types::SteerInput) -> Result<(), PiServerError> {
+    fn steer(&mut self, input: crate::types::SteerInput) -> Result<(), PiServerError> {
+        if self.get_phase() == SessionPhase::Idle {
+            return Err(PiServerError::new(
+                pi_protocol::ProtocolErrorCode::Busy,
+                "There is no active prompt to steer",
+            ));
+        }
         let item = UserTranscriptItem {
             id: uuid::Uuid::new_v4().to_string(),
             role: "user".to_string(),
             content: vec![UserContent::Text(pi_protocol::TextContent::Text {
-                text: _input.text.clone(),
+                text: input.text.clone(),
             })],
             timestamp: pi_ai::types::now_ms() as i64,
         };
@@ -277,8 +366,14 @@ impl PiSessionRuntime for TestSession {
         Ok(())
     }
     fn abort(&mut self) -> Result<(), PiServerError> {
+        if self.get_phase() == SessionPhase::Idle {
+            return Err(PiServerError::new(
+                pi_protocol::ProtocolErrorCode::Busy,
+                "There is no active prompt to abort",
+            ));
+        }
         self.update(|snap| {
-            snap.phase = SessionPhase::Turn;
+            snap.phase = SessionPhase::Idle;
             snap.queued_steer.clear();
             snap.queued_steer_count = 0;
         })?;
@@ -294,27 +389,23 @@ impl PiSessionRuntime for TestSession {
     }
     fn subscribe(&mut self, listener: EventListener) -> Result<Unsubscribe, PiServerError> {
         let mut inner = self.service.inner.lock().unwrap();
-        inner
-            .listeners
-            .entry(self.session_id.clone())
-            .or_default()
-            .push(listener);
-        let _session_id = self.session_id.clone();
+        let listeners = inner.listeners.entry(self.session_id.clone()).or_default();
+        listeners.push(Some(listener));
+        let index = listeners.len() - 1;
+        let listeners = self.service.inner.clone();
+        let session_id = self.session_id.clone();
         Ok(Box::new(move || {
-            // Listener removal is a no-op for the in-memory service (the
-            // registry is appended; best-effort like the upstream tests).
-            let _ = _session_id;
+            if let Some(slots) = listeners.lock().unwrap().listeners.get_mut(&session_id) {
+                if let Some(slot) = slots.get_mut(index) {
+                    *slot = None;
+                }
+            }
         }))
     }
     fn dispose(&mut self) -> Result<(), PiServerError> {
-        // Disposal removes the session from the store so it drops out of
-        // `listSessions`/server metadata (upstream dispose semantics).
-        self.service
-            .inner
-            .lock()
-            .unwrap()
-            .sessions
-            .remove(&self.session_id);
+        // Durable sessions remain in storage after a runtime is released;
+        // only the live runtime is disposed. This is what permits a later
+        // attach or a server restart to restore the persisted session.
         Ok(())
     }
 }
@@ -337,7 +428,7 @@ impl TestSession {
             .cloned()
             .unwrap_or_default();
         drop(inner);
-        for listener in listeners {
+        for listener in listeners.into_iter().flatten() {
             listener(PiSessionRuntimeEvent::Snapshot);
         }
         Ok(())

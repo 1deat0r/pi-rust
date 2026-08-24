@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 65.66% — 109 of 166 ledger tasks complete; 57 open.**
+**Conversion progress: 68.67% — 114 of 166 ledger tasks complete; 52 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -16,10 +16,12 @@ node scripts/conversion-progress.mjs
 ```
 
 The 2026-08-25 completion run is coordinated through the scoped execution
-tree in `.unlazy/full-conversion-20260825/`. Provider, harness, extension,
-server/client, TUI, eval, parity, and final-audit leaves have explicit
-ownership and evidence gates; see [PLAN.md](PLAN.md) and [HANDOFF.md](HANDOFF.md)
-for the current checkpoint and next dependency-safe action.
+tree in `.unlazy/full-conversion-20260825/`. The source inventory is complete;
+focused OAuth, Anthropic, catalog, proxy, protocol, server, and TUI checks are
+green, while harness, client, PTY, eval, provider-matrix, extension-runtime,
+parity, and final-audit leaves remain explicitly gated. See [PLAN.md](PLAN.md)
+and [HANDOFF.md](HANDOFF.md) for the current checkpoint and next
+dependency-safe action.
 
 The port already includes substantial CLI and runtime work, including the
 in-process agent loop, stateful harness-backed print, JSON, and interactive

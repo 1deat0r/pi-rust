@@ -354,6 +354,12 @@ impl TerminalBackend {
     }
 }
 
+impl Default for TerminalBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(unix)]
 fn resolve_escape_timeout() -> Duration {
     const DEFAULT_ESCAPE_TIMEOUT: Duration = Duration::from_millis(10);
@@ -403,10 +409,11 @@ fn key_string(code: KeyCode, modifiers: KeyModifiers) -> String {
     }
     if modifiers.contains(KeyModifiers::SHIFT) && !base.is_empty() {
         // Only annotate shift for non-character keys (upstream normalizes).
-        if !(base.len() == 1 && base.chars().next().unwrap_or(' ').is_ascii_alphabetic()) {
-            if !parts.contains(&"ctrl".to_string()) && !parts.contains(&"alt".to_string()) {
-                parts.push("shift".to_string());
-            }
+        if !(base.len() == 1 && base.chars().next().unwrap_or(' ').is_ascii_alphabetic())
+            && !parts.contains(&"ctrl".to_string())
+            && !parts.contains(&"alt".to_string())
+        {
+            parts.push("shift".to_string());
         }
     }
     parts.push(base);

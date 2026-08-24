@@ -10,21 +10,11 @@ pub const DEFAULT_MAX_CBOR_CONTAINER_LENGTH: usize = 1_000_000;
 /// Default maximum nesting depth.
 pub const DEFAULT_MAX_CBOR_DEPTH: usize = 64;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CborOptions {
     pub max_byte_length: Option<usize>,
     pub max_container_length: Option<usize>,
     pub max_depth: Option<usize>,
-}
-
-impl Default for CborOptions {
-    fn default() -> Self {
-        Self {
-            max_byte_length: None,
-            max_container_length: None,
-            max_depth: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

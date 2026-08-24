@@ -46,7 +46,7 @@ where
     let json_value = serde_json::to_value(value).map_err(|e| {
         ProtocolValidationError::new(format!("Unable to encode {kind} protocol message: {e}"))
     })?;
-    parse(&json_value).map_err(|e| e)?;
+    parse(&json_value)?;
     let max_frame_length = options.max_frame_length.unwrap_or(DEFAULT_MAX_FRAME_LENGTH);
     let cbor = encode_cbor(
         &Value::from(json_value),
@@ -75,7 +75,7 @@ pub fn encode_client_message(
     message: &ClientMessage,
     options: &FrameDecoderOptions,
 ) -> Result<Vec<u8>, ProtocolValidationError> {
-    encode_protocol_message(message, |v| parse_client_message(v), "client", options)
+    encode_protocol_message(message, parse_client_message, "client", options)
 }
 
 /// Validates and encodes one complete length-prefixed server message.
@@ -83,7 +83,7 @@ pub fn encode_server_message(
     message: &ServerMessage,
     options: &FrameDecoderOptions,
 ) -> Result<Vec<u8>, ProtocolValidationError> {
-    encode_protocol_message(message, |v| parse_server_message(v), "server", options)
+    encode_protocol_message(message, parse_server_message, "server", options)
 }
 
 pub struct ValidatedMessageDecoder<T> {
@@ -152,10 +152,13 @@ impl<T> ValidatedMessageDecoder<T> {
                     bounded_error_message(&e.to_string())
                 ))
             })?;
-            let message = (self.parse)(&json).map_err(|e| {
-                self.failed = true;
-                e
-            })?;
+            let message = match (self.parse)(&json) {
+                Ok(message) => message,
+                Err(error) => {
+                    self.failed = true;
+                    return Err(error);
+                }
+            };
             messages.push(message);
         }
         Ok(messages)

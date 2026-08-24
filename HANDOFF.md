@@ -956,3 +956,57 @@ paths and evidence without committing or pushing shared state.
 The working tree retains the pre-existing untracked `AGENTS.md`; `.unlazy/`
 runtime state is ignored. Next action: inspect and approve the scoped gate
 oracles, claim the first-wave leases, then dispatch the ready leaves.
+
+## Active checkpoint — 2026-08-25 — implementation wave integrated
+
+Repository state at handoff: branch `main`; `HEAD` and `origin/main` both
+`6f243b9a0083d5d6e8edf7f05943f3dbeb0fec88` before this dirty working-tree
+checkpoint. Agents are still editing disjoint C1/D2/E2/F1 paths; no active
+agent committed or pushed. The pre-existing untracked `AGENTS.md` remains
+untouched.
+
+Progress checker:
+
+```text
+Conversion progress: 68.67% (114/166; 52 open)
+```
+
+Completed and independently rechecked in this wave:
+
+- S-013 Copilot OAuth, S-014 Anthropic OAuth/provider edges, S-016/S-017
+  catalog refresh/merge, and #75 proxy bootstrap are ledger-checked with
+  unit/mock evidence.
+- Extension command/hook/renderer/failure-isolation fixtures: 8 passed;
+  extension library tests: 26 passed. The external Node/Bun loader remains a
+  documented divergence from upstream in-process TypeScript execution.
+- pi-server: 21 tests passed; strict all-target clippy passed after fixing
+  lifecycle and protocol lint blockers.
+- pi-protocol: 22, 9, and 15 offline test targets passed; strict all-target
+  clippy passed.
+- pi-tui: 187 tests passed; strict all-target clippy and manifest formatting
+  passed.
+- Workspace `cargo check --workspace --offline` passed at this checkpoint.
+
+Exact focused validation commands run:
+
+```text
+/home/mustbearnold/.cargo/bin/cargo test -p pi-ai --offline --test copilot_oauth_parity --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test copilot_oauth_parity --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-ai --offline --test anthropic_provider_parity --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-ai --offline --test anthropic_stream --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-ai --offline --test model_catalog_parity --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test model_catalog_parity --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::http_dispatcher --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test extensions_parity --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-server --offline --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-protocol --offline --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-tui --offline --quiet
+/home/mustbearnold/.cargo/bin/cargo check --workspace --offline
+git diff --check
+node scripts/conversion-progress.mjs
+```
+
+Next dependency-safe action: finish the active C1/D2/E2/F1 leaves, then
+dispatch provider-matrix and independent final reviewers. Do not claim full
+conversion completion until pi-agent/coding-agent clippy, the full workspace
+tests, parity suite, release matrix, and S-065/S-066 audit gates pass.

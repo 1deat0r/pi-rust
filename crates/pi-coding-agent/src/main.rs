@@ -7,6 +7,16 @@ use pi_coding_agent::args::{parse_args, print_help, print_version, ParseOutcome}
 async fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
 
+    // Bootstrap the global proxy before auth/package/config subcommands, which
+    // can create provider HTTP clients without going through a mode settings
+    // manager. Existing HTTP_PROXY/HTTPS_PROXY values always win.
+    let agent_dir = pi_coding_agent::config::get_agent_dir();
+    if let Err(error) =
+        pi_coding_agent::core::http_dispatcher::apply_global_http_proxy_settings(&agent_dir)
+    {
+        eprintln!("Warning: {error}");
+    }
+
     // Keep startup network behavior consistent across subcommands. The
     // upstream sets both switches before auth/package dispatch, so an
     // offline invocation never performs a version or catalog request.

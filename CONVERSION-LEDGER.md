@@ -4,9 +4,9 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
-## Current status (last updated 2026-08-24)
+## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **65.66% (109/166; 57 open)**. Run
+- The exhaustive checker reports **68.67% (114/166; 52 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -38,7 +38,8 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   S1 section is authoritative for residual provider, harness, runtime, TUI,
   RPC, auxiliary client/server, evaluation, and final-audit work.
 
-## Current state (verified 2026-08-24)
+## Historical state snapshot (verified 2026-08-24; superseded by the active
+2026-08-25 checkpoint below)
 
 - The S-009 Codex WebSocket session-cache checkpoint is committed as
   `c3d6109f32abb2f1a4efbda6eb2c90a35383dd98` on `main` and pushed to
@@ -99,21 +100,11 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 - The alt-screen hardening now invalidates differential frames after
   alternate-screen transitions; full regular/fullscreen swapping and the
   dedicated tmux probe remain open in #61/#62.
-- **Additional gaps found in this audit** (not in any TODO file):
-  - Missing CLI flags vs 0.84.2 surface: `--fork`, `--approve/-a`,
-    `--no-approve/-na`, `--no-builtin-tools/-nbt`, `--extension/-e`,
-    `--no-extensions/-ne`, `--skill`, `--no-skills/-ns`, `--prompt-template`,
-    `--no-prompt-templates/-np`, `--theme`, `--use-theme`, `--no-themes`,
-    `--no-context-files/-nc` (+ print-mode `--steer/--follow-up/--compact`).
-  - No auto-compaction wiring in `run.rs` (RPC `compact` command exists).
-  - `image` tool not registered: run.rs exposes 7 tools, upstream has 8
-    (bash/read/write/edit/edit-diff/ls/find/grep/image).
-  - coding-agent core modules not ported as modules (functionality may exist
-    elsewhere — audit first): `bash-executor`, `exec`, `system-prompt` wiring,
-    `skills` loader, `prompt-templates` + `resource-loader`, `http-dispatcher`,
-    `session-cwd`, `cache-stats`, `timings`, `auth-guidance`,
-    `settings-diagnostics`, `diagnostics`, `project-trust`/
-    `trust-manager`, `messages` (extended), `footer-data-provider`.
+- **Historical audit claims superseded by later implementation**: the earlier
+  missing-flag, missing-auto-compaction, unregistered-image-tool, and absent-
+  core-module bullets were contradicted by later source and fixture evidence.
+  The authoritative residuals are the supplemental S-013–S-066 rows and the
+  source-to-source audit in `.unlazy/full-conversion-20260825/audit/`.
 - pi-agent: the core AgentTool shape, prepareArguments seam, optional-details
       payloads, mutable before/after hooks, parallel completion ordering,
       built-in update sink, mutation queue, and malformed-call matrix are now
@@ -467,11 +458,15 @@ Recut of the remaining work by user impact + risk:
       (AGENTS.md/CLAUDE.md + AGENTS.override.md ancestor walk with BOM strip,
       worktree-shadow dedup) — run.rs injects the `<project_context>` section
       and `-nc/--no-context-files` disables it (previously a dead flag).
-- [ ] 75. Port `core/http-dispatcher.ts` / proxy behavior if not covered —
-      AUDIT: real providers route through the pi-ai `Models` facade
-      (`models.stream` in run.rs), which owns HTTP/SSE dispatch + auth
-      internally. A dedicated coding-agent http-dispatcher seam is not present;
-      revisit only if a proxy/network-option divergence surfaces in the facade.
+- [x] 75. Port `core/http-dispatcher.ts` / proxy behavior if not covered.
+      Evidence (unit/mock): `crates/pi-coding-agent/src/core/http_dispatcher.rs`
+      applies the global `httpProxy` setting before auth/package/mode dispatch,
+      preserves explicit `HTTP_PROXY`/`HTTPS_PROXY` values (including empty
+      values), strips the settings BOM, reports malformed settings JSON, and
+      retains the upstream idle/auto-select timeout defaults. Verified with
+      `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+      --lib core::http_dispatcher --quiet` (3 passed), focused rustfmt, and
+      `git diff --check`.
 - [x] 76. Port `core/session-cwd.ts` semantics (interactive + RPC). New
       `core/session_cwd.rs`: `getMissingSessionCwdIssue`,
       `formatMissingSessionCwdError`, `formatMissingSessionCwdPrompt`,
@@ -742,21 +737,41 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       `RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib cloudflare --quiet && printf 'S012_CLOUDFLARE_BINDING_TESTS_PASS\n'` (18 passed) covers prefix/origin validation, JSON body translation, provider/endpoint/query extraction, lower-cased header forwarding, derived-header stripping, dot-segment normalization, rejection paths, and binding dispatch. `RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib cloudflare_provider --quiet && printf 'S012_CLOUDFLARE_PROVIDER_TESTS_PASS\n'` (5 passed) covers stored-field precedence, scoped account/gateway environment, inline upstream authorization, and gateway base URL resolution. Static evidence: `RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTFMT=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo check -p pi-ai --offline && RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTFMT=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo fmt --all -- --check && git diff --check && printf 'S012_STATIC_CHECKS_PASS\n'`.
       The binding fixture also proves encoded dot/empty-segment handling and
       forwards the optional runtime-neutral cancellation handle.
-- [ ] S-013 Complete GitHub Copilot OAuth refresh, enterprise-domain, token
+- [x] S-013 Complete GitHub Copilot OAuth refresh, enterprise-domain, token
       exchange, and expired-credential behavior in the auth store and CLI.
-- [ ] S-014 Complete Anthropic OAuth provider-name mapping, adaptive-thinking
+      Evidence (mock): `/home/mustbearnold/.cargo/bin/cargo test -p pi-ai
+      --offline --test copilot_oauth_parity --quiet` (5 passed) and
+      `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+      --test copilot_oauth_parity --quiet` (4 passed), plus offline checks and
+      owned-path formatting. Fixtures cover enterprise URL normalization,
+      proxy endpoint precedence, rotated refresh credentials, model filtering,
+      expired auth-check refresh, `--no-refresh`, and failure-preserving auth
+      storage.
+- [x] S-014 Complete Anthropic OAuth provider-name mapping, adaptive-thinking
       replay, eager beta headers, client injection, deferred tool references,
-      and server-side fallback behavior.
+      and server-side fallback behavior. Evidence (mock):
+      `/home/mustbearnold/.cargo/bin/cargo test -p pi-ai --offline --test
+      anthropic_provider_parity --quiet` (7 passed),
+      `/home/mustbearnold/.cargo/bin/cargo test -p pi-ai --offline --test
+      anthropic_stream --quiet` (9 passed), the focused module tests, strict
+      pi-ai clippy, owned-path formatting, and `git diff --check`.
 - [ ] S-015 Add provider-by-provider request/stream/usage/error fixtures for
       all catalog providers, including each advertised API variant and an
       explicit no-API implementation check where upstream intentionally has
       one.
-- [ ] S-016 Finish remote model-catalog HTTP semantics: RFC date parsing,
+- [x] S-016 Finish remote model-catalog HTTP semantics: RFC date parsing,
       freshness, ETag/304 handling, 404/501 handling, atomic persistence, and
-      offline behavior.
-- [ ] S-017 Add model-catalog refresh and runtime-merge tests for every
+      offline behavior. Evidence (mock): `/home/mustbearnold/.cargo/bin/cargo
+      test -p pi-coding-agent --offline --test model_catalog_parity --quiet`
+      (8 passed), including RFC-date parsing, conditional requests, 304,
+      unavailable responses, malformed payloads, file locking, and offline
+      refusal.
+- [x] S-017 Add model-catalog refresh and runtime-merge tests for every
       provider shape, including custom providers, malformed payloads, and
-      generated-at precedence.
+      generated-at precedence. Evidence (unit/mock): `/home/mustbearnold/.cargo/bin/cargo
+      test -p pi-ai --offline --test model_catalog_parity --quiet` (4 passed)
+      and the coding-agent catalog fixture above; unknown provider fields are
+      retained through the typed model/catalog persistence round trip.
 
 ### S1-C — pi-agent contract and harness integration
 

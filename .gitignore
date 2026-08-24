@@ -1,3 +1,6 @@
 /target
 
 /upstream_pi/
+
+/.unlazy/
+/.unlazy-hook-state.json

@@ -4,17 +4,42 @@
 
 The existing conversion goal is resumed under the scoped unlazy contract
 `.unlazy/full-conversion-20260825/`. The current authoritative checker output
-is **Conversion progress: 65.66% (109/166; 57 open)**. No ledger item changed
-while the execution tree and ownership contracts were created.
+is **Conversion progress: 68.67% (114/166; 52 open)**. The source inventory
+and claim-reconciliation audit is complete; five behavior tasks were checked
+with exact unit/mock evidence during the first implementation wave.
 
-The first parallel wave is deliberately disjoint: source inventory (`leaf-A1`),
-Copilot OAuth (`leaf-B1`), Anthropic provider edges (`leaf-B2`), model catalog
-semantics (`leaf-B3`), provider fixtures (`leaf-B4`), extension runtime
-(`leaf-C2`), auxiliary server (`leaf-D1`), auxiliary client (`leaf-D2`), TUI
-parity (`leaf-E1`), and evals (`leaf-F1`). The driver owns the conversion
-ledger and synchronized documentation. Harness/mode, reconnect E2E, full PTY,
-parity-fixture, and final-audit leaves are dependency-gated and will be
-dispatched only after their declared parents are independently reverified.
+The first implementation wave completed the audit (`leaf-A1`), Copilot OAuth
+fixtures (`leaf-B1`), Anthropic fixtures (`leaf-B2`), model-catalog fixtures
+(`leaf-B3`), the proxy seam (#75), the Rust-native extension fixture slice
+(`leaf-C2`), server lifecycle fixes (`leaf-D1`), protocol strict-clippy
+cleanup, and TUI static/test cleanup (`leaf-E1`). The active wave is now
+harness/mode (`leaf-C1`), auxiliary client (`leaf-D2`), full PTY (`leaf-E2`),
+and eval metrics (`leaf-F1`); provider matrix, parity, and final-audit leaves
+remain dependency-gated. The driver owns the conversion ledger and
+synchronized documentation.
+
+## Checkpoint 2026-08-25 — first implementation wave
+
+Evidence accepted in this checkpoint:
+
+- Copilot OAuth: pi-ai 5-test and coding-agent 4-test mock suites pass.
+- Anthropic: provider parity 7, stream 9, module tests, and strict pi-ai
+  clippy pass.
+- Model catalogs: pi-ai 4-test and coding-agent 8-test suites pass, including
+  RFC dates, ETag/304, 404/offline, runtime merge, and unknown-field retention.
+- Proxy/bootstrap: three focused `core::http_dispatcher` unit tests pass.
+- Extensions: eight parity tests and 26 extension library tests pass; the
+  unresolved boundary is external Node/Bun execution versus upstream in-process
+  TypeScript registration.
+- Server: 21 offline unit/integration tests and strict server clippy pass.
+- Protocol: 22 + 9 + 15 offline tests and strict protocol clippy pass.
+- TUI: 187 offline tests and strict TUI clippy/manifest formatting pass.
+
+Known issues carried forward: pi-agent and coding-agent strict clippy still
+have pre-existing warnings outside the completed leaf slices; the upstream
+extension runtime is not embedded; server/client remains auxiliary; and the
+full harness, PTY, provider matrix, eval, parity, and final source/TODO
+reconciliation are not yet complete.
 
 Shared contracts: upstream oracle `upstream_pi/` at commit
 `5cd93f688aaab89dbb6dfa4aca535f21796ae185`; `/bin/sh`; offline Cargo by

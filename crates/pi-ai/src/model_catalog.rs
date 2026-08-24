@@ -12,6 +12,16 @@ use std::sync::OnceLock;
 
 use crate::model::Model;
 
+/// A parsed remote entry keeps both the typed model used by the runtime and
+/// the original JSON object. JavaScript's model type is structurally open, so
+/// fields added by a provider must survive a refresh/persistence round trip
+/// even when this Rust release does not interpret them yet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogModelEntry {
+    pub model: Model,
+    pub raw: serde_json::Value,
+}
+
 /// Static provider → (modelId → Model) catalog, built lazily from the
 /// vendored JSON data. Mirrors the upstream `MODELS` table.
 static MODELS: OnceLock<BTreeMap<String, BTreeMap<String, Model>>> = OnceLock::new();
@@ -157,6 +167,95 @@ pub fn get_builtin_model_data_generated_at() -> Option<u64> {
 /// All built-in models across all providers, in provider order.
 pub fn get_all_builtin_models() -> Vec<&'static Model> {
     models().values().flat_map(|m| m.values()).collect()
+}
+
+/// Merge a remote/provider-owned list over a baseline list. Existing model ids
+/// are replaced at their original position; new ids are appended in source
+/// order. This is the ordering contract used by the upstream `mergeModels`.
+pub fn merge_model_lists(baseline: &[Model], dynamic: &[Model]) -> Vec<Model> {
+    let mut merged = baseline.to_vec();
+    for model in dynamic {
+        if let Some(index) = merged.iter().position(|entry| entry.id == model.id) {
+            merged[index] = model.clone();
+        } else {
+            merged.push(model.clone());
+        }
+    }
+    merged
+}
+
+/// Whether a remote catalog may overlay a bundled catalog. A remote catalog
+/// is usable when no bundled generation is known, or when its Last-Modified
+/// timestamp is strictly newer. Missing remote metadata is never newer than a
+/// known bundled generation.
+pub fn remote_catalog_is_newer(
+    remote_last_modified: Option<u64>,
+    local_generated_at: Option<u64>,
+) -> bool {
+    match (remote_last_modified, local_generated_at) {
+        (Some(remote), Some(local)) => remote > local,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => true,
+    }
+}
+
+/// Parse the open catalog shape accepted by upstream `parseCatalog` while
+/// retaining each raw entry for lossless persistence. An object with an array
+/// `models` property uses that array; all other objects use `Object.values`.
+/// Entries that are not objects or do not contain an `id` are ignored, as in
+/// the upstream filter. Typed-deserialization failures are also ignored: the
+/// TypeScript implementation performs no runtime schema validation here.
+pub fn parse_catalog_entries(
+    provider_id: &str,
+    value: &serde_json::Value,
+) -> Result<Vec<CatalogModelEntry>, String> {
+    let entries: Vec<&serde_json::Value> = match value {
+        serde_json::Value::Array(entries) => entries.iter().collect(),
+        serde_json::Value::Object(object) => object
+            .get("models")
+            .and_then(serde_json::Value::as_array)
+            .map(|entries| entries.iter().collect())
+            .unwrap_or_else(|| object.values().collect()),
+        _ => {
+            return Err(format!(
+                "Invalid model catalog for provider \"{provider_id}\""
+            ));
+        }
+    };
+
+    let mut parsed = Vec::new();
+    for entry in entries {
+        let Some(object) = entry.as_object() else {
+            continue;
+        };
+        if !object.contains_key("id") {
+            continue;
+        }
+        let mut raw = entry.clone();
+        if let Some(object) = raw.as_object_mut() {
+            object.insert(
+                "provider".to_string(),
+                serde_json::Value::String(provider_id.to_string()),
+            );
+        }
+        let Ok(model) = serde_json::from_value::<Model>(raw.clone()) else {
+            continue;
+        };
+        parsed.push(CatalogModelEntry { model, raw });
+    }
+    Ok(parsed)
+}
+
+/// Parse a remote catalog into the typed runtime model list.
+pub fn parse_catalog_models(
+    provider_id: &str,
+    value: &serde_json::Value,
+) -> Result<Vec<Model>, String> {
+    Ok(parse_catalog_entries(provider_id, value)?
+        .into_iter()
+        .map(|entry| entry.model)
+        .collect())
 }
 
 #[cfg(test)]

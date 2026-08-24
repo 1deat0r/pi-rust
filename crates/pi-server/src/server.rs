@@ -181,8 +181,7 @@ async fn run_request(arc: Arc<Mutex<dyn ByteConnectionHandler>>, id: String, req
         let mut service_guard = service.lock().unwrap();
         let _state_for_cmd = ConnectionStateStub;
         let snapshots_for_cmd = snapshots.clone();
-        let outcome = run_command_sync(&mut *service_guard, request, &snapshots_for_cmd);
-        outcome
+        run_command_sync(&mut *service_guard, request, &snapshots_for_cmd)
     };
     let message = match &result {
         Ok(result) => ServerMessage::Response {
@@ -203,7 +202,7 @@ async fn run_request(arc: Arc<Mutex<dyn ByteConnectionHandler>>, id: String, req
     };
     let conn = connection;
     let _ = conn.send(&frame).await;
-    if !closing.lock().unwrap().clone() && handshake_complete {
+    if !*closing.lock().unwrap() && handshake_complete {
         let snapshots_for_spawn = snapshots.clone();
         // Broadcast the full server snapshot AND a per-session snapshot event
         // for the mutated session (upstream publishes both after commands).
@@ -222,10 +221,12 @@ async fn run_request(arc: Arc<Mutex<dyn ByteConnectionHandler>>, id: String, req
 /// run_command wrapper).
 struct ConnectionStateStub;
 /// PiServer: owns listeners, connections, snapshot publisher, service.
+type ConnectionList = Arc<Mutex<Vec<Arc<Mutex<dyn ByteConnectionHandler>>>>>;
+
 pub struct PiServer {
     pub id: String,
     service: Arc<Mutex<dyn PiServerService>>,
-    connections: Arc<Mutex<Vec<Arc<Mutex<dyn ByteConnectionHandler>>>>>,
+    connections: ConnectionList,
     snapshots: Arc<ServerSnapshotPublisher>,
     listeners: Vec<Box<dyn crate::listener::PiServerListener>>,
     closing: Arc<Mutex<bool>>,
@@ -324,7 +325,7 @@ impl ByteConnectionHandler for ConnectionHandler {
         self.state.disconnected = true;
         self.state.stage = "closed";
         self.snapshots.revoke_connection(&self.state.id);
-        if !self.closing.lock().unwrap().clone() && self.state.handshake_complete {
+        if !*self.closing.lock().unwrap() && self.state.handshake_complete {
             let snapshots_for_spawn = self.snapshots.clone();
             tokio::spawn(async move {
                 snapshots_for_spawn.broadcast().await;

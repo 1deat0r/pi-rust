@@ -9,17 +9,24 @@
 //! - `pi auth` / `pi auth help` prints command help.
 //!
 //! The upstream model runtime refreshes OAuth tokens and resolves env/
-//! command API keys through the provider auth layer; the port resolves the
-//! stored credentials through the auth-storage port and env templates through
-//! resolve_config_value (documented divergence: no network OAuth refresh).
+//! command API keys through the provider auth layer; this port refreshes
+//! stored OAuth credentials through the auth-storage port and resolves env
+//! templates through resolve_config_value.
+
+use std::future::Future;
+use std::path::Path;
 
 use serde_json::json;
 
 use crate::args::{parse_args, ParseOutcome};
 use crate::config::{self, APP_NAME};
-use crate::core::auth_storage::{read_stored_credential, Credential};
+use crate::core::auth_storage::{
+    read_stored_credential, refresh_oauth_credential_in_storage, AuthStorage, Credential,
+};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{resolve_cli_model, RegistryView};
+
+const DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS: u64 = 30 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthCommandKind {
@@ -215,6 +222,33 @@ pub fn stored_credential_for(provider: &str, auth_path: &std::path::Path) -> Opt
     read_stored_credential(provider, auth_path)
 }
 
+/// Read a provider credential and, when requested, refresh an OAuth
+/// credential whose remaining validity is below the upstream minimum window.
+/// `--no-refresh` deliberately returns the stored access token even when it is
+/// expired; this is the CLI's explicit escape hatch for offline inspection.
+pub async fn get_provider_credential(
+    provider: &str,
+    registry: &ModelRegistry,
+    auth_path: &Path,
+    refresh: bool,
+    min_expiry_ms: Option<u64>,
+) -> Result<Option<Credential>, String> {
+    let Some(stored) = read_stored_credential(provider, auth_path) else {
+        return Ok(None);
+    };
+    if !refresh || !matches!(stored, Credential::OAuth { .. }) {
+        return Ok(Some(stored));
+    }
+    let Some(provider_entry) = registry.get_provider(provider) else {
+        return Ok(None);
+    };
+    let Some(oauth) = provider_entry.auth.oauth else {
+        return Ok(None);
+    };
+    let storage = AuthStorage::create(auth_path.to_path_buf());
+    refresh_oauth_credential_in_storage(&storage, provider, oauth, min_expiry_ms, None).await
+}
+
 /// A minimal registry view over a ModelRegistry (for resolve_cli_model).
 struct RegistryViewAdapter<'a> {
     registry: &'a ModelRegistry,
@@ -301,6 +335,82 @@ pub fn check_provider_auth(
     }
 }
 
+/// Async auth check with upstream's refresh option. The status remains
+/// `ready` when `refresh` is false, including for an expired OAuth token; a
+/// refresh failure is reported as `invalid_state` and the old credential is
+/// left in storage by the locked refresh helper.
+pub async fn check_provider_auth_with_options(
+    provider: &str,
+    registry: &ModelRegistry,
+    auth_path: &Path,
+    refresh: bool,
+) -> AuthCheckResult {
+    if registry.get_error().is_some() {
+        return AuthCheckResult {
+            status: "invalid".to_string(),
+            provider: provider.to_string(),
+            reason: Some("invalid_state".to_string()),
+            auth_type: None,
+        };
+    }
+    let Some(provider_entry) = registry.get_provider(provider) else {
+        return AuthCheckResult {
+            status: "not_ready".to_string(),
+            provider: provider.to_string(),
+            reason: Some("provider_not_found".to_string()),
+            auth_type: None,
+        };
+    };
+    let Some(credential) = read_stored_credential(provider, auth_path) else {
+        return AuthCheckResult {
+            status: "not_ready".to_string(),
+            provider: provider.to_string(),
+            reason: Some("credentials_not_configured".to_string()),
+            auth_type: None,
+        };
+    };
+    let auth_type = if credential.credential_type() == "oauth" {
+        "oauth"
+    } else {
+        "api_key"
+    };
+    if refresh && matches!(credential, Credential::OAuth { .. }) {
+        if provider_entry.auth.oauth.is_none() {
+            return AuthCheckResult {
+                status: "not_ready".to_string(),
+                provider: provider.to_string(),
+                reason: Some("credentials_not_configured".to_string()),
+                auth_type: None,
+            };
+        }
+        match get_provider_credential(provider, registry, auth_path, true, None).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return AuthCheckResult {
+                    status: "not_ready".to_string(),
+                    provider: provider.to_string(),
+                    reason: Some("credentials_not_configured".to_string()),
+                    auth_type: None,
+                };
+            }
+            Err(_) => {
+                return AuthCheckResult {
+                    status: "invalid".to_string(),
+                    provider: provider.to_string(),
+                    reason: Some("invalid_state".to_string()),
+                    auth_type: None,
+                };
+            }
+        }
+    }
+    AuthCheckResult {
+        status: "ready".to_string(),
+        provider: provider.to_string(),
+        reason: None,
+        auth_type: Some(auth_type.to_string()),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthCheckResult {
     pub status: String,
@@ -316,6 +426,14 @@ pub fn create_auth_check_model_registry() -> ModelRegistry {
     let models_path = config::get_agent_dir().join("models.json");
     let config = crate::core::model_config::ModelConfig::load(Some(&models_path));
     crate::core::model_registry::ModelRegistry::new(models, config)
+}
+
+fn block_on_auth<F: Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("auth command runtime should build")
+        .block_on(future)
 }
 
 /// `pi auth` dispatcher. Returns true when the args were an auth command.
@@ -390,7 +508,27 @@ pub fn handle_auth_command(args: &[String]) -> bool {
             eprintln!("Error: Unknown provider \"{provider}\". Use --list-models to see available providers.");
             std::process::exit(1);
         }
-        let Some(credential) = read_stored_credential(&provider, &auth_path) else {
+        let refresh = command.kind == AuthCommandKind::BearerToken;
+        let credential = match block_on_auth(get_provider_credential(
+            &provider,
+            &registry,
+            &auth_path,
+            refresh,
+            if refresh {
+                command
+                    .min_expiry_ms
+                    .or(Some(DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS))
+            } else {
+                None
+            },
+        )) {
+            Ok(credential) => credential,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                std::process::exit(1);
+            }
+        };
+        let Some(credential) = credential else {
             let (verb, noun) = match command.kind {
                 AuthCommandKind::ApiKey => ("API key", "API key"),
                 _ => ("OAuth bearer token", "OAuth bearer token"),
@@ -427,23 +565,32 @@ pub fn handle_auth_command(args: &[String]) -> bool {
 
     // auth check.
     {
-        let result = check_provider_auth(
+        let mut result = block_on_auth(check_provider_auth_with_options(
             validated.provider.as_deref().unwrap_or(""),
             &registry,
             &auth_path,
-        );
+            !command.no_refresh,
+        ));
         let mut credential_value: Option<String> = None;
         if command.credentials && result.status == "ready" {
-            credential_value = read_stored_credential(&result.provider, &auth_path)
-                .and_then(|c| auth_credential_value(&c));
-            if credential_value.is_none() {
-                let result = AuthCheckResult {
-                    status: "not_ready".to_string(),
-                    provider: result.provider.clone(),
-                    reason: Some("credential_not_available".to_string()),
-                    auth_type: None,
-                };
-                let _ = result;
+            match block_on_auth(get_provider_credential(
+                &result.provider,
+                &registry,
+                &auth_path,
+                !command.no_refresh,
+                None,
+            )) {
+                Ok(Some(credential)) => {
+                    credential_value = auth_credential_value(&credential);
+                }
+                Ok(None) | Err(_) => {
+                    result = AuthCheckResult {
+                        status: "not_ready".to_string(),
+                        provider: result.provider.clone(),
+                        reason: Some("credential_not_available".to_string()),
+                        auth_type: None,
+                    };
+                }
             }
         }
         let output = if command.json {

@@ -336,7 +336,7 @@ mod tests {
         let items = vec![item("test", Some("Line one\nLine two\nLine three"))];
         let list = SelectList::new(items, 5, plain_theme(), SelectListLayoutOptions::default());
         let rendered = list.render(100);
-        assert!(rendered.len() > 0);
+        assert!(!rendered.is_empty());
         assert!(!rendered[0].contains('\n'));
         assert!(rendered[0].contains("Line one Line two Line three"));
     }

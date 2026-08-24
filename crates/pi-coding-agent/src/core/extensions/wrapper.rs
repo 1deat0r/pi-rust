@@ -10,6 +10,8 @@
 //! closure so the `addedToolNames` merge contract is testable without a live
 //! agent loop.
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
 use crate::core::extensions::types::RegisteredTool;
 
 /// Tool-execution input for the wrapped call. The active-tool set around the
@@ -53,7 +55,9 @@ pub struct WrappedTool {
 ///
 /// The wrapped execute closure runs the underlying tool execution, then
 /// computes `addedToolNames` as the difference between the active-tool set
-/// after execution and before it, merging that diff into the result.
+/// after execution and before it, merging that diff into the result. If an
+/// existing active tool disappeared, the upstream wrapper leaves the result
+/// unchanged because the snapshot is not a valid monotonic transition.
 pub fn wrap_registered_tool(
     registered_tool: RegisteredTool,
     execute: std::sync::Arc<dyn Fn(&WrappedToolCall) -> WrappedToolResult + Send + Sync>,
@@ -64,8 +68,24 @@ pub fn wrap_registered_tool(
         dyn Fn(WrappedToolCall) -> WrappedToolResult + Send + Sync,
     > = std::sync::Arc::new(move |call: WrappedToolCall| {
         let active_before: Vec<String> = call.active_tools_before.clone();
-        let result = execute_inner(&call);
+        let result = match catch_unwind(AssertUnwindSafe(|| execute_inner(&call))) {
+            Ok(result) => result,
+            Err(payload) => WrappedToolResult {
+                content: vec![serde_json::json!({
+                    "type": "text",
+                    "text": format!("extension tool panicked: {}", panic_message(payload)),
+                })],
+                is_error: true,
+                ..WrappedToolResult::default()
+            },
+        };
         let before_set: std::collections::BTreeSet<&String> = active_before.iter().collect();
+        if !active_before
+            .iter()
+            .all(|name| call.active_tools_after.iter().any(|after| after == name))
+        {
+            return result;
+        }
         let added: Vec<String> = call
             .active_tools_after
             .iter()
@@ -80,6 +100,16 @@ pub fn wrap_registered_tool(
     WrappedTool {
         definition,
         execute: wrapped_execute,
+    }
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }
 
@@ -164,11 +194,11 @@ mod tests {
         let call = WrappedToolCall {
             tool_call_id: "call-1".into(),
             params: serde_json::json!({}),
-            // "read" removed, "new-tool" added.
+            // "read" removed, so the upstream invariant leaves the result unchanged.
             active_tools_before: vec!["bash".into(), "read".into()],
             active_tools_after: vec!["bash".into(), "new-tool".into()],
         };
         let result = (wrapped.execute)(call);
-        assert_eq!(result.added_tool_names, vec!["new-tool"]);
+        assert!(result.added_tool_names.is_empty());
     }
 }

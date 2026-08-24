@@ -35,6 +35,12 @@ pub struct Model {
     /// Whether provider auth is configured (populated by the models store).
     #[serde(default)]
     pub authenticated: bool,
+    /// Provider-specific fields preserved across catalog refreshes. The
+    /// upstream model shape is structurally open, so unknown catalog keys
+    /// must survive a typed Rust round trip even when the runtime does not
+    /// interpret them yet.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, JsonValue>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -67,6 +73,7 @@ impl Model {
             headers: None,
             compat: None,
             authenticated: false,
+            extra: BTreeMap::new(),
         }
     }
 }

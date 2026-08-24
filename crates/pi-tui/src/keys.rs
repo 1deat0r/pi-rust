@@ -51,42 +51,7 @@ impl TuiKey {
             return "ctrl+c".to_string();
         }
         let base = self.base.clone();
-        parts.push(
-            if self.ctrl
-                && matches!(
-                    base.as_str(),
-                    "c" | "d"
-                        | "z"
-                        | "a"
-                        | "l"
-                        | "u"
-                        | "w"
-                        | "e"
-                        | "x"
-                        | "y"
-                        | "r"
-                        | "t"
-                        | "n"
-                        | "p"
-                        | "k"
-                        | "b"
-                        | "f"
-                        | "h"
-                        | "g"
-                        | "i"
-                        | "o"
-                        | "s"
-                        | "m"
-                        | "j"
-                        | "q"
-                        | "v"
-                )
-            {
-                Box::leak(base.into_boxed_str())
-            } else {
-                Box::leak(base.into_boxed_str())
-            },
-        );
+        parts.push(Box::leak(base.into_boxed_str()));
         parts.join("+")
     }
 }
@@ -170,9 +135,7 @@ fn parse_raw_terminal_key(raw: &str) -> Option<TuiKey> {
         }
     }
 
-    let Some(escape_tail) = raw.strip_prefix('\x1b') else {
-        return None;
-    };
+    let escape_tail = raw.strip_prefix('\x1b')?;
 
     // Legacy Alt+key input is ESC followed by one printable character.
     if escape_tail.chars().count() == 1 {

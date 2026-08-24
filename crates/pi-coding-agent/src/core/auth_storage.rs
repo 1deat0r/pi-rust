@@ -782,6 +782,122 @@ pub fn read_stored_credential(provider_id: &str, auth_path: &Path) -> Option<Cre
     data.get(provider_id).cloned()
 }
 
+/// The default OAuth validity window used by upstream auth resolution.
+pub const DEFAULT_OAUTH_MINIMUM_VALIDITY_MS: u64 = 5 * 60 * 1000;
+
+fn current_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn oauth_credential_for_pi_ai(credential: &Credential) -> Option<pi_ai::auth::OAuthCredential> {
+    let Credential::OAuth {
+        access,
+        refresh,
+        expires,
+        extra,
+    } = credential
+    else {
+        return None;
+    };
+    Some(pi_ai::auth::OAuthCredential {
+        access: access.clone(),
+        refresh: refresh.clone(),
+        expires: *expires,
+        extra: extra.clone(),
+    })
+}
+
+fn credential_from_pi_ai(credential: pi_ai::auth::OAuthCredential) -> Credential {
+    Credential::OAuth {
+        access: credential.access,
+        refresh: credential.refresh,
+        expires: credential.expires,
+        extra: credential.extra,
+    }
+}
+
+/// Refresh an expired OAuth credential under AuthStorage's serialized modify
+/// lock and persist the provider-returned credential (including rotated
+/// refresh tokens and opaque extension fields).
+pub async fn refresh_oauth_credential_in_storage(
+    storage: &AuthStorage,
+    provider_id: &str,
+    oauth: Arc<dyn pi_ai::auth::OAuthAuth>,
+    min_validity_ms: Option<u64>,
+    signal: Option<Arc<AtomicBool>>,
+) -> Result<Option<Credential>, String> {
+    let options = AuthOperationOptions {
+        signal: signal.clone(),
+    };
+    let Some(stored) = storage.read(provider_id, &options).await? else {
+        return Ok(None);
+    };
+    if !matches!(stored, Credential::OAuth { .. }) {
+        return Ok(Some(stored));
+    }
+
+    let minimum_validity_ms = DEFAULT_OAUTH_MINIMUM_VALIDITY_MS.max(min_validity_ms.unwrap_or(0));
+    let now = current_time_ms();
+    let stored_expires = match &stored {
+        Credential::OAuth { expires, .. } => *expires,
+        Credential::ApiKey { .. } => unreachable!("API keys return before expiry checks"),
+    };
+    if now.saturating_add(minimum_validity_ms) < stored_expires {
+        return Ok(Some(stored));
+    }
+
+    let refresh_signal = signal.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let oauth_for_lock = oauth.clone();
+    let provider_name = provider_id.to_string();
+    let minimum_validity_for_lock = minimum_validity_ms;
+    let modified = storage
+        .modify(
+            provider_id,
+            move |current| {
+                let current = current.cloned();
+                let oauth = oauth_for_lock.clone();
+                let refresh_signal = refresh_signal.clone();
+                let provider_name = provider_name.clone();
+                Box::pin(async move {
+                    let Some(current) = current else {
+                        return Ok(None);
+                    };
+                    let Some(stored_oauth) = oauth_credential_for_pi_ai(&current) else {
+                        return Ok(None);
+                    };
+                    if current_time_ms().saturating_add(minimum_validity_for_lock)
+                        < stored_oauth.expires
+                    {
+                        return Ok(None);
+                    }
+                    let refreshed = oauth
+                        .refresh(&stored_oauth, &refresh_signal)
+                        .await
+                        .map_err(|error| {
+                            format!("OAuth refresh failed for {provider_name}: {error}")
+                        })?;
+                    Ok(Some(credential_from_pi_ai(refreshed)))
+                })
+            },
+            &options,
+        )
+        .await?;
+
+    if let Some(min_validity_ms) = min_validity_ms {
+        if let Some(Credential::OAuth { expires, .. }) = modified.as_ref() {
+            if current_time_ms().saturating_add(min_validity_ms) >= *expires {
+                return Err(format!(
+                    "OAuth refresh returned a token that expires too soon for {provider_id}"
+                ));
+            }
+        }
+    }
+    Ok(modified)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

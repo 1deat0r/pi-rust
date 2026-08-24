@@ -723,6 +723,13 @@ fn env_api_key_auth_with_env_check() -> Arc<dyn crate::auth::ApiKeyAuth> {
 }
 
 pub fn github_copilot_provider() -> Provider {
+    github_copilot_provider_with_oauth(crate::oauth::GitHubCopilotOAuth::new())
+}
+
+/// Build the Copilot provider with an injectable OAuth implementation. The
+/// production constructor above supplies the real network implementation;
+/// the seam keeps auth-storage and model-filter parity fixtures deterministic.
+pub fn github_copilot_provider_with_oauth(oauth: Arc<dyn crate::auth::OAuthAuth>) -> Provider {
     let mut streams = std::collections::BTreeMap::new();
     let base = "https://api.individual.githubcopilot.com";
     streams.insert(
@@ -747,11 +754,34 @@ pub fn github_copilot_provider() -> Provider {
                 "GitHub Copilot token",
                 vec!["COPILOT_GITHUB_TOKEN".to_string()],
             )),
-            oauth: Some(crate::auth_flows::GitHubCopilotOAuth::new()),
+            oauth: Some(oauth),
         },
         models: catalog_models("github-copilot"),
         api: crate::models::ProviderApiSpec::ByApi(streams),
-        filter_models: None,
+        filter_models: Some(Arc::new(|models, credential| {
+            let Some(crate::auth::Credential::OAuth(credential)) = credential else {
+                return models.to_vec();
+            };
+            let Some(ids) = credential
+                .extra
+                .get("availableModelIds")
+                .and_then(serde_json::Value::as_array)
+            else {
+                return models.to_vec();
+            };
+            if !ids.iter().all(serde_json::Value::is_string) {
+                return models.to_vec();
+            }
+            models
+                .iter()
+                .filter(|model| {
+                    ids.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .any(|id| id == model.id)
+                })
+                .cloned()
+                .collect()
+        })),
     })
 }
 

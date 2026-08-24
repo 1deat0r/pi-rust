@@ -8,6 +8,7 @@ pub mod diagnostics;
 pub mod event_bus;
 pub mod export_html;
 pub mod extensions;
+pub mod http_dispatcher;
 pub mod model_config;
 pub mod model_registry;
 pub mod model_resolver;

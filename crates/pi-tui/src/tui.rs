@@ -188,6 +188,6 @@ mod tests {
         let text = Arc::new(Mutex::new(Text::new("hello", 0, 0, None)));
         let scene = Scene::new(vec![text], None);
         let lines = scene.render(10, 1);
-        assert_eq!(visible_width(&lines[0]) >= 5, true);
+        assert!(visible_width(&lines[0]) >= 5);
     }
 }
