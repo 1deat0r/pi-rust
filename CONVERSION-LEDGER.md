@@ -33,9 +33,10 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   attributes. JSON mode now also owns a stateful in-memory `AgentHarness`
   transcript and replays rich stream updates, including terminal provider
   errors, without changing the established successful RPC wire envelope. A
-  shared lifecycle adapter wraps the interactive, JSON, and RPC loop paths;
-  complete mode-specific golden envelopes and persistence/secondary-lane
-  assertions remain open under S-021/S-022. Telemetry callback panics now
+  shared lifecycle adapter wraps the JSON and RPC loop paths, while interactive
+  turns now run through a configured harness as well; complete mode-specific
+  golden envelopes and persistence/secondary-lane assertions remain open
+  under S-021/S-022. Telemetry callback panics now
   settle in-memory spans as automatic errors while preserving explicit
   statuses and panic propagation; the shared TUI image-capability fixtures
   are serialized for deterministic workspace runs.
@@ -631,15 +632,16 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       coding-agent run path instead of maintaining a parallel direct-loop
       implementation. (Partial unit/integration slice: configured harnesses
       now own the one-shot print-path and JSON-mode Agents plus their
-      in-memory main-lane transcripts; interactive/JSONL/RPC paths and
+      in-memory main-lane transcripts, and interactive turns now seed a
+      configured harness from the current transcript; JSONL/RPC paths and
       secondary lanes remain open.)
 - [ ] S-022 Wire the complete harness event and telemetry lifecycle into print,
       interactive, JSON, JSONL, and RPC modes with span/event golden checks.
-      (Partial unit/integration slice: configured print and JSON harness paths
-      emit ordered run lifecycle events and settled `pi.harness.run` spans;
-      the shared adapter covers interactive/RPC loops, while JSONL, complete
-      mode-specific golden envelopes, and persistence/secondary-lane
-      assertions remain open.)
+      (Partial unit/integration slice: configured print, JSON, and interactive
+      harness paths emit ordered run lifecycle events and settled
+      `pi.harness.run` spans; the shared adapter covers RPC loops, while
+      JSONL, complete mode-specific golden envelopes, and
+      persistence/secondary-lane assertions remain open.)
 - [x] S-023 Add panic-safe telemetry callback settlement equivalent to the
       upstream `try/catch/finally` span lifecycle. (unit) The in-memory
       adapter catches callback unwinds, settles spans as automatic errors

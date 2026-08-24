@@ -1195,6 +1195,31 @@ preserving its JSON event contract, including provider terminal errors.
   mode-specific lifecycle golden envelopes, persistence, and secondary lanes
   still need implementation and evidence.
 
+### Session 35 — 2026-08-24 — Interactive turn harness ownership (partial S-021/S-022)
+Scope: route each interactive turn through a configured harness while keeping
+the existing TUI transcript, session-switch, and stream-update surfaces.
+
+- Interactive turns now build `HarnessTool`s with the same tool preparation
+  callbacks as print/JSON mode, create a memory-backed main-lane harness for
+  the invocation, seed its Agent from the current in-memory transcript, and
+  feed captured rich stream updates into the existing TUI text callback.
+  Session persistence remains owned by the interactive runtime, so resume,
+  fork, clone, and `/share` behavior keep their existing ordering.
+- A focused regression exercises the real faux stream through `stream_turn`,
+  asserting prompt/assistant transcript order, assistant text, and streamed
+  deltas. The direct-loop implementation is removed from this turn path;
+  RPC/JSONL full harness ownership and secondary lanes remain open.
+- Evidence (unit/integration): `/home/mustbearnold/.cargo/bin/cargo test -p
+  pi-coding-agent --offline interactive_stream_turn_uses_harness_transcript_and_events
+  -- --nocapture` (1 passed), `/home/mustbearnold/.cargo/bin/cargo test -p
+  pi-coding-agent --offline --quiet` (446 library tests plus integration
+  targets), `/home/mustbearnold/.cargo/bin/cargo check -p pi-coding-agent
+  --offline`, `/home/mustbearnold/.cargo/bin/cargo fmt --all`, and
+  `git diff --check`.
+- S-021/S-022 remain open: JSONL/RPC full AgentHarness ownership,
+  mode-specific lifecycle golden envelopes, persistence, and secondary lanes
+  still need implementation and evidence.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

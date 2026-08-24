@@ -7,9 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_agent::agent::{run_agent_loop, AgentContext, AgentLoopConfig};
-use pi_agent::harness::events::HarnessEventBus;
-use pi_agent::harness::{run_with_harness_lifecycle, HarnessTelemetryContext};
+use pi_agent::harness::{AgentHarness, AgentHarnessOptions, HarnessTool};
 use pi_agent::session::jsonl::repo::CreateOptions;
 use pi_agent::session::session::Session as JsonlSession;
 use pi_agent::session::state::ForkOptions;
@@ -63,38 +61,25 @@ async fn stream_turn(
 ) -> Vec<pi_agent::types::AgentMessage> {
     let prompt = pi_agent::agent::user_text_prompt(message.clone(), pi_ai::types::now_ms());
     runtime.messages.push(prompt.clone());
-    let mut context = AgentContext::new(runtime.system_prompt.clone(), Vec::new());
-    context.block_images = runtime.block_images;
-    // Seed the model context with prior history (the current prompt is passed
-    // separately below); without this each turn would only see its own prompt.
-    context.messages = runtime.messages[..runtime.messages.len() - 1].to_vec();
-    if runtime.tools_enabled {
-        context
-            .tools
-            .push(pi_agent::tools::bash_tool(runtime.cwd.clone()));
-        context.tools.push(pi_agent::tools::read_tool_with_options(
-            runtime.cwd.clone(),
-            pi_agent::tools::image::ProcessImageOptions {
-                auto_resize_images: runtime.auto_resize_images,
-                ..Default::default()
-            },
-        ));
-        context
-            .tools
-            .push(pi_agent::tools::write_tool(runtime.cwd.clone()));
-        context
-            .tools
-            .push(pi_agent::tools::edit_tool(runtime.cwd.clone()));
-        context
-            .tools
-            .push(crate::core::tools::ls_tool(runtime.cwd.clone()));
-        context
-            .tools
-            .push(crate::core::tools::find_tool(runtime.cwd.clone()));
-        context
-            .tools
-            .push(crate::core::tools::grep_tool(runtime.cwd.clone()));
-    }
+    let tools: Vec<pi_agent::tools::AgentTool> = if runtime.tools_enabled {
+        vec![
+            pi_agent::tools::bash_tool(runtime.cwd.clone()),
+            pi_agent::tools::read_tool_with_options(
+                runtime.cwd.clone(),
+                pi_agent::tools::image::ProcessImageOptions {
+                    auto_resize_images: runtime.auto_resize_images,
+                    ..Default::default()
+                },
+            ),
+            pi_agent::tools::write_tool(runtime.cwd.clone()),
+            pi_agent::tools::edit_tool(runtime.cwd.clone()),
+            crate::core::tools::ls_tool(runtime.cwd.clone()),
+            crate::core::tools::find_tool(runtime.cwd.clone()),
+            crate::core::tools::grep_tool(runtime.cwd.clone()),
+        ]
+    } else {
+        Vec::new()
+    };
     let models = runtime.models.clone();
     let api_key = std::env::var(config::ENV_KEY).ok();
     let stream_options = pi_ai::types::StreamOptions {
@@ -121,28 +106,39 @@ async fn stream_turn(
     } else {
         Arc::new(move |model, ctx| models.stream(model, ctx, Some(&stream_options)))
     };
-    let cfg = AgentLoopConfig {
-        model: runtime.model.clone(),
-        stream_fn,
-        signal: None,
-        stop_after_turn: true,
-        on_stream_event: Some(on_event),
+    let storage = Arc::new(Mutex::new(
+        pi_agent::session::memory::InMemorySessionStorage::new(
+            pi_agent::session::memory::in_memory_metadata("interactive-turn", None),
+        ),
+    ));
+    let session = pi_agent::session::Session::<pi_agent::fs::MemoryFs>::from_in_memory(storage);
+    let mut options = AgentHarnessOptions::new(session, runtime.model.clone());
+    options.stream_fn = Some(stream_fn);
+    options.system_prompt = runtime.system_prompt.clone();
+    options.block_images = runtime.block_images;
+    options.tools = Some(tools.iter().map(HarnessTool::from_agent_tool).collect());
+    let Ok((mut harness, _suspended)) = AgentHarness::create(options).await else {
+        return Vec::new();
     };
-    let telemetry = HarnessTelemetryContext::default();
-    let mut lifecycle = HarnessEventBus::new();
-    let session_id = runtime.session_id.clone();
-    let new_messages = run_with_harness_lifecycle(
-        &telemetry,
-        &mut lifecycle,
-        "main",
-        &session_id,
-        String::new(),
-        move |_span| async move {
-            Ok(run_agent_loop(vec![prompt], &mut context, &cfg, &mut |_| {}).await)
-        },
-    )
-    .await
-    .unwrap_or_default();
+    if harness
+        .set_agent_messages(runtime.messages[..runtime.messages.len() - 1].to_vec())
+        .await
+        .is_err()
+    {
+        return Vec::new();
+    }
+    let Ok((new_messages, rich_events)) = harness.run_prompt_with_events(vec![prompt]).await else {
+        return Vec::new();
+    };
+    for event in rich_events {
+        if let pi_agent::rich_agent::RichAgentEvent::MessageUpdate {
+            assistant_message_event,
+            ..
+        } = event
+        {
+            on_event(&assistant_message_event);
+        }
+    }
     for m in new_messages.iter().skip(1) {
         runtime.messages.push(m.clone());
     }
@@ -1606,6 +1602,41 @@ mod tests {
             block_images: false,
             persisted_until: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn interactive_stream_turn_uses_harness_transcript_and_events() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-interactive-harness-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        let deltas = Arc::new(Mutex::new(Vec::<String>::new()));
+        let deltas_for_event = deltas.clone();
+        let on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync> = Arc::new(move |event| {
+            if let AssistantMessageEvent::TextDelta { delta, .. } = event {
+                deltas_for_event.lock().unwrap().push(delta.clone());
+            }
+        });
+
+        let new_messages = stream_turn(&mut runtime, "hello".to_string(), on_event).await;
+
+        assert_eq!(new_messages.len(), 2, "prompt plus assistant response");
+        assert_eq!(runtime.messages.len(), 2);
+        assert!(runtime.messages.iter().any(|message| {
+            matches!(
+                message,
+                pi_agent::types::AgentMessage::Core(pi_ai::types::Message::Assistant(assistant))
+                    if assistant.content().iter().any(|block| matches!(
+                        block,
+                        pi_ai::types::ContentBlock::Text { text, .. }
+                            if text.contains("faux response to: hello")
+                    ))
+            )
+        }));
+        assert!(!deltas.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Write a fake `gh` script into `bin_dir`. `auth_status` is the exit code

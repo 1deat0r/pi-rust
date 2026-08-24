@@ -26,8 +26,10 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest committed local checkpoint is the JSON-mode harness ownership slice
-(`3fb8049`) after the print-path harness, lifecycle/termination,
+The latest committed local checkpoint is the documentation-hook checkpoint
+(`d56d8ba`); the next code checkpoint routes interactive turns through the
+stateful harness after the JSON-mode harness ownership slice (`3fb8049`),
+print-path harness, lifecycle/termination,
 schema-validator, panic-safe telemetry, RPC runtime, update/version, and
 model-catalog checkpoints. The JSON-mode commit is `dd7a568`; the follow-up
 preserves the successful RPC golden envelope while forwarding terminal JSON
@@ -286,6 +288,17 @@ The JSON-mode harness ownership slice is included in the latest checkpoint:
   error case; the full workspace gate remains green. This is partial S-021 and
   S-022: interactive/JSONL/RPC full harness ownership, lifecycle goldens,
   persistence, and secondary lanes remain open.
+
+The interactive turn harness ownership slice is the next checkpoint:
+
+- Interactive `stream_turn` now creates a configured memory-backed
+  `AgentHarness`, seeds it from the current transcript, preserves all built-in
+  tool preparation callbacks, and forwards rich stream updates to the existing
+  TUI callback. The runtime continues to own durable JSONL persistence and
+  session-switch behavior.
+- The focused interactive harness test and the full 446-test coding-agent
+  suite pass. This remains partial S-021/S-022: JSONL/RPC full harness
+  ownership, lifecycle goldens, persistence, and secondary lanes remain open.
 
 The follow-up bash harness integration is included in the latest checkpoint:
 

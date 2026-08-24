@@ -16,8 +16,8 @@ node scripts/conversion-progress.mjs
 ```
 
 The port already includes substantial CLI and runtime work, including the
-in-process agent loop, stateful harness-backed print and JSON modes,
-provider/model catalog surfaces, session storage, project trust, tools,
+in-process agent loop, stateful harness-backed print, JSON, and interactive
+turns, provider/model catalog surfaces, session storage, project trust, tools,
 compaction, RPC controls, TUI components, and client/server support. Remaining
 work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
