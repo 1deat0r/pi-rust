@@ -21,7 +21,7 @@ use pi_ai::types::ToolResultMessage;
 use pi_ai::types::{json_tool, Tool};
 
 /// Final or partial result produced by a tool (upstream `AgentToolResult`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentToolResult {
     /// Text or image content returned to the model.
     pub content: Vec<pi_ai::types::ContentBlock>,

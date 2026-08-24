@@ -10,13 +10,14 @@
 //! repo-backed). Commands whose upstream dependency is not yet ported (HTML
 //! export, extension commands) respond with the upstream error surface.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pi_agent::agent::AgentContext;
 use pi_agent::rich_agent::{
-    run_rich_agent_loop, PendingMessageQueue, QueueMode, RichAgentEvent, RichAgentLoopConfig,
+    agent_tool_result_to_partial_json, run_rich_agent_loop, PendingMessageQueue, QueueMode,
+    RichAgentEvent, RichAgentLoopConfig,
 };
 use pi_agent::session::jsonl::repo::CreateOptions;
 use pi_agent::session::session::Session as JsonlSession;
@@ -219,13 +220,68 @@ struct RpcPromptRun {
     config: RichAgentLoopConfig,
 }
 
+/// A message-end record plus the session-only termination marker carried by
+/// the upstream harness entry. `terminate` is deliberately not part of the
+/// model-facing `ToolResultMessage`; it is persisted alongside that message
+/// so recovery can reconstruct the completed tool batch.
+#[derive(Debug, Clone)]
+struct PersistedRpcMessage {
+    message: pi_agent::types::AgentMessage,
+    terminate: bool,
+}
+
+fn plain_persisted_messages(
+    messages: Vec<pi_agent::types::AgentMessage>,
+) -> Vec<PersistedRpcMessage> {
+    messages
+        .into_iter()
+        .map(|message| PersistedRpcMessage {
+            message,
+            terminate: false,
+        })
+        .collect()
+}
+
+fn capture_persisted_rpc_event(
+    event: &RichAgentEvent,
+    pending_terminations: &mut HashSet<String>,
+    persisted_messages: &mut Vec<PersistedRpcMessage>,
+) {
+    match event {
+        RichAgentEvent::ToolExecutionEnd {
+            tool_call_id,
+            result,
+            ..
+        } => {
+            if result.terminate {
+                pending_terminations.insert(tool_call_id.clone());
+            } else {
+                pending_terminations.remove(tool_call_id);
+            }
+        }
+        RichAgentEvent::MessageEnd { message } => {
+            let terminate = match message {
+                pi_agent::types::AgentMessage::Core(Message::ToolResult(result)) => {
+                    pending_terminations.remove(result.tool_call_id())
+                }
+                _ => false,
+            };
+            persisted_messages.push(PersistedRpcMessage {
+                message: message.clone(),
+                terminate,
+            });
+        }
+        _ => {}
+    }
+}
+
 struct RpcPromptResult {
     /// Messages that remain in the live agent context after retry handling.
     /// Intermediate retry failures are intentionally absent.
     new_messages: Vec<pi_agent::types::AgentMessage>,
     /// Every message-end record from the run, including intermediate retry
     /// failures. These are the durable session history.
-    persisted_messages: Vec<pi_agent::types::AgentMessage>,
+    persisted_messages: Vec<PersistedRpcMessage>,
 }
 
 enum RpcPromptTaskMessage {
@@ -347,7 +403,7 @@ fn serialize_rpc_prompt_event(event: RichAgentEvent) -> Option<String> {
             "type": "tool_execution_end",
             "toolCallId": tool_call_id,
             "toolName": tool_name,
-            "result": result,
+            "result": agent_tool_result_to_partial_json(&result),
             "isError": is_error,
         }))),
     }
@@ -414,10 +470,13 @@ async fn run_rpc_prompt(run: RpcPromptRun, events: UnboundedSender<RpcPromptTask
     let persisted_messages = Arc::new(Mutex::new(Vec::new()));
     let persisted_for_loop = persisted_messages.clone();
     let events_for_loop = events.clone();
+    let mut pending_terminations = HashSet::new();
     let mut emit: Box<dyn FnMut(RichAgentEvent) + Send> = Box::new(move |event| {
-        if let RichAgentEvent::MessageEnd { message } = &event {
-            persisted_for_loop.lock().unwrap().push(message.clone());
-        }
+        capture_persisted_rpc_event(
+            &event,
+            &mut pending_terminations,
+            &mut persisted_for_loop.lock().unwrap(),
+        );
         if let Some(line) = serialize_rpc_prompt_event(event) {
             let _ = events_for_loop.send(RpcPromptTaskMessage::Event(line));
         }
@@ -1024,7 +1083,7 @@ impl RpcRuntime {
     async fn settle_prompt_with_persistence(
         &mut self,
         new_messages: Vec<pi_agent::types::AgentMessage>,
-        persisted_messages: Vec<pi_agent::types::AgentMessage>,
+        persisted_messages: Vec<PersistedRpcMessage>,
     ) -> Vec<String> {
         let mut store = Vec::new();
         self.messages.extend(new_messages.iter().cloned());
@@ -1034,11 +1093,13 @@ impl RpcRuntime {
         // is not silently lost.
         let messages_to_persist =
             if persisted_messages.is_empty() || persisted_messages.len() < new_messages.len() {
-                &new_messages
+                plain_persisted_messages(new_messages)
             } else {
-                &persisted_messages
+                persisted_messages
             };
-        let _ = self.persist_messages(messages_to_persist).await;
+        let _ = self
+            .persist_messages_with_termination(&messages_to_persist)
+            .await;
 
         self.is_streaming = false;
         {
@@ -1197,13 +1258,28 @@ impl RpcRuntime {
         &mut self,
         new_messages: &[pi_agent::types::AgentMessage],
     ) -> Result<(), String> {
-        for message in new_messages {
+        let messages = new_messages
+            .iter()
+            .cloned()
+            .map(|message| PersistedRpcMessage {
+                message,
+                terminate: false,
+            })
+            .collect::<Vec<_>>();
+        self.persist_messages_with_termination(&messages).await
+    }
+
+    async fn persist_messages_with_termination(
+        &mut self,
+        messages: &[PersistedRpcMessage],
+    ) -> Result<(), String> {
+        for persisted in messages {
             self.session
                 .append_entry(
                     EntryNoStats::Message {
                         id: format!("m-{}", pi_agent::session::new_id()),
-                        message: message.clone(),
-                        terminate: None,
+                        message: persisted.message.clone(),
+                        terminate: persisted.terminate.then_some(true),
                     },
                     "main",
                 )
@@ -1415,11 +1491,14 @@ impl RpcRuntime {
                 let mut captured_events = Vec::new();
                 let persisted_messages = Arc::new(Mutex::new(Vec::new()));
                 let persisted_for_loop = persisted_messages.clone();
+                let mut pending_terminations = HashSet::new();
                 let new_messages =
                     run_rich_agent_loop(prompts, &mut context, &config, &mut |event| {
-                        if let RichAgentEvent::MessageEnd { message } = &event {
-                            persisted_for_loop.lock().unwrap().push(message.clone());
-                        }
+                        capture_persisted_rpc_event(
+                            &event,
+                            &mut pending_terminations,
+                            &mut persisted_for_loop.lock().unwrap(),
+                        );
                         if let Some(line) = serialize_rpc_prompt_event(event) {
                             captured_events.push(line);
                         }
@@ -3098,7 +3177,7 @@ mod tests {
         runtime
             .settle_prompt_with_persistence(
                 vec![prompt.clone(), recovered.clone()],
-                vec![prompt, failed, recovered],
+                plain_persisted_messages(vec![prompt, failed, recovered]),
             )
             .await;
 
@@ -3832,7 +3911,10 @@ mod tests {
             )
         }));
         runtime
-            .settle_prompt_with_persistence(new_messages.clone(), new_messages)
+            .settle_prompt_with_persistence(
+                new_messages.clone(),
+                plain_persisted_messages(new_messages),
+            )
             .await;
         assert!(!runtime.is_streaming);
         assert!(!*runtime.run_lock.lock().unwrap());
@@ -4580,7 +4662,8 @@ mod tests {
                 "type": value["type"],
                 "toolCallId": value["toolCallId"],
                 "toolName": value["toolName"],
-                "resultRole": value["result"]["role"],
+                "resultContentCount": value["result"]["content"].as_array().map_or(0, Vec::len),
+                "terminate": value["result"].get("terminate").cloned().unwrap_or(serde_json::Value::Bool(false)),
                 "isError": value["isError"],
             }),
             _ => value.clone(),
@@ -4661,6 +4744,8 @@ mod tests {
         );
         let tool_result = pi_ai::types::ToolResultMessage::text("call-1", "bash", "hi", false)
             .with_details_usage_timestamp(None, None, 7);
+        let mut lifecycle_result = pi_agent::tools::AgentToolResult::output("hi");
+        lifecycle_result.terminate = true;
         let user = pi_agent::types::AgentMessage::Core(Message::User(
             pi_ai::types::UserContent::string("hello", 7),
         ));
@@ -4862,7 +4947,7 @@ mod tests {
                 RichAgentEvent::ToolExecutionEnd {
                     tool_call_id: "call-1".to_string(),
                     tool_name: "bash".to_string(),
-                    result: tool_result,
+                    result: lifecycle_result,
                     is_error: false,
                 },
             ),
@@ -4959,6 +5044,55 @@ mod tests {
         )))
         .unwrap();
         assert_eq!(transcript, expected);
+    }
+
+    #[tokio::test]
+    async fn tool_terminate_hint_reaches_rpc_and_session_contracts() {
+        let mut lifecycle_result = pi_agent::tools::AgentToolResult::output("done");
+        lifecycle_result.terminate = true;
+        let end = RichAgentEvent::ToolExecutionEnd {
+            tool_call_id: "call-terminate".to_string(),
+            tool_name: "stop".to_string(),
+            result: lifecycle_result,
+            is_error: false,
+        };
+        let mut pending_terminations = HashSet::new();
+        let mut persisted = Vec::new();
+        capture_persisted_rpc_event(&end, &mut pending_terminations, &mut persisted);
+
+        let tool_message = pi_agent::types::AgentMessage::Core(Message::ToolResult(
+            pi_ai::types::ToolResultMessage::text("call-terminate", "stop", "done", false),
+        ));
+        capture_persisted_rpc_event(
+            &RichAgentEvent::MessageEnd {
+                message: tool_message,
+            },
+            &mut pending_terminations,
+            &mut persisted,
+        );
+        assert_eq!(persisted.len(), 1);
+        assert!(persisted[0].terminate);
+
+        let event_json = serialize_rpc_prompt_event(end).unwrap();
+        let event_json: serde_json::Value = serde_json::from_str(event_json.trim()).unwrap();
+        assert_eq!(event_json["result"]["terminate"], true);
+
+        let mut runtime = runtime_for_test().await;
+        runtime
+            .persist_messages_with_termination(&persisted)
+            .await
+            .unwrap();
+        let entries = runtime.get_entries().await.unwrap();
+        assert!(entries.iter().any(|entry| {
+            matches!(
+                entry,
+                pi_agent::session::types::Entry::Message {
+                    message: pi_agent::types::AgentMessage::Core(Message::ToolResult(result)),
+                    terminate: Some(true),
+                    ..
+                } if result.tool_call_id() == "call-terminate"
+            )
+        }));
     }
 
     #[tokio::test]

@@ -27,7 +27,7 @@ use pi_ai::types::{
 };
 
 use crate::agent::{is_aborted, AgentContext, StreamFn};
-use crate::tools::AgentTool;
+use crate::tools::{AgentTool, AgentToolResult};
 use crate::types::AgentMessage;
 
 /// How queued messages are injected at a drain point (upstream `QueueMode`).
@@ -145,7 +145,10 @@ pub enum RichAgentEvent {
     ToolExecutionEnd {
         tool_call_id: String,
         tool_name: String,
-        result: ToolResultMessage,
+        /// Raw upstream result, including the internal `terminate` hint.
+        /// The model-facing `ToolResultMessage` is emitted separately and
+        /// intentionally omits that hint.
+        result: AgentToolResult,
         is_error: bool,
     },
 }
@@ -334,19 +337,6 @@ pub struct ExecutedToolBatch {
     pub terminate: bool,
 }
 
-fn create_error_tool_result(
-    tool_call_id: &str,
-    tool_name: &str,
-    message: &str,
-) -> ToolResultMessage {
-    agent_tool_result_to_message(
-        tool_call_id,
-        tool_name,
-        &crate::tools::AgentToolResult::text(message),
-        true,
-    )
-}
-
 fn create_error_agent_tool_result(message: &str) -> crate::tools::AgentToolResult {
     crate::tools::AgentToolResult::text(message)
 }
@@ -378,7 +368,10 @@ fn agent_tool_result_to_message(
 /// Serialize the upstream-shaped partial result carried by a
 /// `tool_execution_update` event. Optional fields are omitted just as they
 /// are from the TypeScript `AgentToolResult` object.
-fn agent_tool_result_to_partial_json(result: &crate::tools::AgentToolResult) -> serde_json::Value {
+/// Serialize an upstream-shaped `AgentToolResult` for tool lifecycle events.
+/// Optional fields are omitted and `added_tool_names` uses the upstream
+/// `addedToolNames` spelling.
+pub fn agent_tool_result_to_partial_json(result: &AgentToolResult) -> serde_json::Value {
     let mut object = serde_json::Map::new();
     object.insert(
         "content".to_string(),
@@ -459,21 +452,18 @@ where
             tool_name: tc.name.to_string(),
             args: tc.arguments.clone(),
         });
-        let result = create_error_tool_result(
-            tc.id,
-            tc.name,
-            &format!(
-                "Tool call \"{}\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.",
-                tc.name
-            ),
-        );
+        let result = create_error_agent_tool_result(&format!(
+            "Tool call \"{}\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.",
+            tc.name
+        ));
+        let message_result = agent_tool_result_to_message(tc.id, tc.name, &result, true);
         emit(RichAgentEvent::ToolExecutionEnd {
             tool_call_id: tc.id.to_string(),
             tool_name: tc.name.to_string(),
             result: result.clone(),
             is_error: true,
         });
-        emit_tool_result_messages(&mut messages, result, emit);
+        emit_tool_result_messages(&mut messages, message_result, emit);
     }
     ExecutedToolBatch {
         messages,
@@ -550,7 +540,7 @@ where
                 emit(RichAgentEvent::ToolExecutionEnd {
                     tool_call_id: tc.id.to_string(),
                     tool_name: tc.name.to_string(),
-                    result: message_result.clone(),
+                    result: result.clone(),
                     is_error,
                 });
                 emit_tool_result_messages(&mut messages, message_result, emit);
@@ -574,7 +564,7 @@ where
                 emit(RichAgentEvent::ToolExecutionEnd {
                     tool_call_id: tc.id.to_string(),
                     tool_name: tc.name.to_string(),
-                    result: message_result.clone(),
+                    result: result.clone(),
                     is_error,
                 });
                 emit_tool_result_messages(&mut messages, message_result, emit);
@@ -616,11 +606,10 @@ where
             PreparedToolCall::Immediate { result, is_error } => {
                 let id = tc.id.to_string();
                 let name = tc.name.to_string();
-                let message_result = agent_tool_result_to_message(&id, &name, &result, is_error);
                 emit(RichAgentEvent::ToolExecutionEnd {
                     tool_call_id: id.clone(),
                     tool_name: name.clone(),
-                    result: message_result,
+                    result: result.clone(),
                     is_error,
                 });
                 finalized[index] = Some((id, name, result, is_error));
@@ -703,11 +692,10 @@ where
             }
             output = running.next() => {
                 if let Some((index, id, name, result, is_error)) = output {
-                    let message_result = agent_tool_result_to_message(&id, &name, &result, is_error);
                     emit(RichAgentEvent::ToolExecutionEnd {
                         tool_call_id: id.clone(),
                         tool_name: name.clone(),
-                        result: message_result,
+                        result: result.clone(),
                         is_error,
                     });
                     finalized[index] = Some((id, name, result, is_error));
@@ -1828,6 +1816,19 @@ mod tests {
                 execute_tool_batch(&message, &context, &cfg, &mut |event| events.push(event)).await;
             assert_eq!(batch.messages.len(), 2);
             assert!(!batch.terminate);
+            let event_terminations: std::collections::HashMap<_, _> = events
+                .iter()
+                .filter_map(|event| match event {
+                    RichAgentEvent::ToolExecutionEnd {
+                        tool_call_id,
+                        result,
+                        ..
+                    } => Some((tool_call_id.as_str(), result.terminate)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(event_terminations.get("terminate-1"), Some(&true));
+            assert_eq!(event_terminations.get("terminate-2"), Some(&false));
 
             let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
             let model = core.get_model(None).unwrap().clone();
@@ -1849,17 +1850,22 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let batch = execute_tool_batch(&message, &context, &cfg, &mut |_| {}).await;
+            let mut terminating_events = Vec::new();
+            let batch = execute_tool_batch(&message, &context, &cfg, &mut |event| {
+                terminating_events.push(event)
+            })
+            .await;
             assert!(batch.terminate);
-            assert!(events.iter().any(|event| {
-                matches!(
-                    event,
-                    RichAgentEvent::ToolExecutionEnd {
-                        is_error: false,
-                        ..
-                    }
-                )
-            }));
+            assert_eq!(
+                terminating_events
+                    .iter()
+                    .filter_map(|event| match event {
+                        RichAgentEvent::ToolExecutionEnd { result, .. } => Some(result.terminate),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                vec![true, true]
+            );
         });
     }
 
