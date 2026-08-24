@@ -26,7 +26,8 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is the startup-timing compatibility slice, after
+The latest local checkpoint is `869ae6d`, the startup-timing compatibility
+slice, after
 the committed compiled-binary self-update contract (`db97b89`) and interactive
 turn harness ownership
 checkpoint (`0cd9d03`) and documentation-hook checkpoint (`d56d8ba`), JSON-mode
@@ -67,6 +68,17 @@ The local/remote hashes were checked immediately after the checkpoint:
 - `gh auth status` reports no authenticated GitHub host. The pre-commit hook
   therefore could not sync `.github/repository-description.txt` to GitHub.
   Local and remote parity is not claimed until authentication is repaired.
+
+The startup-timing checkpoint was verified against the remote immediately
+after commit:
+
+- `git rev-parse HEAD`: `869ae6de6d451243b511409cf7de545819c55f6b`
+- `git ls-remote origin refs/heads/main`:
+  `90a5b931591eaeaea20f1fd9c0d10f72d7614a7b`
+- Immediate `git push origin main` failed with:
+  `fatal: could not read Username for 'https://github.com': No such device or address`.
+- `gh auth status` still reports no authenticated GitHub host, so the updated
+  repository description remains local only.
 
 ## Verification already completed
 
