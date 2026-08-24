@@ -22,6 +22,11 @@ declared offline branches; its single credentialed live branch remains
 explicitly not-run. The driver owns the conversion ledger and synchronized
 documentation.
 
+The current extension bridge (`leaf-C2b`) is a persistent Node/Bun JSONL
+boundary with deterministic async command/hook/renderer/provider fixtures, but
+S-027 remains open pending jiti/module virtualization, host actions, native
+provider callbacks, and live tool execution parity.
+
 ## Checkpoint 2026-08-25 — first implementation wave
 
 Evidence accepted in this checkpoint:

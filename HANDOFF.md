@@ -1092,7 +1092,7 @@ backlog; F2 owns CLI/RPC/session/settings/provider/telemetry parity fixtures.
 After those leaves, rerun the PTY matrix, full workspace tests/clippy, release
 build, and independent final audit. Full conversion remains open.
 
-## Active checkpoint — 2026-08-25 — TUI behavior and clippy cleanup synchronized
+## Historical checkpoint — 2026-08-25 — TUI behavior and clippy cleanup synchronized
 
 The last synchronized pushed baseline before this checkpoint is
 `0dd35c27d788f59c36582df5671f34747c1cafa1` on `main`; local and remote hashes
@@ -1161,7 +1161,23 @@ Exact evidence:
   clippy, formatting, `node --check scripts/parity-suite.mjs`, and
   `git diff --check` passed.
 
-The parity fixture/script paths are now ready for a focused commit. Extension
-bridge edits remain separate and unstaged; they provide partial S-027 evidence
-but do not yet reproduce jiti virtualization, host actions, native provider
-callbacks, or live tool execution.
+The parity fixture/script paths are committed in the current checkpoint.
+Extension bridge edits remain separate and unstaged; they provide partial
+S-027 evidence but do not yet reproduce jiti virtualization, host actions,
+native provider callbacks, or live tool execution.
+
+## Active checkpoint — 2026-08-25 — extension bridge boundary recorded
+
+The extension leaf `C2b` completed its owned gates. The persistent Node/Bun
+JSONL bridge keeps the JavaScript factory alive and routes async command, hook,
+renderer, JSON-provider, loader-error, and failure-isolation callbacks. Exact
+evidence is `cargo test -p pi-coding-agent --offline --test
+extensions_parity --quiet` (11 passed), `cargo test -p pi-coding-agent
+--offline --lib core::extensions --quiet` (26 passed), strict coding-agent
+clippy, package formatting, and `git diff --check`.
+
+S-027 deliberately remains open: the bridge is not an embedded jiti runtime
+and does not yet reproduce module virtualization, host actions, native provider
+callbacks, or live tool execution. The next dependency-safe action is a fresh
+broader runtime-closure review/implementation pass, followed by the final
+source/TODO reconciliation and release gates.

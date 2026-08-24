@@ -411,3 +411,260 @@ fn reserved_shortcut_resolution_remains_deterministic() {
     assert!(shortcuts.is_empty());
     assert_eq!(runner.get_shortcut_diagnostics().len(), 1);
 }
+
+#[test]
+fn node_bridge_executes_async_factory_commands_hooks_renderers_and_provider_config() {
+    let root = std::env::temp_dir().join(format!("pi-extension-bridge-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).expect("bridge fixture dir");
+    let entry = root.join("bridge.ts");
+    fs::write(
+        &entry,
+        r#"
+export default async function (pi) {
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  pi.registerCommand("bridge", {
+    description: "Bridge command",
+    handler: async (args, ctx) => ({ args, mode: ctx.mode }),
+  });
+  pi.on("input", async (event) => ({
+    action: "transform",
+    text: `${event.text}[bridge]`,
+  }));
+  pi.on("before_provider_headers", async (event) => {
+    await Promise.resolve();
+    event.headers["X-Bridge"] = "yes";
+  });
+  pi.registerMessageRenderer("bridge-message", (message, options) => ({
+    value: message.value,
+    expanded: options.expanded,
+  }));
+  pi.registerEntryRenderer("bridge-entry", (entry, options) => ({
+    id: entry.id,
+    expanded: options.expanded,
+  }));
+  pi.registerMarkdownTransformer(async (markdown, context) =>
+    `${markdown}:${context.messageType}:${context.availableWidth}`
+  );
+  pi.registerFlag("bridge-flag", { type: "boolean", default: true });
+  pi.registerProvider("bridge-provider", {
+    name: "Bridge Provider",
+    baseUrl: "https://bridge.invalid/v1",
+    api: "openai-completions",
+    models: [{
+      id: "bridge-model",
+      name: "Bridge Model",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 4096,
+      maxTokens: 256,
+    }],
+  });
+}
+"#,
+    )
+    .expect("bridge fixture");
+
+    let paths = vec![entry.to_string_lossy().to_string()];
+    let result = load_extensions(&paths, &root.to_string_lossy(), None, Some("node"));
+    assert!(
+        result.errors.is_empty(),
+        "bridge load errors: {:?}",
+        result.errors
+    );
+    assert_eq!(result.extensions.len(), 1);
+    let extension = &result.extensions[0];
+    assert!(extension.commands.contains_key("bridge"));
+    assert!(extension.handlers.contains_key("input"));
+    assert!(extension.message_renderers.contains_key("bridge-message"));
+    assert!(extension.entry_renderers.contains_key("bridge-entry"));
+    assert!(extension.markdown_transformer.is_some());
+    let queued_providers = result
+        .runtime
+        .lock()
+        .expect("bridge runtime lock")
+        .pending_provider_registrations
+        .clone();
+    assert_eq!(queued_providers.len(), 1);
+    assert_eq!(queued_providers[0].name, "bridge-provider");
+    assert_eq!(queued_providers[0].config["api"], "openai-completions");
+
+    let runtime = Arc::clone(&result.runtime);
+    let runner = ExtensionRunner::new(result.extensions, runtime, root.to_string_lossy().into());
+    assert_eq!(
+        runner
+            .execute_command("bridge", "one two")
+            .expect("bridge command"),
+        Some(json!({"args": "one two", "mode": "print"}))
+    );
+    assert_eq!(
+        runner.emit_input("hello", None, "interactive", None),
+        InputEventResult::transform("hello[bridge]", None)
+    );
+    assert_eq!(
+        runner.emit_before_provider_headers(json!({"User-Agent": "fixture/1"})),
+        json!({"User-Agent": "fixture/1", "X-Bridge": "yes"})
+    );
+    assert_eq!(
+        runner
+            .render_message(
+                "bridge-message",
+                &json!({"value": 7}),
+                &json!({"expanded": true}),
+            )
+            .expect("bridge message renderer"),
+        Some(json!({"value": 7, "expanded": true}))
+    );
+    assert_eq!(
+        runner
+            .render_entry(
+                "bridge-entry",
+                &json!({"id": "entry-1"}),
+                &json!({"expanded": false}),
+            )
+            .expect("bridge entry renderer"),
+        Some(json!({"id": "entry-1", "expanded": false}))
+    );
+    assert_eq!(
+        runner.apply_markdown_transformers(
+            "body",
+            &pi_coding_agent::core::extensions::types::MarkdownTransformContext {
+                message_type: "assistant".to_string(),
+                is_streaming: false,
+                available_width: 78,
+            },
+        ),
+        "body:assistant:78"
+    );
+    assert_eq!(
+        runner.get_flag_values().get("bridge-flag"),
+        Some(&json!(true))
+    );
+    let loaded_extension = runner
+        .extensions()
+        .first()
+        .expect("loaded bridge extension");
+    assert_eq!(loaded_extension.source_info.source, "local");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn node_bridge_isolates_async_handler_failures_and_keeps_process_alive() {
+    let root = std::env::temp_dir().join(format!(
+        "pi-extension-bridge-failure-{}",
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir_all(&root).expect("bridge failure fixture dir");
+    let entry = root.join("failure.ts");
+    fs::write(
+        &entry,
+        r#"
+export default function (pi) {
+  pi.on("input", async (event) => {
+    await Promise.resolve();
+    if (event.text === "boom") throw new Error("bridge handler boom");
+    return { action: "transform", text: `${event.text}[ok]` };
+  });
+  pi.registerCommand("broken", {
+    handler: async () => { throw new Error("bridge command boom"); },
+  });
+}
+"#,
+    )
+    .expect("bridge failure fixture");
+
+    let result = load_extensions(
+        &[entry.to_string_lossy().to_string()],
+        &root.to_string_lossy(),
+        None,
+        Some("node"),
+    );
+    assert!(
+        result.errors.is_empty(),
+        "bridge load errors: {:?}",
+        result.errors
+    );
+    let errors = Arc::new(Mutex::new(Vec::new()));
+    let received = Arc::clone(&errors);
+    let runner = ExtensionRunner::new(
+        result.extensions,
+        result.runtime,
+        root.to_string_lossy().into(),
+    );
+    let _unsubscribe = runner.on_error(Arc::new(move |error| {
+        received
+            .lock()
+            .expect("bridge error lock")
+            .push(format!("{}:{}", error.event, error.error));
+    }));
+
+    assert_eq!(
+        runner.emit_input("boom", None, "interactive", None),
+        InputEventResult::continue_with("boom", None)
+    );
+    assert_eq!(
+        runner.emit_input("after", None, "interactive", None),
+        InputEventResult::transform("after[ok]", None)
+    );
+    assert_eq!(
+        runner.execute_command("broken", "args"),
+        Err("bridge command boom".to_string())
+    );
+    let errors = errors.lock().expect("bridge error lock");
+    assert!(errors
+        .iter()
+        .any(|error| error.contains("input:bridge handler boom")));
+    assert!(errors
+        .iter()
+        .any(|error| error.contains("command:bridge command boom")));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn node_bridge_reports_invalid_exports_factory_failures_and_native_provider_boundary() {
+    let root = std::env::temp_dir().join(format!(
+        "pi-extension-bridge-errors-{}",
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir_all(&root).expect("bridge error fixture dir");
+    let no_default = root.join("no-default.ts");
+    let throws = root.join("throws.ts");
+    let native_provider = root.join("native-provider.ts");
+    fs::write(&no_default, "export const notDefault = 1;\n").expect("no-default fixture");
+    fs::write(
+        &throws,
+        "export default async function () { await Promise.resolve(); throw new Error('init boom'); }\n",
+    )
+    .expect("throw fixture");
+    fs::write(
+        &native_provider,
+        "export default function (pi) { pi.registerProvider({ id: 'native', stream: () => {} }); }\n",
+    )
+    .expect("native provider fixture");
+
+    let paths = vec![
+        no_default.to_string_lossy().to_string(),
+        throws.to_string_lossy().to_string(),
+        native_provider.to_string_lossy().to_string(),
+    ];
+    let result = load_extensions(&paths, &root.to_string_lossy(), None, Some("node"));
+    assert!(result.extensions.is_empty());
+    assert_eq!(result.errors.len(), 3);
+    assert!(result.errors.iter().any(|error| {
+        error.path.ends_with("no-default.ts")
+            && error
+                .error
+                .contains("does not export a valid factory function")
+    }));
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| { error.path.ends_with("throws.ts") && error.error.contains("init boom") }));
+    assert!(result.errors.iter().any(|error| {
+        error.path.ends_with("native-provider.ts")
+            && error
+                .error
+                .contains("does not support native provider callbacks")
+    }));
+    let _ = fs::remove_dir_all(root);
+}

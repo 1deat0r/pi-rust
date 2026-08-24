@@ -24,6 +24,11 @@ leaves remain explicitly gated. See [PLAN.md](PLAN.md)
 and [HANDOFF.md](HANDOFF.md) for the current checkpoint and next
 dependency-safe action.
 
+The extension boundary now uses a persistent Node/Bun JSONL bridge with
+deterministic command, hook, renderer, provider-config, and failure-isolation
+fixtures. Full S-027 remains open until jiti/module virtualization, host
+actions, native provider callbacks, and live tool execution are reproduced.
+
 The port already includes substantial CLI and runtime work, including the
 in-process agent loop, stateful harness-backed print, JSON, and interactive
 turns, provider/model catalog surfaces, session storage, project trust, tools,

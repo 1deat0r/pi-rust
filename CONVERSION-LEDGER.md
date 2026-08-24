@@ -903,7 +903,13 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       `git diff --check`, and `node scripts/conversion-progress.mjs`.
 - [ ] S-027 Port TypeScript extension execution semantics or provide a proven
       equivalent embedded runtime; cover extension commands, hooks, renderers,
-      and failure isolation.
+      and failure isolation. Partial evidence (unit/mock): the persistent
+      Node/Bun JSONL bridge passes 11 extension parity tests and 26 library
+      tests, covering async factories, commands, hooks, renderers, JSON
+      provider registration, loader errors, and failure isolation. The task
+      remains open because pinned upstream jiti/module virtualization, host
+      actions, native provider callbacks, and live tool execution are not yet
+      reproduced 1:1; no completion checkbox is claimed.
 - [x] S-028 Port the upstream self-update path (`pi update --self`) or document
       and test the exact supported replacement behavior for this distribution.
       The compiled Rust binary performs the latest-release and `--force`

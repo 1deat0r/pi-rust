@@ -3,20 +3,21 @@
 //!
 //! Rust cannot execute TypeScript extension modules in-process (the upstream
 //! uses jiti imports). The port keeps the exact discovery/resolution surface
-//! and models the module execution step as an *external extension runner*:
-//! the resolved entry is spawned with `node <entry>` (bun when node is
-//! missing), mirroring what the TS runtime would execute. The spawned process
-//! is expected to perform extension registration side effects; because a Rust
-//! `pi` exposes no JS API to subprocesses, a nonzero exit is reported as the
-//! deterministic load error. Divergence from upstream: in-process TS
-//! evaluation is replaced by the external runner; the upstream `jiti` cache is
-//! replaced with per-cwd path deduplication.
+//! and uses a persistent Node/Bun JSON-lines bridge for the supported external
+//! runtime boundary. The bridge awaits the factory, returns registration
+//! metadata, and keeps the JavaScript callbacks alive for command, hook, and
+//! renderer calls. It deliberately does not claim to embed jiti, virtual
+//! modules, or native pi-ai provider/action objects; those remain explicit
+//! runtime-boundary limitations.
 
 use std::collections::BTreeSet;
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 
 use crate::config::CONFIG_DIR_NAME;
 use crate::core::extensions::types::{
@@ -166,6 +167,11 @@ impl<'a> ExtensionApi<'a> {
                 extension_path: self.extension_path.clone(),
             },
         );
+        if let Some(default) = self.extension.flags[&name].default.clone() {
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.flag_values.entry(name.clone()).or_insert(default);
+            }
+        }
         self.extension
             .record_registration(RegistrationKind::Flag, Some(name));
         Ok(())
@@ -221,6 +227,63 @@ impl<'a> ExtensionApi<'a> {
             .flag_values
             .get(name)
             .cloned())
+    }
+
+    /// Queue the JSON provider-config form of upstream `registerProvider`.
+    /// Native provider objects are represented separately because their
+    /// executable callbacks cannot cross the external bridge.
+    pub fn register_provider(
+        &mut self,
+        name: &str,
+        config: serde_json::Value,
+    ) -> Result<(), String> {
+        self.assert_active()?;
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| "Extension runtime lock poisoned".to_string())?;
+        runtime
+            .pending_provider_registrations
+            .push(PendingProviderRegistration {
+                name: name.to_string(),
+                config,
+                extension_path: self.extension_path.clone(),
+            });
+        Ok(())
+    }
+
+    /// Queue a deterministic native-provider identifier for Rust-native
+    /// factories. JavaScript native provider callbacks are not serializable
+    /// and are rejected by the external bridge rather than silently
+    /// downgraded.
+    pub fn register_native_provider(&mut self, provider: &str) -> Result<(), String> {
+        self.assert_active()?;
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| "Extension runtime lock poisoned".to_string())?;
+        runtime
+            .pending_native_provider_registrations
+            .push(PendingNativeProviderRegistration {
+                provider: provider.to_string(),
+                extension_path: self.extension_path.clone(),
+            });
+        Ok(())
+    }
+
+    pub fn unregister_provider(&mut self, name: &str) -> Result<(), String> {
+        self.assert_active()?;
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| "Extension runtime lock poisoned".to_string())?;
+        runtime
+            .pending_provider_registrations
+            .retain(|registration| registration.name != name);
+        runtime
+            .pending_native_provider_registrations
+            .retain(|registration| registration.provider != name);
+        Ok(())
     }
 }
 
@@ -298,16 +361,872 @@ pub fn discover_extensions_in_dir(dir: &Path) -> Vec<PathBuf> {
     discovered
 }
 
-/// Spawn an external extension runner for a resolved entry.
-///
-/// Argument protocol: `node <entry>` (bun when node is absent). The entry is
-/// spawned with the containing directory as cwd. Returns the extension record
-/// on exit 0 (hidden=false) or a deterministic error on nonzero exit.
-pub fn run_external_extension(
+/// Bootstrap executed by a real Node/Bun runner. It is intentionally kept as
+/// a data-only protocol: stdout carries JSON responses, while extension logs
+/// are redirected to stderr so they cannot corrupt the protocol stream.
+const EXTERNAL_EXTENSION_BRIDGE: &str = r###"
+import { pathToFileURL } from "node:url";
+import * as readline from "node:readline";
+
+const entryPath = process.argv.at(-1);
+const NOT_INITIALIZED = "Extension runtime not initialized. Action methods cannot be called during extension loading.";
+const state = {
+  active: true,
+  staleMessage: undefined,
+  handlers: new Map(),
+  commands: new Map(),
+  tools: new Map(),
+  flags: new Map(),
+  shortcuts: new Map(),
+  messageRenderers: new Map(),
+  entryRenderers: new Map(),
+  markdownTransformer: undefined,
+  providers: [],
+  nativeProviders: [],
+  registrations: [],
+};
+
+// A logging extension must not be able to write an invalid protocol frame.
+console.log = (...args) => console.error(...args);
+console.info = (...args) => console.error(...args);
+console.debug = (...args) => console.error(...args);
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function assertActive() {
+  if (!state.active) throw new Error(state.staleMessage ?? "Extension context is stale.");
+}
+
+function requireFunction(value, label) {
+  if (typeof value !== "function") throw new Error(`${label} must be a function`);
+}
+
+function hasFunction(value, seen = new Set()) {
+  if (typeof value === "function") return true;
+  if (!value || typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  return Object.values(value).some((child) => hasFunction(child, seen));
+}
+
+function record(kind, name) {
+  state.registrations.push({ kind, name: name ?? null });
+}
+
+function addHandler(event, handler) {
+  requireFunction(handler, `handler for ${event}`);
+  const handlers = state.handlers.get(event) ?? [];
+  handlers.push(handler);
+  state.handlers.set(event, handlers);
+  record("handler", event);
+}
+
+function notInitialized() {
+  throw new Error(NOT_INITIALIZED);
+}
+
+const api = {
+  on(event, handler) {
+    assertActive();
+    addHandler(event, handler);
+  },
+  registerTool(tool) {
+    assertActive();
+    if (!tool || typeof tool.name !== "string") throw new Error("Extension tools require a name");
+    requireFunction(tool.execute, `execute for tool ${tool.name}`);
+    state.tools.set(tool.name, {
+      name: tool.name,
+      description: tool.description ?? "",
+      parameters: tool.parameters ?? {},
+    });
+    record("tool", tool.name);
+  },
+  registerCommand(name, options = {}) {
+    assertActive();
+    requireFunction(options.handler, `handler for command ${name}`);
+    state.commands.set(name, { description: options.description ?? null, handler: options.handler });
+    record("command", name);
+  },
+  registerShortcut(shortcut, options = {}) {
+    assertActive();
+    requireFunction(options.handler, `handler for shortcut ${shortcut}`);
+    state.shortcuts.set(shortcut, { description: options.description ?? null, handler: options.handler });
+    record("shortcut", shortcut);
+  },
+  registerFlag(name, options = {}) {
+    assertActive();
+    if (options.default !== undefined && typeof options.default !== options.type) {
+      throw new Error(`Invalid default for flag "${name}": expected ${options.type}, got ${typeof options.default}`);
+    }
+    state.flags.set(name, {
+      description: options.description ?? null,
+      type: options.type,
+      default: options.default,
+    });
+    record("flag", name);
+  },
+  registerMessageRenderer(customType, renderer) {
+    assertActive();
+    requireFunction(renderer, `message renderer for ${customType}`);
+    state.messageRenderers.set(customType, renderer);
+    record("message_renderer", customType);
+  },
+  registerMarkdownTransformer(transformer) {
+    assertActive();
+    requireFunction(transformer, "markdown transformer");
+    state.markdownTransformer = transformer;
+    record("markdown_transformer", null);
+  },
+  registerEntryRenderer(customType, renderer) {
+    assertActive();
+    requireFunction(renderer, `entry renderer for ${customType}`);
+    state.entryRenderers.set(customType, renderer);
+    record("entry_renderer", customType);
+  },
+  getFlag(name) {
+    assertActive();
+    return state.flags.has(name) ? state.flags.get(name).default : undefined;
+  },
+  registerProvider(nameOrProvider, config) {
+    assertActive();
+    if (typeof nameOrProvider !== "string") {
+      throw new Error("External extension bridge does not support native provider callbacks");
+    }
+    if (config === undefined) throw new Error("Provider config is required when registering by name");
+    if (hasFunction(config)) {
+      throw new Error("External extension bridge only supports JSON provider configs");
+    }
+    state.providers.push({ name: nameOrProvider, config });
+  },
+  unregisterProvider(name) {
+    assertActive();
+    state.providers = state.providers.filter((registration) => registration.name !== name);
+  },
+  sendMessage: notInitialized,
+  sendUserMessage: notInitialized,
+  appendEntry: notInitialized,
+  setSessionName: notInitialized,
+  getSessionName: notInitialized,
+  setLabel: notInitialized,
+  getActiveTools: notInitialized,
+  getAllTools: notInitialized,
+  setActiveTools: notInitialized,
+  getCommands: notInitialized,
+  setModel: notInitialized,
+  getThinkingLevel: notInitialized,
+  setThinkingLevel: notInitialized,
+};
+
+function metadata() {
+  return {
+    handlers: [...state.handlers].map(([event, handlers]) => ({ event, count: handlers.length })),
+    commands: [...state.commands].map(([name, value]) => ({ name, description: value.description })),
+    tools: [...state.tools.values()],
+    flags: [...state.flags].map(([name, value]) => ({ name, ...value })),
+    shortcuts: [...state.shortcuts].map(([shortcut, value]) => ({ shortcut, ...value })),
+    messageRenderers: [...state.messageRenderers.keys()],
+    entryRenderers: [...state.entryRenderers.keys()],
+    markdownTransformer: state.markdownTransformer !== undefined,
+    providers: state.providers,
+    nativeProviders: state.nativeProviders,
+    registrations: state.registrations,
+  };
+}
+
+function contextFor(request) {
+  const context = { ...(request.context ?? {}) };
+  if (request.kind === "handler" && request.name === "before_agent_start") {
+    context.getSystemPrompt = () => request.event?.systemPrompt ?? "";
+  }
+  return context;
+}
+
+async function invoke(request) {
+  assertActive();
+  const context = contextFor(request);
+  if (request.kind === "handler") {
+    const handlers = state.handlers.get(request.name) ?? [];
+    const handler = handlers[request.index];
+    if (!handler) throw new Error(`Extension handler not found: ${request.name}[${request.index}]`);
+    const result = await handler(request.event, context);
+    // Upstream before_provider_headers handlers mutate the shared event and
+    // their return value is ignored. Returning the event lets Rust apply the
+    // same in-place mutation semantics across the process boundary.
+    return request.name === "before_provider_headers" ? request.event : result;
+  }
+  if (request.kind === "command") {
+    const command = state.commands.get(request.name);
+    if (!command) throw new Error(`Extension command not found: ${request.name}`);
+    return await command.handler(request.args ?? "", context);
+  }
+  if (request.kind === "shortcut") {
+    const shortcut = state.shortcuts.get(request.name);
+    if (!shortcut) throw new Error(`Extension shortcut not found: ${request.name}`);
+    return await shortcut.handler(context);
+  }
+  if (request.kind === "message_renderer") {
+    const renderer = state.messageRenderers.get(request.name);
+    if (!renderer) throw new Error(`Extension message renderer not found: ${request.name}`);
+    return await renderer(request.item, request.options, null);
+  }
+  if (request.kind === "entry_renderer") {
+    const renderer = state.entryRenderers.get(request.name);
+    if (!renderer) throw new Error(`Extension entry renderer not found: ${request.name}`);
+    return await renderer(request.item, request.options, null);
+  }
+  if (request.kind === "markdown_transformer") {
+    if (!state.markdownTransformer) throw new Error("Extension markdown transformer not found");
+    return await state.markdownTransformer(request.markdown, request.context ?? {});
+  }
+  throw new Error(`Unknown extension bridge call: ${request.kind}`);
+}
+
+function send(message) {
+  process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+
+async function main() {
+  if (!entryPath) throw new Error("Extension bridge did not receive an entry path");
+  const module = await import(pathToFileURL(entryPath).href);
+  const factory = module.default;
+  if (typeof factory !== "function") {
+    send({ type: "load_error", error: `Extension does not export a valid factory function: ${entryPath}` });
+    process.exitCode = 1;
+    return;
+  }
+  await factory(api);
+  send({ type: "ready", ...metadata() });
+
+  const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  for await (const line of input) {
+    if (!line.trim()) continue;
+    let request;
+    try {
+      request = JSON.parse(line);
+      const result = await invoke(request);
+      send({ id: request.id, ok: true, result: result === undefined ? null : result });
+    } catch (error) {
+      send({ id: request?.id ?? null, ok: false, error: errorMessage(error) });
+    }
+  }
+}
+
+main().catch((error) => {
+  send({ type: "load_error", error: errorMessage(error) });
+  process.exitCode = 1;
+});
+"###;
+
+struct ExternalProcessState {
+    child: std::process::Child,
+    stdin: BufWriter<std::process::ChildStdin>,
+    stdout: BufReader<std::process::ChildStdout>,
+    stderr: Arc<Mutex<String>>,
+}
+
+struct ExternalExtensionProcess {
+    state: Mutex<ExternalProcessState>,
+    next_request_id: AtomicU64,
+}
+
+impl ExternalExtensionProcess {
+    fn request(&self, mut request: serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+        let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        request
+            .as_object_mut()
+            .ok_or_else(|| "Extension bridge request must be an object".to_string())?
+            .insert("id".to_string(), serde_json::Value::from(id));
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Extension bridge lock poisoned".to_string())?;
+        if let Some(status) = state
+            .child
+            .try_wait()
+            .map_err(|error| format!("Extension bridge status failed: {error}"))?
+        {
+            return Err(format_child_exit(status, &state.stderr));
+        }
+        serde_json::to_writer(&mut state.stdin, &request)
+            .map_err(|error| format!("Extension bridge write failed: {error}"))?;
+        state
+            .stdin
+            .write_all(b"\n")
+            .map_err(|error| format!("Extension bridge write failed: {error}"))?;
+        state
+            .stdin
+            .flush()
+            .map_err(|error| format!("Extension bridge flush failed: {error}"))?;
+
+        let mut line = String::new();
+        let read = state
+            .stdout
+            .read_line(&mut line)
+            .map_err(|error| format!("Extension bridge read failed: {error}"))?;
+        if read == 0 {
+            return Err(format_child_exit_after_eof(&mut state));
+        }
+        let response: serde_json::Value = serde_json::from_str(line.trim())
+            .map_err(|error| format!("Extension bridge returned invalid JSON: {error}"))?;
+        if response.get("id") != Some(&serde_json::Value::from(id)) {
+            return Err("Extension bridge returned an unexpected response id".to_string());
+        }
+        if response.get("ok") == Some(&serde_json::Value::Bool(false)) {
+            return Err(response
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Extension callback failed")
+                .to_string());
+        }
+        let result = response
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        Ok((!result.is_null()).then_some(result))
+    }
+}
+
+impl Drop for ExternalExtensionProcess {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            let _ = state.stdin.write_all(b"{\"type\":\"close\"}\n");
+            let _ = state.stdin.flush();
+            let _ = state.child.kill();
+            let _ = state.child.wait();
+        }
+    }
+}
+
+fn format_child_exit(status: std::process::ExitStatus, stderr: &Arc<Mutex<String>>) -> String {
+    let detail = stderr
+        .lock()
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    match detail {
+        Some(detail) => format!("Extension bridge exited: {detail}"),
+        None => format!(
+            "Extension bridge exited with code {}",
+            status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ),
+    }
+}
+
+fn format_child_exit_after_eof(state: &mut ExternalProcessState) -> String {
+    let status = state.child.try_wait().ok().flatten();
+    match status {
+        Some(status) => format_child_exit(status, &state.stderr),
+        None => "Extension bridge closed stdout unexpectedly".to_string(),
+    }
+}
+
+fn is_javascript_runtime(runner: &str) -> bool {
+    Path::new(runner)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            let name = name.to_ascii_lowercase();
+            name == "node" || name == "node.exe" || name == "bun" || name == "bun.exe"
+        })
+        .unwrap_or(false)
+}
+
+fn bridge_context(context: &crate::core::extensions::types::ExtensionContext) -> serde_json::Value {
+    serde_json::json!({
+        "mode": context.mode,
+        "cwd": context.cwd,
+        "hasUI": context.has_ui,
+    })
+}
+
+fn external_handler(
+    process: Arc<ExternalExtensionProcess>,
+    event: String,
+    index: usize,
+) -> HandlerFn {
+    Arc::new(move |context, payload| {
+        process.request(serde_json::json!({
+            "type": "call",
+            "kind": "handler",
+            "name": event,
+            "index": index,
+            "event": payload,
+            "context": bridge_context(context),
+        }))
+    })
+}
+
+fn external_command_handler(process: Arc<ExternalExtensionProcess>, name: String) -> HandlerFn {
+    Arc::new(move |context, payload| {
+        process.request(serde_json::json!({
+            "type": "call",
+            "kind": "command",
+            "name": name,
+            "args": payload.get("args").and_then(serde_json::Value::as_str).unwrap_or_default(),
+            "context": bridge_context(context),
+        }))
+    })
+}
+
+fn external_shortcut_handler(process: Arc<ExternalExtensionProcess>, name: String) -> HandlerFn {
+    Arc::new(move |context, _payload| {
+        process.request(serde_json::json!({
+            "type": "call",
+            "kind": "shortcut",
+            "name": name,
+            "context": bridge_context(context),
+        }))
+    })
+}
+
+fn external_message_renderer(
+    process: Arc<ExternalExtensionProcess>,
+    name: String,
+) -> MessageRenderer {
+    Arc::new(move |item, options| {
+        process.request(serde_json::json!({
+            "type": "call",
+            "kind": "message_renderer",
+            "name": name,
+            "item": item,
+            "options": options,
+        }))
+    })
+}
+
+fn external_entry_renderer(process: Arc<ExternalExtensionProcess>, name: String) -> EntryRenderer {
+    Arc::new(move |item, options| {
+        process.request(serde_json::json!({
+            "type": "call",
+            "kind": "entry_renderer",
+            "name": name,
+            "item": item,
+            "options": options,
+        }))
+    })
+}
+
+fn external_markdown_transformer(process: Arc<ExternalExtensionProcess>) -> MarkdownTransformer {
+    Arc::new(move |markdown, context| {
+        let result = process.request(serde_json::json!({
+            "type": "call",
+            "kind": "markdown_transformer",
+            "markdown": markdown,
+            "context": {
+                "messageType": context.message_type,
+                "isStreaming": context.is_streaming,
+                "availableWidth": context.available_width,
+            },
+        }))?;
+        Ok(result
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| markdown.to_string()))
+    })
+}
+
+fn terminate_child(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn spawn_external_bridge(
+    extension_path: &str,
+    resolved_path: &Path,
+    runner: &str,
+    timeout_ms: Option<u64>,
+) -> Result<(Arc<ExternalExtensionProcess>, serde_json::Value), String> {
+    let cwd = resolved_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut command = Command::new(runner);
+    if Path::new(runner)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_ascii_lowercase().starts_with("node"))
+        .unwrap_or(false)
+    {
+        command.arg("--input-type=module");
+    }
+    command
+        .arg("--eval")
+        .arg(EXTERNAL_EXTENSION_BRIDGE)
+        .arg("--")
+        .arg(resolved_path)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Failed to load extension: {error}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to load extension: bridge stdin was not created".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to load extension: bridge stdout was not created".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to load extension: bridge stderr was not created".to_string())?;
+    let stderr_capture = Arc::new(Mutex::new(String::new()));
+    let stderr_for_thread = Arc::clone(&stderr_capture);
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut output = String::new();
+        let _ = reader.read_to_string(&mut output);
+        if output.len() > 16 * 1024 {
+            let keep_from = output.len() - 16 * 1024;
+            output = output[keep_from..].to_string();
+        }
+        if let Ok(mut captured) = stderr_for_thread.lock() {
+            *captured = output;
+        }
+    });
+
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        let result = reader
+            .read_line(&mut line)
+            .map(|read| (read, line, reader))
+            .map_err(|error| error.to_string());
+        let _ = sender.send(result);
+    });
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(10_000));
+    let (read, line, stdout) = match receiver.recv_timeout(timeout) {
+        Ok(Ok((read, line, stdout))) => (read, line, stdout),
+        Ok(Err(error)) => {
+            terminate_child(&mut child);
+            return Err(format!(
+                "Failed to load extension: bridge read failed: {error}"
+            ));
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            terminate_child(&mut child);
+            return Err(format!(
+                "Failed to load extension: extension factory timed out for {extension_path}"
+            ));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            terminate_child(&mut child);
+            return Err("Failed to load extension: bridge handshake disconnected".to_string());
+        }
+    };
+    if read == 0 {
+        let error = format_child_exit_after_parts(&mut child, &stderr_capture);
+        return Err(format!("Failed to load extension: {error}"));
+    }
+    let ready: serde_json::Value = serde_json::from_str(line.trim()).map_err(|error| {
+        terminate_child(&mut child);
+        format!("Failed to load extension: bridge returned invalid JSON: {error}")
+    })?;
+    if ready.get("type") == Some(&serde_json::Value::String("load_error".to_string())) {
+        let error = ready
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("extension factory failed");
+        terminate_child(&mut child);
+        return Err(format!("Failed to load extension: {error}"));
+    }
+    if ready.get("type") != Some(&serde_json::Value::String("ready".to_string())) {
+        terminate_child(&mut child);
+        return Err("Failed to load extension: bridge did not return a ready frame".to_string());
+    }
+    let process = Arc::new(ExternalExtensionProcess {
+        state: Mutex::new(ExternalProcessState {
+            child,
+            stdin: BufWriter::new(stdin),
+            stdout,
+            stderr: stderr_capture,
+        }),
+        next_request_id: AtomicU64::new(1),
+    });
+    Ok((process, ready))
+}
+
+fn format_child_exit_after_parts(
+    child: &mut std::process::Child,
+    stderr: &Arc<Mutex<String>>,
+) -> String {
+    let status = child.try_wait().ok().flatten();
+    match status {
+        Some(status) => format_child_exit(status, stderr),
+        None => "Extension bridge closed stdout unexpectedly".to_string(),
+    }
+}
+
+fn required_string(value: &serde_json::Value, key: &str) -> Result<String, String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("Extension bridge metadata missing string field {key:?}"))
+}
+
+fn registration_kind(value: &str) -> Option<RegistrationKind> {
+    match value {
+        "handler" => Some(RegistrationKind::Handler),
+        "tool" => Some(RegistrationKind::Tool),
+        "command" => Some(RegistrationKind::Command),
+        "shortcut" => Some(RegistrationKind::Shortcut),
+        "flag" => Some(RegistrationKind::Flag),
+        "message_renderer" => Some(RegistrationKind::MessageRenderer),
+        "markdown_transformer" => Some(RegistrationKind::MarkdownTransformer),
+        "entry_renderer" => Some(RegistrationKind::EntryRenderer),
+        _ => None,
+    }
+}
+
+fn external_extension_from_metadata(
+    extension_path: &str,
+    resolved_path: &Path,
+    metadata: &serde_json::Value,
+    process: Arc<ExternalExtensionProcess>,
+    runtime: &Arc<Mutex<ExtensionRuntime>>,
+) -> Result<Extension, String> {
+    let mut extension = make_extension(extension_path, resolved_path);
+
+    if let Some(registrations) = metadata
+        .get("registrations")
+        .and_then(serde_json::Value::as_array)
+    {
+        for registration in registrations {
+            let Some(kind) = registration
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .and_then(registration_kind)
+            else {
+                return Err("Extension bridge returned an unknown registration kind".to_string());
+            };
+            let name = registration
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            extension.record_registration(kind, name);
+        }
+    }
+
+    if let Some(handlers) = metadata
+        .get("handlers")
+        .and_then(serde_json::Value::as_array)
+    {
+        for handler in handlers {
+            let event = required_string(handler, "event")?;
+            let count = handler
+                .get("count")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "Extension bridge handler metadata missing count".to_string())?;
+            for index in 0..count as usize {
+                extension
+                    .handlers
+                    .entry(event.clone())
+                    .or_default()
+                    .push(external_handler(Arc::clone(&process), event.clone(), index));
+            }
+        }
+    }
+
+    if let Some(commands) = metadata
+        .get("commands")
+        .and_then(serde_json::Value::as_array)
+    {
+        for command in commands {
+            let name = required_string(command, "name")?;
+            let description = command
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            extension.commands.insert(
+                name.clone(),
+                RegisteredCommand {
+                    name: name.clone(),
+                    source_info: extension.source_info.clone(),
+                    description,
+                    handler: external_command_handler(Arc::clone(&process), name),
+                },
+            );
+        }
+    }
+
+    if let Some(tools) = metadata.get("tools").and_then(serde_json::Value::as_array) {
+        for tool in tools {
+            let name = required_string(tool, "name")?;
+            extension.tools.insert(
+                name.clone(),
+                RegisteredTool {
+                    name,
+                    description: tool
+                        .get("description")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    parameters: tool
+                        .get("parameters")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({})),
+                    source_info: extension.source_info.clone(),
+                },
+            );
+        }
+    }
+
+    if let Some(flags) = metadata.get("flags").and_then(serde_json::Value::as_array) {
+        for flag in flags {
+            let name = required_string(flag, "name")?;
+            let flag_type = match flag.get("type").and_then(serde_json::Value::as_str) {
+                Some("boolean") => FlagType::Boolean,
+                Some("string") => FlagType::String,
+                Some(other) => return Err(format!("Unsupported extension flag type {other:?}")),
+                None => return Err(format!("Extension flag {name:?} is missing type")),
+            };
+            let default = flag.get("default").cloned();
+            if let Some(default) = &default {
+                let valid = match flag_type {
+                    FlagType::Boolean => default.is_boolean(),
+                    FlagType::String => default.is_string(),
+                };
+                if !valid {
+                    let expected = match flag_type {
+                        FlagType::Boolean => "boolean",
+                        FlagType::String => "string",
+                    };
+                    let actual = match default {
+                        serde_json::Value::Null => "object",
+                        serde_json::Value::Bool(_) => "boolean",
+                        serde_json::Value::Number(_) => "number",
+                        serde_json::Value::String(_) => "string",
+                        serde_json::Value::Array(_) | serde_json::Value::Object(_) => "object",
+                    };
+                    return Err(format!(
+                        "Invalid default for flag \"{name}\": expected {expected}, got {actual}"
+                    ));
+                }
+            }
+            extension.flags.insert(
+                name.clone(),
+                ExtensionFlag {
+                    name: name.clone(),
+                    description: flag
+                        .get("description")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    flag_type,
+                    default: default.clone(),
+                    extension_path: extension_path.to_string(),
+                },
+            );
+            if let Some(default) = default {
+                if let Ok(mut guard) = runtime.lock() {
+                    guard.flag_values.entry(name).or_insert(default);
+                }
+            }
+        }
+    }
+
+    if let Some(shortcuts) = metadata
+        .get("shortcuts")
+        .and_then(serde_json::Value::as_array)
+    {
+        for shortcut in shortcuts {
+            let name = required_string(shortcut, "shortcut")?;
+            extension.shortcuts.insert(
+                name.clone(),
+                ExtensionShortcut {
+                    shortcut: name.clone(),
+                    description: shortcut
+                        .get("description")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    handler: external_shortcut_handler(Arc::clone(&process), name),
+                    extension_path: extension_path.to_string(),
+                },
+            );
+        }
+    }
+
+    if let Some(renderers) = metadata
+        .get("messageRenderers")
+        .and_then(serde_json::Value::as_array)
+    {
+        for renderer in renderers {
+            let name = renderer
+                .as_str()
+                .ok_or_else(|| {
+                    "Extension bridge message renderer name is not a string".to_string()
+                })?
+                .to_string();
+            extension.message_renderers.insert(
+                name.clone(),
+                external_message_renderer(Arc::clone(&process), name),
+            );
+        }
+    }
+    if let Some(renderers) = metadata
+        .get("entryRenderers")
+        .and_then(serde_json::Value::as_array)
+    {
+        for renderer in renderers {
+            let name = renderer
+                .as_str()
+                .ok_or_else(|| "Extension bridge entry renderer name is not a string".to_string())?
+                .to_string();
+            extension.entry_renderers.insert(
+                name.clone(),
+                external_entry_renderer(Arc::clone(&process), name),
+            );
+        }
+    }
+    if metadata
+        .get("markdownTransformer")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        extension.markdown_transformer = Some(external_markdown_transformer(Arc::clone(&process)));
+    }
+
+    if let Some(providers) = metadata
+        .get("providers")
+        .and_then(serde_json::Value::as_array)
+    {
+        for provider in providers {
+            queue_provider_registration(
+                runtime,
+                PendingProviderRegistration {
+                    name: required_string(provider, "name")?,
+                    config: provider
+                        .get("config")
+                        .cloned()
+                        .ok_or_else(|| "Extension bridge provider is missing config".to_string())?,
+                    extension_path: extension_path.to_string(),
+                },
+            );
+        }
+    }
+    if metadata
+        .get("nativeProviders")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|providers| !providers.is_empty())
+    {
+        return Err(
+            "External extension bridge does not support native provider callbacks".to_string(),
+        );
+    }
+
+    Ok(extension)
+}
+
+fn run_external_extension_with_runtime(
     extension_path: &str,
     resolved_path: &Path,
     runner: Option<&str>,
     timeout_ms: Option<u64>,
+    runtime: &Arc<Mutex<ExtensionRuntime>>,
 ) -> Result<Extension, String> {
     let runner = match runner {
         Some(runner) => runner.to_string(),
@@ -324,8 +1243,55 @@ pub fn run_external_extension(
             }
         }
     };
+    if !is_javascript_runtime(&runner) {
+        return run_external_extension_legacy(extension_path, resolved_path, &runner, timeout_ms);
+    }
+    let (process, ready) =
+        spawn_external_bridge(extension_path, resolved_path, &runner, timeout_ms)?;
+    external_extension_from_metadata(extension_path, resolved_path, &ready, process, runtime)
+}
+
+fn resolve_external_runner(runner: Option<&str>) -> Result<String, String> {
+    match runner {
+        Some(runner) => Ok(runner.to_string()),
+        None => {
+            if command_on_path("node") {
+                Ok("node".to_string())
+            } else if command_on_path("bun") {
+                Ok("bun".to_string())
+            } else {
+                Err(
+                    "Failed to load extension: no external extension runner found on PATH (expected node or bun)"
+                        .to_string(),
+                )
+            }
+        }
+    }
+}
+
+/// Spawn an external extension runner for a resolved entry.
+///
+/// Argument protocol: `node <entry>` (bun when node is absent). The entry is
+/// spawned with the containing directory as cwd. Returns the extension record
+/// on exit 0 (hidden=false) or a deterministic error on nonzero exit.
+pub fn run_external_extension(
+    extension_path: &str,
+    resolved_path: &Path,
+    runner: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> Result<Extension, String> {
+    let runner = resolve_external_runner(runner)?;
+    run_external_extension_legacy(extension_path, resolved_path, &runner, timeout_ms)
+}
+
+fn run_external_extension_legacy(
+    extension_path: &str,
+    resolved_path: &Path,
+    runner: &str,
+    timeout_ms: Option<u64>,
+) -> Result<Extension, String> {
     let cwd = resolved_path.parent().unwrap_or_else(|| Path::new("."));
-    let mut command = Command::new(&runner);
+    let mut command = Command::new(runner);
     command
         .arg(resolved_path)
         .current_dir(cwd)
@@ -482,8 +1448,18 @@ pub fn load_extension(
     cwd: &str,
     runner: Option<&str>,
 ) -> Result<Extension, ExtensionLoadError> {
+    let runtime = create_extension_runtime();
+    load_extension_with_runtime(extension_path, cwd, runner, &runtime)
+}
+
+fn load_extension_with_runtime(
+    extension_path: &str,
+    cwd: &str,
+    runner: Option<&str>,
+    runtime: &Arc<Mutex<ExtensionRuntime>>,
+) -> Result<Extension, ExtensionLoadError> {
     let resolved = resolve_relative_path(extension_path, cwd);
-    match run_external_extension(extension_path, &resolved, runner, None) {
+    match run_external_extension_with_runtime(extension_path, &resolved, runner, None, runtime) {
         Ok(extension) => Ok(extension),
         Err(error) => Err(ExtensionLoadError {
             path: extension_path.to_string(),
@@ -519,11 +1495,12 @@ pub fn load_extensions(
     let mut extensions = Vec::new();
     let mut errors = Vec::new();
     for ext_path in paths {
-        match load_extension(ext_path, cwd, runner) {
+        match load_extension_with_runtime(ext_path, cwd, runner, &runtime) {
             Ok(extension) => extensions.push(extension),
             Err(error) => errors.push(error),
         }
     }
+    apply_flag_defaults(&runtime, &extensions);
     LoadExtensionsResult {
         extensions,
         errors,
@@ -598,7 +1575,8 @@ pub fn load_bundled_extension(
     } else {
         Path::new(".").join(&path)
     };
-    match run_external_extension(extension_path, &resolved, runner, None) {
+    let runtime = create_extension_runtime();
+    match run_external_extension_with_runtime(extension_path, &resolved, runner, None, &runtime) {
         Ok(extension) => Ok(extension),
         Err(error) => Err(ExtensionLoadError {
             path: extension_path.to_string(),
