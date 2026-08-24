@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **59.64% (99/166; 67 open)**. Run
+- The exhaustive checker reports **60.24% (100/166; 66 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The focused workspace checks and tests for the current harness-lane slice
@@ -769,18 +769,24 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       `cargo test -p pi-coding-agent --offline --test cli_print_parity
       --quiet` (7 passed), `cargo check -p pi-coding-agent --offline`,
       `cargo fmt --all -- --check`, and `git diff --check`.
-- [ ] S-033 Complete interactive slash-command behavior audits for export,
+- [x] S-033 Complete interactive slash-command behavior audits for export,
       import, share, trust, login/logout, new/resume, fork/clone, tree, and
-      reload; each command needs a real terminal or fixture transcript. A
-      real tmux PTY fixture now covers `/help`, `/export`, `/import`, `/share`,
-      `/trust`, `/login`, `/logout`, `/name`, `/copy`, `/new`, `/fork`,
-      `/clone`, `/tree`, and `/reload`, including temporary-path export/import,
-      persisted project trust, and alternate-screen/cursor cleanup assertions.
-      The fixture also exposed and fixed a first-hit terminal capability-cache
-      deadlock caused by holding a read lock while acquiring the write lock;
-      the uncached detection path now has a focused regression test. The
-      `/resume` picker and broader S-056 command matrix remain open, so this
-      supplemental task is not complete.
+      reload; each command needs a real terminal or fixture transcript. The
+      live tmux fixture covers `/help`, `/export`, successful and missing-file
+      `/import`, dry-run `/share`, project `/trust` plus `/reload`, no-OAuth
+      `/login`, provider `/logout`, `/name`, `/copy`, `/new`, the `/resume`
+      picker with keyboard selection and transcript rehydration, `/fork`,
+      `/clone`, `/tree`, and alternate-screen/cursor cleanup. It also exposed
+      and fixed the first-hit terminal capability-cache deadlock caused by
+      holding a read lock while acquiring the write lock. Evidence (live/unit):
+      `cargo test -p pi-coding-agent --offline --test
+      interactive_slash_pty --quiet` (1 passed), `cargo test -p
+      pi-coding-agent --offline --lib interactive:: --quiet` (37 passed),
+      `cargo test -p pi-tui --offline
+      terminal_image::tests::uncached_capability_detection_releases_read_lock_before_write
+      --quiet` (1 passed), `cargo check -p pi-coding-agent --offline`,
+      `cargo fmt --all -- --check`, and `git diff --check`. The broader S-056
+      command matrix remains open.
 - [x] S-034 Finish ConfigSelector project/global inheritance, package pattern
       toggles, search/navigation, write-scope persistence, and close behavior
       against the upstream component. The final audit aligns local package

@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 59.64% (99/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 60.24% (100/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1492,17 +1492,18 @@ matrix open.
 - Implementation commit `514cca9` was committed and pushed immediately after
   this entry; the documentation refresh is the follow-up checkpoint.
 
-### Session 46 — 2026-08-24 — Interactive slash-command PTY fixture checkpoint (partial S-033)
+### Session 46 — 2026-08-24 — Interactive slash-command PTY fixture checkpoint (S-033)
 
-Scope: exercise the real interactive binary through a tmux PTY and close the
-first observable slash-command fixture gap without claiming the full S-033 or
-S-056 matrix complete.
+Scope: exercise the real interactive binary through a tmux PTY and complete
+the S-033 command-behavior audit while leaving the broader S-056 matrix open.
 
 - Added a fixture-driven transcript for `/help`, `/export`, `/import`,
   `/share`, `/trust`, `/login`, `/logout`, `/name`, `/copy`, `/new`, `/fork`,
-  `/clone`, `/tree`, and `/reload`. The fixture substitutes temporary paths,
-  verifies the exported HTML, checks that trust survives a reload, and asserts
-  alternate-screen/cursor cleanup in the raw terminal log.
+  `/clone`, `/tree`, `/reload`, and `/resume`. The fixture seeds a second
+  session, selects it with real picker keys, and verifies the rehydrated faux
+  transcript; it substitutes temporary paths, verifies the exported HTML,
+  checks that trust survives a reload, and asserts alternate-screen/cursor
+  cleanup in the raw terminal log.
 - The live PTY exposed a first-use deadlock in the terminal image capability
   cache: the read guard was held while detection acquired the write lock. The
   cache now releases the read guard before detection/storage, with a focused
@@ -1520,9 +1521,10 @@ S-056 matrix complete.
   `/home/mustbearnold/.cargo/bin/cargo check -p pi-coding-agent --offline`,
   `/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check`,
   `git diff --check`, and `node scripts/conversion-progress.mjs` reporting
-  `59.64% (99/166; 67 open)`.
-- S-033 remains open for the interactive `/resume` selector and any uncovered
-  command behavior; the broader S-056 terminal matrix also remains open.
+  `60.24% (100/166; 66 open)`.
+- S-033 is complete with live fixture evidence. The broader S-056 terminal
+  matrix, including cross-terminal capability and full interaction coverage,
+  remains open.
 - Implementation commit `e890f09` was committed and pushed immediately after
   this entry; the documentation-only hash refresh follows it.
 

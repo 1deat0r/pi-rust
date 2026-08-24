@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 59.64% — 99 of 166 ledger tasks complete; 67 open.**
+**Conversion progress: 60.24% — 100 of 166 ledger tasks complete; 66 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -116,12 +116,14 @@ management, accepts optional summary instructions, persists the compaction
 entry, replaces the live context, and resets cache accounting. The remaining
 interactive slash-command terminal audits are tracked as partial S-033 work.
 
-The current S-033 checkpoint adds a real tmux PTY fixture for `/help`,
+S-033 is now complete at the command-behavior audit level. Its real tmux PTY
+fixture covers `/resume` picker selection and transcript rehydration alongside
+the existing `/help`,
 `/export`, `/import`, `/share`, `/trust`, `/login`, `/logout`, `/name`,
 `/copy`, `/new`, `/fork`, `/clone`, `/tree`, and `/reload`, including
 alternate-screen and cursor cleanup assertions. It also fixes the first-hit
 terminal capability probe so an uncached interactive startup cannot deadlock;
-the broader `/resume` picker and S-056 command matrix remain open.
+the broader S-056 command matrix remains open.
 
 ## Workspace
 

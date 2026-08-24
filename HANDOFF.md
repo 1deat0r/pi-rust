@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-59.64% = 99 completed / 166 total tasks
-67 tasks remain open
+60.24% = 100 completed / 166 total tasks
+66 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -61,7 +61,7 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`59.64% (99/166; 67 open)`. The latest committed implementation checkpoint is
+`60.24% (100/166; 66 open)`. The latest committed implementation checkpoint is
 `e890f09`, synchronized with `origin/main`; this documentation-only hash
 refresh follows it. Preserve the pre-existing
 untracked `AGENTS.md`.
@@ -150,14 +150,15 @@ This is partial S-033. The implementation push was verified at
 share, trust, login/logout, new, fork/clone, tree, and reload. The interactive
 `/resume` selector and broader S-056 matrix remain open.
 
-## Current interactive slash-command PTY fixture checkpoint (partial S-033)
+## Current interactive slash-command PTY fixture checkpoint (S-033 complete)
 
 The working tree now contains a real tmux PTY fixture for `/help`, `/export`,
 `/import`, `/share`, `/trust`, `/login`, `/logout`, `/name`, `/copy`, `/new`,
-`/fork`, `/clone`, `/tree`, and `/reload`. It drives the actual interactive
-binary, substitutes temporary export/import paths, verifies the HTML artifact,
-checks project trust after `/reload`, and inspects alternate-screen/cursor
-cleanup in the raw pane log.
+`/resume`, `/fork`, `/clone`, `/tree`, and `/reload`. It drives the actual
+interactive binary, seeds a second session, selects it through the real picker
+keys, verifies transcript rehydration, substitutes temporary export/import
+paths, verifies the HTML artifact, checks project trust after `/reload`, and
+inspects alternate-screen/cursor cleanup in the raw pane log.
 
 The first uncached interactive startup also exposed a lock-order bug in the
 terminal image capability cache: capability detection tried to take a write
@@ -173,13 +174,13 @@ cargo test -p pi-tui --offline terminal_image::tests::uncached_capability_detect
 cargo check -p pi-coding-agent --offline
 cargo fmt --all -- --check
 git diff --check
-node scripts/conversion-progress.mjs (59.64% = 99/166; 67 open)
+node scripts/conversion-progress.mjs (60.24% = 100/166; 66 open)
 ```
 
-This remains partial S-033: the interactive `/resume` selector and the
-broader S-056 command-by-command terminal matrix are still open. The
-implementation checkpoint `e890f09` is committed and pushed; this follow-up
-keeps the handoff hash and evidence aligned with `origin/main`.
+S-033 is complete with the live command fixture evidence above. The broader
+S-056 command-by-command terminal matrix remains open. The implementation
+checkpoint `e890f09` is committed and pushed; this follow-up keeps the handoff
+hash and evidence aligned with `origin/main`.
 
 ## Current S-032 committed checkpoint
 

@@ -49,6 +49,53 @@ mod unix {
                 raw_log,
             }
         }
+
+        fn seed_session(&self) {
+            let mut command = Command::new(&self.binary);
+            command
+                .current_dir(&self.project)
+                .env("HOME", &self.home)
+                .env("PI_CODING_AGENT_DIR", &self.agent_dir)
+                .env("PI_OFFLINE", "1")
+                .env("PI_SKIP_VERSION_CHECK", "1")
+                .env("PI_SHARE_DRY_RUN", "1")
+                .args([
+                    "--print",
+                    "--approve",
+                    "--provider",
+                    "faux",
+                    "--model",
+                    "faux-1",
+                    "--session-id",
+                    "seed-session",
+                    "seed",
+                ]);
+            let output = command.output().expect("seed session command must start");
+            assert!(
+                output.status.success(),
+                "seed session failed: {}",
+                stderr(&output)
+            );
+        }
+
+        fn seed_session_path(&self) -> PathBuf {
+            let sessions_root = self.agent_dir.join("sessions");
+            let session_dir = fs::read_dir(&sessions_root)
+                .expect("seed session directory")
+                .filter_map(Result::ok)
+                .find(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+                .expect("seed session cwd directory");
+            fs::read_dir(session_dir.path())
+                .expect("seed session files")
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with("_seed-session.jsonl"))
+                })
+                .expect("seed session JSONL file")
+        }
     }
 
     impl Drop for Sandbox {
@@ -143,6 +190,15 @@ mod unix {
             );
         }
 
+        fn send_key(&self, key: &str) {
+            let output = tmux(&["send-keys", "-t", &self.name, key]);
+            assert!(
+                output.status.success(),
+                "tmux send-keys {key:?} failed: {}",
+                stderr(&output)
+            );
+        }
+
         fn stop_pipe(&self) {
             let output = tmux(&["pipe-pane", "-t", &self.name]);
             assert!(
@@ -195,6 +251,7 @@ mod unix {
     #[test]
     fn slash_command_fixture_runs_through_real_interactive_terminal() {
         let sandbox = Sandbox::new();
+        sandbox.seed_session();
         let session = TmuxSession::start(&sandbox);
         session.wait_for(|capture| capture.contains("(faux/Faux Model)"));
 
@@ -208,7 +265,8 @@ mod unix {
                 .unwrap_or_else(|| panic!("fixture row must be command|expected: {row}"));
             let command = command
                 .replace("$HTML", &sandbox.html.display().to_string())
-                .replace("$MISSING", &sandbox.missing.display().to_string());
+                .replace("$MISSING", &sandbox.missing.display().to_string())
+                .replace("$SEED", &sandbox.seed_session_path().display().to_string());
             let capture_before = session.capture();
             session.send_line(&command);
             let capture =
@@ -232,6 +290,20 @@ mod unix {
             if command.starts_with("/export ") {
                 let html = wait_for_file(&sandbox.html, "<html");
                 assert!(html.contains("session"), "unexpected HTML export: {html}");
+            }
+            if command == "/resume" {
+                // `/new` leaves the original empty session alongside the
+                // seeded one; move past that first item, then confirm the
+                // seeded transcript.
+                session.send_key("Down");
+                session.send_key("Enter");
+                let resumed = session.wait_for(|capture| capture.contains("resumed session"));
+                let transcript =
+                    session.wait_for(|capture| capture.contains("faux response to: seed"));
+                assert!(
+                    transcript.contains("faux response to: seed"),
+                    "resume did not rehydrate the seeded transcript:\n{resumed}\n{transcript}"
+                );
             }
         }
 

@@ -6,11 +6,14 @@
 /share|share skipped
 /logout|usage: /logout
 /login faux|no OAuth login available
+/logout faux|logged out faux
 /copy|no assistant message
 /name slash fixture|session name: slash fixture
 /new|started new session
-/tree|tree: empty session
+/resume|seed-
+/tree|session tree:
 /fork|fork session
 /clone|clone session
 /export $HTML|exported session to
+/import $SEED|imported
 /import $MISSING|file not found
