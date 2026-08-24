@@ -207,8 +207,10 @@ or public-interface failure. No ledger checkbox changed during this rerun. The
 checker reports exactly `Conversion progress: 64.46% (107/166; 59 open)`. The
 next dependency-safe task is S-011 Google Vertex ADC file, token URI, scope,
 refresh, and project/location precedence parity. The S-010 implementation
-commit is `9a8eaee9b8273e7b938075a38ed9659baff02359`; the ledger, plan, handoff,
-and README remain synchronized after the next documentation push.
+commit is `9a8eaee9b8273e7b938075a38ed9659baff02359`, and the public-boundary
+acceptance/documentation commit is
+`feadf6415f663662ff0948b2e29507655fc359bd`. Both are pushed with matching
+local/remote hashes; the ledger, plan, handoff, and README are synchronized.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 

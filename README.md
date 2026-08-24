@@ -46,6 +46,8 @@ ECS, STS, and provider-auth paths. SSO- or process-backed profiles and EC2
 metadata remain outside the hand-rolled signer scope.
 The S-010 checkpoint is pushed as
 `9a8eaee9b8273e7b938075a38ed9659baff02359`.
+The public-boundary acceptance checkpoint is pushed as
+`feadf6415f663662ff0948b2e29507655fc359bd`.
 The whole-result acceptance rerun passed the exported Bedrock `stream` and
 `stream_simple` runtime boundaries, provider-auth tests, full pi-ai
 compile/lint/test/metadata gates, formatting, and diff checks. `cargo package -p pi-ai --offline

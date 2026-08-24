@@ -49,6 +49,10 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   to `origin/main`. Local and remote hashes matched after the push. The only
   remaining worktree item is the pre-existing untracked `AGENTS.md`, which is
   preserved and unstaged.
+- The follow-up public-interface acceptance checkpoint is committed as
+  `feadf6415f663662ff0948b2e29507655fc359bd` on `main` and pushed to
+  `origin/main`, with local and remote hashes matching. It adds exported
+  `stream`/`stream_simple` ECS and web-identity integration fixtures.
 - The latest committed S-008 constrained-sampling/grammar checkpoint is
   `7a72f2fe104cf660f946f29a822c88da556a37d1` on `main`, pushed to
   `origin/main` with matching local/remote hashes. It follows the S-007 image

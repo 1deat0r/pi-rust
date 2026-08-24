@@ -1793,9 +1793,11 @@ endpoint fixtures.
   `Conversion progress: 64.46% (107/166; 59 open)`.
 - S-010 is complete. The next dependency-safe action is S-011 Google Vertex
   ADC file, token URI, scope, refresh, and project/location precedence parity.
-  The focused S-010 checkpoint `9a8eaee9b8273e7b938075a38ed9659baff02359` is
-  pushed to `origin/main`, and local/remote hashes matched. The ledger, plan,
-  handoff, and README are synchronized after the documentation push.
+  The focused S-010 implementation checkpoint
+  `9a8eaee9b8273e7b938075a38ed9659baff02359` and the public-boundary
+  acceptance checkpoint `feadf6415f663662ff0948b2e29507655fc359bd` are pushed
+  to `origin/main`, with local/remote hashes matched. The ledger, plan,
+  handoff, and README are synchronized.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
