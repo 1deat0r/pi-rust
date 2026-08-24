@@ -26,8 +26,9 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is the working-tree S-029 install-telemetry slice,
-after the committed S-030 interactive cache-notice slice `7356dd3`, `ef640ce`,
+The latest local checkpoint is the committed S-029 install-telemetry slice
+`3d6f1fc`, after the committed S-030 interactive cache-notice slice `7356dd3`,
+`ef640ce`,
 the partial legacy-session
 integration slice, after committed startup timing (`869ae6d`) and
 the committed compiled-binary self-update contract (`db97b89`) and interactive
@@ -175,6 +176,18 @@ The S-029 install-telemetry checkpoint is complete in the working tree:
 
 S-029 is closed. The remaining CLI session-routing audit (S-026) and
 S-021/S-022 harness ownership work are still open.
+
+The S-029 checkpoint was checked against the remote immediately after commit:
+
+- `git rev-parse HEAD`: `3d6f1fc6dc047e983cdc12d6093b8423cb582441`
+- `git ls-remote origin refs/heads/main`:
+  `90a5b931591eaeaea20f1fd9c0d10f72d7614a7b`
+- Immediate `git push origin main` failed with:
+  `fatal: could not read Username for 'https://github.com': No such device or address`.
+- `gh auth status --hostname github.com`: `You are not logged into any GitHub hosts.`
+
+Local and remote parity remains unclaimed; the next action after GitHub auth is
+to push `main`, then verify `git rev-parse HEAD` equals `git ls-remote`.
 
 A full `cargo test --workspace --offline` passed after the image/read changes,
 including 162 `pi-agent` unit tests, the coding-agent integration targets, 186
