@@ -1429,6 +1429,9 @@ callers.
   AgentHarness ownership, mode-specific golden envelopes, secondary-lane
   persistence across all adapters, queue/control operations, and complete
   event registry wiring remain open.
+- Checkpoint: commit `d8b589f`; `git rev-parse HEAD` and
+  `git ls-remote origin refs/heads/main` both resolve to
+  `d8b589f3532847042405c2a1a474b0e761c943a7a`.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

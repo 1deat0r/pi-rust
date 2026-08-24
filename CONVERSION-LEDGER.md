@@ -9,26 +9,29 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 - The exhaustive checker reports **59.04% (98/166; 68 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
-- The workspace currently checks and tests successfully offline, including the
-  focused tool-contract, RPC, and one-shot compaction/image parity tests. The
-  full workspace test result is re-run at verification gates rather than
-  inferred from a historical session count.
+- The focused workspace checks and tests for the current harness-lane slice
+  pass offline, including pi-agent, RPC, interactive, and one-shot parity
+  suites. The last full-workspace gate is historical; resource pressure
+  blocked its S-032 retry, so do not infer a fresh full-workspace result here.
 - The original 100 entries remain the historical work queue. The supplemental
   S1 section is authoritative for residual provider, harness, runtime, TUI,
   RPC, auxiliary client/server, evaluation, and final-audit work.
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the committed S-032 provider-auth-guidance checkpoint `50c2103` on
+- HEAD is the committed partial S-021/S-022 secondary-lane checkpoint `d8b589f`
+  on
   `main`, after the S-026 CLI session-routing checkpoint `711a25e`,
   the startup-timing compatibility and compiled-binary self-update contracts,
   the print-path harness ownership, AgentTool harness/termination,
   schema-validator, panic-safe telemetry, install telemetry, update/version,
   and model-catalog work. GitHub authentication is configured through `gh
-  auth setup-git`, and `origin/main` matches local `HEAD` at `50c2103`.
-- The workspace is green under `cargo test --workspace --offline`; the focused
-  tool-contract, RPC, image/read, print-mode compaction, malformed-call, and
-  harness-owned print-path suites pass. The one-shot path now owns a
+  auth setup-git`, and `origin/main` matches local `HEAD` at `d8b589f`.
+- The focused tool-contract, RPC, image/read, print-mode compaction,
+  malformed-call, harness-owned print-path, and secondary-lane suites pass.
+  The last full workspace gate was green before the resource-constrained
+  S-032 retry; the current checkpoint does not claim a fresh workspace-wide
+  result. The one-shot path now owns a
   stateful `AgentHarness` transcript and replays it into durable JSONL while
   retaining compaction behavior. Its configured print run now emits ordered
   lifecycle events and a settled `pi.harness.run` span with required

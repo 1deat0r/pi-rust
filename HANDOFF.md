@@ -60,25 +60,25 @@ additions/renames include:
 
 Current status at pause: branch `main`, progress checker reports
 `59.04% (98/166; 68 open)`. The latest committed parity checkpoint is
-`50c2103`, synchronized with `origin/main`. Preserve the pre-existing
+`d8b589f`, synchronized with `origin/main`. Preserve the pre-existing
 untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
 provider auth guidance, startup-timing, interactive cache-notice,
 install-telemetry contracts, and the synchronized-doc workflow. The
 pre-existing `AGENTS.md` remains untouched.
 
-## Current secondary-lane working checkpoint (partial S-021/S-022)
+## Current secondary-lane committed checkpoint (partial S-021/S-022)
 
-The next implementation slice is prepared but not yet committed: the
+The implementation slice is now committed and pushed:
 `AgentHarness` session is now shared across lane views, `lane`/`create_lane`/
 `lanes` expose durable main and secondary lane metadata, and secondary lanes
 build independent Agents seeded from their branch context. Text/message prompts
 persist into the selected lane, advance only that lane pointer, return
 `RunResultValue`, and share ordered lifecycle events plus lane-attributed
-`pi.harness.run` spans. The prior committed branch remains `7780c95` until this
-slice is checkpointed.
+`pi.harness.run` spans. Local and remote `main` both resolve to
+`d8b589f3532847042405c2a1a474b0e761c943a7a`.
 
-Focused evidence for the working tree:
+Focused evidence for this checkpoint:
 
 ```text
 cargo test -p pi-agent --offline harness::agent_harness::tests::secondary_lane_has_branch_context_and_shared_lifecycle -- --nocapture (1 passed)
