@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-- **Conversion progress: 65.06% (108/166 exhaustive ledger tasks complete).** The
+- **Conversion progress: 65.66% (109/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1973,3 +1973,32 @@ Agent: pi (Codex)   HEAD: S-010 pushed checkpoint → (working tree)
   credential-file slice and are documented as unported.
 - The next dependency-safe action is S-012 Cloudflare AI Gateway
   account/gateway binding and base URL/header precedence parity.
+
+### Session 13 — 2026-08-24 — S-012 Cloudflare gateway binding and precedence parity
+Agent: pi (Codex)   HEAD: S-011 pushed checkpoint → (working tree)
+
+- **Cloudflare gateway binding transport completed (mock evidence)** in
+  `crates/pi-ai/src/api/cloudflare.rs`. The runtime-neutral binding boundary
+  validates same-origin configured prefixes, applies WHATWG-compatible literal
+  and percent-encoded dot-segment normalization while preserving empty path
+  segments, requires POST plus a JSON body, extracts provider/endpoint/query,
+  lowercases forwarded headers, strips derived transport headers, rejects
+  unexpressible requests, forwards the optional `Arc<AtomicBool>` cancellation
+  handle, and routes the translated universal request to an injected binding.
+- **Cloudflare auth precedence aligned**: each stored credential field wins when
+  present, including an explicit empty field blocking ambient fallback; scoped
+  account/gateway values resolve into the gateway base URL; gateway auth uses the
+  sentinel header contract; inline upstream `Authorization` remains the
+  request-level override.
+- Independent read-only parity review of the current source, fixtures, and
+  upstream Cloudflare binding/auth contract returned **APPROVE**; no remaining
+  patch-introduced blockers.
+- **Evidence tier: mock.** `RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib cloudflare --quiet && printf 'S012_CLOUDFLARE_BINDING_TESTS_PASS\n'` (18 passed) covers binding translation, validation, header filtering, query/body preservation, and dispatch. `RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib cloudflare_provider --quiet && printf 'S012_CLOUDFLARE_PROVIDER_TESTS_PASS\n'` (5 passed) covers credential-field, scoped-environment, inline-header, and base-URL precedence. Supporting evidence: `RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo check -p pi-ai --offline`, the pinned-toolchain `cargo fmt --all -- --check`, `git diff --check`, and `node scripts/conversion-progress.mjs`.
+- Strict clippy also passes with zero diagnostics: `RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo clippy -p pi-ai --offline --all-targets -- -D warnings`.
+- **Intentional scope:** no live Cloudflare account, Workers runtime, or network
+  request was used. The Rust binding trait keeps the runtime response opaque;
+  the deterministic adapter fixture proves the request contract without
+  embedding a second HTTP runtime in `pi-ai`.
+- S-012 is now ledger-complete at `65.66% (109/166; 57 open)`. The next
+  dependency-safe action is S-013 GitHub Copilot OAuth refresh and enterprise
+  domain/token-exchange parity.

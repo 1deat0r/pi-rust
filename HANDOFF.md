@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-65.06% = 108 completed / 166 total tasks
-58 tasks remain open
+65.66% = 109 completed / 166 total tasks
+57 tasks remain open
 
 ```
 
@@ -27,17 +27,18 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The current logical checkpoint is the validated S-011 Google Vertex ADC file
-and provider-precedence parity slice. The pre-existing untracked `AGENTS.md`
-remains untouched and must be preserved. Do not use `git reset --hard`,
-`git checkout --`, broad revert commands, or `git clean`.
+The current logical checkpoint is the validated S-012 Cloudflare AI Gateway
+binding and provider-precedence parity slice. The pre-existing untracked
+`AGENTS.md` remains untouched and must be preserved. Do not use
+`git reset --hard`, `git checkout --`, broad revert commands, or `git clean`.
 
 Current status: branch `main`, progress checker reports
-`65.06% (108/166; 58 open)`. The S-011 source and synchronized checkpoint
-documents were committed as `b18af9a895f9cb287ab47f0816d67dc20b256fe3` and
-pushed to `origin/main`; `git rev-parse HEAD` and
-`git ls-remote origin refs/heads/main` both returned that hash. The working
-tree retains only the preserved untracked `AGENTS.md`.
+`65.66% (109/166; 57 open)`. S-012 source and synchronized documentation are
+implemented in the working tree and are ready for the focused commit/push
+checkpoint; the remote hash must not be called synchronized until the commit
+and `git rev-parse HEAD`/`git ls-remote origin refs/heads/main` comparison
+match. The S-011 pushed source checkpoint remains
+`b18af9a895f9cb287ab47f0816d67dc20b256fe3`.
 
 ## Current strict-verification cleanup
 
@@ -823,10 +824,9 @@ items just because a similarly named Rust module exists.
 
 ## Recommended next sequence
 
-1. Continue with the remaining S-026 and S-021/S-022 work, then the full
-   regular/fullscreen #61/#62 swap
-   work and broader S-056 interactive matrix.
-3. Keep `CONVERSION-LEDGER.md`, `PLAN.md`, and this handoff synchronized;
+1. Continue with S-013 GitHub Copilot OAuth refresh, enterprise-domain,
+   token-exchange, and expired-credential parity.
+2. Keep `CONVERSION-LEDGER.md`, `PLAN.md`, and this handoff synchronized;
    only mark a task complete with an evidence tier and exact command/fixture.
 
 ## Useful source references
@@ -886,3 +886,48 @@ checkpoint was committed as
 `git rev-parse HEAD` and `git ls-remote origin refs/heads/main` matched.
 The next dependency-safe task is S-012 Cloudflare AI Gateway account/gateway
 binding and base URL/header precedence parity.
+
+## Current checkpoint — 2026-08-24 — S-012 Cloudflare gateway binding parity
+
+S-012 is implemented in `crates/pi-ai/src/api/cloudflare.rs`. The new
+runtime-neutral gateway-binding boundary validates same-origin configured
+prefixes, applies WHATWG-compatible literal and percent-encoded dot-segment
+normalization while preserving empty path segments, requires JSON POST bodies,
+extracts the provider/endpoint/query contract, lowercases forwarded headers,
+strips `content-length`, `host`, and the gateway auth sentinel, rejects
+requests that cannot be represented, forwards the optional `Arc<AtomicBool>`
+cancellation handle, and dispatches the translated request through an injected
+binding trait. Cloudflare auth preserves per-field stored credential
+precedence, scoped account/gateway environment, inline upstream `Authorization`
+precedence, and gateway base-URL resolution.
+
+Evidence tier: **mock**.
+
+```text
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib cloudflare --quiet && printf 'S012_CLOUDFLARE_BINDING_TESTS_PASS\n'
+18 passed; output marker: S012_CLOUDFLARE_BINDING_TESTS_PASS
+
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib cloudflare_provider --quiet && printf 'S012_CLOUDFLARE_PROVIDER_TESTS_PASS\n'
+5 passed; output marker: S012_CLOUDFLARE_PROVIDER_TESTS_PASS
+
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo clippy -p pi-ai --offline --all-targets -- -D warnings
+Finished `dev` profile; zero diagnostics
+
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTFMT=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo fmt --all -- --check && git diff --check && printf 'S012_STATIC_CHECKS_PASS\n'
+output marker: S012_STATIC_CHECKS_PASS
+
+node scripts/conversion-progress.mjs
+Conversion progress: 65.66% (109/166; 57 open)
+```
+
+Independent read-only parity review returned **APPROVE** after checking the
+current Cloudflare source, deterministic fixtures, and upstream binding/auth
+contract; no patch-introduced blockers remain.
+
+No live Cloudflare account, Workers runtime, or network request was used.
+The binding trait deliberately leaves response handling to the host runtime;
+the recording adapter proves the request and cancellation contract without
+adding a second HTTP runtime to `pi-ai`. The next dependency-safe action is
+S-013 GitHub Copilot OAuth refresh and enterprise-domain/token-exchange parity.
+The focused S-012 commit and remote-hash verification remain the immediate
+documentation gate.

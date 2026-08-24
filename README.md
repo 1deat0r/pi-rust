@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 65.06% — 108 of 166 ledger tasks complete; 58 open.**
+**Conversion progress: 65.66% — 109 of 166 ledger tasks complete; 57 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -37,6 +37,15 @@ configured token URIs and scopes, explicit credential-path precedence, and
 API-key requests that do not require project or location. Deterministic local
 fixtures cover the token exchanges and provider-auth precedence; metadata
 server, workload identity, and external-account discovery remain open.
+
+The S-012 Cloudflare checkpoint now covers AI Gateway binding-prefix
+validation with WHATWG-compatible dot/empty-segment handling, JSON POST/query
+translation, header precedence and filtering, runtime-neutral cancellation
+forwarding, stored-field credential precedence, scoped account/gateway
+environment, inline upstream authorization, and gateway base-URL resolution.
+Deterministic local fixtures provide mock evidence; no live Cloudflare account
+or Workers runtime was used, and the host binding response remains
+runtime-owned.
 
 The shared `AgentHarness` now exposes durable main and secondary lane views:
 lanes branch from session leaves, seed independent provider context, persist

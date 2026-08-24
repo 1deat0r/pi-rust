@@ -1,7 +1,7 @@
-//! Cloudflare base URLs + provider stream wrapping — port of
-//! `packages/ai/src/api/cloudflare.ts` and the HTTPS-facing parts of
-//! `packages/ai/src/providers/cloudflare-stream.ts` and
-//! `cloudflare-auth.ts`.
+//! Cloudflare base URLs, auth, stream wrapping, and AI Gateway binding
+//! transport — port of `packages/ai/src/api/cloudflare.ts`,
+//! `cloudflare-auth.ts`, `cloudflare-stream.ts`, and
+//! `cloudflare-gateway-binding.ts`.
 //!
 //! Cloudflare's two providers reuse the standard API adaptors (anthropic-
 //! messages / openai-completions / openai-responses) against gateway /
@@ -11,14 +11,18 @@
 //! credential or ambient `CLOUDFLARE_API_KEY` plus account (and gateway)
 //! ids, per-field merged.
 //!
-//! DOCUMENTED DIVERGENCE: upstream also ships `cloudflare-gateway-binding.ts`,
-//! a transport that routes HTTPS gateway URLs through the Workers AI binding
-//! (`env.AI.gateway(...)`) inside a Cloudflare Worker. That surface only
-//! exists in the Workers runtime and has no Rust analog here; the HTTPS wire
-//! behavior this port implements is identical for anything outside a Worker.
-//! The `TODO` marker below is the seam where binding-routing would plug in.
+//! The binding transport is runtime-neutral: `create_gateway_binding_request`
+//! validates and translates an effective HTTPS request into the universal
+//! `gateway(id).run(...)` payload, while `AiGatewayBinding` lets a
+//! Cloudflare-Workers adapter execute that payload without coupling this crate
+//! to Workers-only types. Requests outside the configured prefix or unsupported
+//! by the universal endpoint reject instead of silently falling back to an
+//! authenticated HTTPS request.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{atomic::AtomicBool, Arc};
+
+use url::Url;
 
 use crate::auth::{
     ApiKeyAuth, ApiKeyCredential, AuthCheck, AuthContext, AuthResult, ModelAuth, ProviderAuth,
@@ -26,6 +30,220 @@ use crate::auth::{
 use crate::model::Model;
 use crate::models::ProviderStreams;
 use crate::types::{ProviderEnv, ProviderHeaders};
+
+/// Structural request accepted by the Workers AI universal gateway binding.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AiGatewayUniversalRequest {
+    pub provider: String,
+    pub endpoint: String,
+    pub headers: BTreeMap<String, String>,
+    pub query: serde_json::Value,
+}
+
+/// Effective HTTP request presented to the binding transport translator.
+///
+/// Callers that model the JavaScript `fetch(input, init)` contract should
+/// resolve `init` first: an init method/header/body replaces the corresponding
+/// `Request` field, while an omitted init field preserves it.
+#[derive(Debug, Clone)]
+pub struct GatewayBindingFetchRequest<'a> {
+    pub method: &'a str,
+    pub url: &'a str,
+    pub headers: &'a BTreeMap<String, String>,
+    pub body: Option<&'a [u8]>,
+    /// Runtime-neutral cancellation flag; `None` means no abort signal.
+    pub signal: Option<Arc<AtomicBool>>,
+}
+
+/// Gateway HTTPS prefix and binding gateway name for one client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayBindingFetchOptions {
+    pub base_url: String,
+    pub gateway: String,
+}
+
+/// Runtime adapter for `env.AI.gateway(id).run(...)`.
+///
+/// The associated response is intentionally opaque so a Workers integration
+/// can return its native streaming response untouched.
+#[async_trait::async_trait]
+pub trait AiGatewayBinding: Send + Sync {
+    type Response: Send;
+
+    async fn run(
+        &self,
+        gateway: &str,
+        request: AiGatewayUniversalRequest,
+        signal: Option<Arc<AtomicBool>>,
+    ) -> Result<Self::Response, String>;
+}
+
+/// Translate an HTTPS gateway request into a universal binding request.
+///
+/// Only POST requests with a JSON body under the configured origin/path prefix
+/// are expressible by the universal endpoint. Header names are lowercased and
+/// `content-length`, `host`, and `cf-aig-authorization` are omitted before
+/// forwarding.
+pub fn create_gateway_binding_request(
+    options: &GatewayBindingFetchOptions,
+    request: &GatewayBindingFetchRequest<'_>,
+) -> Result<AiGatewayUniversalRequest, String> {
+    let method = request.method.to_ascii_uppercase();
+    let base = Url::parse(&options.base_url).map_err(|error| {
+        format!(
+            "createGatewayBindingFetch: invalid configured gateway prefix {}: {error}",
+            options.base_url
+        )
+    })?;
+    let parsed = Url::parse(request.url)
+        .map_err(|_| outside_gateway_prefix_error(&method, request.url, &options.base_url))?;
+    let base_path = gateway_prefix_path(base.path());
+    let request_path = normalize_url_path(parsed.path());
+    if !same_origin(&parsed, &base) || !request_path.starts_with(&base_path) {
+        return Err(outside_gateway_prefix_error(
+            &method,
+            request.url,
+            &options.base_url,
+        ));
+    }
+    if method != "POST" {
+        return Err(cannot_express_gateway_request(
+            &method,
+            request.url,
+            "only POST is supported",
+        ));
+    }
+
+    let rest = &request_path[base_path.len()..];
+    let Some(slash) = rest.find('/') else {
+        return Err(cannot_express_gateway_request(
+            &method,
+            request.url,
+            "missing provider/endpoint path",
+        ));
+    };
+    if slash == 0 {
+        return Err(cannot_express_gateway_request(
+            &method,
+            request.url,
+            "missing provider/endpoint path",
+        ));
+    }
+    let provider = &rest[..slash];
+    let mut endpoint = rest[slash + 1..].to_string();
+    if let Some(query) = parsed.query().filter(|query| !query.is_empty()) {
+        endpoint.push('?');
+        endpoint.push_str(query);
+    }
+
+    let Some(body) = request.body else {
+        return Err(cannot_express_gateway_request(
+            &method,
+            request.url,
+            "missing body",
+        ));
+    };
+    let query = serde_json::from_slice(body)
+        .map_err(|_| cannot_express_gateway_request(&method, request.url, "non-JSON body"))?;
+
+    let mut headers = BTreeMap::new();
+    for (name, value) in request.headers {
+        let name = name.to_ascii_lowercase();
+        if matches!(
+            name.as_str(),
+            "content-length" | "host" | "cf-aig-authorization"
+        ) {
+            continue;
+        }
+        headers.insert(name, value.clone());
+    }
+
+    Ok(AiGatewayUniversalRequest {
+        provider: provider.to_string(),
+        endpoint,
+        headers,
+        query,
+    })
+}
+
+/// Translate and execute one request through a Workers AI gateway binding.
+pub async fn run_gateway_binding_request<B: AiGatewayBinding>(
+    binding: &B,
+    options: &GatewayBindingFetchOptions,
+    request: &GatewayBindingFetchRequest<'_>,
+) -> Result<B::Response, String> {
+    let universal = create_gateway_binding_request(options, request)?;
+    binding
+        .run(&options.gateway, universal, request.signal.clone())
+        .await
+}
+
+fn outside_gateway_prefix_error(method: &str, url: &str, base_url: &str) -> String {
+    format!(
+        "createGatewayBindingFetch: {method} {url} is outside the configured gateway prefix \
+         ({base_url}); this fetch only serves its gateway-bound client"
+    )
+}
+
+fn cannot_express_gateway_request(method: &str, url: &str, reason: &str) -> String {
+    format!(
+        "createGatewayBindingFetch: cannot express {method} {url} as a universal gateway \
+         request ({reason}); route it over HTTPS with gateway auth instead"
+    )
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn gateway_prefix_path(path: &str) -> String {
+    let mut normalized = normalize_url_path(path);
+    if !normalized.ends_with('/') {
+        normalized.push('/');
+    }
+    normalized
+}
+
+fn normalize_url_path(path: &str) -> String {
+    let mut segments = Vec::new();
+    let mut raw_segments = path.split('/').peekable();
+    while let Some(segment) = raw_segments.next() {
+        let is_last = raw_segments.peek().is_none();
+        if is_single_dot_segment(segment) {
+            if is_last {
+                segments.push("");
+            }
+        } else if is_double_dot_segment(segment) {
+            if segments.len() > 1 {
+                segments.pop();
+            }
+            if is_last {
+                segments.push("");
+            }
+        } else {
+            segments.push(segment);
+        }
+    }
+    let normalized = segments.join("/");
+    if normalized.is_empty() {
+        "/".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn is_single_dot_segment(segment: &str) -> bool {
+    segment == "." || segment.eq_ignore_ascii_case("%2e")
+}
+
+fn is_double_dot_segment(segment: &str) -> bool {
+    segment == ".."
+        || segment.eq_ignore_ascii_case(".%2e")
+        || segment.eq_ignore_ascii_case("%2e.")
+        || segment.eq_ignore_ascii_case("%2e%2e")
+}
 
 /// Workers AI direct endpoint.
 pub const CLOUDFLARE_WORKERS_AI_BASE_URL: &str =
@@ -70,8 +288,10 @@ fn get_env_value(name: &str, env: Option<&ProviderEnv>, ctx: &AuthContext) -> Op
     ctx.env(name).filter(|v| !v.is_empty())
 }
 
-/// Per-field merge: prefer the credential value, fall back to ambient env
-/// (upstream `resolveValue`).
+/// Per-field merge: prefer the credential value, falling back to ambient env
+/// only when the credential does not define that field (upstream
+/// `resolveValue`). An explicitly empty credential field still blocks ambient
+/// fallback and is rejected by `resolved`.
 fn resolve_value(
     name: &str,
     ctx: &AuthContext,
@@ -85,8 +305,8 @@ fn resolve_value(
         }
     });
     match from_credential {
-        Some(v) if !v.is_empty() => Some(v),
-        _ => get_env_value(name, None, ctx),
+        Some(v) => Some(v),
+        None => get_env_value(name, None, ctx),
     }
 }
 
@@ -112,17 +332,16 @@ impl CloudflareAuth {
         ctx: &AuthContext,
         credential: Option<&ApiKeyCredential>,
     ) -> Option<(String, ProviderEnv, String)> {
-        let api_key = resolve_value(CLOUDFLARE_API_KEY, ctx, credential)?;
-        let account_id = resolve_value(CLOUDFLARE_ACCOUNT_ID, ctx, credential)?;
+        let api_key =
+            resolve_value(CLOUDFLARE_API_KEY, ctx, credential).filter(|v| !v.is_empty())?;
+        let account_id =
+            resolve_value(CLOUDFLARE_ACCOUNT_ID, ctx, credential).filter(|v| !v.is_empty())?;
         let gateway_id = match self.kind {
             CloudflareAuthKind::WorkersAi => None,
-            CloudflareAuthKind::AiGateway => {
-                Some(resolve_value(CLOUDFLARE_GATEWAY_ID, ctx, credential)?)
-            }
+            CloudflareAuthKind::AiGateway => Some(
+                resolve_value(CLOUDFLARE_GATEWAY_ID, ctx, credential).filter(|v| !v.is_empty())?,
+            ),
         };
-        if api_key.is_empty() || account_id.is_empty() {
-            return None;
-        }
         let mut env = ProviderEnv::new();
         env.insert(CLOUDFLARE_ACCOUNT_ID.to_string(), account_id);
         if let Some(gateway_id) = gateway_id {
@@ -217,8 +436,6 @@ pub fn resolve_cloudflare_model(model: &Model, env: Option<&ProviderEnv>) -> Mod
 /// Wrap an API implementation so Cloudflare account/gateway endpoint
 /// placeholders materialize from the resolved provider env before dispatch
 /// (upstream `cloudflareStreams`).
-// NOTE: the Workers AI binding transport seam (`createGatewayBindingFetch`)
-// would live here; see the module-level DOCUMENTED DIVERGENCE.
 pub fn cloudflare_streams(inner: ProviderStreams) -> ProviderStreams {
     let stream: crate::models::StreamFn = {
         let inner = inner.clone();
@@ -260,6 +477,9 @@ pub fn cloudflare_streams(inner: ProviderStreams) -> ProviderStreams {
 mod tests {
     use super::*;
     use crate::event_stream::AssistantMessageEventStream;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     fn cloudflare_model() -> Model {
         let mut model = Model::new(
@@ -469,5 +689,400 @@ mod tests {
         unsafe {
             std::env::remove_var("CLOUDFLARE_API_KEY");
         }
+    }
+    fn gateway_binding_options() -> GatewayBindingFetchOptions {
+        GatewayBindingFetchOptions {
+            base_url: "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway".to_string(),
+            gateway: "my-gateway".to_string(),
+        }
+    }
+
+    #[test]
+    fn cloudflare_binding_translates_provider_endpoint_query_and_json_body() {
+        let options = gateway_binding_options();
+        let headers = BTreeMap::from([("Anthropic-Version".to_string(), "2023-06-01".to_string())]);
+        let request = GatewayBindingFetchRequest {
+            method: "post",
+            url: "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway/anthropic/v1/messages?beta=true",
+            headers: &headers,
+            body: Some(br#"{"model":"claude"}"#),
+            signal: None,
+        };
+        let bare_query = GatewayBindingFetchRequest {
+            method: "POST",
+            url:
+                "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway/anthropic/v1/messages?",
+            headers: &headers,
+            body: Some(br#"{"model":"claude"}"#),
+            signal: None,
+        };
+
+        let translated = create_gateway_binding_request(&options, &request).unwrap();
+        let bare_translated = create_gateway_binding_request(&options, &bare_query).unwrap();
+
+        assert_eq!(translated.provider, "anthropic");
+        assert_eq!(translated.endpoint, "v1/messages?beta=true");
+        assert_eq!(translated.query, serde_json::json!({"model": "claude"}));
+        assert_eq!(
+            translated.headers.get("anthropic-version"),
+            Some(&"2023-06-01".to_string())
+        );
+        assert_eq!(bare_translated.endpoint, "v1/messages");
+    }
+
+    #[test]
+    fn cloudflare_binding_lowercases_and_strips_derived_headers() {
+        let options = gateway_binding_options();
+        let headers = BTreeMap::from([
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("Content-Length".to_string(), "17".to_string()),
+            (
+                "CF-AIG-Authorization".to_string(),
+                format!("Bearer {CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL}"),
+            ),
+            ("Host".to_string(), "gateway.ai.cloudflare.com".to_string()),
+            (
+                "cf-aig-metadata".to_string(),
+                r#"{"user":"42"}"#.to_string(),
+            ),
+            ("X-API-Key".to_string(), "provider-key".to_string()),
+        ]);
+        let request = GatewayBindingFetchRequest {
+            method: "POST",
+            url: "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway/openai/responses",
+            headers: &headers,
+            body: Some(br#"{}"#),
+            signal: None,
+        };
+
+        let translated = create_gateway_binding_request(&options, &request).unwrap();
+
+        assert_eq!(
+            translated.headers.get("content-type"),
+            Some(&"application/json".to_string())
+        );
+        assert_eq!(
+            translated.headers.get("cf-aig-metadata"),
+            Some(&r#"{"user":"42"}"#.to_string())
+        );
+        assert_eq!(
+            translated.headers.get("x-api-key"),
+            Some(&"provider-key".to_string())
+        );
+        assert!(!translated.headers.contains_key("content-length"));
+        assert!(!translated.headers.contains_key("host"));
+        assert!(!translated.headers.contains_key("cf-aig-authorization"));
+    }
+
+    #[test]
+    fn cloudflare_binding_normalizes_dot_segments_before_prefix_split() {
+        let options = gateway_binding_options();
+        let headers = BTreeMap::new();
+        let request = GatewayBindingFetchRequest {
+            method: "POST",
+            url: "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway/anthropic/../anthropic/v1/./messages",
+            headers: &headers,
+            body: Some(br#"{"model":"claude"}"#),
+            signal: None,
+        };
+        let encoded_dot = GatewayBindingFetchRequest {
+            method: "POST",
+            url: "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway/anthropic/v1/%2e/messages",
+            headers: &headers,
+            body: Some(br#"{"model":"claude"}"#),
+            signal: None,
+        };
+
+        let translated = create_gateway_binding_request(&options, &request).unwrap();
+        let encoded_translated = create_gateway_binding_request(&options, &encoded_dot).unwrap();
+
+        assert_eq!(translated.provider, "anthropic");
+        assert_eq!(translated.endpoint, "v1/messages");
+        assert_eq!(encoded_translated.provider, "anthropic");
+        assert_eq!(encoded_translated.endpoint, "v1/messages");
+    }
+
+    #[test]
+    fn cloudflare_binding_rejects_outside_and_unexpressible_requests() {
+        let options = gateway_binding_options();
+        let headers = BTreeMap::new();
+        let outside = GatewayBindingFetchRequest {
+            method: "POST",
+            url: "https://api.openai.com/v1/chat/completions",
+            headers: &headers,
+            body: Some(br#"{}"#),
+            signal: None,
+        };
+        let encoded_parent = GatewayBindingFetchRequest {
+            method: "POST",
+            url: "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway/%2e%2e/other/anthropic/v1/messages",
+            headers: &headers,
+            body: Some(br#"{}"#),
+            signal: None,
+        };
+        let doubled_slash = GatewayBindingFetchRequest {
+            method: "POST",
+            url:
+                "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway//anthropic/v1/messages",
+            headers: &headers,
+            body: Some(br#"{}"#),
+            signal: None,
+        };
+        let wrong_method = GatewayBindingFetchRequest {
+            method: "GET",
+            url: "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway/openai/responses",
+            headers: &headers,
+            body: Some(br#"{}"#),
+            signal: None,
+        };
+        let missing_path = GatewayBindingFetchRequest {
+            method: "POST",
+            url: "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway/openai",
+            headers: &headers,
+            body: Some(br#"{}"#),
+            signal: None,
+        };
+        let missing_body = GatewayBindingFetchRequest {
+            method: "POST",
+            url: "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway/openai/responses",
+            headers: &headers,
+            body: None,
+            signal: None,
+        };
+        let invalid_body = GatewayBindingFetchRequest {
+            method: "POST",
+            url: "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway/openai/responses",
+            headers: &headers,
+            body: Some(b"not json"),
+            signal: None,
+        };
+
+        assert!(create_gateway_binding_request(&options, &outside)
+            .unwrap_err()
+            .contains("outside the configured gateway prefix"));
+        assert!(create_gateway_binding_request(&options, &encoded_parent)
+            .unwrap_err()
+            .contains("outside the configured gateway prefix"));
+        assert!(create_gateway_binding_request(&options, &doubled_slash)
+            .unwrap_err()
+            .contains("missing provider/endpoint path"));
+        assert!(create_gateway_binding_request(&options, &wrong_method)
+            .unwrap_err()
+            .contains("cannot express GET"));
+        assert!(create_gateway_binding_request(&options, &missing_path)
+            .unwrap_err()
+            .contains("missing provider/endpoint path"));
+        assert!(create_gateway_binding_request(&options, &missing_body)
+            .unwrap_err()
+            .contains("missing body"));
+        assert!(create_gateway_binding_request(&options, &invalid_body)
+            .unwrap_err()
+            .contains("non-JSON body"));
+    }
+
+    type CapturedBindingRequest = (String, AiGatewayUniversalRequest, Option<Arc<AtomicBool>>);
+    struct RecordingGatewayBinding {
+        captured: Arc<Mutex<Option<CapturedBindingRequest>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AiGatewayBinding for RecordingGatewayBinding {
+        type Response = String;
+
+        async fn run(
+            &self,
+            gateway: &str,
+            request: AiGatewayUniversalRequest,
+            signal: Option<Arc<AtomicBool>>,
+        ) -> Result<Self::Response, String> {
+            self.captured
+                .lock()
+                .await
+                .replace((gateway.to_string(), request, signal));
+            Ok("binding-response".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn cloudflare_binding_routes_translated_request_to_gateway() {
+        let captured = Arc::new(Mutex::new(None));
+        let binding = RecordingGatewayBinding {
+            captured: captured.clone(),
+        };
+        let options = gateway_binding_options();
+        let headers = BTreeMap::new();
+        let signal = Arc::new(AtomicBool::new(false));
+        let request = GatewayBindingFetchRequest {
+            method: "POST",
+            url: "https://gateway.ai.cloudflare.com/v1/account-id/my-gateway/workers-ai/v1/chat/completions",
+            headers: &headers,
+            body: Some(br#"{"model":"@cf/model"}"#),
+            signal: Some(signal.clone()),
+        };
+
+        let response = run_gateway_binding_request(&binding, &options, &request)
+            .await
+            .unwrap();
+
+        assert_eq!(response, "binding-response");
+        let (gateway, translated, received_signal) = captured.lock().await.take().unwrap();
+        assert_eq!(gateway, "my-gateway");
+        assert_eq!(translated.provider, "workers-ai");
+        assert_eq!(translated.endpoint, "v1/chat/completions");
+        assert_eq!(translated.query, serde_json::json!({"model": "@cf/model"}));
+        let received_signal = received_signal.expect("binding should receive the request signal");
+        assert!(Arc::ptr_eq(&received_signal, &signal));
+    }
+
+    #[test]
+    fn cloudflare_provider_auth_preserves_per_field_credential_precedence() {
+        let _guard = crate::utils::env_lock();
+        let auth = CloudflareAuth {
+            kind: CloudflareAuthKind::AiGateway,
+        };
+        let ctx = AuthContext::default();
+        unsafe {
+            std::env::set_var(CLOUDFLARE_API_KEY, "ambient-key");
+            std::env::set_var(CLOUDFLARE_ACCOUNT_ID, "ambient-account");
+            std::env::set_var(CLOUDFLARE_GATEWAY_ID, "ambient-gateway");
+        }
+        let cred = ApiKeyCredential {
+            key: Some("stored-key".to_string()),
+            env: Some({
+                let mut env = ProviderEnv::new();
+                env.insert(
+                    CLOUDFLARE_ACCOUNT_ID.to_string(),
+                    "stored-account".to_string(),
+                );
+                env
+            }),
+        };
+
+        let resolved = auth.resolve(&ctx, Some(&cred)).unwrap();
+
+        assert_eq!(
+            resolved
+                .auth
+                .headers
+                .as_ref()
+                .unwrap()
+                .get("cf-aig-authorization"),
+            Some(&Some("Bearer stored-key".to_string()))
+        );
+        assert_eq!(
+            resolved.env.as_ref().unwrap().get(CLOUDFLARE_ACCOUNT_ID),
+            Some(&"stored-account".to_string())
+        );
+        assert_eq!(
+            resolved.env.as_ref().unwrap().get(CLOUDFLARE_GATEWAY_ID),
+            Some(&"ambient-gateway".to_string())
+        );
+        unsafe {
+            std::env::remove_var(CLOUDFLARE_API_KEY);
+            std::env::remove_var(CLOUDFLARE_ACCOUNT_ID);
+            std::env::remove_var(CLOUDFLARE_GATEWAY_ID);
+        }
+    }
+
+    #[test]
+    fn cloudflare_provider_empty_credential_fields_block_ambient_fallback() {
+        let _guard = crate::utils::env_lock();
+        let ctx = AuthContext::default();
+        unsafe {
+            std::env::set_var(CLOUDFLARE_API_KEY, "ambient-key");
+            std::env::set_var(CLOUDFLARE_ACCOUNT_ID, "ambient-account");
+            std::env::set_var(CLOUDFLARE_GATEWAY_ID, "ambient-gateway");
+        }
+        let workers_auth = CloudflareAuth {
+            kind: CloudflareAuthKind::WorkersAi,
+        };
+        let empty_key = ApiKeyCredential {
+            key: Some(String::new()),
+            env: Some({
+                let mut env = ProviderEnv::new();
+                env.insert(
+                    CLOUDFLARE_ACCOUNT_ID.to_string(),
+                    "stored-account".to_string(),
+                );
+                env
+            }),
+        };
+        assert!(workers_auth.resolve(&ctx, Some(&empty_key)).is_none());
+
+        let gateway_auth = CloudflareAuth {
+            kind: CloudflareAuthKind::AiGateway,
+        };
+        let empty_gateway = ApiKeyCredential {
+            key: Some("stored-key".to_string()),
+            env: Some({
+                let mut env = ProviderEnv::new();
+                env.insert(
+                    CLOUDFLARE_ACCOUNT_ID.to_string(),
+                    "stored-account".to_string(),
+                );
+                env.insert(CLOUDFLARE_GATEWAY_ID.to_string(), String::new());
+                env
+            }),
+        };
+        assert!(gateway_auth.resolve(&ctx, Some(&empty_gateway)).is_none());
+
+        unsafe {
+            std::env::remove_var(CLOUDFLARE_API_KEY);
+            std::env::remove_var(CLOUDFLARE_ACCOUNT_ID);
+            std::env::remove_var(CLOUDFLARE_GATEWAY_ID);
+        }
+    }
+
+    #[test]
+    fn cloudflare_provider_headers_keep_inline_upstream_authorization() {
+        let auth = CloudflareAuth {
+            kind: CloudflareAuthKind::AiGateway,
+        };
+        let ctx = AuthContext {
+            env: Arc::new(|name| match name {
+                CLOUDFLARE_API_KEY => Some("gateway-key".to_string()),
+                CLOUDFLARE_ACCOUNT_ID => Some("account".to_string()),
+                CLOUDFLARE_GATEWAY_ID => Some("gateway".to_string()),
+                _ => None,
+            }),
+            file_exists: Arc::new(|_| false),
+        };
+        let resolved = auth.resolve(&ctx, None).unwrap();
+        let inline = ProviderHeaders::from([(
+            "Authorization".to_string(),
+            Some("Bearer upstream-token".to_string()),
+        )]);
+        let merged =
+            crate::models::merge_headers(resolved.auth.headers.as_ref(), Some(&inline)).unwrap();
+
+        assert_eq!(
+            merged.get("Authorization"),
+            Some(&Some("Bearer upstream-token".to_string()))
+        );
+        assert_eq!(
+            merged.get("cf-aig-authorization"),
+            Some(&Some("Bearer gateway-key".to_string()))
+        );
+        assert_eq!(merged.get("x-api-key"), Some(&None));
+    }
+
+    #[test]
+    fn cloudflare_provider_base_url_uses_scoped_account_and_gateway_env() {
+        let mut env = ProviderEnv::new();
+        env.insert(
+            CLOUDFLARE_ACCOUNT_ID.to_string(),
+            "request-account".to_string(),
+        );
+        env.insert(
+            CLOUDFLARE_GATEWAY_ID.to_string(),
+            "request-gateway".to_string(),
+        );
+
+        let resolved = resolve_cloudflare_model(&cloudflare_model(), Some(&env));
+
+        assert_eq!(
+            resolved.base_url,
+            "https://gateway.ai.cloudflare.com/v1/request-account/request-gateway/openai"
+        );
     }
 }

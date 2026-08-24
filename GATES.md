@@ -197,3 +197,30 @@ Scope: preserve the completed interactive slash-command, project-trust, deferred
   CHECK: node scripts/conversion-progress.mjs
   EXPECT: Conversion progress:
   EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=fbe3799a2a56/21 entries; output=Conversion progress: 65.06% (108/166; 58 open)
+
+## Next slice: close S-012 Cloudflare gateway binding and precedence parity
+
+- [x] G34: the Cloudflare gateway-binding transport validates its configured
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=fbe3799a2a56/21 entries; output=test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 325 filtered out; finished in 0.01s | S012_CLOUDFLARE_BINDING_TESTS_PASS
+      prefix, translates JSON POST requests, preserves query/headers, and
+      rejects unexpressible traffic
+  CHECK: RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib cloudflare --quiet && printf 'S012_CLOUDFLARE_BINDING_TESTS_PASS\n'
+  EXPECT: S012_CLOUDFLARE_BINDING_TESTS_PASS
+
+- [x] G35: Cloudflare Workers AI and AI Gateway auth preserve stored-field
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=fbe3799a2a56/21 entries; output=test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.01s | S012_CLOUDFLARE_PROVIDER_TESTS_PASS
+      precedence, scoped account/gateway env, and header/base-url behavior
+  CHECK: RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib cloudflare_provider --quiet && printf 'S012_CLOUDFLARE_PROVIDER_TESTS_PASS\n'
+  EXPECT: S012_CLOUDFLARE_PROVIDER_TESTS_PASS
+
+- [x] G36: the Cloudflare implementation compiles, formats, and has no
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=fbe3799a2a56/21 entries; output=S012_STATIC_CHECKS_PASS | Finished `dev` profile [optimized + debuginfo] target(s) in 0.07s
+      whitespace errors
+  CHECK: RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTFMT=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo check -p pi-ai --offline && RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTFMT=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo fmt --all -- --check && git diff --check && printf 'S012_STATIC_CHECKS_PASS\n'
+  EXPECT: S012_STATIC_CHECKS_PASS
+
+- [x] G37: the conversion ledger and synchronized docs report the measured
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=fbe3799a2a56/21 entries; output=Conversion progress: 65.66% (109/166; 57 open)
+      S-012 progress
+  CHECK: node scripts/conversion-progress.mjs
+  EXPECT: Conversion progress:
