@@ -1014,7 +1014,7 @@ tests, parity suite, release matrix, and S-065/S-066 audit gates pass.
 ## Active checkpoint — 2026-08-25 — eval metrics and pushed wave synchronized
 
 The completed implementation/eval wave is pushed at commit
-`0a4f83911d4c494aa5d891728e6f04a849c2512e`; `git rev-parse HEAD` and
+`b95f3b4c3b049c83f877f02eba15b4396c596b9a`; `git rev-parse HEAD` and
 `git ls-remote origin refs/heads/main` both return that hash. The worktree now
 contains only active C1/D2/E2 changes; the pre-existing untracked `AGENTS.md`
 remains untouched.
