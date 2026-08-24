@@ -18,6 +18,12 @@ use crate::core::settings::SettingsManager;
 use crate::core::version_check::{get_latest_pi_release, is_newer_package_version};
 
 const PACKAGE_NAME: &str = "@earendil-works/pi-coding-agent";
+const SELF_UPDATE_UNAVAILABLE_SUFFIX: &str =
+    "using the package manager, wrapper, or source checkout that provides this installation.";
+
+fn self_update_unavailable_instruction(install_spec: &str) -> String {
+    format!("Update {install_spec} {SELF_UPDATE_UNAVAILABLE_SUFFIX}")
+}
 
 /// Package command kind (upstream `PackageCommand`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -637,8 +643,8 @@ pub async fn handle_package_command(args: &[String]) -> bool {
                     eprintln!("Update note: {}", note.trim());
                 }
                 eprintln!(
-                    "Update {} using the package manager, wrapper, or source checkout that provides this installation.",
-                    plan.install_spec
+                    "{}",
+                    self_update_unavailable_instruction(&plan.install_spec)
                 );
                 std::process::exit(1);
             }
@@ -760,6 +766,14 @@ mod tests {
     fn update_extension_missing_value() {
         let options = parse(&["update", "--extension"]);
         assert!(options.missing_option_value.is_some());
+    }
+
+    #[test]
+    fn self_update_fallback_instruction_matches_distribution_contract() {
+        assert_eq!(
+            self_update_unavailable_instruction("@earendil-works/pi-coding-agent@0.85.0"),
+            "Update @earendil-works/pi-coding-agent@0.85.0 using the package manager, wrapper, or source checkout that provides this installation."
+        );
     }
 
     #[test]

@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-55.42% = 92 completed / 166 total tasks
-74 tasks remain open
+56.02% = 93 completed / 166 total tasks
+73 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,9 +26,10 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest committed local checkpoint is the interactive turn harness
-ownership slice (`0cd9d03`) after the documentation-hook checkpoint
-(`d56d8ba`), JSON-mode harness ownership (`3fb8049`), print-path harness,
+The latest committed local checkpoint is the compiled-binary self-update
+contract slice after the interactive turn harness ownership checkpoint
+(`0cd9d03`) and documentation-hook checkpoint (`d56d8ba`), JSON-mode harness
+ownership (`3fb8049`), print-path harness,
 lifecycle/termination, schema-validator, panic-safe telemetry, RPC runtime,
 update/version, and model-catalog checkpoints. The JSON-mode implementation is
 `dd7a568`; its follow-up preserves the successful RPC golden envelope while
@@ -50,10 +51,10 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`55.42% (92/166; 74 open)`. Preserve the pre-existing untracked `AGENTS.md`.
-The README now records this JSON-mode checkpoint and the synchronized-doc
-workflow. All staged checkpoint changes are intentional local work ahead of
-the remote; the pre-existing `AGENTS.md` remains untouched.
+`56.02% (93/166; 73 open)`. Preserve the pre-existing untracked `AGENTS.md`.
+The README now records this compiled-binary self-update contract and the
+synchronized-doc workflow. All staged checkpoint changes are intentional local
+work ahead of the remote; the pre-existing `AGENTS.md` remains untouched.
 
 ## Verification already completed
 
@@ -102,8 +103,8 @@ A full `cargo test --workspace --offline` passed after the image/read changes,
 including 162 `pi-agent` unit tests, the coding-agent integration targets, 186
 `pi-tui` unit tests, and all workspace doctests.
 
-The latest full gate after the interactive turn harness checkpoint passed: 176
-`pi-agent` tests, 286 `pi-ai` unit tests, 446 `pi-coding-agent` unit tests plus
+The latest full gate after the compiled-binary self-update checkpoint passed:
+176 `pi-agent` tests, 286 `pi-ai` unit tests, 447 `pi-coding-agent` unit tests plus
 all integration targets (including the malformed-call and print-parity
 fixtures), 186 `pi-tui` unit tests, and all workspace doctests.
 
@@ -112,7 +113,22 @@ restoring the successful RPC golden transcript. The focused JSON integration
 test passes both normal faux streaming and the terminal no-key provider error
 case, with both cases exiting successfully as required by JSON mode.
 
-## Last code change
+The compiled-binary self-update contract checkpoint is now complete locally:
+
+- `pi update --self` retains the upstream latest-release lookup and update
+  decision, but a compiled Rust executable reports a non-zero result instead
+  of attempting to overwrite itself. The replacement message is centralized
+  and unit-tested byte-for-byte, including the package/version target.
+- README.md documents rebuilding a source checkout with
+  `cargo build --release -p pi-coding-agent` and replacing the installed
+  binary through its owning mechanism. S-028 is closed as this intentional,
+  user-visible distribution behavior.
+- The focused package-command and offline update tests, workspace check/test,
+  formatter, diff check, and progress checker are the evidence recorded for
+  this checkpoint. GitHub description synchronization is attempted by the
+  pre-commit hook when `gh` is authenticated.
+
+## Earlier completed code changes
 
 The one-shot auto-compaction milestone (#33–34 / S-025) is complete in the
 working tree:

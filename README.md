@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 55.42% — 92 of 166 ledger tasks complete; 74 open.**
+**Conversion progress: 56.02% — 93 of 166 ledger tasks complete; 73 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -21,6 +21,22 @@ turns, provider/model catalog surfaces, session storage, project trust, tools,
 compaction, RPC controls, TUI components, and client/server support. Remaining
 work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
+
+### Updating compiled Rust installs
+
+`pi update --self` performs the same latest-release and `--force` decision as
+upstream. A running compiled Rust executable cannot safely replace itself, so
+when an update is available it exits non-zero and prints the exact replacement
+instruction for the detected release, for example:
+
+```text
+Update @earendil-works/pi-coding-agent@<version> using the package manager, wrapper, or source checkout that provides this installation.
+```
+
+For a source checkout, rebuild with `cargo build --release -p pi-coding-agent`
+and replace the installed `pi` binary using the mechanism that installed it.
+This is the supported replacement behavior for the Rust distribution; the
+command does not claim that the running executable was updated.
 
 ## Workspace
 

@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **55.42% (92/166)**. Run
+- The exhaustive checker reports **56.02% (93/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -19,7 +19,8 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the local JSON-mode harness checkpoint on `main`, after
+- HEAD is the local compiled-binary self-update contract checkpoint on `main`,
+  after
   the print-path harness ownership, AgentTool harness/termination,
   schema-validator, panic-safe telemetry, update/version, and model-catalog
   work; the HTTPS remote is still behind because GitHub credentials are
@@ -32,8 +33,8 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   lifecycle events and a settled `pi.harness.run` span with required
   attributes. JSON mode now also owns a stateful in-memory `AgentHarness`
   transcript and replays rich stream updates, including terminal provider
-  errors, without changing the established successful RPC wire envelope. A
-  configured harnesses cover print, JSON, and interactive turns, while the
+  errors, without changing the established successful RPC wire envelope.
+  Configured harnesses cover print, JSON, and interactive turns, while the
   shared lifecycle adapter covers the remaining RPC loop paths; complete
   mode-specific golden envelopes and persistence/secondary-lane assertions
   remain open under S-021/S-022. Telemetry callback panics now
@@ -675,8 +676,17 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 - [ ] S-027 Port TypeScript extension execution semantics or provide a proven
       equivalent embedded runtime; cover extension commands, hooks, renderers,
       and failure isolation.
-- [ ] S-028 Port the upstream self-update path (`pi update --self`) or document
+- [x] S-028 Port the upstream self-update path (`pi update --self`) or document
       and test the exact supported replacement behavior for this distribution.
+      The compiled Rust binary performs the latest-release and `--force`
+      decision, then exits non-zero with the exact package-manager,
+      wrapper, or source-checkout replacement instruction instead of claiming
+      that the running executable was replaced. The README documents the
+      source-checkout rebuild command. Evidence (unit/mock):
+      `cargo test -p pi-coding-agent --offline
+      commands::package::tests::self_update_fallback_instruction_matches_distribution_contract`,
+      `cargo test -p pi-coding-agent --offline --test cli_commands update_`,
+      and `cargo test --workspace --offline --quiet`.
 - [ ] S-029 Complete install-telemetry report transport, opt-out, retry, and
       offline behavior where the upstream CLI performs the network ping.
 - [ ] S-030 Wire cache-miss notices and “cache re-billed” display data into the

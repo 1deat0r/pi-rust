@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 55.42% (92/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 56.02% (93/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1221,6 +1221,29 @@ the existing TUI transcript, session-switch, and stream-update surfaces.
 - S-021/S-022 remain open: JSONL/RPC full AgentHarness ownership,
   mode-specific lifecycle golden envelopes, persistence, and secondary lanes
   still need implementation and evidence.
+
+### Session 36 — 2026-08-24 — Compiled-binary self-update contract (S-028)
+Scope: document and test the supported replacement behavior for the Rust
+distribution where the running executable cannot replace itself.
+
+- `pi update --self` retains the upstream latest-release lookup, semver
+  decision, `--force` handling, and failure exit code. Once a newer release is
+  selected, the Rust command emits one stable replacement instruction naming
+  the detected package/version and explicitly directs the user to the package
+  manager, wrapper, or source checkout that owns the installation.
+- README.md now documents the source-checkout replacement workflow:
+  `cargo build --release -p pi-coding-agent`, followed by replacement through
+  the installation mechanism. The GitHub repository description source records
+  this intentional compiled-binary fallback.
+- Evidence (unit/mock):
+  `cargo test -p pi-coding-agent --offline
+  commands::package::tests::self_update_fallback_instruction_matches_distribution_contract`,
+  `cargo test -p pi-coding-agent --offline --test cli_commands update_`,
+  `cargo check --workspace --offline`, `cargo test --workspace --offline
+  --quiet`, `cargo fmt --all`, and `git diff --check`.
+- S-028 is complete with an explicit distribution-level divergence; S-026,
+  S-027, S-029, and the remaining S-021/S-022 harness ownership work remain
+  open.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
