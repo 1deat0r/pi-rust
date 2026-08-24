@@ -938,6 +938,21 @@ command matrix remains S-056.
   config_selector_pty` (1 passed), plus the existing selector snapshot suite.
   S-035 is complete; #61/#62 and S-056 remain open.
 
+### Session 24 — 2026-08-24 — Alt-screen redraw invalidation
+Scope: the safe screen-restoration seam inside T5 #61/#62; the full
+regular/fullscreen renderer swap remains open.
+
+- `TerminalBackend` now exposes a monotonic screen epoch that changes on
+  alternate-screen entry/exit. `pi-tui::Tree` records that epoch and forces a
+  complete differential redraw when an overlay or external prompt has replaced
+  and restored the active screen.
+- Evidence (unit): `cargo test -p pi-tui --offline
+  terminal::tests::mode_state_is_idempotent_before_terminal_activation` (1 passed);
+  the ConfigSelector tmux PTY test also remains green.
+- This closes a concrete stale-frame seam but does not mark #61/#62 complete:
+  regular/main-screen rendering, mode switching, and the dedicated tmux swap
+  probe still need implementation.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

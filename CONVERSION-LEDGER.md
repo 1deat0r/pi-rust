@@ -19,9 +19,9 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the local image/read checkpoint followed by one-shot compaction and
-  the client reconnect/timeout checkpoint on `main`; the HTTPS remote is still
-  behind because GitHub credentials are unavailable.
+- HEAD is the local ConfigSelector PTY/resize checkpoint followed by the
+  alt-screen screen-epoch redraw hardening on `main`; the HTTPS remote is
+  still behind because GitHub credentials are unavailable.
 - The workspace is green under `cargo test --workspace --offline`; the focused
   RPC suite, image/read suite, and print-mode compaction suite pass.
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
@@ -32,6 +32,9 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   swap + terminal feature probes, server/client
   concurrency surfaces (leases, reconnect, queuing). Signed usage adjustment
   parity is closed in Session 16.
+- The alt-screen hardening now invalidates differential frames after
+  alternate-screen transitions; full regular/fullscreen swapping and the
+  dedicated tmux probe remain open in #61/#62.
 - **Additional gaps found in this audit** (not in any TODO file):
   - Missing CLI flags vs 0.84.2 surface: `--fork`, `--approve/-a`,
     `--no-approve/-na`, `--no-builtin-tools/-nbt`, `--extension/-e`,

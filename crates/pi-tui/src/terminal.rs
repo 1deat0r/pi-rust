@@ -27,6 +27,7 @@ pub struct TerminalBackend {
     height: u16,
     raw: bool,
     alt_screen: bool,
+    screen_epoch: u64,
     #[cfg(unix)]
     stdin: std::io::Stdin,
     #[cfg(unix)]
@@ -54,6 +55,7 @@ impl TerminalBackend {
             height,
             raw: false,
             alt_screen: false,
+            screen_epoch: 0,
             #[cfg(unix)]
             stdin: std::io::stdin(),
             #[cfg(unix)]
@@ -106,6 +108,7 @@ impl TerminalBackend {
         }
         self.write_raw("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H");
         self.alt_screen = true;
+        self.screen_epoch = self.screen_epoch.wrapping_add(1);
         let _ = self.flush();
     }
 
@@ -116,6 +119,7 @@ impl TerminalBackend {
         }
         self.write_raw("\x1b[?25h\x1b[?1049l");
         self.alt_screen = false;
+        self.screen_epoch = self.screen_epoch.wrapping_add(1);
         let _ = self.flush();
     }
 
@@ -135,6 +139,14 @@ impl TerminalBackend {
 
     pub fn is_alt_screen(&self) -> bool {
         self.alt_screen
+    }
+
+    /// Monotonic token for alternate-screen transitions. Differential
+    /// renderers use this to detect a screen that was temporarily replaced
+    /// by an overlay or external prompt and force a complete redraw when it
+    /// is restored.
+    pub fn screen_epoch(&self) -> u64 {
+        self.screen_epoch
     }
 
     pub fn write_raw(&mut self, s: &str) {
@@ -424,14 +436,17 @@ mod tests {
         let mut terminal = TerminalBackend::new();
         assert!(!terminal.is_raw());
         assert!(!terminal.is_alt_screen());
+        assert_eq!(terminal.screen_epoch(), 0);
         terminal.leave_alt_screen();
         terminal.suspend_alt_screen();
         terminal.resume_alt_screen();
         // The state-only transitions are harmless even when stdout is not a
         // terminal; the explicit leave restores the invariant for callers.
         assert!(terminal.is_alt_screen());
+        assert_eq!(terminal.screen_epoch(), 1);
         terminal.leave_alt_screen();
         assert!(!terminal.is_alt_screen());
+        assert_eq!(terminal.screen_epoch(), 2);
     }
 
     #[test]

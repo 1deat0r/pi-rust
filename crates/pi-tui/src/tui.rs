@@ -54,6 +54,7 @@ impl Scene {
 pub struct Tree {
     terminal: Arc<Mutex<TerminalBackend>>,
     last_lines: Vec<String>,
+    last_screen_epoch: Option<u64>,
     focused: Option<SharedComponent>,
 }
 
@@ -62,6 +63,7 @@ impl Tree {
         Self {
             terminal,
             last_lines: Vec::new(),
+            last_screen_epoch: None,
             focused: None,
         }
     }
@@ -111,10 +113,14 @@ impl Tree {
 
     /// Render the scene, diffing against the previous frame.
     pub fn render(&mut self, scene: Option<&Arc<Mutex<Scene>>>) {
-        let (width, height) = {
+        let (width, height, screen_epoch) = {
             let term = self.terminal.lock().unwrap();
-            (term.width(), term.height())
+            (term.width(), term.height(), term.screen_epoch())
         };
+        if self.last_screen_epoch != Some(screen_epoch) {
+            self.last_lines.clear();
+            self.last_screen_epoch = Some(screen_epoch);
+        }
         let lines: Vec<String> = match scene {
             Some(scene) => {
                 let guard = scene.lock().unwrap();

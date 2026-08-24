@@ -26,11 +26,12 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is the current `HEAD` (`test(config): add PTY
-selector lifecycle coverage`) after the client reconnect/timeout hardening.
-The one-shot auto-compaction, covered client criteria, selector behavior, and
-selector PTY/resize lifecycle are implemented, verified, and committed locally.
-Pushes are blocked because the HTTPS remote requires GitHub credentials.
+The latest local checkpoint is the current `HEAD` (`fix(tui): invalidate frames
+after screen swaps`) after the selector PTY/resize checkpoint and client
+reconnect/timeout hardening. The one-shot auto-compaction, covered client
+criteria, selector behavior, selector PTY/resize lifecycle, and screen-epoch
+redraw invalidation are implemented, verified, and committed locally. Pushes
+are blocked because the HTTPS remote requires GitHub credentials.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
 
@@ -134,6 +135,15 @@ The focused ConfigSelector PTY milestone (S-035) is also complete locally:
 - The focused PTY suite passes one test. The full interactive slash-command
   matrix remains S-056; alt-screen mode switching remains #61/#62.
 
+The next alt-screen hardening checkpoint is also complete locally:
+
+- `TerminalBackend` now exposes a monotonic screen epoch that changes on
+  alternate-screen entry/exit, and `Tree` forces a full redraw when the epoch
+  changes. This covers overlays or external prompts that temporarily replace
+  the active screen without claiming the full regular/fullscreen renderer swap.
+- The terminal transition test verifies idempotence and the expected epoch
+  sequence; the PTY selector test remains green after the renderer change.
+
 ## Major parity work already present
 
 The current source includes substantial ports beyond the original baseline:
@@ -161,8 +171,8 @@ items just because a similarly named Rust module exists.
 
 1. Retry `git push origin main` after credentials are available; the current
    client/selector/PTY checkpoint is local and is not remote yet.
-2. Continue with #61/#62 alt-screen swap work and the broader S-056
-   interactive slash-command matrix.
+2. Continue with the full regular/fullscreen #61/#62 swap work and the broader
+   S-056 interactive slash-command matrix.
 3. Keep `CONVERSION-LEDGER.md`, `PLAN.md`, and this handoff synchronized;
    only mark a task complete with an evidence tier and exact command/fixture.
 
