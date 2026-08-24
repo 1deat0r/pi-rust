@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 50.60% (84/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 51.20% (85/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -999,7 +999,22 @@ claimed in this checkpoint.
   `cargo test -p pi-agent --offline harness::shell_output`, and
   `cargo test -p pi-agent --offline rich_loop_abort_cancels_inflight_bash_tool`.
 - S-018 remains open for exact scheduled-timer/write-chain fixtures and the
-  broader built-in malformed-call/update matrix; progress remains 50.60%.
+  broader built-in malformed-call/update matrix; the next RPC audit raises the
+  ledger to 51.20%.
+
+### Session 27 — 2026-08-24 — RPC runtime control audit
+Scope: T7 #88, closing the remaining direct audit item for auto-compaction,
+auto-retry, steering mode, and follow-up mode commands.
+
+- Added a direct RPC runtime test that sends all four control commands and
+  verifies live flags, persisted settings, queue modes, and the `get_state`
+  wire response. Existing stream/compaction/retry/provider-setting and queue
+  drain tests cover the downstream effects.
+- Evidence (unit/mock):
+  `cargo test -p pi-coding-agent --offline
+  rpc_runtime_control_commands_update_settings_and_state`, the focused RPC
+  suite, and `cargo test --workspace --offline`.
+- #88 is complete. #89–90 and the supplemental eval/fixture tasks remain open.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

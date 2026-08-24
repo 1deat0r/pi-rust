@@ -3421,6 +3421,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rpc_runtime_control_commands_update_settings_and_state() {
+        let mut runtime = runtime_for_test().await;
+        let commands = [
+            serde_json::json!({
+                "id": "compact-off",
+                "type": "set_auto_compaction",
+                "enabled": false
+            }),
+            serde_json::json!({
+                "id": "retry-off",
+                "type": "set_auto_retry",
+                "enabled": false
+            }),
+            serde_json::json!({
+                "id": "steer-all",
+                "type": "set_steering_mode",
+                "mode": "all"
+            }),
+            serde_json::json!({
+                "id": "follow-one",
+                "type": "set_follow_up_mode",
+                "mode": "one-at-a-time"
+            }),
+        ];
+        let mut store = Vec::new();
+        for command in commands {
+            runtime
+                .handle_command(RpcCommand::parse(command).unwrap(), &mut store)
+                .await
+                .unwrap();
+        }
+
+        assert!(store.iter().all(|line| {
+            let value: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            value["type"] == "response" && value["success"] == true
+        }));
+        assert!(!runtime.auto_compaction_enabled);
+        assert!(!runtime.auto_retry_enabled);
+        assert!(!runtime.settings.get_compaction_enabled());
+        assert!(!runtime.settings.get_retry_enabled());
+        assert_eq!(runtime.steering_mode, "all");
+        assert_eq!(runtime.follow_up_mode, "one-at-a-time");
+        assert_eq!(runtime.steering_queue.lock().unwrap().mode, QueueMode::All);
+        assert_eq!(
+            runtime.follow_up_queue.lock().unwrap().mode,
+            QueueMode::OneAtATime
+        );
+
+        let mut state = Vec::new();
+        runtime
+            .handle_command(
+                RpcCommand::parse(serde_json::json!({"type": "get_state"})).unwrap(),
+                &mut state,
+            )
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(state[0].trim()).unwrap();
+        assert_eq!(value["data"]["autoCompactionEnabled"], false);
+        assert_eq!(value["data"]["steeringMode"], "all");
+        assert_eq!(value["data"]["followUpMode"], "one-at-a-time");
+    }
+
+    #[tokio::test]
     async fn bash_executes_and_captures() {
         let abort = Arc::new(AtomicBool::new(false));
         let result = run_bash("echo hello-rpc", "/tmp", abort).await;

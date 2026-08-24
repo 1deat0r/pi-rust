@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **50.60% (84/166)**. Run
+- The exhaustive checker reports **51.20% (85/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -483,7 +483,13 @@ Recut of the remaining work by user impact + risk:
       text, and return real entry ids for fork messages. Covered by RPC tests.
       Runtime honoring of set_auto_compaction/retry/steering/follow-up remains
       tracked separately in #88.
-- [ ] 88. RPC runtime audit: set_auto_compaction/retry/steering/follow-up honored.
+- [x] 88. RPC runtime audit: set_auto_compaction/retry/steering/follow-up
+      honored. (unit; mock) `RpcRuntime` applies command mutations to its live
+      flags, persisted settings, queue modes, prompt configuration, and
+      `get_state` response. Evidence: `cargo test -p pi-coding-agent --offline
+      rpc_runtime_control_commands_update_settings_and_state`, the existing
+      `rpc_applies_settings_to_stream_compaction_retry_and_queues`, queue-mode
+      drain tests, and the full RPC suite.
 - [ ] 89. `pi update` parity: version check + `--models` pi.dev fetch seam;
       `PI_SKIP_VERSION_CHECK`.
 - [ ] 90. Update/tests (offline, skip-check, fetch failure paths). (mock)

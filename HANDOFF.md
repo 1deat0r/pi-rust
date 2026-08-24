@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-50.60% = 84 completed / 166 total tasks
-82 tasks remain open
+51.20% = 85 completed / 166 total tasks
+81 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -31,9 +31,9 @@ the selector PTY/resize and screen-epoch checkpoints. The one-shot
 auto-compaction, covered client criteria, selector behavior, selector
 PTY/resize lifecycle, screen-epoch redraw invalidation, edit argument
 preparation, streamed tool updates, and terminate-batch handling are
-implemented and verified locally. Only the bash harness follow-up and its
-docs are currently uncommitted; pushes are blocked because the HTTPS remote
-requires GitHub credentials.
+implemented and verified locally. The bash harness follow-up, RPC runtime
+audit test, and synchronized docs are currently uncommitted; pushes are
+blocked because the HTTPS remote requires GitHub credentials.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
 
@@ -50,7 +50,7 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`50.60% (84/166; 82 open)`. Preserve the pre-existing untracked `AGENTS.md`;
+`51.20% (85/166; 81 open)`. Preserve the pre-existing untracked `AGENTS.md`;
 all other changes in this checkpoint are intentional local work ahead of the
 remote.
 
@@ -80,6 +80,7 @@ These checks passed during the session:
 /home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline terminate_hints_require_every_parallel_tool_to_opt_in
 /home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline --test tools bash_tool_streams_partial_updates_through_agent_contract
 /home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline --test tools edit_tool_registers_prepare_arguments_before_validation
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline rpc_runtime_control_commands_update_settings_and_state
 git diff --check
 node scripts/conversion-progress.mjs
 ```
@@ -179,6 +180,16 @@ committed:
   broader malformed-call/update matrix; no additional ledger checkbox was
   claimed.
 
+The RPC runtime audit is now complete locally:
+
+- A direct test sends `set_auto_compaction`, `set_auto_retry`,
+  `set_steering_mode`, and `set_follow_up_mode`, then verifies live flags,
+  persisted settings, queue modes, and the `get_state` response. Existing
+  stream/compaction/retry/provider-setting and queue-drain tests cover the
+  downstream behavior.
+- #88 is marked complete. #89–90 and the supplemental eval/fixture work remain
+  open.
+
 ## Major parity work already present
 
 The current source includes substantial ports beyond the original baseline:
@@ -204,7 +215,7 @@ items just because a similarly named Rust module exists.
 
 ## Recommended next sequence
 
-1. Commit the bash harness follow-up, retry `git push origin main`, and
+1. Commit the bash harness/RPC audit follow-up, retry `git push origin main`, and
    report the HTTPS credential blocker if it persists.
 2. Continue with S-018/S-020 harness fixture parity, then the full
    regular/fullscreen #61/#62 swap work and broader S-056 interactive matrix.
