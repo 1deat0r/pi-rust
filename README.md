@@ -24,9 +24,9 @@ similarly named module exists.
 
 The current implementation slice completes OpenRouter image retry,
 HTTP-date-delay, and cancellation parity on top of the deferred-response
-runtime checkpoint `56ea6f3`; it is being committed and pushed with this
-documentation refresh. GitHub CLI authentication is configured for the HTTPS
-remote, so checkpoints are pushed and hash-verified immediately.
+runtime checkpoint `56ea6f3`. Implementation commit `2b92195` and its push to
+`origin/main` are verified; GitHub CLI authentication is configured for the
+HTTPS remote, so checkpoints are pushed and hash-verified immediately.
 
 The shared `AgentHarness` now exposes durable main and secondary lane views:
 lanes branch from session leaves, seed independent provider context, persist

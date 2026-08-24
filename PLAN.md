@@ -1602,6 +1602,9 @@ implementation as an unverified divergence.
 - S-007 is complete. Next provider item is S-008 constrained-sampling/
   grammar support; broader harness, extension, TUI, server/client, evaluation,
   and final-audit work remains open.
+- Checkpoint: commit `2b92195`; local `HEAD` and `origin/main` were verified
+  equal immediately after the implementation push. This documentation refresh
+  follows that push.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
