@@ -19,15 +19,17 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- The latest committed docs checkpoint is `79ab5e6` on `main`, containing the
-  partial S-021/S-022 secondary-lane implementation checkpoint `d8b589f`,
+- The latest committed ConfigSelector implementation checkpoint is `974bd1b`
+  on `main`, containing the partial S-021/S-022 secondary-lane checkpoint
+  `d8b589f`,
   after the S-026 CLI session-routing checkpoint `711a25e`,
   the startup-timing compatibility and compiled-binary self-update contracts,
   the print-path harness ownership, AgentTool harness/termination,
   schema-validator, panic-safe telemetry, install telemetry, update/version,
   and model-catalog work. GitHub authentication is configured through `gh
-  auth setup-git`, and `origin/main` matches local `HEAD` at the latest
-  documentation checkpoint `79ab5e6`.
+  auth setup-git`, and `origin/main` matched local `HEAD` at
+  `974bd1b513d985b13907c58d3296842310cd5ad8` immediately after the
+  implementation push. This documentation refresh is the follow-up commit.
 - The focused tool-contract, RPC, image/read, print-mode compaction,
   malformed-call, harness-owned print-path, and secondary-lane suites pass.
   The last full workspace gate was green before the resource-constrained

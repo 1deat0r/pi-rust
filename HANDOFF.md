@@ -59,9 +59,9 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`59.64% (99/166; 67 open)`. The latest committed documentation checkpoint is
-`79ab5e6`, synchronized with `origin/main`; the ConfigSelector parity
-implementation and its docs are the next immediate checkpoint. Preserve the pre-existing
+`59.64% (99/166; 67 open)`. The latest committed implementation checkpoint is
+`974bd1b`, synchronized with `origin/main`; this post-task documentation
+refresh follows it. Preserve the pre-existing
 untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
 provider auth guidance, startup-timing, interactive cache-notice,
@@ -99,8 +99,8 @@ pre-existing and untracked; it is not staged.
 
 ## Current ConfigSelector package/path parity checkpoint (S-034)
 
-The remaining ConfigSelector audit is complete in the working tree and is
-being committed and pushed with this documentation refresh. Project package
+The remaining ConfigSelector audit is complete. Implementation commit
+`974bd1b` was committed and pushed before this documentation refresh. Project package
 overrides now match local sources across global/project settings bases, create
 project-relative sources, preserve the upstream absent-vs-empty `autoload:
 false` filter distinction, and remove empty project override objects when
@@ -119,8 +119,9 @@ cargo fmt --all
 git diff --check
 ```
 
-S-034 is now complete. The exact local/remote commit hash is added here after
-the immediate push; `AGENTS.md` remains pre-existing and untracked.
+S-034 is now complete. The implementation push was verified at
+`974bd1b513d985b13907c58d3296842310cd5ad8`; `AGENTS.md` remains pre-existing
+and untracked.
 
 ## Current S-032 committed checkpoint
 

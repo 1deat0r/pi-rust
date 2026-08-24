@@ -547,7 +547,7 @@ Agent: pi (Claude) + 6 RLM subagents (A1/A2/B/C/D/E) in isolated worktrees; each
 - **RPC compact divergence closed**: faux registered in the runtime models facade.
 - Workspace: **1236 tests passing** (was 529); 0 warnings; clippy-clean for all new files.
 - Divergences carried as TODO comments: codex WS transport, OAuth device-code flows, DeferredHandles,
-  images retries, ConfigSelector TUI full port, several interactive slash commands pending core plumbing,
+  images retries, several interactive slash commands pending core plumbing,
   models.json runtime merge seam, AWS profile-file chain, vertex ADC scope.
 
 ### Session 12 — 2026-08-22 — SessionHandle API + per-session snapshot events (P6)
@@ -1461,9 +1461,8 @@ coverage.
 - S-034 is complete. S-033 slash-command audits, S-021/S-022 full JSONL/RPC
   harness ownership, and the remaining provider/TUI/client/server/evaluation
   audits remain open.
-- The implementation and documentation checkpoint is committed and pushed
-  immediately after this entry; the exact parity hash is recorded in the
-  handoff once the push completes.
+- Implementation commit `974bd1b` was committed and pushed immediately after
+  this entry; the documentation refresh is the follow-up checkpoint.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
@@ -1608,5 +1607,5 @@ Agent: pi (Claude) + 6 RLM subagents (A1/A2/B/C/D/E) in isolated worktrees; each
 - **RPC compact divergence closed**: faux registered in the runtime models facade.
 - Workspace: **1236 tests passing** (was 529); 0 warnings; clippy-clean for all new files.
 - Divergences carried as TODO comments: codex WS transport, OAuth device-code flows, DeferredHandles,
-  images retries, ConfigSelector TUI full port, several interactive slash commands pending core plumbing,
+  images retries, several interactive slash commands pending core plumbing,
   models.json runtime merge seam, AWS profile-file chain, vertex ADC scope.

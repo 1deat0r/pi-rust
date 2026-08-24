@@ -22,7 +22,7 @@ compaction, RPC controls, TUI components, and client/server support. Remaining
 work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
 
-The last verified local and GitHub `main` checkpoint is `79ab5e6`. GitHub CLI
+The last verified local and GitHub `main` checkpoint is `974bd1b`. GitHub CLI
 authentication is configured for the HTTPS remote, so implementation
 checkpoints are pushed and hash-verified immediately.
 
