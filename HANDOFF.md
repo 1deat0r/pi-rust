@@ -60,7 +60,7 @@ additions/renames include:
 
 Current status at pause: branch `main`, progress checker reports
 `59.64% (99/166; 67 open)`. The latest committed implementation checkpoint is
-`974bd1b`, synchronized with `origin/main`; this post-task documentation
+`514cca9`, synchronized with `origin/main`; this post-task documentation
 refresh follows it. Preserve the pre-existing
 untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
@@ -125,8 +125,8 @@ and untracked.
 
 ## Current interactive manual compaction checkpoint (partial S-033)
 
-The interactive `/compact` divergence is resolved in the working tree and is
-being committed and pushed with this documentation refresh. Automatic and
+The interactive `/compact` divergence is resolved. Implementation commit
+`514cca9` was committed and pushed before this documentation refresh. Automatic and
 manual compaction now share one helper: automatic runs observe the context
 threshold, while `/compact` forces preparation and accepts optional summary
 instructions. Successful runs persist the compaction entry, replace the live
@@ -143,7 +143,8 @@ cargo fmt --all -- --check
 git diff --check
 ```
 
-This is partial S-033. Real-terminal/fixture audits for export, import, share,
+This is partial S-033. The implementation push was verified at
+`514cca9`; real-terminal/fixture audits for export, import, share,
 trust, login/logout, new/resume, fork/clone, tree, and reload remain open.
 
 ## Current S-032 committed checkpoint

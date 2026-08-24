@@ -1489,6 +1489,8 @@ matrix open.
   `git diff --check`.
 - S-033 remains open for the real-terminal/fixture audits of export, import,
   share, trust, login/logout, new/resume, fork/clone, tree, and reload.
+- Implementation commit `514cca9` was committed and pushed immediately after
+  this entry; the documentation refresh is the follow-up checkpoint.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
