@@ -171,3 +171,29 @@ Scope: preserve the completed interactive slash-command, project-trust, deferred
   CHECK: /bin/sh -c '/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check && git diff --check && node scripts/conversion-progress.mjs && printf "clippy-cleanup-checks-passed\\n"'
   EXPECT: clippy-cleanup-checks-passed
   EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=06dd37959781/23 entries; output=Conversion progress: 62.65% (104/166; 62 open) | clippy-cleanup-checks-passed
+
+## Next slice: close S-011 Vertex ADC file and provider parity
+
+- [x] G30: Vertex ADC service-account and authorized-user files use their
+      configured token URI, scopes, and refresh credentials
+  CHECK: RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib google_vertex --quiet && printf 'S011_VERTEX_ADC_TESTS_PASS\n'
+  EXPECT: S011_VERTEX_ADC_TESTS_PASS
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=fbe3799a2a56/21 entries; output=test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 316 filtered out; finished in 0.01s | S011_VERTEX_ADC_TESTS_PASS
+
+- [x] G31: Vertex provider auth honors stored credential environment,
+      ambient API-key precedence, and explicit ADC path selection
+  CHECK: RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib google_vertex_provider --quiet && printf 'S011_VERTEX_PROVIDER_TESTS_PASS\n'
+  EXPECT: S011_VERTEX_PROVIDER_TESTS_PASS
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=fbe3799a2a56/21 entries; output=test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 330 filtered out; finished in 0.01s | S011_VERTEX_PROVIDER_TESTS_PASS
+
+- [x] G32: the Vertex implementation compiles, formats, and has no whitespace
+      errors
+  CHECK: RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTFMT=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo check -p pi-ai --offline && RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTFMT=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo fmt --all -- --check && git diff --check && printf 'S011_STATIC_CHECKS_PASS\n'
+  EXPECT: S011_STATIC_CHECKS_PASS
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=fbe3799a2a56/21 entries; output=S011_STATIC_CHECKS_PASS | Finished `dev` profile [optimized + debuginfo] target(s) in 0.07s
+
+- [x] G33: the conversion ledger and synchronized docs report the measured
+      S-011 progress
+  CHECK: node scripts/conversion-progress.mjs
+  EXPECT: Conversion progress:
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=fbe3799a2a56/21 entries; output=Conversion progress: 65.06% (108/166; 58 open)

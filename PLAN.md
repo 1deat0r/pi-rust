@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 64.46% (107/166 exhaustive ledger tasks complete).** The
+- **Conversion progress: 65.06% (108/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1944,3 +1944,32 @@ Agent: pi (Claude) + 6 RLM subagents (A1/A2/B/C/D/E) in isolated worktrees; each
 - Divergences carried as TODO comments: codex WS transport, OAuth device-code flows, DeferredHandles,
   images retries, several interactive slash commands pending core plumbing,
   models.json runtime merge seam, AWS profile-file chain, vertex ADC scope.
+
+### Session 12 — 2026-08-24 — S-011 Google Vertex ADC parity
+Agent: pi (Codex)   HEAD: S-010 pushed checkpoint → (working tree)
+
+- **Vertex ADC file auth completed (mock evidence)** in
+  `crates/pi-ai/src/api/google_vertex.rs`. ADC resolution now honors an
+  explicit `GOOGLE_APPLICATION_CREDENTIALS` path without falling back when it
+  is missing, otherwise uses the concrete `HOME` default path. Service-account
+  files use their configured `token_uri` and `scopes` for JWT exchange;
+  authorized-user files use their configured `token_uri`, client credentials,
+  refresh token, and optional scope for refresh exchange. RSA PKCS#1 conversion
+  now emits DER lengths correctly without leaking the PEM buffer. API-key
+  requests use the publisher path without requiring project/location.
+- **Vertex provider precedence aligned** in `crates/pi-ai/src/providers/all.rs`.
+  Stored keys win, ambient `GOOGLE_CLOUD_API_KEY` is next, and ADC requires a
+  present credential file plus project and location. Stored credential
+  environment overrides ambient values, and source labels distinguish stored
+  credentials from gcloud ADC.
+- **Evidence tier: mock.** `cargo test -p pi-ai --offline --lib google_vertex
+  --quiet` (18 passed) covers the file/token/request fixtures; the same command
+  with `google_vertex_provider` (4 passed) covers auth precedence. Supporting
+  `cargo check -p pi-ai --offline`, `cargo fmt --all -- --check`, and
+  `git diff --check` pass with the pinned stable toolchain. No live Google
+  credential or network test was run.
+- **Intentional scope:** metadata-server/workload-identity ADC resolution,
+  external account files, and live token exchange remain outside this
+  credential-file slice and are documented as unported.
+- The next dependency-safe action is S-012 Cloudflare AI Gateway
+  account/gateway binding and base URL/header precedence parity.

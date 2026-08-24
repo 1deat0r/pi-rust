@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **64.46% (107/166; 59 open)**. Run
+- The exhaustive checker reports **65.06% (108/166; 58 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -735,8 +735,8 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       `upstream_pi/packages/ai/src/env-api-keys.ts:167-184`,
       `upstream_pi/packages/ai/test/bedrock-credentials.test.ts:66-115`, and
       `upstream_pi/packages/ai/test/bedrock-endpoint-resolution.test.ts:96-208`.
-- [ ] S-011 Complete Google Vertex ADC file, token URI, scope, refresh, and
-      project/location precedence parity.
+- [x] S-011 Complete Google Vertex ADC file, token URI, scope, refresh, and
+      project/location precedence parity. Evidence (mock): `RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib google_vertex --quiet` (18 passed) covers explicit ADC path/default-home selection, service-account JWT exchange with the file token URI and configured scopes, authorized-user refresh-token exchange with file credentials, API-key publisher routing without project/location, and the existing ADC project requirement. `RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib google_vertex_provider --quiet` (4 passed) covers stored credential-environment precedence, ambient API-key precedence, ADC project/location requirements, and no fallback from a missing explicit ADC path. Supporting evidence: `RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo check -p pi-ai --offline`, `RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTFMT=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo fmt --all -- --check`, and `git diff --check`. Upstream parity references: `upstream_pi/packages/ai/src/providers/google-vertex.ts`, `upstream_pi/packages/ai/src/api/google-vertex.ts`, `upstream_pi/packages/ai/src/env-api-keys.ts`, and the ADC credential-file/token tests.
 - [ ] S-012 Complete Cloudflare AI Gateway account/gateway binding and all
       documented base URL/header precedence cases.
 - [ ] S-013 Complete GitHub Copilot OAuth refresh, enterprise-domain, token

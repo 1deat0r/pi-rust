@@ -10,14 +10,20 @@
 //! Auth is either an explicit Google Cloud API key (`x-goog-api-key`) or
 //! Application Default Credentials (`Authorization: Bearer <token>`).
 //!
-//! DOCUMENTED DIVERGENCE (ADC token acquisition): upstream delegates to
-//! `@google/genai` + google-auth-library, which implements the full ADC chain
-//! (metadata server, gcloud CLI, service account files). This port supports
-//! the service-account file path used by `gcloud auth application-default
-//! login`: it reads `GOOGLE_APPLICATION_CREDENTIALS`, builds a self-signed
-//! JWT (RS256 with the service account private key), and exchanges it at the
-//! token_uri for an access token. The seam is marked `TODO(adc)` below.
-//! Ambient metadata-server and workload-identity resolution are not ported.
+//! ADC file auth supports both service-account JWT exchange and authorized-user
+//! refresh-token exchange, including the file's token URI and configured
+//! scopes. Ambient metadata-server and workload-identity resolution are not
+//! ported.
+
+//! The provider facade still requires project and location for ADC. Explicit
+//! Vertex API keys use the request path selected by the adaptor without
+//! acquiring an ADC token.
+
+//! The credential-file implementation deliberately stops at the file-based
+//! ADC sources; gcloud CLI, metadata-server, and external-account discovery
+//! remain outside this adaptor's scope.
+
+use std::path::Path;
 
 use serde_json::{json, Value};
 
@@ -37,7 +43,9 @@ use super::google_shared::{resolve_google_thinking_level, ResolvedGoogleThinking
 
 const API_VERSION: &str = "v1";
 const GCP_VERTEX_CREDENTIALS_MARKER: &str = "gcp-vertex-credentials";
-const VERTEX_ADC_DEFAULT_PATH: &str = "~/.config/gcloud/application_default_credentials.json";
+pub const VERTEX_ADC_DEFAULT_PATH: &str = "~/.config/gcloud/application_default_credentials.json";
+const DEFAULT_ADC_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
+const DEFAULT_ADC_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 
 /// Options for Vertex requests (subset of upstream `GoogleVertexOptions`).
 #[derive(Clone, Default)]
@@ -86,8 +94,7 @@ pub fn resolve_project(
     project: Option<&str>,
     env: Option<&crate::types::ProviderEnv>,
 ) -> Result<String, String> {
-    let project = project
-        .map(|s| s.to_string())
+    let project = nonempty_value(project)
         .or_else(|| get_provider_env_value("GOOGLE_CLOUD_PROJECT", env))
         .or_else(|| get_provider_env_value("GCLOUD_PROJECT", env));
     project.ok_or_else(|| {
@@ -102,13 +109,18 @@ pub fn resolve_location(
     location: Option<&str>,
     env: Option<&crate::types::ProviderEnv>,
 ) -> Result<String, String> {
-    let location = location
-        .map(|s| s.to_string())
-        .or_else(|| get_provider_env_value("GOOGLE_CLOUD_LOCATION", env));
+    let location =
+        nonempty_value(location).or_else(|| get_provider_env_value("GOOGLE_CLOUD_LOCATION", env));
     location.ok_or_else(|| {
         "Vertex AI requires a location. Set GOOGLE_CLOUD_LOCATION or pass location in options."
             .to_string()
     })
+}
+
+fn nonempty_value(value: Option<&str>) -> Option<String> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
 }
 
 /// `resolveCustomBaseUrl`: a custom base URL is used unless empty or still
@@ -142,8 +154,8 @@ pub fn base_url_includes_api_version(base_url: &str) -> bool {
 fn build_request(
     model: &Model,
     options: &GoogleVertexOptions,
-    project: &str,
-    location: &str,
+    project: Option<&str>,
+    location: Option<&str>,
     api_key: Option<&str>,
     bearer_token: Option<&str>,
     api_version: &str,
@@ -154,11 +166,21 @@ fn build_request(
         _ => format!("/{api_version}"),
     };
     let base = custom_base
-        .unwrap_or_else(|| format!("https://{location}-aiplatform.googleapis.com"))
+        .unwrap_or_else(|| {
+            location
+                .map(|location| format!("https://{location}-aiplatform.googleapis.com"))
+                .unwrap_or_else(|| "https://aiplatform.googleapis.com".to_string())
+        })
         .trim_end_matches('/')
         .to_string();
+    let resource = match (project, location) {
+        (Some(project), Some(location)) => {
+            format!("/projects/{project}/locations/{location}")
+        }
+        _ => String::new(),
+    };
     let url = format!(
-        "{base}{version_segment}/projects/{project}/locations/{location}/publishers/google/models/{}:streamGenerateContent?alt=sse",
+        "{base}{version_segment}{resource}/publishers/google/models/{}:streamGenerateContent?alt=sse",
         model.id
     );
 
@@ -287,23 +309,25 @@ pub fn stream(
                     .and_then(|k| resolve_api_key(Some(k)))
             });
 
-            let project =
-                resolve_project(options.project.as_deref(), options.base.base.env.as_ref())?;
-            let location =
-                resolve_location(options.location.as_deref(), options.base.base.env.as_ref())?;
+            let (project, location, bearer) = if api_key.is_none() {
+                let project =
+                    resolve_project(options.project.as_deref(), options.base.base.env.as_ref())?;
+                let location =
+                    resolve_location(options.location.as_deref(), options.base.base.env.as_ref())?;
+                let bearer =
+                    resolve_adc_access_token(&client, options.base.base.env.as_ref()).await?;
+                (Some(project), Some(location), Some(bearer))
+            } else {
+                (None, None, None)
+            };
 
             let params = build_params(&model, &context, &to_google_options(&options))?;
 
-            let bearer = if api_key.is_none() {
-                resolve_adc_access_token(options.base.base.env.as_ref()).await
-            } else {
-                None
-            };
             let (endpoint, headers) = build_request(
                 &model,
                 &options,
-                &project,
-                &location,
+                project.as_deref(),
+                location.as_deref(),
                 api_key.as_deref(),
                 bearer.as_deref(),
                 API_VERSION,
@@ -447,48 +471,142 @@ pub fn stream_simple(
 }
 
 // ---------------------------------------------------------------------------
-// Application Default Credentials (service-account file path)
+// Application Default Credentials (file-based sources)
 // ---------------------------------------------------------------------------
 
-fn expand_home(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/") {
-        std::env::var("HOME")
-            .map(|h| format!("{h}/{rest}"))
-            .unwrap_or_else(|_| path.to_string())
-    } else {
-        path.to_string()
+#[derive(Debug, Clone)]
+struct ServiceAccountCredentials {
+    client_email: String,
+    private_key: String,
+    token_uri: String,
+    scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AuthorizedUserCredentials {
+    client_id: String,
+    client_secret: String,
+    refresh_token: String,
+    token_uri: String,
+    scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+enum AdcCredentials {
+    ServiceAccount(ServiceAccountCredentials),
+    AuthorizedUser(AuthorizedUserCredentials),
+}
+
+/// Resolve the ADC path from an explicit credentials path or the standard
+/// gcloud home. An explicit path wins even when it does not exist; callers can
+/// then report the missing file instead of silently falling back.
+pub fn resolve_adc_path(explicit_path: Option<&str>, home: Option<&str>) -> String {
+    if let Some(path) = explicit_path.filter(|path| !path.trim().is_empty()) {
+        return path.to_string();
     }
+    if let Some(home) = home.filter(|home| !home.trim().is_empty()) {
+        return format!(
+            "{}/.config/gcloud/application_default_credentials.json",
+            home.trim_end_matches('/')
+        );
+    }
+    VERTEX_ADC_DEFAULT_PATH.to_string()
 }
 
 fn find_adc_path(env: Option<&crate::types::ProviderEnv>) -> Option<String> {
-    get_provider_env_value("GOOGLE_APPLICATION_CREDENTIALS", env).or_else(|| {
-        if std::path::Path::new(&expand_home(VERTEX_ADC_DEFAULT_PATH)).exists() {
-            Some(expand_home(VERTEX_ADC_DEFAULT_PATH))
-        } else {
-            None
-        }
-    })
+    let explicit_path = get_provider_env_value("GOOGLE_APPLICATION_CREDENTIALS", env);
+    let home = get_provider_env_value("HOME", env);
+    let path = resolve_adc_path(explicit_path.as_deref(), home.as_deref());
+    let path = expand_home(&path, home.as_deref());
+    Path::new(&path).exists().then_some(path)
 }
 
-fn read_service_account(path: &str) -> Result<(String, String, String), String> {
+fn expand_home(path: &str, home: Option<&str>) -> String {
+    path.strip_prefix("~/")
+        .and_then(|rest| {
+            home.map(str::to_string)
+                .or_else(|| std::env::var("HOME").ok())
+                .map(|home| format!("{home}/{rest}"))
+        })
+        .unwrap_or_else(|| path.to_string())
+}
+
+fn required_string(value: &Value, field: &str) -> Result<String, String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("ADC file missing {field}"))
+}
+
+fn token_uri(value: &Value) -> String {
+    value
+        .get("token_uri")
+        .and_then(Value::as_str)
+        .filter(|uri| !uri.trim().is_empty())
+        .unwrap_or(DEFAULT_ADC_TOKEN_URI)
+        .to_string()
+}
+
+fn configured_scopes(value: &Value, default: &[&str]) -> Vec<String> {
+    let mut scopes = value
+        .get("scopes")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .flat_map(str::split_whitespace)
+                .filter(|scope| !scope.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if scopes.is_empty() {
+        scopes = value
+            .get("scope")
+            .and_then(Value::as_str)
+            .map(|scope| {
+                scope
+                    .split_whitespace()
+                    .filter(|scope| !scope.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+    }
+    if scopes.is_empty() {
+        scopes.extend(default.iter().map(|scope| (*scope).to_string()));
+    }
+    scopes
+}
+
+fn read_adc_credentials(path: &str) -> Result<AdcCredentials, String> {
     let bytes =
         std::fs::read(path).map_err(|e| format!("Failed to read ADC credentials file: {e}"))?;
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|e| format!("Malformed ADC credentials file: {e}"))?;
-    let client_email = value
-        .get("client_email")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "ADC file missing client_email".to_string())?;
-    let private_key = value
-        .get("private_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "ADC file missing private_key".to_string())?;
-    let token_uri = value
-        .get("token_uri")
-        .and_then(|v| v.as_str())
-        .unwrap_or("https://oauth2.googleapis.com/token")
-        .to_string();
-    Ok((client_email.to_string(), private_key.to_string(), token_uri))
+    match value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("service_account")
+    {
+        "service_account" => Ok(AdcCredentials::ServiceAccount(ServiceAccountCredentials {
+            client_email: required_string(&value, "client_email")?,
+            private_key: required_string(&value, "private_key")?,
+            token_uri: token_uri(&value),
+            scopes: configured_scopes(&value, &[DEFAULT_ADC_SCOPE]),
+        })),
+        "authorized_user" => Ok(AdcCredentials::AuthorizedUser(AuthorizedUserCredentials {
+            client_id: required_string(&value, "client_id")?,
+            client_secret: required_string(&value, "client_secret")?,
+            refresh_token: required_string(&value, "refresh_token")?,
+            token_uri: token_uri(&value),
+            scopes: configured_scopes(&value, &[]),
+        })),
+        kind => Err(format!("Unsupported ADC credential type: {kind}")),
+    }
 }
 
 /// Build a base64url-encoded self-signed JWT for a service account
@@ -499,16 +617,37 @@ pub fn build_self_signed_jwt(
     token_uri: &str,
     now_secs: u64,
 ) -> Result<String, String> {
+    build_self_signed_jwt_with_scopes(
+        client_email,
+        private_key_pem,
+        token_uri,
+        &[DEFAULT_ADC_SCOPE.to_string()],
+        now_secs,
+    )
+}
+
+fn build_self_signed_jwt_with_scopes(
+    client_email: &str,
+    private_key_pem: &str,
+    token_uri: &str,
+    scopes: &[String],
+    now_secs: u64,
+) -> Result<String, String> {
     use base64::Engine;
     let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     let header = json!({ "alg": "RS256", "typ": "JWT" });
+    let scope = if scopes.is_empty() {
+        DEFAULT_ADC_SCOPE.to_string()
+    } else {
+        scopes.join(" ")
+    };
     let claims = json!({
         "iss": client_email,
-        "scope": "https://www.googleapis.com/auth/cloud-platform",
+        "scope": scope,
         "aud": token_uri,
         "iat": now_secs,
-        "exp": now_secs + 3600,
+        "exp": now_secs.saturating_add(3600),
     });
     let header_b64 = engine.encode(serde_json::to_vec(&header).unwrap());
     let claims_b64 = engine.encode(serde_json::to_vec(&claims).unwrap());
@@ -530,28 +669,22 @@ pub fn build_self_signed_jwt(
 fn decode_rsa_key(pem: &str) -> Result<ring::signature::RsaKeyPair, String> {
     let pem_trimmed = pem.trim();
     if let Some(der) = pem_to_der(pem_trimmed, "PRIVATE KEY") {
-        return ring::signature::RsaKeyPair::from_pkcs8(der)
+        return ring::signature::RsaKeyPair::from_pkcs8(&der)
             .map_err(|e| format!("Failed to parse PKCS#8 private key: {e}"));
     }
     // PKCS#1 "RSA PRIVATE KEY": wrap in a minimal PKCS#8 structure.
     if let Some(der) = pem_to_der(pem_trimmed, "RSA PRIVATE KEY") {
-        // PKCS#8 = SEQUENCE { version: 0, AlgorithmIdentifier, OCTET STRING der }
-        let mut pkcs8 = vec![0x30];
         let alg_id: &[u8] = &[
             0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05,
             0x00,
         ];
-        let inner = der.len() + alg_id.len() + 2 + 2; // octet string header
-        let len = inner + 1; // version byte content byte
-        let content = {
-            let mut v = vec![0x00]; // version 0
-            v.extend_from_slice(alg_id);
-            v.push(0x04);
-            v.push(der.len() as u8);
-            v.extend_from_slice(der);
-            v
-        };
-        pkcs8.push(len as u8);
+        let mut content = vec![0x02, 0x01, 0x00];
+        content.extend_from_slice(alg_id);
+        content.push(0x04);
+        content.extend_from_slice(&der_length(der.len()));
+        content.extend_from_slice(&der);
+        let mut pkcs8 = vec![0x30];
+        pkcs8.extend_from_slice(&der_length(content.len()));
         pkcs8.extend_from_slice(&content);
         return ring::signature::RsaKeyPair::from_pkcs8(&pkcs8)
             .map_err(|e| format!("Failed to parse PKCS#1 private key: {e}"));
@@ -559,57 +692,173 @@ fn decode_rsa_key(pem: &str) -> Result<ring::signature::RsaKeyPair, String> {
     Err("ADC private key is not a PEM PRIVATE KEY or RSA PRIVATE KEY".to_string())
 }
 
-fn pem_to_der<'a>(pem: &'a str, label: &str) -> Option<&'a [u8]> {
-    let lines: Vec<&str> = pem.lines().map(|l| l.trim()).collect();
+fn der_length(length: usize) -> Vec<u8> {
+    if length < 128 {
+        return vec![length as u8];
+    }
+    let bytes = length.to_be_bytes();
+    let first = bytes
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(bytes.len() - 1);
+    let value = &bytes[first..];
+    let mut encoded = vec![0x80 | value.len() as u8];
+    encoded.extend_from_slice(value);
+    encoded
+}
+
+fn pem_to_der(pem: &str, label: &str) -> Option<Vec<u8>> {
+    let lines: Vec<&str> = pem.lines().map(|line| line.trim()).collect();
     let start = format!("-----BEGIN {label}-----");
     let end = format!("-----END {label}-----");
-    let start_idx = lines.iter().position(|l| *l == start)?;
-    let end_idx = lines[start_idx + 1..].iter().position(|l| *l == end)? + start_idx + 1;
+    let start_idx = lines.iter().position(|line| *line == start)?;
+    let end_idx = lines[start_idx + 1..]
+        .iter()
+        .position(|line| *line == end)?
+        + start_idx
+        + 1;
     use base64::Engine;
     let b64: String = lines[start_idx + 1..end_idx].concat();
-    base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .ok()
-        .map(|v| Box::leak(v.into_boxed_slice()) as &[u8])
+    base64::engine::general_purpose::STANDARD.decode(b64).ok()
 }
 
-/// Resolve an ADC access token via the self-signed JWT exchange (upstream's
-/// google-auth-library does this internally). `TODO(adc)`: only the
-/// service-account file path is supported.
-async fn resolve_adc_access_token(env: Option<&crate::types::ProviderEnv>) -> Option<String> {
-    let path = find_adc_path(env)?;
-    let (client_email, private_key, token_uri) = read_service_account(&path).ok()?;
-    let jwt = build_self_signed_jwt(
-        &client_email,
-        &private_key,
-        &token_uri,
-        crate::types::now_ms() / 1000,
-    )
-    .ok()?;
-    exchange_jwt_for_token(&token_uri, &jwt).await
+fn token_error(value: &Value) -> String {
+    value
+        .get("error_description")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("error").and_then(Value::as_str))
+        .unwrap_or("token endpoint returned an error")
+        .to_string()
 }
 
-async fn exchange_jwt_for_token(token_uri: &str, jwt: &str) -> Option<String> {
-    let client = reqwest::Client::new();
+async fn post_token(
+    client: &reqwest::Client,
+    token_uri: &str,
+    form: &[(&str, String)],
+) -> Result<String, String> {
     let response = client
         .post(token_uri)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(format!(
-            "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion={jwt}"
-        ))
+        .form(form)
         .send()
         .await
-        .ok()?;
-    let body: Value = response.json().await.ok()?;
-    body.get("access_token")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map_err(|e| format!("ADC token request failed: {e}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("ADC token response failed: {e}"))?;
+    let value: Value =
+        serde_json::from_str(&body).map_err(|e| format!("Malformed ADC token response: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "ADC token exchange failed ({}): {}",
+            status.as_u16(),
+            token_error(&value)
+        ));
+    }
+    value
+        .get("access_token")
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "ADC token response missing access_token".to_string())
+}
+
+async fn exchange_jwt_for_token(
+    client: &reqwest::Client,
+    token_uri: &str,
+    jwt: &str,
+) -> Result<String, String> {
+    post_token(
+        client,
+        token_uri,
+        &[
+            (
+                "grant_type",
+                "urn:ietf:params:oauth:grant-type:jwt-bearer".to_string(),
+            ),
+            ("assertion", jwt.to_string()),
+        ],
+    )
+    .await
+}
+
+async fn refresh_authorized_user(
+    client: &reqwest::Client,
+    credentials: &AuthorizedUserCredentials,
+) -> Result<String, String> {
+    let mut form = vec![
+        ("grant_type", "refresh_token".to_string()),
+        ("client_id", credentials.client_id.clone()),
+        ("client_secret", credentials.client_secret.clone()),
+        ("refresh_token", credentials.refresh_token.clone()),
+    ];
+    if !credentials.scopes.is_empty() {
+        form.push(("scope", credentials.scopes.join(" ")));
+    }
+    post_token(client, &credentials.token_uri, &form).await
+}
+
+/// Resolve an ADC access token from the selected credentials file.
+async fn resolve_adc_access_token(
+    client: &reqwest::Client,
+    env: Option<&crate::types::ProviderEnv>,
+) -> Result<String, String> {
+    let path = find_adc_path(env)
+        .ok_or_else(|| "Vertex AI ADC credentials file was not found".to_string())?;
+    match read_adc_credentials(&path)? {
+        AdcCredentials::ServiceAccount(credentials) => {
+            let jwt = build_self_signed_jwt_with_scopes(
+                &credentials.client_email,
+                &credentials.private_key,
+                &credentials.token_uri,
+                &credentials.scopes,
+                crate::types::now_ms() / 1000,
+            )?;
+            exchange_jwt_for_token(client, &credentials.token_uri, &jwt).await
+        }
+        AdcCredentials::AuthorizedUser(credentials) => {
+            refresh_authorized_user(client, &credentials).await
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
+    const KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCz9YCbyrPvK7GM
+jEN6TpELtSTg4HscjCCIsCxIgSdN7MZ8dn8wpxhM0pnSRtEDi+HRtKxk+togt1ln
+PKPLNmuKK5yFGeTHG5fN9mGnOFHow3YPNMwiOZ4yrP+0rBLNgT03ZuWt2t8b8wBs
+T/Rznk31eZpVxfp5OUXJZmrHMwZ8hvEeStgudxMAEoKEXJoO7XrhsEd2pWXn6tsw
+GCgDn2DHbfCnr4qZE62UMFRK4b145W01V8VnPIRzOxGdXJFsGPt3xuvAQnwk5L4G
+t8RxMSLv+vVoWtzhsc1cbroe9L90+LJiQP2K7y/UvT6D1YO+7Dv5LMpbqwglStSO
+QwJYu0zZAgMBAAECggEAED8HI8lqchqbNkmJY/bI0GpDkIujgaHC5CQnc0o5nqbU
+CnN2KxHCt1jB60JaZzwPIGvzrlAZNh/nUdMfJF7e2YPzZu6+AR2kGEN4cGy8tEtF
+Er1c+nACMKf+k7R/JA9ZU/GVpZrfTnojHSQguPlfJ1yZisnLQXtiqfp1hFM+cCpl
+n3Ac4BCfujn0TtBYBMIjT6VI4jz4NsWhdcVlWtgyRws5NMIgedJsSVZt/WKSGeEt
+N8ziBwRfTjMT6t+uJj0KDOF09yrzpf9nTvgpLHvl+iIpoL0wUynOtW38lloe8eIr
+cMLbBUPyVeyVTQ4D26qFYnm1Ph+3kIC5ddloo8g0yQKBgQDp4Vd85QfdwZk2RWtU
+joyZVrHB9d2U+yPB8m7i36KdYqY3DdNg9o2RWNTPRkRXiduti8MulsNcPESa5Qoa
+FWAA07KzWOxrWLBdYnjPnt4Si+V4s6AtpkSmIiBYp3igUnZTiOzJgzLh+pMoVZws
+nKTVZiT+cSvpY258sQkdlf/rNQKBgQDE+qGFjYSXfgyrgyCoeXhlBk5k/Ew4hYuH
+bd5xJ/zNHmdEmlfbqqmsLQw8qLAGqG7Xkcc4mc61DTagWMI6gZ2ORxKEkrH0dXLH
+j94dUJ+ABezIEBlrOE4oGsE3KCR3v8lWyESoVOKiy2RAeElahc1sdYRhM2J30Q6l
+Ev5KkF+rlQKBgQCUSgVfshO/ve135KH91fg9jSNd2Jcqy+VLJny6KpN/eLnstD5u
+/0SZgJpF5caVPlpj+fbCRmMNy0SwdUJncWAShieK4XndQjlorHPvKEqjtcHEOxf3
+ebGTKJYbv+uSs1ZE9s8zoZUUhPzjGQzRmGxGxeH01irCawH124XtFVtTdQKBgEm/
+sKPJFWCG0AWTBbIuMHZagxVqJLtwvInLB+KD3zGI9Y8I3mYfIoGVKCS535XOkBlj
+uhwl8e91cANe1/GBv9SaJYO/TKNDKeMvqTB+lAkhrsJEzM+I+DIpujeFbwnqo147
+gwEnLudWkUVWA9jBieTWpuahj3derUX+s3iFT1x1AoGBAL9A2z8nCfpTYV/0Ls93
+lwX3VeJCSr71H0kRXJP41wSs3BLaekUN46psQ5gvkLfGjbnAKnogLlvaiWYlfWNm
+PMgLxH//0PXY7k2j5xPHlO+UQVcZ5waO2ySGdBfljTeFtWi1UryhV6o8N22ICPzY
+pxb9Ao9R6mqLWjzEaSeYzN4o
+-----END PRIVATE KEY-----
+"#;
     fn vertex_model() -> Model {
         let mut m = Model::new(
             "gemini-3-flash-preview",
@@ -620,6 +869,180 @@ mod tests {
         m.reasoning = true;
         m.base_url = "https://{location}-aiplatform.googleapis.com".to_string();
         m
+    }
+
+    async fn token_fixture(body: &str) -> (String, tokio::task::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let response_body = body.to_string();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0u8; 16 * 1024];
+            let size = socket.read(&mut request).await.unwrap();
+            request.truncate(size);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        (format!("http://{address}/token"), handle)
+    }
+
+    fn write_adc_fixture(label: &str, value: Value) -> String {
+        let path = std::env::temp_dir().join(format!(
+            "pi-ai-vertex-{label}-{}-{}.json",
+            std::process::id(),
+            crate::types::now_ms()
+        ));
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn parse_form(request: &str) -> std::collections::BTreeMap<String, String> {
+        let body = request.split("\r\n\r\n").nth(1).unwrap_or_default();
+        url::form_urlencoded::parse(body.as_bytes())
+            .into_owned()
+            .collect()
+    }
+
+    #[test]
+    fn adc_path_explicit_value_wins_over_default_home() {
+        assert_eq!(
+            resolve_adc_path(Some("/tmp/missing-adc.json"), Some("/home/test")),
+            "/tmp/missing-adc.json"
+        );
+        assert_eq!(
+            resolve_adc_path(None, Some("/home/test")),
+            "/home/test/.config/gcloud/application_default_credentials.json"
+        );
+    }
+
+    #[test]
+    fn api_key_request_does_not_require_project_or_location() {
+        let options = GoogleVertexOptions::default();
+        let (url, headers) = build_request(
+            &vertex_model(),
+            &options,
+            None,
+            None,
+            Some("key"),
+            None,
+            API_VERSION,
+        );
+        assert_eq!(
+            url,
+            "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-3-flash-preview:streamGenerateContent?alt=sse"
+        );
+        assert!(headers
+            .iter()
+            .any(|(name, value)| name == "x-goog-api-key" && value == "key"));
+    }
+
+    #[tokio::test]
+    async fn stream_api_key_uses_publisher_path_without_project_or_location() {
+        let body = r#"data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}
+
+"#;
+        let (base_url, server) = token_fixture(body).await;
+        let mut model = vertex_model();
+        model.base_url = base_url;
+        let stream = stream(
+            &model,
+            &Context::default(),
+            reqwest::Client::new(),
+            Some("real-api-key"),
+            &GoogleVertexOptions::default(),
+        );
+        let (_, message) = stream.collect().await;
+        let request = server.await.unwrap();
+        assert!(request.starts_with("POST /token/v1/publishers/google/models/"));
+        assert!(request.contains("x-goog-api-key: real-api-key"));
+        assert!(!message
+            .error_message()
+            .unwrap_or("")
+            .contains("Vertex AI requires a project ID"));
+    }
+
+    #[tokio::test]
+    async fn adc_service_account_uses_token_uri_and_configured_scopes() {
+        let (token_uri, server) = token_fixture(r#"{"access_token":"service-token"}"#).await;
+        let path = write_adc_fixture(
+            "service-account",
+            json!({
+                "type": "service_account",
+                "client_email": "sa@example.iam.gserviceaccount.com",
+                "private_key": KEY,
+                "token_uri": token_uri,
+                "scopes": ["scope.one", "scope.two"]
+            }),
+        );
+        let mut env = crate::types::ProviderEnv::new();
+        env.insert("GOOGLE_APPLICATION_CREDENTIALS".to_string(), path.clone());
+        let token = resolve_adc_access_token(&reqwest::Client::new(), Some(&env))
+            .await
+            .unwrap();
+        assert_eq!(token, "service-token");
+        let request = server.await.unwrap();
+        let form = parse_form(&request);
+        assert_eq!(
+            form.get("grant_type").map(String::as_str),
+            Some("urn:ietf:params:oauth:grant-type:jwt-bearer")
+        );
+        let assertion = form.get("assertion").unwrap();
+        let claims: Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(assertion.split('.').nth(1).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(claims["scope"], json!("scope.one scope.two"));
+        assert_eq!(claims["aud"], json!(token_uri));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn adc_authorized_user_refreshes_with_file_credentials() {
+        let (token_uri, server) = token_fixture(r#"{"access_token":"user-token"}"#).await;
+        let path = write_adc_fixture(
+            "authorized-user",
+            json!({
+                "type": "authorized_user",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+                "refresh_token": "refresh-token",
+                "token_uri": token_uri,
+                "scope": "scope.user.one scope.user.two"
+            }),
+        );
+        let mut env = crate::types::ProviderEnv::new();
+        env.insert("GOOGLE_APPLICATION_CREDENTIALS".to_string(), path.clone());
+        let token = resolve_adc_access_token(&reqwest::Client::new(), Some(&env))
+            .await
+            .unwrap();
+        assert_eq!(token, "user-token");
+        let request = server.await.unwrap();
+        let form = parse_form(&request);
+        assert_eq!(
+            form.get("grant_type").map(String::as_str),
+            Some("refresh_token")
+        );
+        assert_eq!(form.get("client_id").map(String::as_str), Some("client-id"));
+        assert_eq!(
+            form.get("client_secret").map(String::as_str),
+            Some("client-secret")
+        );
+        assert_eq!(
+            form.get("refresh_token").map(String::as_str),
+            Some("refresh-token")
+        );
+        assert_eq!(
+            form.get("scope").map(String::as_str),
+            Some("scope.user.one scope.user.two")
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -674,8 +1097,8 @@ mod tests {
         let (url, headers) = build_request(
             &vertex_model(),
             &options,
-            "test-project",
-            "us-central1",
+            Some("test-project"),
+            Some("us-central1"),
             Some("key"),
             None,
             API_VERSION,
@@ -699,8 +1122,8 @@ mod tests {
         let (url, _) = build_request(
             &model,
             &options,
-            "test-project",
-            "us-central1",
+            Some("test-project"),
+            Some("us-central1"),
             Some("key"),
             None,
             API_VERSION,
@@ -721,8 +1144,15 @@ mod tests {
             h.insert("User-Agent".to_string(), Some("custom-agent".to_string()));
             h
         });
-        let (_, headers) =
-            build_request(&vertex_model(), &options, "p", "l", None, None, API_VERSION);
+        let (_, headers) = build_request(
+            &vertex_model(),
+            &options,
+            Some("p"),
+            Some("l"),
+            None,
+            None,
+            API_VERSION,
+        );
         let ua = headers
             .iter()
             .find(|(k, _)| k == "User-Agent")
@@ -757,35 +1187,6 @@ mod tests {
 
     #[test]
     fn jwt_signing_produces_three_parts() {
-        const KEY: &str = r#"-----BEGIN PRIVATE KEY-----
-MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCz9YCbyrPvK7GM
-jEN6TpELtSTg4HscjCCIsCxIgSdN7MZ8dn8wpxhM0pnSRtEDi+HRtKxk+togt1ln
-PKPLNmuKK5yFGeTHG5fN9mGnOFHow3YPNMwiOZ4yrP+0rBLNgT03ZuWt2t8b8wBs
-T/Rznk31eZpVxfp5OUXJZmrHMwZ8hvEeStgudxMAEoKEXJoO7XrhsEd2pWXn6tsw
-GCgDn2DHbfCnr4qZE62UMFRK4b145W01V8VnPIRzOxGdXJFsGPt3xuvAQnwk5L4G
-t8RxMSLv+vVoWtzhsc1cbroe9L90+LJiQP2K7y/UvT6D1YO+7Dv5LMpbqwglStSO
-QwJYu0zZAgMBAAECggEAED8HI8lqchqbNkmJY/bI0GpDkIujgaHC5CQnc0o5nqbU
-CnN2KxHCt1jB60JaZzwPIGvzrlAZNh/nUdMfJF7e2YPzZu6+AR2kGEN4cGy8tEtF
-Er1c+nACMKf+k7R/JA9ZU/GVpZrfTnojHSQguPlfJ1yZisnLQXtiqfp1hFM+cCpl
-n3Ac4BCfujn0TtBYBMIjT6VI4jz4NsWhdcVlWtgyRws5NMIgedJsSVZt/WKSGeEt
-N8ziBwRfTjMT6t+uJj0KDOF09yrzpf9nTvgpLHvl+iIpoL0wUynOtW38lloe8eIr
-cMLbBUPyVeyVTQ4D26qFYnm1Ph+3kIC5ddloo8g0yQKBgQDp4Vd85QfdwZk2RWtU
-joyZVrHB9d2U+yPB8m7i36KdYqY3DdNg9o2RWNTPRkRXiduti8MulsNcPESa5Qoa
-FWAA07KzWOxrWLBdYnjPnt4Si+V4s6AtpkSmIiBYp3igUnZTiOzJgzLh+pMoVZws
-nKTVZiT+cSvpY258sQkdlf/rNQKBgQDE+qGFjYSXfgyrgyCoeXhlBk5k/Ew4hYuH
-bd5xJ/zNHmdEmlfbqqmsLQw8qLAGqG7Xkcc4mc61DTagWMI6gZ2ORxKEkrH0dXLH
-j94dUJ+ABezIEBlrOE4oGsE3KCR3v8lWyESoVOKiy2RAeElahc1sdYRhM2J30Q6l
-Ev5KkF+rlQKBgQCUSgVfshO/ve135KH91fg9jSNd2Jcqy+VLJny6KpN/eLnstD5u
-/0SZgJpF5caVPlpj+fbCRmMNy0SwdUJncWAShieK4XndQjlorHPvKEqjtcHEOxf3
-ebGTKJYbv+uSs1ZE9s8zoZUUhPzjGQzRmGxGxeH01irCawH124XtFVtTdQKBgEm/
-sKPJFWCG0AWTBbIuMHZagxVqJLtwvInLB+KD3zGI9Y8I3mYfIoGVKCS535XOkBlj
-uhwl8e91cANe1/GBv9SaJYO/TKNDKeMvqTB+lAkhrsJEzM+I+DIpujeFbwnqo147
-gwEnLudWkUVWA9jBieTWpuahj3derUX+s3iFT1x1AoGBAL9A2z8nCfpTYV/0Ls93
-lwX3VeJCSr71H0kRXJP41wSs3BLaekUN46psQ5gvkLfGjbnAKnogLlvaiWYlfWNm
-PMgLxH//0PXY7k2j5xPHlO+UQVcZ5waO2ySGdBfljTeFtWi1UryhV6o8N22ICPzY
-pxb9Ao9R6mqLWjzEaSeYzN4o
------END PRIVATE KEY-----
-"#;
         let jwt = build_self_signed_jwt(
             "sa@example.iam.gserviceaccount.com",
             KEY,

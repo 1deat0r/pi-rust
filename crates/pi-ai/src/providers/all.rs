@@ -812,9 +812,9 @@ pub fn openai_codex_provider() -> Provider {
     )
 }
 
-/// Vertex auth: explicit Google Cloud API key or ADC (project/location env
-/// vars are read by the adaptor itself). A stored key wins; otherwise any
-/// ambient Google Cloud credential file makes the provider available.
+/// Vertex auth: explicit Google Cloud API key or file-based ADC. ADC is only
+/// available when its credentials file, project, and location are present;
+/// stored credential environment overrides ambient values.
 pub fn google_vertex_provider() -> Provider {
     create_provider(CreateProviderOptions {
         id: "google-vertex".to_string(),
@@ -831,6 +831,45 @@ pub fn google_vertex_provider() -> Provider {
     })
 }
 
+fn vertex_env_value(
+    ctx: &crate::auth::AuthContext,
+    credential_env: Option<&crate::types::ProviderEnv>,
+    name: &str,
+) -> Option<String> {
+    credential_env
+        .and_then(|env| env.get(name))
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| ctx.env(name).filter(|value| !value.trim().is_empty()))
+}
+
+fn vertex_adc_path(
+    ctx: &crate::auth::AuthContext,
+    credential_env: Option<&crate::types::ProviderEnv>,
+) -> String {
+    let explicit = vertex_env_value(ctx, credential_env, "GOOGLE_APPLICATION_CREDENTIALS");
+    let home = vertex_env_value(ctx, credential_env, "HOME");
+    crate::api::google_vertex::resolve_adc_path(explicit.as_deref(), home.as_deref())
+}
+
+fn vertex_has_adc(
+    ctx: &crate::auth::AuthContext,
+    credential_env: Option<&crate::types::ProviderEnv>,
+) -> bool {
+    ctx.file_exists(&vertex_adc_path(ctx, credential_env))
+}
+
+fn vertex_is_configured_adc(
+    ctx: &crate::auth::AuthContext,
+    credential_env: Option<&crate::types::ProviderEnv>,
+) -> bool {
+    vertex_has_adc(ctx, credential_env)
+        && vertex_env_value(ctx, credential_env, "GOOGLE_CLOUD_PROJECT")
+            .or_else(|| vertex_env_value(ctx, credential_env, "GCLOUD_PROJECT"))
+            .is_some()
+        && vertex_env_value(ctx, credential_env, "GOOGLE_CLOUD_LOCATION").is_some()
+}
+
 fn vertex_auth() -> Arc<dyn crate::auth::ApiKeyAuth> {
     struct VertexAuth;
     impl crate::auth::ApiKeyAuth for VertexAuth {
@@ -842,26 +881,33 @@ fn vertex_auth() -> Arc<dyn crate::auth::ApiKeyAuth> {
             ctx: &crate::auth::AuthContext,
             credential: Option<&crate::auth::ApiKeyCredential>,
         ) -> Option<crate::auth::AuthCheck> {
-            if credential.map(|c| c.key.is_some()).unwrap_or(false) {
+            if credential
+                .and_then(|cred| cred.key.as_deref())
+                .is_some_and(|key| !key.trim().is_empty())
+            {
                 return Some(crate::auth::AuthCheck {
                     source: Some("stored credential".to_string()),
                     auth_type: "api_key",
                 });
             }
-            let env = |name: &str| ctx.env(name).filter(|v| !v.is_empty());
-            let has_adc = env("GOOGLE_APPLICATION_CREDENTIALS").is_some()
-                || ctx
-                    .env("HOME")
-                    .map(|h| {
-                        std::path::Path::new(&format!(
-                            "{h}/.config/gcloud/application_default_credentials.json"
-                        ))
-                        .exists()
-                    })
-                    .unwrap_or(false);
-            if env("GOOGLE_CLOUD_API_KEY").is_some() || has_adc {
+            if ctx
+                .env("GOOGLE_CLOUD_API_KEY")
+                .filter(|key| !key.trim().is_empty())
+                .is_some()
+            {
                 return Some(crate::auth::AuthCheck {
-                    source: Some("Google Cloud credentials".to_string()),
+                    source: Some("GOOGLE_CLOUD_API_KEY".to_string()),
+                    auth_type: "api_key",
+                });
+            }
+            let credential_env = credential.and_then(|cred| cred.env.as_ref());
+            if vertex_is_configured_adc(ctx, credential_env) {
+                return Some(crate::auth::AuthCheck {
+                    source: Some(if credential.is_some() {
+                        "stored credential".to_string()
+                    } else {
+                        "gcloud application default credentials".to_string()
+                    }),
                     auth_type: "api_key",
                 });
             }
@@ -873,7 +919,11 @@ fn vertex_auth() -> Arc<dyn crate::auth::ApiKeyAuth> {
             credential: Option<&crate::auth::ApiKeyCredential>,
         ) -> Option<crate::auth::AuthResult> {
             if let Some(cred) = credential {
-                if cred.key.is_some() {
+                if cred
+                    .key
+                    .as_deref()
+                    .is_some_and(|key| !key.trim().is_empty())
+                {
                     return Some(crate::auth::AuthResult {
                         auth: crate::auth::ModelAuth {
                             api_key: cred.key.clone(),
@@ -885,8 +935,10 @@ fn vertex_auth() -> Arc<dyn crate::auth::ApiKeyAuth> {
                     });
                 }
             }
-            let env = |name: &str| ctx.env(name).filter(|v| !v.is_empty());
-            if let Some(key) = env("GOOGLE_CLOUD_API_KEY") {
+            if let Some(key) = ctx
+                .env("GOOGLE_CLOUD_API_KEY")
+                .filter(|key| !key.trim().is_empty())
+            {
                 return Some(crate::auth::AuthResult {
                     auth: crate::auth::ModelAuth {
                         api_key: Some(key),
@@ -897,23 +949,16 @@ fn vertex_auth() -> Arc<dyn crate::auth::ApiKeyAuth> {
                     source: Some("GOOGLE_CLOUD_API_KEY".to_string()),
                 });
             }
-            // ADC path: no api key; the adaptor resolves the token + project
-            // from the environment.
-            if env("GOOGLE_APPLICATION_CREDENTIALS").is_some()
-                || ctx
-                    .env("HOME")
-                    .map(|h| {
-                        std::path::Path::new(&format!(
-                            "{h}/.config/gcloud/application_default_credentials.json"
-                        ))
-                        .exists()
-                    })
-                    .unwrap_or(false)
-            {
+            let credential_env = credential.and_then(|cred| cred.env.as_ref());
+            if vertex_is_configured_adc(ctx, credential_env) {
                 return Some(crate::auth::AuthResult {
                     auth: crate::auth::ModelAuth::default(),
-                    env: None,
-                    source: Some("ADC".to_string()),
+                    env: credential.and_then(|cred| cred.env.clone()),
+                    source: Some(if credential.is_some() {
+                        "stored credential".to_string()
+                    } else {
+                        "gcloud application default credentials".to_string()
+                    }),
                 });
             }
             None
@@ -1346,6 +1391,115 @@ mod tests {
             );
             assert!(!err.contains("no API implementation"), "got: {err}");
         });
+    }
+
+    #[test]
+    fn google_vertex_provider_auth_uses_stored_adc_environment() {
+        let explicit_path = "/tmp/pi-vertex-stored-adc.json".to_string();
+        let stored_env = std::collections::BTreeMap::from([
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
+                explicit_path.clone(),
+            ),
+            (
+                "GOOGLE_CLOUD_PROJECT".to_string(),
+                "stored-project".to_string(),
+            ),
+            (
+                "GOOGLE_CLOUD_LOCATION".to_string(),
+                "stored-location".to_string(),
+            ),
+        ]);
+        let ambient_env = std::collections::BTreeMap::from([
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
+                "/tmp/ambient-adc.json".to_string(),
+            ),
+            (
+                "GOOGLE_CLOUD_PROJECT".to_string(),
+                "ambient-project".to_string(),
+            ),
+            (
+                "GOOGLE_CLOUD_LOCATION".to_string(),
+                "ambient-location".to_string(),
+            ),
+        ]);
+        let expected_path = explicit_path.clone();
+        let ctx = crate::auth::AuthContext {
+            env: Arc::new(move |name| ambient_env.get(name).cloned()),
+            file_exists: Arc::new(move |path| path == expected_path),
+        };
+        let credential = crate::auth::ApiKeyCredential {
+            key: None,
+            env: Some(stored_env.clone()),
+        };
+        let auth = google_vertex_provider().auth.api_key.unwrap();
+        let check = auth
+            .check(&ctx, Some(&credential))
+            .expect("stored ADC should be detected");
+        assert_eq!(check.source.as_deref(), Some("stored credential"));
+        let resolved = auth
+            .resolve(&ctx, Some(&credential))
+            .expect("stored ADC should resolve");
+        assert_eq!(resolved.source.as_deref(), Some("stored credential"));
+        assert_eq!(resolved.env, Some(stored_env));
+        assert!(resolved.auth.api_key.is_none());
+    }
+
+    #[test]
+    fn google_vertex_provider_auth_requires_adc_project_and_location() {
+        let env = std::collections::BTreeMap::from([
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
+                "/tmp/pi-vertex-adc.json".to_string(),
+            ),
+            ("GOOGLE_CLOUD_PROJECT".to_string(), "project".to_string()),
+        ]);
+        let ctx = crate::auth::AuthContext {
+            env: Arc::new(move |name| env.get(name).cloned()),
+            file_exists: Arc::new(|path| path == "/tmp/pi-vertex-adc.json"),
+        };
+        let auth = google_vertex_provider().auth.api_key.unwrap();
+        assert!(auth.check(&ctx, None).is_none());
+    }
+
+    #[test]
+    fn google_vertex_provider_auth_prefers_ambient_api_key() {
+        let env = std::collections::BTreeMap::from([(
+            "GOOGLE_CLOUD_API_KEY".to_string(),
+            "ambient-key".to_string(),
+        )]);
+        let ctx = crate::auth::AuthContext {
+            env: Arc::new(move |name| env.get(name).cloned()),
+            file_exists: Arc::new(|_| false),
+        };
+        let auth = google_vertex_provider().auth.api_key.unwrap();
+        let resolved = auth
+            .resolve(&ctx, None)
+            .expect("ambient key should resolve");
+        assert_eq!(resolved.auth.api_key.as_deref(), Some("ambient-key"));
+        assert_eq!(resolved.source.as_deref(), Some("GOOGLE_CLOUD_API_KEY"));
+    }
+
+    #[test]
+    fn google_vertex_provider_auth_does_not_fallback_from_missing_explicit_adc() {
+        let env = std::collections::BTreeMap::from([
+            (
+                "GOOGLE_APPLICATION_CREDENTIALS".to_string(),
+                "/tmp/missing-explicit-adc.json".to_string(),
+            ),
+            ("HOME".to_string(), "/home/test".to_string()),
+            ("GOOGLE_CLOUD_PROJECT".to_string(), "project".to_string()),
+            ("GOOGLE_CLOUD_LOCATION".to_string(), "location".to_string()),
+        ]);
+        let ctx = crate::auth::AuthContext {
+            env: Arc::new(move |name| env.get(name).cloned()),
+            file_exists: Arc::new(|path| {
+                path == crate::api::google_vertex::VERTEX_ADC_DEFAULT_PATH
+            }),
+        };
+        let auth = google_vertex_provider().auth.api_key.unwrap();
+        assert!(auth.check(&ctx, None).is_none());
     }
 
     #[test]

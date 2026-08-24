@@ -8,8 +8,9 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-64.46% = 107 completed / 166 total tasks
-59 tasks remain open
+65.06% = 108 completed / 166 total tasks
+58 tasks remain open
+
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,33 +27,17 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The current logical checkpoint is the validated S-010 Bedrock credential/profile
-and region-resolution parity slice. The pre-existing untracked `AGENTS.md`
+The current logical checkpoint is the validated S-011 Google Vertex ADC file
+and provider-precedence parity slice. The pre-existing untracked `AGENTS.md`
 remains untouched and must be preserved. Do not use `git reset --hard`,
 `git checkout --`, broad revert commands, or `git clean`.
 
-Current status after the S-010 implementation commit: branch `main`, progress
-checker reports `64.46% (107/166; 59 open)`, and the working tree contains only
-the preserved untracked `AGENTS.md`. The S-010 implementation commit is
-`9a8eaee9b8273e7b938075a38ed9659baff02359`; its documentation checkpoints
-are pushed and hash-verified. The S-009
-implementation and documentation commit is
-`c3d6109f32abb2f1a4efbda6eb2c90a35383dd98`; the preceding S-008 implementation
-commit is `7a72f2fe104cf660f946f29a822c88da556a37d1`. Local `HEAD` and
-`origin/main` resolve to the S-010 hash after the push. Its changes include:
-
-- `crates/pi-ai/src/api/constrained_sampling.rs`, the shared strict-schema and
-  grammar resolver plus streaming JSON-delta helper.
-- OpenAI Completions/Responses/Azure/Codex custom grammar wire conversion,
-  message replay, and stream assembly.
-- Anthropic, Bedrock, Google/Vertex, and Mistral strict-schema propagation with
-  exact required-constraint diagnostics.
-- Adaptor/unit fixtures covering rewrites, unsupported schemas, grammar
-  precedence/inference, request shapes, replay, and SSE deltas.
-
-The implementation commit is pushed and hash-verified. Only this final
-handoff synchronization is being recorded; preserve the broader worktree and
-the untracked `AGENTS.md`.
+Current status: branch `main`, progress checker reports
+`65.06% (108/166; 58 open)`, and the working tree contains the S-011 source,
+gate, README, and checkpoint-document changes plus the preserved untracked
+`AGENTS.md`. Focused tests, compile, format, whitespace, progress, and gate
+status checks pass; the focused implementation/documentation commit is ready
+for commit, push, and hash-parity verification.
 
 ## Current strict-verification cleanup
 
@@ -862,3 +847,41 @@ accumulated branch is verified at parity with `origin/main` at `50c2103`.
 Before continuing, inspect
 `git status`, read this handoff, run the progress checker, and treat all
 existing dirty changes as user-owned work.
+
+## Current checkpoint — 2026-08-24 — S-011 Vertex ADC parity
+
+The S-011 Google Vertex credential-file and provider-auth slice is complete.
+`crates/pi-ai/src/api/google_vertex.rs` now supports explicit/default ADC file
+selection, service-account JWT exchange with file `token_uri` and `scopes`,
+authorized-user refresh-token exchange with file credentials, and API-key
+publisher routing without project/location resolution. The implementation
+keeps metadata-server, workload-identity, and external-account ADC sources
+outside this file-auth slice and documents that boundary.
+`crates/pi-ai/src/providers/all.rs` now matches stored credential environment,
+ambient API-key, ADC file/project/location, and source-label precedence.
+
+Evidence tier: **mock**.
+
+```text
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib google_vertex --quiet
+18 passed; includes adc_path_explicit_value_wins_over_default_home,
+adc_service_account_uses_token_uri_and_configured_scopes,
+adc_authorized_user_refreshes_with_file_credentials, and
+stream_api_key_uses_publisher_path_without_project_or_location.
+
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-ai --offline --lib google_vertex_provider --quiet
+4 passed; includes stored ADC environment, missing project/location,
+ambient API-key precedence, and missing explicit ADC no-fallback fixtures.
+
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo check -p pi-ai --offline
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTFMT=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo fmt --all -- --check
+git diff --check
+```
+
+The unlazy ledger currently reports all 33 gates met; G30/G31/G32 are the
+focused test/static gates and G33 records the progress checker. Re-run the
+gate checker after this documentation refresh so its evidence contains the
+final measured progress. The conversion checker reports `65.06% (108/166; 58
+open)`. Commit/push and local/remote hash verification remain before the
+checkpoint is closed. The next dependency-safe task is S-012 Cloudflare AI
+Gateway account/gateway binding and base URL/header precedence parity.

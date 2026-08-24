@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 64.46% — 107 of 166 ledger tasks complete; 59 open.**
+**Conversion progress: 65.06% — 108 of 166 ledger tasks complete; 58 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -30,6 +30,13 @@ assembled monotonically through streaming Responses/Completions events. The
 S-008 implementation commit `7a72f2fe104cf660f946f29a822c88da556a37d1`
 is pushed to `origin/main` and hash-verified; the image retry/cancellation and
 telemetry checkpoints below remain part of the pushed baseline.
+
+The S-011 Google Vertex checkpoint now covers file-based Application Default
+Credentials for service-account JWT and authorized-user refresh flows,
+configured token URIs and scopes, explicit credential-path precedence, and
+API-key requests that do not require project or location. Deterministic local
+fixtures cover the token exchanges and provider-auth precedence; metadata
+server, workload identity, and external-account discovery remain open.
 
 The shared `AgentHarness` now exposes durable main and secondary lane views:
 lanes branch from session leaves, seed independent provider context, persist
