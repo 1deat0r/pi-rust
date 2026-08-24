@@ -62,7 +62,10 @@ impl<F: FileSystem> Session<F> {
     pub async fn get_metadata(&self) -> SessionMetadata {
         match &self.inner {
             SessionStorageKind::Jsonl(s) => s.get_metadata().await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().get_metadata().await,
+            // `InMemorySessionStorage::metadata` is synchronous. Clone it
+            // before releasing the storage mutex so callers can safely await
+            // the facade method from a Send future.
+            SessionStorageKind::InMemory(s) => s.lock().unwrap().metadata().clone(),
         }
     }
 

@@ -26,6 +26,12 @@ The last verified local and GitHub `main` checkpoint is `50c2103`. GitHub CLI
 authentication is configured for the HTTPS remote, so implementation
 checkpoints are pushed and hash-verified immediately.
 
+The shared `AgentHarness` now exposes durable main and secondary lane views:
+lanes branch from session leaves, seed independent provider context, persist
+their own prompt turns, and emit lane-attributed lifecycle telemetry. Full
+JSONL/RPC harness ownership and mode-specific golden persistence remain open
+under S-021/S-022.
+
 Legacy v1/v2/v3 session files are atomically migrated before session inventory,
 CLI continue/resume/session/fork selection, interactive startup and `/import`,
 and direct RPC switches. Selected sessions restore their branch context and
@@ -89,6 +95,13 @@ the upstream actionable guidance: API-key failures name the provider and point
 to `/login` plus the bundled provider/model docs; OAuth-capable failures point
 to `/login <provider>`. Network and non-auth errors retain their original
 diagnostics.
+
+### Harness lanes
+
+The harness session tree supports `main` plus named secondary lanes. A lane
+created at a session leaf inherits that branch as provider context, then
+persists new user/assistant messages and advances only its own leaf pointer.
+Run lifecycle events and `pi.harness.run` spans include the lane name.
 
 ## Workspace
 

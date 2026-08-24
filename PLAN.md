@@ -1396,6 +1396,40 @@ user-visible print, JSON, interactive, and RPC error boundary.
 - S-032 is complete. S-021/S-022 harness ownership, S-027 extension runtime,
   and the remaining provider/TUI/client/server/evaluation audits remain open.
 
+### Session 43 — 2026-08-24 — Shared secondary AgentHarness lanes (partial S-021/S-022)
+Scope: replace the harness lane/session stubs with shared durable session-tree
+views while preserving the existing main-lane print, JSON, and interactive
+callers.
+
+- `AgentHarness` now shares its session and lifecycle bus through async-safe
+  handles. `lane`, `create_lane`, and `lanes` expose durable main/secondary
+  lane metadata, reject invalid/reserved names with stable harness errors, and
+  preserve one shared session file/tree.
+- Secondary lane views build an independent stateful `Agent` from the same
+  model/tools/provider stream, seed it from the selected branch, and implement
+  text/message prompts. Prompt deltas append to the selected lane, advance only
+  that lane pointer, and return `RunResultValue` outcomes. Run lifecycle events
+  and `pi.harness.run` spans are shared and carry the concrete lane name.
+- The in-memory regression creates a lane at the main leaf, verifies inherited
+  branch context, lane-local persistence/pointer movement, event order, and
+  telemetry attributes. `Session::get_metadata` now clones synchronously under
+  the in-memory mutex so lane futures remain `Send`.
+- Evidence (unit/mock): `/home/mustbearnold/.cargo/bin/cargo test -p
+  pi-agent --offline harness::agent_harness::tests::secondary_lane_has_branch_context_and_shared_lifecycle
+  -- --nocapture` (1 passed), `/home/mustbearnold/.cargo/bin/cargo test -p
+  pi-agent --offline --quiet` (177 library tests plus integration targets),
+  `/home/mustbearnold/.cargo/bin/cargo check -p pi-coding-agent --offline`,
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+  --lib modes::rpc::tests --quiet` (41 passed), `/home/mustbearnold/.cargo/bin/cargo
+  test -p pi-coding-agent --offline --lib interactive:: --quiet` (33 passed),
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test
+  cli_print_parity --quiet` (7 passed), `/home/mustbearnold/.cargo/bin/cargo
+  fmt --all`, and `git diff --check`.
+- This is a partial S-021/S-022 checkpoint, not closure: JSONL/RPC full
+  AgentHarness ownership, mode-specific golden envelopes, secondary-lane
+  persistence across all adapters, queue/control operations, and complete
+  event registry wiring remain open.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

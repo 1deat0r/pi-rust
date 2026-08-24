@@ -637,16 +637,20 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       coding-agent run path instead of maintaining a parallel direct-loop
       implementation. (Partial unit/integration slice: configured harnesses
       now own the one-shot print-path and JSON-mode Agents plus their
-      in-memory main-lane transcripts, and interactive turns now seed a
-      configured harness from the current transcript; JSONL/RPC paths and
-      secondary lanes remain open.)
+      in-memory main-lane transcripts, interactive turns now seed a configured
+      harness from the current transcript, and secondary lane views now share
+      the durable session tree with independent branch-scoped Agents. The
+      harness implements `lane`, `createLane`, `lanes`, lane prompt text/
+      message execution, branch context seeding, and lane-local persistence;
+      JSONL/RPC mode ownership and the remaining direct-loop paths stay open.)
 - [ ] S-022 Wire the complete harness event and telemetry lifecycle into print,
       interactive, JSON, JSONL, and RPC modes with span/event golden checks.
       (Partial unit/integration slice: configured print, JSON, and interactive
       harness paths emit ordered run lifecycle events and settled
-      `pi.harness.run` spans; the shared adapter covers RPC loops, while
-      JSONL, complete mode-specific golden envelopes, and
-      persistence/secondary-lane assertions remain open.)
+      `pi.harness.run` spans; the shared adapter covers RPC loops, and
+      secondary lane runs now emit the same ordered events/spans with lane
+      attributes. JSONL, complete mode-specific golden envelopes, and
+      persistence/secondary-lane end-to-end assertions remain open.)
 - [x] S-023 Add panic-safe telemetry callback settlement equivalent to the
       upstream `try/catch/finally` span lifecycle. (unit) The in-memory
       adapter catches callback unwinds, settles spans as automatic errors

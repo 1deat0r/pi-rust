@@ -30,9 +30,13 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
+use tokio::sync::Mutex as AsyncMutex;
 
 use pi_ai::model::Model;
-use pi_ai::types::{AssistantMessage, DeferredHandle, SimpleStreamOptions, Usage};
+use pi_ai::types::{
+    AssistantMessage, ContentBlock, DeferredHandle, Message, SimpleStreamOptions, Usage,
+    UserContent,
+};
 use pi_ai::utils::retry::RetryPolicy;
 use pi_telemetry::{
     InMemoryTelemetryContext, SpanError, SpanHandle, SpanOptions, SpanStatus, TelemetryContext,
@@ -49,7 +53,7 @@ use crate::harness::models::BoxFuture;
 use crate::harness::result::TaggedError;
 use crate::rich_agent::Agent;
 use crate::session::session::Session;
-use crate::session::state::{EntryOrder, EntryQuery, RecordQuery};
+use crate::session::state::{BranchBounds, EntryOrder, EntryQuery, RecordQuery};
 use crate::session::types::{Entry, EntryNoStats};
 use crate::tools::{AgentTool, ToolExecuteFn, ToolPrepareArgumentsFn};
 use crate::types::{AgentHarnessResources, AgentMessage, SessionError};
@@ -1072,7 +1076,7 @@ pub trait AgentLane: Send + Sync {
 /// `AgentHarness`). Sessions with existing records reject `create`.
 pub struct AgentHarness<F: FileSystem> {
     name: String,
-    session: Session<F>,
+    session: Arc<AsyncMutex<Session<F>>>,
     model: Model,
     thinking_level: ModelThinkingLevel,
     active_tool_names: Vec<String>,
@@ -1084,14 +1088,42 @@ pub struct AgentHarness<F: FileSystem> {
     steering_mode: QueueMode,
     follow_up_mode: QueueMode,
     agent: Option<Arc<Agent>>,
+    stream_fn: Option<crate::agent::StreamFn>,
+    system_prompt: String,
+    block_images: bool,
+    tool_execution: Option<ToolExecution>,
     telemetry_context: HarnessTelemetryContext,
-    event_bus: HarnessEventBus,
+    event_bus: Arc<std::sync::Mutex<HarnessEventBus>>,
     pub hooks: UnavailableRegistry,
     pub events: UnavailableRegistry,
     closed: Arc<RwLock<bool>>,
 }
 
-impl<F: FileSystem> std::fmt::Debug for AgentHarness<F> {
+fn build_harness_agent(
+    stream_fn: Option<crate::agent::StreamFn>,
+    model: &Model,
+    system_prompt: &str,
+    tools: &[HarnessTool],
+    block_images: bool,
+    tool_execution: Option<ToolExecution>,
+) -> Option<Arc<Agent>> {
+    stream_fn.map(|stream_fn| {
+        let mut agent = Agent::new(stream_fn);
+        {
+            let mut state = agent.state();
+            state.model = model.clone();
+            state.system_prompt = system_prompt.to_string();
+            state.set_tools(tools.iter().map(HarnessTool::to_agent_tool).collect());
+        }
+        agent.set_block_images(block_images);
+        if let Some(ToolExecution::Sequential) = tool_execution {
+            agent.set_tool_execution(crate::rich_agent::ToolExecutionMode::Sequential);
+        }
+        Arc::new(agent)
+    })
+}
+
+impl<F: FileSystem + 'static> std::fmt::Debug for AgentHarness<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentHarness")
             .field("name", &self.name)
@@ -1113,7 +1145,7 @@ impl<F: FileSystem> std::fmt::Debug for AgentHarness<F> {
     }
 }
 
-impl<F: FileSystem> AgentHarness<F> {
+impl<F: FileSystem + 'static> AgentHarness<F> {
     /// Open a harness for a record-free session. Sessions that already
     /// contain records reject with `HarnessNotImplemented("create.restore")`
     /// until restore is ported (upstream behavior).
@@ -1153,33 +1185,24 @@ impl<F: FileSystem> AgentHarness<F> {
             .clone()
             .unwrap_or(DEFAULT_COMPACTION_SETTINGS);
         let telemetry_context = options.context.clone().unwrap_or_default();
-        let agent = options.stream_fn.clone().map(|stream_fn| {
-            let mut agent = Agent::new(stream_fn);
-            {
-                let mut state = agent.state();
-                state.model = options.model.clone();
-                state.system_prompt = options.system_prompt.clone().unwrap_or_default();
-                state.set_tools(
-                    options
-                        .tools
-                        .as_ref()
-                        .map(|tools| tools.iter().map(HarnessTool::to_agent_tool).collect())
-                        .unwrap_or_default(),
-                );
-            }
-            agent.set_block_images(options.block_images);
-            if let Some(ToolExecution::Sequential) = options.tool_execution {
-                agent.set_tool_execution(crate::rich_agent::ToolExecutionMode::Sequential);
-            }
-            Arc::new(agent)
-        });
+        let tools = options.tools.clone().unwrap_or_default();
+        let system_prompt = options.system_prompt.clone().unwrap_or_default();
+        let stream_fn = options.stream_fn.clone();
+        let agent = build_harness_agent(
+            stream_fn.clone(),
+            &options.model,
+            &system_prompt,
+            &tools,
+            options.block_images,
+            options.tool_execution,
+        );
         Self {
             name: "main".to_string(),
-            session: options.session,
+            session: Arc::new(AsyncMutex::new(options.session)),
             model: options.model,
             thinking_level: options.thinking_level.unwrap_or(ModelThinkingLevel::Off),
             active_tool_names,
-            tools: options.tools.clone().unwrap_or_default(),
+            tools,
             resources: options.resources.clone().unwrap_or_default(),
             stream_options: options.stream_options.clone().unwrap_or_default(),
             retry_policy,
@@ -1187,8 +1210,12 @@ impl<F: FileSystem> AgentHarness<F> {
             steering_mode: options.steering_mode.unwrap_or_default(),
             follow_up_mode: options.follow_up_mode.unwrap_or_default(),
             agent,
+            stream_fn,
+            system_prompt,
+            block_images: options.block_images,
+            tool_execution: options.tool_execution,
             telemetry_context,
-            event_bus: HarnessEventBus::new(),
+            event_bus: Arc::new(std::sync::Mutex::new(HarnessEventBus::new())),
             hooks: UnavailableRegistry::new("hooks.on", closed.clone()),
             events: UnavailableRegistry::new("events.on", closed.clone()),
             closed,
@@ -1197,8 +1224,8 @@ impl<F: FileSystem> AgentHarness<F> {
 
     /// The underlying durable session tree (upstream aliases
     /// `durableSession` and `session` to the same object).
-    pub fn session(&self) -> &Session<F> {
-        &self.session
+    pub fn session(&self) -> Arc<AsyncMutex<Session<F>>> {
+        self.session.clone()
     }
 
     pub fn is_closed(&self) -> bool {
@@ -1212,11 +1239,11 @@ impl<F: FileSystem> AgentHarness<F> {
         event_type: &'static str,
         listener: HarnessEventListener,
     ) -> usize {
-        self.event_bus.on(event_type, listener)
+        self.event_bus.lock().unwrap().on(event_type, listener)
     }
 
     pub fn unsubscribe_event(&mut self, subscription_id: usize) {
-        self.event_bus.unsubscribe(subscription_id);
+        self.event_bus.lock().unwrap().unsubscribe(subscription_id);
     }
 
     fn unavailable<T>(&self, operation: &str) -> Result<T, HarnessError> {
@@ -1228,9 +1255,9 @@ impl<F: FileSystem> AgentHarness<F> {
     }
 
     /// Run prompts through the configured stateful Agent and append the
-    /// resulting messages to the harness-owned main-lane session. A harness
-    /// created without a stream function remains a scaffold and reports the
-    /// same explicit `HarnessNotImplemented` error as upstream.
+    /// resulting messages to this lane's session branch. A harness created
+    /// without a stream function remains a scaffold and reports the same
+    /// explicit `HarnessNotImplemented` error as upstream.
     pub async fn run_prompt(
         &mut self,
         prompts: Vec<AgentMessage>,
@@ -1246,6 +1273,22 @@ impl<F: FileSystem> AgentHarness<F> {
         &mut self,
         prompts: Vec<AgentMessage>,
     ) -> Result<(Vec<AgentMessage>, Vec<crate::rich_agent::RichAgentEvent>), HarnessError> {
+        self.run_prompt_with_events_for_lane(prompts)
+            .await
+            .map(|(_, messages, events)| (messages, events))
+    }
+
+    async fn run_prompt_with_events_for_lane(
+        &self,
+        prompts: Vec<AgentMessage>,
+    ) -> Result<
+        (
+            String,
+            Vec<AgentMessage>,
+            Vec<crate::rich_agent::RichAgentEvent>,
+        ),
+        HarnessError,
+    > {
         if self.is_closed() {
             return Err(HarnessError::closed());
         }
@@ -1253,17 +1296,21 @@ impl<F: FileSystem> AgentHarness<F> {
             return self.unavailable("prompt");
         };
         let run_id = crate::session::new_id();
-        let session_id = self.session.get_metadata().await.id;
-        self.event_bus.emit(&HarnessEvent::RunStart(RunStartEvent {
-            lane: self.name.clone(),
-            run_id: run_id.clone(),
-        }));
+        let session_id = self.session.lock().await.get_metadata().await.id;
+        self.event_bus
+            .lock()
+            .unwrap()
+            .emit(&HarnessEvent::RunStart(RunStartEvent {
+                lane: self.name.clone(),
+                run_id: run_id.clone(),
+            }));
 
         let telemetry = self.telemetry_context.clone();
         let span_run_id = run_id.clone();
         let span_session_id = session_id;
         let span_lane = self.name.clone();
-        let session = &mut self.session;
+        let lane = self.name.clone();
+        let session = self.session.clone();
         let run_result: Result<
             (Vec<AgentMessage>, Vec<crate::rich_agent::RichAgentEvent>),
             HarnessError,
@@ -1291,8 +1338,19 @@ impl<F: FileSystem> AgentHarness<F> {
                 move |span| async move {
                     span.add_event("run_start", None);
                     let (messages, events) = agent.prompt_messages_with_events(prompts).await;
+                    let mut session = session.lock().await;
                     for message in &messages {
-                        if let Err(error) = session.append_message(message.clone()).await {
+                        if let Err(error) = session
+                            .append_entry(
+                                EntryNoStats::Message {
+                                    id: crate::session::new_id(),
+                                    message: message.clone(),
+                                    terminate: None,
+                                },
+                                &lane,
+                            )
+                            .await
+                        {
                             span.set_status(SpanStatus::Error {
                                 error: Some(SpanError {
                                     name: "SessionError".to_string(),
@@ -1312,41 +1370,59 @@ impl<F: FileSystem> AgentHarness<F> {
             )
             .await;
 
-        let leaf_id = self
-            .session
-            .get_leaf_id()
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        self.event_bus.emit(&HarnessEvent::RunEnd(RunEndEvent {
-            lane: self.name.clone(),
-            run_id,
-            outcome: if run_result.is_ok() {
-                EventOutcome::Completed
-            } else {
-                EventOutcome::Failed
-            },
-            leaf_id,
-        }));
-        run_result
+        let leaf_id = self.lane_leaf_id().await.ok().flatten().unwrap_or_default();
+        self.event_bus
+            .lock()
+            .unwrap()
+            .emit(&HarnessEvent::RunEnd(RunEndEvent {
+                lane: self.name.clone(),
+                run_id: run_id.clone(),
+                outcome: if run_result.is_ok() {
+                    EventOutcome::Completed
+                } else {
+                    EventOutcome::Failed
+                },
+                leaf_id,
+            }));
+        run_result.map(|(messages, events)| (run_id, messages, events))
     }
 
     /// Snapshot the harness-owned durable transcript in chronological order.
     pub async fn transcript(&self) -> Result<Vec<Entry>, HarnessError> {
-        self.session
-            .find_entries(&EntryQuery {
-                order: Some(EntryOrder::OldestFirst),
-                ..Default::default()
-            })
-            .await
-            .map_err(HarnessError::from)
+        let mut session = self.session.lock().await;
+        let query = EntryQuery {
+            order: Some(EntryOrder::OldestFirst),
+            ..Default::default()
+        };
+        if self.name == "main" {
+            session
+                .find_entries(&query)
+                .await
+                .map_err(HarnessError::from)
+        } else {
+            session
+                .view(&self.name)
+                .find_entries_on_branch(&query, &BranchBounds::default())
+                .await
+                .map_err(HarnessError::from)
+        }
     }
 
-    /// Append a provisioned entry to the harness-owned main lane.
+    async fn lane_leaf_id(&self) -> Result<Option<String>, SessionError> {
+        let mut session = self.session.lock().await;
+        if self.name == "main" {
+            session.get_leaf_id().await
+        } else {
+            session.view(&self.name).get_leaf_id().await
+        }
+    }
+
+    /// Append a provisioned entry to the harness-owned lane.
     pub async fn append_entry(&mut self, entry: EntryNoStats) -> Result<Entry, HarnessError> {
         self.session
-            .append_entry(entry, "main")
+            .lock()
+            .await
+            .append_entry(entry, &self.name)
             .await
             .map_err(HarnessError::from)
     }
@@ -1370,50 +1446,204 @@ impl<F: FileSystem> AgentHarness<F> {
         Ok(agent.state().messages().to_vec())
     }
 
-    /// Lane accessor on the main harness (upstream `lane(name)`); unimplemented
-    /// until secondary lanes land.
-    pub async fn lane(&self, _name: &str) -> Result<Box<dyn AgentLane>, HarnessError> {
-        self.unavailable("lane")
+    async fn make_lane(&self, name: &str) -> Result<AgentHarness<F>, HarnessError> {
+        let agent = if name == self.name {
+            self.agent.clone()
+        } else {
+            build_harness_agent(
+                self.stream_fn.clone(),
+                &self.model,
+                &self.system_prompt,
+                &self.tools,
+                self.block_images,
+                self.tool_execution,
+            )
+        };
+        let lane = AgentHarness {
+            name: name.to_string(),
+            session: self.session.clone(),
+            model: self.model.clone(),
+            thinking_level: self.thinking_level,
+            active_tool_names: self.active_tool_names.clone(),
+            tools: self.tools.clone(),
+            resources: self.resources.clone(),
+            stream_options: self.stream_options.clone(),
+            retry_policy: self.retry_policy.clone(),
+            compaction_settings: self.compaction_settings.clone(),
+            steering_mode: self.steering_mode,
+            follow_up_mode: self.follow_up_mode,
+            agent,
+            stream_fn: self.stream_fn.clone(),
+            system_prompt: self.system_prompt.clone(),
+            block_images: self.block_images,
+            tool_execution: self.tool_execution,
+            telemetry_context: self.telemetry_context.clone(),
+            event_bus: self.event_bus.clone(),
+            hooks: UnavailableRegistry::new("hooks.on", self.closed.clone()),
+            events: UnavailableRegistry::new("events.on", self.closed.clone()),
+            closed: self.closed.clone(),
+        };
+        if name != self.name {
+            if let Some(agent) = &lane.agent {
+                let entries = lane.transcript().await?;
+                let context = crate::session::context::build_session_context(
+                    &entries,
+                    &crate::session::context::SessionContextBuildOptions::default(),
+                );
+                agent.state().set_messages(context.messages);
+            }
+        }
+        Ok(lane)
     }
 
-    /// Create a new lane (upstream `createLane(name, at)`); unimplemented.
+    /// Return a lane-bound harness view (upstream `lane(name)`).
+    pub async fn lane(&self, name: &str) -> Result<Box<dyn AgentLane>, HarnessError> {
+        if self.is_closed() {
+            return Err(HarnessError::closed());
+        }
+        let exists = self
+            .session
+            .lock()
+            .await
+            .get_lanes()
+            .await
+            .into_iter()
+            .any(|lane| lane.lane == name);
+        if !exists {
+            return Err(HarnessError::invalid_lane(name, "lane does not exist"));
+        }
+        Ok(Box::new(self.make_lane(name).await?))
+    }
+
+    /// Create a new lane (upstream `createLane(name, at)`) and return its
+    /// independent agent view over the shared session tree.
     pub async fn create_lane(
         &self,
-        _name: &str,
-        _at: Option<&str>,
+        name: &str,
+        at: Option<&str>,
     ) -> Result<Box<dyn AgentLane>, HarnessError> {
-        self.unavailable("createLane")
+        if self.is_closed() {
+            return Err(HarnessError::closed());
+        }
+        if name == "main" || name.is_empty() {
+            return Err(HarnessError::invalid_lane(
+                name,
+                "lane name is reserved or empty",
+            ));
+        }
+        self.session
+            .lock()
+            .await
+            .create_lane(name, at)
+            .await
+            .map_err(|error| {
+                if error.kind == crate::session::types::SessionErrorKind::AlreadyExists {
+                    HarnessError::lane_exists(name)
+                } else {
+                    HarnessError::from(error)
+                }
+            })?;
+        Ok(Box::new(self.make_lane(name).await?))
     }
 
-    /// List lanes (upstream `lanes()`); unimplemented.
+    /// List the durable session lanes (upstream `lanes()`).
     pub async fn lanes(&self) -> Result<Vec<LaneInfo>, HarnessError> {
-        self.unavailable("lanes")
+        if self.is_closed() {
+            return Err(HarnessError::closed());
+        }
+        Ok(self
+            .session
+            .lock()
+            .await
+            .get_lanes()
+            .await
+            .into_iter()
+            .map(|lane| LaneInfo {
+                name: lane.lane,
+                leaf_id: lane.leaf_id,
+                operation: None,
+            })
+            .collect())
+    }
+
+    fn prompt_with_images(text: &str, images: &[ImageContent]) -> AgentMessage {
+        let mut blocks = vec![ContentBlock::text(text.to_string())];
+        blocks.extend(images.iter().cloned().map(|image| ContentBlock::Image {
+            data: image.data,
+            mime_type: image.mime_type,
+        }));
+        AgentMessage::Core(Message::User(UserContent::blocks(
+            blocks,
+            pi_ai::types::now_ms(),
+        )))
+    }
+
+    async fn prompt_result(
+        &self,
+        prompts: Vec<AgentMessage>,
+    ) -> Result<RunResultValue, HarnessError> {
+        let (run_id, messages, _) = self.run_prompt_with_events_for_lane(prompts).await?;
+        let final_message = messages.iter().rev().find_map(|message| match message {
+            AgentMessage::Core(Message::Assistant(assistant)) => Some(assistant.clone()),
+            _ => None,
+        });
+        let Some(final_message) = final_message else {
+            return Err(HarnessError::fault("run produced no assistant message"));
+        };
+        let leaf_id = self.lane_leaf_id().await?.unwrap_or_default();
+        let final_entry_id = leaf_id.clone();
+        let outcome = match final_message.stop_reason() {
+            Some(pi_ai::types::StopReason::Aborted) => RunOutcome::Aborted {
+                leaf_id,
+                final_entry_id,
+                final_message,
+            },
+            Some(pi_ai::types::StopReason::Error) => RunOutcome::Failed {
+                leaf_id,
+                error: OperationError {
+                    code: "provider_error".to_string(),
+                    message: final_message
+                        .error_message()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| "provider request failed".to_string()),
+                },
+                final_entry_id: Some(final_entry_id),
+                final_message: Some(final_message),
+            },
+            _ => RunOutcome::Completed {
+                leaf_id,
+                final_entry_id,
+                final_message,
+            },
+        };
+        Ok(RunResultValue { run_id, outcome })
     }
 }
 
 #[async_trait]
-impl<F: FileSystem> AgentLane for AgentHarness<F> {
+impl<F: FileSystem + 'static> AgentLane for AgentHarness<F> {
     fn lane_name(&self) -> &str {
         &self.name
     }
 
     async fn get_leaf_id(&self) -> Result<Option<String>, SessionError> {
-        self.session.get_leaf_id().await
+        self.lane_leaf_id().await
     }
 
     async fn prompt_text(
         &self,
-        _text: &str,
-        _images: &[ImageContent],
+        text: &str,
+        images: &[ImageContent],
     ) -> Result<RunResultValue, HarnessError> {
-        self.unavailable("prompt")
+        self.prompt_result(vec![Self::prompt_with_images(text, images)])
+            .await
     }
 
     async fn prompt_messages(
         &self,
-        _messages: &[AgentMessage],
+        messages: &[AgentMessage],
     ) -> Result<RunResultValue, HarnessError> {
-        self.unavailable("prompt")
+        self.prompt_result(messages.to_vec()).await
     }
 
     async fn skill(
@@ -1774,6 +2004,137 @@ mod tests {
     }
 
     #[test]
+    fn secondary_lane_has_branch_context_and_shared_lifecycle() {
+        rt().block_on(async {
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            core.set_responses(vec![
+                FauxResponseStep::Message(faux_assistant_message(
+                    vec![ContentBlock::text("main reply")],
+                    FauxAssistantOptions::default(),
+                )),
+                FauxResponseStep::Message(faux_assistant_message(
+                    vec![ContentBlock::text("thread reply")],
+                    FauxAssistantOptions::default(),
+                )),
+            ]);
+            let stream_fn: crate::agent::StreamFn =
+                Arc::new(move |model, context| core.stream(model, context, None));
+            let telemetry = Arc::new(InMemoryTelemetryContext::new());
+            let mut options = AgentHarnessOptions::new(create_session("lanes"), test_model());
+            options.stream_fn = Some(stream_fn);
+            options.context = Some(HarnessTelemetryContext::InMemory(telemetry.clone()));
+            let (mut harness, _) = AgentHarness::create(options).await.unwrap();
+
+            let lifecycle = Arc::new(Mutex::new(Vec::<String>::new()));
+            let seen = lifecycle.clone();
+            harness.subscribe_event(
+                "run_start",
+                Box::new(move |event| {
+                    seen.lock()
+                        .unwrap()
+                        .push(format!("start:{}", event.as_run_start().unwrap().lane));
+                }),
+            );
+            let seen = lifecycle.clone();
+            harness.subscribe_event(
+                "run_end",
+                Box::new(move |event| {
+                    seen.lock().unwrap().push(format!(
+                        "end:{}:{}",
+                        event.as_run_end().unwrap().lane,
+                        event.as_run_end().unwrap().outcome.as_str()
+                    ));
+                }),
+            );
+
+            harness
+                .run_prompt(vec![user_message("main prompt")])
+                .await
+                .unwrap();
+            let main_leaf = harness
+                .session()
+                .lock()
+                .await
+                .get_leaf_id()
+                .await
+                .unwrap()
+                .unwrap();
+
+            let thread = harness
+                .create_lane("thread", Some(&main_leaf))
+                .await
+                .unwrap();
+            assert_eq!(thread.lane_name(), "thread");
+            assert_eq!(thread.get_leaf_id().await.unwrap(), Some(main_leaf.clone()));
+
+            let result = thread
+                .prompt_messages(&[user_message("thread prompt")])
+                .await
+                .unwrap();
+            assert!(matches!(
+                result.outcome,
+                RunOutcome::Completed { ref leaf_id, .. } if !leaf_id.is_empty()
+            ));
+
+            let lanes = harness.lanes().await.unwrap();
+            assert_eq!(
+                lanes
+                    .iter()
+                    .map(|lane| lane.name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["main", "thread"]
+            );
+            assert_ne!(
+                lanes[0].leaf_id.as_deref(),
+                lanes[1].leaf_id.as_deref(),
+                "the thread run must advance only its own lane pointer"
+            );
+
+            let session_handle = harness.session();
+            let mut session = session_handle.lock().await;
+            let thread_entries = session
+                .view("thread")
+                .find_entries_on_branch(
+                    &EntryQuery {
+                        order: Some(EntryOrder::OldestFirst),
+                        ..Default::default()
+                    },
+                    &BranchBounds::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(thread_entries.len(), 4);
+            assert_eq!(
+                thread_entries
+                    .iter()
+                    .filter_map(|entry| entry.as_message())
+                    .filter_map(|message| match message {
+                        AgentMessage::Core(Message::User(user)) => {
+                            Some(crate::agent::user_content_text(user))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                vec!["main prompt", "thread prompt"]
+            );
+
+            assert_eq!(
+                *lifecycle.lock().unwrap(),
+                vec![
+                    "start:main",
+                    "end:main:completed",
+                    "start:thread",
+                    "end:thread:completed"
+                ]
+            );
+            let spans = telemetry.get_spans();
+            assert_eq!(spans.len(), 2);
+            assert_eq!(spans[0].attributes["pi.lane.name"], "main");
+            assert_eq!(spans[1].attributes["pi.lane.name"], "thread");
+        });
+    }
+
+    #[test]
     fn mode_lifecycle_adapter_preserves_event_and_span_order() {
         rt().block_on(async {
             let telemetry =
@@ -1844,7 +2205,10 @@ mod tests {
             assert!(suspended.is_empty());
             assert_eq!(harness.lane_name(), "main");
             assert_eq!(harness.get_leaf_id().await.unwrap(), None);
-            assert_eq!(harness.session().get_leaf_id().await.unwrap(), None);
+            assert_eq!(
+                harness.session().lock().await.get_leaf_id().await.unwrap(),
+                None
+            );
             harness.close().await;
 
             let mut recorded = create_session("recorded");
@@ -2121,25 +2485,6 @@ mod tests {
                 capture("watch", &mut error_by_op, err);
             }
             {
-                let err = match harness.lane("main").await {
-                    Err(e) => e,
-                    Ok(_) => panic!("lane unexpectedly implemented"),
-                };
-                capture("lane", &mut error_by_op, err);
-            }
-            {
-                let err = match harness.create_lane("thread", None).await {
-                    Err(e) => e,
-                    Ok(_) => panic!("createLane unexpectedly implemented"),
-                };
-                capture("createLane", &mut error_by_op, err);
-            }
-            capture(
-                "lanes",
-                &mut error_by_op,
-                harness.lanes().await.unwrap_err(),
-            );
-            {
                 let err = match harness.watch_session().await {
                     Err(e) => e,
                     Ok(_) => panic!("watchSession unexpectedly implemented"),
@@ -2166,9 +2511,6 @@ mod tests {
                 "executeAction",
                 "runToCompletion",
                 "watch",
-                "lane",
-                "createLane",
-                "lanes",
                 "watchSession",
             ];
             for key in checks {

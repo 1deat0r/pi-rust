@@ -67,6 +67,35 @@ provider auth guidance, startup-timing, interactive cache-notice,
 install-telemetry contracts, and the synchronized-doc workflow. The
 pre-existing `AGENTS.md` remains untouched.
 
+## Current secondary-lane working checkpoint (partial S-021/S-022)
+
+The next implementation slice is prepared but not yet committed: the
+`AgentHarness` session is now shared across lane views, `lane`/`create_lane`/
+`lanes` expose durable main and secondary lane metadata, and secondary lanes
+build independent Agents seeded from their branch context. Text/message prompts
+persist into the selected lane, advance only that lane pointer, return
+`RunResultValue`, and share ordered lifecycle events plus lane-attributed
+`pi.harness.run` spans. The prior committed branch remains `7780c95` until this
+slice is checkpointed.
+
+Focused evidence for the working tree:
+
+```text
+cargo test -p pi-agent --offline harness::agent_harness::tests::secondary_lane_has_branch_context_and_shared_lifecycle -- --nocapture (1 passed)
+cargo test -p pi-agent --offline --quiet (177 library tests plus integration targets)
+cargo check -p pi-coding-agent --offline
+cargo test -p pi-coding-agent --offline --lib modes::rpc::tests --quiet (41 passed)
+cargo test -p pi-coding-agent --offline --lib interactive:: --quiet (33 passed)
+cargo test -p pi-coding-agent --offline --test cli_print_parity --quiet (7 passed)
+cargo fmt --all
+git diff --check
+```
+
+This remains partial S-021/S-022. JSONL/RPC full harness ownership,
+mode-specific golden envelopes, queue/control operations, complete persistence
+coverage, and the upstream event registry remain open. `AGENTS.md` is still
+pre-existing and untracked; it is not staged.
+
 ## Current S-032 committed checkpoint
 
 Provider auth failures now receive the upstream actionable guidance at all
