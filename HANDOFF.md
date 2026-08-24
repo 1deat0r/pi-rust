@@ -26,8 +26,9 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is the committed S-029 install-telemetry slice
-`3d6f1fc`, after the committed S-030 interactive cache-notice slice `7356dd3`,
+The latest local checkpoint is the documentation parity checkpoint `a1c3e92`,
+after the committed S-029 install-telemetry slice `3d6f1fc` and the committed
+S-030 interactive cache-notice slice `7356dd3`,
 `ef640ce`,
 the partial legacy-session
 integration slice, after committed startup timing (`869ae6d`) and
@@ -38,8 +39,8 @@ harness ownership (`3fb8049`), print-path harness,
 lifecycle/termination, schema-validator, panic-safe telemetry, RPC runtime,
 update/version, and model-catalog checkpoints. The JSON-mode implementation is
 `dd7a568`; its follow-up preserves the successful RPC golden envelope while
-forwarding terminal JSON provider errors. Pushes remain blocked because the
-HTTPS remote requires GitHub credentials.
+forwarding terminal JSON provider errors. GitHub authentication is now
+configured through `gh`, and the accumulated branch has been pushed.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
 
@@ -56,7 +57,9 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`57.83% (96/166; 70 open)`. Preserve the pre-existing untracked `AGENTS.md`.
+`57.83% (96/166; 70 open)`. Local `HEAD` and `origin/main` both point to
+`a1c3e9268cd74d8992bcbd4c62f995ff20a5382d`. Preserve the pre-existing
+untracked `AGENTS.md`.
 The README now records the legacy-session integration, startup-timing,
 interactive cache-notice, and install-telemetry contracts and the
 synchronized-doc workflow. All staged checkpoint changes are intentional local
@@ -71,7 +74,8 @@ The compiled self-update checkpoint was checked immediately after its commit:
   `fatal: could not read Username for 'https://github.com': No such device or address`.
 - `gh auth status` reports no authenticated GitHub host. The pre-commit hook
   therefore could not sync `.github/repository-description.txt` to GitHub.
-  Local and remote parity is not claimed until authentication is repaired.
+  That historical push was blocked before GitHub authentication was repaired;
+  the accumulated branch was later pushed at the parity checkpoint below.
 
 The S-030 checkpoint was retried immediately after commit and remains blocked:
 
@@ -186,8 +190,18 @@ The S-029 checkpoint was checked against the remote immediately after commit:
   `fatal: could not read Username for 'https://github.com': No such device or address`.
 - `gh auth status --hostname github.com`: `You are not logged into any GitHub hosts.`
 
-Local and remote parity remains unclaimed; the next action after GitHub auth is
-to push `main`, then verify `git rev-parse HEAD` equals `git ls-remote`.
+Remote parity was restored after GitHub device authentication:
+
+- `gh auth status --hostname github.com`: logged in as `1deat0r` with `repo`
+  scope.
+- `gh auth setup-git --hostname github.com`: configured the GitHub CLI
+  credential helper for the HTTPS remote.
+- `git push origin main`: advanced `origin/main` from `90a5b93` to `a1c3e92`.
+- `git rev-parse HEAD` and `git ls-remote origin refs/heads/main` both equal
+  `a1c3e9268cd74d8992bcbd4c62f995ff20a5382d`.
+
+The next implementation checkpoint must repeat the same commit, push, and
+exact-hash verification sequence.
 
 A full `cargo test --workspace --offline` passed after the image/read changes,
 including 162 `pi-agent` unit tests, the coding-agent integration targets, 186
@@ -502,9 +516,8 @@ items just because a similarly named Rust module exists.
 
 ## Recommended next sequence
 
-1. Retry `git push origin main` whenever GitHub credentials are available and
-   report the HTTPS credential blocker if it persists.
-2. Continue with the remaining S-021/S-022 work, then the full regular/fullscreen #61/#62 swap
+1. Continue with the remaining S-026 and S-021/S-022 work, then the full
+   regular/fullscreen #61/#62 swap
    work and broader S-056 interactive matrix.
 3. Keep `CONVERSION-LEDGER.md`, `PLAN.md`, and this handoff synchronized;
    only mark a task complete with an evidence tier and exact command/fixture.
@@ -521,9 +534,8 @@ items just because a similarly named Rust module exists.
 
 ## Session discipline
 
-The operator has requested commit + push after each checkpoint. The
-auto-compaction commit was made and its push was retried; GitHub rejected it
-because no HTTPS username is available. Retry the push whenever credentials
-are available and report the blocker honestly. Before continuing, inspect
+The operator has requested commit + push after each checkpoint. GitHub device
+authentication and the HTTPS credential helper are now configured; the
+accumulated branch is verified at parity with `origin/main`. Before continuing, inspect
 `git status`, read this handoff, run the progress checker, and treat all
 existing dirty changes as user-owned work.

@@ -22,6 +22,10 @@ compaction, RPC controls, TUI components, and client/server support. Remaining
 work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
 
+The current local and GitHub `main` checkpoints are synchronized at
+`a1c3e92`. GitHub CLI authentication is configured for the HTTPS remote, so
+future implementation checkpoints are pushed and hash-verified immediately.
+
 Legacy v1/v2/v3 session files are now atomically migrated before interactive
 resume inventory and direct RPC session switches. The CLI continue/resume/fork
 surface still has an explicit follow-up audit in the conversion ledger.

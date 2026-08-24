@@ -1189,8 +1189,8 @@ preserving its JSON event contract, including provider terminal errors.
   `/home/mustbearnold/.cargo/bin/cargo fmt --all`, and `git diff --check`.
 - Commits: `dd7a568` (`feat(harness): route json mode through stateful
   agent`) and `3fb8049` (`fix(rich-agent): preserve rpc terminal event
-  parity`). The push for each checkpoint was attempted and rejected because
-  the HTTPS remote has no configured GitHub credentials.
+  parity`). Those historical pushes were initially blocked; the accumulated
+  branch is now pushed and verified at parity after `gh auth setup-git`.
 - S-021/S-022 remain open: interactive, JSONL, RPC full harness ownership,
   mode-specific lifecycle golden envelopes, persistence, and secondary lanes
   still need implementation and evidence.
