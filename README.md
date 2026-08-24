@@ -46,6 +46,12 @@ ECS, STS, and provider-auth paths. SSO- or process-backed profiles and EC2
 metadata remain outside the hand-rolled signer scope.
 The S-010 checkpoint is pushed as
 `9a8eaee9b8273e7b938075a38ed9659baff02359`.
+The whole-result acceptance rerun passed the public Bedrock stream/request
+boundary, provider-auth tests, full pi-ai compile/lint/test/metadata gates,
+formatting, and diff checks. `cargo package -p pi-ai --offline
+--allow-dirty --no-verify` remains a repository-level P9 blocker because the
+internal `pi-telemetry` dependency is not available in the offline crates.io
+index.
 
 Legacy v1/v2/v3 session files are atomically migrated before session inventory,
 CLI continue/resume/session/fork selection, interactive startup and `/import`,

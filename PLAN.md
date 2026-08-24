@@ -1775,6 +1775,20 @@ endpoint fixtures.
   tests), `cargo fmt --all -- --check`, and `git diff --check` pass. The
   authoritative checker reports exactly `Conversion progress: 64.46%
   (107/166; 59 open)`.
+- The feedback loop was then rerun over the complete result. The profile,
+  ambient-key, config-region, and endpoint requirements passed their named
+  fixtures; ECS and web-identity runtime retrieval passed parser and local
+  mock HTTP fixtures; the public stream/request boundary passed the 41-test
+  adaptor suite; and the provider-auth boundary passed both Bedrock auth
+  tests. The full pi-ai integration targets, offline metadata, compile,
+  strict-clippy, formatting, and diff checks also passed.
+- The broader packaging check was attempted separately with `cargo package -p
+  pi-ai --offline --allow-dirty --no-verify` and failed before packaging because
+  the internal `pi-telemetry` path dependency has no crates.io version
+  requirement and is unavailable in the offline index. This is a repository
+  P9 packaging blocker, not an S-010 runtime or public-interface failure. No
+  ledger checkbox changed during the rerun, so the checker remains exactly
+  `Conversion progress: 64.46% (107/166; 59 open)`.
 - S-010 is complete. The next dependency-safe action is S-011 Google Vertex
   ADC file, token URI, scope, refresh, and project/location precedence parity.
   The focused S-010 checkpoint `9a8eaee9b8273e7b938075a38ed9659baff02359` is

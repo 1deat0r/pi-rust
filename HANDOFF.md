@@ -33,8 +33,9 @@ remains untouched and must be preserved. Do not use `git reset --hard`,
 
 Current status after the S-010 implementation commit: branch `main`, progress
 checker reports `64.46% (107/166; 59 open)`, and the working tree contains only
-the preserved untracked `AGENTS.md`. The S-010 implementation/documentation
-commit is `9a8eaee9b8273e7b938075a38ed9659baff02359`; the S-009
+the preserved untracked `AGENTS.md`. The S-010 implementation commit is
+`9a8eaee9b8273e7b938075a38ed9659baff02359`; its documentation checkpoints
+are pushed and hash-verified. The S-009
 implementation and documentation commit is
 `c3d6109f32abb2f1a4efbda6eb2c90a35383dd98`; the preceding S-008 implementation
 commit is `7a72f2fe104cf660f946f29a822c88da556a37d1`. Local `HEAD` and
@@ -148,7 +149,7 @@ containing this handoff is pushed, and local/remote hashes were verified after
 the push. The worktree is clean except for the preserved untracked
 `AGENTS.md`.
 
-## Current checkpoint — 2026-08-24 — S-010 validated, reviewed, and ready to publish
+## Current checkpoint — 2026-08-24 — S-010 published and whole-result checked
 
 S-010 completes Bedrock credential/profile-file and region-resolution parity.
 The adaptor now honors explicit and scoped profile precedence over ambient
@@ -168,6 +169,8 @@ $HOME/.cargo/bin/cargo test -p pi-ai --offline --lib providers::all::tests::amaz
 $HOME/.cargo/bin/cargo check -p pi-ai --offline
 $HOME/.cargo/bin/cargo clippy -p pi-ai --offline --all-targets -- -D warnings
 $HOME/.cargo/bin/cargo test -p pi-ai --offline --quiet (323 library, 4 + 9 + 2 integration tests)
+$HOME/.cargo/bin/cargo test -p pi-ai --offline --tests --quiet
+$HOME/.cargo/bin/cargo metadata --no-deps --offline --format-version 1
 $HOME/.cargo/bin/cargo fmt --all -- --check
 git diff --check
 node scripts/conversion-progress.mjs
@@ -179,12 +182,30 @@ form submission, and provider source labels. Independent reviewer cow compared
 the implementation and tests with the upstream Bedrock API/provider/env-key
 sources and credential/endpoint fixtures and returned **APPROVE** with no
 blockers. SSO- or process-backed profiles and EC2 metadata remain outside the
-manual signer scope. The checker reports exactly `Conversion progress: 64.46%
-(107/166; 59 open)`. The next dependency-safe task is S-011 Google Vertex ADC
-file, token URI, scope, refresh, and project/location precedence parity. The
-S-010 implementation/documentation commit is
-`9a8eaee9b8273e7b938075a38ed9659baff02359`; the ledger, plan, handoff, and
-README are synchronized after the documentation push.
+manual signer scope.
+
+The feedback loop was rerun over the complete S-010 result after the earlier
+implementation and review work. Profile/env/config/endpoint precedence maps to
+the named fixtures above; ECS and web-identity runtime behavior maps to the
+parser and local mock HTTP fixtures; the public stream/request boundary maps to
+the 41-test Bedrock adaptor suite; and the provider-auth boundary maps to the
+two Bedrock auth tests. The full pi-ai library and integration targets passed.
+
+The broader packaging check was also attempted with:
+
+```text
+$HOME/.cargo/bin/cargo package -p pi-ai --offline --allow-dirty --no-verify
+```
+
+It remains blocked before packaging because the internal `pi-telemetry` path
+dependency has no crates.io version requirement and is unavailable in the
+offline index. This is a repository P9 packaging blocker, not an S-010 runtime
+or public-interface failure. No ledger checkbox changed during this rerun. The
+checker reports exactly `Conversion progress: 64.46% (107/166; 59 open)`. The
+next dependency-safe task is S-011 Google Vertex ADC file, token URI, scope,
+refresh, and project/location precedence parity. The S-010 implementation
+commit is `9a8eaee9b8273e7b938075a38ed9659baff02359`; the ledger, plan, handoff,
+and README remain synchronized after the next documentation push.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 

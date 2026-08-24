@@ -26,6 +26,14 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   identity STS credentials, bearer/skip-auth behavior, and exact provider auth
   source labels. SSO- or process-backed profiles and EC2 metadata remain
   outside the hand-rolled signer scope.
+- The post-publication whole-result S-010 acceptance rerun covered the public
+  Bedrock stream/request boundary, provider-auth boundary, all pi-ai library
+  and integration targets, compile/lint/format/diff gates, and offline Cargo
+  metadata. Those checks passed. `cargo package -p pi-ai --offline
+  --allow-dirty --no-verify` remains blocked by repository-level packaging
+  metadata: the path dependency `pi-telemetry` has no crates.io version
+  requirement, and it is not available in the offline index. No ledger checkbox
+  changed during this rerun; packaging remains P9 work outside S-010 behavior.
 - The original 100 entries remain the historical work queue. The supplemental
   S1 section is authoritative for residual provider, harness, runtime, TUI,
   RPC, auxiliary client/server, evaluation, and final-audit work.
