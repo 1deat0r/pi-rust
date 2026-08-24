@@ -22,7 +22,7 @@ compaction, RPC controls, TUI components, and client/server support. Remaining
 work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
 
-The last verified implementation checkpoint is `9599298`; the synchronized
+The last verified implementation checkpoint is `3b4d350`; the synchronized
 documentation follow-up is pushed with it. GitHub CLI authentication is
 configured for the HTTPS remote, so implementation checkpoints are pushed and
 hash-verified immediately.

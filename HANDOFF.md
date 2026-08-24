@@ -27,7 +27,7 @@ freeze. Do not claim 100% before the final clean-room audit.
 ## Important working-tree state
 
 The latest implementation checkpoint is the committed S-033
-interactive slash-command PTY fixture slice `9599298`, after the committed
+interactive slash-command PTY fixture slice `3b4d350`, after the committed
 S-032
 provider-auth-guidance slice `50c2103`, after the committed S-026 CLI
 session-routing slice `711a25e`, the parity checkpoint `eaa36ba`, and the committed S-029
@@ -62,7 +62,7 @@ additions/renames include:
 
 Current status at pause: branch `main`, progress checker reports
 `60.84% (101/166; 65 open)`. The latest committed implementation checkpoint is
-`9599298`, synchronized with `origin/main`; this documentation-only hash
+`3b4d350`, synchronized with `origin/main`; this documentation-only hash
 refresh follows it. Preserve the pre-existing
 untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
@@ -180,7 +180,7 @@ node scripts/conversion-progress.mjs (60.24% = 100/166; 66 open)
 
 S-033 is complete with the live command fixture evidence above. The broader
 S-056 command-by-command terminal matrix remains open. The implementation
-checkpoint `9599298` is committed and pushed; this follow-up keeps the handoff
+checkpoint `3b4d350` is committed and pushed; this follow-up keeps the handoff
 hash and evidence aligned with `origin/main`.
 
 ## Current project-trust safety checkpoint (S-036 complete)
