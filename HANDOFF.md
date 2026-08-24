@@ -934,3 +934,25 @@ S-012 implementation and documentation are committed as
 `origin/main` hashes matched in the required verification. The next
 dependency-safe action is S-013 GitHub Copilot OAuth refresh and
 enterprise-domain/token-exchange parity.
+## Active checkpoint — 2026-08-25 — full-conversion tree established
+
+The existing full-conversion goal is active and is being resumed with scoped
+sub-agent work under `.unlazy/full-conversion-20260825/`. Startup documents
+were read, the repository checker was run, and the authoritative result is:
+
+```text
+Conversion progress: 65.66% (109/166; 57 open)
+```
+
+No conversion-ledger item changed in this setup checkpoint. The depth tree,
+shared contracts, root acceptance gates, and disjoint leaf ledgers are in the
+scoped unlazy directory. The first ready leaves cover provider residuals,
+extensions, server/client libraries, TUI, evals, and source inventory; harness,
+PTY, integration, parity, and final-audit leaves wait on their declared
+dependencies. The driver owns `CONVERSION-LEDGER.md`, `PLAN.md`, `HANDOFF.md`,
+`README.md`, and final release/audit documentation. Agents must return changed
+paths and evidence without committing or pushing shared state.
+
+The working tree retains the pre-existing untracked `AGENTS.md`; `.unlazy/`
+runtime state is ignored. Next action: inspect and approve the scoped gate
+oracles, claim the first-wave leases, then dispatch the ready leaves.

@@ -1,5 +1,27 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-08-25 full-conversion execution tree
+
+The existing conversion goal is resumed under the scoped unlazy contract
+`.unlazy/full-conversion-20260825/`. The current authoritative checker output
+is **Conversion progress: 65.66% (109/166; 57 open)**. No ledger item changed
+while the execution tree and ownership contracts were created.
+
+The first parallel wave is deliberately disjoint: source inventory (`leaf-A1`),
+Copilot OAuth (`leaf-B1`), Anthropic provider edges (`leaf-B2`), model catalog
+semantics (`leaf-B3`), provider fixtures (`leaf-B4`), extension runtime
+(`leaf-C2`), auxiliary server (`leaf-D1`), auxiliary client (`leaf-D2`), TUI
+parity (`leaf-E1`), and evals (`leaf-F1`). The driver owns the conversion
+ledger and synchronized documentation. Harness/mode, reconnect E2E, full PTY,
+parity-fixture, and final-audit leaves are dependency-gated and will be
+dispatched only after their declared parents are independently reverified.
+
+Shared contracts: upstream oracle `upstream_pi/` at commit
+`5cd93f688aaab89dbb6dfa4aca535f21796ae185`; `/bin/sh`; offline Cargo by
+default; exact user-visible errors, JSONL/session formats, terminal bytes, and
+provider envelopes; evidence tiers `unit`, `mock`, or `live`. Every returned
+leaf is reviewed, reverified, and integrated before its ledger status changes.
+
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 

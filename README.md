@@ -15,6 +15,12 @@ queue. Recalculate the live value with:
 node scripts/conversion-progress.mjs
 ```
 
+The 2026-08-25 completion run is coordinated through the scoped execution
+tree in `.unlazy/full-conversion-20260825/`. Provider, harness, extension,
+server/client, TUI, eval, parity, and final-audit leaves have explicit
+ownership and evidence gates; see [PLAN.md](PLAN.md) and [HANDOFF.md](HANDOFF.md)
+for the current checkpoint and next dependency-safe action.
+
 The port already includes substantial CLI and runtime work, including the
 in-process agent loop, stateful harness-backed print, JSON, and interactive
 turns, provider/model catalog surfaces, session storage, project trust, tools,
