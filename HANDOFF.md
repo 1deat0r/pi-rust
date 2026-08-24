@@ -241,6 +241,19 @@ The print-path harness ownership slice is included in the latest checkpoint:
   and RPC modes still use their direct loop paths, and secondary lanes plus
   complete event/telemetry lifecycle wiring remain S-021/S-022 work.
 
+The harness lifecycle/telemetry slice is included in the latest checkpoint:
+
+- The configured print-path harness now consumes `HarnessTelemetryContext`
+  through an async-safe span boundary, emits `run_start` and `run_end` in
+  order, and records a settled `pi.harness.run` span with the required
+  session/lane/operation attributes. Session-write failures mark the span
+  explicitly as errors.
+- The focused harness fixture asserts the exact event sequence, span name,
+  required attributes, settled status, and `run_start`/`run_end` span events.
+  The full workspace gate remains green. This is partial S-022; the
+  interactive, JSON, JSONL, and RPC adapters still need the same bridge and
+  golden wire checks.
+
 The follow-up bash harness integration is included in the latest checkpoint:
 
 - The registered bash tool now runs through `StdExecutionEnv` and

@@ -14,8 +14,12 @@
 
 use std::collections::BTreeMap;
 use std::error::Error;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+use futures_util::FutureExt;
 
 pub type AttributeValue = serde_json::Value;
 pub type SpanAttributes = BTreeMap<String, AttributeValue>;
@@ -60,12 +64,14 @@ pub trait TelemetryContext: Send + Sync {
 // SpanHandle — the concrete span identity passed to callbacks
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 enum SpanInner {
     Noop,
     InMemory(InMemoryChildSpan),
 }
 
 /// Concrete span handle. Behaves as both a recording span and a context.
+#[derive(Clone)]
 pub struct SpanHandle {
     inner: SpanInner,
 }
@@ -109,6 +115,23 @@ impl SpanHandle {
             inner: SpanInner::Noop,
         }
     }
+
+    /// Start a child span whose lifetime follows an async callback.
+    ///
+    /// The synchronous `TelemetryContext::start_span` API remains the
+    /// canonical contract, but Rust callers must keep a span open across an
+    /// `.await` without settling it when the callback merely returns a
+    /// future. This helper provides that lifetime bridge.
+    pub async fn start_span_async<T, F, Fut>(&self, options: SpanOptions, callback: F) -> T
+    where
+        F: FnOnce(SpanHandle) -> Fut,
+        Fut: Future<Output = T>,
+    {
+        match &self.inner {
+            SpanInner::Noop => callback(SpanHandle::noop()).await,
+            SpanInner::InMemory(child) => child.start_chapter_async(options, callback).await,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +140,18 @@ impl SpanHandle {
 
 /// Shared telemetry context used when an application does not provide one.
 pub struct NoopTelemetry;
+
+impl NoopTelemetry {
+    /// Async counterpart to [`TelemetryContext::start_span`].
+    pub async fn start_span_async<T, F, Fut>(&self, options: SpanOptions, callback: F) -> T
+    where
+        F: FnOnce(SpanHandle) -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let _ = options;
+        callback(SpanHandle::noop()).await
+    }
+}
 
 impl TelemetryContext for NoopTelemetry {
     fn start_span<T, F>(&self, _options: SpanOptions, callback: F) -> T
@@ -317,6 +352,16 @@ struct InMemoryChildSpan {
     index: usize,
 }
 
+impl Clone for InMemoryChildSpan {
+    fn clone(&self) -> Self {
+        Self {
+            record: self.record.clone(),
+            state: self.state.clone(),
+            index: self.index,
+        }
+    }
+}
+
 impl InMemoryChildSpan {
     fn record_add_event(&self, name: &str, attributes: Option<SpanAttributes>) {
         self.record.add_event(name, attributes);
@@ -343,6 +388,21 @@ impl InMemoryChildSpan {
             Some(guard.spans[self.index].id)
         };
         start_span_with_parent(&self.state, parent_id, options, callback)
+    }
+
+    async fn start_chapter_async<T, F, Fut>(&self, options: SpanOptions, callback: F) -> T
+    where
+        F: FnOnce(SpanHandle) -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let parent_id = {
+            let guard = self.state.lock().unwrap();
+            if guard.spans[self.index].settled {
+                return callback(SpanHandle::noop()).await;
+            }
+            Some(guard.spans[self.index].id)
+        };
+        start_span_with_parent_async(&self.state, parent_id, options, callback).await
     }
 }
 
@@ -404,6 +464,62 @@ where
     }
 }
 
+/// Async variant of [`start_span_with_parent`]. The callback future is
+/// awaited before settlement, and an unwind still marks the span as an
+/// automatic error before the original panic resumes.
+async fn start_span_with_parent_async<T, F, Fut>(
+    state: &Arc<Mutex<InMemoryTelemetryState>>,
+    parent_id: Option<u64>,
+    options: SpanOptions,
+    callback: F,
+) -> T
+where
+    F: FnOnce(SpanHandle) -> Fut,
+    Fut: Future<Output = T>,
+{
+    let mut guard = state.lock().unwrap();
+    let id = guard.next_span_id;
+    guard.next_span_id += 1;
+    let index = guard.spans.len();
+    guard.spans.push(MutableRecordedTelemetrySpan {
+        id,
+        parent_id,
+        name: options.name,
+        attributes: copy_attributes(options.attributes.as_ref()),
+        ..Default::default()
+    });
+    drop(guard);
+
+    let settled = Arc::new(AtomicBool::new(false));
+    let handle = InMemorySpanHandle {
+        state: state.clone(),
+        index,
+        settled: settled.clone(),
+    };
+    let record: Arc<dyn TelemetrySpan + Send + Sync> = Arc::new(handle);
+    let child = InMemoryChildSpan {
+        record,
+        state: state.clone(),
+        index,
+    };
+    let span = SpanHandle {
+        inner: SpanInner::InMemory(child),
+    };
+
+    let result = AssertUnwindSafe(callback(span)).catch_unwind().await;
+    settled.store(true, Ordering::SeqCst);
+    match result {
+        Ok(result) => {
+            settle_span(&mut state.lock().unwrap(), index, false, None);
+            result
+        }
+        Err(panic) => {
+            settle_panicked_span(&mut state.lock().unwrap(), index);
+            std::panic::resume_unwind(panic)
+        }
+    }
+}
+
 /// Backend-neutral reference implementation that records spans in process
 /// memory. Create a fresh instance to isolate tests or recording scopes.
 #[derive(Debug, Clone)]
@@ -429,6 +545,15 @@ impl InMemoryTelemetryContext {
         F: FnOnce(&SpanHandle) -> T,
     {
         start_span_with_parent(&self.state, None, options, callback)
+    }
+
+    /// Start a root span whose lifetime follows an async callback.
+    pub async fn start_span_async<T, F, Fut>(&self, options: SpanOptions, callback: F) -> T
+    where
+        F: FnOnce(SpanHandle) -> Fut,
+        Fut: Future<Output = T>,
+    {
+        start_span_with_parent_async(&self.state, None, options, callback).await
     }
 
     /// Returns detached snapshots in span-start order.

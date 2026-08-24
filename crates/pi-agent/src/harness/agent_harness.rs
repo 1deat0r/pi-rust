@@ -34,10 +34,17 @@ use async_trait::async_trait;
 use pi_ai::model::Model;
 use pi_ai::types::{AssistantMessage, DeferredHandle, SimpleStreamOptions, Usage};
 use pi_ai::utils::retry::RetryPolicy;
-use pi_telemetry::{InMemoryTelemetryContext, SpanHandle, SpanOptions, TelemetryContext};
+use pi_telemetry::{
+    InMemoryTelemetryContext, SpanError, SpanHandle, SpanOptions, SpanStatus, TelemetryContext,
+    TelemetrySpan,
+};
 
 use crate::fs::FileSystem;
 use crate::harness::compaction::compaction::{CompactionSettings, DEFAULT_COMPACTION_SETTINGS};
+use crate::harness::events::{
+    HarnessEvent, HarnessEventBus, HarnessEventListener, RunEndEvent, RunOutcome as EventOutcome,
+    RunStartEvent,
+};
 use crate::harness::models::BoxFuture;
 use crate::harness::result::TaggedError;
 use crate::rich_agent::Agent;
@@ -77,6 +84,21 @@ impl HarnessTelemetryContext {
                 pi_telemetry::NOOP_TELEMETRY_CONTEXT.start_span(options, callback)
             }
             HarnessTelemetryContext::InMemory(ctx) => ctx.start_span(options, callback),
+        }
+    }
+
+    pub async fn start_span_async<T, F, Fut>(&self, options: SpanOptions, callback: F) -> T
+    where
+        F: FnOnce(SpanHandle) -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        match self {
+            HarnessTelemetryContext::Noop => {
+                pi_telemetry::NOOP_TELEMETRY_CONTEXT
+                    .start_span_async(options, callback)
+                    .await
+            }
+            HarnessTelemetryContext::InMemory(ctx) => ctx.start_span_async(options, callback).await,
         }
     }
 }
@@ -969,6 +991,8 @@ pub struct AgentHarness<F: FileSystem> {
     steering_mode: QueueMode,
     follow_up_mode: QueueMode,
     agent: Option<Arc<Agent>>,
+    telemetry_context: HarnessTelemetryContext,
+    event_bus: HarnessEventBus,
     pub hooks: UnavailableRegistry,
     pub events: UnavailableRegistry,
     closed: Arc<RwLock<bool>>,
@@ -1035,6 +1059,7 @@ impl<F: FileSystem> AgentHarness<F> {
             .compaction
             .clone()
             .unwrap_or(DEFAULT_COMPACTION_SETTINGS);
+        let telemetry_context = options.context.clone().unwrap_or_default();
         let agent = options.stream_fn.clone().map(|stream_fn| {
             let mut agent = Agent::new(stream_fn);
             {
@@ -1069,6 +1094,8 @@ impl<F: FileSystem> AgentHarness<F> {
             steering_mode: options.steering_mode.unwrap_or_default(),
             follow_up_mode: options.follow_up_mode.unwrap_or_default(),
             agent,
+            telemetry_context,
+            event_bus: HarnessEventBus::new(),
             hooks: UnavailableRegistry::new("hooks.on", closed.clone()),
             events: UnavailableRegistry::new("events.on", closed.clone()),
             closed,
@@ -1083,6 +1110,20 @@ impl<F: FileSystem> AgentHarness<F> {
 
     pub fn is_closed(&self) -> bool {
         self.closed.read().map(|b| *b).unwrap_or(false)
+    }
+
+    /// Subscribe to the integrated harness run lifecycle without changing
+    /// the upstream scaffolded `events` registry surface.
+    pub fn subscribe_event(
+        &mut self,
+        event_type: &'static str,
+        listener: HarnessEventListener,
+    ) -> usize {
+        self.event_bus.on(event_type, listener)
+    }
+
+    pub fn unsubscribe_event(&mut self, subscription_id: usize) {
+        self.event_bus.unsubscribe(subscription_id);
     }
 
     fn unavailable<T>(&self, operation: &str) -> Result<T, HarnessError> {
@@ -1104,17 +1145,84 @@ impl<F: FileSystem> AgentHarness<F> {
         if self.is_closed() {
             return Err(HarnessError::closed());
         }
-        let Some(agent) = &self.agent else {
+        let Some(agent) = self.agent.clone() else {
             return self.unavailable("prompt");
         };
-        let messages = agent.prompt_messages(prompts).await;
-        for message in &messages {
-            self.session
-                .append_message(message.clone())
-                .await
-                .map_err(HarnessError::from)?;
-        }
-        Ok(messages)
+        let run_id = crate::session::new_id();
+        let session_id = self.session.get_metadata().await.id;
+        self.event_bus.emit(&HarnessEvent::RunStart(RunStartEvent {
+            lane: self.name.clone(),
+            run_id: run_id.clone(),
+        }));
+
+        let telemetry = self.telemetry_context.clone();
+        let span_run_id = run_id.clone();
+        let span_session_id = session_id;
+        let span_lane = self.name.clone();
+        let session = &mut self.session;
+        let run_result: Result<Vec<AgentMessage>, HarnessError> = telemetry
+            .start_span_async(
+                SpanOptions {
+                    name: "pi.harness.run".to_string(),
+                    attributes: Some(BTreeMap::from([
+                        (
+                            "pi.session.id".to_string(),
+                            serde_json::json!(span_session_id),
+                        ),
+                        ("pi.lane.name".to_string(), serde_json::json!(span_lane)),
+                        (
+                            "pi.operation.id".to_string(),
+                            serde_json::json!(span_run_id),
+                        ),
+                        (
+                            "pi.operation.recovery".to_string(),
+                            serde_json::json!(false),
+                        ),
+                        ("pi.operation.kind".to_string(), serde_json::json!("run")),
+                    ])),
+                },
+                move |span| async move {
+                    span.add_event("run_start", None);
+                    let messages = agent.prompt_messages(prompts).await;
+                    for message in &messages {
+                        if let Err(error) = session.append_message(message.clone()).await {
+                            span.set_status(SpanStatus::Error {
+                                error: Some(SpanError {
+                                    name: "SessionError".to_string(),
+                                    message: error.to_string(),
+                                }),
+                            });
+                            return Err(HarnessError::from(error));
+                        }
+                    }
+                    span.set_attributes(BTreeMap::from([(
+                        "pi.operation.outcome".to_string(),
+                        serde_json::json!("completed"),
+                    )]));
+                    span.add_event("run_end", None);
+                    Ok(messages)
+                },
+            )
+            .await;
+
+        let leaf_id = self
+            .session
+            .get_leaf_id()
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        self.event_bus.emit(&HarnessEvent::RunEnd(RunEndEvent {
+            lane: self.name.clone(),
+            run_id,
+            outcome: if run_result.is_ok() {
+                EventOutcome::Completed
+            } else {
+                EventOutcome::Failed
+            },
+            leaf_id,
+        }));
+        run_result
     }
 
     /// Snapshot the harness-owned durable transcript in chronological order.
@@ -1421,6 +1529,7 @@ mod tests {
     };
     use pi_ai::types::{ContentBlock, Cost, Message, UserContent};
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
 
     type MemSession = Session<MemoryFs>;
 
@@ -1495,8 +1604,33 @@ mod tests {
             let mut options = AgentHarnessOptions::new(create_session("running"), test_model());
             options.stream_fn = Some(stream_fn);
             options.system_prompt = Some("system".into());
+            let telemetry = Arc::new(InMemoryTelemetryContext::new());
+            options.context = Some(HarnessTelemetryContext::InMemory(telemetry.clone()));
             let (mut harness, suspended) = AgentHarness::create(options).await.unwrap();
             assert!(suspended.is_empty());
+
+            let lifecycle = Arc::new(Mutex::new(Vec::<String>::new()));
+            let start_lifecycle = lifecycle.clone();
+            harness.subscribe_event(
+                "run_start",
+                Box::new(move |event| {
+                    start_lifecycle
+                        .lock()
+                        .unwrap()
+                        .push(event.event_type().to_string());
+                }),
+            );
+            let end_lifecycle = lifecycle.clone();
+            harness.subscribe_event(
+                "run_end",
+                Box::new(move |event| {
+                    let outcome = event.as_run_end().expect("run_end event").outcome.as_str();
+                    end_lifecycle
+                        .lock()
+                        .unwrap()
+                        .push(format!("{}:{outcome}", event.event_type()));
+                }),
+            );
 
             let messages = harness
                 .run_prompt(vec![user_message("hello")])
@@ -1509,6 +1643,26 @@ mod tests {
             assert_eq!(transcript.len(), 2);
             assert_eq!(transcript[0].as_message().unwrap(), &messages[0]);
             assert_eq!(transcript[1].as_message().unwrap(), &messages[1]);
+            assert_eq!(
+                *lifecycle.lock().unwrap(),
+                vec!["run_start".to_string(), "run_end:completed".to_string()]
+            );
+
+            let spans = telemetry.get_spans();
+            assert_eq!(spans.len(), 1);
+            assert_eq!(spans[0].name, "pi.harness.run");
+            assert_eq!(spans[0].attributes["pi.lane.name"], "main");
+            assert_eq!(spans[0].attributes["pi.operation.kind"], "run");
+            assert_eq!(spans[0].status, SpanStatus::Ok);
+            assert!(spans[0].settled);
+            assert_eq!(
+                spans[0]
+                    .events
+                    .iter()
+                    .map(|event| event.name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["run_start", "run_end"]
+            );
         });
     }
 

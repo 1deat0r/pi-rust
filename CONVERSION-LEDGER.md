@@ -27,11 +27,13 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   tool-contract, RPC, image/read, print-mode compaction, malformed-call, and
   harness-owned print-path suites pass. The one-shot path now owns a
   stateful `AgentHarness` transcript and replays it into durable JSONL while
-  retaining compaction behavior; interactive/JSON/JSONL/RPC loop integration
-  remains open under S-021/S-022. Telemetry callback panics now settle
-  in-memory spans as automatic errors while preserving explicit statuses and
-  panic propagation; the shared TUI image-capability fixtures are serialized
-  for deterministic workspace runs.
+  retaining compaction behavior. Its configured print run now emits ordered
+  lifecycle events and a settled `pi.harness.run` span with required
+  attributes; interactive/JSON/JSONL/RPC loop integration remains open under
+  S-021/S-022. Telemetry callback panics now settle in-memory spans as
+  automatic errors while preserving explicit statuses and panic propagation;
+  the shared TUI image-capability fixtures are serialized for deterministic
+  workspace runs.
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
   device-code flows, codex WebSocket transport (SSE fallback today),
   `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
@@ -628,6 +630,9 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       interactive/JSON/JSONL/RPC paths and secondary lanes remain open.)
 - [ ] S-022 Wire the complete harness event and telemetry lifecycle into print,
       interactive, JSON, JSONL, and RPC modes with span/event golden checks.
+      (Partial unit/integration slice: the configured print-path harness now
+      emits ordered run lifecycle events and a settled `pi.harness.run` span;
+      mode-wide bridges and golden wire assertions remain open.)
 - [x] S-023 Add panic-safe telemetry callback settlement equivalent to the
       upstream `try/catch/finally` span lifecycle. (unit) The in-memory
       adapter catches callback unwinds, settles spans as automatic errors

@@ -1045,6 +1045,7 @@ dependencies = [
 name = "pi-telemetry"
 version = "0.84.2"
 dependencies = [
+ "futures-util",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

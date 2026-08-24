@@ -1112,6 +1112,32 @@ session behavior.
   direct loop paths, and secondary lane operations plus complete harness event
   wiring remain for the next slice. S-022 remains open.
 
+### Session 32 — 2026-08-24 — Harness run lifecycle and async span settlement (partial S-022)
+Scope: make the integrated harness-owned print run observable with the
+upstream run lifecycle and telemetry contract.
+
+- `HarnessTelemetryContext` now has an async span boundary that keeps
+  `pi.harness.run` open across provider/session awaits and preserves panic
+  settlement semantics. The harness consumes its configured telemetry context
+  instead of silently discarding it.
+- Configured `AgentHarness::run_prompt` emits ordered `run_start` and
+  `run_end` events, records required operation/session/lane attributes, adds
+  matching span events, marks failed session writes as telemetry errors, and
+  retains the existing durable transcript behavior. The upstream scaffolded
+  `events.on` registry remains unavailable; this integration seam is explicit
+  and testable.
+- Evidence (unit/integration): `/home/mustbearnold/.cargo/bin/cargo test
+  -p pi-agent --offline configured_harness_runs_agent_and_persists_lane_messages
+  -- --nocapture`, `/home/mustbearnold/.cargo/bin/cargo test -p pi-telemetry
+  --offline --quiet` (6 passed), `/home/mustbearnold/.cargo/bin/cargo test
+  -p pi-agent --offline --quiet` (175 library tests plus integration targets),
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+  --test cli_print_parity -- --nocapture`, `/home/mustbearnold/.cargo/bin/cargo
+  test --workspace --offline --quiet`, `/home/mustbearnold/.cargo/bin/cargo
+  fmt --all -- --check`, and `git diff --check`.
+- S-022 remains open: interactive, JSON, JSONL, and RPC adapters still need
+  the same complete lifecycle/event bridge and golden wire assertions.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration
