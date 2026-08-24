@@ -19,13 +19,13 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the S-026 CLI session-routing checkpoint `711a25e` on `main`, with
-  the S-032 auth-guidance slice currently in the working tree, after
+- HEAD is the committed S-032 provider-auth-guidance checkpoint `50c2103` on
+  `main`, after the S-026 CLI session-routing checkpoint `711a25e`,
   the startup-timing compatibility and compiled-binary self-update contracts,
   the print-path harness ownership, AgentTool harness/termination,
   schema-validator, panic-safe telemetry, install telemetry, update/version,
   and model-catalog work. GitHub authentication is configured through `gh
-  auth setup-git`, and `origin/main` matches local `HEAD` at `711a25e`.
+  auth setup-git`, and `origin/main` matches local `HEAD` at `50c2103`.
 - The workspace is green under `cargo test --workspace --offline`; the focused
   tool-contract, RPC, image/read, print-mode compaction, malformed-call, and
   harness-owned print-path suites pass. The one-shot path now owns a

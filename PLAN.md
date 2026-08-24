@@ -1390,6 +1390,9 @@ user-visible print, JSON, interactive, and RPC error boundary.
   unrelated OpenHuman release build ran: rustc was SIGKILLed, then rust-lld
   reported SIGBUS, and the isolated retry reached `Disk quota exceeded`.
   Re-run the full workspace gate after the host build/cache pressure clears.
+- Checkpoint: commit `50c2103`; `git rev-parse HEAD` and
+  `git ls-remote origin refs/heads/main` both resolve to
+  `50c2103e3471f302fba5a4a015138af43c9cc400`.
 - S-032 is complete. S-021/S-022 harness ownership, S-027 extension runtime,
   and the remaining provider/TUI/client/server/evaluation audits remain open.
 

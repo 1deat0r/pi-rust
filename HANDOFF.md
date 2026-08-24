@@ -26,9 +26,9 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest implementation checkpoint is the S-032 provider-auth-guidance slice
-in the working tree, after the committed S-026 CLI session-routing slice
-`711a25e`, the parity checkpoint `eaa36ba`, and the committed S-029
+The latest implementation checkpoint is the committed S-032
+provider-auth-guidance slice `50c2103`, after the committed S-026 CLI
+session-routing slice `711a25e`, the parity checkpoint `eaa36ba`, and the committed S-029
 install-telemetry slice `3d6f1fc` and the committed
 S-030 interactive cache-notice slice `7356dd3`,
 `ef640ce`,
@@ -60,14 +60,14 @@ additions/renames include:
 
 Current status at pause: branch `main`, progress checker reports
 `59.04% (98/166; 68 open)`. The latest committed parity checkpoint is
-`28ebf0d`; the S-032 implementation is currently in the working tree.
-Preserve the pre-existing untracked `AGENTS.md`.
+`50c2103`, synchronized with `origin/main`. Preserve the pre-existing
+untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
 provider auth guidance, startup-timing, interactive cache-notice,
 install-telemetry contracts, and the synchronized-doc workflow. The
 pre-existing `AGENTS.md` remains untouched.
 
-## Current S-032 working-tree checkpoint
+## Current S-032 committed checkpoint
 
 Provider auth failures now receive the upstream actionable guidance at all
 user-visible mode boundaries:
@@ -575,7 +575,7 @@ items just because a similarly named Rust module exists.
 
 The operator has requested commit + push after each checkpoint. GitHub device
 authentication and the HTTPS credential helper are now configured; the
-accumulated branch is verified at parity with `origin/main` at `28ebf0d`; the
-S-032 working tree must be committed and pushed next. Before continuing, inspect
+accumulated branch is verified at parity with `origin/main` at `50c2103`.
+Before continuing, inspect
 `git status`, read this handoff, run the progress checker, and treat all
 existing dirty changes as user-owned work.
