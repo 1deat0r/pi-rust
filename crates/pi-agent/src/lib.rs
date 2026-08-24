@@ -5,7 +5,7 @@
 //! - `fs.rs`: filesystem abstraction for session storage.
 //! - `session/`: entry/record/fact model, in-memory `SessionState`,
 //!   JSONL v4 codec + storage (create/load/append/query, torn-tail repair).
-//! See PLAN.md P3 and TODO.md for remaining harness work.
+//!   See PLAN.md P3 and TODO.md for remaining harness work.
 
 pub mod agent;
 pub mod fs;

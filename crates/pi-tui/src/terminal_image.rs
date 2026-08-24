@@ -14,7 +14,7 @@ pub enum ImageProtocol {
 }
 
 /// Terminal capabilities for images, truecolor, hyperlinks.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalCapabilities {
     pub images: Option<ImageProtocol>,
     pub true_color: bool,
@@ -23,6 +23,52 @@ pub struct TerminalCapabilities {
 
 static CAPS: RwLock<Option<TerminalCapabilities>> = RwLock::new(None);
 static CELL_DIMENSIONS: RwLock<(u32, u32)> = RwLock::new((9, 18));
+
+/// The environment inputs used by terminal capability detection.
+///
+/// Keeping the matrix separate from process-global environment reads makes
+/// terminal support testable without racing other tests or mutating the
+/// caller's environment.  `from_process` is the only place that reads
+/// environment variables for the normal runtime path.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CapabilityEnvironment {
+    pub term_program: Option<String>,
+    pub terminal_emulator: Option<String>,
+    pub term: Option<String>,
+    pub color_term: Option<String>,
+    pub kitty_window_id: bool,
+    pub ghostty_resources_dir: bool,
+    pub wezterm_pane: bool,
+    pub warp_session_id: bool,
+    pub warp_terminal_session_uuid: bool,
+    pub iterm_session_id: bool,
+    pub wt_session: bool,
+    pub tmux: bool,
+    pub is_windows: bool,
+}
+
+impl CapabilityEnvironment {
+    fn from_process() -> Self {
+        fn value(name: &str) -> Option<String> {
+            std::env::var(name).ok().map(|value| value.to_lowercase())
+        }
+        Self {
+            term_program: value("TERM_PROGRAM"),
+            terminal_emulator: value("TERMINAL_EMULATOR"),
+            term: value("TERM"),
+            color_term: value("COLORTERM"),
+            kitty_window_id: std::env::var_os("KITTY_WINDOW_ID").is_some(),
+            ghostty_resources_dir: std::env::var_os("GHOSTTY_RESOURCES_DIR").is_some(),
+            wezterm_pane: std::env::var_os("WEZTERM_PANE").is_some(),
+            warp_session_id: std::env::var_os("WARP_SESSION_ID").is_some(),
+            warp_terminal_session_uuid: std::env::var_os("WARP_TERMINAL_SESSION_UUID").is_some(),
+            iterm_session_id: std::env::var_os("ITERM_SESSION_ID").is_some(),
+            wt_session: std::env::var_os("WT_SESSION").is_some(),
+            tmux: std::env::var_os("TMUX").is_some(),
+            is_windows: cfg!(windows),
+        }
+    }
+}
 
 /// Detect capabilities from the environment.
 pub fn detect_capabilities() -> TerminalCapabilities {
@@ -34,16 +80,32 @@ pub fn detect_capabilities_with_tmux_probe<F>(tmux_forwards_hyperlink: F) -> Ter
 where
     F: FnOnce() -> bool,
 {
-    fn get(name: &str) -> Option<String> {
-        std::env::var(name).ok().map(|v| v.to_lowercase())
-    }
-    let term_program = get("TERM_PROGRAM").unwrap_or_default();
-    let term_emulator = get("TERMINAL_EMULATOR").unwrap_or_default();
-    let term = get("TERM").unwrap_or_default();
-    let color_term = get("COLORTERM").unwrap_or_default();
+    detect_capabilities_for_environment(
+        &CapabilityEnvironment::from_process(),
+        tmux_forwards_hyperlink,
+    )
+}
+
+/// Detect capabilities for an explicit environment matrix.
+///
+/// This is public so downstream fixture tests can verify a terminal family
+/// without changing process environment variables.  The precedence mirrors
+/// the upstream detector: tmux and screen are transport layers and therefore
+/// take precedence over the outer terminal's image protocol.
+pub fn detect_capabilities_for_environment<F>(
+    environment: &CapabilityEnvironment,
+    tmux_forwards_hyperlink: F,
+) -> TerminalCapabilities
+where
+    F: FnOnce() -> bool,
+{
+    let term_program = environment.term_program.as_deref().unwrap_or_default();
+    let term_emulator = environment.terminal_emulator.as_deref().unwrap_or_default();
+    let term = environment.term.as_deref().unwrap_or_default();
+    let color_term = environment.color_term.as_deref().unwrap_or_default();
     let has_true_color = color_term == "truecolor" || color_term == "24bit";
 
-    let tmux = std::env::var("TMUX").is_ok() || term.starts_with("tmux");
+    let tmux = environment.tmux || term.starts_with("tmux");
     if tmux {
         return TerminalCapabilities {
             images: None,
@@ -58,16 +120,16 @@ where
             hyperlinks: false,
         };
     }
-    let in_env = |names: &[&str]| names.iter().any(|n| std::env::var(n).is_ok());
-    if in_env(&["KITTY_WINDOW_ID"])
+    if environment.kitty_window_id
         || term_program == "kitty"
         || term_program == "ghostty"
         || term.contains("ghostty")
-        || in_env(&["GHOSTTY_RESOURCES_DIR"])
-        || in_env(&["WEZTERM_PANE"])
+        || environment.ghostty_resources_dir
+        || environment.wezterm_pane
         || term_program == "wezterm"
         || term_program == "warpterminal"
-        || in_env(&["WARP_SESSION_ID", "WARP_TERMINAL_SESSION_UUID"])
+        || environment.warp_session_id
+        || environment.warp_terminal_session_uuid
     {
         return TerminalCapabilities {
             images: Some(ImageProtocol::Kitty),
@@ -75,14 +137,14 @@ where
             hyperlinks: true,
         };
     }
-    if in_env(&["ITERM_SESSION_ID"]) || term_program == "iterm.app" {
+    if environment.iterm_session_id || term_program == "iterm.app" {
         return TerminalCapabilities {
             images: Some(ImageProtocol::ITerm2),
             true_color: true,
             hyperlinks: true,
         };
     }
-    if in_env(&["WT_SESSION"]) || term_program == "vscode" || term_program == "alacritty" {
+    if environment.wt_session || term_program == "vscode" || term_program == "alacritty" {
         return TerminalCapabilities {
             images: None,
             true_color: true,
@@ -96,7 +158,7 @@ where
             hyperlinks: false,
         };
     }
-    if cfg!(windows) {
+    if environment.is_windows {
         return TerminalCapabilities {
             images: None,
             true_color: true,
@@ -187,6 +249,39 @@ where
 pub fn set_capabilities(caps: TerminalCapabilities) {
     let mut guard = CAPS.write().unwrap_or_else(|e| e.into_inner());
     *guard = Some(caps);
+}
+
+/// Clear the process capability cache so a later call re-runs detection.
+/// This is primarily useful for deterministic fixture tests and parity with
+/// the upstream `resetCapabilitiesCache` helper.
+pub fn reset_capabilities_cache() {
+    let mut guard = CAPS.write().unwrap_or_else(|e| e.into_inner());
+    *guard = None;
+}
+
+/// Allocate a non-zero Kitty image id without relying on a platform RNG API.
+/// A monotonic id is sufficient for the TUI's lifetime and deterministic in
+/// tests; callers may still provide an explicit id to `encode_kitty`.
+pub fn allocate_image_id() -> u32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT_IMAGE_ID: AtomicU32 = AtomicU32::new(1);
+    let id = NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed);
+    if id == 0 {
+        NEXT_IMAGE_ID.store(2, Ordering::Relaxed);
+        1
+    } else {
+        id
+    }
+}
+
+/// Delete one Kitty image while retaining the terminal's other placements.
+pub fn delete_kitty_image(image_id: u32) -> String {
+    format!("\x1b_Ga=d,d=I,i={image_id},q=2\x1b\\")
+}
+
+/// Delete all Kitty placements and their uploaded image data.
+pub fn delete_all_kitty_images() -> &'static str {
+    "\x1b_Ga=d,d=A,q=2\x1b\\"
 }
 
 /// Wrap text in an OSC 8 hyperlink sequence.
@@ -443,7 +538,11 @@ pub fn encode_kitty(
 }
 
 pub fn encode_iterm2(base64_data: &str, columns: usize, preserve_aspect_ratio: bool) -> String {
-    let size = base64_data.len();
+    // iTerm2's `size` is the decoded byte count, not the base64 character
+    // count.  The latter is only equal for a few accidental inputs.
+    let size = decode_base64(base64_data)
+        .map(|bytes| bytes.len())
+        .unwrap_or_else(|| base64_data.len());
     let mut params = vec!["inline=1".to_string(), format!("size={size}")];
     if columns > 0 {
         params.push(format!("width={columns}"));
@@ -497,5 +596,175 @@ mod tests {
         let actual = cached_capabilities(&cache, || expected);
         assert!(actual.true_color);
         assert!(cache.read().unwrap().is_some());
+    }
+
+    #[test]
+    fn capability_matrix_covers_named_terminal_families_and_fallback() {
+        let cases = [
+            (
+                "Kitty",
+                CapabilityEnvironment {
+                    kitty_window_id: true,
+                    ..Default::default()
+                },
+                TerminalCapabilities {
+                    images: Some(ImageProtocol::Kitty),
+                    true_color: true,
+                    hyperlinks: true,
+                },
+            ),
+            (
+                "Ghostty",
+                CapabilityEnvironment {
+                    term_program: Some("ghostty".into()),
+                    ..Default::default()
+                },
+                TerminalCapabilities {
+                    images: Some(ImageProtocol::Kitty),
+                    true_color: true,
+                    hyperlinks: true,
+                },
+            ),
+            (
+                "WezTerm",
+                CapabilityEnvironment {
+                    wezterm_pane: true,
+                    ..Default::default()
+                },
+                TerminalCapabilities {
+                    images: Some(ImageProtocol::Kitty),
+                    true_color: true,
+                    hyperlinks: true,
+                },
+            ),
+            (
+                "Warp",
+                CapabilityEnvironment {
+                    term_program: Some("warpterminal".into()),
+                    ..Default::default()
+                },
+                TerminalCapabilities {
+                    images: Some(ImageProtocol::Kitty),
+                    true_color: true,
+                    hyperlinks: true,
+                },
+            ),
+            (
+                "iTerm2",
+                CapabilityEnvironment {
+                    iterm_session_id: true,
+                    ..Default::default()
+                },
+                TerminalCapabilities {
+                    images: Some(ImageProtocol::ITerm2),
+                    true_color: true,
+                    hyperlinks: true,
+                },
+            ),
+            (
+                "VS Code",
+                CapabilityEnvironment {
+                    term_program: Some("vscode".into()),
+                    ..Default::default()
+                },
+                TerminalCapabilities {
+                    images: None,
+                    true_color: true,
+                    hyperlinks: true,
+                },
+            ),
+            (
+                "Alacritty",
+                CapabilityEnvironment {
+                    term_program: Some("alacritty".into()),
+                    ..Default::default()
+                },
+                TerminalCapabilities {
+                    images: None,
+                    true_color: true,
+                    hyperlinks: true,
+                },
+            ),
+            (
+                "JetBrains",
+                CapabilityEnvironment {
+                    terminal_emulator: Some("jetbrains-jediterm".into()),
+                    ..Default::default()
+                },
+                TerminalCapabilities {
+                    images: None,
+                    true_color: true,
+                    hyperlinks: false,
+                },
+            ),
+            (
+                "screen",
+                CapabilityEnvironment {
+                    term: Some("screen-256color".into()),
+                    color_term: Some("truecolor".into()),
+                    ..Default::default()
+                },
+                TerminalCapabilities {
+                    images: None,
+                    true_color: true,
+                    hyperlinks: false,
+                },
+            ),
+            (
+                "Windows Terminal",
+                CapabilityEnvironment {
+                    wt_session: true,
+                    ..Default::default()
+                },
+                TerminalCapabilities {
+                    images: None,
+                    true_color: true,
+                    hyperlinks: true,
+                },
+            ),
+            (
+                "unknown with truecolor",
+                CapabilityEnvironment {
+                    color_term: Some("24bit".into()),
+                    ..Default::default()
+                },
+                TerminalCapabilities {
+                    images: None,
+                    true_color: true,
+                    hyperlinks: false,
+                },
+            ),
+        ];
+
+        for (name, environment, expected) in cases {
+            let actual = detect_capabilities_for_environment(&environment, || false);
+            assert_eq!(actual, expected, "capability mismatch for {name}");
+        }
+    }
+
+    #[test]
+    fn tmux_transport_wins_over_outer_terminal_and_probe_controls_links() {
+        let environment = CapabilityEnvironment {
+            term_program: Some("kitty".into()),
+            term: Some("tmux-256color".into()),
+            tmux: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            detect_capabilities_for_environment(&environment, || true),
+            TerminalCapabilities {
+                images: None,
+                true_color: false,
+                hyperlinks: true,
+            }
+        );
+        assert!(!detect_capabilities_for_environment(&environment, || false).hyperlinks);
+    }
+
+    #[test]
+    fn iterm2_size_uses_decoded_payload_bytes() {
+        let encoded = encode_iterm2("SGVsbG8=", 0, true);
+        assert!(encoded.contains("size=5"));
+        assert!(!encoded.contains("size=8"));
     }
 }

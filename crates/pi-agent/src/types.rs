@@ -10,6 +10,7 @@ use pi_ai::types::Message;
 use serde::{Deserialize, Serialize};
 
 /// Agent message union (user / assistant / toolResult / custom).
+#[allow(clippy::large_enum_variant)] // preserve the public upstream message union
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AgentMessage {

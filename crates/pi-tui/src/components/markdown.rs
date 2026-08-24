@@ -226,6 +226,21 @@ pub fn parse_markdown(source: &str) -> Vec<Block> {
                 code_lines.push(l);
                 i += 1;
             }
+            // During streaming, a closing fence may have arrived as a
+            // shorter run at EOF. Marked stabilizes that shape as the closing
+            // border instead of showing the partial fence as code content.
+            if !closed {
+                if let Some(last) = code_lines.last() {
+                    let trimmed = last.trim();
+                    let marker_char = marker_len.chars().next().unwrap_or('`');
+                    if !trimmed.is_empty()
+                        && trimmed.chars().all(|c| c == marker_char)
+                        && trimmed.chars().count() < marker_len.chars().count()
+                    {
+                        code_lines.pop();
+                    }
+                }
+            }
             let _ = closed;
             let text = code_lines.join("\n");
             tokens.push(Block::Code {
@@ -289,6 +304,15 @@ pub fn parse_markdown(source: &str) -> Vec<Block> {
         if let Some(parsed_list) = try_parse_list(&lines[i..]) {
             tokens.push(Block::List(parsed_list.block));
             i += parsed_list.line_count;
+            continue;
+        }
+
+        // Display math is a block token in marked. Handling it before the
+        // paragraph parser keeps `$$...$$` and `\\[...\\]` from being
+        // mistaken for two unrelated inline fragments while streaming.
+        if let Some((latex, line_count)) = try_parse_display_latex(&lines[i..]) {
+            tokens.push(latex);
+            i += line_count;
             continue;
         }
 
@@ -394,6 +418,86 @@ fn is_hr(line: &str) -> bool {
     let run: Vec<char> = t.chars().filter(|c| *c == mark || *c == ' ').collect();
     let count = t.chars().filter(|c| *c == mark).count();
     run.len() == t.chars().count() && count >= 3
+}
+
+fn try_parse_display_latex(lines: &[&str]) -> Option<(Block, usize)> {
+    let first = lines.first()?.trim();
+
+    if first.starts_with("$$") {
+        if first.len() >= 4 && first.ends_with("$$") {
+            let body = first[2..first.len() - 2].to_string();
+            return Some((
+                Block::LatexBlock {
+                    text: body,
+                    raw: first.to_string(),
+                    pending: false,
+                },
+                1,
+            ));
+        }
+        let mut body_lines = Vec::new();
+        for (index, line) in lines.iter().enumerate().skip(1) {
+            if line.trim() == "$$" {
+                return Some((
+                    Block::LatexBlock {
+                        text: body_lines.join("\n"),
+                        raw: lines[..=index].join("\n"),
+                        pending: false,
+                    },
+                    index + 1,
+                ));
+            }
+            body_lines.push(*line);
+        }
+        return Some((
+            Block::LatexBlock {
+                text: body_lines.join("\n"),
+                raw: lines.join("\n"),
+                pending: true,
+            },
+            lines.len(),
+        ));
+    }
+
+    if let Some(stripped) = first.strip_prefix("\\[") {
+        if let Some(close) = stripped.find("\\]") {
+            return Some((
+                Block::LatexBlock {
+                    text: stripped[..close].to_string(),
+                    raw: first.to_string(),
+                    pending: false,
+                },
+                1,
+            ));
+        }
+        let mut body_lines = Vec::new();
+        for (index, line) in lines.iter().enumerate().skip(1) {
+            if let Some(close) = line.find("\\]") {
+                if close > 0 {
+                    body_lines.push(&line[..close]);
+                }
+                return Some((
+                    Block::LatexBlock {
+                        text: body_lines.join("\n"),
+                        raw: lines[..=index].join("\n"),
+                        pending: false,
+                    },
+                    index + 1,
+                ));
+            }
+            body_lines.push(*line);
+        }
+        return Some((
+            Block::LatexBlock {
+                text: body_lines.join("\n"),
+                raw: lines.join("\n"),
+                pending: true,
+            },
+            lines.len(),
+        ));
+    }
+
+    None
 }
 
 fn looks_like_table(lines: &[&str]) -> bool {
@@ -655,6 +759,9 @@ fn try_parse_table(lines: &[&str]) -> Option<(TableBlock, usize)> {
             .split('|')
             .map(|cell| parse_inlines(cell.trim()))
             .collect();
+        let mut cells = cells;
+        cells.resize_with(ncols, Vec::new);
+        cells.truncate(ncols);
         rows.push(cells);
         consumed += 1;
     }
@@ -688,7 +795,8 @@ fn parse_inline_range(source: &str, start: usize, end: usize) -> Vec<Inline> {
         // Escapes.
         if c == '\\' && rest.len() > 1 {
             let next = rest.chars().nth(1).unwrap();
-            if "`*_{}[]()#+-.!|>~\\".contains(next) {
+            let is_math_delimiter = matches!(next, '(' | '[');
+            if next.is_ascii_punctuation() && !is_math_delimiter {
                 // Preserve the backslash when configured.
                 flush(&mut tokens, &mut text_buf);
                 tokens.push(Inline::Escape(next.to_string()));
@@ -723,6 +831,19 @@ fn parse_inline_range(source: &str, start: usize, end: usize) -> Vec<Inline> {
                 i += fence + rel + fence;
                 continue;
             }
+        }
+
+        // Marked tokenizes bare URLs and email addresses as links. Keep this
+        // after codespans so `$HOME`/URLs in code remain literal text.
+        if let Some((display, href, consumed)) = try_autolink(rest) {
+            flush(&mut tokens, &mut text_buf);
+            tokens.push(Inline::Link {
+                text: vec![Inline::Text(display.clone())],
+                href,
+                raw_text: display,
+            });
+            i += consumed;
+            continue;
         }
 
         // Bold with **.
@@ -1003,6 +1124,53 @@ fn try_inline_link(s: &str) -> Option<(String, String, usize)> {
         i += c.len_utf8();
     }
     None
+}
+
+fn try_autolink(s: &str) -> Option<(String, String, usize)> {
+    let is_url = s.starts_with("https://") || s.starts_with("http://");
+    let first = s.chars().next()?;
+    let is_email_start = first.is_ascii_alphanumeric() || matches!(first, '.' | '_' | '-');
+    if !is_url && !is_email_start {
+        return None;
+    }
+
+    let mut end = 0usize;
+    for (index, character) in s.char_indices() {
+        if character.is_whitespace() || character.is_control() || matches!(character, '<' | '>') {
+            break;
+        }
+        end = index + character.len_utf8();
+    }
+    if end == 0 {
+        return None;
+    }
+
+    let mut display = s[..end].to_string();
+    // Sentence punctuation is not part of a CommonMark autolink. Keep a
+    // closing parenthesis when it is balanced inside the URL.
+    while display.ends_with(['.', ',', ';', ':', '!', '?'])
+        || (display.ends_with(')') && display.matches('(').count() < display.matches(')').count())
+    {
+        display.pop();
+    }
+    if display.is_empty() {
+        return None;
+    }
+
+    if is_url {
+        let consumed = display.len();
+        return Some((display.clone(), display, consumed));
+    }
+    let at = display.find('@')?;
+    if at == 0
+        || at + 1 >= display.len()
+        || display[at + 1..].contains('@')
+        || !display[at + 1..].contains('.')
+        || display[..at].contains('/')
+    {
+        return None;
+    }
+    Some((display.clone(), format!("mailto:{display}"), display.len()))
 }
 
 // ---------------------------------------------------------------------------

@@ -31,16 +31,11 @@ use crate::tools::{AgentTool, AgentToolResult};
 use crate::types::AgentMessage;
 
 /// How queued messages are injected at a drain point (upstream `QueueMode`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueueMode {
     All,
+    #[default]
     OneAtATime,
-}
-
-impl Default for QueueMode {
-    fn default() -> Self {
-        QueueMode::OneAtATime
-    }
 }
 
 /// Queue of pending steering/follow-up messages (upstream
@@ -67,6 +62,9 @@ impl PendingMessageQueue {
     pub fn len(&self) -> usize {
         self.messages.len()
     }
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
     pub fn snapshot(&self) -> Vec<AgentMessage> {
         self.messages.clone()
     }
@@ -86,19 +84,15 @@ impl PendingMessageQueue {
 
 /// Tool execution strategy for assistant messages that contain multiple tool
 /// calls (upstream `ToolExecutionMode`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ToolExecutionMode {
     Sequential,
+    #[default]
     Parallel,
 }
 
-impl Default for ToolExecutionMode {
-    fn default() -> Self {
-        ToolExecutionMode::Parallel
-    }
-}
-
 /// Events emitted by the `Agent` for UI updates (upstream `AgentEvent`).
+#[allow(clippy::large_enum_variant)] // preserve the public upstream event shape
 #[derive(Debug, Clone, PartialEq)]
 pub enum RichAgentEvent {
     AgentStart,
@@ -199,6 +193,15 @@ pub type AsyncHook<Args, Out> =
 
 pub type ConvertToLlmFn = Arc<dyn Fn(&[AgentMessage]) -> Vec<Message> + Send + Sync>;
 
+pub type TransformContextHook =
+    AsyncHook<(Vec<AgentMessage>, Option<Arc<AtomicBool>>), Vec<AgentMessage>>;
+pub type ApiKeyResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+type AgentListener = Arc<
+    dyn Fn(RichAgentEvent, Option<Arc<AtomicBool>>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
 pub type BeforeToolCallHook = Arc<
     dyn for<'a> Fn(
             &'a mut BeforeToolCallContext,
@@ -242,10 +245,9 @@ pub struct RichAgentLoopConfig {
     /// the durable transcript/UI result.
     pub block_images: bool,
     /// Optional transform applied at the AgentMessage level before conversion.
-    pub transform_context:
-        Option<AsyncHook<(Vec<AgentMessage>, Option<Arc<AtomicBool>>), Vec<AgentMessage>>>,
+    pub transform_context: Option<TransformContextHook>,
     /// Dynamic API key resolver for each LLM call.
-    pub get_api_key: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    pub get_api_key: Option<ApiKeyResolver>,
     /// Reasoning level forwarded to the stream function.
     pub reasoning: Option<ThinkingLevel>,
     /// Session identifier forwarded to cache-aware providers.
@@ -560,7 +562,7 @@ where
                     finalize_tool_call(message, &tc, args, result, is_error, config).await;
                 let terminate = result.terminate;
                 let message_result =
-                    agent_tool_result_to_message(&tc.id, &tc.name, &result, is_error);
+                    agent_tool_result_to_message(tc.id, tc.name, &result, is_error);
                 emit(RichAgentEvent::ToolExecutionEnd {
                     tool_call_id: tc.id.to_string(),
                     tool_name: tc.name.to_string(),
@@ -644,7 +646,6 @@ where
                 let assistant_message = message.clone();
                 let update_sender = update_sender.clone();
                 let signal = signal.clone();
-                let config = config;
                 running.push(
                     async move {
                         let tool_call = ToolCallRef {
@@ -1424,18 +1425,7 @@ fn default_model() -> pi_ai::model::Model {
 /// Stateful wrapper around the low-level agent loop (upstream `Agent`).
 pub struct Agent {
     state: Mutex<AgentState>,
-    listeners: Mutex<
-        Vec<
-            Arc<
-                dyn Fn(
-                        RichAgentEvent,
-                        Option<Arc<AtomicBool>>,
-                    ) -> Pin<Box<dyn Future<Output = ()> + Send>>
-                    + Send
-                    + Sync,
-            >,
-        >,
-    >,
+    listeners: Mutex<Vec<AgentListener>>,
     steering_queue: Mutex<PendingMessageQueue>,
     follow_up_queue: Mutex<PendingMessageQueue>,
     active_run: Mutex<Option<ActiveRun>>,
@@ -2328,7 +2318,6 @@ mod tests {
                     FauxAssistantOptions {
                         stop_reason: Some(pi_ai::types::StopReason::Error),
                         error_message: Some("overloaded_error".to_string()),
-                        ..Default::default()
                     },
                 )),
                 FauxResponseStep::Message(faux_assistant_message(
@@ -2408,7 +2397,6 @@ mod tests {
                 FauxAssistantOptions {
                     stop_reason: Some(pi_ai::types::StopReason::Error),
                     error_message: Some("overloaded_error".to_string()),
-                    ..Default::default()
                 },
             ))]);
             let model = core.get_model(None).unwrap().clone();
@@ -2547,7 +2535,7 @@ mod tests {
                 s.messages().to_vec()
             };
             assert!(msgs.iter().any(
-                |m| matches!(m, AgentMessage::Core(Message::Assistant(a)) if a.content().len() > 0)
+                |m| matches!(m, AgentMessage::Core(Message::Assistant(a)) if !a.content().is_empty())
             ));
         });
     }

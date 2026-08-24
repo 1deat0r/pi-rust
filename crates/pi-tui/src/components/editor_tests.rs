@@ -1,8 +1,95 @@
-use crate::autocomplete::{CombinedAutocompleteProvider, SlashCommand};
+use crate::autocomplete::{
+    AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, CombinedAutocompleteProvider,
+    CompletionResult, SlashCommand,
+};
 use crate::components::editor::{plain_editor_theme, Editor, EditorOptions};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 fn editor(rows: usize) -> Editor {
     Editor::new(rows, plain_editor_theme(), EditorOptions::default())
+}
+
+struct CountingAutocompleteProvider {
+    calls: Arc<AtomicUsize>,
+}
+
+impl AutocompleteProvider for CountingAutocompleteProvider {
+    fn trigger_characters(&self) -> Vec<String> {
+        vec!["@".into()]
+    }
+
+    fn get_suggestions(
+        &self,
+        lines: &[String],
+        cursor_line: usize,
+        cursor_col: usize,
+        _force: bool,
+        _aborted: &std::sync::atomic::AtomicBool,
+    ) -> Option<AutocompleteSuggestions> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let line = lines.get(cursor_line)?.clone();
+        let prefix = line[..cursor_col.min(line.len())].to_string();
+        Some(AutocompleteSuggestions {
+            items: vec![AutocompleteItem {
+                value: "@main.rs".into(),
+                label: "main.rs".into(),
+                description: None,
+            }],
+            prefix,
+        })
+    }
+
+    fn apply_completion(
+        &self,
+        lines: &[String],
+        cursor_line: usize,
+        cursor_col: usize,
+        item: &AutocompleteItem,
+        prefix: &str,
+    ) -> CompletionResult {
+        let line = &lines[cursor_line];
+        let before = &line[..cursor_col.saturating_sub(prefix.len())];
+        let mut updated = lines.to_vec();
+        updated[cursor_line] = format!("{before}{} ", item.value);
+        CompletionResult {
+            lines: updated,
+            cursor_line,
+            cursor_col: before.len() + item.value.len() + 1,
+        }
+    }
+}
+
+#[test]
+fn autocomplete_debounce_flush_and_cancel_are_deterministic() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut e = editor(24);
+    e.set_autocomplete_provider(Box::new(CountingAutocompleteProvider {
+        calls: calls.clone(),
+    }));
+    e.handle_input("@");
+    e.handle_input("m");
+    e.handle_input("a");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(e.is_autocomplete_pending());
+    e.flush_autocomplete();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(e.is_showing_autocomplete());
+
+    e.handle_input("backspace");
+    e.handle_input("backspace");
+    e.handle_input("backspace");
+    assert!(!e.is_autocomplete_pending());
+    assert!(!e.is_showing_autocomplete());
+}
+
+#[test]
+fn editor_ignores_kitty_releases_and_inserts_shifted_printables() {
+    let mut e = editor(24);
+    e.handle_input("\x1b[97:65;2u");
+    assert_eq!(e.get_text(), "A");
+    e.handle_input("\x1b[98;1:3u");
+    assert_eq!(e.get_text(), "A");
 }
 
 #[test]

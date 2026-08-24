@@ -43,6 +43,7 @@ impl SourceInfo {
 /// handler dispatch stays generic (upstream `ExtensionHandler`).
 pub type HandlerFn =
     Arc<dyn Fn(&ExtensionContext, &Value) -> Result<Option<Value>, String> + Send + Sync>;
+type Subscription = Arc<dyn Fn() + Send + Sync>;
 
 /// Renderer closures are the Rust-native equivalent of extension renderCall,
 /// renderResult, and renderEntry callbacks. Their JSON payloads retain the
@@ -333,7 +334,7 @@ pub struct ExtensionRuntime {
     pub pending_native_provider_registrations: Vec<PendingNativeProviderRegistration>,
     initialized: bool,
     stale_message: Option<String>,
-    subscriptions: Arc<Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>>,
+    subscriptions: Arc<Mutex<Vec<Subscription>>>,
 }
 
 impl std::fmt::Debug for ExtensionRuntime {

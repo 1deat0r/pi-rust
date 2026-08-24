@@ -76,7 +76,7 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
             fs.read_text_file(path),
             &format!("Failed to read session {path}"),
         )
-        .map_err(|e| LoadError::Io(e))?;
+        .map_err(LoadError::Io)?;
         let physical_lines: Vec<&str> = content.split('\n').collect();
         let mut physical_lines: Vec<&str> = physical_lines.into_iter().collect();
         if physical_lines.last().copied() == Some("") {
@@ -95,7 +95,7 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
             fs.file_info(path),
             &format!("Failed to read session metadata {path}"),
         )
-        .map_err(|e| LoadError::Io(e))?;
+        .map_err(LoadError::Io)?;
         let mut storage = Self::new(fs, metadata_from_header(&header, path, file_info.mtime_ms));
         let mut torn_tail_repaired = false;
         for (index, line) in physical_lines.iter().enumerate().skip(1) {
@@ -114,7 +114,7 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
                             )
                         })
                         .await
-                        .map_err(|e| LoadError::Io(e))?;
+                        .map_err(LoadError::Io)?;
                         break;
                     }
                     return Err(LoadError::InvalidFile {
@@ -139,7 +139,7 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
                 storage.fs.append_file(path, "\n"),
                 &format!("Failed to repair unterminated session tail {path}"),
             )
-            .map_err(|e| LoadError::Io(e))?;
+            .map_err(LoadError::Io)?;
         }
         Ok(storage)
     }

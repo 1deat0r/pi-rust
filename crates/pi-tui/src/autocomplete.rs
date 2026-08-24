@@ -6,6 +6,7 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use crate::fuzzy::fuzzy_filter;
 
@@ -56,14 +57,10 @@ fn build_fd_path_query(query: &str) -> String {
     pattern
 }
 
-fn find_last_delimiter(text: &str) -> isize {
-    let chars: Vec<char> = text.chars().collect();
-    for i in (0..chars.len()).rev() {
-        if PATH_DELIMITERS.contains(&chars[i]) {
-            return i as isize;
-        }
-    }
-    -1
+fn find_last_delimiter(text: &str) -> Option<usize> {
+    text.char_indices()
+        .rev()
+        .find_map(|(index, character)| PATH_DELIMITERS.contains(&character).then_some(index))
 }
 
 fn find_unclosed_quote_start(text: &str) -> Option<usize> {
@@ -303,11 +300,40 @@ fn walk_directory_with_fd(
         args.push(build_fd_path_query(query));
     }
 
-    let output = match std::process::Command::new(fd_path).args(&args).output() {
-        Ok(o) => o,
+    let mut child = match std::process::Command::new(fd_path)
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
         Err(_) => return Vec::new(),
     };
-    if aborted.load(Ordering::SeqCst) || !output.status.success() {
+
+    // `Command::output` cannot observe cancellation while fd is walking a
+    // large tree. Poll the child so a newer autocomplete request can kill the
+    // superseded search deterministically.
+    let status = loop {
+        if aborted.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Vec::new();
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Vec::new();
+            }
+        }
+    };
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(_) => return Vec::new(),
+    };
+    if aborted.load(Ordering::SeqCst) || !status.success() {
         return Vec::new();
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -364,12 +390,9 @@ impl CombinedAutocompleteProvider {
                 return Some(quoted);
             }
         }
-        let last_delimiter_index = find_last_delimiter(text);
-        let token_start = if last_delimiter_index == -1 {
-            0
-        } else {
-            last_delimiter_index as usize + 1
-        };
+        let token_start = find_last_delimiter(text)
+            .map(|index| index + 1)
+            .unwrap_or(0);
         if text[token_start..].starts_with('@') {
             return Some(text[token_start..].to_string());
         }
@@ -380,12 +403,9 @@ impl CombinedAutocompleteProvider {
         if let Some(quoted) = extract_quoted_prefix(text) {
             return Some(quoted);
         }
-        let last_delimiter_index = find_last_delimiter(text);
-        let path_prefix = if last_delimiter_index == -1 {
-            text.to_string()
-        } else {
-            text[last_delimiter_index as usize + 1..].to_string()
-        };
+        let path_prefix = find_last_delimiter(text)
+            .map(|index| text[index + 1..].to_string())
+            .unwrap_or_else(|| text.to_string());
 
         if force_extract {
             return Some(path_prefix);
@@ -829,12 +849,20 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         let cursor_col = cursor_col.min(text.len());
         // Remove the prefix (measured in chars) from the end of the
         // text-before-cursor region.
-        let prefix_chars = prefix.chars().count();
         let before_prefix = text[..cursor_col].to_string();
-        let before_prefix_char: String = before_prefix
-            .chars()
-            .take(before_prefix.chars().count().saturating_sub(prefix_chars))
-            .collect();
+        let prefix_chars = prefix.chars().count();
+        let before_chars = before_prefix.chars().count();
+        let chars_before_prefix = before_chars.saturating_sub(prefix_chars);
+        let prefix_start = if chars_before_prefix == before_chars {
+            before_prefix.len()
+        } else {
+            before_prefix
+                .char_indices()
+                .nth(chars_before_prefix)
+                .map(|(index, _)| index)
+                .unwrap_or(0)
+        };
+        let before_prefix_char = before_prefix[..prefix_start].to_string();
         let after_cursor = text[cursor_col..].to_string();
         let is_quoted_prefix = prefix.starts_with('"') || prefix.starts_with("@\"");
         let has_leading_quote_after_cursor = after_cursor.starts_with('"');

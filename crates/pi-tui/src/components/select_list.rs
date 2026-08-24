@@ -14,6 +14,9 @@ const DEFAULT_PRIMARY_COLUMN_WIDTH: usize = 32;
 const PRIMARY_COLUMN_GAP: usize = 2;
 const MIN_DESCRIPTION_WIDTH: usize = 10;
 
+pub type SelectItemCallback = Box<dyn Fn(&SelectItem) + Send + Sync>;
+pub type SelectCancelCallback = Box<dyn Fn() + Send + Sync>;
+
 fn normalize_to_single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -84,6 +87,9 @@ pub struct SelectList {
     max_visible: usize,
     theme: SelectListTheme,
     layout: SelectListLayoutOptions,
+    on_select: Option<SelectItemCallback>,
+    on_cancel: Option<SelectCancelCallback>,
+    on_selection_change: Option<SelectItemCallback>,
 }
 
 impl SelectList {
@@ -100,7 +106,22 @@ impl SelectList {
             max_visible,
             theme,
             layout,
+            on_select: None,
+            on_cancel: None,
+            on_selection_change: None,
         }
+    }
+
+    pub fn with_callbacks(
+        mut self,
+        on_select: impl Fn(&SelectItem) + Send + Sync + 'static,
+        on_cancel: impl Fn() + Send + Sync + 'static,
+        on_selection_change: impl Fn(&SelectItem) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_select = Some(Box::new(on_select));
+        self.on_cancel = Some(Box::new(on_cancel));
+        self.on_selection_change = Some(Box::new(on_selection_change));
+        self
     }
 
     pub fn set_filter(&mut self, filter: &str) {
@@ -290,6 +311,7 @@ impl Component for SelectList {
                     } else {
                         self.selected_index - 1
                     };
+                    self.notify_selection_change();
                 }
             }
             "down" => {
@@ -300,9 +322,32 @@ impl Component for SelectList {
                     } else {
                         self.selected_index + 1
                     };
+                    self.notify_selection_change();
+                }
+            }
+            "enter" if !key.ctrl => {
+                if let Some(item) = self.get_selected_item() {
+                    if let Some(on_select) = &self.on_select {
+                        on_select(item);
+                    }
+                }
+            }
+            "escape" | "ctrl+c" => {
+                if let Some(on_cancel) = &self.on_cancel {
+                    on_cancel();
                 }
             }
             _ => {}
+        }
+    }
+}
+
+impl SelectList {
+    fn notify_selection_change(&self) {
+        if let Some(item) = self.get_selected_item() {
+            if let Some(on_selection_change) = &self.on_selection_change {
+                on_selection_change(item);
+            }
         }
     }
 }

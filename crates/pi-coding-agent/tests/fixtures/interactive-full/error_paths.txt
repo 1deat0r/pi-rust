@@ -1,0 +1,2 @@
+# model argument|visible error|terminal sequence that must be absent
+missing|interactive error: unknown faux model "missing"|\x1b[?1049h

@@ -51,9 +51,9 @@ impl Drop for EnvGuard {
     }
 }
 
-fn environment_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn environment_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 struct MockServer {
@@ -122,7 +122,7 @@ fn store_path(agent_dir: &Path) -> PathBuf {
 
 #[tokio::test(flavor = "current_thread")]
 async fn http_refresh_parses_rfc_dates_and_preserves_unknown_model_fields() {
-    let _guard = environment_lock().lock().unwrap();
+    let _guard = environment_lock().lock().await;
     let _offline = EnvGuard::remove("PI_OFFLINE");
     let server = MockServer::start(vec![(
         "200 OK",
@@ -160,7 +160,7 @@ async fn http_refresh_parses_rfc_dates_and_preserves_unknown_model_fields() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn etag_304_keeps_cached_body_and_refreshes_freshness() {
-    let _guard = environment_lock().lock().unwrap();
+    let _guard = environment_lock().lock().await;
     let _offline = EnvGuard::remove("PI_OFFLINE");
     let first = MockServer::start(vec![("200 OK", "ETag: \"catalog-1\"\r\n", catalog_body())]);
     let _endpoint = EnvGuard::set("PI_MODEL_CATALOG_URL", &first.base_url);
@@ -197,7 +197,7 @@ async fn etag_304_keeps_cached_body_and_refreshes_freshness() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn not_found_and_not_implemented_keep_models_but_clear_validator() {
-    let _guard = environment_lock().lock().unwrap();
+    let _guard = environment_lock().lock().await;
     let _offline = EnvGuard::remove("PI_OFFLINE");
     let first = MockServer::start(vec![("200 OK", "ETag: \"catalog-1\"\r\n", catalog_body())]);
     let _endpoint = EnvGuard::set("PI_MODEL_CATALOG_URL", &first.base_url);
@@ -224,7 +224,7 @@ async fn not_found_and_not_implemented_keep_models_but_clear_validator() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn malformed_payload_reports_upstream_catalog_error_without_overwriting_cache() {
-    let _guard = environment_lock().lock().unwrap();
+    let _guard = environment_lock().lock().await;
     let _offline = EnvGuard::remove("PI_OFFLINE");
     let server = MockServer::start(vec![("200 OK", "", "null")]);
     let _endpoint = EnvGuard::set("PI_MODEL_CATALOG_URL", &server.base_url);
@@ -243,7 +243,7 @@ async fn malformed_payload_reports_upstream_catalog_error_without_overwriting_ca
 
 #[tokio::test(flavor = "current_thread")]
 async fn refresh_is_offline_without_touching_the_network() {
-    let _guard = environment_lock().lock().unwrap();
+    let _guard = environment_lock().lock().await;
     let _offline = EnvGuard::set("PI_OFFLINE", "1");
     let agent_dir = temp_agent_dir("offline");
     let error = refresh_catalogs_for_providers(&agent_dir, true, &["google".to_string()])
@@ -293,7 +293,7 @@ fn older_remote_overlay_is_suppressed_but_merge_helpers_match_upstream() {
     assert!(remote_models(Some(&stored), Some(101)).is_empty());
     assert_eq!(remote_models(Some(&stored), Some(99)).len(), 1);
     assert!(remote_models(Some(&stored), None).len() == 1);
-    assert!(REMOTE_CATALOG_REFRESH_INTERVAL_MS > 0);
+    assert!(std::hint::black_box(REMOTE_CATALOG_REFRESH_INTERVAL_MS) > 0);
 
     let merged = merge_models(
         &[model("google", "same", "Local")],

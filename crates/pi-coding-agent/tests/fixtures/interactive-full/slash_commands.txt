@@ -1,0 +1,31 @@
+# Full Rust interactive slash-command matrix.
+# Rows are command|visible-substring|follow-up. A follow-up of "escape"
+# closes a selector modal; "clear" uses a seeded prompt before asserting that
+# the transcript was cleared.
+/settings|Default thinking level|escape
+/model|faux/Faux Model|escape
+/thinking|low|escape
+/theme|dark|escape
+/session|session |
+/compact|nothing to compact
+/hotkeys|hotkeys: enter submit
+/help|commands: /settings /model /thinking
+/copy|no assistant message to copy
+/clear|__clear_transcript__|clear
+/trust allow|default project trust: allow
+/trust maybe|usage: /trust <allow|deny|ask>
+/reload|reloaded settings
+/share|share skipped
+/login faux|no OAuth login available
+/logout|usage: /logout <provider>
+/logout faux|logged out faux
+/name matrix fixture|session name: matrix fixture
+/name|usage: /name <session-name>
+/resume|no sessions found to resume in this directory
+/tree|session tree:
+/fork|fork session
+/clone|clone session
+/new|started new session
+/export $HTML|exported session to
+/import $IMPORT|imported
+/import $MISSING|file not found: $MISSING

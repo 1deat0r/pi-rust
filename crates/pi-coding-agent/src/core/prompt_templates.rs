@@ -81,7 +81,7 @@ pub fn substitute_args(content: &str, args: &[String]) -> String {
             .count();
         if name_len == 0 {
             result.push('$');
-            rest = &after;
+            rest = after;
             continue;
         }
         let name = &after[..name_len];

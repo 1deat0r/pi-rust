@@ -1091,3 +1091,40 @@ remaining TUI behavior; R3 owns the measured pi-agent/coding-agent clippy
 backlog; F2 owns CLI/RPC/session/settings/provider/telemetry parity fixtures.
 After those leaves, rerun the PTY matrix, full workspace tests/clippy, release
 build, and independent final audit. Full conversion remains open.
+
+## Active checkpoint — 2026-08-25 — TUI behavior and clippy cleanup synchronized
+
+The last synchronized pushed baseline before this checkpoint is
+`0dd35c27d788f59c36582df5671f34747c1cafa1` on `main`; local and remote hashes
+matched there. This checkpoint integrates the completed E3 TUI behavior slice
+and R3 strict-clippy cleanup. The pre-existing untracked `AGENTS.md` remains
+untouched; active server, PTY, and parity paths remain unstaged for their
+owners.
+
+Progress checker:
+
+```text
+Conversion progress: 85.54% (142/166; 24 open)
+```
+
+Evidence synchronized here:
+
+- E3: `/home/mustbearnold/.cargo/bin/cargo test -p pi-tui --offline --quiet`
+  — 203 passed, including terminal capability, autocomplete/editor,
+  SettingsList, Markdown, alt-screen, tmux, and cleanup fixtures; strict
+  pi-tui clippy, owned formatting, and `git diff --check` also passed.
+- R3: `/home/mustbearnold/.cargo/bin/cargo clippy -p pi-agent --offline
+  --all-targets --no-deps --message-format=short -- -D warnings` and the
+  corresponding `pi-coding-agent` command both exited 0. The targeted
+  pi-agent and coding-agent tests and `git diff --check` are green; full
+  workspace formatting remains gated on the active server files settling.
+- E2b: `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+  --test interactive_full_matrix --quiet` — 3 live PTY cases passed, and
+  `interactive_slash_pty` passed 1 case; stty, ANSI, tmux, resize,
+  Ctrl-C/Ctrl-D, and exact diagnostics were asserted under tmux. Owned
+  rustfmt and diff checks passed.
+
+Active next leaves are D1b expanded server conformance and F2 parity fixtures.
+After those complete, reverify D3/R3 and run the full workspace tests, strict
+clippy, release suite, parity suite, and independent final source/TODO audit.
+Full conversion remains open.

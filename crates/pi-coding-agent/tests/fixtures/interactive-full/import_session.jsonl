@@ -1,0 +1,3 @@
+{"type":"session","version":4,"id":"interactive-import","timestamp":"2026-08-22T00:00:00.000Z","cwd":"/tmp"}
+{"type":"message","id":"import-user","parentId":null,"timestamp":"2026-08-22T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"imported prompt"}]}}
+{"type":"message","id":"import-assistant","parentId":"import-user","timestamp":"2026-08-22T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"imported response"}]}}

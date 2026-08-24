@@ -153,13 +153,11 @@ impl ProjectTrustStore {
             let data = read_trust_file(&self.trust_path).ok()?;
             let mut current = normalize_cwd(cwd);
             loop {
-                if let Some(value) = data.get(&current) {
-                    if let Some(decision) = value {
-                        return Some(ProjectTrustStoreEntry {
-                            path: current.clone(),
-                            decision: *decision,
-                        });
-                    }
+                if let Some(Some(decision)) = data.get(&current) {
+                    return Some(ProjectTrustStoreEntry {
+                        path: current.clone(),
+                        decision: *decision,
+                    });
                 }
                 let parent = Path::new(&current)
                     .parent()
@@ -291,7 +289,7 @@ fn read_trust_file(path: &Path) -> Result<BTreeMap<String, Option<bool>>, String
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read trust store {path:?}: {e}"))?;
     let content = crate::core::settings::strip_bom(&content);
-    let parsed: serde_json::Value = serde_json::from_str(&content)
+    let parsed: serde_json::Value = serde_json::from_str(content)
         .map_err(|e| format!("Failed to read trust store {path:?}: {e}"))?;
     let obj = parsed
         .as_object()

@@ -106,6 +106,7 @@ impl Args {
     }
 }
 
+#[allow(clippy::large_enum_variant)] // preserve the public parser outcome shape
 pub enum ParseOutcome {
     Run(Args),
     Help,

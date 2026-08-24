@@ -10,6 +10,14 @@ pub struct TuiKey {
     pub alt: bool,
 }
 
+/// Event kind emitted by the Kitty keyboard protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyEventType {
+    Press,
+    Repeat,
+    Release,
+}
+
 impl TuiKey {
     pub fn simple(base: impl Into<String>) -> Self {
         Self {
@@ -111,6 +119,14 @@ pub fn parse_key(raw: &str) -> TuiKey {
 fn parse_raw_terminal_key(raw: &str) -> Option<TuiKey> {
     if raw.is_empty() {
         return None;
+    }
+
+    // Kitty CSI-u and xterm modifyOtherKeys can carry printable text that is
+    // not present as a literal UTF-8 character. Decode it before the legacy
+    // CSI parser, while leaving Ctrl/Alt combinations to key matching.
+    if let Some(printable) = decode_printable_key(raw) {
+        let shift = printable.1 & 1 != 0;
+        return Some(with_modifiers(printable.0, false, false, shift));
     }
 
     match raw {
@@ -273,6 +289,112 @@ fn parse_csi_u_key(parameters: &str) -> Option<TuiKey> {
     Some(with_modifiers(base, ctrl, alt, shift))
 }
 
+/// Return the Kitty CSI-u codepoint, normalized modifier mask, and event.
+fn parse_kitty_sequence(raw: &str) -> Option<(u32, Option<u32>, u8, KeyEventType)> {
+    let body = raw.strip_prefix("\x1b[")?.strip_suffix('u')?;
+    let (codepoint_part, modifier_part) = body.split_once(';').unwrap_or((body, "1"));
+    let mut codepoint_fields = codepoint_part.split(':');
+    let codepoint = codepoint_fields.next()?.parse::<u32>().ok()?;
+    let shifted = codepoint_fields
+        .next()
+        .filter(|field| !field.is_empty())
+        .and_then(|field| field.parse::<u32>().ok());
+    let mut modifier_fields = modifier_part.split(':');
+    let modifier_value = modifier_fields.next()?.parse::<u16>().ok()?;
+    let event = match modifier_fields.next().and_then(|field| field.parse().ok()) {
+        Some(2) => KeyEventType::Repeat,
+        Some(3) => KeyEventType::Release,
+        _ => KeyEventType::Press,
+    };
+    Some((
+        codepoint,
+        shifted,
+        modifier_value.saturating_sub(1).min(u8::MAX as u16) as u8,
+        event,
+    ))
+}
+
+fn parse_modify_other_keys(raw: &str) -> Option<(u32, u8)> {
+    let body = raw.strip_prefix("\x1b[27;")?.strip_suffix('~')?;
+    let mut fields = body.split(';');
+    let modifier = fields.next()?.parse::<u16>().ok()?.saturating_sub(1);
+    let codepoint = fields.next()?.parse::<u32>().ok()?;
+    Some((codepoint, modifier.min(u8::MAX as u16) as u8))
+}
+
+fn is_printable_codepoint(codepoint: u32) -> Option<String> {
+    if codepoint < 32 || codepoint == 127 {
+        return None;
+    }
+    char::from_u32(codepoint)
+        .filter(|character| !character.is_control())
+        .map(|character| character.to_string())
+}
+
+/// Decode a printable Kitty CSI-u or xterm modifyOtherKeys sequence.
+///
+/// Only plain and Shift-modified text is returned. Ctrl, Alt, Super, and
+/// other modifier combinations remain keybinding events instead of becoming
+/// accidental text insertion. The returned mask is the normalized Kitty
+/// modifier bitset (Shift=1, Alt=2, Ctrl=4, Super=8).
+pub fn decode_printable_key(raw: &str) -> Option<(String, u8)> {
+    const SHIFT: u8 = 1;
+    const ALT: u8 = 2;
+    const CTRL: u8 = 4;
+    const SUPER: u8 = 8;
+    const LOCKS: u8 = 64 | 128;
+
+    if let Some((codepoint, shifted, modifier, _event)) = parse_kitty_sequence(raw) {
+        let effective_modifier = modifier & !LOCKS;
+        if effective_modifier & (ALT | CTRL | SUPER) != 0 {
+            return None;
+        }
+        let effective_codepoint = if effective_modifier & SHIFT != 0 {
+            shifted.unwrap_or(codepoint)
+        } else {
+            codepoint
+        };
+        return is_printable_codepoint(effective_codepoint).map(|text| (text, modifier));
+    }
+
+    let (codepoint, modifier) = parse_modify_other_keys(raw)?;
+    let effective_modifier = modifier & !LOCKS;
+    if effective_modifier & (ALT | CTRL | SUPER) != 0 {
+        return None;
+    }
+    is_printable_codepoint(codepoint).map(|text| (text, modifier))
+}
+
+/// Classify the event suffix used by Kitty's flag-2 keyboard protocol.
+/// Bracketed paste is content, not a release/repeat event, even when pasted
+/// text happens to contain a matching `:2` or `:3` substring.
+pub fn key_event_type(raw: &str) -> KeyEventType {
+    if raw.contains("\x1b[200~") {
+        return KeyEventType::Press;
+    }
+    if let Some(body) = raw.strip_prefix("\x1b[") {
+        let body = body.strip_suffix(['u', '~', 'A', 'B', 'C', 'D', 'H', 'F']);
+        if let Some(body) = body {
+            if let Some(last) = body.rsplit(':').next() {
+                return match last {
+                    "2" => KeyEventType::Repeat,
+                    "3" => KeyEventType::Release,
+                    _ => KeyEventType::Press,
+                };
+            }
+        }
+    }
+    KeyEventType::Press
+}
+
+pub fn is_key_release(raw: &str) -> bool {
+    key_event_type(raw) == KeyEventType::Release
+}
+
+pub fn is_key_repeat(raw: &str) -> bool {
+    key_event_type(raw) == KeyEventType::Repeat
+}
+
 fn with_modifiers(base: String, ctrl: bool, alt: bool, shift: bool) -> TuiKey {
     TuiKey {
         base,
@@ -317,5 +439,27 @@ mod tests {
             parse_key("\x1b\r"),
             with_modifiers("enter".to_string(), false, false, true)
         );
+    }
+
+    #[test]
+    fn decodes_shifted_kitty_and_modify_other_keys_printables() {
+        assert_eq!(
+            decode_printable_key("\x1b[97:65;2u"),
+            Some(("A".to_string(), 1))
+        );
+        assert_eq!(
+            decode_printable_key("\x1b[27;2;65~"),
+            Some(("A".to_string(), 1))
+        );
+        assert_eq!(decode_printable_key("\x1b[97;5u"), None);
+        assert_eq!(decode_printable_key("\x1b[97;3u"), None);
+    }
+
+    #[test]
+    fn identifies_kitty_event_types_without_misclassifying_paste() {
+        assert_eq!(key_event_type("\x1b[97;1:2u"), KeyEventType::Repeat);
+        assert!(is_key_release("\x1b[97;1:3u"));
+        assert!(!is_key_release("\x1b[200~90:62:3F:A5\x1b[201~"));
+        assert!(!is_key_repeat("ordinary text :2F"));
     }
 }

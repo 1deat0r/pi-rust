@@ -26,15 +26,9 @@ pub struct EntryQuery {
     pub limit: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct EntryCursor {
     pub after_seq: u64,
-}
-
-impl Default for EntryCursor {
-    fn default() -> Self {
-        Self { after_seq: 0 }
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -536,10 +530,7 @@ impl SessionState {
                     Some(t) => {
                         let mut cursor = t.clone();
                         let mut out = Vec::new();
-                        loop {
-                            let Some(entry) = self.entries.iter().find(|e| e.id() == cursor) else {
-                                break;
-                            };
+                        while let Some(entry) = self.entries.iter().find(|e| e.id() == cursor) {
                             let clone = entry.clone();
                             match entry.parent_id() {
                                 Some(p) if !p.is_empty() => {

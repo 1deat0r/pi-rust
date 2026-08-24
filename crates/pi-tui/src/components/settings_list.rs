@@ -14,6 +14,14 @@ pub type SubmenuFn =
     Box<dyn Fn(&str, bool) -> Option<Box<dyn Component + Send + Sync>> + Send + Sync>;
 /// A two-argument style function (text, selected).
 pub type LabelStyleFn = Box<dyn Fn(&str, bool) -> String + Send + Sync>;
+pub type SettingsChangeFn = Box<dyn Fn(&str, &str) + Send + Sync>;
+pub type SettingsCancelFn = Box<dyn Fn() + Send + Sync>;
+pub type SettingsSubmenuDoneFn = Box<dyn Fn(Option<String>, Option<String>) + Send + Sync>;
+pub type SettingsSubmenuResult = (Option<String>, Option<String>);
+pub type SettingsSubmenuState = std::sync::Arc<std::sync::Mutex<Option<SettingsSubmenuResult>>>;
+pub type SubmenuWithDoneFn = Box<
+    dyn Fn(&str, SettingsSubmenuDoneFn) -> Option<Box<dyn Component + Send + Sync>> + Send + Sync,
+>;
 
 /// A single setting item.
 pub struct SettingItem {
@@ -25,6 +33,11 @@ pub struct SettingItem {
     pub values: Option<Vec<String>>,
     /// If provided, Enter opens this submenu (returns a component).
     pub submenu: Option<SubmenuFn>,
+    /// Callback-aware submenu variant. The second argument receives the
+    /// selected value and optional target id when the submenu completes.
+    pub submenu_with_done: Option<SubmenuWithDoneFn>,
+    /// Disabled rows remain visible but cannot be selected or activated.
+    pub disabled: bool,
 }
 
 impl std::fmt::Debug for SettingItem {
@@ -55,11 +68,29 @@ impl SettingItem {
                 Some(values)
             },
             submenu: None,
+            submenu_with_done: None,
+            disabled: false,
         }
     }
 
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    pub fn with_disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn with_submenu_done(
+        mut self,
+        submenu: impl Fn(&str, SettingsSubmenuDoneFn) -> Option<Box<dyn Component + Send + Sync>>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        self.submenu_with_done = Some(Box::new(submenu));
         self
     }
 }
@@ -100,6 +131,10 @@ pub struct SettingsList {
     search_enabled: bool,
     submenu_component: Option<Box<dyn Component + Send + Sync>>,
     submenu_item_index: Option<usize>,
+    navigate_after_close: Option<String>,
+    submenu_done: Option<SettingsSubmenuState>,
+    on_change: Option<SettingsChangeFn>,
+    on_cancel: Option<SettingsCancelFn>,
 }
 
 impl std::fmt::Debug for SettingsList {
@@ -117,13 +152,50 @@ impl SettingsList {
         theme: SettingsListTheme,
         options: SettingsListOptions,
     ) -> Self {
-        self_ready_init(items, max_visible, theme, options)
+        self_ready_init(items, max_visible, theme, options, None, None)
+    }
+
+    /// Construct a settings list with the upstream callback semantics.
+    pub fn new_with_callbacks(
+        items: Vec<SettingItem>,
+        max_visible: usize,
+        theme: SettingsListTheme,
+        on_change: impl Fn(&str, &str) + Send + Sync + 'static,
+        on_cancel: impl Fn() + Send + Sync + 'static,
+        options: SettingsListOptions,
+    ) -> Self {
+        self_ready_init(
+            items,
+            max_visible,
+            theme,
+            options,
+            Some(Box::new(on_change)),
+            Some(Box::new(on_cancel)),
+        )
+    }
+
+    /// Attach callbacks after construction while retaining the legacy
+    /// constructor used by existing callers.
+    pub fn with_callbacks(
+        mut self,
+        on_change: impl Fn(&str, &str) + Send + Sync + 'static,
+        on_cancel: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        self.on_change = Some(Box::new(on_change));
+        self.on_cancel = Some(Box::new(on_cancel));
+        self
     }
 
     /// Update an item's currentValue.
     pub fn update_value(&mut self, id: &str, new_value: impl Into<String>) {
         if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
             item.current_value = new_value.into();
+        }
+    }
+
+    pub fn set_disabled(&mut self, id: &str, disabled: bool) {
+        if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
+            item.disabled = disabled;
         }
     }
 
@@ -136,7 +208,7 @@ impl SettingsList {
         } else {
             self.items.iter().collect()
         };
-        if let Some(index) = items.iter().position(|i| i.id == id) {
+        if let Some(index) = items.iter().position(|i| i.id == id && !i.disabled) {
             self.selected_index = index;
         }
     }
@@ -170,6 +242,12 @@ impl SettingsList {
 
     pub fn close_submenu(&mut self) {
         self.submenu_component = None;
+        self.submenu_done = None;
+        if let Some(id) = self.navigate_after_close.take() {
+            self.select_item(&id);
+            self.activate_item();
+            return;
+        }
         if let Some(idx) = self.submenu_item_index.take() {
             self.selected_index = idx;
         }
@@ -307,8 +385,23 @@ impl SettingsList {
             self.items.get(self.selected_index)
         };
         let Some(item) = item else { return };
+        if item.disabled {
+            return;
+        }
 
-        if let Some(submenu) = &item.submenu {
+        if let Some(submenu_with_done) = &item.submenu_with_done {
+            let result = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let result_for_callback = result.clone();
+            let done: SettingsSubmenuDoneFn = Box::new(move |selected, navigate_to| {
+                *result_for_callback.lock().unwrap() = Some((selected, navigate_to));
+            });
+            let component = submenu_with_done(&item.current_value, done);
+            if let Some(component) = component {
+                self.submenu_item_index = Some(self.selected_index);
+                self.submenu_done = Some(result);
+                self.submenu_component = Some(component);
+            }
+        } else if let Some(submenu) = &item.submenu {
             let component = submenu(&item.current_value, false);
             if let Some(component) = component {
                 self.submenu_item_index = Some(self.selected_index);
@@ -324,20 +417,89 @@ impl SettingsList {
                 let new_value = values[next_index].clone();
                 let id = item.id.clone();
                 self.update_value(&id, new_value.clone());
+                if let Some(on_change) = &self.on_change {
+                    on_change(&id, &new_value);
+                }
             }
         }
     }
 
     fn apply_filter(&mut self, query: &str) {
-        let items = self.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
-        let filtered_labels: Vec<String> = self.items.iter().map(|i| i.label.clone()).collect();
-        let _ = items;
-        let matches = fuzzy_filter(filtered_labels, query, |label| label.clone());
-        self.filtered_items = matches
-            .iter()
-            .filter_map(|label| self.items.iter().position(|i| &i.label == label))
-            .collect();
-        self.selected_index = 0;
+        let indexed_items: Vec<usize> = (0..self.items.len()).collect();
+        self.filtered_items = fuzzy_filter(indexed_items, query, |index| {
+            self.items[*index].label.clone()
+        });
+        self.selected_index = self.first_enabled_index().unwrap_or(0);
+    }
+
+    fn consume_submenu_done(&mut self) {
+        let Some(state) = &self.submenu_done else {
+            return;
+        };
+        let result = state.lock().unwrap().take();
+        let Some((selected_value, navigate_to)) = result else {
+            return;
+        };
+        if let Some(value) = selected_value {
+            let display_index = self.submenu_item_index.unwrap_or(self.selected_index);
+            if let Some(item_index) = self.display_index(display_index) {
+                let id = self.items[item_index].id.clone();
+                self.update_value(&id, value.clone());
+                if let Some(on_change) = &self.on_change {
+                    on_change(&id, &value);
+                }
+            }
+        }
+        self.navigate_after_close = navigate_to;
+        self.close_submenu();
+    }
+
+    fn display_index(&self, index: usize) -> Option<usize> {
+        if self.search_enabled {
+            self.filtered_items.get(index).copied()
+        } else if index < self.items.len() {
+            Some(index)
+        } else {
+            None
+        }
+    }
+
+    fn first_enabled_index(&self) -> Option<usize> {
+        let len = if self.search_enabled {
+            self.filtered_items.len()
+        } else {
+            self.items.len()
+        };
+        (0..len).find(|index| {
+            self.display_index(*index)
+                .and_then(|item| self.items.get(item))
+                .map(|item| !item.disabled)
+                .unwrap_or(false)
+        })
+    }
+
+    fn move_selection(&mut self, direction: isize) {
+        let display_len = if self.search_enabled {
+            self.filtered_items.len()
+        } else {
+            self.items.len()
+        };
+        if display_len == 0 || self.first_enabled_index().is_none() {
+            return;
+        }
+        let mut index = self.selected_index.min(display_len - 1) as isize;
+        for _ in 0..display_len {
+            index = (index + direction).rem_euclid(display_len as isize);
+            if self
+                .display_index(index as usize)
+                .and_then(|item| self.items.get(item))
+                .map(|item| !item.disabled)
+                .unwrap_or(false)
+            {
+                self.selected_index = index as usize;
+                return;
+            }
+        }
     }
 }
 
@@ -346,6 +508,8 @@ fn self_ready_init(
     max_visible: usize,
     theme: SettingsListTheme,
     options: SettingsListOptions,
+    on_change: Option<SettingsChangeFn>,
+    on_cancel: Option<SettingsCancelFn>,
 ) -> SettingsList {
     let search_enabled = options.enable_search;
     let search_input = if search_enabled {
@@ -354,17 +518,22 @@ fn self_ready_init(
         None
     };
     let filtered_items: Vec<usize> = (0..items.len()).collect();
+    let selected_index = items.iter().position(|item| !item.disabled).unwrap_or(0);
     items.shrink_to_fit();
     SettingsList {
         items,
         filtered_items,
         theme,
-        selected_index: 0,
-        max_visible,
+        selected_index,
+        max_visible: max_visible.max(1),
         search_input,
         search_enabled,
         submenu_component: None,
         submenu_item_index: None,
+        navigate_after_close: None,
+        submenu_done: None,
+        on_change,
+        on_cancel,
     }
 }
 
@@ -385,39 +554,16 @@ impl Component for SettingsList {
             if let Some(sub) = &mut self.submenu_component {
                 sub.handle_input(key);
             }
+            self.consume_submenu_done();
             return;
         }
 
         match key.base.as_str() {
             "up" => {
-                let display_len = if self.search_enabled {
-                    self.filtered_items.len()
-                } else {
-                    self.items.len()
-                };
-                if display_len == 0 {
-                    return;
-                }
-                self.selected_index = if self.selected_index == 0 {
-                    display_len - 1
-                } else {
-                    self.selected_index - 1
-                };
+                self.move_selection(-1);
             }
             "down" => {
-                let display_len = if self.search_enabled {
-                    self.filtered_items.len()
-                } else {
-                    self.items.len()
-                };
-                if display_len == 0 {
-                    return;
-                }
-                self.selected_index = if self.selected_index == display_len - 1 {
-                    0
-                } else {
-                    self.selected_index + 1
-                };
+                self.move_selection(1);
             }
             "enter" => {
                 if key.ctrl {
@@ -425,8 +571,21 @@ impl Component for SettingsList {
                 }
                 self.activate_item();
             }
+            " " if !self.search_enabled
+                || self
+                    .search_input
+                    .as_ref()
+                    .map(|input| input.value.is_empty())
+                    .unwrap_or(true) =>
+            {
+                if !key.ctrl {
+                    self.activate_item();
+                }
+            }
             "escape" => {
-                // Parent handles closing (returns via cancel).
+                if let Some(on_cancel) = &self.on_cancel {
+                    on_cancel();
+                }
             }
             _ => {
                 if self.search_enabled {

@@ -114,9 +114,11 @@ pub fn truncate_tail_with(
             content: joined,
         },
         last_line_partial,
-        last_line_partial
-            .then(|| utf8_len(selected[0]))
-            .unwrap_or(0),
+        if last_line_partial {
+            utf8_len(selected[0])
+        } else {
+            0
+        },
     )
 }
 

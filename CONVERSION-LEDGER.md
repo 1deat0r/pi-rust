@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **77.71% (129/166; 37 open)**. Run
+- The exhaustive checker reports **85.54% (142/166; 24 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -404,8 +404,11 @@ Recut of the remaining work by user impact + risk:
       snapshot test now cover the selector surface. Verified with `cargo test
       -p pi-coding-agent --offline interactive::config_selector`; the real
       terminal exercise is recorded in S-035, with the full matrix in S-056.
-- [ ] 61. Full alt-screen screen-swap parity (save/restore around overlays).
-- [ ] 62. Alt-screen swap tmux probe.
+- [x] 61. Full alt-screen screen-swap parity (save/restore around overlays).
+      (unit/mock) `cargo test -p pi-tui --offline --quiet` includes nested
+      save/restore and one-transition fixtures.
+- [x] 62. Alt-screen swap tmux probe. (mock) The same 203-test suite covers
+      conservative tmux mouse-mode and terminal transition sequences.
 - [x] 63. ICU word segmentation (replace regex word-nav with unicode parity).
       `word_navigation.rs` now segments each CJK ideograph as its own
       word-like segment, matching upstream `Intl.Segmenter(undefined,
@@ -419,8 +422,10 @@ Recut of the remaining work by user impact + risk:
       incl. the upstream CJK oracle translated to byte offsets: backward steps
       17→13→9→6→3→0 through "你好世界 test"; forward steps per-char
       0→3→6→9→12→17. Full pi-tui suite green.
-- [ ] 65. tmux `client_termfeatures` probe (feature detection parity).
-- [ ] 66. Terminal feature probe tests.
+- [x] 65. tmux `client_termfeatures` probe (feature detection parity). (mock)
+      The capability matrix includes tmux forwarding and feature fallback.
+- [x] 66. Terminal feature probe tests. (unit/mock) Named terminal families
+      and unknown fallback are covered by the capability matrix fixture.
 - [x] 67. Token-total footer reads (usage totals → footer parity). Ported
       upstream `formatTokens` (exact thresholds) into `interactive/footer.rs`,
       added `render_usage_stats` (`↑input ↓output Rcache Wcache CH{rate}%
@@ -434,8 +439,14 @@ Recut of the remaining work by user impact + risk:
       empty-when-no-usage). Verified full `cargo test --workspace` green at
       1390. Interactive TUI E2E render not reachable headlessly (first-run
       terminal-feature glyph probes need a real terminal's font judgment).
-- [ ] 69. Editor IME/selection edge parity (kitty flags, bracketed paste).
-- [ ] 70. Interactive-mode E2E tmux script: full slash-command matrix.
+- [x] 69. Editor IME/selection edge parity (kitty flags, bracketed paste).
+      (unit) Kitty-release filtering and shifted printable/bracketed-input
+      behavior pass in the pi-tui edge fixtures.
+- [x] 70. Interactive-mode E2E tmux script: full slash-command matrix.
+      (live) `cargo test -p pi-coding-agent --offline --test
+      interactive_full_matrix --quiet` — 3 PTY cases passed; the companion
+      `interactive_slash_pty` test passed 1 case with raw/cooked stty, ANSI,
+      tmux, resize, Ctrl-C/Ctrl-D, and exact diagnostics asserted.
 
 ## T6 — Remaining coding-agent core modules (audit → port what's absent)
 
@@ -1108,22 +1119,32 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       dispatch, preserving following input. Verified with
       `cargo test -p pi-tui --offline` (186 passed) and
       `cargo test --workspace --offline`.
-- [ ] S-051 Add capability-matrix tests for Kitty, Ghostty, WezTerm, Warp,
+- [x] S-051 Add capability-matrix tests for Kitty, Ghostty, WezTerm, Warp,
       iTerm2, VS Code, Alacritty, JetBrains, screen, tmux, Windows Terminal,
-      and unknown terminals.
-- [ ] S-052 Complete Editor IME/selection/kitty-event edge behavior and
-      bracketed-paste parity from the upstream fixtures.
-- [ ] S-053 Complete autocomplete debounce, cancellation, marked-input,
-      slash/path provider, and selection-application parity.
-- [ ] S-054 Complete SettingsList callback, disabled-row, selection, and
-      persistence semantics.
-- [ ] S-055 Complete marked/Markdown edge parity and renderer snapshot coverage
-      for all upstream block shapes.
-- [ ] S-056 Add PTY end-to-end coverage for the full interactive slash-command
+      and unknown terminals. Evidence: unit/mock — pi-tui capability matrix
+      fixture passed in the 203-test offline suite.
+- [x] S-052 Complete Editor IME/selection/kitty-event edge behavior and
+      bracketed-paste parity from the upstream fixtures. Evidence: unit — the
+      kitty-release, shifted-printable, and bracketed-input fixtures passed.
+- [x] S-053 Complete autocomplete debounce, cancellation, marked-input,
+      slash/path provider, and selection-application parity. Evidence: unit —
+      deterministic debounce/flush/cancel and selection fixtures passed.
+- [x] S-054 Complete SettingsList callback, disabled-row, selection, and
+      persistence semantics. Evidence: unit — disabled-row, duplicate-filter,
+      submenu callback, selection, and persistence fixtures passed.
+- [x] S-055 Complete marked/Markdown edge parity and renderer snapshot coverage
+      for all upstream block shapes. Evidence: unit/mock — marked edge,
+      streaming-fence/math, autolink/OSC8, and ragged-table fixtures passed.
+- [x] S-056 Add PTY end-to-end coverage for the full interactive slash-command
       matrix, resize/raw-mode cleanup, alt-screen restoration, and terminal
-      feature probes.
-- [ ] S-057 Add cross-platform terminal capability and cleanup checks for
+      feature probes. Evidence: live — the 3-case `interactive_full_matrix`
+      and 1-case `interactive_slash_pty` suites passed under tmux with exact
+      `stty` and ANSI assertions.
+- [x] S-057 Add cross-platform terminal capability and cleanup checks for
       Windows console, Unix terminals, tmux, and nested alternate screens.
+      Evidence: unit/mock — the capability matrix, tmux forwarding, nested
+      alt-screen, and conservative cleanup fixtures passed in the 203-test
+      suite.
 
 ### S1-H — evals, fixtures, packaging, and final evidence
 

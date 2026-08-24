@@ -269,7 +269,7 @@ impl FileSystem for MemoryFs {
     fn append_file(&self, path: &str, content: &str) -> Result<(), FileError> {
         let ts = self.clock.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut files = self.files.lock().unwrap();
-        let entry = files.entry(path.to_string()).or_insert_with(String::new);
+        let entry = files.entry(path.to_string()).or_default();
         entry.push_str(content);
         drop(files);
         self.mtimes.lock().unwrap().insert(path.to_string(), ts + 1);

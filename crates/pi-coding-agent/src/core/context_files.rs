@@ -180,7 +180,11 @@ pub fn load_project_context_files(cwd: &str, agent_dir: &str) -> Vec<ContextFile
             })
             .unwrap_or(false);
         if let Some(ctx) = context_file {
-            if !is_shadowed && !seen_paths.iter().any(|p| *p == PathBuf::from(&ctx.path)) {
+            if !is_shadowed
+                && !seen_paths
+                    .iter()
+                    .any(|p| p.as_path() == std::path::Path::new(&ctx.path))
+            {
                 ancestor_context_files.insert(0, ctx.clone());
                 seen_paths.push(PathBuf::from(&ctx.path));
             }
@@ -311,7 +315,7 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].content, "override");
         // only one loaded for the dir
-        assert_eq!(files[0].path.ends_with("AGENTS.override.md"), true);
+        assert!(files[0].path.ends_with("AGENTS.override.md"));
         std::fs::remove_dir_all(&root).ok();
     }
 

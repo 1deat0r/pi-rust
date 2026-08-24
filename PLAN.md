@@ -4,7 +4,7 @@
 
 The existing conversion goal is resumed under the scoped unlazy contract
 `.unlazy/full-conversion-20260825/`. The current authoritative checker output
-is **Conversion progress: 77.71% (129/166; 37 open)**. The source inventory
+is **Conversion progress: 85.54% (142/166; 24 open)**. The source inventory
 and claim-reconciliation audit is complete; the current wave has unit, mock,
 and live evidence across providers, client/server, harness, and reconnects.
 
@@ -12,13 +12,13 @@ The first implementation wave completed the audit (`leaf-A1`), Copilot OAuth
 fixtures (`leaf-B1`), Anthropic fixtures (`leaf-B2`), model-catalog fixtures
 (`leaf-B3`), the proxy seam (#75), the Rust-native extension fixture slice
 (`leaf-C2`), server lifecycle fixes (`leaf-D1`), protocol strict-clippy
-cleanup, TUI static/test cleanup (`leaf-E1`), eval metrics (`leaf-F1`),
-provider matrix (`leaf-B4`), auxiliary client (`leaf-D2`), harness/mode
-(`leaf-C1`), and reconnect E2E (`leaf-D3`). The active wave is expanded server
-conformance (`leaf-D1b`), remaining TUI behavior (`leaf-E3`), strict clippy
-(`leaf-R3`), and parity/release fixtures (`leaf-F2`); final audit remains
-dependency-gated. The driver owns the conversion ledger and synchronized
-documentation.
+cleanup, TUI static/test cleanup (`leaf-E1`), TUI behavior (`leaf-E3`), eval
+metrics (`leaf-F1`), provider matrix (`leaf-B4`), auxiliary client (`leaf-D2`),
+harness/mode (`leaf-C1`), reconnect E2E (`leaf-D3`), live PTY rerun
+(`leaf-E2b`), and measured strict clippy cleanup (`leaf-R3`). The active wave
+is expanded server conformance (`leaf-D1b`) and parity/release fixtures
+(`leaf-F2`); final audit remains dependency-gated. The driver owns the
+conversion ledger and synchronized documentation.
 
 ## Checkpoint 2026-08-25 — first implementation wave
 

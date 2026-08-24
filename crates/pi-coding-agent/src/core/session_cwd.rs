@@ -23,9 +23,7 @@ pub fn get_missing_session_cwd_issue(
     session_cwd: &str,
     fallback_cwd: &str,
 ) -> Option<SessionCwdIssue> {
-    if session_file.is_none() {
-        return None;
-    }
+    session_file?;
     if session_cwd.is_empty() || Path::new(session_cwd).exists() {
         return None;
     }

@@ -47,7 +47,7 @@ pub fn resolve_read_tool_path(cwd: &str, path: &str) -> Vec<String> {
     variants.push(resolved.replace('\'', "\u{2019}"));
     variants
         .iter()
-        .map(|v| v.clone())
+        .cloned()
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect()

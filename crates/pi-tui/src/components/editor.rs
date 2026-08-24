@@ -11,11 +11,13 @@
 //! `drain_autocomplete_tick` from its event loop).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::autocomplete::{AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions};
 use crate::components::select_list::{SelectItem, SelectList, SelectListLayoutOptions};
-use crate::keys::{match_key, TuiKey};
+use crate::keys::{is_key_release, match_key, TuiKey};
 use crate::kill_ring::{KillRing, KillRingPushOptions};
 use crate::tui::Component;
 use crate::undo_stack::UndoStack;
@@ -30,7 +32,11 @@ fn paste_marker_regex() -> regex::Regex {
 }
 
 fn is_paste_marker(segment: &str) -> bool {
-    segment.len() >= 10 && paste_marker_regex().is_match(segment)
+    segment.len() >= 10
+        && paste_marker_regex()
+            .find(segment)
+            .map(|matched| matched.as_str() == segment)
+            .unwrap_or(false)
 }
 
 /// A chunk of text for word-wrap layout.
@@ -399,6 +405,15 @@ const SLASH_COMMAND_SELECT_LIST_LAYOUT: SelectListLayoutOptions = SelectListLayo
     max_primary_column_width: Some(32),
 };
 
+const AUTOCOMPLETE_DEBOUNCE: Duration = Duration::from_millis(20);
+
+struct PendingAutocomplete {
+    force: bool,
+    explicit_tab: bool,
+    generation: u64,
+    due: Instant,
+}
+
 /// The editor component.
 pub struct Editor {
     state: EditorState,
@@ -416,6 +431,9 @@ pub struct Editor {
     autocomplete_state: Option<&'static str>,
     autocomplete_prefix: String,
     autocomplete_max_visible: usize,
+    autocomplete_generation: u64,
+    autocomplete_pending: Option<PendingAutocomplete>,
+    autocomplete_abort: Option<Arc<AtomicBool>>,
 
     // Paste tracking
     pastes: HashMap<usize, String>,
@@ -474,6 +492,9 @@ impl Editor {
             autocomplete_state: None,
             autocomplete_prefix: String::new(),
             autocomplete_max_visible,
+            autocomplete_generation: 0,
+            autocomplete_pending: None,
+            autocomplete_abort: None,
             pastes: HashMap::new(),
             paste_counter: 0,
             paste_buffer: String::new(),
@@ -950,6 +971,20 @@ impl Editor {
         // backend (key string); here data is a key string such as "a",
         // "enter", "ctrl+c", "up", "shift+enter".
 
+        // Drive delayed attachment completion from the event loop. A caller
+        // that owns a render loop can call `drain_autocomplete_tick` directly
+        // as well; this keeps the debounce deterministic without spawning an
+        // unmanaged timer thread.
+        self.drain_autocomplete_tick();
+
+        // Kitty flag-2 release events are notifications, not text or editor
+        // commands. Keep repeats as ordinary key input. This check must run
+        // before paste handling so a pasted MAC address cannot be mistaken
+        // for an event suffix (the key helper deliberately guards markers).
+        if is_key_release(data) {
+            return;
+        }
+
         // Character jump mode.
         if self.jump_mode.is_some() {
             let jump = self.jump_mode.take();
@@ -1409,6 +1444,7 @@ impl Editor {
     }
 
     fn handle_backspace(&mut self) {
+        self.cancel_autocomplete_request();
         self.exit_history_browsing();
         self.last_action = None;
 
@@ -1692,6 +1728,7 @@ impl Editor {
     }
 
     fn handle_forward_delete(&mut self) {
+        self.cancel_autocomplete_request();
         self.exit_history_browsing();
         self.last_action = None;
         let current_line = self
@@ -1734,11 +1771,16 @@ impl Editor {
     }
 
     fn move_to_line_start(&mut self) {
+        self.cancel_autocomplete_request();
         self.last_action = None;
         self.set_cursor_col(0);
+        if self.autocomplete_state.is_some() {
+            self.update_autocomplete();
+        }
     }
 
     fn move_to_line_end(&mut self) {
+        self.cancel_autocomplete_request();
         self.last_action = None;
         let len = self
             .state
@@ -1747,6 +1789,9 @@ impl Editor {
             .map(|l| l.len())
             .unwrap_or(0);
         self.set_cursor_col(len);
+        if self.autocomplete_state.is_some() {
+            self.update_autocomplete();
+        }
     }
 
     // ------------------------------------------------------------------ vertical movement
@@ -1905,6 +1950,7 @@ impl Editor {
     }
 
     fn move_cursor(&mut self, delta_line: isize, delta_col: isize) {
+        self.cancel_autocomplete_request();
         self.last_action = None;
         let visual_lines = self.build_visual_line_map(self.last_width);
         let current_visual_line = self.find_current_visual_line(&visual_lines);
@@ -2344,6 +2390,40 @@ impl Editor {
     }
 
     fn request_autocomplete(&mut self, force: bool, explicit_tab: bool) {
+        self.cancel_autocomplete_request();
+
+        // Attachment completion is intentionally delayed so a burst of
+        // `@foo`/`#123` input produces one provider call. Slash command and
+        // explicit Tab completion remain immediate, matching upstream.
+        if !force && !explicit_tab && self.should_debounce_attachment_completion() {
+            let generation = self.autocomplete_generation;
+            self.autocomplete_pending = Some(PendingAutocomplete {
+                force,
+                explicit_tab,
+                generation,
+                due: Instant::now() + AUTOCOMPLETE_DEBOUNCE,
+            });
+            return;
+        }
+
+        let generation = self.autocomplete_generation;
+        self.request_autocomplete_now(force, explicit_tab, generation);
+    }
+
+    fn should_debounce_attachment_completion(&self) -> bool {
+        let current_line = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .cloned()
+            .unwrap_or_default();
+        let text_before_cursor =
+            current_line[..self.state.cursor_col.min(current_line.len())].to_string();
+        !self.is_in_slash_command_context(&text_before_cursor)
+            && self.autocomplete_trigger_pattern(&text_before_cursor)
+    }
+
+    fn request_autocomplete_now(&mut self, force: bool, explicit_tab: bool, generation: u64) {
         let Some(provider) = self.autocomplete_provider.take() else {
             return;
         };
@@ -2359,24 +2439,39 @@ impl Editor {
             return;
         }
 
-        let aborted = std::sync::atomic::AtomicBool::new(false);
+        let request_lines = self.state.lines.clone();
+        let request_cursor_line = self.state.cursor_line;
+        let request_cursor_col = self.state.cursor_col;
+        let aborted = Arc::new(AtomicBool::new(false));
+        self.autocomplete_abort = Some(aborted.clone());
         let suggestions = provider.get_suggestions(
-            &self.state.lines,
-            self.state.cursor_line,
-            self.state.cursor_col,
+            &request_lines,
+            request_cursor_line,
+            request_cursor_col,
             force,
-            &aborted,
+            aborted.as_ref(),
         );
+        let request_is_current = self.autocomplete_generation == generation
+            && !aborted.load(Ordering::SeqCst)
+            && self.state.lines == request_lines
+            && self.state.cursor_line == request_cursor_line
+            && self.state.cursor_col == request_cursor_col;
+        self.autocomplete_abort = None;
+
+        if !request_is_current {
+            self.autocomplete_provider = Some(provider);
+            return;
+        }
 
         match suggestions {
             None => {
                 self.autocomplete_provider = Some(provider);
-                self.cancel_autocomplete();
+                self.clear_autocomplete_ui();
             }
             Some(suggestions) => {
                 if suggestions.items.is_empty() {
                     self.autocomplete_provider = Some(provider);
-                    self.cancel_autocomplete();
+                    self.clear_autocomplete_ui();
                     return;
                 }
                 if force && explicit_tab && suggestions.items.len() == 1 {
@@ -2457,13 +2552,75 @@ impl Editor {
             return;
         }
         let force = self.autocomplete_state == Some("force");
+        let current_line = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .cloned()
+            .unwrap_or_default();
+        let before_cursor =
+            current_line[..self.state.cursor_col.min(current_line.len())].to_string();
+        if !force
+            && !self.is_in_slash_command_context(&before_cursor)
+            && !self.autocomplete_trigger_pattern(&before_cursor)
+        {
+            self.cancel_autocomplete();
+            return;
+        }
         self.request_autocomplete(force, false);
     }
 
-    fn cancel_autocomplete(&mut self) {
+    fn cancel_autocomplete_request(&mut self) {
+        self.autocomplete_generation = self.autocomplete_generation.wrapping_add(1);
+        self.autocomplete_pending = None;
+        if let Some(aborted) = &self.autocomplete_abort {
+            aborted.store(true, Ordering::SeqCst);
+        }
+        self.autocomplete_abort = None;
+    }
+
+    fn clear_autocomplete_ui(&mut self) {
         self.autocomplete_state = None;
         self.autocomplete_list = None;
         self.autocomplete_prefix.clear();
+    }
+
+    fn cancel_autocomplete(&mut self) {
+        self.cancel_autocomplete_request();
+        self.clear_autocomplete_ui();
+    }
+
+    /// Execute a due natural autocomplete request. The interactive event loop
+    /// can call this once per frame; it returns whether a request was run.
+    pub fn drain_autocomplete_tick(&mut self) -> bool {
+        let Some(pending) = self.autocomplete_pending.as_ref() else {
+            return false;
+        };
+        if pending.due > Instant::now() {
+            return false;
+        }
+        let pending = self.autocomplete_pending.take().expect("pending request");
+        if pending.generation != self.autocomplete_generation {
+            return false;
+        }
+        self.request_autocomplete_now(pending.force, pending.explicit_tab, pending.generation);
+        true
+    }
+
+    /// Run a pending request immediately. This deterministic hook is useful
+    /// for tests and for event loops that need completion before the next
+    /// render pass without sleeping for the debounce interval.
+    pub fn flush_autocomplete(&mut self) {
+        let Some(pending) = self.autocomplete_pending.take() else {
+            return;
+        };
+        if pending.generation == self.autocomplete_generation {
+            self.request_autocomplete_now(pending.force, pending.explicit_tab, pending.generation);
+        }
+    }
+
+    pub fn is_autocomplete_pending(&self) -> bool {
+        self.autocomplete_pending.is_some()
     }
 
     pub fn is_showing_autocomplete(&self) -> bool {
@@ -2490,6 +2647,9 @@ fn matches_jump_cancel(data: &str) -> bool {
 }
 
 fn decode_printable(data: &str) -> Option<String> {
+    if let Some((text, _modifier)) = crate::keys::decode_printable_key(data) {
+        return Some(text);
+    }
     let c = data.chars().next()?;
     if data.len() == c.len_utf8() && (c as u32) >= 32 && !c.is_control() {
         if matches_key(data, "enter")

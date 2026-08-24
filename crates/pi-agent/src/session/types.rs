@@ -16,6 +16,7 @@ pub type JsonValue = serde_json::Value;
 
 /// Entry union. JSONL files use `type` as the discriminator; `seq`,
 /// `parentId`, and `timestamp` are storage-assigned at append time.
+#[allow(clippy::large_enum_variant)] // preserve the public upstream session union
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Entry {
@@ -363,6 +364,7 @@ impl Entry {
 }
 
 /// Provisioned entries lack `seq`/`parentId`/`timestamp` (assigned at append).
+#[allow(clippy::large_enum_variant)] // preserve the public upstream session union
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EntryNoStats {
@@ -847,6 +849,7 @@ impl NewRecord {
 
 /// A line-level mutation stored in the JSONL file (port of
 /// `SessionMutation` from `state.ts`).
+#[allow(clippy::large_enum_variant)] // preserve the public upstream mutation union
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Mutation {
@@ -958,6 +961,7 @@ pub struct SessionStats {
 }
 
 /// `LogItem` from session/types.ts — the full mutation log union.
+#[allow(clippy::large_enum_variant)] // preserve the public upstream log union
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogItem {
     Entry(Entry),

@@ -130,9 +130,11 @@ fn compaction_entry(
     }
 }
 
+type ScriptedCalls = Arc<Mutex<Vec<(String, SimpleStreamOptions)>>>;
+
 fn scripted_models(
     responses: Vec<pi_ai::types::AssistantMessage>,
-) -> (SimpleModels, Arc<Mutex<Vec<(String, SimpleStreamOptions)>>>) {
+) -> (SimpleModels, ScriptedCalls) {
     let queue = Arc::new(Mutex::new(VecDeque::from(responses)));
     let calls = Arc::new(Mutex::new(Vec::new()));
     let queue_c = queue.clone();
@@ -310,7 +312,7 @@ fn prepares_compaction_using_latest_summary_as_previous() {
         preparation.previous_summary.as_deref(),
         Some("First summary")
     );
-    assert!(preparation.retained_tail.len() > 0);
+    assert!(!preparation.retained_tail.is_empty());
     assert_eq!(
         preparation.tokens_before,
         estimate_context_tokens(
@@ -758,9 +760,9 @@ async fn returns_compaction_result_with_file_details() {
     let result = compact(&preparation, &models, &model, None, None, None, None, None)
         .await
         .unwrap();
-    assert!(result.summary.len() > 0);
+    assert!(!result.summary.is_empty());
     assert!(result.usage.is_some());
-    assert!(result.retained_tail.len() > 0);
+    assert!(!result.retained_tail.is_empty());
     let details = result.details.unwrap();
     assert!(details.read_files.contains(&"src/index.ts".to_string()));
 }

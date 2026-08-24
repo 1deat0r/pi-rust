@@ -17,6 +17,7 @@ use crate::types::AgentMessage;
 /// Provider stream function: `(model, context) -> event stream`.
 pub type StreamFn =
     Arc<dyn Fn(&pi_ai::model::Model, &Context) -> AssistantMessageEventStream + Send + Sync>;
+pub type StreamEventObserver = Arc<dyn Fn(&pi_ai::AssistantMessageEvent) + Send + Sync>;
 
 pub struct AgentContext {
     pub system_prompt: Option<String>,
@@ -66,7 +67,7 @@ pub struct AgentLoopConfig {
     pub stop_after_turn: bool,
     /// Optional raw stream-event observer (used by RPC mode to stream
     /// message_update events like the upstream AgentSession).
-    pub on_stream_event: Option<Arc<dyn Fn(&pi_ai::AssistantMessageEvent) + Send + Sync>>,
+    pub on_stream_event: Option<StreamEventObserver>,
 }
 
 /// Runs the agent loop over the given prompts, mutating `context.messages`.

@@ -240,10 +240,8 @@ impl ExtensionRunner {
         let mut flags = BTreeMap::new();
         for extension in &self.extensions {
             for name in extension.ordered_flag_names() {
-                if !flags.contains_key(&name) {
-                    if let Some(flag) = extension.flags.get(&name) {
-                        flags.insert(name, flag.clone());
-                    }
+                if let Some(flag) = extension.flags.get(&name).cloned() {
+                    flags.entry(name).or_insert(flag);
                 }
             }
         }
@@ -1074,11 +1072,15 @@ mod tests {
 
     #[test]
     fn tools_first_registration_wins() {
-        let mut e1 = Extension::default();
-        e1.path = "e1".into();
+        let mut e1 = Extension {
+            path: "e1".into(),
+            ..Default::default()
+        };
         e1.tools.insert("bash".to_string(), tool("bash"));
-        let mut e2 = Extension::default();
-        e2.path = "e2".into();
+        let mut e2 = Extension {
+            path: "e2".into(),
+            ..Default::default()
+        };
         e2.tools.insert("bash".to_string(), tool("bash-other"));
         e2.tools.insert("custom".to_string(), tool("custom"));
         let runner = runner_with(vec![e1, e2]);
@@ -1096,12 +1098,16 @@ mod tests {
 
     #[test]
     fn commands_disambiguated_with_name_suffix() {
-        let mut e1 = Extension::default();
-        e1.path = "e1".into();
+        let mut e1 = Extension {
+            path: "e1".into(),
+            ..Default::default()
+        };
         e1.commands
             .insert("dup".into(), command("dup", dummy_handler()));
-        let mut e2 = Extension::default();
-        e2.path = "e2".into();
+        let mut e2 = Extension {
+            path: "e2".into(),
+            ..Default::default()
+        };
         e2.commands
             .insert("dup".into(), command("dup", dummy_handler()));
         let mut runner = runner_with(vec![e1, e2]);
@@ -1115,8 +1121,10 @@ mod tests {
 
     #[test]
     fn flags_first_wins() {
-        let mut extension = Extension::default();
-        extension.path = "e1".into();
+        let mut extension = Extension {
+            path: "e1".into(),
+            ..Default::default()
+        };
         extension.flags.insert(
             "artist".into(),
             crate::core::extensions::types::ExtensionFlag {
@@ -1155,8 +1163,10 @@ mod tests {
 
     #[test]
     fn reserved_shortcuts_are_skipped() {
-        let mut extension = Extension::default();
-        extension.path = "e1".into();
+        let mut extension = Extension {
+            path: "e1".into(),
+            ..Default::default()
+        };
         extension.shortcuts.insert(
             "ctrl+c".into(),
             ExtensionShortcut {

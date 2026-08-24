@@ -1,4 +1,5 @@
 use crate::components::markdown::{plain_markdown_theme, Markdown, MarkdownOptions};
+use crate::terminal_image::{reset_capabilities_cache, set_capabilities, TerminalCapabilities};
 use crate::tui::Component;
 use std::sync::Arc;
 
@@ -285,4 +286,90 @@ fn renders_code_blocks_and_headings() {
     assert_eq!(lines[0], "Title");
     assert!(lines.iter().any(|l| l.trim() == "```rust"));
     assert!(lines.iter().any(|l| l == "  fn main() {}"));
+}
+
+#[test]
+fn marked_edge_snapshot_is_stable_for_mixed_blocks() {
+    let lines = md(
+        "# Title\n\n- [x] done\n\n```rust\nlet x = 1;\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |",
+        40,
+    );
+    assert_eq!(
+        lines,
+        vec![
+            "Title",
+            "",
+            "- [x] done",
+            "",
+            "```rust",
+            "  let x = 1;",
+            "```",
+            "",
+            "┌───┬───┐",
+            "│ A │ B │",
+            "├───┼───┤",
+            "│ 1 │ 2 │",
+            "└───┴───┘",
+        ]
+    );
+}
+
+#[test]
+fn stabilizes_streaming_fences_and_display_math_shapes() {
+    assert_eq!(
+        md("```ts\nconst x = 1;\n``", 80),
+        vec!["```ts", "  const x = 1;", "```"]
+    );
+    assert_eq!(
+        md("Before\n\n$$x^2$$\n\nafter", 80),
+        vec!["Before", "", "x²", "", "after"]
+    );
+    assert_eq!(md("\\[\nx^2", 80), vec!["\\[", "x^2"]);
+}
+
+#[test]
+fn autolinks_follow_marked_fallback_and_osc8_shapes() {
+    set_capabilities(TerminalCapabilities {
+        images: None,
+        true_color: false,
+        hyperlinks: false,
+    });
+    let fallback = Markdown::new(
+        "Contact user@example.com or https://example.com.",
+        0,
+        0,
+        plain_markdown_theme(),
+        None,
+        None,
+    )
+    .render(80)
+    .join(" ");
+    assert!(fallback.contains("user@example.com"));
+    assert!(fallback.contains("https://example.com"));
+    assert_eq!(fallback.matches("https://example.com").count(), 1);
+
+    set_capabilities(TerminalCapabilities {
+        images: None,
+        true_color: false,
+        hyperlinks: true,
+    });
+    let linked = Markdown::new(
+        "[docs](https://example.com)",
+        0,
+        0,
+        plain_markdown_theme(),
+        None,
+        None,
+    )
+    .render(80)
+    .join("");
+    assert!(linked.contains("\x1b]8;;https://example.com\x1b\\"));
+    reset_capabilities_cache();
+}
+
+#[test]
+fn ragged_marked_table_is_normalized_without_overflow() {
+    let lines = md("| A | B |\n|---|---|\n| only |\n| too | many | cells |", 20);
+    assert!(!lines.is_empty());
+    assert!(lines.iter().all(|line| line.chars().count() <= 20));
 }

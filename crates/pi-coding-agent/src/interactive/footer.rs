@@ -93,8 +93,10 @@ pub fn render_usage_stats(usage: &UsageTotals, cache_hit_rate: Option<f64>) -> V
     if usage.cache_write != 0 {
         parts.push(format!("W{}", format_tokens(usage.cache_write)));
     }
-    if (usage.cache_read > 0 || usage.cache_write > 0) && cache_hit_rate.is_some() {
-        parts.push(format!("CH{:.1}%", cache_hit_rate.unwrap()));
+    if let Some(cache_hit_rate) =
+        cache_hit_rate.filter(|_| usage.cache_read > 0 || usage.cache_write > 0)
+    {
+        parts.push(format!("CH{cache_hit_rate:.1}%"));
     }
     if usage.cost != 0.0 {
         parts.push(format!("${:.3}", usage.cost));
@@ -159,6 +161,14 @@ pub fn render_footer(data: &FooterData, width: usize) -> Vec<String> {
         right
     };
     vec![t::dim(line1), t::dim(stats)]
+}
+
+fn truncate_dim(text: &str, width: usize) -> String {
+    if pi_tui::utils::visible_width(text) <= width {
+        return text.to_string();
+    }
+    let sliced = pi_tui::utils::slice_with_width(text, width.saturating_sub(3));
+    format!("{sliced}...")
 }
 
 #[cfg(test)]
@@ -235,12 +245,4 @@ mod tests {
         assert!(stats_line.contains("$0.001"));
         assert!(stats_line.contains("gpt/model"));
     }
-}
-
-fn truncate_dim(text: &str, width: usize) -> String {
-    if pi_tui::utils::visible_width(text) <= width {
-        return text.to_string();
-    }
-    let sliced = pi_tui::utils::slice_with_width(text, width.saturating_sub(3));
-    format!("{sliced}...")
 }

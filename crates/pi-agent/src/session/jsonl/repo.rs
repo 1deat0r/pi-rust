@@ -352,10 +352,11 @@ pub fn list_jsonl_session_metadata<F: FileSystem>(
                 return Ok(Vec::new());
             }
             for entry in fs.list_dir_entries(&root)? {
-                if entry.is_dir || fs.exists(&fs.join_path(&root, &entry.name)) {
-                    if entry.name.starts_with("--") && entry.name.ends_with("--") {
-                        directories.push(fs.join_path(&root, &entry.name));
-                    }
+                if (entry.is_dir || fs.exists(&fs.join_path(&root, &entry.name)))
+                    && entry.name.starts_with("--")
+                    && entry.name.ends_with("--")
+                {
+                    directories.push(fs.join_path(&root, &entry.name));
                 }
             }
         }
@@ -378,7 +379,7 @@ pub fn list_jsonl_session_metadata<F: FileSystem>(
             metadata.push(metadata_from_header(&header, &path, entry.mtime_ms));
         }
     }
-    metadata.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    metadata.sort_by_key(|a| std::cmp::Reverse(a.modified_at));
     Ok(metadata)
 }
 

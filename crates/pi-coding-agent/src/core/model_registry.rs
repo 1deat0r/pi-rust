@@ -362,9 +362,8 @@ mod run_path_merge_tests {
         // No agent dir models.json in the test environment.
         let path = crate::core::model_config::models_json_path();
         // Either None or a real file; assert consistency with existence.
-        match &path {
-            Some(p) => assert!(p.exists(), "reported path must exist: {p:?}"),
-            None => {}
+        if let Some(p) = &path {
+            assert!(p.exists(), "reported path must exist: {p:?}");
         }
     }
 }

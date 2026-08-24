@@ -307,7 +307,7 @@ mod tests {
     fn is_config_command() {
         // The handler exits on paths after parsing; only test the recognizer
         // via a full invocation with --help (no exit).
-        let args = vec!["config".to_string(), "--help".to_string()];
+        let args = ["config".to_string(), "--help".to_string()];
         // We can't run because it prints and returns; but the return value is
         // true and the print happens on stdout. Run in a subprocess guard is
         // overkill — the binary-level tests cover it. Here we just verify the

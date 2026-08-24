@@ -148,6 +148,158 @@ mod components_extra_tests {
         }
     }
 
+    #[test]
+    fn settings_callbacks_skip_disabled_rows_and_preserve_duplicate_filter_matches() {
+        use std::sync::{Arc, Mutex};
+
+        let changes = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let cancels = Arc::new(Mutex::new(0usize));
+        let changes_for_callback = changes.clone();
+        let cancels_for_callback = cancels.clone();
+        let items = vec![
+            SettingItem::new(
+                "disabled",
+                "Duplicate",
+                "off",
+                vec!["off".into(), "on".into()],
+            )
+            .with_disabled(true),
+            SettingItem::new(
+                "enabled-a",
+                "Duplicate",
+                "one",
+                vec!["one".into(), "two".into()],
+            ),
+            SettingItem::new(
+                "enabled-b",
+                "Duplicate",
+                "red",
+                vec!["red".into(), "blue".into()],
+            ),
+        ];
+        let mut list = SettingsList::new_with_callbacks(
+            items,
+            10,
+            plain_settings_theme(),
+            move |id, value| {
+                changes_for_callback
+                    .lock()
+                    .unwrap()
+                    .push((id.to_string(), value.to_string()))
+            },
+            move || *cancels_for_callback.lock().unwrap() += 1,
+            SettingsListOptions {
+                enable_search: true,
+            },
+        );
+
+        // Search must retain both rows with the same label rather than mapping
+        // both fuzzy results back to the first matching label.
+        for character in "Duplicate".chars() {
+            list.handle_input(&TuiKey::simple(character.to_string()));
+        }
+        assert_eq!(
+            list.visible_items()
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["disabled", "enabled-a", "enabled-b"]
+        );
+
+        // The initial selection is the first enabled row; Down skips the
+        // disabled item and Enter persists through the callback.
+        list.handle_input(&TuiKey::simple("down"));
+        assert_eq!(list.selected_id().as_deref(), Some("enabled-b"));
+        list.handle_input(&TuiKey::simple("enter"));
+        assert_eq!(
+            changes.lock().unwrap().as_slice(),
+            [("enabled-b".to_string(), "blue".to_string())]
+        );
+        list.handle_input(&TuiKey::simple("escape"));
+        assert_eq!(*cancels.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn settings_space_changes_before_search_and_becomes_query_afterward() {
+        use std::sync::{Arc, Mutex};
+
+        let changes = Arc::new(Mutex::new(Vec::<String>::new()));
+        let changes_for_callback = changes.clone();
+        let mut list = SettingsList::new_with_callbacks(
+            vec![SettingItem::new(
+                "mode",
+                "Mode",
+                "one",
+                vec!["one".into(), "two".into()],
+            )],
+            5,
+            plain_settings_theme(),
+            move |_, value| changes_for_callback.lock().unwrap().push(value.to_string()),
+            || {},
+            SettingsListOptions {
+                enable_search: true,
+            },
+        );
+        list.handle_input(&TuiKey::simple(" "));
+        assert_eq!(changes.lock().unwrap().as_slice(), ["two".to_string()]);
+        list.handle_input(&TuiKey::simple("m"));
+        list.handle_input(&TuiKey::simple(" "));
+        assert_eq!(changes.lock().unwrap().as_slice(), ["two".to_string()]);
+    }
+
+    #[test]
+    fn settings_submenu_done_updates_value_and_closes() {
+        use crate::components::settings_list::SettingsSubmenuDoneFn;
+        use std::sync::{Arc, Mutex};
+
+        struct DoneComponent {
+            done: Option<SettingsSubmenuDoneFn>,
+        }
+        impl Component for DoneComponent {
+            fn render(&self, _width: usize) -> Vec<String> {
+                vec!["submenu".to_string()]
+            }
+            fn handle_input(&mut self, key: &TuiKey) {
+                if key.base == "enter" {
+                    if let Some(done) = self.done.take() {
+                        done(Some("selected".to_string()), None);
+                    }
+                }
+            }
+        }
+
+        let changes = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let changes_for_callback = changes.clone();
+        let item = SettingItem::new("picker", "Picker", "old", Vec::new()).with_submenu_done(
+            |current, done| {
+                assert_eq!(current, "old");
+                Some(Box::new(DoneComponent { done: Some(done) }))
+            },
+        );
+        let mut list = SettingsList::new_with_callbacks(
+            vec![item],
+            5,
+            plain_settings_theme(),
+            move |id, value| {
+                changes_for_callback
+                    .lock()
+                    .unwrap()
+                    .push((id.to_string(), value.to_string()));
+            },
+            || {},
+            SettingsListOptions::default(),
+        );
+        list.handle_input(&TuiKey::simple("enter"));
+        assert!(list.is_submenu_open());
+        list.handle_input(&TuiKey::simple("enter"));
+        assert!(!list.is_submenu_open());
+        assert_eq!(list.visible_items()[0].current_value, "selected");
+        assert_eq!(
+            changes.lock().unwrap().as_slice(),
+            [("picker".to_string(), "selected".to_string())]
+        );
+    }
+
     fn base64_encode(bytes: &[u8]) -> String {
         const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut out = String::new();

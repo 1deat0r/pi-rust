@@ -14,7 +14,7 @@ pub struct SessionMetaForPicker {
 /// Sort sessions newest-first and render picker labels from file names.
 pub fn session_picker_items(sessions: Vec<SessionMetadata>) -> Vec<SessionMetaForPicker> {
     let mut sessions = sessions;
-    sessions.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    sessions.sort_by_key(|a| std::cmp::Reverse(a.modified_at));
     sessions
         .into_iter()
         .map(|metadata| {

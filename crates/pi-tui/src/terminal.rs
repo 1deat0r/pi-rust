@@ -15,6 +15,50 @@ use std::os::fd::AsRawFd;
 use crate::stdin_buffer::StdinBuffer;
 use crate::terminal_image::{get_capabilities, parse_cell_size_response, set_cell_dimensions};
 
+pub const ENTER_ALT_SCREEN: &str = "\x1b[?1049h";
+pub const EXIT_ALT_SCREEN: &str = "\x1b[?1049l";
+pub const DISABLE_AUTOWRAP: &str = "\x1b[?7l";
+pub const ENABLE_AUTOWRAP: &str = "\x1b[?7h";
+pub const ENABLE_BRACKETED_PASTE: &str = "\x1b[?2004h";
+pub const DISABLE_BRACKETED_PASTE: &str = "\x1b[?2004l";
+pub const ENABLE_BUTTON_MOTION_MOUSE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1004h\x1b[?1006h";
+pub const ENABLE_ALL_MOTION_MOUSE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1004h\x1b[?1006h";
+pub const DISABLE_MOUSE: &str = "\x1b[?1006l\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+pub const SHOW_CURSOR: &str = "\x1b[?25h";
+pub const HIDE_CURSOR: &str = "\x1b[?25l";
+pub const CLEAR_SCREEN_HOME: &str = "\x1b[2J\x1b[H";
+pub const BEGIN_SYNC_UPDATE: &str = "\x1b[?2026h";
+pub const END_SYNC_UPDATE: &str = "\x1b[?2026l";
+
+/// Complete, deterministic terminal-mode sequences used by overlays and
+/// tests. tmux/screen-like transports use button-motion reporting because
+/// all-motion mode is not reliably forwarded through the multiplexer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AltScreenSequences {
+    pub enter: String,
+    pub suspend: String,
+    pub restore: String,
+    pub cleanup: String,
+}
+
+pub fn alt_screen_sequences(through_multiplexer: bool) -> AltScreenSequences {
+    let mouse = if through_multiplexer {
+        ENABLE_BUTTON_MOTION_MOUSE
+    } else {
+        ENABLE_ALL_MOTION_MOUSE
+    };
+    AltScreenSequences {
+        enter: format!(
+            "{ENTER_ALT_SCREEN}{DISABLE_AUTOWRAP}{mouse}{CLEAR_SCREEN_HOME}{HIDE_CURSOR}"
+        ),
+        suspend: format!("{DISABLE_MOUSE}{ENABLE_AUTOWRAP}{EXIT_ALT_SCREEN}{SHOW_CURSOR}"),
+        restore: format!(
+            "{ENTER_ALT_SCREEN}{DISABLE_AUTOWRAP}{mouse}{CLEAR_SCREEN_HOME}{HIDE_CURSOR}"
+        ),
+        cleanup: format!("{BEGIN_SYNC_UPDATE}{DISABLE_MOUSE}{ENABLE_AUTOWRAP}{END_SYNC_UPDATE}"),
+    }
+}
+
 /// A terminal event handed to the interactive loop.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TerminalEvent {
@@ -27,6 +71,7 @@ pub struct TerminalBackend {
     height: u16,
     raw: bool,
     alt_screen: bool,
+    alt_screen_depth: usize,
     screen_epoch: u64,
     #[cfg(unix)]
     stdin: std::io::Stdin,
@@ -55,6 +100,7 @@ impl TerminalBackend {
             height,
             raw: false,
             alt_screen: false,
+            alt_screen_depth: 0,
             screen_epoch: 0,
             #[cfg(unix)]
             stdin: std::io::stdin(),
@@ -81,16 +127,25 @@ impl TerminalBackend {
     }
 
     pub fn enter_raw(&mut self) -> std::io::Result<()> {
+        let was_raw = self.raw;
         if !self.raw {
             crossterm::terminal::enable_raw_mode()?;
             self.raw = true;
         }
-        self.enter_alt_screen();
+        if !self.alt_screen {
+            self.enter_alt_screen();
+        }
+        if !was_raw {
+            self.write_raw(ENABLE_BRACKETED_PASTE);
+        }
         Ok(())
     }
 
     pub fn leave_raw(&mut self) -> std::io::Result<()> {
-        self.leave_alt_screen();
+        while self.alt_screen {
+            self.leave_alt_screen();
+        }
+        self.write_raw(DISABLE_BRACKETED_PASTE);
         if self.raw {
             self.raw = false;
             crossterm::terminal::disable_raw_mode()
@@ -104,10 +159,13 @@ impl TerminalBackend {
     /// surfaces can suspend and restore the previous screen safely.
     pub fn enter_alt_screen(&mut self) {
         if self.alt_screen {
+            self.alt_screen_depth = self.alt_screen_depth.saturating_add(1);
             return;
         }
-        self.write_raw("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H");
+        let sequences = alt_screen_sequences(terminal_is_multiplexed());
+        self.write_raw(&sequences.enter);
         self.alt_screen = true;
+        self.alt_screen_depth = 1;
         self.screen_epoch = self.screen_epoch.wrapping_add(1);
         let _ = self.flush();
     }
@@ -117,8 +175,14 @@ impl TerminalBackend {
         if !self.alt_screen {
             return;
         }
-        self.write_raw("\x1b[?25h\x1b[?1049l");
+        if self.alt_screen_depth > 1 {
+            self.alt_screen_depth -= 1;
+            return;
+        }
+        let sequences = alt_screen_sequences(terminal_is_multiplexed());
+        self.write_raw(&format!("{}{}", sequences.cleanup, sequences.suspend));
         self.alt_screen = false;
+        self.alt_screen_depth = 0;
         self.screen_epoch = self.screen_epoch.wrapping_add(1);
         let _ = self.flush();
     }
@@ -360,6 +424,16 @@ impl Default for TerminalBackend {
     }
 }
 
+fn terminal_is_multiplexed() -> bool {
+    let term = std::env::var("TERM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    std::env::var_os("TMUX").is_some()
+        || term.starts_with("tmux")
+        || term.starts_with("screen")
+        || std::env::var_os("ZELLIJ").is_some()
+}
+
 #[cfg(unix)]
 fn resolve_escape_timeout() -> Duration {
     const DEFAULT_ESCAPE_TIMEOUT: Duration = Duration::from_millis(10);
@@ -454,6 +528,32 @@ mod tests {
         terminal.leave_alt_screen();
         assert!(!terminal.is_alt_screen());
         assert_eq!(terminal.screen_epoch(), 2);
+    }
+
+    #[test]
+    fn nested_alt_screen_save_restore_has_one_terminal_transition() {
+        let mut terminal = TerminalBackend::new();
+        terminal.enter_alt_screen();
+        terminal.enter_alt_screen();
+        assert!(terminal.is_alt_screen());
+        terminal.leave_alt_screen();
+        assert!(terminal.is_alt_screen());
+        terminal.leave_alt_screen();
+        assert!(!terminal.is_alt_screen());
+        assert_eq!(terminal.screen_epoch(), 2);
+    }
+
+    #[test]
+    fn alt_screen_sequences_use_conservative_tmux_mouse_mode() {
+        let direct = alt_screen_sequences(false);
+        let tmux = alt_screen_sequences(true);
+        assert!(direct.enter.contains(ENABLE_ALL_MOTION_MOUSE));
+        assert!(tmux.enter.contains(ENABLE_BUTTON_MOTION_MOUSE));
+        assert!(!tmux.enter.contains(ENABLE_ALL_MOTION_MOUSE));
+        assert!(tmux.cleanup.starts_with(BEGIN_SYNC_UPDATE));
+        assert!(tmux.cleanup.ends_with(END_SYNC_UPDATE));
+        assert!(tmux.suspend.contains(EXIT_ALT_SCREEN));
+        assert!(tmux.suspend.contains(SHOW_CURSOR));
     }
 
     #[test]

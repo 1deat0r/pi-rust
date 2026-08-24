@@ -1,0 +1,4 @@
+# key|fallback key|observable contract
+# Both upstream control paths must shut down directly and restore the PTY.
+C-d||raw terminal restored
+C-c||raw terminal restored

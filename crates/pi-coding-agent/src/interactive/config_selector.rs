@@ -1325,7 +1325,7 @@ mod tests {
                     "/home/u/.pi/agent/extensions/pkg/ext.md",
                     true,
                     "npm:x",
-                    Some("/home/u/.pi/agent/extensions/pkg".into()),
+                    Some("/home/u/.pi/agent/extensions/pkg"),
                 ),
                 ResolvedResource {
                     path: "/home/u/.pi/proj/.pi/extensions/proj.md".into(),
@@ -1352,7 +1352,7 @@ mod tests {
     fn group_label_for_package_and_top_level() {
         let resolved = ResolvedPaths {
             extensions: vec![
-                user_pkg("/p/ext.md", true, "npm:foo", Some("/p".into())),
+                user_pkg("/p/ext.md", true, "npm:foo", Some("/p")),
                 user_top("/home/u/.pi/agent/extensions/a.md", true),
             ],
             ..Default::default()
@@ -1397,7 +1397,6 @@ mod tests {
             themes: vec![user_top("/p/themes/theme.json", true)],
             skills: vec![user_top("/p/skills/sk.md", true)],
             prompts: vec![user_top("/p/prompts/pr.md", true)],
-            ..Default::default()
         };
         let groups = build_groups(&resolved, "/p", ".pi", None);
         assert_eq!(groups.len(), 1);

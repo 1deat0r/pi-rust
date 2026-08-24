@@ -356,11 +356,14 @@ fn valid_format(value: &str, format: &str) -> bool {
                         .map(|re| re.is_match(value))
                         .unwrap_or(false))
         }
-        "hostname" => Regex::new(
-            r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$",
-        )
-        .map(|re| re.is_match(value))
-        .unwrap_or(false),
+        "hostname" => {
+            value.len() <= 253
+                && Regex::new(
+                    r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$",
+                )
+                .map(|re| re.is_match(value))
+                .unwrap_or(false)
+        }
         "ipv4" => value.parse::<std::net::Ipv4Addr>().is_ok(),
         "ipv6" => value.parse::<std::net::Ipv6Addr>().is_ok(),
         "regex" => Regex::new(value).is_ok(),

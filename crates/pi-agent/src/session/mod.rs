@@ -4,6 +4,7 @@
 pub mod context;
 pub mod jsonl;
 pub mod memory;
+#[allow(clippy::module_inception)] // mirrors the upstream session/ directory
 pub mod session;
 pub mod state;
 pub mod types;
