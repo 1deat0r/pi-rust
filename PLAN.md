@@ -1464,6 +1464,32 @@ coverage.
 - Implementation commit `974bd1b` was committed and pushed immediately after
   this entry; the documentation refresh is the follow-up checkpoint.
 
+### Session 45 — 2026-08-24 — Interactive manual compaction slash command (partial S-033)
+
+Scope: replace the interactive `/compact` divergence banner with the existing
+agent compaction machinery, while leaving the broader slash-command terminal
+matrix open.
+
+- Refactored interactive automatic compaction into a shared helper that can
+  either observe the context threshold or force a manual run. `/compact` now
+  accepts optional instructions, prepares the current session path, summarizes
+  through the configured models facade, persists a compaction entry, replaces
+  the in-memory context, resets cache accounting, and reports stable success,
+  no-op, or error banners.
+- The no-history manual path is covered so an empty session does not invoke a
+  provider or mutate the transcript. The existing threshold-triggered
+  compaction test exercises the shared persistence/context replacement path.
+- Evidence (unit/mock):
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib
+  modes::interactive --quiet` (13 passed),
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib
+  interactive:: --quiet` (37 passed),
+  `/home/mustbearnold/.cargo/bin/cargo check -p pi-coding-agent --offline`,
+  `/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check`, and
+  `git diff --check`.
+- S-033 remains open for the real-terminal/fixture audits of export, import,
+  share, trust, login/logout, new/resume, fork/clone, tree, and reload.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

@@ -110,6 +110,11 @@ project overrides when returning to inherit. Search, navigation, scope
 switching, synchronous writes, close behavior, and the real-terminal PTY
 exercise are covered by the selector and ConfigSelector tests.
 
+Interactive `/compact` now uses the same compaction path as automatic context
+management, accepts optional summary instructions, persists the compaction
+entry, replaces the live context, and resets cache accounting. The remaining
+interactive slash-command terminal audits are tracked as partial S-033 work.
+
 ## Workspace
 
 ```text

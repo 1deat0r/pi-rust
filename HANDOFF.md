@@ -123,6 +123,29 @@ S-034 is now complete. The implementation push was verified at
 `974bd1b513d985b13907c58d3296842310cd5ad8`; `AGENTS.md` remains pre-existing
 and untracked.
 
+## Current interactive manual compaction checkpoint (partial S-033)
+
+The interactive `/compact` divergence is resolved in the working tree and is
+being committed and pushed with this documentation refresh. Automatic and
+manual compaction now share one helper: automatic runs observe the context
+threshold, while `/compact` forces preparation and accepts optional summary
+instructions. Successful runs persist the compaction entry, replace the live
+message context, reset cache accounting, and report a stable status banner;
+empty history is a no-op.
+
+Evidence:
+
+```text
+cargo test -p pi-coding-agent --offline --lib modes::interactive --quiet (13 passed)
+cargo test -p pi-coding-agent --offline --lib interactive:: --quiet (37 passed)
+cargo check -p pi-coding-agent --offline
+cargo fmt --all -- --check
+git diff --check
+```
+
+This is partial S-033. Real-terminal/fixture audits for export, import, share,
+trust, login/logout, new/resume, fork/clone, tree, and reload remain open.
+
 ## Current S-032 committed checkpoint
 
 Provider auth failures now receive the upstream actionable guidance at all

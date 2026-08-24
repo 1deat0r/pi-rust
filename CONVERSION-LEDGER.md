@@ -770,7 +770,11 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       `cargo fmt --all -- --check`, and `git diff --check`.
 - [ ] S-033 Complete interactive slash-command behavior audits for export,
       import, share, trust, login/logout, new/resume, fork/clone, tree, and
-      reload; each command needs a real terminal or fixture transcript.
+      reload; each command needs a real terminal or fixture transcript. A
+      partial checkpoint now wires interactive `/compact` through the shared
+      forced compaction path with optional custom instructions, durable
+      compaction entries, context replacement, and cache reset; the remaining
+      command-by-command terminal matrix stays open.
 - [x] S-034 Finish ConfigSelector project/global inheritance, package pattern
       toggles, search/navigation, write-scope persistence, and close behavior
       against the upstream component. The final audit aligns local package

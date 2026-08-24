@@ -171,20 +171,25 @@ async fn stream_turn(
     new_messages
 }
 
-/// Auto-compaction (upstream `core/compaction/` loop): after a turn, if the
-/// estimated context tokens exceed the model's window minus the reserve,
-/// summarize the history through the models facade and replace the in-memory
-/// context with the summary plus the retained tail. Returns true when
-/// compaction ran.
-async fn maybe_auto_compact(runtime: &mut InteractiveRuntime) -> Result<bool, String> {
+/// Run the shared interactive compaction path. Automatic compaction observes
+/// the threshold; `/compact` forces the same persistence/context replacement
+/// path and may provide custom summarization instructions.
+async fn compact_interactive(
+    runtime: &mut InteractiveRuntime,
+    custom_instructions: Option<&str>,
+    force: bool,
+) -> Result<bool, String> {
+    let operation = if force { "compact" } else { "auto-compact" };
     let settings = pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS;
-    let estimate = pi_agent::harness::compaction::estimate_context_tokens(&runtime.messages);
-    if !pi_agent::harness::compaction::should_compact(
-        estimate.tokens,
-        runtime.model.context_window,
-        &settings,
-    ) {
-        return Ok(false);
+    if !force {
+        let estimate = pi_agent::harness::compaction::estimate_context_tokens(&runtime.messages);
+        if !pi_agent::harness::compaction::should_compact(
+            estimate.tokens,
+            runtime.model.context_window,
+            &settings,
+        ) {
+            return Ok(false);
+        }
     }
     let entries = runtime
         .session
@@ -197,9 +202,9 @@ async fn maybe_auto_compact(runtime: &mut InteractiveRuntime) -> Result<bool, St
             limit: None,
         })
         .await
-        .map_err(|e| format!("auto-compact: read entries: {e}"))?;
+        .map_err(|e| format!("{operation}: read entries: {e}"))?;
     let Some(preparation) = pi_agent::harness::compaction::prepare_compaction(&entries, &settings)
-        .map_err(|e| format!("auto-compact: prepare: {e}"))?
+        .map_err(|e| format!("{operation}: prepare: {e}"))?
     else {
         return Ok(false);
     };
@@ -223,14 +228,14 @@ async fn maybe_auto_compact(runtime: &mut InteractiveRuntime) -> Result<bool, St
         &preparation,
         &options,
         &runtime.model,
-        None,
+        custom_instructions,
         None,
         None,
         Some(&retry),
         None,
     )
     .await
-    .map_err(|e| format!("auto-compact: {e}"))?;
+    .map_err(|e| format!("{operation}: {e}"))?;
 
     // Replace the in-memory context: summary message + retained tail.
     let summary_msg = pi_agent::agent::user_text_prompt(
@@ -256,7 +261,7 @@ async fn maybe_auto_compact(runtime: &mut InteractiveRuntime) -> Result<bool, St
             "main",
         )
         .await
-        .map_err(|e| format!("auto-compact: persist: {e}"))?;
+        .map_err(|e| format!("{operation}: persist: {e}"))?;
     // Keep a reset marker in the deferred display-entry shadow so the next
     // request cannot be mistaken for a continuation of the pre-compaction
     // prompt cache.
@@ -267,6 +272,15 @@ async fn maybe_auto_compact(runtime: &mut InteractiveRuntime) -> Result<bool, St
     }));
     runtime.persisted_until = runtime.messages.len();
     Ok(true)
+}
+
+/// Auto-compaction (upstream `core/compaction/` loop): after a turn, if the
+/// estimated context tokens exceed the model's window minus the reserve,
+/// summarize the history through the models facade and replace the in-memory
+/// context with the summary plus the retained tail. Returns true when
+/// compaction ran.
+async fn maybe_auto_compact(runtime: &mut InteractiveRuntime) -> Result<bool, String> {
+    compact_interactive(runtime, None, false).await
 }
 
 /// Short cwd for banners (home-relative like the footer).
@@ -1320,7 +1334,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             Err(e) => status_banner = e,
                         }
                     }
-                    SubmitAction::Command(command, _arg) => {
+                    SubmitAction::Command(command, arg) => {
                         match command.kind {
                             SlashKind::Model => {
                                 let items = it::selectors::model_selector_items(&runtime.models, None);
@@ -1362,14 +1376,22 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 return Ok(());
                             }
                             SlashKind::Compact => {
-                                status_banner = "manual compaction lands with the harness loop wiring; use the RPC /compact in the meantime".to_string();
+                                let instructions = arg
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|value| !value.is_empty());
+                                match compact_interactive(&mut runtime, instructions, true).await {
+                                    Ok(true) => status_banner = "context compacted".to_string(),
+                                    Ok(false) => status_banner = "nothing to compact".to_string(),
+                                    Err(error) => status_banner = error,
+                                }
                             }
                             SlashKind::Unsupported => match command.name {
                                 "export" => {
                                     let meta = runtime.session.get_metadata().await;
                                     match crate::core::export_html::export_session_file(
                                         &meta.path,
-                                        _arg.as_deref(),
+                                        arg.as_deref(),
                                         None,
                                     ) {
                                         Ok(path) => {
@@ -1444,7 +1466,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     }
                                 }
                                 "name" => {
-                                    match _arg.as_deref() {
+                                    match arg.as_deref() {
                                         Some(name) if !name.trim().is_empty() => {
                                             match runtime.session.set_name(Some(name.trim())).await {
                                                 Ok(()) => {
@@ -1463,7 +1485,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 }
                                 "import" => {
                                     let mut import_path: Option<String> = None;
-                                    match _arg.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                                    match arg.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
                                         None => {
                                             status_banner = "usage: /import <session.jsonl>".to_string();
                                         }
@@ -1662,7 +1684,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     }
                                 }
                                 "trust" => {
-                                    match _arg.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()) {
+                                    match arg.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()) {
                                         Some(choice) if matches!(choice.as_str(), "allow" | "deny" | "ask") => {
                                             settings.set_default_project_trust(&choice);
                                             status_banner = format!("default project trust: {choice}");
@@ -1724,7 +1746,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     }
                                 }
                                 "login" => {
-                                    let provider_ref = _arg.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+                                    let provider_ref = arg.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
                                     let banner = Arc::new(Mutex::new(String::new()));
                                     let term = tree.terminal_handle();
                                     match run_oauth_login(&runtime.models, provider_ref, banner.clone(), term).await {
@@ -1733,7 +1755,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     }
                                 }
                                 "logout" => {
-                                    match _arg.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                                    match arg.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
                                         Some(provider) => {
                                             let auth = crate::core::auth_storage::AuthStorage::create(config::get_auth_path());
                                             let opts = crate::core::auth_storage::AuthOperationOptions::default();
@@ -2222,6 +2244,22 @@ mod tests {
             .expect("auto-compact");
         assert!(!compacted, "no compaction under threshold");
         assert_eq!(runtime.messages.len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn manual_compact_is_a_noop_without_session_history() {
+        let _env = env_lock();
+        let root = std::env::temp_dir().join(format!("pi-compact-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+
+        let compacted = compact_interactive(&mut runtime, Some("Focus on decisions"), true)
+            .await
+            .expect("manual compact");
+
+        assert!(!compacted);
+        assert!(runtime.messages.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
