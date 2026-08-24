@@ -982,6 +982,25 @@ landed AgentTool shape and schema validator.
   truncation/detail parity and S-020 remains open for the malformed-call
   fixture matrix.
 
+### Session 26 — 2026-08-24 — Bash harness capture integration
+Scope: follow-up hardening for T2 #26 / S-018; no new ledger checkbox is
+claimed in this checkpoint.
+
+- The registered bash AgentTool now executes through the existing
+  `StdExecutionEnv` + `execute_shell_with_capture` seam. Live updates carry
+  structured truncation metadata, and large output is persisted to a temp log
+  with `fullOutputPath` in the final result/details. The legacy direct
+  `run_bash` API remains available for compatibility and lower-level tests.
+- Extended the Rust truncation snapshot with the upstream output counts,
+  partial-line, first-line, and applied-limit fields so RPC/UI consumers can
+  serialize the same detail shape.
+- Evidence (unit): `cargo test -p pi-agent --offline --test tools
+  bash_tool_preserves_full_output_details_when_truncated`,
+  `cargo test -p pi-agent --offline harness::shell_output`, and
+  `cargo test -p pi-agent --offline rich_loop_abort_cancels_inflight_bash_tool`.
+- S-018 remains open for exact scheduled-timer/write-chain fixtures and the
+  broader built-in malformed-call/update matrix; progress remains 50.60%.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

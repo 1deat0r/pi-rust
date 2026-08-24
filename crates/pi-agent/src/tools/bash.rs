@@ -3,6 +3,11 @@
 
 use super::truncate::{format_size, truncate_tail, DEFAULT_MAX_BYTES};
 use super::{AgentToolResult, ToolUpdateCallback};
+use crate::harness::env::{ExecutionErrorCode, StdExecutionEnv};
+use crate::harness::shell_output::{
+    execute_shell_with_capture, ChunkHandlerWithProgress, ShellCaptureOptions,
+    ShellCaptureProgress, ShellCaptureResult, TruncationResult,
+};
 use crate::types::FileError;
 use pi_ai::types::ToolResultMessage;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -264,38 +269,64 @@ pub async fn execute_bash_with_updates(
     let last_update_at = Arc::new(Mutex::new(
         Instant::now() - Duration::from_millis(BASH_UPDATE_THROTTLE_MS),
     ));
-    let output_callback = on_update.as_ref().map(|on_update| {
+    let output_callback: Option<ChunkHandlerWithProgress> = on_update.as_ref().map(|on_update| {
         let on_update = on_update.clone();
         let last_update_at = last_update_at.clone();
-        Arc::new(move |output: String| {
-            let should_emit = {
-                let mut last_update_at = last_update_at.lock().unwrap();
-                if last_update_at.elapsed() < Duration::from_millis(BASH_UPDATE_THROTTLE_MS) {
-                    false
-                } else {
-                    *last_update_at = Instant::now();
-                    true
+        Arc::new(
+            move |_chunk: &str, progress: &Mutex<ShellCaptureProgress>| {
+                let should_emit = {
+                    let mut last_update_at = last_update_at.lock().unwrap();
+                    if last_update_at.elapsed() < Duration::from_millis(BASH_UPDATE_THROTTLE_MS) {
+                        false
+                    } else {
+                        *last_update_at = Instant::now();
+                        true
+                    }
+                };
+                if should_emit {
+                    let progress = progress.lock().unwrap().clone();
+                    emit_bash_partial(
+                        &on_update,
+                        progress.output.clone(),
+                        bash_progress_details(&progress),
+                    );
                 }
-            };
-            if should_emit {
-                emit_bash_partial(&on_update, output, serde_json::Value::Null);
-            }
-        }) as BashOutputCallback
+                Ok(())
+            },
+        ) as ChunkHandlerWithProgress
     });
-    let capture = run_bash_with_callback(command, cwd, timeout, abort, output_callback.as_ref())
-        .await
-        .map_err(|e| e.to_string())?;
+    let env = StdExecutionEnv::new(cwd.to_string());
+    let capture = execute_shell_with_capture(
+        &env,
+        command,
+        &ShellCaptureOptions {
+            cwd: Some(cwd.to_string()),
+            timeout,
+            abort,
+            on_chunk: output_callback,
+            inherit_env: true,
+            return_execution_errors: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     if let Some(on_update) = &on_update {
-        let details = if capture.truncated {
-            serde_json::json!({"truncated": true})
-        } else {
-            serde_json::Value::Null
+        let progress = ShellCaptureProgress {
+            output: capture.output.clone(),
+            truncation: capture.truncation.clone(),
+            full_output_path: capture.full_output_path.clone(),
+            last_line_bytes: capture.last_line_bytes,
         };
-        emit_bash_partial(on_update, capture.output.clone(), details);
+        emit_bash_partial(
+            on_update,
+            progress.output.clone(),
+            bash_progress_details(&progress),
+        );
     }
 
-    let output_text = format!("{}{}", capture.output, capture.truncation_message);
+    let output_text = format_bash_output(&capture);
     let append_status = |status: String| -> String {
         if output_text.is_empty() {
             status
@@ -304,34 +335,120 @@ pub async fn execute_bash_with_updates(
         }
     };
 
-    if capture.aborted {
-        return Err(append_status("Operation aborted".to_string()));
+    if capture.cancelled {
+        return Err(append_status("Command aborted".to_string()));
     }
-    if capture.timed_out {
+    if capture
+        .execution_error
+        .as_ref()
+        .is_some_and(|error| error.code == ExecutionErrorCode::Timeout)
+    {
         return Err(append_status(format!(
             "Command timed out after {} seconds",
             timeout.unwrap_or(0.0)
         )));
     }
-    if capture.exit_code == Some(0) {
-        Ok(AgentToolResult::from_tool_result_message(
-            &ToolResultMessage::text(
-                "bash",
-                "bash",
+    if let Some(error) = &capture.execution_error {
+        return Err(append_status(error.message.clone()));
+    }
+    if capture.exit_code != Some(0) {
+        Err(append_status(format!(
+            "Command exited with code {}",
+            capture.exit_code.unwrap_or(0)
+        )))
+    } else {
+        Ok(AgentToolResult {
+            content: vec![pi_ai::types::ContentBlock::text(
                 if output_text.is_empty() {
                     "(no output)".to_string()
                 } else {
                     output_text
                 },
-                false,
-            ),
-        ))
-    } else {
-        Err(append_status(format!(
-            "Command exited with code {}",
-            capture.exit_code.unwrap_or(0)
-        )))
+            )],
+            details: if capture.truncated {
+                bash_progress_details(&ShellCaptureProgress {
+                    output: capture.output.clone(),
+                    truncation: capture.truncation.clone(),
+                    full_output_path: capture.full_output_path.clone(),
+                    last_line_bytes: capture.last_line_bytes,
+                })
+            } else {
+                serde_json::json!({})
+            },
+            usage: None,
+            added_tool_names: Vec::new(),
+            terminate: false,
+        })
     }
+}
+
+fn format_bash_output(capture: &ShellCaptureResult) -> String {
+    if !capture.truncation.truncated {
+        return capture.output.clone();
+    }
+
+    let start_line = capture
+        .truncation
+        .total_lines
+        .saturating_sub(capture.truncation.output_lines)
+        + 1;
+    let end_line = capture.truncation.total_lines;
+    let full_output_path = capture
+        .full_output_path
+        .as_deref()
+        .unwrap_or("<full output unavailable>");
+    let message = if capture.truncation.last_line_partial {
+        format!(
+            "\n\n[Showing last {} of line {end_line} (line is {}). Full output: {full_output_path}]",
+            format_size(capture.truncation.output_bytes),
+            format_size(capture.last_line_bytes),
+        )
+    } else if capture.truncation.truncated_by == Some(crate::tools::truncate::TruncatedBy::Lines) {
+        format!(
+            "\n\n[Showing lines {start_line}-{end_line} of {}. Full output: {full_output_path}]",
+            capture.truncation.total_lines,
+        )
+    } else {
+        format!(
+            "\n\n[Showing lines {start_line}-{end_line} of {} ({} limit). Full output: {full_output_path}]",
+            capture.truncation.total_lines,
+            format_size(DEFAULT_MAX_BYTES),
+        )
+    };
+    format!("{}{}", capture.output, message)
+}
+
+fn bash_progress_details(progress: &ShellCaptureProgress) -> serde_json::Value {
+    let mut details = serde_json::Map::new();
+    if progress.truncation.truncated {
+        details.insert(
+            "truncation".to_string(),
+            truncation_to_json(&progress.truncation),
+        );
+    }
+    if let Some(path) = &progress.full_output_path {
+        details.insert("fullOutputPath".to_string(), serde_json::json!(path));
+    }
+    serde_json::Value::Object(details)
+}
+
+fn truncation_to_json(truncation: &TruncationResult) -> serde_json::Value {
+    serde_json::json!({
+        "content": truncation.content,
+        "truncated": truncation.truncated,
+        "truncatedBy": truncation.truncated_by.map(|kind| match kind {
+            crate::tools::truncate::TruncatedBy::Lines => "lines",
+            crate::tools::truncate::TruncatedBy::Bytes => "bytes",
+        }),
+        "totalLines": truncation.total_lines,
+        "totalBytes": truncation.total_bytes,
+        "outputLines": truncation.output_lines,
+        "outputBytes": truncation.output_bytes,
+        "lastLinePartial": truncation.last_line_partial,
+        "firstLineExceedsLimit": truncation.first_line_exceeds_limit,
+        "maxLines": truncation.max_lines,
+        "maxBytes": truncation.max_bytes,
+    })
 }
 
 fn emit_bash_partial(on_update: &ToolUpdateCallback, output: String, details: serde_json::Value) {

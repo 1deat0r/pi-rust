@@ -25,6 +25,12 @@ pub struct TruncationResult {
     pub truncated_by: Option<TruncatedBy>,
     pub total_lines: usize,
     pub total_bytes: usize,
+    pub output_lines: usize,
+    pub output_bytes: usize,
+    pub last_line_partial: bool,
+    pub first_line_exceeds_limit: bool,
+    pub max_lines: usize,
+    pub max_bytes: usize,
 }
 
 /// Progress available to `on_chunk` callbacks (upstream
@@ -142,7 +148,7 @@ fn create_progress(
     accum: &CaptureAccumulator,
     full_output_path: &Option<String>,
 ) -> ShellCaptureProgress {
-    let (tail_truncation, _, _) = truncate_tail(&accum.tail_output);
+    let (tail_truncation, last_line_partial, _) = truncate_tail(&accum.tail_output);
     let total_lines = accum.completed_lines + usize::from(accum.has_open_line);
     let truncated = total_lines > DEFAULT_MAX_LINES || accum.total_bytes > DEFAULT_MAX_BYTES;
     let truncated_by = if truncated {
@@ -171,6 +177,12 @@ fn create_progress(
             truncated_by,
             total_lines,
             total_bytes: accum.total_bytes,
+            output_lines: tail_truncation.output_lines,
+            output_bytes: tail_truncation.output_bytes,
+            last_line_partial,
+            first_line_exceeds_limit: false,
+            max_lines: DEFAULT_MAX_LINES,
+            max_bytes: DEFAULT_MAX_BYTES,
         },
         full_output_path: full_output_path.clone(),
         last_line_bytes: accum.current_line_bytes,

@@ -113,6 +113,31 @@ fn bash_tool_streams_partial_updates_through_agent_contract() {
 }
 
 #[test]
+fn bash_tool_preserves_full_output_details_when_truncated() {
+    let rt = rt();
+    rt.block_on(async {
+        let dir = tmpdir("bash-full-output");
+        let result = pi_agent::tools::bash::execute_bash_with_updates(
+            "yes line | head -n 15000",
+            None,
+            &dir.to_string_lossy(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let full_output_path = result.details["fullOutputPath"]
+            .as_str()
+            .expect("full output path in tool details");
+        assert!(std::path::Path::new(full_output_path).is_file());
+        assert!(result.content.iter().any(|content| {
+            matches!(content, ContentBlock::Text { text, .. } if text.contains("Full output:"))
+        }));
+    });
+}
+
+#[test]
 fn edit_tool_registers_prepare_arguments_before_validation() {
     let tool = pi_agent::tools::edit_tool(std::env::temp_dir().to_string_lossy().into_owned());
     let prepare = tool

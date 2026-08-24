@@ -31,9 +31,9 @@ the selector PTY/resize and screen-epoch checkpoints. The one-shot
 auto-compaction, covered client criteria, selector behavior, selector
 PTY/resize lifecycle, screen-epoch redraw invalidation, edit argument
 preparation, streamed tool updates, and terminate-batch handling are
-implemented and verified locally. The new AgentTool/docs changes are not yet
-committed; pushes are blocked because the HTTPS remote requires GitHub
-credentials.
+implemented and verified locally. Only the bash harness follow-up and its
+docs are currently uncommitted; pushes are blocked because the HTTPS remote
+requires GitHub credentials.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
 
@@ -167,6 +167,18 @@ The AgentTool contract/update checkpoint is now complete locally:
   S-018 remains open for the full harness truncation/detail fixture parity and
   S-020 remains open for the malformed-call matrix.
 
+The follow-up bash harness integration is also complete locally but not yet
+committed:
+
+- The registered bash tool now runs through `StdExecutionEnv` and
+  `execute_shell_with_capture`, preserving structured truncation metadata and
+  full-output temp-file paths while retaining the legacy direct `run_bash`
+  API.
+- The focused full-output test passes, as do the shell-capture and abort tests.
+  S-018 remains open for exact scheduled-timer/write-chain fixtures and the
+  broader malformed-call/update matrix; no additional ledger checkbox was
+  claimed.
+
 ## Major parity work already present
 
 The current source includes substantial ports beyond the original baseline:
@@ -192,7 +204,7 @@ items just because a similarly named Rust module exists.
 
 ## Recommended next sequence
 
-1. Commit the AgentTool/docs checkpoint, retry `git push origin main`, and
+1. Commit the bash harness follow-up, retry `git push origin main`, and
    report the HTTPS credential blocker if it persists.
 2. Continue with S-018/S-020 harness fixture parity, then the full
    regular/fullscreen #61/#62 swap work and broader S-056 interactive matrix.
