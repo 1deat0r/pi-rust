@@ -33,11 +33,11 @@ remains untouched and must be preserved. Do not use `git reset --hard`,
 `git checkout --`, broad revert commands, or `git clean`.
 
 Current status: branch `main`, progress checker reports
-`65.06% (108/166; 58 open)`, and the working tree contains the S-011 source,
-gate, README, and checkpoint-document changes plus the preserved untracked
-`AGENTS.md`. Focused tests, compile, format, whitespace, progress, and gate
-status checks pass; the focused implementation/documentation commit is ready
-for commit, push, and hash-parity verification.
+`65.06% (108/166; 58 open)`. The S-011 source and synchronized checkpoint
+documents were committed as `b18af9a895f9cb287ab47f0816d67dc20b256fe3` and
+pushed to `origin/main`; `git rev-parse HEAD` and
+`git ls-remote origin refs/heads/main` both returned that hash. The working
+tree retains only the preserved untracked `AGENTS.md`.
 
 ## Current strict-verification cleanup
 
@@ -878,10 +878,11 @@ RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/
 git diff --check
 ```
 
-The unlazy ledger currently reports all 33 gates met; G30/G31/G32 are the
-focused test/static gates and G33 records the progress checker. Re-run the
-gate checker after this documentation refresh so its evidence contains the
-final measured progress. The conversion checker reports `65.06% (108/166; 58
-open)`. Commit/push and local/remote hash verification remain before the
-checkpoint is closed. The next dependency-safe task is S-012 Cloudflare AI
-Gateway account/gateway binding and base URL/header precedence parity.
+The unlazy gate status check reports all 33 gates met; G30/G31/G32 are the
+focused test/static gates and G33 records the progress checker. The conversion
+checker reports `65.06% (108/166; 58 open)`. The focused implementation
+checkpoint was committed as
+`b18af9a895f9cb287ab47f0816d67dc20b256fe3` and pushed to `origin/main`;
+`git rev-parse HEAD` and `git ls-remote origin refs/heads/main` matched.
+The next dependency-safe task is S-012 Cloudflare AI Gateway account/gateway
+binding and base URL/header precedence parity.
