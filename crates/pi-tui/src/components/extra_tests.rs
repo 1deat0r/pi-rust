@@ -101,6 +101,7 @@ mod components_extra_tests {
 
     #[test]
     fn kitty_capability_renders_image_protocol() {
+        let _guard = cap_lock();
         set_capabilities(TerminalCapabilities {
             images: Some(ImageProtocol::Kitty),
             true_color: true,

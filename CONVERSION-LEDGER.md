@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **54.82% (91/166)**. Run
+- The exhaustive checker reports **55.42% (92/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -19,12 +19,16 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the local schema-validator parity checkpoint on `main`, after the
-  AgentTool harness/termination, update/version, and model-catalog work; the
-  HTTPS remote is still behind because GitHub credentials are unavailable.
+- HEAD is the local panic-safe telemetry settlement checkpoint on `main`, after
+  the AgentTool harness/termination, schema-validator, update/version, and
+  model-catalog work; the HTTPS remote is still behind because GitHub
+  credentials are unavailable.
 - The workspace is green under `cargo test --workspace --offline`; the focused
   tool-contract, RPC, image/read, print-mode compaction, and malformed-call
-  suites pass.
+  suites pass. Telemetry callback panics now settle in-memory spans as
+  automatic errors while preserving explicit statuses and panic propagation;
+  the shared TUI image-capability fixtures are serialized for deterministic
+  workspace runs.
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
   device-code flows, codex WebSocket transport (SSE fallback today),
   `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
@@ -619,8 +623,15 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       implementation.
 - [ ] S-022 Wire the complete harness event and telemetry lifecycle into print,
       interactive, JSON, JSONL, and RPC modes with span/event golden checks.
-- [ ] S-023 Add panic-safe telemetry callback settlement equivalent to the
-      upstream `try/catch/finally` span lifecycle.
+- [x] S-023 Add panic-safe telemetry callback settlement equivalent to the
+      upstream `try/catch/finally` span lifecycle. (unit) The in-memory
+      adapter catches callback unwinds, settles spans as automatic errors
+      without inspecting panic payloads, preserves explicit statuses, resumes
+      the original panic, and settles nested spans inner-first. Evidence:
+      `cargo test -p pi-telemetry --offline --quiet` (6 passed),
+      `cargo test -p pi-agent --offline --quiet`,
+      `cargo test -p pi-tui --offline --quiet` (186 passed), and
+      `cargo test --workspace --offline --quiet`.
 - [x] S-024 Complete JSON-schema validation parity for unions, arrays, numeric
       bounds, formats, additional properties, and partial tool-call arguments;
       compare all diagnostics with upstream. (unit) Validation now resolves

@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-54.82% = 91 completed / 166 total tasks
-75 tasks remain open
+55.42% = 92 completed / 166 total tasks
+74 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,11 +26,11 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest committed local checkpoint is the schema-validator parity slice
-after the AgentTool harness, lifecycle/termination, RPC runtime, update/version,
-and model-catalog checkpoints. It includes synchronized ledger/plan/handoff
-docs. Pushes remain blocked because the HTTPS remote requires GitHub
-credentials.
+The latest committed local checkpoint is the panic-safe telemetry settlement
+slice after the AgentTool harness, lifecycle/termination, schema-validator,
+RPC runtime, update/version, and model-catalog checkpoints. It includes
+synchronized ledger/plan/handoff docs. Pushes remain blocked because the HTTPS
+remote requires GitHub credentials.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
 
@@ -47,7 +47,7 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`54.82% (91/166; 75 open)`. Preserve the pre-existing untracked `AGENTS.md`;
+`55.42% (92/166; 74 open)`. Preserve the pre-existing untracked `AGENTS.md`;
 all other changes in this checkpoint are intentional local work ahead of the
 remote.
 
@@ -82,8 +82,10 @@ These checks passed during the session:
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::remote_catalog_provider::tests
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test cli_commands update_
 /home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-telemetry --offline --quiet
 /home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline tools::validation -- --nocapture
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test tool_contract -- --nocapture
+/home/mustbearnold/.cargo/bin/cargo test -p pi-tui --offline --quiet
 /home/mustbearnold/.cargo/bin/cargo test --workspace --offline --quiet
 /home/mustbearnold/.cargo/bin/cargo fmt --all -- --check
 git diff --check
@@ -94,10 +96,10 @@ A full `cargo test --workspace --offline` passed after the image/read changes,
 including 162 `pi-agent` unit tests, the coding-agent integration targets, 186
 `pi-tui` unit tests, and all workspace doctests.
 
-The latest full gate after the schema-validator slice passed: 174 `pi-agent`
-tests, 286 `pi-ai` unit tests, 445 `pi-coding-agent` unit tests plus all
-integration targets (including the malformed-call fixture), 186 `pi-tui` unit
-tests, and all workspace doctests.
+The latest full gate after the panic-safe telemetry slice passed: 174
+`pi-agent` tests, 286 `pi-ai` unit tests, 445 `pi-coding-agent` unit tests plus
+all integration targets (including the malformed-call fixture), 186 `pi-tui`
+unit tests, and all workspace doctests.
 
 ## Last code change
 
@@ -211,6 +213,17 @@ The schema-validator parity follow-up is included in the latest checkpoint:
   gate is green; S-024 is complete. Remaining validator work, if discovered by
   future source audits, must be recorded as a new supplemental item rather
   than silently folded into this claim.
+
+The panic-safe telemetry follow-up is included in the latest checkpoint:
+
+- The in-memory telemetry adapter now catches callback panics, settles the
+  span as an automatic error unless an explicit status was recorded, resumes
+  the original panic, and keeps nested spans’ inner-first settlement order.
+  Panic payloads remain opaque and late span operations remain inert.
+- The TUI image fallback and Kitty capability fixtures now share their global
+  capability lock, removing the workspace-only race seen during the first
+  full gate.
+- S-023 is complete. The next harness/runtime gaps are S-021 and S-022.
 
 The follow-up bash harness integration is included in the latest checkpoint:
 

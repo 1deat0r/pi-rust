@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 54.82% (91/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 55.42% (92/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1061,6 +1061,31 @@ execution ordering, mutation serialization, and malformed-call behavior.
 - S-018, S-019, S-020, and S-024 are complete. The next open harness/runtime
   work is S-021/S-022/S-023; S-026 and the remaining provider/runtime audits
   continue in their respective ledger sections.
+
+### Session 30 — 2026-08-24 — Panic-safe telemetry settlement
+Scope: supplemental S-023 closure for callback unwind settlement and a
+deterministic workspace gate.
+
+- The in-memory telemetry adapter now wraps callback admission in an unwind
+  boundary. Normal callbacks settle as before; panics settle the current span
+  as an automatic error unless an explicit status was recorded, preserve the
+  original panic payload by resuming unwinding, and leave late recordings
+  inert. Nested callback panics settle inner spans before their parents.
+- The TUI image fallback and Kitty capability fixtures now share their module
+  lock, preventing concurrent global capability mutation from making the
+  workspace gate flaky.
+- Evidence (unit):
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-telemetry --offline --quiet`
+  (6 passed),
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline --quiet`,
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-tui --offline --quiet`
+  (186 passed),
+  `/home/mustbearnold/.cargo/bin/cargo test --workspace --offline --quiet`,
+  `/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check`, and
+  `git diff --check`.
+- S-023 is complete. The next open harness/runtime work is S-021/S-022;
+  S-026 and the remaining provider/runtime audits continue in their ledger
+  sections.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

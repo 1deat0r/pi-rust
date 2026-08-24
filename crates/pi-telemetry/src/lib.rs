@@ -233,6 +233,22 @@ fn settle_span(
     state.next_end_sequence = next;
 }
 
+fn settle_panicked_span(state: &mut InMemoryTelemetryState, index: usize) {
+    let span = &mut state.spans[index];
+    if span.settled {
+        return;
+    }
+    if !span.explicit_status {
+        // A panic is the Rust equivalent of an exception that escapes the
+        // callback. Keep the payload opaque: telemetry settlement must not
+        // inspect or retain arbitrary panic values.
+        span.status = SpanStatus::Error { error: None };
+    }
+    span.settled = true;
+    span.end_sequence = Some(state.next_end_sequence);
+    state.next_end_sequence += 1;
+}
+
 /// Handle passed to callbacks. Records through the shared state and honors
 /// the upstream "passive recording, no recording after settle" rules.
 struct InMemorySpanHandle {
@@ -371,13 +387,21 @@ where
         inner: SpanInner::InMemory(child),
     };
 
-    let result = {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let span: &SpanHandle = &handle;
         callback(span)
-    };
+    }));
     settled.store(true, Ordering::SeqCst);
-    settle_span(&mut state.lock().unwrap(), index, false, None);
-    result
+    match result {
+        Ok(result) => {
+            settle_span(&mut state.lock().unwrap(), index, false, None);
+            result
+        }
+        Err(panic) => {
+            settle_panicked_span(&mut state.lock().unwrap(), index);
+            std::panic::resume_unwind(panic)
+        }
+    }
 }
 
 /// Backend-neutral reference implementation that records spans in process
@@ -546,5 +570,61 @@ mod tests {
         assert_eq!(span.attributes.get("a"), Some(&serde_json::json!(1)));
         assert_eq!(span.attributes.get("b"), Some(&serde_json::json!("x")));
         assert_eq!(span.status, SpanStatus::Error { error: None });
+    }
+
+    #[test]
+    fn panic_settles_span_and_preserves_panic() {
+        let ctx = InMemoryTelemetryContext::new();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ctx.start_span(
+                SpanOptions {
+                    name: "panic".into(),
+                    attributes: None,
+                },
+                |span| {
+                    span.add_event("before_panic", None);
+                    panic!("callback failed");
+                },
+            );
+        }));
+
+        assert!(panic.is_err());
+        let span = &ctx.get_spans()[0];
+        assert!(span.settled);
+        assert_eq!(span.status, SpanStatus::Error { error: None });
+        assert!(span.end_sequence.is_some());
+        assert_eq!(span.events.len(), 1);
+    }
+
+    #[test]
+    fn panic_keeps_explicit_status_and_settles_nested_spans_in_order() {
+        let ctx = InMemoryTelemetryContext::new();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ctx.start_span(
+                SpanOptions {
+                    name: "parent".into(),
+                    attributes: None,
+                },
+                |parent| {
+                    parent.set_status(SpanStatus::Ok);
+                    parent.start_span(
+                        SpanOptions {
+                            name: "child".into(),
+                            attributes: None,
+                        },
+                        |_child| {
+                            panic!("nested callback failed");
+                        },
+                    );
+                },
+            );
+        }));
+
+        assert!(panic.is_err());
+        let spans = ctx.get_spans();
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].status, SpanStatus::Ok);
+        assert_eq!(spans[1].status, SpanStatus::Error { error: None });
+        assert!(spans[1].end_sequence.unwrap() < spans[0].end_sequence.unwrap());
     }
 }
