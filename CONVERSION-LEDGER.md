@@ -96,6 +96,9 @@ its focused tests and crate gate pass. Full `pi-ai` strict clippy remains open
 with 23 diagnostics after the adapter cleanup, so this cleanup does not change
 the ledger count.
 
+The adapter cleanup checkpoint is committed as `8aba4db` on `main`; local and
+remote hashes were verified equal immediately after its push.
+
 ## Standing process rules (binding)
 
 - Commit + push after every commit (session-4 directive; applies to every git

@@ -1643,6 +1643,8 @@ Azure, Google, faux, partial-JSON, event-stream, and core content helpers.
   62.65% (104/166); this is warning cleanup rather than a new parity task.
 - The next leaf covers provider helper signatures, SSE loop shape, faux and
   message enum layout, test-module placement, and test fixture initializers.
+- Checkpoint: adapter cleanup commit `8aba4db` is pushed and hash-verified;
+  this documentation refresh records that synchronized checkpoint.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
