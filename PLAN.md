@@ -1732,7 +1732,10 @@ recovery against the upstream `openai-codex-responses.ts` implementation.
   `git diff --check` pass. The authoritative checker reports exactly
   `Conversion progress: 63.86% (106/166; 60 open)`.
 - S-009 is complete. The next dependency-safe action is S-010 AWS
-  credential/profile-file and region resolution parity for Bedrock.
+  credential/profile-file and region resolution parity for Bedrock. The
+  focused S-009 implementation/documentation commit
+  `c3d6109f32abb2f1a4efbda6eb2c90a35383dd98` is pushed to `origin/main`, and
+  local/remote hashes match.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

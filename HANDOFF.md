@@ -31,10 +31,10 @@ grammar parity slice. The pre-existing untracked `AGENTS.md` remains untouched
 and must be preserved. Do not use `git reset --hard`, `git checkout --`, broad
 revert commands, or `git clean`.
 
-Current status after the validated S-009 checkpoint: branch `main`, progress
+Current status after the pushed S-009 checkpoint: branch `main`, progress
 checker reports `63.86% (106/166; 60 open)`. The S-009 implementation and
-documentation changes are the current logical checkpoint. The pre-existing
-untracked `AGENTS.md` remains untouched and must not be staged. The preceding
+documentation commit is `c3d6109f32abb2f1a4efbda6eb2c90a35383dd98`; the
+pre-existing untracked `AGENTS.md` remains untouched and unstaged. The preceding
 S-008 implementation commit is `7a72f2fe104cf660f946f29a822c88da556a37d1`;
 local and `origin/main` matched that hash immediately after its push. Its
 changes include:
@@ -112,7 +112,7 @@ was pushed to `origin/main`; the final documentation-sync commit is
 `git ls-remote origin refs/heads/main` both resolve to the documentation-sync
 hash. Next dependency-safe work is S-009 Codex WebSocket session caching/reuse.
 
-## Current checkpoint — 2026-08-24 — S-009 complete in the working tree
+## Current checkpoint — 2026-08-24 — S-009 complete and pushed
 
 S-009 completes Codex WebSocket session caching/reuse and the
 `websocket-cached` transport behavior. The implementation in
@@ -142,7 +142,10 @@ implementation with `upstream_pi/packages/ai/src/api/openai-codex-responses.ts`
 and returned **APPROVE** with no blockers. The checker reports exactly
 `Conversion progress: 63.86% (106/166; 60 open)`. The next dependency-safe
 task is S-010 AWS credential/profile-file and region resolution parity for
-Bedrock. Commit and push this focused checkpoint before starting it.
+Bedrock. The implementation commit is pushed, the documentation-sync commit
+containing this handoff is pushed, and local/remote hashes were verified after
+the push. The worktree is clean except for the preserved untracked
+`AGENTS.md`.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 

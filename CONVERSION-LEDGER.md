@@ -25,6 +25,10 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
+- The S-009 Codex WebSocket session-cache checkpoint is committed as
+  `c3d6109f32abb2f1a4efbda6eb2c90a35383dd98` on `main` and pushed to
+  `origin/main`. The only remaining worktree item is the pre-existing
+  untracked `AGENTS.md`, which is preserved and unstaged.
 - The latest committed S-008 constrained-sampling/grammar checkpoint is
   `7a72f2fe104cf660f946f29a822c88da556a37d1` on `main`, pushed to
   `origin/main` with matching local/remote hashes. It follows the S-007 image
