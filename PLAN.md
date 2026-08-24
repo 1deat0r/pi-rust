@@ -1525,7 +1525,7 @@ the S-033 command-behavior audit while leaving the broader S-056 matrix open.
 - S-033 is complete with live fixture evidence. The broader S-056 terminal
   matrix, including cross-terminal capability and full interaction coverage,
   remains open.
-- Implementation commit `e890f09` was committed and pushed immediately after
+- Implementation commit `9599298` was committed and pushed immediately after
   this entry; the documentation-only hash refresh follows it.
 
 ### Open (carry-forward)

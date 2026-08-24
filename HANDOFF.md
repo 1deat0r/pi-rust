@@ -27,7 +27,7 @@ freeze. Do not claim 100% before the final clean-room audit.
 ## Important working-tree state
 
 The latest implementation checkpoint is the committed S-033
-interactive slash-command PTY fixture slice `e890f09`, after the committed
+interactive slash-command PTY fixture slice `9599298`, after the committed
 S-032
 provider-auth-guidance slice `50c2103`, after the committed S-026 CLI
 session-routing slice `711a25e`, the parity checkpoint `eaa36ba`, and the committed S-029
@@ -62,7 +62,7 @@ additions/renames include:
 
 Current status at pause: branch `main`, progress checker reports
 `60.24% (100/166; 66 open)`. The latest committed implementation checkpoint is
-`e890f09`, synchronized with `origin/main`; this documentation-only hash
+`9599298`, synchronized with `origin/main`; this documentation-only hash
 refresh follows it. Preserve the pre-existing
 untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
@@ -146,7 +146,7 @@ git diff --check
 ```
 
 This is partial S-033. The implementation push was verified at
-`e890f09`; real-terminal/fixture coverage is now recorded for export, import,
+`9599298`; real-terminal/fixture coverage is now recorded for export, import,
 share, trust, login/logout, new, fork/clone, tree, and reload. The interactive
 `/resume` selector and broader S-056 matrix remain open.
 
@@ -179,7 +179,7 @@ node scripts/conversion-progress.mjs (60.24% = 100/166; 66 open)
 
 S-033 is complete with the live command fixture evidence above. The broader
 S-056 command-by-command terminal matrix remains open. The implementation
-checkpoint `e890f09` is committed and pushed; this follow-up keeps the handoff
+checkpoint `9599298` is committed and pushed; this follow-up keeps the handoff
 hash and evidence aligned with `origin/main`.
 
 ## Current S-032 committed checkpoint
