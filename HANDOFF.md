@@ -26,10 +26,10 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest committed local checkpoint is the compiled-binary self-update
-contract slice after the interactive turn harness ownership checkpoint
-(`0cd9d03`) and documentation-hook checkpoint (`d56d8ba`), JSON-mode harness
-ownership (`3fb8049`), print-path harness,
+The latest committed local checkpoint is `db97b89`, the compiled-binary
+self-update contract slice, after the interactive turn harness ownership
+checkpoint (`0cd9d03`) and documentation-hook checkpoint (`d56d8ba`), JSON-mode
+harness ownership (`3fb8049`), print-path harness,
 lifecycle/termination, schema-validator, panic-safe telemetry, RPC runtime,
 update/version, and model-catalog checkpoints. The JSON-mode implementation is
 `dd7a568`; its follow-up preserves the successful RPC golden envelope while
@@ -55,6 +55,17 @@ Current status at pause: branch `main`, progress checker reports
 The README now records this compiled-binary self-update contract and the
 synchronized-doc workflow. All staged checkpoint changes are intentional local
 work ahead of the remote; the pre-existing `AGENTS.md` remains untouched.
+
+The local/remote hashes were checked immediately after the checkpoint:
+
+- `git rev-parse HEAD`: `db97b89c0c7767ece2154b70a886e3f98fb151e5`
+- `git ls-remote origin refs/heads/main`:
+  `90a5b931591eaeaea20f1fd9c0d10f72d7614a7b`
+- Immediate `git push origin main` failed with the exact blocker:
+  `fatal: could not read Username for 'https://github.com': No such device or address`.
+- `gh auth status` reports no authenticated GitHub host. The pre-commit hook
+  therefore could not sync `.github/repository-description.txt` to GitHub.
+  Local and remote parity is not claimed until authentication is repaired.
 
 ## Verification already completed
 
