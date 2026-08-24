@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **69.88% (116/166; 50 open)**. Run
+- The exhaustive checker reports **71.08% (118/166; 48 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -574,10 +574,15 @@ Recut of the remaining work by user impact + risk:
 
 ## T8 — Evals, packaging, parity suite
 
-- [ ] 91. pi-evals: capture usage tokens from subprocess runs (parse session
-      JSONL usage) so eval metrics match upstream.
-- [ ] 92. pi-evals: extension-scenario diagnostics under faux (unscorable →
-      scorable).
+- [x] 91. pi-evals: capture usage tokens from subprocess runs (parse session
+      JSONL usage) so eval metrics match upstream. Evidence: mock/unit —
+      `/home/mustbearnold/.cargo/bin/cargo test -p pi-evals --offline --quiet`
+      and the session-usage fixture suite; faux smoke JSONL recorded input
+      1246, output 20, total 1266.
+- [x] 92. pi-evals: extension-scenario diagnostics under faux (unscorable →
+      scorable). Evidence: unit/mock —
+      `/home/mustbearnold/.cargo/bin/cargo test -p pi-evals --offline --test extensions --quiet`
+      and the schema-1 `extension-authoring` faux diagnostic fixture.
 - [ ] 93. `scripts/parity-suite.mjs`: CLI matrix checks (exit codes/format vs
       upstream).
 - [ ] 94. Parity suite: golden RPC transcripts. (fixtures)

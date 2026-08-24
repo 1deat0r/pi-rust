@@ -4,7 +4,7 @@
 
 The existing conversion goal is resumed under the scoped unlazy contract
 `.unlazy/full-conversion-20260825/`. The current authoritative checker output
-is **Conversion progress: 69.88% (116/166; 50 open)**. The source inventory
+is **Conversion progress: 71.08% (118/166; 48 open)**. The source inventory
 and claim-reconciliation audit is complete; seven behavior tasks were checked
 with exact unit/mock evidence during the first implementation wave.
 
@@ -43,7 +43,8 @@ reconciliation are not yet complete.
 
 ## Checkpoint 2026-08-25 — eval metrics integrated
 
-- S-058 usage/cost accounting now reads subprocess session JSONL and reports
+- T8 rows 91/92 and S-058 usage/cost accounting now read subprocess session
+  JSONL and report
   deterministic input `1246`, output `20`, total `1266` fixture values.
 - S-059 extension evaluation now has deterministic score/diagnostic handling:
   faux unsupported behavior is an explicit schema-1 fixture contract.

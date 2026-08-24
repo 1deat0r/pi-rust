@@ -1022,7 +1022,7 @@ remains untouched.
 Progress checker:
 
 ```text
-Conversion progress: 69.88% (116/166; 50 open)
+Conversion progress: 71.08% (118/166; 48 open)
 ```
 
 S-058 and S-059 are now ledger-checked with unit/mock evidence. F1 reports
