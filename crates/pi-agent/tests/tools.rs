@@ -1,7 +1,7 @@
 //! Tool behavior tests: bash capture, read truncation messages, write/edit,
 //! path normalization, and an agent-loop tool-call round trip.
 
-use pi_agent::tools::AgentTool;
+use pi_agent::tools::{AgentTool, ToolUpdateCallback};
 use pi_ai::types::ContentBlock;
 
 fn rt() -> tokio::runtime::Runtime {
@@ -73,6 +73,59 @@ fn bash_validates_timeout() {
     assert!(pi_agent::tools::bash::validate_timeout(Some(0.0)).is_err());
     assert!(pi_agent::tools::bash::validate_timeout(Some(f64::NAN)).is_err());
     assert!(pi_agent::tools::bash::validate_timeout(Some(1.0)).is_ok());
+}
+
+#[test]
+fn bash_tool_streams_partial_updates_through_agent_contract() {
+    let rt = rt();
+    rt.block_on(async {
+        let dir = tmpdir("bash-updates");
+        let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = updates.clone();
+        let on_update: ToolUpdateCallback = std::sync::Arc::new(move |partial| {
+            received.lock().unwrap().push(partial.clone());
+        });
+
+        let result = pi_agent::tools::bash::execute_bash_with_updates(
+            "printf hello",
+            None,
+            &dir.to_string_lossy(),
+            None,
+            Some(on_update),
+        )
+        .await
+        .unwrap();
+
+        let updates = updates.lock().unwrap();
+        assert!(updates.len() >= 2, "expected initial and output updates");
+        assert!(updates.iter().any(|update| {
+            update.content.iter().any(|content| {
+                matches!(content, ContentBlock::Text { text, .. } if text.contains("hello"))
+            })
+        }));
+        assert!(updates.last().unwrap().content.iter().any(|content| {
+            matches!(content, ContentBlock::Text { text, .. } if text == "hello")
+        }));
+        assert!(result.content.iter().any(|content| {
+            matches!(content, ContentBlock::Text { text, .. } if text == "hello")
+        }));
+    });
+}
+
+#[test]
+fn edit_tool_registers_prepare_arguments_before_validation() {
+    let tool = pi_agent::tools::edit_tool(std::env::temp_dir().to_string_lossy().into_owned());
+    let prepare = tool
+        .prepare_arguments
+        .as_ref()
+        .expect("edit tool prepareArguments");
+    let prepared = prepare(serde_json::json!({
+        "path": "file.txt",
+        "oldText": "before",
+        "newText": "after",
+    }));
+    assert_eq!(prepared["edits"][0]["oldText"], "before");
+    assert!(prepared.get("oldText").is_none());
 }
 
 #[test]

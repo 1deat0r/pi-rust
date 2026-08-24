@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-48.80% = 81 completed / 166 total tasks
-85 tasks remain open
+50.60% = 84 completed / 166 total tasks
+82 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,12 +26,14 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is the current `HEAD` (`fix(tui): invalidate frames
-after screen swaps`) after the selector PTY/resize checkpoint and client
-reconnect/timeout hardening. The one-shot auto-compaction, covered client
-criteria, selector behavior, selector PTY/resize lifecycle, and screen-epoch
-redraw invalidation are implemented, verified, and committed locally. Pushes
-are blocked because the HTTPS remote requires GitHub credentials.
+The latest local code checkpoint is the AgentTool contract/update work after
+the selector PTY/resize and screen-epoch checkpoints. The one-shot
+auto-compaction, covered client criteria, selector behavior, selector
+PTY/resize lifecycle, screen-epoch redraw invalidation, edit argument
+preparation, streamed tool updates, and terminate-batch handling are
+implemented and verified locally. The new AgentTool/docs changes are not yet
+committed; pushes are blocked because the HTTPS remote requires GitHub
+credentials.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
 
@@ -47,9 +49,10 @@ additions/renames include:
 - Runtime/model catalog, RPC, config selector, TUI, provider, session, CLI,
   and parity work is spread across the modified crates.
 
-Current status at pause: branch `main`, no cargo/rustc process still running,
-progress checker reports `48.80% (81/166; 85 open)`, with the local client,
-selector, and PTY checkpoints ahead of the remote and no cargo/rustc process running.
+Current status at pause: branch `main`, progress checker reports
+`50.60% (84/166; 82 open)`. Preserve the pre-existing untracked `AGENTS.md`;
+all other changes in this checkpoint are intentional local work ahead of the
+remote.
 
 ## Verification already completed
 
@@ -73,6 +76,10 @@ These checks passed during the session:
 /home/mustbearnold/.cargo/bin/cargo test -p pi-tui terminal::tests::cell_size_query_and_response_update_image_dimensions --offline
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent modes::rpc::tests --offline
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent remote_catalog_provider --offline
+/home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline rich_loop_executes_tool_batch_and_emits_execution_events
+/home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline terminate_hints_require_every_parallel_tool_to_opt_in
+/home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline --test tools bash_tool_streams_partial_updates_through_agent_contract
+/home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline --test tools edit_tool_registers_prepare_arguments_before_validation
 git diff --check
 node scripts/conversion-progress.mjs
 ```
@@ -144,6 +151,22 @@ The next alt-screen hardening checkpoint is also complete locally:
 - The terminal transition test verifies idempotence and the expected epoch
   sequence; the PTY selector test remains green after the renderer change.
 
+The AgentTool contract/update checkpoint is now complete locally:
+
+- `edit_tool` registers the upstream `prepareArguments` normalization before
+  schema validation. The pinned source audit confirmed the other built-ins do
+  not define non-identity prepare shims.
+- The rich loop passes a scoped callback into tool execution and forwards
+  updates through a channel while sequential/parallel calls run. Callbacks
+  are gated after settlement; bash emits an initial update, 100ms-throttled
+  output progress, and a final snapshot before `tool_execution_end`.
+- Batch termination honors `AgentToolResult.terminate` only when every
+  finalized tool opts in. Mixed parallel termination is covered by a focused
+  unit test.
+- The focused `pi-agent` tests listed above pass. #25–27 are marked complete;
+  S-018 remains open for the full harness truncation/detail fixture parity and
+  S-020 remains open for the malformed-call matrix.
+
 ## Major parity work already present
 
 The current source includes substantial ports beyond the original baseline:
@@ -169,10 +192,10 @@ items just because a similarly named Rust module exists.
 
 ## Recommended next sequence
 
-1. Retry `git push origin main` after credentials are available; the current
-   client/selector/PTY checkpoint is local and is not remote yet.
-2. Continue with the full regular/fullscreen #61/#62 swap work and the broader
-   S-056 interactive slash-command matrix.
+1. Commit the AgentTool/docs checkpoint, retry `git push origin main`, and
+   report the HTTPS credential blocker if it persists.
+2. Continue with S-018/S-020 harness fixture parity, then the full
+   regular/fullscreen #61/#62 swap work and broader S-056 interactive matrix.
 3. Keep `CONVERSION-LEDGER.md`, `PLAN.md`, and this handoff synchronized;
    only mark a task complete with an evidence tier and exact command/fixture.
 

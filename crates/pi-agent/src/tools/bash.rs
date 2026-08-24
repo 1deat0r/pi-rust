@@ -1,14 +1,16 @@
-//! Bash tool — port of `packages/agent/src/harness/tools/bash.ts`
-//! (execution + capture semantics; live `onUpdate` throttling is not carried
-//! by the current loop and is noted in the TODO).
+//! Bash tool — port of `packages/agent/src/harness/tools/bash.ts`, including
+//! bounded live output updates and a final progress snapshot.
 
 use super::truncate::{format_size, truncate_tail, DEFAULT_MAX_BYTES};
+use super::{AgentToolResult, ToolUpdateCallback};
 use crate::types::FileError;
 use pi_ai::types::ToolResultMessage;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 const MAX_TIMEOUT_SECONDS: f64 = 2_147_483_647.0 / 1000.0;
+const BASH_UPDATE_THROTTLE_MS: u64 = 100;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BashCapture {
@@ -44,6 +46,18 @@ pub async fn run_bash(
     cwd: &str,
     timeout_secs: Option<f64>,
     abort: Option<Arc<AtomicBool>>,
+) -> Result<BashCapture, FileError> {
+    run_bash_with_callback(command, cwd, timeout_secs, abort, None).await
+}
+
+type BashOutputCallback = Arc<dyn Fn(String) + Send + Sync>;
+
+async fn run_bash_with_callback(
+    command: &str,
+    cwd: &str,
+    timeout_secs: Option<f64>,
+    abort: Option<Arc<AtomicBool>>,
+    on_output: Option<&BashOutputCallback>,
 ) -> Result<BashCapture, FileError> {
     let mut child = tokio::process::Command::new("/bin/bash")
         .arg("-c")
@@ -93,14 +107,24 @@ pub async fn run_bash(
             result = stdout.read(&mut buf_so), if !so_eof => {
                 match result {
                     Ok(0) => so_eof = true,
-                    Ok(n) => so.extend_from_slice(&buf_so[..n]),
+                    Ok(n) => {
+                        so.extend_from_slice(&buf_so[..n]);
+                        if let Some(on_output) = on_output {
+                            on_output(combined_output(&so, &se));
+                        }
+                    }
                     Err(_) => so_eof = true,
                 }
             }
             result = stderr.read(&mut buf_se), if !se_eof => {
                 match result {
                     Ok(0) => se_eof = true,
-                    Ok(n) => se.extend_from_slice(&buf_se[..n]),
+                    Ok(n) => {
+                        se.extend_from_slice(&buf_se[..n]);
+                        if let Some(on_output) = on_output {
+                            on_output(combined_output(&so, &se));
+                        }
+                    }
                     Err(_) => se_eof = true,
                 }
             }
@@ -111,13 +135,7 @@ pub async fn run_bash(
     }
     let exit_code = child.wait().await.ok().and_then(|s| s.code());
 
-    let mut output = String::from_utf8_lossy(&so).into_owned();
-    if !se.is_empty() {
-        if !output.is_empty() {
-            output.push('\n');
-        }
-        output.push_str(&String::from_utf8_lossy(&se));
-    }
+    let output = combined_output(&so, &se);
 
     let (truncation, last_line_partial, last_line_bytes) = truncate_tail(&output);
     let mut truncation_message = String::new();
@@ -156,6 +174,17 @@ pub async fn run_bash(
         timed_out,
         aborted,
     })
+}
+
+fn combined_output(stdout: &[u8], stderr: &[u8]) -> String {
+    let mut output = String::from_utf8_lossy(stdout).into_owned();
+    if !stderr.is_empty() {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&String::from_utf8_lossy(stderr));
+    }
+    output
 }
 
 /// Execute handler for the agent tool: validates, runs, and renders the
@@ -215,4 +244,102 @@ pub async fn execute_bash_with_abort(
             capture.exit_code.unwrap_or(0)
         )))
     }
+}
+
+/// Execute bash while forwarding partial combined output through the
+/// AgentTool `onUpdate` contract.
+pub async fn execute_bash_with_updates(
+    command: &str,
+    timeout: Option<f64>,
+    cwd: &str,
+    abort: Option<Arc<AtomicBool>>,
+    on_update: Option<ToolUpdateCallback>,
+) -> Result<AgentToolResult, String> {
+    validate_timeout(timeout)?;
+
+    if let Some(on_update) = &on_update {
+        on_update(&AgentToolResult::default());
+    }
+
+    let last_update_at = Arc::new(Mutex::new(
+        Instant::now() - Duration::from_millis(BASH_UPDATE_THROTTLE_MS),
+    ));
+    let output_callback = on_update.as_ref().map(|on_update| {
+        let on_update = on_update.clone();
+        let last_update_at = last_update_at.clone();
+        Arc::new(move |output: String| {
+            let should_emit = {
+                let mut last_update_at = last_update_at.lock().unwrap();
+                if last_update_at.elapsed() < Duration::from_millis(BASH_UPDATE_THROTTLE_MS) {
+                    false
+                } else {
+                    *last_update_at = Instant::now();
+                    true
+                }
+            };
+            if should_emit {
+                emit_bash_partial(&on_update, output, serde_json::Value::Null);
+            }
+        }) as BashOutputCallback
+    });
+    let capture = run_bash_with_callback(command, cwd, timeout, abort, output_callback.as_ref())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(on_update) = &on_update {
+        let details = if capture.truncated {
+            serde_json::json!({"truncated": true})
+        } else {
+            serde_json::Value::Null
+        };
+        emit_bash_partial(on_update, capture.output.clone(), details);
+    }
+
+    let output_text = format!("{}{}", capture.output, capture.truncation_message);
+    let append_status = |status: String| -> String {
+        if output_text.is_empty() {
+            status
+        } else {
+            format!("{output_text}\n\n{status}")
+        }
+    };
+
+    if capture.aborted {
+        return Err(append_status("Operation aborted".to_string()));
+    }
+    if capture.timed_out {
+        return Err(append_status(format!(
+            "Command timed out after {} seconds",
+            timeout.unwrap_or(0.0)
+        )));
+    }
+    if capture.exit_code == Some(0) {
+        Ok(AgentToolResult::from_tool_result_message(
+            &ToolResultMessage::text(
+                "bash",
+                "bash",
+                if output_text.is_empty() {
+                    "(no output)".to_string()
+                } else {
+                    output_text
+                },
+                false,
+            ),
+        ))
+    } else {
+        Err(append_status(format!(
+            "Command exited with code {}",
+            capture.exit_code.unwrap_or(0)
+        )))
+    }
+}
+
+fn emit_bash_partial(on_update: &ToolUpdateCallback, output: String, details: serde_json::Value) {
+    on_update(&AgentToolResult {
+        content: vec![pi_ai::types::ContentBlock::text(output)],
+        details,
+        usage: None,
+        added_tool_names: Vec::new(),
+        terminate: false,
+    });
 }

@@ -6,13 +6,13 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **48.80% (81/166)**. Run
+- The exhaustive checker reports **50.60% (84/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
-  focused RPC suite and the one-shot compaction/image parity tests. The full
-  workspace test result is re-run at verification gates rather than inferred
-  from a historical session count.
+  focused tool-contract, RPC, and one-shot compaction/image parity tests. The
+  full workspace test result is re-run at verification gates rather than
+  inferred from a historical session count.
 - The original 100 entries remain the historical work queue. The supplemental
   S1 section is authoritative for residual provider, harness, runtime, TUI,
   RPC, auxiliary client/server, evaluation, and final-audit work.
@@ -23,7 +23,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   alt-screen screen-epoch redraw hardening on `main`; the HTTPS remote is
   still behind because GitHub credentials are unavailable.
 - The workspace is green under `cargo test --workspace --offline`; the focused
-  RPC suite, image/read suite, and print-mode compaction suite pass.
+  tool-contract, RPC, image/read, and print-mode compaction suites pass.
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
   device-code flows, codex WebSocket transport (SSE fallback today),
   `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
@@ -51,9 +51,10 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
     `session-cwd`, `cache-stats`, `timings`, `auth-guidance`,
     `settings-diagnostics`, `diagnostics`, `project-trust`/
     `trust-manager`, `messages` (extended), `footer-data-provider`.
-  - pi-agent: AgentTool contract not upgraded to upstream shape
-    (label / prepareArguments / execute(toolCallId, params, signal, onUpdate)
-    -> AgentToolResult); `validateToolArguments` not ported/wired.
+  - pi-agent: the remaining contract work is built-in harness integration and
+    exact malformed-call/update fixture coverage; the core AgentTool shape,
+    prepareArguments seam, schema validation, terminate-batch handling, and
+    update-event sink now land locally.
   - pi-client: reconnect state/listeners, handshake/request timeout bounds,
     late-response suppression, and permanent dispose now land with fake-socket
     coverage; lease/reconcile parity remains partial, as do transport-factory
@@ -177,11 +178,23 @@ Recut of the remaining work by user impact + risk:
 - [x] 23. Audit upstream AgentTool shape vs current `pi-agent/src/tools/`
       trait; per-tool deltas. (unit)
 - [x] 24. Upgrade tool trait to upstream shape.
-- [ ] 25. `prepareArguments` for bash/read/write/edit/edit-diff/ls/find/grep/
-      image.
-- [ ] 26. `execute` upstream signature + `onUpdate` → rich loop emits
-      `tool_execution_update`.
-- [ ] 27. Terminate-hint plumbing in `rich_agent.rs`.
+- [x] 25. `prepareArguments` for bash/read/write/edit/edit-diff/ls/find/grep/
+      image. (unit) Audited the pinned upstream constructors: `edit` is the
+      only built-in with a non-identity prepare shim; Rust now registers the
+      upstream normalization for JSON-string, single-object, and legacy
+      top-level edit arguments. The remaining built-ins intentionally have no
+      prepare shim in the oracle.
+- [x] 26. `execute` upstream signature + `onUpdate` → rich loop emits
+      `tool_execution_update`. (unit) The callback is now passed through a
+      channel-backed sequential/parallel execution sink; bash emits throttled
+      partial output plus a final snapshot. Evidence:
+      `cargo test -p pi-agent --offline
+      rich_loop_executes_tool_batch_and_emits_execution_events` and
+      `cargo test -p pi-agent --offline --test tools
+      bash_tool_streams_partial_updates_through_agent_contract`.
+- [x] 27. Terminate-hint plumbing in `rich_agent.rs`. (unit) Batch termination
+      now requires every finalized parallel result to opt in, with evidence in
+      `terminate_hints_require_every_parallel_tool_to_opt_in`.
 - [x] 28. Migrate every tool constructor + run.rs call sites.
 - [x] 29. Port `validateToolArguments` (tool-args JSON-schema validation).
 - [x] 30. Wire validation into `prepare_tool_call` with upstream errors.
@@ -358,8 +371,9 @@ Recut of the remaining work by user impact + risk:
       `run_bash` with upstream capture semantics (concurrent stdout/stderr
       drain against the timeout deadline, `truncate_tail`, `[Showing lines
       X-Y of N... Full output truncated]` messages) and is wired into run.rs
-      via `bash_tool`. Only noted gap: live `onUpdate` throttling, a streaming
-      concern orthogonal to capture parity.
+      via `bash_tool`. Session 25 subsequently closed the live `onUpdate`
+      callback path and basic throttled bash progress; S-018 still tracks full
+      harness truncation/detail fixture parity.
 - [x] 72. Port `core/system-prompt.ts` wiring into run context — run.rs now
       assembles the system prompt from `--system-prompt` base + the skills
       `<available_skills>` block + `--append-system-prompt` inputs (files read

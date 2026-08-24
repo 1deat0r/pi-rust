@@ -255,6 +255,7 @@ pub fn edit_tool(cwd: String) -> AgentTool {
             })
         }),
     )
+    .with_prepare_arguments(Arc::new(edit::prepare_edit_arguments))
 }
 
 pub fn bash_tool(cwd: String) -> AgentTool {
@@ -272,7 +273,7 @@ pub fn bash_tool(cwd: String) -> AgentTool {
             }),
         ),
         "Bash",
-        Arc::new(move |_tool_call_id, args, signal, _on_update| {
+        Arc::new(move |_tool_call_id, args, signal, on_update| {
             let cwd = cwd.clone();
             Box::pin(async move {
                 let command = args
@@ -280,8 +281,7 @@ pub fn bash_tool(cwd: String) -> AgentTool {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "bash: missing required argument command".to_string())?;
                 let timeout = args.get("timeout").and_then(|v| v.as_f64());
-                let result = bash::execute_bash_with_abort(command, timeout, &cwd, signal).await?;
-                Ok(AgentToolResult::from_tool_result_message(&result))
+                bash::execute_bash_with_updates(command, timeout, &cwd, signal, on_update).await
             })
         }),
     )

@@ -8,6 +8,7 @@ use super::edit_diff::{
 };
 use super::path_utils::resolve_tool_path;
 use pi_ai::types::ToolResultMessage;
+use serde_json::Value;
 
 /// Tool execute for `edit` (upstream createEditTool.execute, direct fs).
 pub async fn execute_edit(
@@ -53,6 +54,61 @@ pub async fn execute_edit(
         false,
     )
     .with_details_usage_timestamp(None, Some(details), pi_ai::types::now_ms()))
+}
+
+/// Normalize the raw arguments accepted by the upstream edit tool before
+/// schema validation. Provider adapters have historically sent `edits` as a
+/// JSON string, a single edit object, or the legacy top-level `oldText` /
+/// `newText` pair.
+pub fn prepare_edit_arguments(mut args: Value) -> Value {
+    let Some(object) = args.as_object_mut() else {
+        return args;
+    };
+
+    if let Some(Value::String(raw)) = object.get("edits").cloned() {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+            if parsed.is_array() {
+                object.insert("edits".to_string(), parsed);
+            } else if is_single_edit(&parsed) {
+                object.insert("edits".to_string(), Value::Array(vec![parsed]));
+            }
+        }
+    } else if let Some(edit) = object.get("edits").cloned() {
+        if is_single_edit(&edit) {
+            object.insert("edits".to_string(), Value::Array(vec![edit]));
+        }
+    }
+
+    let legacy_edit = match (
+        object.get("oldText").and_then(Value::as_str),
+        object.get("newText").and_then(Value::as_str),
+    ) {
+        (Some(old_text), Some(new_text)) => Some(serde_json::json!({
+            "oldText": old_text,
+            "newText": new_text,
+        })),
+        _ => None,
+    };
+
+    if let Some(legacy_edit) = legacy_edit {
+        let mut edits = object
+            .get("edits")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        edits.push(legacy_edit);
+        object.insert("edits".to_string(), Value::Array(edits));
+        object.remove("oldText");
+        object.remove("newText");
+    }
+
+    args
+}
+
+fn is_single_edit(value: &Value) -> bool {
+    value.is_object()
+        && value.get("oldText").and_then(Value::as_str).is_some()
+        && value.get("newText").and_then(Value::as_str).is_some()
 }
 
 /// Upstream `prepareEditArguments` + `validateEditInput`: accepts `edits` as
@@ -307,5 +363,43 @@ mod tests {
         // missing edits entirely -> error
         let args = serde_json::json!({ "path": "x.ts" });
         assert!(extract_edits(&args).is_err());
+    }
+
+    #[test]
+    fn prepare_edit_arguments_runs_before_schema_validation() {
+        let prepared = prepare_edit_arguments(serde_json::json!({
+            "path": "x.ts",
+            "edits": {"oldText": "a", "newText": "b"},
+        }));
+        assert_eq!(
+            prepared,
+            serde_json::json!({
+                "path": "x.ts",
+                "edits": [{"oldText": "a", "newText": "b"}],
+            })
+        );
+
+        let prepared = prepare_edit_arguments(serde_json::json!({
+            "path": "x.ts",
+            "oldText": "a",
+            "newText": "b",
+        }));
+        assert_eq!(
+            prepared,
+            serde_json::json!({
+                "path": "x.ts",
+                "edits": [{"oldText": "a", "newText": "b"}],
+            })
+        );
+
+        let prepared = prepare_edit_arguments(serde_json::json!({
+            "path": "x.ts",
+            "edits": [{"oldText": "a", "newText": "b"}],
+            "oldText": "c",
+            "newText": "d",
+        }));
+        assert_eq!(prepared["edits"].as_array().unwrap().len(), 2);
+        assert!(prepared.get("oldText").is_none());
+        assert!(prepared.get("newText").is_none());
     }
 }

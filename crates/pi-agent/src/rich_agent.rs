@@ -6,14 +6,13 @@
 //! `tool_execution_*`), steering/follow-up drains, before/afterToolCall hooks,
 //! sequential+parallel tool batches, and the stateful `Agent` class.
 //!
-//! Known divergence (tracked against the AgentTool contract upgrade):
-//! - `tool_execution_update` is not emitted because built-in tools do not yet
-//!   stream partial results through the execution closure.
-//! - Tool `terminate` hints are not representable on `ToolResultMessage`;
-//!   batch early-termination always resolves to false (upstream's behavior
-//!   when no tool sets `terminate`).
-//! - `validateToolArguments` is performed by the rely-on-the-tool schema
-//!   contract; the pi-ai validator port will bolt on when it lands.
+//! Contract notes:
+//! - Tool update callbacks are scoped to an execution and are converted into
+//!   `tool_execution_update` events before the matching end event.
+//! - Tool `terminate` hints are retained in the in-memory result and control
+//!   batch termination; they are intentionally not added to the model-facing
+//!   `ToolResultMessage` shape.
+//! - `validateToolArguments` runs after each tool's `prepareArguments` shim.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -362,6 +361,64 @@ fn agent_tool_result_to_message(
     }
 }
 
+/// Serialize the upstream-shaped partial result carried by a
+/// `tool_execution_update` event. Optional fields are omitted just as they
+/// are from the TypeScript `AgentToolResult` object.
+fn agent_tool_result_to_partial_json(result: &crate::tools::AgentToolResult) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    object.insert(
+        "content".to_string(),
+        serde_json::to_value(&result.content).unwrap_or(serde_json::Value::Null),
+    );
+    object.insert("details".to_string(), result.details.clone());
+    if let Some(usage) = &result.usage {
+        object.insert(
+            "usage".to_string(),
+            serde_json::to_value(usage).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    if !result.added_tool_names.is_empty() {
+        object.insert(
+            "addedToolNames".to_string(),
+            serde_json::json!(result.added_tool_names),
+        );
+    }
+    if result.terminate {
+        object.insert("terminate".to_string(), serde_json::Value::Bool(true));
+    }
+    serde_json::Value::Object(object)
+}
+
+struct ToolUpdateEvent {
+    tool_call_id: String,
+    tool_name: String,
+    args: serde_json::Value,
+    partial_result: crate::tools::AgentToolResult,
+}
+
+fn emit_tool_update<F>(update: ToolUpdateEvent, emit: &mut F)
+where
+    F: FnMut(RichAgentEvent) + Send,
+{
+    emit(RichAgentEvent::ToolExecutionUpdate {
+        tool_call_id: update.tool_call_id,
+        tool_name: update.tool_name,
+        args: update.args,
+        partial_result: agent_tool_result_to_partial_json(&update.partial_result),
+    });
+}
+
+fn drain_queued_tool_updates<F>(
+    receiver: &mut tokio::sync::mpsc::UnboundedReceiver<ToolUpdateEvent>,
+    emit: &mut F,
+) where
+    F: FnMut(RichAgentEvent) + Send,
+{
+    while let Ok(update) = receiver.try_recv() {
+        emit_tool_update(update, emit);
+    }
+}
+
 async fn drain_steering(config: &RichAgentLoopConfig) -> Vec<AgentMessage> {
     (config.get_steering_messages)(()).await
 }
@@ -450,6 +507,8 @@ where
 {
     let mut messages: Vec<ToolResultMessage> = Vec::new();
     let mut terminate_flags: Vec<bool> = Vec::new();
+    let (update_sender, mut update_receiver) =
+        tokio::sync::mpsc::unbounded_channel::<ToolUpdateEvent>();
     for tc in tool_calls_of(message) {
         emit(RichAgentEvent::ToolExecutionStart {
             tool_call_id: tc.id.to_string(),
@@ -468,8 +527,15 @@ where
                 terminate_flags.push(false);
             }
             PreparedToolCall::Prepared { tool, args } => {
+                let execution = start_tool_execution(
+                    &tc,
+                    tool,
+                    args.clone(),
+                    config.signal.as_ref(),
+                    update_sender.clone(),
+                );
                 let (result, is_error) =
-                    execute_tool_once(&tc, &tool, args.clone(), config.signal.as_ref()).await;
+                    await_tool_execution(execution, &mut update_receiver, emit).await;
                 let terminate = result.terminate;
                 let (result, is_error) =
                     finalize_tool_call(message, &tc, args, result, is_error, config, emit).await;
@@ -539,6 +605,8 @@ where
 
     let mut finalized: Vec<(usize, (crate::tools::AgentToolResult, bool))> = Vec::new();
     if !calls.is_empty() {
+        let (update_sender, mut update_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<ToolUpdateEvent>();
         let futures: Vec<_> = calls
             .iter()
             .map(|(id, name, args, i)| {
@@ -548,6 +616,7 @@ where
                 let i = *i;
                 let tools = tools.clone();
                 let signal = signal.clone();
+                let update_sender = update_sender.clone();
                 async move {
                     let tool = tools.iter().find(|t| t.tool.name == name).cloned();
                     let (result, is_error) = match tool {
@@ -557,7 +626,14 @@ where
                                 name: &name,
                                 arguments: &args,
                             };
-                            execute_tool_once(&tc, &tool, args.clone(), signal.as_ref()).await
+                            start_tool_execution(
+                                &tc,
+                                tool,
+                                args.clone(),
+                                signal.as_ref(),
+                                update_sender,
+                            )
+                            .await
                         }
                         None => (
                             crate::tools::AgentToolResult::text(format!("Tool {name} not found")),
@@ -569,8 +645,21 @@ where
                 .boxed()
             })
             .collect();
-        let outputs = futures_util::future::join_all(futures).await;
-        finalized.extend(outputs);
+        let mut all = futures_util::future::join_all(futures).boxed();
+        loop {
+            tokio::select! {
+                update = update_receiver.recv() => {
+                    if let Some(update) = update {
+                        emit_tool_update(update, emit);
+                    }
+                }
+                outputs = &mut all => {
+                    finalized.extend(outputs);
+                    break;
+                }
+            }
+        }
+        drain_queued_tool_updates(&mut update_receiver, emit);
     }
 
     // Emit tool_execution_end + tool-result messages in assistant source order.
@@ -716,25 +805,71 @@ async fn prepare_tool_call(
     }
 }
 
-async fn execute_tool_once(
+type ToolExecutionFuture =
+    Pin<Box<dyn Future<Output = (crate::tools::AgentToolResult, bool)> + Send>>;
+
+fn start_tool_execution(
     tc: &ToolCallRef<'_>,
-    tool: &AgentTool,
+    tool: AgentTool,
     args: serde_json::Value,
     signal: Option<&Arc<AtomicBool>>,
-) -> (crate::tools::AgentToolResult, bool) {
-    if is_aborted(signal) {
-        return (
-            crate::tools::AgentToolResult::text("Operation aborted"),
-            true,
-        );
-    }
-    match (tool.execute)(tc.id.to_string(), args, signal.cloned(), None).await {
-        Ok(result) => {
-            let is_error = false;
-            (result, is_error)
+    update_sender: tokio::sync::mpsc::UnboundedSender<ToolUpdateEvent>,
+) -> ToolExecutionFuture {
+    let tool_call_id = tc.id.to_string();
+    let tool_name = tc.name.to_string();
+    let update_args = tc.arguments.clone();
+    let signal = signal.cloned();
+    let accepting_updates = Arc::new(AtomicBool::new(true));
+    let update_gate = accepting_updates.clone();
+    let update_call_id = tool_call_id.clone();
+    let on_update: crate::tools::ToolUpdateCallback = Arc::new(move |partial_result| {
+        if !update_gate.load(Ordering::Acquire) {
+            return;
         }
-        Err(e) => (crate::tools::AgentToolResult::text(e), true),
-    }
+        let _ = update_sender.send(ToolUpdateEvent {
+            tool_call_id: update_call_id.clone(),
+            tool_name: tool_name.clone(),
+            args: update_args.clone(),
+            partial_result: partial_result.clone(),
+        });
+    });
+    Box::pin(async move {
+        if is_aborted(signal.as_ref()) {
+            accepting_updates.store(false, Ordering::Release);
+            return (
+                crate::tools::AgentToolResult::text("Operation aborted"),
+                true,
+            );
+        }
+        let execution = (tool.execute)(tool_call_id, args, signal.clone(), Some(on_update)).await;
+        accepting_updates.store(false, Ordering::Release);
+        match execution {
+            Ok(result) => (result, false),
+            Err(e) => (crate::tools::AgentToolResult::text(e), true),
+        }
+    })
+}
+
+async fn await_tool_execution<F>(
+    mut execution: ToolExecutionFuture,
+    receiver: &mut tokio::sync::mpsc::UnboundedReceiver<ToolUpdateEvent>,
+    emit: &mut F,
+) -> (crate::tools::AgentToolResult, bool)
+where
+    F: FnMut(RichAgentEvent) + Send,
+{
+    let result = loop {
+        tokio::select! {
+            update = receiver.recv() => {
+                if let Some(update) = update {
+                    emit_tool_update(update, emit);
+                }
+            }
+            result = &mut execution => break result,
+        }
+    };
+    drain_queued_tool_updates(receiver, emit);
+    result
 }
 
 /// afterToolCall merge (upstream `finalizeExecutedToolCall`).
@@ -1552,6 +1687,28 @@ mod tests {
         crate::agent::user_text_prompt(text, 1)
     }
 
+    fn terminating_tool(name: &str, terminate: bool) -> AgentTool {
+        let name = name.to_string();
+        let tool_name = name.clone();
+        AgentTool::new(
+            pi_ai::types::json_tool(
+                &name,
+                "test terminating tool",
+                &serde_json::json!({"type": "object", "properties": {}}),
+            ),
+            name,
+            Arc::new(move |_, _, _, _| {
+                let tool_name = tool_name.clone();
+                Box::pin(async move {
+                    Ok(crate::tools::AgentToolResult {
+                        terminate,
+                        ..crate::tools::AgentToolResult::text(format!("{tool_name} done"))
+                    })
+                })
+            }),
+        )
+    }
+
     #[test]
     fn pending_queue_drain_modes() {
         let mut all = PendingMessageQueue::new(QueueMode::All);
@@ -1598,11 +1755,85 @@ mod tests {
 
             assert!(events.iter().any(|e| matches!(e, RichAgentEvent::ToolExecutionStart { tool_name, .. } if tool_name == "bash")));
             assert!(events.iter().any(|e| matches!(e, RichAgentEvent::ToolExecutionEnd { is_error: false, .. })));
+            assert!(events.iter().any(|e| {
+                matches!(
+                    e,
+                    RichAgentEvent::ToolExecutionUpdate {
+                        tool_name,
+                        partial_result,
+                        ..
+                    } if tool_name == "bash" && partial_result["content"].is_array()
+                )
+            }));
             assert!(events.iter().any(|e| matches!(e, RichAgentEvent::AgentEnd { .. })));
             let has_tool_result = new_messages.iter().any(|m| {
                 matches!(m, AgentMessage::Core(Message::ToolResult(r)) if !r.is_error())
             });
             assert!(has_tool_result);
+        });
+    }
+
+    #[test]
+    fn terminate_hints_require_every_parallel_tool_to_opt_in() {
+        let rt = rt();
+        rt.block_on(async {
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            let model = core.get_model(None).unwrap().clone();
+            let cfg = RichAgentLoopConfig::new(model, scripted_stream(core), None);
+            let message = faux_assistant_message(
+                vec![
+                    ContentBlock::tool_call("terminate-1", "stop", serde_json::json!({})),
+                    ContentBlock::tool_call("terminate-2", "continue", serde_json::json!({})),
+                ],
+                FauxAssistantOptions {
+                    stop_reason: Some(pi_ai::types::StopReason::ToolUse),
+                    ..Default::default()
+                },
+            );
+            let context = AgentContext::new(
+                Some("test".into()),
+                vec![
+                    terminating_tool("stop", true),
+                    terminating_tool("continue", false),
+                ],
+            );
+            let mut events = Vec::new();
+            let batch =
+                execute_tool_batch(&message, &context, &cfg, &mut |event| events.push(event)).await;
+            assert_eq!(batch.messages.len(), 2);
+            assert!(!batch.terminate);
+
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            let model = core.get_model(None).unwrap().clone();
+            let cfg = RichAgentLoopConfig::new(model, scripted_stream(core), None);
+            let context = AgentContext::new(
+                Some("test".into()),
+                vec![
+                    terminating_tool("stop", true),
+                    terminating_tool("finish", true),
+                ],
+            );
+            let message = faux_assistant_message(
+                vec![
+                    ContentBlock::tool_call("terminate-3", "stop", serde_json::json!({})),
+                    ContentBlock::tool_call("terminate-4", "finish", serde_json::json!({})),
+                ],
+                FauxAssistantOptions {
+                    stop_reason: Some(pi_ai::types::StopReason::ToolUse),
+                    ..Default::default()
+                },
+            );
+            let batch = execute_tool_batch(&message, &context, &cfg, &mut |_| {}).await;
+            assert!(batch.terminate);
+            assert!(events.iter().any(|event| {
+                matches!(
+                    event,
+                    RichAgentEvent::ToolExecutionEnd {
+                        is_error: false,
+                        ..
+                    }
+                )
+            }));
         });
     }
 

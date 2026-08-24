@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 48.80% (81/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 50.60% (84/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -722,7 +722,9 @@ executed from the NEXT-100 tracker against the T6 verify-then-port recut.
   the real deliverable was wiring into the run path):
   - `#71` bash-executor/exec audit — already covered by `pi_agent` bash tool
     (BashCapture + `run_bash`, truncate-tail + `[Showing lines X-Y of N...]`
-    messages). Live `onUpdate` throttling noted as the only gap.
+    messages). Session 25 later closed the live `onUpdate` callback path and
+    basic throttled bash progress; S-018 still tracks full harness
+    truncation/detail fixture parity.
   - `#72` system-prompt assembly (`--system-prompt` base + skills block +
     `--append-system-prompt`); `#73` skills loader (`--skill`/`-ns`/
     `.pi/skills`/`<agentDir>/skills`/settings key) + `<available_skills>`
@@ -952,6 +954,33 @@ regular/fullscreen renderer swap remains open.
 - This closes a concrete stale-frame seam but does not mark #61/#62 complete:
   regular/main-screen rendering, mode switching, and the dedicated tmux swap
   probe still need implementation.
+
+### Session 25 — 2026-08-24 — AgentTool preparation and streamed updates
+Scope: T2 #25–27, including the remaining runtime seams behind the already
+landed AgentTool shape and schema validator.
+
+- Audited the pinned upstream harness tools and wired `edit`'s
+  `prepareArguments` normalization before validation. JSON-string, single-edit
+  object, and legacy top-level `oldText`/`newText` calls now reach the same
+  validated array shape; the other built-ins have identity/no prepare shims in
+  the oracle.
+- The rich loop now passes a scoped update callback to every tool execution.
+  A channel-backed sink forwards updates while sequential or parallel tools
+  are still running, drains queued updates before each end event, and ignores
+  callbacks after settlement. Bash emits an initial update, throttled output
+  progress, and a final snapshot.
+- Terminate hints are retained in `AgentToolResult` and stop a batch only when
+  every finalized result opts in; mixed parallel batches continue normally.
+- Evidence (unit): `cargo test -p pi-agent --offline
+  rich_loop_executes_tool_batch_and_emits_execution_events`,
+  `cargo test -p pi-agent --offline
+  terminate_hints_require_every_parallel_tool_to_opt_in`, and the two focused
+  integration filters `bash_tool_streams_partial_updates_through_agent_contract`
+  and `edit_tool_registers_prepare_arguments_before_validation` under
+  `cargo test -p pi-agent --offline --test tools`.
+- #25–27 are complete. Supplemental S-018 remains open for full harness
+  truncation/detail parity and S-020 remains open for the malformed-call
+  fixture matrix.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
