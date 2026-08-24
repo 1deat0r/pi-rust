@@ -33,11 +33,11 @@ binding and provider-precedence parity slice. The pre-existing untracked
 `git reset --hard`, `git checkout --`, broad revert commands, or `git clean`.
 
 Current status: branch `main`, progress checker reports
-`65.66% (109/166; 57 open)`. S-012 source and synchronized documentation are
-implemented in the working tree and are ready for the focused commit/push
-checkpoint; the remote hash must not be called synchronized until the commit
-and `git rev-parse HEAD`/`git ls-remote origin refs/heads/main` comparison
-match. The S-011 pushed source checkpoint remains
+`65.66% (109/166; 57 open)`. S-012 source and synchronized documentation
+are committed in `617e39ce030bfb26598f4305a60d0e7de1e29bcc` and pushed to
+`origin/main`; `git rev-parse HEAD` and `git ls-remote origin
+refs/heads/main` both report that hash. The working tree retains only the
+pre-existing untracked `AGENTS.md`. The S-011 pushed source checkpoint remains
 `b18af9a895f9cb287ab47f0816d67dc20b256fe3`.
 
 ## Current strict-verification cleanup
@@ -927,7 +927,10 @@ contract; no patch-introduced blockers remain.
 No live Cloudflare account, Workers runtime, or network request was used.
 The binding trait deliberately leaves response handling to the host runtime;
 the recording adapter proves the request and cancellation contract without
-adding a second HTTP runtime to `pi-ai`. The next dependency-safe action is
-S-013 GitHub Copilot OAuth refresh and enterprise-domain/token-exchange parity.
-The focused S-012 commit and remote-hash verification remain the immediate
-documentation gate.
+adding a second HTTP runtime to `pi-ai`.
+
+S-012 implementation and documentation are committed as
+`617e39ce030bfb26598f4305a60d0e7de1e29bcc` and pushed; the local and
+`origin/main` hashes matched in the required verification. The next
+dependency-safe action is S-013 GitHub Copilot OAuth refresh and
+enterprise-domain/token-exchange parity.
