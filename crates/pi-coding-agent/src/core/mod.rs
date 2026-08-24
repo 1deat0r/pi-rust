@@ -27,6 +27,7 @@ pub mod settings;
 pub mod skills;
 pub mod slash_commands;
 pub mod telemetry;
+pub mod timings;
 pub mod tools;
 pub mod usage_totals;
 pub mod version_check;

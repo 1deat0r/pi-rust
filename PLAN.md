@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 56.02% (93/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 56.63% (94/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1244,6 +1244,24 @@ distribution where the running executable cannot replace itself.
 - S-028 is complete with an explicit distribution-level divergence; S-026,
   S-027, S-029, and the remaining S-021/S-022 harness ownership work remain
   open.
+
+### Session 37 — 2026-08-24 — Startup timing compatibility (S-031)
+Scope: preserve the upstream `PI_TIMING=1` gate while documenting the Rust
+distribution's intentional lack of startup timing namespaces.
+
+- Added `core::timings`, which recognizes only the exact upstream value `1`.
+  The binary emits a visible warning for that request and points to
+  `/usr/bin/time -p` as the supported process-level timing fallback. It does
+  not pretend to provide the upstream per-namespace profiler.
+- Evidence (unit):
+  `cargo test -p pi-coding-agent --offline
+  core::timings::tests::matches_upstream_exact_one_gate_and_fallback_text`.
+  `PI_TIMING=1 ./target/debug/pi --version` (mock binary smoke) prints the
+  warning before `pi 0.84.2`; the full workspace check/test and documentation
+  gate are green before the checkpoint commit (448 coding-agent tests).
+- S-031 is complete as an explicit, user-visible non-port. S-029/S-030,
+  session migration integration, and the remaining harness ownership work
+  remain open.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 56.02% — 93 of 166 ledger tasks complete; 73 open.**
+**Conversion progress: 56.63% — 94 of 166 ledger tasks complete; 72 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -37,6 +37,14 @@ For a source checkout, rebuild with `cargo build --release -p pi-coding-agent`
 and replace the installed `pi` binary using the mechanism that installed it.
 This is the supported replacement behavior for the Rust distribution; the
 command does not claim that the running executable was updated.
+
+### Startup timing
+
+The upstream `PI_TIMING=1` startup namespaces are intentionally not exposed by
+the Rust distribution. When that exact value is requested, `pi` prints a
+warning and points to `/usr/bin/time -p pi ...` for supported process-level
+startup timing; other values remain silent, matching upstream's exact-one
+enable gate.
 
 ## Workspace
 

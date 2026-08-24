@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **56.02% (93/166)**. Run
+- The exhaustive checker reports **56.63% (94/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -19,8 +19,8 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the local compiled-binary self-update contract checkpoint on `main`,
-  after
+- HEAD is the local startup-timing compatibility checkpoint on `main`, after
+  the compiled-binary self-update contract,
   the print-path harness ownership, AgentTool harness/termination,
   schema-validator, panic-safe telemetry, update/version, and model-catalog
   work; the HTTPS remote is still behind because GitHub credentials are
@@ -691,8 +691,15 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       offline behavior where the upstream CLI performs the network ping.
 - [ ] S-030 Wire cache-miss notices and “cache re-billed” display data into the
       interactive transcript/footer, including setting gates and reset events.
-- [ ] S-031 Port the `PI_TIMING=1` startup timing surface or prove/document its
+- [x] S-031 Port the `PI_TIMING=1` startup timing surface or prove/document its
       intentional non-port with a compatibility test and user-facing fallback.
+      The Rust distribution deliberately does not expose upstream's startup
+      timing namespaces. When `PI_TIMING=1` is requested, `pi` emits a warning
+      naming the supported `/usr/bin/time -p` process-level fallback; other
+      values retain the upstream exact-one gate and remain silent. Evidence
+      (unit): `cargo test -p pi-coding-agent --offline
+      core::timings::tests::matches_upstream_exact_one_gate_and_fallback_text`,
+      `PI_TIMING=1 ./target/debug/pi --version` (mock binary smoke).
 - [ ] S-032 Wire provider-specific no-key/auth guidance into every model
       resolution and provider error path, preserving upstream help text.
 - [ ] S-033 Complete interactive slash-command behavior audits for export,

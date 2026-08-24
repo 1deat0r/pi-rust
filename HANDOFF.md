@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-56.02% = 93 completed / 166 total tasks
-73 tasks remain open
+56.63% = 94 completed / 166 total tasks
+72 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,8 +26,9 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest committed local checkpoint is `db97b89`, the compiled-binary
-self-update contract slice, after the interactive turn harness ownership
+The latest local checkpoint is the startup-timing compatibility slice, after
+the committed compiled-binary self-update contract (`db97b89`) and interactive
+turn harness ownership
 checkpoint (`0cd9d03`) and documentation-hook checkpoint (`d56d8ba`), JSON-mode
 harness ownership (`3fb8049`), print-path harness,
 lifecycle/termination, schema-validator, panic-safe telemetry, RPC runtime,
@@ -51,8 +52,8 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`56.02% (93/166; 73 open)`. Preserve the pre-existing untracked `AGENTS.md`.
-The README now records this compiled-binary self-update contract and the
+`56.63% (94/166; 72 open)`. Preserve the pre-existing untracked `AGENTS.md`.
+The README now records the startup-timing compatibility contract and the
 synchronized-doc workflow. All staged checkpoint changes are intentional local
 work ahead of the remote; the pre-existing `AGENTS.md` remains untouched.
 
@@ -114,8 +115,8 @@ A full `cargo test --workspace --offline` passed after the image/read changes,
 including 162 `pi-agent` unit tests, the coding-agent integration targets, 186
 `pi-tui` unit tests, and all workspace doctests.
 
-The latest full gate after the compiled-binary self-update checkpoint passed:
-176 `pi-agent` tests, 286 `pi-ai` unit tests, 447 `pi-coding-agent` unit tests plus
+The latest full gate after the startup-timing compatibility checkpoint passed:
+176 `pi-agent` tests, 286 `pi-ai` unit tests, 448 `pi-coding-agent` unit tests plus
 all integration targets (including the malformed-call and print-parity
 fixtures), 186 `pi-tui` unit tests, and all workspace doctests.
 
@@ -138,6 +139,18 @@ The compiled-binary self-update contract checkpoint is now complete locally:
   formatter, diff check, and progress checker are the evidence recorded for
   this checkpoint. GitHub description synchronization is attempted by the
   pre-commit hook when `gh` is authenticated.
+
+The startup-timing compatibility checkpoint is complete in the working tree:
+
+- `core::timings` recognizes the upstream exact `PI_TIMING=1` gate. The binary
+  prints a user-facing warning with `/usr/bin/time -p` as the supported
+  process-level fallback; the upstream timing namespaces remain an explicit
+  Rust distribution non-port.
+- The exact-one gate and fallback text are covered by
+  `core::timings::tests::matches_upstream_exact_one_gate_and_fallback_text`.
+  `PI_TIMING=1 ./target/debug/pi --version` prints the warning before
+  `pi 0.84.2`. S-031 is closed; session migration integration, install
+  telemetry, cache notices, and harness ownership remain open.
 
 ## Earlier completed code changes
 

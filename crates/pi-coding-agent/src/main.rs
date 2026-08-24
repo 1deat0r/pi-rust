@@ -16,6 +16,10 @@ async fn main() {
         std::env::set_var("PI_SKIP_VERSION_CHECK", "1");
     }
 
+    if let Some(notice) = pi_coding_agent::core::timings::startup_notice() {
+        eprintln!("Warning: {notice}");
+    }
+
     // Subcommand dispatch mirrors main.ts: auth commands, package commands,
     // and the config command run before generic arg parsing.
     if pi_coding_agent::commands::auth::handle_auth_command(&argv) {
