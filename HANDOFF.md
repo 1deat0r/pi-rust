@@ -29,7 +29,7 @@ freeze. Do not claim 100% before the final clean-room audit.
 The latest pushed implementation checkpoint is the full `pi-ai` strict-clippy
 restoration `7b3db53`, following the adapter cleanup `8aba4db`, telemetry
 strict-verification fix `45e6d64`, and image retry/cancellation slice `2b92195`;
-metadata/documentation sync is `788f9c5`. The deferred-response
+metadata/documentation sync is `7f44350`. The deferred-response
 runtime/lazy-capability
 slice `56ea6f3`, after the committed S-033
 interactive slash-command PTY fixture slice `3b4d350`, after the committed
@@ -66,8 +66,8 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`62.65% (104/166; 62 open)`. The telemetry implementation `45e6d64` and
-metadata sync `788f9c5` are pushed; `git rev-parse HEAD` and
+`62.65% (104/166; 62 open)`. The strict-clippy implementation `7b3db53` and
+handoff/docs refresh `7f44350` are pushed; `git rev-parse HEAD` and
 `git ls-remote origin refs/heads/main` resolve to the same full hash.
 Preserve the pre-existing untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
@@ -94,6 +94,20 @@ Full `pi-ai` tests pass (290 library, 4 + 8 + 2 integration tests). This cleanup
 does not change the ledger count (`62.65%`, 104/166).
 The verified implementation checkpoint is `7b3db53`; local `HEAD` and
 `origin/main` matched immediately after its push.
+
+## Stop point — 2026-08-24
+
+Implementation is intentionally stopped here at the user's request. No S-008
+code has been started. The next ledger item is constrained-sampling/grammar
+support across every adaptor that advertises strict or grammar tools (S-008),
+after an upstream audit and new gates are written.
+
+The repository is public at [1deat0r/pi-rust](https://github.com/1deat0r/pi-rust),
+uses `main`, and local/remote full hashes match `7f44350`. The earlier GitHub
+metadata failure was HTTP 422 because the description exceeded GitHub's 350
+character limit; the description is now 271 characters and the authenticated
+pre-commit hook syncs it successfully. `AGENTS.md` remains pre-existing,
+untracked, and untouched.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 
