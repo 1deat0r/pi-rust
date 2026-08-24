@@ -8,6 +8,8 @@
 use std::sync::{Arc, Mutex};
 
 use pi_agent::agent::{run_agent_loop, AgentContext, AgentLoopConfig};
+use pi_agent::harness::events::HarnessEventBus;
+use pi_agent::harness::{run_with_harness_lifecycle, HarnessTelemetryContext};
 use pi_agent::session::jsonl::repo::CreateOptions;
 use pi_agent::session::session::Session as JsonlSession;
 use pi_agent::session::state::ForkOptions;
@@ -126,7 +128,21 @@ async fn stream_turn(
         stop_after_turn: true,
         on_stream_event: Some(on_event),
     };
-    let new_messages = run_agent_loop(vec![prompt], &mut context, &cfg, &mut |_| {}).await;
+    let telemetry = HarnessTelemetryContext::default();
+    let mut lifecycle = HarnessEventBus::new();
+    let session_id = runtime.session_id.clone();
+    let new_messages = run_with_harness_lifecycle(
+        &telemetry,
+        &mut lifecycle,
+        "main",
+        &session_id,
+        String::new(),
+        move |_span| async move {
+            Ok(run_agent_loop(vec![prompt], &mut context, &cfg, &mut |_| {}).await)
+        },
+    )
+    .await
+    .unwrap_or_default();
     for m in new_messages.iter().skip(1) {
         runtime.messages.push(m.clone());
     }

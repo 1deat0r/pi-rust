@@ -477,18 +477,20 @@ where
     F: FnOnce(SpanHandle) -> Fut,
     Fut: Future<Output = T>,
 {
-    let mut guard = state.lock().unwrap();
-    let id = guard.next_span_id;
-    guard.next_span_id += 1;
-    let index = guard.spans.len();
-    guard.spans.push(MutableRecordedTelemetrySpan {
-        id,
-        parent_id,
-        name: options.name,
-        attributes: copy_attributes(options.attributes.as_ref()),
-        ..Default::default()
-    });
-    drop(guard);
+    let index = {
+        let mut guard = state.lock().unwrap();
+        let id = guard.next_span_id;
+        guard.next_span_id += 1;
+        let index = guard.spans.len();
+        guard.spans.push(MutableRecordedTelemetrySpan {
+            id,
+            parent_id,
+            name: options.name,
+            attributes: copy_attributes(options.attributes.as_ref()),
+            ..Default::default()
+        });
+        index
+    };
 
     let settled = Arc::new(AtomicBool::new(false));
     let handle = InMemorySpanHandle {

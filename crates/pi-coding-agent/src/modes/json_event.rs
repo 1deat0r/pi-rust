@@ -8,6 +8,8 @@
 use std::sync::{Arc, Mutex};
 
 use pi_agent::agent::{run_agent_loop, AgentContext, AgentLoopConfig};
+use pi_agent::harness::events::HarnessEventBus;
+use pi_agent::harness::{run_with_harness_lifecycle, HarnessTelemetryContext};
 use pi_ai::types::{ContentBlock, Message, UserContent};
 
 use crate::args::Args;
@@ -170,7 +172,21 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
     let mut cfg = cfg;
     cfg.on_stream_event = Some(observer);
 
-    run_agent_loop(prompts, &mut context, &cfg, &mut |_| {}).await;
+    let telemetry = HarnessTelemetryContext::default();
+    let mut lifecycle = HarnessEventBus::new();
+    run_with_harness_lifecycle(
+        &telemetry,
+        &mut lifecycle,
+        "main",
+        "json-mode",
+        String::new(),
+        move |_span| async move {
+            run_agent_loop(prompts, &mut context, &cfg, &mut |_| {}).await;
+            Ok(())
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
 
     // Emit the captured events in wire order. A streamed terminal model error
     // is delivered as a JSON event line and the process exits 0 — upstream

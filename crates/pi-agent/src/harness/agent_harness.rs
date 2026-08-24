@@ -103,6 +103,99 @@ impl HarnessTelemetryContext {
     }
 }
 
+/// Run a mode-owned loop under the harness run lifecycle.
+///
+/// Modes that still own their historical context/session plumbing can use
+/// this bridge without changing their existing wire or TUI events. The
+/// callback receives the live run span so mode-specific events can be nested
+/// under the same operation when needed.
+pub async fn run_with_harness_lifecycle<T, F, Fut>(
+    telemetry: &HarnessTelemetryContext,
+    event_bus: &mut HarnessEventBus,
+    lane: &str,
+    session_id: &str,
+    leaf_id: String,
+    callback: F,
+) -> Result<T, HarnessError>
+where
+    F: FnOnce(SpanHandle) -> Fut,
+    Fut: std::future::Future<Output = Result<T, HarnessError>>,
+{
+    let run_id = crate::session::new_id();
+    event_bus.emit(&HarnessEvent::RunStart(RunStartEvent {
+        lane: lane.to_string(),
+        run_id: run_id.clone(),
+    }));
+
+    let span_run_id = run_id.clone();
+    let span_lane = lane.to_string();
+    let span_session_id = session_id.to_string();
+    let result = telemetry
+        .start_span_async(
+            SpanOptions {
+                name: "pi.harness.run".to_string(),
+                attributes: Some(BTreeMap::from([
+                    (
+                        "pi.session.id".to_string(),
+                        serde_json::json!(span_session_id),
+                    ),
+                    ("pi.lane.name".to_string(), serde_json::json!(span_lane)),
+                    (
+                        "pi.operation.id".to_string(),
+                        serde_json::json!(span_run_id),
+                    ),
+                    (
+                        "pi.operation.recovery".to_string(),
+                        serde_json::json!(false),
+                    ),
+                    ("pi.operation.kind".to_string(), serde_json::json!("run")),
+                ])),
+            },
+            move |span| async move {
+                span.add_event("run_start", None);
+                let result = callback(span.clone()).await;
+                let outcome = if result.is_ok() {
+                    "completed"
+                } else {
+                    "failed"
+                };
+                if let Err(error) = &result {
+                    span.set_status(SpanStatus::Error {
+                        error: Some(SpanError {
+                            name: "HarnessError".to_string(),
+                            message: error.to_string(),
+                        }),
+                    });
+                }
+                span.set_attributes(BTreeMap::from([(
+                    "pi.operation.outcome".to_string(),
+                    serde_json::json!(outcome),
+                )]));
+                span.add_event(
+                    "run_end",
+                    Some(BTreeMap::from([(
+                        "pi.operation.outcome".to_string(),
+                        serde_json::json!(outcome),
+                    )])),
+                );
+                result
+            },
+        )
+        .await;
+
+    event_bus.emit(&HarnessEvent::RunEnd(RunEndEvent {
+        lane: lane.to_string(),
+        run_id,
+        outcome: if result.is_ok() {
+            EventOutcome::Completed
+        } else {
+            EventOutcome::Failed
+        },
+        leaf_id,
+    }));
+    result
+}
+
 // ---------------------------------------------------------------------------
 // Error surface
 // ---------------------------------------------------------------------------
@@ -1663,6 +1756,66 @@ mod tests {
                     .collect::<Vec<_>>(),
                 vec!["run_start", "run_end"]
             );
+        });
+    }
+
+    #[test]
+    fn mode_lifecycle_adapter_preserves_event_and_span_order() {
+        rt().block_on(async {
+            let telemetry =
+                HarnessTelemetryContext::InMemory(Arc::new(InMemoryTelemetryContext::new()));
+            let mut bus = HarnessEventBus::new();
+            let lifecycle = Arc::new(Mutex::new(Vec::<String>::new()));
+            let start_lifecycle = lifecycle.clone();
+            bus.on(
+                "run_start",
+                Box::new(move |_| start_lifecycle.lock().unwrap().push("start".into())),
+            );
+            let end_lifecycle = lifecycle.clone();
+            bus.on(
+                "run_end",
+                Box::new(move |event| {
+                    end_lifecycle.lock().unwrap().push(format!(
+                        "end:{}",
+                        event.as_run_end().unwrap().outcome.as_str()
+                    ));
+                }),
+            );
+
+            let value = run_with_harness_lifecycle(
+                &telemetry,
+                &mut bus,
+                "main",
+                "session",
+                "leaf".into(),
+                |span| async move {
+                    span.add_event("inner", None);
+                    Ok::<_, HarnessError>(7)
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(value, 7);
+            assert_eq!(
+                *lifecycle.lock().unwrap(),
+                vec!["start".to_string(), "end:completed".to_string()]
+            );
+
+            let spans = match telemetry {
+                HarnessTelemetryContext::InMemory(context) => context.get_spans(),
+                HarnessTelemetryContext::Noop => unreachable!(),
+            };
+            assert_eq!(spans.len(), 1);
+            assert_eq!(
+                spans[0]
+                    .events
+                    .iter()
+                    .map(|event| event.name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["run_start", "inner", "run_end"]
+            );
+            assert_eq!(spans[0].attributes["pi.session.id"], "session");
+            assert_eq!(spans[0].attributes["pi.operation.outcome"], "completed");
         });
     }
 

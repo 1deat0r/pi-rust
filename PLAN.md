@@ -1138,6 +1138,33 @@ upstream run lifecycle and telemetry contract.
 - S-022 remains open: interactive, JSON, JSONL, and RPC adapters still need
   the same complete lifecycle/event bridge and golden wire assertions.
 
+### Session 33 — 2026-08-24 — Shared lifecycle bridge across mode adapters (partial S-022)
+Scope: apply the harness lifecycle boundary to the remaining mode-owned agent
+loops without changing their established UI or wire payloads.
+
+- A reusable `run_with_harness_lifecycle` adapter now wraps an arbitrary
+  mode-owned async loop with ordered run events and a settled
+  `pi.harness.run` span. The JSON mode, interactive turn path, detached RPC
+  prompt worker, and synchronous RPC prompt path all use the same adapter.
+- Existing mode-specific agent events remain unchanged and are emitted inside
+  the lifecycle boundary; the adapter exposes the live span for nested
+  operation events. A focused golden fixture asserts event order, nested span
+  event order, required attributes, and completed outcome.
+- Evidence (unit/integration): `/home/mustbearnold/.cargo/bin/cargo test
+  -p pi-agent --offline mode_lifecycle_adapter_preserves_event_and_span_order
+  -- --nocapture`, `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent
+  --offline modes::rpc::tests --quiet` (39 passed), `/home/mustbearnold/.cargo/bin/cargo
+  test -p pi-coding-agent --offline --test cli_print_parity --quiet`,
+  `/home/mustbearnold/.cargo/bin/cargo check -p pi-coding-agent --offline`,
+  `/home/mustbearnold/.cargo/bin/cargo test --workspace --offline --quiet`
+  (176 pi-agent tests, 286 pi-ai tests, 445 pi-coding-agent tests, and 186
+  pi-tui tests plus integration targets),
+  `/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check`, and
+  `git diff --check`.
+- S-022 remains open: mode-specific lifecycle events are not yet exposed as
+  complete golden JSON/JSONL/RPC envelopes, and interactive/JSON persistence
+  and secondary lane telemetry still need end-to-end assertions.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

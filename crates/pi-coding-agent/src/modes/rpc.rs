@@ -22,7 +22,8 @@ use pi_agent::rich_agent::{
 use pi_agent::session::jsonl::repo::CreateOptions;
 use pi_agent::session::session::Session as JsonlSession;
 
-use pi_agent::harness::SimpleModels;
+use pi_agent::harness::events::HarnessEventBus;
+use pi_agent::harness::{run_with_harness_lifecycle, HarnessTelemetryContext, SimpleModels};
 use pi_agent::session::state::{BranchBounds, EntryOrder, EntryQuery, ForkOptions};
 use pi_agent::session::types::{EntryNoStats, SessionMetadata};
 use pi_agent::session::JsonlSessionRepo;
@@ -481,7 +482,24 @@ async fn run_rpc_prompt(run: RpcPromptRun, events: UnboundedSender<RpcPromptTask
             let _ = events_for_loop.send(RpcPromptTaskMessage::Event(line));
         }
     });
-    let new_messages = run_rich_agent_loop(prompts, &mut context, &config, &mut emit).await;
+    let telemetry = HarnessTelemetryContext::default();
+    let mut lifecycle = HarnessEventBus::new();
+    let session_id = config
+        .session_id
+        .clone()
+        .unwrap_or_else(|| "rpc-mode".to_string());
+    let new_messages = run_with_harness_lifecycle(
+        &telemetry,
+        &mut lifecycle,
+        "main",
+        &session_id,
+        String::new(),
+        move |_span| async move {
+            Ok(run_rich_agent_loop(prompts, &mut context, &config, &mut emit).await)
+        },
+    )
+    .await
+    .unwrap_or_default();
     let persisted_messages = std::mem::take(&mut *persisted_messages.lock().unwrap());
     let _ = events.send(RpcPromptTaskMessage::Finished(RpcPromptResult {
         new_messages,
@@ -1488,22 +1506,40 @@ impl RpcRuntime {
                     mut context,
                     config,
                 } = self.prepare_prompt_run(&message);
-                let mut captured_events = Vec::new();
                 let persisted_messages = Arc::new(Mutex::new(Vec::new()));
                 let persisted_for_loop = persisted_messages.clone();
-                let mut pending_terminations = HashSet::new();
-                let new_messages =
-                    run_rich_agent_loop(prompts, &mut context, &config, &mut |event| {
-                        capture_persisted_rpc_event(
-                            &event,
-                            &mut pending_terminations,
-                            &mut persisted_for_loop.lock().unwrap(),
-                        );
-                        if let Some(line) = serialize_rpc_prompt_event(event) {
-                            captured_events.push(line);
-                        }
-                    })
-                    .await;
+                let telemetry = HarnessTelemetryContext::default();
+                let mut lifecycle = HarnessEventBus::new();
+                let session_id = config
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| "rpc-mode".to_string());
+                let (new_messages, captured_events) = run_with_harness_lifecycle(
+                    &telemetry,
+                    &mut lifecycle,
+                    "main",
+                    &session_id,
+                    String::new(),
+                    move |_span| async move {
+                        let mut captured_events = Vec::new();
+                        let mut pending_terminations = HashSet::new();
+                        let new_messages =
+                            run_rich_agent_loop(prompts, &mut context, &config, &mut |event| {
+                                capture_persisted_rpc_event(
+                                    &event,
+                                    &mut pending_terminations,
+                                    &mut persisted_for_loop.lock().unwrap(),
+                                );
+                                if let Some(line) = serialize_rpc_prompt_event(event) {
+                                    captured_events.push(line);
+                                }
+                            })
+                            .await;
+                        Ok((new_messages, captured_events))
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
 
                 // Emit the captured stream events in wire order.
                 for line in captured_events {

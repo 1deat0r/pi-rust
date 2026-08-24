@@ -97,7 +97,7 @@ A full `cargo test --workspace --offline` passed after the image/read changes,
 including 162 `pi-agent` unit tests, the coding-agent integration targets, 186
 `pi-tui` unit tests, and all workspace doctests.
 
-The latest full gate after the print-path harness slice passed: 175
+The latest full gate after the shared mode lifecycle bridge passed: 176
 `pi-agent` tests, 286 `pi-ai` unit tests, 445 `pi-coding-agent` unit tests plus
 all integration targets (including the malformed-call and print-parity
 fixtures), 186 `pi-tui` unit tests, and all workspace doctests.
@@ -250,9 +250,21 @@ The harness lifecycle/telemetry slice is included in the latest checkpoint:
   explicitly as errors.
 - The focused harness fixture asserts the exact event sequence, span name,
   required attributes, settled status, and `run_start`/`run_end` span events.
-  The full workspace gate remains green. This is partial S-022; the
-  interactive, JSON, JSONL, and RPC adapters still need the same bridge and
-  golden wire checks.
+  The full workspace gate remains green; the shared mode bridge described
+  below now applies the same boundary to the remaining loops. This is partial
+  S-022 because golden wire checks remain.
+
+The shared mode lifecycle bridge is included in the latest checkpoint:
+
+- `run_with_harness_lifecycle` now wraps the JSON mode, interactive turns,
+  detached RPC prompt workers, and synchronous RPC prompt execution. Existing
+  mode-specific events remain in their established order/payload shape, while
+  each run receives the same ordered harness lifecycle and async span boundary.
+- The adapter fixture asserts `run_start`, nested event, `run_end` ordering and
+  the required operation attributes; RPC’s focused 39-test suite and print
+  parity remain green. The full workspace gate passes with 176 pi-agent tests.
+  This is still partial S-022: mode-specific golden lifecycle envelopes,
+  persistence, and secondary-lane assertions remain.
 
 The follow-up bash harness integration is included in the latest checkpoint:
 

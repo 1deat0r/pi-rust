@@ -22,7 +22,10 @@ pub mod skills;
 pub mod system_prompt;
 pub mod telemetry;
 
-pub use agent_harness::{AgentHarness, AgentHarnessOptions, HarnessTool};
+pub use agent_harness::{
+    run_with_harness_lifecycle, AgentHarness, AgentHarnessOptions, HarnessTelemetryContext,
+    HarnessTool,
+};
 pub mod tools;
 
 pub use models::{BoxFuture, CompleteSimpleFn, SimpleModels};
