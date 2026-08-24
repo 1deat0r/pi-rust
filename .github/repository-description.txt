@@ -1,0 +1,1 @@
+A 1:1 Rust port of the Pi coding agent (v0.84.2), targeting CLI, session, provider, tool, TUI, RPC, and wire-format parity.

@@ -19,7 +19,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the local shared mode lifecycle bridge checkpoint on `main`, after
+- HEAD is the local JSON-mode harness checkpoint on `main`, after
   the print-path harness ownership, AgentTool harness/termination,
   schema-validator, panic-safe telemetry, update/version, and model-catalog
   work; the HTTPS remote is still behind because GitHub credentials are
@@ -30,8 +30,10 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   stateful `AgentHarness` transcript and replays it into durable JSONL while
   retaining compaction behavior. Its configured print run now emits ordered
   lifecycle events and a settled `pi.harness.run` span with required
-  attributes. A shared lifecycle adapter now wraps the interactive, JSON, and
-  RPC loop paths without changing their existing wire/UI event payloads;
+  attributes. JSON mode now also owns a stateful in-memory `AgentHarness`
+  transcript and replays rich stream updates, including terminal provider
+  errors, without changing the established successful RPC wire envelope. A
+  shared lifecycle adapter wraps the interactive, JSON, and RPC loop paths;
   complete mode-specific golden envelopes and persistence/secondary-lane
   assertions remain open under S-021/S-022. Telemetry callback panics now
   settle in-memory spans as automatic errors while preserving explicit
@@ -55,7 +57,6 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
     `--no-prompt-templates/-np`, `--theme`, `--use-theme`, `--no-themes`,
     `--no-context-files/-nc` (+ print-mode `--steer/--follow-up/--compact`).
   - No auto-compaction wiring in `run.rs` (RPC `compact` command exists).
-  - No JSON-event mode (`--mode json`; upstream `modes/json-event.ts`).
   - `image` tool not registered: run.rs exposes 7 tools, upstream has 8
     (bash/read/write/edit/edit-diff/ls/find/grep/image).
   - coding-agent core modules not ported as modules (functionality may exist
@@ -629,13 +630,16 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 - [ ] S-021 Integrate the `AgentHarness` lane/session abstraction into the
       coding-agent run path instead of maintaining a parallel direct-loop
       implementation. (Partial unit/integration slice: configured harnesses
-      now own the one-shot print-path Agent and in-memory main-lane transcript;
-      interactive/JSON/JSONL/RPC paths and secondary lanes remain open.)
+      now own the one-shot print-path and JSON-mode Agents plus their
+      in-memory main-lane transcripts; interactive/JSONL/RPC paths and
+      secondary lanes remain open.)
 - [ ] S-022 Wire the complete harness event and telemetry lifecycle into print,
       interactive, JSON, JSONL, and RPC modes with span/event golden checks.
-      (Partial unit/integration slice: the configured print-path harness now
-      emits ordered run lifecycle events and a settled `pi.harness.run` span;
-      mode-wide bridges and golden wire assertions remain open.)
+      (Partial unit/integration slice: configured print and JSON harness paths
+      emit ordered run lifecycle events and settled `pi.harness.run` spans;
+      the shared adapter covers interactive/RPC loops, while JSONL, complete
+      mode-specific golden envelopes, and persistence/secondary-lane
+      assertions remain open.)
 - [x] S-023 Add panic-safe telemetry callback settlement equivalent to the
       upstream `try/catch/finally` span lifecycle. (unit) The in-memory
       adapter catches callback unwinds, settles spans as automatic errors

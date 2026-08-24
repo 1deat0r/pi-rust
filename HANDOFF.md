@@ -26,11 +26,13 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest committed local checkpoint is the print-path harness ownership
-slice after the AgentTool harness, lifecycle/termination, schema-validator,
-panic-safe telemetry, RPC runtime, update/version, and model-catalog
-checkpoints. It includes synchronized ledger/plan/handoff docs. Pushes remain
-blocked because the HTTPS remote requires GitHub credentials.
+The latest committed local checkpoint is the JSON-mode harness ownership slice
+(`3fb8049`) after the print-path harness, lifecycle/termination,
+schema-validator, panic-safe telemetry, RPC runtime, update/version, and
+model-catalog checkpoints. The JSON-mode commit is `dd7a568`; the follow-up
+preserves the successful RPC golden envelope while forwarding terminal JSON
+provider errors. Pushes remain blocked because the HTTPS remote requires
+GitHub credentials.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
 
@@ -48,9 +50,9 @@ additions/renames include:
 
 Current status at pause: branch `main`, progress checker reports
 `55.42% (92/166; 74 open)`. Preserve the pre-existing untracked `AGENTS.md`.
-An independent `README.md` rewrite is also preserved and intentionally left
-unstaged; it is outside this checkpoint. All staged checkpoint changes are
-intentional local work ahead of the remote.
+The README now records this JSON-mode checkpoint and the synchronized-doc
+workflow. All staged checkpoint changes are intentional local work ahead of
+the remote; the pre-existing `AGENTS.md` remains untouched.
 
 ## Verification already completed
 
@@ -88,6 +90,8 @@ These checks passed during the session:
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test tool_contract -- --nocapture
 /home/mustbearnold/.cargo/bin/cargo test -p pi-tui --offline --quiet
 /home/mustbearnold/.cargo/bin/cargo test --workspace --offline --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test cli_json_mode --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib modes::rpc::tests::rpc_command_golden_transcript_matches_fixture
 /home/mustbearnold/.cargo/bin/cargo fmt --all -- --check
 git diff --check
 node scripts/conversion-progress.mjs
@@ -101,6 +105,11 @@ The latest full gate after the shared mode lifecycle bridge passed: 176
 `pi-agent` tests, 286 `pi-ai` unit tests, 445 `pi-coding-agent` unit tests plus
 all integration targets (including the malformed-call and print-parity
 fixtures), 186 `pi-tui` unit tests, and all workspace doctests.
+
+The JSON-mode harness checkpoint also passed the full workspace gate after
+restoring the successful RPC golden transcript. The focused JSON integration
+test passes both normal faux streaming and the terminal no-key provider error
+case, with both cases exiting successfully as required by JSON mode.
 
 ## Last code change
 
@@ -265,6 +274,18 @@ The shared mode lifecycle bridge is included in the latest checkpoint:
   parity remain green. The full workspace gate passes with 176 pi-agent tests.
   This is still partial S-022: mode-specific golden lifecycle envelopes,
   persistence, and secondary-lane assertions remain.
+
+The JSON-mode harness ownership slice is included in the latest checkpoint:
+
+- `--mode json` now creates a memory-backed `AgentHarness`, configures its
+  registered tools/model/system prompt, and emits the harness-captured rich
+  message updates. Terminal provider errors are preserved as JSON
+  `message_update` events; terminal `done` remains omitted from RPC's existing
+  successful golden transcript.
+- `cli_json_mode` passes both its faux success case and its no-key terminal
+  error case; the full workspace gate remains green. This is partial S-021 and
+  S-022: interactive/JSONL/RPC full harness ownership, lifecycle goldens,
+  persistence, and secondary lanes remain open.
 
 The follow-up bash harness integration is included in the latest checkpoint:
 

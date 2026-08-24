@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+staged_files="$(git diff --cached --name-only --diff-filter=ACMRTUXB)"
+if [[ -z "$staged_files" ]]; then
+  exit 0
+fi
+
+# A source/configuration change is only commit-ready when the durable project
+# handoff is part of the same checkpoint. README.md is also the GitHub README.
+requires_docs=0
+while IFS= read -r path; do
+  case "$path" in
+    README.md|PLAN.md|CONVERSION-LEDGER.md|HANDOFF.md|.githooks/*|.github/*|docs/*|scripts/conversion-progress.mjs)
+      ;;
+    *)
+      requires_docs=1
+      ;;
+  esac
+done <<< "$staged_files"
+
+if [[ "$requires_docs" -eq 1 ]]; then
+  required_docs=(README.md PLAN.md CONVERSION-LEDGER.md HANDOFF.md)
+  for doc in "${required_docs[@]}"; do
+    if ! grep -Fxq "$doc" <<< "$staged_files"; then
+      echo "pre-commit: implementation changes require staged $doc" >&2
+      exit 1
+    fi
+  done
+
+  progress_output="$(node scripts/conversion-progress.mjs)"
+  progress_percent="$(sed -E 's/^Conversion progress: ([0-9]+\.[0-9]+)%.*/\1%/p' <<< "$progress_output")"
+  if [[ -z "$progress_percent" ]]; then
+    echo "pre-commit: unable to parse conversion-progress output" >&2
+    exit 1
+  fi
+  for doc in "${required_docs[@]}"; do
+    if ! grep -Fq "$progress_percent" "$doc"; then
+      echo "pre-commit: $doc does not contain current progress $progress_percent" >&2
+      exit 1
+    fi
+  done
+fi
+
+git diff --cached --check
+
+# GitHub repository metadata is external state. Sync it when the authenticated
+# CLI is available; otherwise leave a visible, non-blocking reminder so local
+# commits remain recoverable while pushes/authentication are being repaired.
+description_file=".github/repository-description.txt"
+if command -v gh >/dev/null 2>&1 && [[ -f "$description_file" ]]; then
+  description="$(tr '\n' ' ' < "$description_file" | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//')"
+  if gh auth status >/dev/null 2>&1; then
+    if ! gh repo edit --description "$description" >/dev/null; then
+      echo "pre-commit: warning: GitHub description sync failed" >&2
+    fi
+  else
+    echo "pre-commit: warning: GitHub CLI is not authenticated; description not synced" >&2
+  fi
+fi

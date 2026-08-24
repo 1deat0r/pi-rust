@@ -1108,9 +1108,10 @@ session behavior.
   `/home/mustbearnold/.cargo/bin/cargo test --workspace --offline --quiet`,
   `/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check`, and
   `git diff --check`.
-- S-021 remains open: interactive, JSON, JSONL, and RPC modes still use their
+- S-021 remains open: interactive, JSONL, and RPC modes still use their
   direct loop paths, and secondary lane operations plus complete harness event
-  wiring remain for the next slice. S-022 remains open.
+  wiring remain for the next slice. JSON mode now uses a configured stateful
+  harness, while S-022 remains open.
 
 ### Session 32 — 2026-08-24 — Harness run lifecycle and async span settlement (partial S-022)
 Scope: make the integrated harness-owned print run observable with the
@@ -1164,6 +1165,35 @@ loops without changing their established UI or wire payloads.
 - S-022 remains open: mode-specific lifecycle events are not yet exposed as
   complete golden JSON/JSONL/RPC envelopes, and interactive/JSON persistence
   and secondary lane telemetry still need end-to-end assertions.
+
+### Session 34 — 2026-08-24 — JSON mode harness ownership (partial S-021/S-022)
+Scope: route `--mode json` through the configured stateful `AgentHarness` while
+preserving its JSON event contract, including provider terminal errors.
+
+- JSON mode now builds its registered tools as `HarnessTool`s, creates a
+  memory-backed main-lane session, configures the provider/model/system prompt
+  through `AgentHarnessOptions`, and emits the rich stream updates captured by
+  `AgentHarness::run_prompt_with_events`. The harness retains the prompt and
+  assistant transcript exactly once for this invocation.
+- The rich loop now forwards terminal provider `Error` events as message
+  updates. Terminal `Done` remains intentionally omitted from the existing
+  RPC golden envelope, preserving successful RPC wire parity while allowing
+  JSON mode to reproduce its error-event contract.
+- Evidence (unit/integration): `/home/mustbearnold/.cargo/bin/cargo test -p
+  pi-agent --offline --quiet` (176 tests plus integration targets),
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+  --test cli_json_mode --quiet` (2 passed),
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+  --lib modes::rpc::tests::rpc_command_golden_transcript_matches_fixture`,
+  `/home/mustbearnold/.cargo/bin/cargo test --workspace --offline --quiet`,
+  `/home/mustbearnold/.cargo/bin/cargo fmt --all`, and `git diff --check`.
+- Commits: `dd7a568` (`feat(harness): route json mode through stateful
+  agent`) and `3fb8049` (`fix(rich-agent): preserve rpc terminal event
+  parity`). The push for each checkpoint was attempted and rejected because
+  the HTTPS remote has no configured GitHub credentials.
+- S-021/S-022 remain open: interactive, JSONL, RPC full harness ownership,
+  mode-specific lifecycle golden envelopes, persistence, and secondary lanes
+  still need implementation and evidence.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

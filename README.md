@@ -1,79 +1,91 @@
-# pi — the pi agent harness, rewritten in Rust
+# pi-rust
 
-A working 1:1 port of the [pi agent harness](https://github.com/earendil-works/pi)
-(v0.84.2, commit `5cd93f6`) to idiomatic Rust. Same CLI surface, same on-disk
-formats, same wire behavior, same observable semantics — different
-implementation language.
+An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earendil-works/pi)** (v0.84.2, pinned upstream commit `5cd93f6`). The project targets the same CLI surface, session formats, provider behavior, tools, and wire contracts in idiomatic Rust.
 
+## Current status
+
+**Conversion progress: 55.42% — 92 of 166 ledger tasks complete; 74 open.**
+
+The denominator includes the full conversion ledger: source audits, provider
+edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
+final verification work. The original 100-item list is only the historical core
+queue. Recalculate the live value with:
+
+```bash
+node scripts/conversion-progress.mjs
 ```
-$ cargo build --release -p pi-coding-agent
-$ ./target/release/pi --help
-```
 
-## Status
-
-The CLI-observable product surface — `pi` interactive mode, `pi run`,
-RPC/json/jsonl modes, `pi config`, `pi auth`, `pi list-models`, `pi /share`,
-`pi --export`, the full flag and env surface, project trust, skills /
-prompt-templates / context-files loaders, tools (bash/read/write/edit/
-edit-diff/ls/find/grep/image), compaction, and session storage — is ported and
-working. The workspace test suite is **1418 tests, 0 failures**, with the
-new-code surface held to a 0-warning / clippy-clean bar.
-
-The remaining work and its progress are tracked in the exhaustive
-[`CONVERSION-LEDGER.md`](CONVERSION-LEDGER.md). The percentage in `PLAN.md` is
-derived from every checked/unchecked ledger task, including source-audit,
-provider edge cases, TUI, RPC, auxiliary client/server, evaluation, and final
-verification work; the original 100-item queue is only the historical core of
-that ledger.
+The port already includes substantial CLI and runtime work, including the
+in-process agent loop, stateful harness-backed print and JSON modes,
+provider/model catalog surfaces, session storage, project trust, tools,
+compaction, RPC controls, TUI components, and client/server support. Remaining
+work is tracked explicitly rather than treated as complete just because a
+similarly named module exists.
 
 ## Workspace
 
-```
+```text
 crates/
-  pi-protocol/          strict CBOR codec, framing, client/server message schemas
-  pi-telemetry/         vendor-neutral telemetry contracts + reference adapters
-  pi-ai/                unified multi-provider LLM API, model catalog, transports
-  pi-agent/             agent runtime + harness (tools, compaction, session JSONL)
-  pi-client/            client session handle + transport (auxiliary)
-  pi-server/            in-process server + live-session manager (auxiliary)
+  pi-protocol/          CBOR codec, framing, and message schemas
+  pi-telemetry/         vendor-neutral telemetry contracts and adapters
+  pi-ai/                providers, model catalogs, transports, and images
+  pi-agent/             agent runtime, harness, tools, and session JSONL
+  pi-client/            auxiliary client session handles and transport
+  pi-server/            auxiliary in-process server and live-session manager
   pi-session-backends/  SQLite session backend
-  pi-tui/               TUI primitives: editor, markdown, select lists, word nav
-  pi-coding-agent/      the `pi` binary — interactive CLI, config, RPC, run loop
-  pi-evals/             eval harness
+  pi-tui/               editor, markdown, select lists, terminal features
+  pi-coding-agent/      the `pi` binary, CLI, config, RPC, and run loop
+  pi-evals/             evaluation harness
 ```
 
-The `pi` binary is built from `pi-coding-agent`; it runs the agent loop
-in-process (as the real CLI does). `pi-server`/`pi-client` are an auxiliary
-subsystem that no shipped binary links — they harden the client/server surface
-without advancing CLI parity (see `PLAN.md §Recut`).
+The shipped `pi` binary runs the agent loop in-process, matching the upstream
+CLI architecture. `pi-server` and `pi-client` are auxiliary surfaces and are
+not linked into the shipped CLI binary.
 
-## Roadmap & process
+## Project documents
 
-- [`PLAN.md`](PLAN.md) — the living roadmap, fidelity model, module maps, phased
-  roadmap, and a **session ledger**. Every phase is reassessed on completion,
-  reviewed line-by-line against upstream, and gated by an independent reviewer
-  sign-off before continuation.
-- [`CONVERSION-LEDGER.md`](CONVERSION-LEDGER.md) — the exhaustive task tracker
-  for the full 1:1 conversion, with evidence tiers (`unit` | `mock` | `live`)
-  on every criterion.
-- Per-crate `TODO.md` files shadow the upstream module maps.
+- [`PLAN.md`](PLAN.md) — fidelity model, phase roadmap, parity evidence, and
+  next actions.
+- [`CONVERSION-LEDGER.md`](CONVERSION-LEDGER.md) — exhaustive task ledger with
+  `unit`, `mock`, or `live` evidence.
+- [`HANDOFF.md`](HANDOFF.md) — current checkpoint, tests, blockers, progress,
+  and resume instructions.
+- [`AGENTS.md`](AGENTS.md) — mandatory Codex turn, documentation, and
+  local/remote commit-push protocol.
 
-## Parity oracle
+Every Codex task must leave these documents synchronized, commit one focused
+checkpoint, push it immediately, and verify the local and remote hashes match.
+If remote authentication or network access blocks the push, the blocker is
+recorded rather than hidden.
 
-`scripts/oracle_partial_json.mjs` reproduces the upstream streaming-JSON
-contract against the vendored npm `partial-json@0.1.7` (in
-`scripts/partial-json-0.1.7/`), network-free; pi-ai tests assert the same golden
-table. The pinned upstream clone is **excluded from this repo** (gitignored).
-
-## Build & test
+The repository pre-commit hook enforces that implementation commits stage the
+README, plan, ledger, and handoff together, validates the conversion progress
+checker, and attempts to sync the GitHub repository description when `gh` is
+authenticated. Enable it for a clone with:
 
 ```bash
-cargo test --workspace       # 1418 tests, 0 failures
-cargo check --workspace
+git config core.hooksPath .githooks
 ```
 
-Requires Rust 1.85+ (`rust-version`). The dev profile uses `opt-level = 1`.
+## Build and test
+
+Use the offline commands when working from a restricted environment:
+
+```bash
+cargo check --workspace --offline
+cargo test --workspace --offline
+git diff --check
+```
+
+For a release build:
+
+```bash
+cargo build --release -p pi-coding-agent
+./target/release/pi --help
+```
+
+The pinned upstream source and its tests are the parity oracle; behavior is not
+marked complete without evidence from the relevant test or live command.
 
 ## License
 
