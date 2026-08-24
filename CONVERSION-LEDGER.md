@@ -704,7 +704,7 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 - [x] S-010 Complete AWS credential/profile-file and region resolution parity
       for Bedrock, with environment/config precedence fixtures. Evidence
       (unit/mock): `cargo test -p pi-ai --offline --lib
-      api::bedrock_converse --quiet` (41 passed) covers
+      api::bedrock_converse --quiet` (43 passed) covers
       `explicit_profile_ignores_ambient_access_keys_and_loads_profile_credentials`,
       `scoped_profile_ignores_ambient_access_keys`,
       `ambient_profile_preserves_env_key_precedence`,
@@ -713,12 +713,17 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       The same suite covers `parses_ecs_credentials_response`,
       `parses_sts_web_identity_response`,
       `resolves_ecs_full_uri_credentials_with_authorization_token`, and
-      `resolves_web_identity_credentials_with_mock_sts`. Provider auth source
-      labels are covered by `cargo test -p pi-ai --offline --lib
+      `resolves_web_identity_credentials_with_mock_sts`. The exported
+      `stream` and `stream_simple` boundaries are covered by
+      `public_stream_resolves_ecs_credentials_before_bedrock_request` and
+      `public_stream_resolves_web_identity_credentials_before_bedrock_request`,
+      including local ECS/STS HTTP endpoints, Bedrock eventstream responses,
+      credential IDs, form fields, and session-token signing headers. Provider
+      auth source labels are covered by `cargo test -p pi-ai --offline --lib
       providers::all::tests::amazon_bedrock_auth_recognizes_ecs_and_web_identity_sources
       --quiet` (1 passed). Supporting evidence: `cargo check -p pi-ai
       --offline`, `cargo clippy -p pi-ai --offline --all-targets -- -D
-      warnings`, `cargo test -p pi-ai --offline --quiet` (323 library, 4 + 9 +
+      warnings`, `cargo test -p pi-ai --offline --quiet` (325 library, 4 + 9 +
       2 integration tests), `cargo fmt --all -- --check`, and `git diff
       --check`. Upstream parity references:
       `upstream_pi/packages/ai/src/api/bedrock-converse-stream.ts:144-205,1165-1204`,

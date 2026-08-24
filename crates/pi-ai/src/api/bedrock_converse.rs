@@ -2445,7 +2445,28 @@ mod tests {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = Vec::new();
             let mut buf = [0_u8; 1024];
-            loop {
+            let header_end = loop {
+                let n = tokio::io::AsyncReadExt::read(&mut socket, &mut buf)
+                    .await
+                    .unwrap();
+                if n == 0 {
+                    break request.len();
+                }
+                request.extend_from_slice(&buf[..n]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+            let content_length = String::from_utf8_lossy(&request[..header_end])
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    (name.eq_ignore_ascii_case("content-length"))
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
                 let n = tokio::io::AsyncReadExt::read(&mut socket, &mut buf)
                     .await
                     .unwrap();
@@ -2453,9 +2474,6 @@ mod tests {
                     break;
                 }
                 request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
             }
             let content_type = if response_body.trim_start().starts_with('<') {
                 "application/xml"
@@ -3212,6 +3230,44 @@ mod tests {
         (format!("http://{addr}"), requests)
     }
 
+    fn successful_text_frames() -> Vec<Vec<u8>> {
+        vec![
+            build_frame(
+                "messageStart",
+                &json!({ "messageStart": { "role": "assistant" } }),
+            ),
+            build_frame(
+                "contentBlockDelta",
+                &json!({
+                    "contentBlockDelta": { "contentBlockIndex": 0, "delta": { "text": "Hello" } }
+                }),
+            ),
+            build_frame(
+                "contentBlockStop",
+                &json!({ "contentBlockStop": { "contentBlockIndex": 0 } }),
+            ),
+            build_frame(
+                "messageStop",
+                &json!({ "messageStop": { "stopReason": "end_turn" } }),
+            ),
+        ]
+    }
+
+    fn public_runtime_options(env: crate::types::ProviderEnv) -> BedrockOptions {
+        BedrockOptions {
+            profile: Some("missing-public-runtime-profile".to_string()),
+            region: Some("us-east-1".to_string()),
+            base: StreamOptions {
+                base: crate::types::ProviderRequestOptions {
+                    env: Some(env),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     #[tokio::test]
     async fn full_stream_text_and_stop() {
         let frames = vec![
@@ -3283,6 +3339,139 @@ mod tests {
             "got: {req}"
         );
         let _ = &mut options;
+    }
+
+    #[tokio::test]
+    async fn public_stream_resolves_ecs_credentials_before_bedrock_request() {
+        let (bedrock_url, requests) =
+            start_eventstream_server(&successful_text_frames(), 200).await;
+        let (metadata_url, metadata_request) = one_shot_http_server(
+            r#"{"AccessKeyId":"AKIAMOCK","SecretAccessKey":"secret","Token":"session"}"#,
+        )
+        .await;
+        let env = crate::types::ProviderEnv::from([
+            (
+                "AWS_CONTAINER_CREDENTIALS_FULL_URI".to_string(),
+                metadata_url,
+            ),
+            (
+                "AWS_CONTAINER_AUTHORIZATION_TOKEN".to_string(),
+                "Bearer container-token".to_string(),
+            ),
+            (
+                "AWS_SHARED_CREDENTIALS_FILE".to_string(),
+                "/definitely/missing/pi-rust-s010-public-ecs-credentials".to_string(),
+            ),
+        ]);
+        let options = public_runtime_options(env);
+        let mut model = base_model();
+        model.base_url = bedrock_url;
+
+        let (_, message) = stream(
+            &model,
+            &user_ctx("hello"),
+            reqwest::Client::new(),
+            None,
+            &options,
+        )
+        .collect()
+        .await;
+
+        assert_eq!(message.stop_reason(), Some(StopReason::Stop));
+        let metadata_request = metadata_request.await.unwrap();
+        assert!(metadata_request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer container-token"));
+        let bedrock_request = requests.lock().unwrap()[0].clone();
+        assert!(bedrock_request.contains("Credential=AKIAMOCK/"));
+        assert!(bedrock_request
+            .to_ascii_lowercase()
+            .contains("x-amz-security-token: session"));
+    }
+
+    #[tokio::test]
+    async fn public_stream_resolves_web_identity_credentials_before_bedrock_request() {
+        let (bedrock_url, requests) =
+            start_eventstream_server(&successful_text_frames(), 200).await;
+        let token_path = std::env::temp_dir().join(format!(
+            "pi-rust-public-web-identity-token-{}",
+            crate::types::now_ms()
+        ));
+        tokio::fs::write(&token_path, "jwt-token\n").await.unwrap();
+        let (sts_url, sts_request) = one_shot_http_server(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleWithWebIdentityResult>
+    <Credentials>
+      <AccessKeyId>AKIAWEB</AccessKeyId>
+      <SecretAccessKey>secret</SecretAccessKey>
+      <SessionToken>sts-token</SessionToken>
+    </Credentials>
+  </AssumeRoleWithWebIdentityResult>
+</AssumeRoleWithWebIdentityResponse>"#,
+        )
+        .await;
+        let env = crate::types::ProviderEnv::from([
+            (
+                "AWS_WEB_IDENTITY_TOKEN_FILE".to_string(),
+                token_path.to_string_lossy().to_string(),
+            ),
+            (
+                "AWS_ROLE_ARN".to_string(),
+                "arn:aws:iam::123:role/test".to_string(),
+            ),
+            (
+                "AWS_ROLE_SESSION_NAME".to_string(),
+                "public-session".to_string(),
+            ),
+            (
+                "AWS_PROFILE".to_string(),
+                "missing-public-runtime-profile".to_string(),
+            ),
+            ("AWS_REGION".to_string(), "us-east-1".to_string()),
+            ("AWS_STS_ENDPOINT".to_string(), sts_url),
+            (
+                "AWS_SHARED_CREDENTIALS_FILE".to_string(),
+                "/definitely/missing/pi-rust-s010-public-web-credentials".to_string(),
+            ),
+        ]);
+        let options = SimpleStreamOptions {
+            base: StreamOptions {
+                base: crate::types::ProviderRequestOptions {
+                    env: Some(env),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut model = base_model();
+        model.base_url = bedrock_url;
+
+        let (_, message) = stream_simple(
+            &model,
+            &user_ctx("hello"),
+            reqwest::Client::new(),
+            None,
+            &options,
+        )
+        .collect()
+        .await;
+
+        assert_eq!(message.stop_reason(), Some(StopReason::Stop));
+        let sts_request = sts_request.await.unwrap();
+        assert!(sts_request
+            .to_ascii_lowercase()
+            .contains("content-type: application/x-www-form-urlencoded"));
+        assert!(sts_request.contains("Action=AssumeRoleWithWebIdentity"));
+        assert!(sts_request.contains("RoleSessionName=public-session"));
+        assert!(sts_request.contains("WebIdentityToken=jwt-token"));
+        let bedrock_request = requests.lock().unwrap()[0].clone();
+        assert!(bedrock_request.contains("Credential=AKIAWEB/"));
+        assert!(bedrock_request
+            .to_ascii_lowercase()
+            .contains("x-amz-security-token: sts-token"));
+        let _ = tokio::fs::remove_file(token_path).await;
     }
 
     #[tokio::test]

@@ -164,11 +164,11 @@ uses the upstream source labels `ECS task role` and `web identity token`.
 Evidence and review:
 
 ```text
-$HOME/.cargo/bin/cargo test -p pi-ai --offline --lib api::bedrock_converse --quiet (41 passed)
+$HOME/.cargo/bin/cargo test -p pi-ai --offline --lib api::bedrock_converse --quiet (43 passed)
 $HOME/.cargo/bin/cargo test -p pi-ai --offline --lib providers::all::tests::amazon_bedrock_auth_recognizes_ecs_and_web_identity_sources --quiet (1 passed)
 $HOME/.cargo/bin/cargo check -p pi-ai --offline
 $HOME/.cargo/bin/cargo clippy -p pi-ai --offline --all-targets -- -D warnings
-$HOME/.cargo/bin/cargo test -p pi-ai --offline --quiet (323 library, 4 + 9 + 2 integration tests)
+$HOME/.cargo/bin/cargo test -p pi-ai --offline --quiet (325 library, 4 + 9 + 2 integration tests)
 $HOME/.cargo/bin/cargo test -p pi-ai --offline --tests --quiet
 $HOME/.cargo/bin/cargo metadata --no-deps --offline --format-version 1
 $HOME/.cargo/bin/cargo fmt --all -- --check
@@ -178,7 +178,9 @@ node scripts/conversion-progress.mjs
 
 The local mock fixtures cover profile precedence, config-file region loading,
 ECS JSON parsing and retrieval, container authorization, STS XML parsing and
-form submission, and provider source labels. Independent reviewer cow compared
+form submission, exported `stream` ECS retrieval, exported `stream_simple`
+web-identity retrieval, Bedrock eventstream responses, signed credential IDs,
+and session-token headers. Independent reviewer cow compared
 the implementation and tests with the upstream Bedrock API/provider/env-key
 sources and credential/endpoint fixtures and returned **APPROVE** with no
 blockers. SSO- or process-backed profiles and EC2 metadata remain outside the
@@ -187,9 +189,10 @@ manual signer scope.
 The feedback loop was rerun over the complete S-010 result after the earlier
 implementation and review work. Profile/env/config/endpoint precedence maps to
 the named fixtures above; ECS and web-identity runtime behavior maps to the
-parser and local mock HTTP fixtures; the public stream/request boundary maps to
-the 41-test Bedrock adaptor suite; and the provider-auth boundary maps to the
-two Bedrock auth tests. The full pi-ai library and integration targets passed.
+parser and local mock HTTP fixtures; the exported `stream` and `stream_simple`
+boundaries map to the two public runtime fixtures and their local Bedrock
+eventstream servers; and the provider-auth boundary maps to the two Bedrock
+auth tests. The full pi-ai library and integration targets passed.
 
 The broader packaging check was also attempted with:
 

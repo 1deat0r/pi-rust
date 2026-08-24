@@ -1768,20 +1768,22 @@ endpoint fixtures.
   reviewer specifically confirmed the previous ECS/web-identity runtime gap
   and STS JSON/XML defect were resolved.
 - Evidence (unit/mock): `cargo test -p pi-ai --offline --lib
-  api::bedrock_converse --quiet` (41 passed), the targeted provider-auth test
+  api::bedrock_converse --quiet` (43 passed), the targeted provider-auth test
   (1 passed), `cargo check -p pi-ai --offline`,
   `cargo clippy -p pi-ai --offline --all-targets -- -D warnings`,
-  `cargo test -p pi-ai --offline --quiet` (323 library, 4 + 9 + 2 integration
+  `cargo test -p pi-ai --offline --quiet` (325 library, 4 + 9 + 2 integration
   tests), `cargo fmt --all -- --check`, and `git diff --check` pass. The
   authoritative checker reports exactly `Conversion progress: 64.46%
   (107/166; 59 open)`.
 - The feedback loop was then rerun over the complete result. The profile,
   ambient-key, config-region, and endpoint requirements passed their named
   fixtures; ECS and web-identity runtime retrieval passed parser and local
-  mock HTTP fixtures; the public stream/request boundary passed the 41-test
-  adaptor suite; and the provider-auth boundary passed both Bedrock auth
-  tests. The full pi-ai integration targets, offline metadata, compile,
-  strict-clippy, formatting, and diff checks also passed.
+  mock HTTP fixtures; the exported `stream` ECS fixture and exported
+  `stream_simple` web-identity fixture passed against local credential/STS and
+  Bedrock eventstream servers, including credential IDs, form fields, and
+  session-token signing headers; and the provider-auth boundary passed both
+  Bedrock auth tests. The full pi-ai integration targets, offline metadata,
+  compile, strict-clippy, formatting, and diff checks also passed.
 - The broader packaging check was attempted separately with `cargo package -p
   pi-ai --offline --allow-dirty --no-verify` and failed before packaging because
   the internal `pi-telemetry` path dependency has no crates.io version
