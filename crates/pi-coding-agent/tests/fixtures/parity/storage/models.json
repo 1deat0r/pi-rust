@@ -1,0 +1,30 @@
+{
+  "x-parity-root-unknown": "accepted-by-open-schema",
+  "providers": {
+    "parity": {
+      "name": "Parity Provider",
+      "baseUrl": "http://127.0.0.1:9/v1",
+      "api": "openai-responses",
+      "apiKey": "$PI_PARITY_KEY",
+      "x-parity-provider-unknown": "ignored-by-typed-config",
+      "models": [
+        {
+          "id": "parity-model",
+          "name": "Parity Model",
+          "reasoning": false,
+          "input": ["text"],
+          "cost": {"input": 0.1, "output": 0.2, "cacheRead": 0.0, "cacheWrite": 0.0},
+          "contextWindow": 64000,
+          "maxTokens": 4096,
+          "x-parity-model-unknown": {"marker": "model-unknown"}
+        }
+      ],
+      "modelOverrides": {
+        "parity-model": {
+          "name": "Parity Model Override",
+          "contextWindow": 128000
+        }
+      }
+    }
+  }
+}

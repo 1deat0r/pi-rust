@@ -493,6 +493,29 @@ fn config_unknown_option_errors() {
     );
 }
 
+#[test]
+fn main_help_lists_mode_option() {
+    let sandbox = Sandbox::new("main-help");
+    let cwd = project(&sandbox, "work");
+    let out = sandbox.pi_offline(&cwd, &["--help"]);
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    assert!(sandbox.stdout(&out).contains("--mode <mode>"));
+    assert!(sandbox.stderr(&out).is_empty());
+}
+
+#[test]
+fn unknown_flag_matches_upstream_diagnostic() {
+    let sandbox = Sandbox::new("unknown-flag");
+    let cwd = project(&sandbox, "work");
+    let out = sandbox.pi_offline(&cwd, &["--definitely-not-a-real-flag"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(sandbox.stdout(&out), "\n");
+    assert_eq!(
+        sandbox.stderr(&out),
+        "Unknown flag: --definitely-not-a-real-flag\n"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // pi auth
 // ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ async fn main() {
 
     // Subcommand dispatch mirrors main.ts: auth commands, package commands,
     // and the config command run before generic arg parsing.
-    if pi_coding_agent::commands::auth::handle_auth_command(&argv) {
+    if pi_coding_agent::commands::auth::handle_auth_command(&argv).await {
         return;
     }
     if pi_coding_agent::commands::package::handle_package_command(&argv).await {
@@ -71,7 +71,9 @@ async fn main() {
                 }
             }
             if !args.unknown_flags.is_empty() {
-                eprintln!("unknown flags: {}", args.unknown_flags.join(", "));
+                println!();
+                eprintln!("Unknown flag: {}", args.unknown_flags.join(", "));
+                std::process::exit(1);
             }
             if args.mode.as_deref() == Some("rpc") && !args.file_args.is_empty() {
                 eprintln!("Error: @file arguments are not supported in RPC mode");

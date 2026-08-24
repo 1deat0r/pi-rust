@@ -1,0 +1,3 @@
+{"type":"session","version":2,"id":"parity-v2","timestamp":"2025-01-01T00:00:00.000Z","cwd":"/tmp/pi-parity"}
+{"type":"message","id":"v2-user","parentId":null,"timestamp":"2025-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hello v2"}],"timestamp":1735689601000}}
+{"type":"message","id":"v2-custom","parentId":"v2-user","timestamp":"2025-01-01T00:00:02.000Z","message":{"role":"hookMessage","customType":"parityHook","content":"hook v2","display":false,"timestamp":1735689602000}}

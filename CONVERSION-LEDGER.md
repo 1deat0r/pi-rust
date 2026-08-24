@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **87.95% (146/166; 20 open)**. Run
+- The exhaustive checker reports **93.37% (155/166; 11 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -611,11 +611,19 @@ Recut of the remaining work by user impact + risk:
       scorable). Evidence: unit/mock —
       `/home/mustbearnold/.cargo/bin/cargo test -p pi-evals --offline --test extensions --quiet`
       and the schema-1 `extension-authoring` faux diagnostic fixture.
-- [ ] 93. `scripts/parity-suite.mjs`: CLI matrix checks (exit codes/format vs
-      upstream).
-- [ ] 94. Parity suite: golden RPC transcripts. (fixtures)
-- [ ] 95. Parity suite: session-file byte fixtures (v1/v2/v3/v4 goldens).
-- [ ] 96. Parity suite: settings/auth/models.json on-disk round-trip goldens.
+- [x] 93. `scripts/parity-suite.mjs`: CLI matrix checks (exit codes/format vs
+      upstream). Evidence: unit/mock — 8 CLI cases pass in the complete
+      release parity run, including help, unknown-flag, exit-code, and output
+      format comparisons.
+- [x] 94. Parity suite: golden RPC transcripts. (fixtures) Evidence:
+      mock — 2 ordered JSONL transcript fixtures pass, including malformed and
+      async lifecycle envelopes.
+- [x] 95. Parity suite: session-file byte fixtures (v1/v2/v3/v4 goldens).
+      Evidence: unit/mock — 5 legacy/current JSONL fixtures pass canonical
+      byte, migration, parent-chain, and current-write checks.
+- [x] 96. Parity suite: settings/auth/models.json on-disk round-trip goldens.
+      Evidence: unit/mock — storage/settings/auth/models/resource fixtures and
+      9 focused round-trip checks pass with unknown-key preservation.
 - [ ] 97. Release-build verification: `cargo build --release` + full binary
       suite in release. (live)
 - [ ] 98. PLAN.md session-13 ledger update + reviewer-gate prep (§0.3).
@@ -1170,16 +1178,24 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       `/home/mustbearnold/.cargo/bin/cargo test -p pi-evals --offline --test extensions --quiet`
       and the faux extension fixture test/diagnostic contract (`schema 1:
       extension-authoring`) passed.
-- [ ] S-060 Add provider/CLI exit-code and output-format matrix checks to the
-      parity suite, not only smoke checks.
-- [ ] S-061 Add golden RPC transcript fixtures and byte-level session fixtures
-      for v1/v2/v3/v4 migration and current writes.
-- [ ] S-062 Add settings/auth/models.json and package-resource on-disk golden
+- [x] S-060 Add provider/CLI exit-code and output-format matrix checks to the
+      parity suite, not only smoke checks. Evidence: unit/mock — all 8 CLI
+      cases pass in `node scripts/parity-suite.mjs`.
+- [x] S-061 Add golden RPC transcript fixtures and byte-level session fixtures
+      for v1/v2/v3/v4 migration and current writes. Evidence: unit/mock — 2
+      RPC transcripts and 5 session fixtures pass the release matrix.
+- [x] S-062 Add settings/auth/models.json and package-resource on-disk golden
       fixtures, including unknown-key preservation and lock/retry behavior.
-- [ ] S-063 Add full provider/adaptor fixture execution to the release parity
+      Evidence: unit/mock — storage/resource matrices and 9 focused checks
+      pass with declared unknown-key paths.
+- [x] S-063 Add full provider/adaptor fixture execution to the release parity
       suite with network-free mock servers and explicit live smoke cases.
-- [ ] S-064 Port telemetry schema conformance tests and include them in the
-      release gate.
+      Evidence: mock — 51 provider/API variants pass the offline provider
+      matrix; a credentialed live smoke case is explicitly declared not-run,
+      with no live pass claimed.
+- [x] S-064 Port telemetry schema conformance tests and include them in the
+      release gate. Evidence: unit/mock — telemetry schema plus 2 focused
+      tests pass, including 1 AI span, 11 harness spans, and 4 mutations.
 - [ ] S-065 Synchronize README, per-crate TODOs, session reports, and PLAN with
       the final ledger state and remove stale historical claims.
 - [ ] S-066 Freeze the final denominator after S-001, run the full source/TODO

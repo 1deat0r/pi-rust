@@ -1,0 +1,3 @@
+{"type":"session","id":"parity-v1","timestamp":"2025-01-01T00:00:00.000Z","cwd":"/tmp/pi-parity"}
+{"type":"message","timestamp":"2025-01-01T00:00:01.000Z","message":{"role":"user","content":"hello v1","timestamp":1735689601000}}
+{"type":"message","timestamp":"2025-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"reply v1"}],"api":"faux","provider":"faux","model":"faux-1","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cache_read":0,"cache_write":0,"total":0}},"stopReason":"stop","timestamp":1735689602000}}

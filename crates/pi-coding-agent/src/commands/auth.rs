@@ -13,7 +13,6 @@
 //! stored OAuth credentials through the auth-storage port and resolves env
 //! templates through resolve_config_value.
 
-use std::future::Future;
 use std::path::Path;
 
 use serde_json::json;
@@ -243,7 +242,10 @@ pub async fn get_provider_credential(
         return Ok(None);
     };
     let Some(oauth) = provider_entry.auth.oauth else {
-        return Ok(None);
+        // Preserve a stored OAuth bearer token when this provider has no
+        // refresh implementation. The upstream credential-print path still
+        // recognizes the stored credential type and returns its access token.
+        return Ok(Some(stored));
     };
     let storage = AuthStorage::create(auth_path.to_path_buf());
     refresh_oauth_credential_in_storage(&storage, provider, oauth, min_expiry_ms, None).await
@@ -428,16 +430,8 @@ pub fn create_auth_check_model_registry() -> ModelRegistry {
     crate::core::model_registry::ModelRegistry::new(models, config)
 }
 
-fn block_on_auth<F: Future>(future: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("auth command runtime should build")
-        .block_on(future)
-}
-
 /// `pi auth` dispatcher. Returns true when the args were an auth command.
-pub fn handle_auth_command(args: &[String]) -> bool {
+pub async fn handle_auth_command(args: &[String]) -> bool {
     if is_auth_command_help(args) {
         print_auth_command_help();
         return true;
@@ -509,7 +503,7 @@ pub fn handle_auth_command(args: &[String]) -> bool {
             std::process::exit(1);
         }
         let refresh = command.kind == AuthCommandKind::BearerToken;
-        let credential = match block_on_auth(get_provider_credential(
+        let credential = match get_provider_credential(
             &provider,
             &registry,
             &auth_path,
@@ -521,7 +515,9 @@ pub fn handle_auth_command(args: &[String]) -> bool {
             } else {
                 None
             },
-        )) {
+        )
+        .await
+        {
             Ok(credential) => credential,
             Err(error) => {
                 eprintln!("Error: {error}");
@@ -565,21 +561,24 @@ pub fn handle_auth_command(args: &[String]) -> bool {
 
     // auth check.
     {
-        let mut result = block_on_auth(check_provider_auth_with_options(
+        let mut result = check_provider_auth_with_options(
             validated.provider.as_deref().unwrap_or(""),
             &registry,
             &auth_path,
             !command.no_refresh,
-        ));
+        )
+        .await;
         let mut credential_value: Option<String> = None;
         if command.credentials && result.status == "ready" {
-            match block_on_auth(get_provider_credential(
+            match get_provider_credential(
                 &result.provider,
                 &registry,
                 &auth_path,
                 !command.no_refresh,
                 None,
-            )) {
+            )
+            .await
+            {
                 Ok(Some(credential)) => {
                     credential_value = auth_credential_value(&credential);
                 }

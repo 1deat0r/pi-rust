@@ -1,0 +1,8 @@
+{
+  "name": "parity-fixture-theme",
+  "colors": {
+    "accent": "#00ff99",
+    "background": "#101010"
+  },
+  "x-parity-unknown": "theme-unknown"
+}

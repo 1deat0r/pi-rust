@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "upstream_oracle": {
+    "repository": "upstream_pi",
+    "commit": "5cd93f688aaab89dbb6dfa4aca535f21796ae185",
+    "paths": [
+      "packages/agent/src/harness/session/jsonl/codec.ts",
+      "packages/agent/src/harness/session/jsonl/repo.ts",
+      "packages/agent/test/harness/session/jsonl-codec.test.ts",
+      "packages/agent/test/harness/session/jsonl-storage.test.ts",
+      "packages/coding-agent/src/core/session-manager.ts",
+      "packages/coding-agent/test/session-manager/migration.test.ts",
+      "packages/coding-agent/docs/session-format.md"
+    ]
+  },
+  "evidence_tier": "unit",
+  "byte_encoding": "UTF-8 JSONL, compact JSON objects, LF line endings, one final LF",
+  "fixtures": [
+    {
+      "id": "legacy-v1",
+      "file": "v1.jsonl",
+      "mode": "legacy-migrate",
+      "version": 1,
+      "expected": {
+        "header_id": "parity-v1",
+        "header_version": 4,
+        "created_at": 1735689600000,
+        "cwd": "/tmp/pi-parity",
+        "entry_count_at_least": 2,
+        "ids": "generated-8-lowercase-hex",
+        "parent_chain": true,
+        "dynamic_paths": ["entries[*].id", "entries[*].timestamp", "entries[*].message.timestamp"]
+      },
+      "evidence_tier": "unit"
+    },
+    {
+      "id": "legacy-v2",
+      "file": "v2.jsonl",
+      "mode": "legacy-migrate",
+      "version": 2,
+      "expected": {
+        "header_id": "parity-v2",
+        "header_version": 4,
+        "created_at": 1735689600000,
+        "cwd": "/tmp/pi-parity",
+        "entry_ids": ["v2-user", "v2-custom"],
+        "parent_chain": true,
+        "custom_role_at_entry": 1,
+        "dynamic_paths": ["entries[*].timestamp", "entries[*].message.timestamp"]
+      },
+      "evidence_tier": "unit"
+    },
+    {
+      "id": "legacy-v3",
+      "file": "v3.jsonl",
+      "mode": "legacy-migrate",
+      "version": 3,
+      "expected": {
+        "header_id": "parity-v3",
+        "header_version": 4,
+        "created_at": 1735689600000,
+        "cwd": "/tmp/pi-parity",
+        "entry_ids": ["v3-user", "v3-assistant"],
+        "parent_chain": true,
+        "dynamic_paths": ["entries[*].timestamp", "entries[*].message.timestamp"]
+      },
+      "evidence_tier": "unit"
+    },
+    {
+      "id": "current-v4-codec",
+      "file": "current-v4.jsonl",
+      "mode": "static-v4",
+      "version": 4,
+      "expected": {
+        "header_id": "parity-v4",
+        "header_version": 4,
+        "entry_ids": ["v4-user", "v4-assistant"],
+        "parent_chain": true,
+        "byte_exact": true
+      },
+      "evidence_tier": "unit"
+    },
+    {
+      "id": "current-write",
+      "mode": "current-write",
+      "version": 4,
+      "prompt": "hello current write",
+      "expected": {
+        "header_id": "parity-current-write",
+        "header_version": 4,
+        "cwd_is_sandbox": true,
+        "entry_types": ["message", "message"],
+        "sequence": [1, 2],
+        "parent_chain": true,
+        "user_text": "hello current write",
+        "assistant_text": "faux response to: hello current write",
+        "dynamic_paths": ["header.createdAt", "entries[*].id", "entries[*].timestamp", "entries[*].message.timestamp", "entries[*].message.usage"]
+      },
+      "evidence_tier": "mock"
+    }
+  ],
+  "focused_commands": [
+    {"id": "session-jsonl-codec", "program": "cargo", "args": ["test", "-p", "pi-agent", "--test", "jsonl_codec", "--offline", "--quiet"]},
+    {"id": "session-jsonl-repository", "program": "cargo", "args": ["test", "-p", "pi-agent", "--test", "jsonl_repo", "--offline", "--quiet"]},
+    {"id": "session-jsonl-conformance", "program": "cargo", "args": ["test", "-p", "pi-agent", "--test", "conformance", "--offline", "--quiet"]},
+    {"id": "session-legacy-migration", "program": "cargo", "args": ["test", "-p", "pi-coding-agent", "--lib", "core::session_migration", "--offline", "--quiet"]}
+  ]
+}

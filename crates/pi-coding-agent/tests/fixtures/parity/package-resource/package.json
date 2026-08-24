@@ -1,0 +1,13 @@
+{
+  "name": "pi-parity-resource-fixture",
+  "version": "1.0.0",
+  "x-parity-unknown": {
+    "marker": "package-manifest-unknown"
+  },
+  "pi": {
+    "extensions": ["extensions/parity.ts"],
+    "skills": ["skills/parity/SKILL.md"],
+    "prompts": ["prompts/parity.md"],
+    "themes": ["themes/parity.json"]
+  }
+}

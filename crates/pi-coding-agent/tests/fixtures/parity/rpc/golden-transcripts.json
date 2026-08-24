@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "upstream_oracle": {
+    "repository": "upstream_pi",
+    "commit": "5cd93f688aaab89dbb6dfa4aca535f21796ae185",
+    "paths": [
+      "packages/coding-agent/src/modes/rpc/rpc-mode.ts",
+      "packages/coding-agent/src/modes/rpc/rpc-types.ts",
+      "packages/coding-agent/test/rpc-jsonl.test.ts",
+      "packages/coding-agent/test/rpc-prompt-response-semantics.test.ts",
+      "packages/coding-agent/test/suite/regressions/5868-rpc-unknown-command-id.test.ts"
+    ]
+  },
+  "evidence_tier": "mock",
+  "comparison": "JSONL is parsed record-by-record; the declared ordered projections are exact and dynamic fields are never compared by omission",
+  "transcripts": [
+    {
+      "id": "malformed-and-unknown-envelopes",
+      "args": ["--mode", "rpc", "--provider", "faux", "--model", "faux-1", "--no-tools", "--no-session"],
+      "input": [
+        "",
+        "not-json",
+        "[]",
+        {"id": "bad", "type": "prompt"},
+        {"id": "u", "type": "not-real"}
+      ],
+      "expected_exit": 0,
+      "expected": {
+        "mode": "jsonl-sequence",
+        "sequence": [
+          {"fields": {"type": "response", "command": "parse", "success": false, "error": "Failed to parse command: expected ident at line 1 column 2"}},
+          {"fields": {"type": "response", "command": "parse", "success": false, "error": "command missing type"}},
+          {"fields": {"id": "bad", "type": "response", "command": "prompt", "success": false, "error": "missing message"}},
+          {"fields": {"id": "u", "type": "response", "command": "not-real", "success": false, "error": "Unknown command: not-real"}}
+        ]
+      },
+      "evidence_tier": "mock"
+    },
+    {
+      "id": "async-prompt-follow-up-lifecycle",
+      "args": ["--mode", "rpc", "--provider", "faux", "--model", "faux-1", "--no-tools", "--no-session"],
+      "input": [
+        {"id": "p1", "type": "prompt", "message": "first"},
+        {"id": "p2", "type": "prompt", "message": "second", "streamingBehavior": "followUp"}
+      ],
+      "expected_exit": 0,
+      "expected": {
+        "mode": "jsonl-sequence",
+        "sequence": [
+          {"fields": {"id": "p1", "type": "response", "command": "prompt", "success": true}},
+          {"fields": {"id": "p2", "type": "response", "command": "prompt", "success": false, "error": "Agent is already streaming; send abort first"}},
+          {"fields": {"type": "agent_start"}},
+          {"fields": {"type": "turn_start"}},
+          {"fields": {"type": "message_start", "message.role": "user"}},
+          {"fields": {"type": "message_end", "message.role": "user"}},
+          {"fields": {"type": "message_start", "message.role": "assistant", "message.stopReason": "pending"}},
+          {"fields": {"type": "message_update", "assistantMessageEvent.type": "text_start"}},
+          {"repeat": "one_or_more", "fields": {"type": "message_update", "assistantMessageEvent.type": "text_delta"}},
+          {"fields": {"type": "message_update", "assistantMessageEvent.type": "text_end"}},
+          {"fields": {"type": "message_end", "message.role": "assistant", "message.stopReason": "stop"}},
+          {"fields": {"type": "turn_end", "message.role": "assistant"}},
+          {"fields": {"type": "agent_end"}},
+          {"fields": {"type": "agent_settled"}}
+        ]
+      },
+      "evidence_tier": "mock"
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "upstream_oracle": {
+    "repository": "upstream_pi",
+    "commit": "5cd93f688aaab89dbb6dfa4aca535f21796ae185",
+    "paths": [
+      "packages/coding-agent/src/core/settings-manager.ts",
+      "packages/coding-agent/test/settings-manager.test.ts",
+      "packages/coding-agent/src/core/auth-storage.ts",
+      "packages/coding-agent/test/auth-storage.test.ts",
+      "packages/coding-agent/src/core/models-store.ts",
+      "packages/coding-agent/test/models-store.test.ts",
+      "packages/coding-agent/src/core/model-config.ts",
+      "packages/coding-agent/test/model-registry.test.ts"
+    ]
+  },
+  "evidence_tier": "unit",
+  "round_trip_contract": {
+    "settings_unknown_keys": "preserve",
+    "auth_oauth_unknown_keys": "preserve",
+    "models_json_unknown_keys": "accepted-and-ignored-by-typed-config",
+    "models_store_model_unknown_keys": "preserve-through-Model-extra"
+  },
+  "lock_retry_contract": {
+    "settings": "exclusive sibling lock with bounded retry",
+    "auth": "sync retry and async stale-lock/backoff path",
+    "models_store": "create_new sibling lock with retry and stale fallback"
+  },
+  "fixtures": [
+    {"id": "settings", "file": "settings.json", "unknown_paths": ["x-parity-unknown"], "evidence_tier": "unit"},
+    {"id": "auth", "file": "auth.json", "unknown_paths": ["github.x-parity-unknown"], "evidence_tier": "unit"},
+    {"id": "models-json", "file": "models.json", "unknown_paths": ["x-parity-root-unknown", "providers.parity.x-parity-provider-unknown", "providers.parity.models[0].x-parity-model-unknown"], "evidence_tier": "unit"},
+    {"id": "models-store", "file": "models-store.json", "unknown_paths": ["parity.models[0].x-parity-model-unknown"], "evidence_tier": "unit"}
+  ],
+  "focused_commands": [
+    {"id": "settings-round-trip-and-retry", "program": "cargo", "args": ["test", "-p", "pi-coding-agent", "--lib", "core::settings::tests", "--offline", "--quiet"]},
+    {"id": "auth-round-trip-and-lock", "program": "cargo", "args": ["test", "-p", "pi-coding-agent", "--lib", "core::auth_storage::tests", "--offline", "--quiet"]},
+    {"id": "models-config-round-trip", "program": "cargo", "args": ["test", "-p", "pi-coding-agent", "--lib", "core::model_config::tests", "--offline", "--quiet"]},
+    {"id": "models-registry-overlay", "program": "cargo", "args": ["test", "-p", "pi-coding-agent", "--lib", "core::model_registry::tests", "--offline", "--quiet"]},
+    {"id": "models-store-round-trip-and-lock", "program": "cargo", "args": ["test", "-p", "pi-coding-agent", "--lib", "core::models_store::tests", "--offline", "--quiet"]}
+  ]
+}

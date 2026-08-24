@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "evidence_tier": "unit",
+  "upstream_oracle": {
+    "repository": "upstream_pi",
+    "commit": "5cd93f688aaab89dbb6dfa4aca535f21796ae185",
+    "paths": [
+      "packages/coding-agent/src/cli/args.ts",
+      "packages/coding-agent/src/main.ts",
+      "packages/coding-agent/src/modes/rpc/rpc-mode.ts",
+      "packages/coding-agent/src/modes/rpc/rpc-types.ts",
+      "packages/agent/src/harness/session/jsonl/codec.ts",
+      "packages/coding-agent/src/core/settings-manager.ts",
+      "packages/coding-agent/src/core/auth-storage.ts",
+      "packages/ai/src/models-store.ts",
+      "packages/coding-agent/src/core/package-manager.ts",
+      "packages/telemetry/src/testing/conformance.ts"
+    ]
+  },
+  "evidence_tiers": ["unit", "mock", "live"],
+  "matrices": [
+    {
+      "id": "cli",
+      "gap": "93",
+      "fixture": "cli-matrix.json",
+      "evidence_tier": "unit"
+    },
+    {
+      "id": "rpc",
+      "gap": "94",
+      "fixture": "rpc/golden-transcripts.json",
+      "evidence_tier": "mock"
+    },
+    {
+      "id": "storage",
+      "gap": "96",
+      "fixture": "storage/storage-matrix.json",
+      "evidence_tier": "unit"
+    },
+    {
+      "id": "resources",
+      "gap": "S-062",
+      "fixture": "package-resource/resource-matrix.json",
+      "evidence_tier": "unit"
+    },
+    {
+      "id": "telemetry",
+      "gap": "S-064",
+      "fixture": "telemetry-schema.json",
+      "evidence_tier": "unit"
+    }
+  ],
+  "session_fixture": {
+    "gap": "95",
+    "path": "../../../../pi-agent/tests/fixtures/parity/session/session-matrix.json",
+    "evidence_tier": "unit"
+  },
+  "provider_fixture": {
+    "gaps": ["S-060", "S-063"],
+    "path": "../../../../pi-ai/tests/fixtures/parity/provider-boundaries.json",
+    "evidence_tier": "mock"
+  }
+}

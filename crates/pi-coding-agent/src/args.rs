@@ -390,6 +390,7 @@ pub fn print_help() {
     println!("  --api-key <key>                API key (defaults to env vars)");
     println!("  --system-prompt <text>         System prompt (default: coding assistant prompt)");
     println!("  --append-system-prompt <text>  Append text or file contents to the system prompt (repeatable)");
+    println!("  --mode <mode>                  Output mode: text (default), json, or rpc");
     println!("  --print, -p                    Non-interactive mode: process prompt and exit");
     println!("  --continue, -c                 Continue previous session");
     println!("  --resume, -r                   Select a session to resume");

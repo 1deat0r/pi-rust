@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "upstream_oracle": {
+    "repository": "upstream_pi",
+    "commit": "5cd93f688aaab89dbb6dfa4aca535f21796ae185",
+    "paths": [
+      "packages/telemetry/src/index.ts",
+      "packages/telemetry/src/memory.ts",
+      "packages/telemetry/src/noop.ts",
+      "packages/telemetry/src/testing/conformance.ts",
+      "packages/telemetry/test/conformance.test.ts",
+      "packages/agent/docs/telemetry-schema.md"
+    ]
+  },
+  "evidence_tier": "unit",
+  "release_gate": "telemetry schema and adapter conformance are required offline checks; no live telemetry endpoint is contacted",
+  "required_schema": {
+    "version": 1,
+    "ai_span": {
+      "name": "pi.ai.request",
+      "start_attributes": [
+        "pi.ai.operation",
+        "pi.ai.provider",
+        "pi.ai.model",
+        "pi.ai.streaming"
+      ],
+      "status_default": "ok"
+    },
+    "harness_spans": [
+      "pi.harness.run",
+      "pi.harness.compaction",
+      "pi.harness.navigation",
+      "pi.harness.checkpoint",
+      "pi.harness.turn",
+      "pi.harness.step",
+      "pi.harness.tool",
+      "pi.harness.hook",
+      "pi.harness.sleep",
+      "pi.harness.event_handler",
+      "pi.session.write"
+    ],
+    "session_mutations": ["entry", "record", "lane", "fact"],
+    "tool_replay_values": ["never", "safe"]
+  },
+  "upstream_conformance_groups": [
+    "callback lifecycle",
+    "status",
+    "attributes and events",
+    "nested spans",
+    "noop adapter"
+  ],
+  "focused_commands": [
+    {"id": "telemetry-memory-conformance", "program": "cargo", "args": ["test", "-p", "pi-telemetry", "--offline", "--quiet"]},
+    {"id": "agent-telemetry-schema", "program": "cargo", "args": ["test", "-p", "pi-agent", "--lib", "harness::telemetry::tests", "--offline", "--quiet"]}
+  ]
+}

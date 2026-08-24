@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "upstream_oracle": {
+    "repository": "upstream_pi",
+    "commit": "5cd93f688aaab89dbb6dfa4aca535f21796ae185",
+    "paths": [
+      "packages/coding-agent/src/cli/args.ts",
+      "packages/coding-agent/src/main.ts",
+      "packages/coding-agent/test/args.test.ts"
+    ]
+  },
+  "evidence_tier": "unit",
+  "comparison": "required cases compare exit code and declared stdout/stderr projection; no case is downgraded to a warning",
+  "cases": [
+    {
+      "id": "version",
+      "args": ["--version"],
+      "expected_exit": 0,
+      "stdout": {"mode": "regex", "value": "^pi \\d+\\.\\d+\\.\\d+\n$"},
+      "stderr": {"mode": "exact", "value": ""},
+      "evidence_tier": "unit"
+    },
+    {
+      "id": "help-format",
+      "args": ["--help"],
+      "expected_exit": 0,
+      "stdout": {
+        "mode": "contains",
+        "values": [
+          "Usage:",
+          "--provider <name>",
+          "--mode <mode>",
+          "--print, -p",
+          "--thinking <level>",
+          "--help, -h"
+        ]
+      },
+      "stderr": {"mode": "exact", "value": ""},
+      "evidence_tier": "unit"
+    },
+    {
+      "id": "unknown-flag-exit",
+      "args": ["--definitely-not-a-real-flag"],
+      "expected_exit": 1,
+      "stdout": {"mode": "exact", "value": "\n"},
+      "stderr": {"mode": "regex", "value": "^Unknown flag: --definitely-not-a-real-flag\n$"},
+      "evidence_tier": "unit"
+    },
+    {
+      "id": "use-theme-requires-value",
+      "args": ["--use-theme", "--print", "hello"],
+      "expected_exit": 1,
+      "stdout": {"mode": "exact", "value": ""},
+      "stderr": {"mode": "exact", "value": "Error: --use-theme requires a theme name\n"},
+      "evidence_tier": "unit"
+    },
+    {
+      "id": "invalid-thinking-warning",
+      "args": ["-p", "--provider", "faux", "--model", "faux-1", "--thinking", "bogus", "hello"],
+      "expected_exit": 0,
+      "stdout": {"mode": "exact", "value": "faux response to: hello\n"},
+      "stderr": {
+        "mode": "exact",
+        "value": "Warning: Invalid thinking level \"bogus\". Valid values: off, minimal, low, medium, high, xhigh, max\n"
+      },
+      "evidence_tier": "mock"
+    },
+    {
+      "id": "faux-print-output",
+      "args": ["-p", "--provider", "faux", "--model", "faux-1", "hello parity"],
+      "expected_exit": 0,
+      "stdout": {"mode": "exact", "value": "faux response to: hello parity\n"},
+      "stderr": {"mode": "exact", "value": ""},
+      "evidence_tier": "mock"
+    },
+    {
+      "id": "json-event-format",
+      "args": ["--mode", "json", "--provider", "faux", "--model", "faux-1", "hello parity"],
+      "expected_exit": 0,
+      "stdout": {
+        "mode": "jsonl-sequence",
+        "sequence": [
+          {"fields": {"type": "agent_start"}},
+          {"fields": {"type": "turn_start"}},
+          {"fields": {"type": "message_start", "message.role": "user"}},
+          {"fields": {"type": "message_end", "message.role": "user"}},
+          {"fields": {"type": "message_start", "message.role": "assistant", "message.stopReason": "pending"}},
+          {"fields": {"type": "message_update", "assistantMessageEvent.type": "text_start"}},
+          {"repeat": "one_or_more", "fields": {"type": "message_update", "assistantMessageEvent.type": "text_delta"}},
+          {"fields": {"type": "message_update", "assistantMessageEvent.type": "text_end"}},
+          {"fields": {"type": "message_end", "message.role": "assistant", "message.stopReason": "stop"}},
+          {"fields": {"type": "turn_end", "message.role": "assistant"}},
+          {"fields": {"type": "agent_end"}}
+        ]
+      },
+      "stderr": {"mode": "exact", "value": ""},
+      "evidence_tier": "mock"
+    },
+    {
+      "id": "missing-provider-credential",
+      "args": ["-p", "--provider", "openai", "--model", "gpt-4o-mini", "hello"],
+      "expected_exit": 1,
+      "stdout": {"mode": "exact", "value": ""},
+      "stderr": {"mode": "contains", "values": ["No API key found for openai."]},
+      "evidence_tier": "unit"
+    }
+  ]
+}

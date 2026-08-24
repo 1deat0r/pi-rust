@@ -4,7 +4,7 @@
 
 The existing conversion goal is resumed under the scoped unlazy contract
 `.unlazy/full-conversion-20260825/`. The current authoritative checker output
-is **Conversion progress: 87.95% (146/166; 20 open)**. The source inventory
+is **Conversion progress: 93.37% (155/166; 11 open)**. The source inventory
 and claim-reconciliation audit is complete; the current wave has unit, mock,
 and live evidence across providers, client/server, harness, and reconnects.
 
@@ -16,9 +16,11 @@ cleanup, TUI static/test cleanup (`leaf-E1`), TUI behavior (`leaf-E3`), eval
 metrics (`leaf-F1`), provider matrix (`leaf-B4`), auxiliary client (`leaf-D2`),
 harness/mode (`leaf-C1`), reconnect E2E (`leaf-D3`), live PTY rerun
 (`leaf-E2b`), and measured strict clippy cleanup (`leaf-R3`). The active wave
-is parity/release fixtures (`leaf-F2`); final audit remains dependency-gated.
-The expanded server conformance and live PTY leaves are now accepted; the
-driver owns the conversion ledger and synchronized documentation.
+is extension runtime closure (`leaf-C2b`) and the final audit/reconciliation
+leaves. The parity/release fixture leaf (`leaf-F2`) is now green for all 37
+declared offline branches; its single credentialed live branch remains
+explicitly not-run. The driver owns the conversion ledger and synchronized
+documentation.
 
 ## Checkpoint 2026-08-25 — first implementation wave
 

@@ -1104,7 +1104,7 @@ owners.
 Progress checker:
 
 ```text
-Conversion progress: 87.95% (146/166; 20 open)
+Conversion progress: 93.37% (155/166; 11 open)
 ```
 
 Evidence synchronized here:
@@ -1129,7 +1129,39 @@ Evidence synchronized here:
   lease suite also passed. The server harness now covers deferred operations,
   malformed/handshake errors, snapshots, lifecycle, queues, and cleanup.
 
-Active next leave is F2 parity fixtures. After it completes, run the full
-workspace tests, strict clippy, release suite, parity suite, and independent
-final source/TODO audit, including the remaining extension-runtime decision.
-Full conversion remains open.
+Active next work is the extension-runtime decision and final audit. The full
+offline parity suite is green for all 37 declared offline branches; one
+credentialed live provider smoke is explicitly not-run and is not claimed as
+pass evidence. Full conversion remains open pending S-027, S-001/S-004,
+S-065/S-066, and #97–100.
+
+## Active checkpoint — 2026-08-25 — parity matrix and CLI/auth blockers closed
+
+The last synchronized pushed baseline before this checkpoint is
+`8a3c1dc84c59d1125b3b4ed12eefb7c32a2b1c40` on `main`; local and remote hashes
+matched there. This checkpoint integrates the production CLI/auth fixes and
+the complete F2 parity fixture matrix. The pre-existing untracked `AGENTS.md`
+remains untouched.
+
+Progress checker:
+
+```text
+Conversion progress: 93.37% (155/166; 11 open)
+```
+
+Exact evidence:
+
+- `cargo test -p pi-coding-agent --offline --test cli_commands --quiet` — 30
+  passed; the args unit target passed 23 tests. Help now includes
+  `--mode <mode>`, unknown flags match upstream exit/text, and auth commands
+  run without nested-runtime panics.
+- `node scripts/parity-suite.mjs` — `40 passed, 0 failed, 1 not-run, 41
+  total`; all 37 offline branches passed, including 51 provider variants.
+- `cargo test --workspace --offline --quiet` exited 0; strict coding-agent
+  clippy, formatting, `node --check scripts/parity-suite.mjs`, and
+  `git diff --check` passed.
+
+The parity fixture/script paths are now ready for a focused commit. Extension
+bridge edits remain separate and unstaged; they provide partial S-027 evidence
+but do not yet reproduce jiti virtualization, host actions, native provider
+callbacks, or live tool execution.

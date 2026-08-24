@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "upstream_oracle": {
+    "repository": "upstream_pi",
+    "commit": "5cd93f688aaab89dbb6dfa4aca535f21796ae185",
+    "paths": [
+      "packages/ai/src/api",
+      "packages/ai/src/providers",
+      "packages/ai/test",
+      "packages/coding-agent/src/core/model-registry.ts"
+    ]
+  },
+  "evidence_tier": "mock",
+  "offline_fixture_index": "../provider-matrix/index.json",
+  "offline_harness": {
+    "kind": "local TCP HTTP mock server",
+    "proves": ["request shape", "stream decoding", "usage", "response identity", "error encoding", "no-API controls"],
+    "test_command": ["cargo", "test", "-p", "pi-ai", "--test", "provider_matrix", "--offline", "--quiet"]
+  },
+  "boundaries": [
+    {
+      "id": "catalog-provider-api-matrix",
+      "evidence_tier": "mock",
+      "required": true,
+      "fixture_index": "../provider-matrix/index.json",
+      "description": "Every catalog/API fixture variant is exercised by the offline local-server harness."
+    },
+    {
+      "id": "live-provider-smoke",
+      "evidence_tier": "live",
+      "required": false,
+      "run_by_default": false,
+      "description": "Credentialed provider endpoints are intentionally outside the offline release gate; no live pass is claimed.",
+      "status_without_live_flag": "not-run",
+      "activation": "node scripts/parity-suite.mjs --live"
+    }
+  ]
+}

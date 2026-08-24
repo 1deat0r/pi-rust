@@ -1,0 +1,13 @@
+{
+  "theme": "dark",
+  "thinkingLevel": "high",
+  "retry": {
+    "enabled": true,
+    "maxRetries": 2,
+    "maxDelayMs": 5000
+  },
+  "x-parity-unknown": {
+    "preserve": true,
+    "marker": "settings-unknown"
+  }
+}

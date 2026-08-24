@@ -1,0 +1,23 @@
+{
+  "parity": {
+    "models": [
+      {
+        "id": "parity-store-model",
+        "name": "Parity Store Model",
+        "api": "openai-responses",
+        "provider": "parity",
+        "baseUrl": "http://127.0.0.1:9/v1",
+        "reasoning": false,
+        "input": ["text"],
+        "cost": {"input": 0.1, "output": 0.2, "cacheRead": 0.0, "cacheWrite": 0.0},
+        "contextWindow": 64000,
+        "maxTokens": 4096,
+        "authenticated": true,
+        "x-parity-model-unknown": "round-trip"
+      }
+    ],
+    "lastModified": 1735689600000,
+    "checkedAt": 1735689601000,
+    "etag": "parity-etag"
+  }
+}

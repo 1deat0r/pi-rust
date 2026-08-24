@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "upstream_oracle": {
+    "repository": "upstream_pi",
+    "commit": "5cd93f688aaab89dbb6dfa4aca535f21796ae185",
+    "paths": [
+      "packages/coding-agent/src/core/package-manager.ts",
+      "packages/coding-agent/src/core/pi-manifest.ts",
+      "packages/coding-agent/src/core/resource-loader.ts",
+      "packages/coding-agent/test/package-manager.test.ts",
+      "packages/coding-agent/test/resource-loader.test.ts"
+    ]
+  },
+  "evidence_tier": "unit",
+  "package_manifest": "package.json",
+  "unknown_key_policy": "package and resource JSON unknown keys are accepted without changing declared resource paths",
+  "round_trip": {
+    "expected_files": [
+      "package.json",
+      "extensions/parity.ts",
+      "skills/parity/SKILL.md",
+      "prompts/parity.md",
+      "themes/parity.json"
+    ],
+    "expected_manifest_paths": {
+      "extensions": ["extensions/parity.ts"],
+      "skills": ["skills/parity/SKILL.md"],
+      "prompts": ["prompts/parity.md"],
+      "themes": ["themes/parity.json"]
+    }
+  },
+  "focused_commands": [
+    {"id": "package-manifest", "program": "cargo", "args": ["test", "-p", "pi-coding-agent", "--lib", "core::pi_manifest::tests", "--offline", "--quiet"]},
+    {"id": "package-resource-resolution", "program": "cargo", "args": ["test", "-p", "pi-coding-agent", "--lib", "core::package_manager::resolve_tests", "--offline", "--quiet"]},
+    {"id": "package-resource-cli-round-trip", "program": "cargo", "args": ["test", "-p", "pi-coding-agent", "--test", "cli_resources", "--offline", "--quiet"]}
+  ]
+}
