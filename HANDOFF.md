@@ -183,8 +183,8 @@ manual signer scope. The checker reports exactly `Conversion progress: 64.46%
 (107/166; 59 open)`. The next dependency-safe task is S-011 Google Vertex ADC
 file, token URI, scope, refresh, and project/location precedence parity. The
 S-010 implementation/documentation commit is
-`9a8eaee9b8273e7b938075a38ed9659baff02359`; this documentation
-synchronization remains to be committed and hash-verified.
+`9a8eaee9b8273e7b938075a38ed9659baff02359`; the ledger, plan, handoff, and
+README are synchronized after the documentation push.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 
