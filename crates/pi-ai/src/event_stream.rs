@@ -107,7 +107,7 @@ impl AssistantMessageEventStream {
                 break;
             }
         }
-        final_message.unwrap_or_else(AssistantMessage::new)
+        final_message.unwrap_or_default()
     }
 
     /// Push an event. Drops after completion (mirrors upstream `if (this.done) return`).

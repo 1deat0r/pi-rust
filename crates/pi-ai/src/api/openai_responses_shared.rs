@@ -245,13 +245,12 @@ pub fn convert_responses_messages(
                 for block in assistant.content() {
                     match block {
                         ContentBlock::Thinking {
-                            thinking_signature, ..
+                            thinking_signature: Some(sig),
+                            ..
                         } => {
                             // Signature carries a ResponseReasoningItem JSON for replay.
-                            if let Some(sig) = thinking_signature {
-                                if let Ok(item) = serde_json::from_str::<Value>(sig) {
-                                    output.push(item);
-                                }
+                            if let Ok(item) = serde_json::from_str::<Value>(sig) {
+                                output.push(item);
                             }
                         }
                         ContentBlock::Text {
@@ -429,14 +428,9 @@ enum ResponsesSlot {
     },
 }
 
+#[derive(Default)]
 pub struct ProcessResponsesOptions {
     pub service_tier: Option<String>,
-}
-
-impl Default for ProcessResponsesOptions {
-    fn default() -> Self {
-        Self { service_tier: None }
-    }
 }
 
 /// Multiplexed stream processor (port of `processResponsesStream`).
@@ -874,27 +868,20 @@ pub fn process_responses_stream(
                                 item.get("encrypted_content").and_then(|e| e.as_str())
                             {
                                 if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                                    if let Some(block) = reasoning_signatures_by_id.get_mut(id) {
-                                        if let ContentBlock::Thinking {
-                                            thinking_signature, ..
-                                        } = block
-                                        {
-                                            if let Some(sig) = thinking_signature {
-                                                if let Ok(mut stored) =
-                                                    serde_json::from_str::<Value>(sig)
-                                                {
-                                                    if stored
-                                                        .get("encrypted_content")
-                                                        .and_then(|v| v.as_str())
-                                                        .is_none()
-                                                    {
-                                                        stored["encrypted_content"] =
-                                                            json!(encrypted);
-                                                        // Update the live block too.
-                                                        *thinking_signature =
-                                                            Some(stored.to_string());
-                                                    }
-                                                }
+                                    if let Some(ContentBlock::Thinking {
+                                        thinking_signature: Some(sig),
+                                        ..
+                                    }) = reasoning_signatures_by_id.get_mut(id)
+                                    {
+                                        if let Ok(mut stored) = serde_json::from_str::<Value>(sig) {
+                                            if stored
+                                                .get("encrypted_content")
+                                                .and_then(|v| v.as_str())
+                                                .is_none()
+                                            {
+                                                stored["encrypted_content"] = json!(encrypted);
+                                                // Update the live block too.
+                                                *sig = stored.to_string();
                                             }
                                         }
                                     }
@@ -1021,12 +1008,6 @@ pub fn process_responses_stream(
             }
             _ => {}
         }
-    }
-
-    for (_, slot) in output_slots.iter() {
-        // Open slots with no done event — mirror upstream by leaving them; the
-        // finalizer still emits the message with whatever was accumulated.
-        let _ = slot;
     }
 
     if !saw_terminal_response_event {

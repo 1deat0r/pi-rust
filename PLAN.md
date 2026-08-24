@@ -1627,6 +1627,23 @@ restore the crate-level strict clippy baseline before continuing the larger
   metadata sync `788f9c5` are pushed; local `HEAD` and `origin/main` matched
   after each push. This documentation refresh follows those checkpoints.
 
+### Session 51 — 2026-08-24 — pi-ai adapter strict-clippy cleanup
+
+Scope: remove low-risk strict-clippy findings across the Anthropic, OpenAI,
+Azure, Google, faux, partial-JSON, event-stream, and core content helpers.
+
+- Replaced manual defaults with derives, converted `map().flatten()` to
+  `and_then`, collapsed single-pattern matches, removed copy-type clones and
+  needless borrows, used `clamp`, and removed a no-op response-slot loop.
+- Evidence (unit/build): `cargo test -p pi-ai --offline --lib --quiet` (290
+  passed), `cargo check -p pi-coding-agent --offline`, `cargo fmt --all --
+  --check`, `git diff --check`, and the conversion progress checker pass.
+- The strict all-target clippy run now reports 23 diagnostics (down from 52),
+  all in the remaining structural/test-placement group. The ledger remains
+  62.65% (104/166); this is warning cleanup rather than a new parity task.
+- The next leaf covers provider helper signatures, SSE loop shape, faux and
+  message enum layout, test-module placement, and test fixture initializers.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

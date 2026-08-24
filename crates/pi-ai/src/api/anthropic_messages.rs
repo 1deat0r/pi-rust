@@ -37,7 +37,7 @@ impl AnthropicThinkingDisplay {
 
 /// Options for Anthropic Messages requests (subset of upstream
 /// `AnthropicOptions` + `StreamOptions`).
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct AnthropicOptions {
     pub base: StreamOptions,
     pub max_tokens: Option<u64>,
@@ -47,21 +47,6 @@ pub struct AnthropicOptions {
     pub thinking_budget_tokens: Option<u64>,
     pub thinking_display: Option<AnthropicThinkingDisplay>,
     pub effort: Option<String>,
-}
-
-impl Default for AnthropicOptions {
-    fn default() -> Self {
-        Self {
-            base: Default::default(),
-            max_tokens: None,
-            temperature: None,
-            tool_choice: None,
-            thinking_enabled: None,
-            thinking_budget_tokens: None,
-            thinking_display: None,
-            effort: None,
-        }
-    }
 }
 
 /// Maps an Anthropic stop reason to the unified `StopReason` (port of
@@ -307,8 +292,7 @@ pub fn build_params(model: &Model, context: &Context, options: &AnthropicOptions
                 if model
                     .thinking_level_map
                     .as_ref()
-                    .map(|m| m.get(&crate::types::ModelThinkingLevel::Off))
-                    .flatten()
+                    .and_then(|m| m.get(&crate::types::ModelThinkingLevel::Off))
                     .is_some()
                 {
                     params["thinking"] = json!({"type": "disabled"});
@@ -930,9 +914,6 @@ pub fn default_base_url() -> String {
 
 /// Sets the error message field on an assistant message.
 pub(crate) fn set_error_message(message: &mut AssistantMessage, text: String) {
-    match message {
-        AssistantMessage::Assistant { error_message, .. } => *error_message = Some(text),
-        #[allow(unreachable_patterns)]
-        _ => {}
-    }
+    let AssistantMessage::Assistant { error_message, .. } = message;
+    *error_message = Some(text);
 }

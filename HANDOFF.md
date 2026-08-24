@@ -86,8 +86,10 @@ Evidence currently passing: `cargo test -p pi-telemetry --offline --quiet`
 (6 passed), `cargo clippy -p pi-telemetry --offline --all-targets -- -D
 warnings`, `cargo fmt --all -- --check`, `git diff --check`, and the progress
 checker. The full `cargo clippy -p pi-ai --offline --all-targets -- -D
-warnings` gate remains open with 52 diagnostics for the next cleanup slice.
-This cleanup does not change the ledger count (`62.65%`, 104/166).
+warnings` gate remains open with 23 diagnostics for the next cleanup slice.
+The adapter cleanup covered derived defaults, option flattening, guard
+patterns, and copy-field moves; all 290 `pi-ai` library tests still pass. This
+cleanup does not change the ledger count (`62.65%`, 104/166).
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 

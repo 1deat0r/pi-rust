@@ -156,8 +156,9 @@ classifier, and image failures stay encoded as `AssistantImages` results.
 The telemetry async span path now releases its in-memory mutex before invoking
 an async callback, preserving settled-parent behavior without holding a guard
 across `.await`. The focused telemetry tests and strict all-target clippy gate
-pass. The broader `pi-ai` all-target clippy cleanup remains active; its current
-run reports 52 diagnostics, so no repository-wide zero-warning claim is made.
+pass. The broader `pi-ai` all-target clippy cleanup remains active; the adapter
+cleanup reduced its current run to 23 structural/test diagnostics, so no
+repository-wide zero-warning claim is made.
 
 ## Workspace
 

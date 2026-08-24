@@ -278,13 +278,12 @@ fn has_tool_history(messages: &[crate::types::Message]) -> bool {
     for msg in messages {
         match msg {
             crate::types::Message::ToolResult(_) => return true,
-            crate::types::Message::Assistant(a) => {
+            crate::types::Message::Assistant(a)
                 if a.content()
                     .iter()
-                    .any(|b| matches!(b, ContentBlock::ToolCall { .. }))
-                {
-                    return true;
-                }
+                    .any(|b| matches!(b, ContentBlock::ToolCall { .. })) =>
+            {
+                return true
             }
             _ => {}
         }
@@ -1185,8 +1184,7 @@ fn apply_thinking_params(
             } else if model
                 .thinking_level_map
                 .as_ref()
-                .map(|m| m.get(&crate::types::ModelThinkingLevel::Off))
-                .flatten()
+                .and_then(|m| m.get(&crate::types::ModelThinkingLevel::Off))
                 != Some(&Some("off".to_string()))
             {
                 // off not explicitly mapped to null -> disable
@@ -1360,11 +1358,8 @@ fn new_output(model: &Model) -> AssistantMessage {
 }
 
 fn set_error_message(message: &mut AssistantMessage, text: String) {
-    match message {
-        AssistantMessage::Assistant { error_message, .. } => *error_message = Some(text),
-        #[allow(unreachable_patterns)]
-        _ => {}
-    }
+    let AssistantMessage::Assistant { error_message, .. } = message;
+    *error_message = Some(text);
 }
 
 /// Options for the OpenAI-completions adaptor (upstream `OpenAICompletionsOptions`).
@@ -1381,7 +1376,7 @@ impl From<&SimpleStreamOptions> for OpenAIChatOptions {
         Self {
             base: simple.base.clone(),
             reasoning_effort: None,
-            tool_choice: simple.tool_choice.clone(),
+            tool_choice: simple.tool_choice,
             thinking_budgets: simple.thinking_budgets.clone(),
         }
     }
@@ -1641,7 +1636,7 @@ pub fn stream_simple(
     let chat_options = OpenAIChatOptions {
         base: options.base.clone(),
         reasoning_effort,
-        tool_choice: options.tool_choice.clone(),
+        tool_choice: options.tool_choice,
         thinking_budgets: options.thinking_budgets.clone(),
     };
     stream(model, context, client, base_url, api_key, &chat_options)

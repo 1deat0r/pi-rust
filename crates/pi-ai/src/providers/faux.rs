@@ -65,18 +65,10 @@ pub fn faux_assistant_message(
     m
 }
 
+#[derive(Default)]
 pub struct FauxAssistantOptions {
     pub stop_reason: Option<StopReason>,
     pub error_message: Option<String>,
-}
-
-impl Default for FauxAssistantOptions {
-    fn default() -> Self {
-        Self {
-            stop_reason: None,
-            error_message: None,
-        }
-    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -880,9 +872,9 @@ async fn stream_with_deltas(
         None => {
             let error_message = create_error_message(
                 "Faux response ended without a stop reason",
-                &message.api().unwrap_or(DEFAULT_API),
-                &message.provider().unwrap_or(DEFAULT_PROVIDER),
-                &message.model().unwrap_or(DEFAULT_MODEL_ID),
+                message.api().unwrap_or(DEFAULT_API),
+                message.provider().unwrap_or(DEFAULT_PROVIDER),
+                message.model().unwrap_or(DEFAULT_MODEL_ID),
             );
             stream.push(AssistantMessageEvent::Error {
                 reason: ErrorReason::Error,
@@ -913,7 +905,7 @@ fn split_by_token_size(
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         let rnd = (combined >> 11) as f64 / (1u64 << 53) as f64;
-        let rnd = rnd.min(1.0 - f64::EPSILON).max(0.0);
+        let rnd = rnd.clamp(0.0, 1.0 - f64::EPSILON);
         let token_size =
             min_token_size + (rnd * (max_token_size - min_token_size + 1) as f64) as usize;
         let char_size = (token_size * 4).max(1);

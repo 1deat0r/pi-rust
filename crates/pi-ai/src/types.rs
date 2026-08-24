@@ -371,17 +371,16 @@ impl ContentBlock {
         }
     }
     pub fn set_tool_call_id(&mut self, id: String) {
-        match self {
-            ContentBlock::ToolCall { id: slot, .. } => *slot = id,
-            _ => {}
+        if let ContentBlock::ToolCall { id: slot, .. } = self {
+            *slot = id;
         }
     }
     pub fn clear_thought_signature(&mut self) {
-        match self {
-            ContentBlock::ToolCall {
-                thought_signature, ..
-            } => *thought_signature = None,
-            _ => {}
+        if let ContentBlock::ToolCall {
+            thought_signature, ..
+        } = self
+        {
+            *thought_signature = None;
         }
     }
 }

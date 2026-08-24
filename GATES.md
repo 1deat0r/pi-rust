@@ -164,7 +164,7 @@ Scope: preserve the completed interactive slash-command, project-trust, deferred
 - [ ] G28: pi-ai and its telemetry dependency pass the strict clippy gate
   CHECK: /home/mustbearnold/.cargo/bin/cargo clippy -p pi-ai --offline --all-targets -- -D warnings
   EXPECT: Finished `dev` profile
-  EVIDENCE: pending implementation; current run reports 52 pi-ai diagnostics
+  EVIDENCE: pending implementation; current run reports 23 pi-ai diagnostics
 
 - [x] G29: the cleanup checkpoint remains formatted, whitespace-clean, and
       progress-accounted

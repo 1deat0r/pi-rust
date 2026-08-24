@@ -122,25 +122,13 @@ fn get_prompt_cache_retention(
 
 /// Options for OpenAI Responses requests (subset of upstream
 /// `OpenAIResponsesOptions`).
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct OpenAIResponsesOptions {
     pub base: StreamOptions,
     pub reasoning_effort: Option<String>,
     pub reasoning_summary: Option<String>,
     pub service_tier: Option<String>,
     pub tool_choice: Option<Value>,
-}
-
-impl Default for OpenAIResponsesOptions {
-    fn default() -> Self {
-        Self {
-            base: StreamOptions::default(),
-            reasoning_effort: None,
-            reasoning_summary: None,
-            service_tier: None,
-            tool_choice: None,
-        }
-    }
 }
 
 impl OpenAIResponsesOptions {
@@ -482,17 +470,14 @@ pub fn stream_simple(
 ) -> AssistantMessageEventStream {
     let compat = OpenAIResponsesCompat::get(model);
     let _ = compat;
-    let reasoning_effort = options
-        .reasoning
-        .map(|r| {
-            let clamped = clamp_thinking_level(model, ModelThinkingLevel::from(r));
-            if clamped == ModelThinkingLevel::Off {
-                None
-            } else {
-                Some(clamped.as_str().to_string())
-            }
-        })
-        .flatten();
+    let reasoning_effort = options.reasoning.and_then(|r| {
+        let clamped = clamp_thinking_level(model, ModelThinkingLevel::from(r));
+        if clamped == ModelThinkingLevel::Off {
+            None
+        } else {
+            Some(clamped.as_str().to_string())
+        }
+    });
     let go = OpenAIResponsesOptions {
         base: options.base.clone(),
         reasoning_effort,

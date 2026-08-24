@@ -27,7 +27,7 @@ const AZURE_TOOL_CALL_PROVIDERS: [&str; 4] = [
     "azure-openai-responses",
 ];
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct AzureOpenAIResponsesOptions {
     pub base: StreamOptions,
     pub reasoning_effort: Option<String>,
@@ -37,21 +37,6 @@ pub struct AzureOpenAIResponsesOptions {
     pub azure_resource_name: Option<String>,
     pub azure_base_url: Option<String>,
     pub azure_deployment_name: Option<String>,
-}
-
-impl Default for AzureOpenAIResponsesOptions {
-    fn default() -> Self {
-        Self {
-            base: StreamOptions::default(),
-            reasoning_effort: None,
-            reasoning_summary: None,
-            tool_choice: None,
-            azure_api_version: None,
-            azure_resource_name: None,
-            azure_base_url: None,
-            azure_deployment_name: None,
-        }
-    }
 }
 
 fn env_value(name: &str) -> Option<String> {
@@ -446,17 +431,14 @@ pub fn stream_simple(
     api_key: Option<&str>,
     options: &SimpleStreamOptions,
 ) -> AssistantMessageEventStream {
-    let reasoning_effort = options
-        .reasoning
-        .map(|r| {
-            let clamped = clamp_thinking_level(model, ModelThinkingLevel::from(r));
-            if clamped == ModelThinkingLevel::Off {
-                None
-            } else {
-                Some(clamped.as_str().to_string())
-            }
-        })
-        .flatten();
+    let reasoning_effort = options.reasoning.and_then(|r| {
+        let clamped = clamp_thinking_level(model, ModelThinkingLevel::from(r));
+        if clamped == ModelThinkingLevel::Off {
+            None
+        } else {
+            Some(clamped.as_str().to_string())
+        }
+    });
     let go = AzureOpenAIResponsesOptions {
         base: options.base.clone(),
         reasoning_effort,

@@ -311,14 +311,14 @@ fn process_chunk(
                                 BlockKind::Text => {
                                     push(AssistantMessageEvent::TextEnd {
                                         content_index: blocks.len() - 1,
-                                        content: block_text(&blocks, *prev),
+                                        content: block_text(blocks, *prev),
                                         partial: output.clone(),
                                     });
                                 }
                                 BlockKind::Thinking => {
                                     push(AssistantMessageEvent::ThinkingEnd {
                                         content_index: blocks.len() - 1,
-                                        content: block_thinking(&blocks, *prev),
+                                        content: block_thinking(blocks, *prev),
                                         partial: output.clone(),
                                     });
                                 }
@@ -394,14 +394,14 @@ fn process_chunk(
                             BlockKind::Text => {
                                 push(AssistantMessageEvent::TextEnd {
                                     content_index: blocks.len() - 1,
-                                    content: block_text(&blocks, *prev),
+                                    content: block_text(blocks, *prev),
                                     partial: output.clone(),
                                 });
                             }
                             BlockKind::Thinking => {
                                 push(AssistantMessageEvent::ThinkingEnd {
                                     content_index: blocks.len() - 1,
-                                    content: block_thinking(&blocks, *prev),
+                                    content: block_thinking(blocks, *prev),
                                     partial: output.clone(),
                                 });
                             }

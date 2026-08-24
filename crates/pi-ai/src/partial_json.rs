@@ -470,7 +470,7 @@ impl<'a> Parser<'a> {
         }
         // Complete numbers.
         if let Ok(f) = text.parse::<f64>() {
-            if let Some(i) = text.parse::<i64>().ok() {
+            if let Ok(i) = text.parse::<i64>() {
                 if i as f64 == f {
                     return Ok(JsonValue::from(i));
                 }
