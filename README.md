@@ -44,6 +44,8 @@ web-identity STS XML credentials, bearer/skip-auth modes, and exact provider
 auth source labels. Deterministic local fixtures cover the profile, region,
 ECS, STS, and provider-auth paths. SSO- or process-backed profiles and EC2
 metadata remain outside the hand-rolled signer scope.
+The S-010 checkpoint is pushed as
+`9a8eaee9b8273e7b938075a38ed9659baff02359`.
 
 Legacy v1/v2/v3 session files are atomically migrated before session inventory,
 CLI continue/resume/session/fork selection, interactive startup and `/import`,

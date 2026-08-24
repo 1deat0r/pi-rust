@@ -31,14 +31,14 @@ and region-resolution parity slice. The pre-existing untracked `AGENTS.md`
 remains untouched and must be preserved. Do not use `git reset --hard`,
 `git checkout --`, broad revert commands, or `git clean`.
 
-Current status before the S-010 publication commit: branch `main`, progress
+Current status after the S-010 implementation commit: branch `main`, progress
 checker reports `64.46% (107/166; 59 open)`, and the working tree contains only
-the focused S-010 changes plus the preserved untracked `AGENTS.md`. The S-009
+the preserved untracked `AGENTS.md`. The S-010 implementation/documentation
+commit is `9a8eaee9b8273e7b938075a38ed9659baff02359`; the S-009
 implementation and documentation commit is
 `c3d6109f32abb2f1a4efbda6eb2c90a35383dd98`; the preceding S-008 implementation
-commit is `7a72f2fe104cf660f946f29a822c88da556a37d1`. The exact S-010 commit
-hash must be recorded after commit, push, and local/remote verification. Its
-changes include:
+commit is `7a72f2fe104cf660f946f29a822c88da556a37d1`. Local `HEAD` and
+`origin/main` resolve to the S-010 hash after the push. Its changes include:
 
 - `crates/pi-ai/src/api/constrained_sampling.rs`, the shared strict-schema and
   grammar resolver plus streaming JSON-delta helper.
@@ -182,8 +182,9 @@ blockers. SSO- or process-backed profiles and EC2 metadata remain outside the
 manual signer scope. The checker reports exactly `Conversion progress: 64.46%
 (107/166; 59 open)`. The next dependency-safe task is S-011 Google Vertex ADC
 file, token URI, scope, refresh, and project/location precedence parity. The
-S-010 implementation/documentation commit and its post-push documentation
-synchronization remain to be created and hash-verified.
+S-010 implementation/documentation commit is
+`9a8eaee9b8273e7b938075a38ed9659baff02359`; this documentation
+synchronization remains to be committed and hash-verified.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 

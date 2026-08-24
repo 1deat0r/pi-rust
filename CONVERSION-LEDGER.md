@@ -37,9 +37,10 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   `origin/main`. The only remaining worktree item is the pre-existing
   untracked `AGENTS.md`, which is preserved and unstaged.
 - The S-010 Bedrock credential/profile and region-resolution checkpoint is
-  validated and ready for its focused implementation/documentation commit. Its
-  exact pushed hash will be recorded in the next documentation synchronization
-  after the commit/push gate.
+  committed as `9a8eaee9b8273e7b938075a38ed9659baff02359` on `main` and pushed
+  to `origin/main`. Local and remote hashes matched after the push. The only
+  remaining worktree item is the pre-existing untracked `AGENTS.md`, which is
+  preserved and unstaged.
 - The latest committed S-008 constrained-sampling/grammar checkpoint is
   `7a72f2fe104cf660f946f29a822c88da556a37d1` on `main`, pushed to
   `origin/main` with matching local/remote hashes. It follows the S-007 image
