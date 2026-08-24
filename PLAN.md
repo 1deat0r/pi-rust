@@ -1087,6 +1087,31 @@ deterministic workspace gate.
   S-026 and the remaining provider/runtime audits continue in their ledger
   sections.
 
+### Session 31 — 2026-08-24 — Print-path harness ownership (partial S-021)
+Scope: route the one-shot coding-agent path through a configured,
+stateful `AgentHarness` while preserving its existing compaction and JSONL
+session behavior.
+
+- `AgentHarness` now accepts the provider stream, model, system prompt,
+  image policy, and registered tool preparation callbacks; configured harnesses
+  own a rich `Agent` plus an in-memory main-lane transcript. Harness-created
+  tools preserve `prepareArguments` semantics instead of dropping them at the
+  adapter boundary.
+- The one-shot `run.rs` path now prompts the harness, reads its chronological
+  transcript for compaction decisions, updates the harness Agent after a
+  compaction boundary, and replays the harness transcript into the durable
+  JSONL session. Agent prompt messages are retained exactly once across turns.
+- Evidence (unit/integration): `/home/mustbearnold/.cargo/bin/cargo test
+  -p pi-agent --offline --quiet` (175 library tests plus integration targets),
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+  --quiet` (445 library tests plus integration targets),
+  `/home/mustbearnold/.cargo/bin/cargo test --workspace --offline --quiet`,
+  `/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check`, and
+  `git diff --check`.
+- S-021 remains open: interactive, JSON, JSONL, and RPC modes still use their
+  direct loop paths, and secondary lane operations plus complete harness event
+  wiring remain for the next slice. S-022 remains open.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

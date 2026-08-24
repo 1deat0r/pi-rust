@@ -26,11 +26,11 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest committed local checkpoint is the panic-safe telemetry settlement
+The latest committed local checkpoint is the print-path harness ownership
 slice after the AgentTool harness, lifecycle/termination, schema-validator,
-RPC runtime, update/version, and model-catalog checkpoints. It includes
-synchronized ledger/plan/handoff docs. Pushes remain blocked because the HTTPS
-remote requires GitHub credentials.
+panic-safe telemetry, RPC runtime, update/version, and model-catalog
+checkpoints. It includes synchronized ledger/plan/handoff docs. Pushes remain
+blocked because the HTTPS remote requires GitHub credentials.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
 
@@ -47,9 +47,10 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`55.42% (92/166; 74 open)`. Preserve the pre-existing untracked `AGENTS.md`;
-all other changes in this checkpoint are intentional local work ahead of the
-remote.
+`55.42% (92/166; 74 open)`. Preserve the pre-existing untracked `AGENTS.md`.
+An independent `README.md` rewrite is also preserved and intentionally left
+unstaged; it is outside this checkpoint. All staged checkpoint changes are
+intentional local work ahead of the remote.
 
 ## Verification already completed
 
@@ -96,10 +97,10 @@ A full `cargo test --workspace --offline` passed after the image/read changes,
 including 162 `pi-agent` unit tests, the coding-agent integration targets, 186
 `pi-tui` unit tests, and all workspace doctests.
 
-The latest full gate after the panic-safe telemetry slice passed: 174
+The latest full gate after the print-path harness slice passed: 175
 `pi-agent` tests, 286 `pi-ai` unit tests, 445 `pi-coding-agent` unit tests plus
-all integration targets (including the malformed-call fixture), 186 `pi-tui`
-unit tests, and all workspace doctests.
+all integration targets (including the malformed-call and print-parity
+fixtures), 186 `pi-tui` unit tests, and all workspace doctests.
 
 ## Last code change
 
@@ -225,6 +226,21 @@ The panic-safe telemetry follow-up is included in the latest checkpoint:
   full gate.
 - S-023 is complete. The next harness/runtime gaps are S-021 and S-022.
 
+The print-path harness ownership slice is included in the latest checkpoint:
+
+- Configured `AgentHarness` instances now own the rich `Agent`, provider/model
+  configuration, tool preparation callbacks, and an in-memory main-lane
+  transcript. The one-shot `run.rs` path prompts that harness, performs
+  compaction against its transcript, updates Agent state at the compaction
+  boundary, and replays the transcript into the durable JSONL session.
+- Agent prompt messages are retained exactly once across sequential turns. A
+  focused harness fixture proves the configured Agent output is persisted in
+  chronological lane order; the four-test print-parity suite and full
+  workspace gate remain green.
+- This is a partial S-021 checkpoint, not closure: interactive, JSON, JSONL,
+  and RPC modes still use their direct loop paths, and secondary lanes plus
+  complete event/telemetry lifecycle wiring remain S-021/S-022 work.
+
 The follow-up bash harness integration is included in the latest checkpoint:
 
 - The registered bash tool now runs through `StdExecutionEnv` and
@@ -289,7 +305,7 @@ items just because a similarly named Rust module exists.
 
 1. Retry `git push origin main` whenever GitHub credentials are available and
    report the HTTPS credential blocker if it persists.
-2. Continue with S-021/S-022/S-023, then the full regular/fullscreen #61/#62 swap
+2. Continue with the remaining S-021/S-022 work, then the full regular/fullscreen #61/#62 swap
    work and broader S-056 interactive matrix.
 3. Keep `CONVERSION-LEDGER.md`, `PLAN.md`, and this handoff synchronized;
    only mark a task complete with an evidence tier and exact command/fixture.

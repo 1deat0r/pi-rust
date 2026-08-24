@@ -40,10 +40,11 @@ use crate::fs::FileSystem;
 use crate::harness::compaction::compaction::{CompactionSettings, DEFAULT_COMPACTION_SETTINGS};
 use crate::harness::models::BoxFuture;
 use crate::harness::result::TaggedError;
+use crate::rich_agent::Agent;
 use crate::session::session::Session;
-use crate::session::state::RecordQuery;
+use crate::session::state::{EntryOrder, EntryQuery, RecordQuery};
 use crate::session::types::{Entry, EntryNoStats};
-use crate::tools::ToolExecuteFn;
+use crate::tools::{AgentTool, ToolExecuteFn, ToolPrepareArgumentsFn};
 use crate::types::{AgentHarnessResources, AgentMessage, SessionError};
 use pi_ai::types::{ModelThinkingLevel, Tool};
 
@@ -626,6 +627,7 @@ impl ReplayPolicy {
 pub struct HarnessTool {
     pub tool: Tool,
     pub execute: ToolExecuteFn,
+    pub prepare_arguments: Option<ToolPrepareArgumentsFn>,
     pub replay: Option<ReplayPolicy>,
 }
 
@@ -641,6 +643,25 @@ impl std::fmt::Debug for HarnessTool {
 impl HarnessTool {
     pub fn name(&self) -> &str {
         &self.tool.name
+    }
+
+    /// Adapt a registered `AgentTool` into the harness-facing tool shape
+    /// without dropping argument preparation semantics.
+    pub fn from_agent_tool(tool: &AgentTool) -> Self {
+        Self {
+            tool: tool.tool.clone(),
+            execute: tool.execute.clone(),
+            prepare_arguments: tool.prepare_arguments.clone(),
+            replay: None,
+        }
+    }
+
+    fn to_agent_tool(&self) -> AgentTool {
+        let mut tool = AgentTool::new(self.tool.clone(), self.name(), self.execute.clone());
+        if let Some(prepare_arguments) = &self.prepare_arguments {
+            tool = tool.with_prepare_arguments(prepare_arguments.clone());
+        }
+        tool
     }
 }
 
@@ -759,11 +780,13 @@ pub type RunWhenIdleCallback = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + S
 pub struct AgentHarnessOptions<F: FileSystem> {
     pub session: Session<F>,
     pub model: Model,
+    pub stream_fn: Option<crate::agent::StreamFn>,
+    pub system_prompt: Option<String>,
+    pub block_images: bool,
     pub thinking_level: Option<ModelThinkingLevel>,
     pub active_tool_names: Option<Vec<String>>,
     pub tools: Option<Vec<HarnessTool>>,
     pub tool_context: Option<serde_json::Value>,
-    pub system_prompt: Option<String>,
     pub resources: Option<Resources>,
     pub stream_options: Option<StreamOptions>,
     pub retry: Option<RetryPolicy>,
@@ -782,11 +805,13 @@ impl<F: FileSystem> AgentHarnessOptions<F> {
         Self {
             session,
             model,
+            stream_fn: None,
+            system_prompt: None,
+            block_images: false,
             thinking_level: None,
             active_tool_names: None,
             tools: None,
             tool_context: None,
-            system_prompt: None,
             resources: None,
             stream_options: None,
             retry: None,
@@ -943,6 +968,7 @@ pub struct AgentHarness<F: FileSystem> {
     compaction_settings: CompactionSettings,
     steering_mode: QueueMode,
     follow_up_mode: QueueMode,
+    agent: Option<Arc<Agent>>,
     pub hooks: UnavailableRegistry,
     pub events: UnavailableRegistry,
     closed: Arc<RwLock<bool>>,
@@ -1009,6 +1035,26 @@ impl<F: FileSystem> AgentHarness<F> {
             .compaction
             .clone()
             .unwrap_or(DEFAULT_COMPACTION_SETTINGS);
+        let agent = options.stream_fn.clone().map(|stream_fn| {
+            let mut agent = Agent::new(stream_fn);
+            {
+                let mut state = agent.state();
+                state.model = options.model.clone();
+                state.system_prompt = options.system_prompt.clone().unwrap_or_default();
+                state.set_tools(
+                    options
+                        .tools
+                        .as_ref()
+                        .map(|tools| tools.iter().map(HarnessTool::to_agent_tool).collect())
+                        .unwrap_or_default(),
+                );
+            }
+            agent.set_block_images(options.block_images);
+            if let Some(ToolExecution::Sequential) = options.tool_execution {
+                agent.set_tool_execution(crate::rich_agent::ToolExecutionMode::Sequential);
+            }
+            Arc::new(agent)
+        });
         Self {
             name: "main".to_string(),
             session: options.session,
@@ -1022,6 +1068,7 @@ impl<F: FileSystem> AgentHarness<F> {
             compaction_settings,
             steering_mode: options.steering_mode.unwrap_or_default(),
             follow_up_mode: options.follow_up_mode.unwrap_or_default(),
+            agent,
             hooks: UnavailableRegistry::new("hooks.on", closed.clone()),
             events: UnavailableRegistry::new("events.on", closed.clone()),
             closed,
@@ -1044,6 +1091,68 @@ impl<F: FileSystem> AgentHarness<F> {
         } else {
             HarnessError::not_implemented(operation)
         })
+    }
+
+    /// Run prompts through the configured stateful Agent and append the
+    /// resulting messages to the harness-owned main-lane session. A harness
+    /// created without a stream function remains a scaffold and reports the
+    /// same explicit `HarnessNotImplemented` error as upstream.
+    pub async fn run_prompt(
+        &mut self,
+        prompts: Vec<AgentMessage>,
+    ) -> Result<Vec<AgentMessage>, HarnessError> {
+        if self.is_closed() {
+            return Err(HarnessError::closed());
+        }
+        let Some(agent) = &self.agent else {
+            return self.unavailable("prompt");
+        };
+        let messages = agent.prompt_messages(prompts).await;
+        for message in &messages {
+            self.session
+                .append_message(message.clone())
+                .await
+                .map_err(HarnessError::from)?;
+        }
+        Ok(messages)
+    }
+
+    /// Snapshot the harness-owned durable transcript in chronological order.
+    pub async fn transcript(&self) -> Result<Vec<Entry>, HarnessError> {
+        self.session
+            .find_entries(&EntryQuery {
+                order: Some(EntryOrder::OldestFirst),
+                ..Default::default()
+            })
+            .await
+            .map_err(HarnessError::from)
+    }
+
+    /// Append a provisioned entry to the harness-owned main lane.
+    pub async fn append_entry(&mut self, entry: EntryNoStats) -> Result<Entry, HarnessError> {
+        self.session
+            .append_entry(entry, "main")
+            .await
+            .map_err(HarnessError::from)
+    }
+
+    /// Replace the in-memory Agent transcript after a compaction boundary.
+    pub async fn set_agent_messages(
+        &self,
+        messages: Vec<AgentMessage>,
+    ) -> Result<(), HarnessError> {
+        let Some(agent) = &self.agent else {
+            return self.unavailable("prompt");
+        };
+        agent.state().set_messages(messages);
+        Ok(())
+    }
+
+    pub async fn agent_messages(&self) -> Result<Vec<AgentMessage>, HarnessError> {
+        let Some(agent) = &self.agent else {
+            return self.unavailable("prompt");
+        };
+        Ok(agent.state().messages().to_vec())
     }
 
     /// Lane accessor on the main harness (upstream `lane(name)`); unimplemented
@@ -1306,7 +1415,11 @@ mod tests {
     use crate::fs::MemoryFs;
     use crate::session::memory::{in_memory_metadata, InMemorySessionStorage};
     use crate::session::types::{NewRecord, OperationIntent};
-    use pi_ai::types::{Cost, Message, UserContent};
+    use pi_ai::providers::{
+        faux_assistant_message, FauxAssistantOptions, FauxProviderCore, FauxResponseStep,
+        RegisterFauxProviderOptions,
+    };
+    use pi_ai::types::{ContentBlock, Cost, Message, UserContent};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     type MemSession = Session<MemoryFs>;
@@ -1367,6 +1480,36 @@ mod tests {
             HarnessError::NotImplemented { operation } => operation,
             other => panic!("expected NotImplemented, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn configured_harness_runs_agent_and_persists_lane_messages() {
+        rt().block_on(async {
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
+                vec![ContentBlock::text("reply")],
+                FauxAssistantOptions::default(),
+            ))]);
+            let stream_fn: crate::agent::StreamFn =
+                std::sync::Arc::new(move |model, context| core.stream(model, context, None));
+            let mut options = AgentHarnessOptions::new(create_session("running"), test_model());
+            options.stream_fn = Some(stream_fn);
+            options.system_prompt = Some("system".into());
+            let (mut harness, suspended) = AgentHarness::create(options).await.unwrap();
+            assert!(suspended.is_empty());
+
+            let messages = harness
+                .run_prompt(vec![user_message("hello")])
+                .await
+                .unwrap();
+            assert_eq!(messages.len(), 2);
+            assert_eq!(harness.agent_messages().await.unwrap().len(), 2);
+
+            let transcript = harness.transcript().await.unwrap();
+            assert_eq!(transcript.len(), 2);
+            assert_eq!(transcript[0].as_message().unwrap(), &messages[0]);
+            assert_eq!(transcript[1].as_message().unwrap(), &messages[1]);
+        });
     }
 
     #[test]
@@ -1436,6 +1579,7 @@ mod tests {
                     &serde_json::json!({ "type": "object" }),
                 ),
                 execute: crate::tools::read_tool(".".to_string()).execute,
+                prepare_arguments: None,
                 replay: None,
             };
             let mut tools = vec![tool.clone()];
@@ -1447,6 +1591,7 @@ mod tests {
                     &serde_json::json!({ "type": "object" }),
                 ),
                 execute: crate::tools::read_tool(".".to_string()).execute,
+                prepare_arguments: None,
                 replay: None,
             });
             assert_eq!(

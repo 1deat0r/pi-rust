@@ -1420,6 +1420,7 @@ pub struct Agent {
     after_tool_call: Option<AfterToolCallHook>,
     should_stop_after_turn: Option<ShouldStopAfterTurnHook>,
     tool_execution: ToolExecutionMode,
+    block_images: bool,
     session_id: Option<String>,
     reasoning: Option<ThinkingLevel>,
 }
@@ -1442,6 +1443,7 @@ impl Agent {
             after_tool_call: None,
             should_stop_after_turn: None,
             tool_execution: ToolExecutionMode::Parallel,
+            block_images: false,
             session_id: None,
             reasoning: None,
         }
@@ -1467,6 +1469,9 @@ impl Agent {
     }
     pub fn set_tool_execution(&mut self, mode: ToolExecutionMode) {
         self.tool_execution = mode;
+    }
+    pub fn set_block_images(&mut self, block_images: bool) {
+        self.block_images = block_images;
     }
 
     pub fn state(&self) -> std::sync::MutexGuard<'_, AgentState> {
@@ -1538,7 +1543,15 @@ impl Agent {
     /// Start a prompt run (upstream `Agent.prompt`). Returns after settlement
     /// of the run and its awaited listeners.
     pub async fn prompt(&self, message: AgentMessage) {
-        self.run_prompt_messages(vec![message], false).await;
+        let _ = self.run_prompt_messages(vec![message], false).await;
+    }
+
+    /// Run one or more prompts and return the messages appended to the
+    /// stateful transcript by this invocation. This is the harness-facing
+    /// equivalent of upstream `Agent.prompt` when callers need to persist the
+    /// resulting lane entries themselves.
+    pub async fn prompt_messages(&self, messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
+        self.run_prompt_messages(messages, false).await
     }
 
     /// Continue from the current transcript (upstream `Agent.continue`).
@@ -1553,12 +1566,12 @@ impl Agent {
         if last.role() == "assistant" {
             let queued_steering = self.steering_queue.lock().unwrap().drain();
             if !queued_steering.is_empty() {
-                self.run_prompt_messages(queued_steering, true).await;
+                let _ = self.run_prompt_messages(queued_steering, true).await;
                 return;
             }
             let queued_follow_ups = self.follow_up_queue.lock().unwrap().drain();
             if !queued_follow_ups.is_empty() {
-                self.run_prompt_messages(queued_follow_ups, false).await;
+                let _ = self.run_prompt_messages(queued_follow_ups, false).await;
                 return;
             }
             panic!("Cannot continue from message role: assistant");
@@ -1566,7 +1579,11 @@ impl Agent {
         self.run_continuation().await;
     }
 
-    async fn run_prompt_messages(&self, messages: Vec<AgentMessage>, skip_initial_steering: bool) {
+    async fn run_prompt_messages(
+        &self,
+        messages: Vec<AgentMessage>,
+        skip_initial_steering: bool,
+    ) -> Vec<AgentMessage> {
         let mut skip = skip_initial_steering;
         let (model, system_prompt, tools) = {
             let state = self.state.lock().unwrap();
@@ -1577,10 +1594,11 @@ impl Agent {
             )
         };
         let mut context = AgentContext::new(Some(system_prompt), tools);
-        {
+        let prior_messages = {
             let state = self.state.lock().unwrap();
-            context.messages = state.messages.clone();
-        }
+            state.messages.clone()
+        };
+        context.messages = prior_messages.clone();
         let config = self.build_config(model, &mut skip);
         let mut events: Vec<RichAgentEvent> = Vec::new();
         let new_messages = run_rich_agent_loop(messages, &mut context, &config, &mut |e| {
@@ -1588,11 +1606,18 @@ impl Agent {
         })
         .await;
         self.record_events(&events).await;
+        // `run_rich_agent_loop` keeps prompts in its local current-message
+        // view, while the stateful Agent must retain them in its durable
+        // transcript as well. The returned delta contains the prompts,
+        // steering/follow-up messages, and all assistant/tool messages in
+        // their durable order.
+        context.messages = prior_messages;
+        context.messages.extend(new_messages.clone());
         {
             let mut state = self.state.lock().unwrap();
             state.messages = context.messages;
         }
-        let _ = new_messages;
+        new_messages
     }
 
     async fn run_continuation(&self) {
@@ -1629,6 +1654,7 @@ impl Agent {
     ) -> RichAgentLoopConfig {
         let mut config = RichAgentLoopConfig::new(model, self.stream_fn.clone(), None);
         config.convert_to_llm = self.convert_to_llm.clone();
+        config.block_images = self.block_images;
         config.before_tool_call = self.before_tool_call.clone();
         config.after_tool_call = self.after_tool_call.clone();
         config.should_stop_after_turn = self.should_stop_after_turn.clone();

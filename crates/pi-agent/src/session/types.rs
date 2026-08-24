@@ -279,6 +279,87 @@ impl Entry {
             _ => None,
         }
     }
+
+    /// Strip storage-assigned sequence, parent, and timestamp metadata so an
+    /// entry can be replayed into another session backend.
+    pub fn to_no_stats(&self) -> EntryNoStats {
+        match self {
+            Entry::Message {
+                id,
+                message,
+                terminate,
+                ..
+            } => EntryNoStats::Message {
+                id: id.clone(),
+                message: message.clone(),
+                terminate: *terminate,
+            },
+            Entry::ModelChange {
+                id,
+                provider,
+                model_id,
+                ..
+            } => EntryNoStats::ModelChange {
+                id: id.clone(),
+                provider: provider.clone(),
+                model_id: model_id.clone(),
+            },
+            Entry::ThinkingLevel {
+                id, thinking_level, ..
+            } => EntryNoStats::ThinkingLevel {
+                id: id.clone(),
+                thinking_level: thinking_level.clone(),
+            },
+            Entry::ActiveTools {
+                id,
+                active_tool_names,
+                ..
+            } => EntryNoStats::ActiveTools {
+                id: id.clone(),
+                active_tool_names: active_tool_names.clone(),
+            },
+            Entry::Compaction {
+                id,
+                summary,
+                retained_tail,
+                tokens_before,
+                details,
+                usage,
+                ..
+            } => EntryNoStats::Compaction {
+                id: id.clone(),
+                summary: summary.clone(),
+                retained_tail: retained_tail.clone(),
+                tokens_before: *tokens_before,
+                details: details.clone(),
+                usage: usage.clone(),
+            },
+            Entry::BranchSummary {
+                id,
+                from_id,
+                summary,
+                details,
+                usage,
+                ..
+            } => EntryNoStats::BranchSummary {
+                id: id.clone(),
+                from_id: from_id.clone(),
+                summary: summary.clone(),
+                details: details.clone(),
+                usage: usage.clone(),
+            },
+            Entry::Custom {
+                id,
+                custom_type,
+                data,
+                ..
+            } => EntryNoStats::Custom {
+                id: id.clone(),
+                custom_type: custom_type.clone(),
+                data: data.clone(),
+            },
+        }
+    }
 }
 
 /// Provisioned entries lack `seq`/`parentId`/`timestamp` (assigned at append).

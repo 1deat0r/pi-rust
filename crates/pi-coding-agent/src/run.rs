@@ -8,16 +8,18 @@
 //!   settings.json `defaultProvider`/`defaultModel` (project merged over
 //!   global) → hard default `google` / provider default.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use pi_agent::agent::{run_agent_loop, AgentContext, AgentLoopConfig};
+use pi_agent::fs::StdFileSystem;
 use pi_agent::harness::compaction::{
     compact, estimate_context_tokens, prepare_compaction, should_compact, CompactionSettings,
 };
 use pi_agent::harness::SimpleModels;
+use pi_agent::harness::{AgentHarness, AgentHarnessOptions, HarnessTool};
 use pi_agent::session::context::{build_session_context, SessionContextBuildOptions};
+use pi_agent::session::memory::{in_memory_metadata, InMemorySessionStorage};
 use pi_agent::session::types::{Entry, EntryNoStats};
-use pi_agent::session::{CreateOptions, JsonlSessionRepo};
+use pi_agent::session::{CreateOptions, JsonlSessionRepo, Session};
 use pi_agent::tools::image::{
     detect_supported_image_mime_type, process_image, ProcessImageOptions,
 };
@@ -263,21 +265,27 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         tools.push(crate::core::tools::find_tool(cwd.clone()));
         tools.push(crate::core::tools::grep_tool(cwd.clone()));
     }
-    let mut context = AgentContext {
-        system_prompt: Some(system_prompt),
-        messages: Vec::new(),
-        tools,
-        block_images: settings.get_block_images(),
-    };
-    let cfg = AgentLoopConfig {
-        model: model.clone(),
-        stream_fn,
-        signal: None,
-        stop_after_turn: true,
-        on_stream_event: None,
-    };
+    // The harness owns the stateful Agent and a lane/session transcript for
+    // the duration of print mode. The final JSONL persistence step below
+    // replays that transcript into the selected durable session repository.
+    let harness_storage = Arc::new(Mutex::new(InMemorySessionStorage::new(in_memory_metadata(
+        "print-run",
+        None,
+    ))));
+    let harness_session: Session<StdFileSystem> = Session::from_in_memory(harness_storage);
+    let harness_tools = tools
+        .iter()
+        .map(HarnessTool::from_agent_tool)
+        .collect::<Vec<_>>();
+    let mut harness_options = AgentHarnessOptions::new(harness_session, model.clone());
+    harness_options.stream_fn = Some(stream_fn);
+    harness_options.system_prompt = Some(system_prompt);
+    harness_options.block_images = settings.get_block_images();
+    harness_options.tools = Some(harness_tools);
+    let (mut harness, _suspended) = AgentHarness::create(harness_options)
+        .await
+        .map_err(|error| format!("create agent harness: {error}"))?;
 
-    let mut events: Vec<pi_agent::agent::AgentEvent> = Vec::new();
     // Expand `/template` prompt-template invocations in positional messages
     // (upstream `expandPromptTemplate`).
     let prompt_templates = load_prompt_templates_for_run(args, &cwd, &agent_dir);
@@ -286,11 +294,8 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     // session.prompt(message); }`). Each turn's messages fold into the agent
     // context so a later prompt observes earlier turns.
     let mut all_messages: Vec<pi_agent::types::AgentMessage> = Vec::new();
-    // Keep a provisioned in-memory session path while print mode is running.
     // The compaction harness consumes full entries (not just provider
-    // messages), and the same provisioned entries are persisted below.
-    let mut history_entries: Vec<Entry> = Vec::new();
-    let mut session_entries: Vec<EntryNoStats> = Vec::new();
+    // messages), all sourced from the harness-owned main lane.
     let summarizer = SimpleModels::new({
         let summary_stream_fn = summary_stream_fn.clone();
         move |model, context, _options| {
@@ -325,16 +330,22 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             blocks,
             pi_ai::types::now_ms(),
         )));
-        let turn_messages =
-            run_agent_loop(vec![prompt], &mut context, &cfg, &mut |e| events.push(e)).await;
-        context.messages.extend(turn_messages.iter().cloned());
-        for message in &turn_messages {
-            append_run_message(&mut history_entries, &mut session_entries, message.clone());
-        }
+        let turn_messages = harness
+            .run_prompt(vec![prompt])
+            .await
+            .map_err(|error| format!("run harness prompt: {error}"))?;
+        let mut history_entries = harness
+            .transcript()
+            .await
+            .map_err(|error| format!("read harness transcript: {error}"))?;
         all_messages.extend(turn_messages);
 
+        let mut agent_messages = harness
+            .agent_messages()
+            .await
+            .map_err(|error| format!("read harness messages: {error}"))?;
         if let Some(compaction) = maybe_auto_compact(
-            &mut context,
+            &mut agent_messages,
             &mut history_entries,
             &model,
             &settings,
@@ -342,7 +353,14 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         )
         .await
         {
-            session_entries.push(compaction);
+            harness
+                .set_agent_messages(agent_messages)
+                .await
+                .map_err(|error| format!("set compacted harness messages: {error}"))?;
+            harness
+                .append_entry(compaction)
+                .await
+                .map_err(|error| format!("append harness compaction: {error}"))?;
         }
     }
 
@@ -409,9 +427,13 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             })
             .await
             .map_err(|e| format!("create session: {e}"))?;
-        for entry in session_entries {
+        let harness_entries = harness
+            .transcript()
+            .await
+            .map_err(|error| format!("read final harness transcript: {error}"))?;
+        for entry in harness_entries {
             session
-                .append_entry(entry, "main")
+                .append_entry(entry.to_no_stats(), "main")
                 .await
                 .map_err(|e| format!("append entry: {e}"))?;
         }
@@ -428,37 +450,10 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     })
 }
 
-/// Provision a print-mode message in both the in-memory compaction path and
-/// the eventual JSONL session. Keeping one id for both views preserves the
-/// session tree shape when a compaction entry is inserted between turns.
-fn append_run_message(
-    history_entries: &mut Vec<Entry>,
-    session_entries: &mut Vec<EntryNoStats>,
-    message: AgentMessage,
-) {
-    let id = pi_agent::session::new_id();
-    let seq = history_entries.last().map_or(1, |entry| entry.seq() + 1);
-    let parent_id = history_entries.last().map(|entry| entry.id().to_string());
-    let timestamp = message.timestamp();
-    history_entries.push(Entry::Message {
-        id: id.clone(),
-        seq,
-        parent_id,
-        timestamp,
-        message: message.clone(),
-        terminate: None,
-    });
-    session_entries.push(EntryNoStats::Message {
-        id,
-        message,
-        terminate: None,
-    });
-}
-
 /// Apply one threshold compaction to the print-mode context and return the
 /// provisioned JSONL entry to append after the turn's messages.
 async fn maybe_auto_compact(
-    context: &mut AgentContext,
+    messages: &mut Vec<AgentMessage>,
     history_entries: &mut Vec<Entry>,
     model: &pi_ai::model::Model,
     settings: &SettingsManager,
@@ -470,7 +465,7 @@ async fn maybe_auto_compact(
         reserve_tokens,
         keep_recent_tokens,
     };
-    let estimate = estimate_context_tokens(&context.messages);
+    let estimate = estimate_context_tokens(messages);
     if !should_compact(estimate.tokens, model.context_window, &compaction_settings) {
         return None;
     }
@@ -529,7 +524,7 @@ async fn maybe_auto_compact(
         details: details.clone(),
         usage: usage.clone(),
     });
-    context.messages =
+    *messages =
         build_session_context(history_entries, &SessionContextBuildOptions::default()).messages;
 
     Some(EntryNoStats::Compaction {

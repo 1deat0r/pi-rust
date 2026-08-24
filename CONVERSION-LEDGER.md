@@ -19,16 +19,19 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the local panic-safe telemetry settlement checkpoint on `main`, after
-  the AgentTool harness/termination, schema-validator, update/version, and
-  model-catalog work; the HTTPS remote is still behind because GitHub
-  credentials are unavailable.
+- HEAD is the local print-path harness ownership checkpoint on `main`, after
+  the AgentTool harness/termination, schema-validator, panic-safe telemetry,
+  update/version, and model-catalog work; the HTTPS remote is still behind
+  because GitHub credentials are unavailable.
 - The workspace is green under `cargo test --workspace --offline`; the focused
-  tool-contract, RPC, image/read, print-mode compaction, and malformed-call
-  suites pass. Telemetry callback panics now settle in-memory spans as
-  automatic errors while preserving explicit statuses and panic propagation;
-  the shared TUI image-capability fixtures are serialized for deterministic
-  workspace runs.
+  tool-contract, RPC, image/read, print-mode compaction, malformed-call, and
+  harness-owned print-path suites pass. The one-shot path now owns a
+  stateful `AgentHarness` transcript and replays it into durable JSONL while
+  retaining compaction behavior; interactive/JSON/JSONL/RPC loop integration
+  remains open under S-021/S-022. Telemetry callback panics now settle
+  in-memory spans as automatic errors while preserving explicit statuses and
+  panic propagation; the shared TUI image-capability fixtures are serialized
+  for deterministic workspace runs.
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
   device-code flows, codex WebSocket transport (SSE fallback today),
   `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
@@ -620,7 +623,9 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       write, edit, bash, ls, find, and grep calls.
 - [ ] S-021 Integrate the `AgentHarness` lane/session abstraction into the
       coding-agent run path instead of maintaining a parallel direct-loop
-      implementation.
+      implementation. (Partial unit/integration slice: configured harnesses
+      now own the one-shot print-path Agent and in-memory main-lane transcript;
+      interactive/JSON/JSONL/RPC paths and secondary lanes remain open.)
 - [ ] S-022 Wire the complete harness event and telemetry lifecycle into print,
       interactive, JSON, JSONL, and RPC modes with span/event golden checks.
 - [x] S-023 Add panic-safe telemetry callback settlement equivalent to the

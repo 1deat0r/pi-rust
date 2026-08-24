@@ -21,6 +21,8 @@ pub mod shell_output;
 pub mod skills;
 pub mod system_prompt;
 pub mod telemetry;
+
+pub use agent_harness::{AgentHarness, AgentHarnessOptions, HarnessTool};
 pub mod tools;
 
 pub use models::{BoxFuture, CompleteSimpleFn, SimpleModels};
