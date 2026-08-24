@@ -26,8 +26,8 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is the working-tree S-030 interactive cache-notice
-slice, after `ef640ce`, the partial legacy-session
+The latest local checkpoint is the committed S-030 interactive cache-notice
+slice `7356dd3`, after `ef640ce`, the partial legacy-session
 integration slice, after committed startup timing (`869ae6d`) and
 the committed compiled-binary self-update contract (`db97b89`) and interactive
 turn harness ownership
@@ -60,7 +60,7 @@ compatibility, and interactive cache-notice contracts and the
 synchronized-doc workflow. All staged checkpoint changes are intentional local
 work ahead of the remote; the pre-existing `AGENTS.md` remains untouched.
 
-The local/remote hashes were checked immediately after the checkpoint:
+The compiled self-update checkpoint was checked immediately after its commit:
 
 - `git rev-parse HEAD`: `db97b89c0c7767ece2154b70a886e3f98fb151e5`
 - `git ls-remote origin refs/heads/main`:
@@ -70,6 +70,15 @@ The local/remote hashes were checked immediately after the checkpoint:
 - `gh auth status` reports no authenticated GitHub host. The pre-commit hook
   therefore could not sync `.github/repository-description.txt` to GitHub.
   Local and remote parity is not claimed until authentication is repaired.
+
+The S-030 checkpoint was retried immediately after commit and remains blocked:
+
+- `git rev-parse HEAD`: `7356dd37896043b54c554949b7dabec8bd325aae`
+- `git ls-remote origin refs/heads/main`:
+  `90a5b931591eaeaea20f1fd9c0d10f72d7614a7b`
+- `git push origin main` failed with:
+  `fatal: could not read Username for 'https://github.com': No such device or address`.
+- `gh auth status --hostname github.com`: `You are not logged into any GitHub hosts.`
 
 The startup-timing checkpoint was verified against the remote immediately
 after commit:
