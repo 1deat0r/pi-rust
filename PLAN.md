@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 62.05% (103/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 62.65% (104/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1580,6 +1580,28 @@ lazy capability declarations and models-store overrides.
 - Checkpoint: commit `56ea6f3`; local `HEAD` and `origin/main` were verified
   equal immediately after the implementation push. This documentation refresh
   follows that push.
+
+### Session 49 — 2026-08-24 — Image retry and cancellation parity (S-007)
+
+Scope: complete the pinned OpenRouter image-generation retry loop and its
+abort/quota/error classification rather than leaving the earlier partial retry
+implementation as an unverified divergence.
+
+- The image adapter now uses the upstream zero-based exponential retry index,
+  parses both numeric and IMF-fixdate `Retry-After`, validates the 60-second
+  server-delay cap, and rebuilds each request per attempt.
+- `ImagesOptions` carries a shared cancellation flag. Request sending, response
+  body reads, and retry backoff all race cancellation and return an aborted
+  `AssistantImages` result without issuing another attempt.
+- The existing assistant retry classifier is covered alongside the image path:
+  quota/billing exhaustion is terminal, while transient provider, transport,
+  websocket, stream, and explicit retry-guidance errors remain retryable.
+- Evidence (unit/mock): OpenRouter adapter (10), retry submodule (5), shared
+  retry classifier (16), image facade (19), full pi-ai library (290), coding-
+  agent check, unlazy G21–G25, formatting, diff, and progress gates all pass.
+- S-007 is complete. Next provider item is S-008 constrained-sampling/
+  grammar support; broader harness, extension, TUI, server/client, evaluation,
+  and final-audit work remains open.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

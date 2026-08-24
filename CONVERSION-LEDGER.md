@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **62.05% (103/166; 63 open)**. Run
+- The exhaustive checker reports **62.65% (104/166; 62 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The focused workspace checks and tests for the current harness-lane slice
@@ -609,8 +609,19 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       `cargo test -p pi-ai --offline --lib --quiet` (288 passed), and
       `cargo test -p pi-coding-agent --offline --lib core::model_registry
       --quiet` (8 passed).
-- [ ] S-007 Port the upstream image retry loop and its abort/quota/error
-      classification for image generation requests.
+- [x] S-007 Port the upstream image retry loop and its abort/quota/error
+      classification for image generation requests. Evidence (unit/mock): the
+      OpenRouter image adapter now uses the correct zero-based retry index,
+      parses numeric and IMF-fixdate `Retry-After`, caps server delays, and
+      observes a shared abort flag while sending, reading, and backing off.
+      The shared assistant retry classifier keeps quota/billing failures
+      terminal while retaining transient provider/transport/retry guidance.
+      Verified with `cargo test -p pi-ai --offline --lib
+      api::openrouter_images --quiet` (10 passed), `cargo test -p pi-ai
+      --offline --lib api::openrouter_images::retry_tests --quiet` (5
+      passed), `cargo test -p pi-ai --offline --lib utils::retry --quiet`
+      (16 passed), `cargo test -p pi-ai --offline --lib images --quiet` (19
+      passed), and the full pi-ai library suite (290 passed).
 - [ ] S-008 Complete constrained-sampling/grammar tool support for every
       adaptor that advertises strict or grammar tools; reject unsupported
       schemas with the upstream diagnostics.

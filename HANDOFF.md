@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-62.05% = 103 completed / 166 total tasks
-63 tasks remain open
+62.65% = 104 completed / 166 total tasks
+62 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -27,7 +27,8 @@ freeze. Do not claim 100% before the final clean-room audit.
 ## Important working-tree state
 
 The latest implementation checkpoint is the committed deferred-response
-runtime/lazy-capability slice `56ea6f3`, after the committed S-033
+runtime/lazy-capability slice `56ea6f3`; the current image retry/cancellation
+slice is being committed and pushed now, after the committed S-033
 interactive slash-command PTY fixture slice `3b4d350`, after the committed
 S-032
 provider-auth-guidance slice `50c2103`, after the committed S-026 CLI
@@ -62,10 +63,9 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`62.05% (103/166; 63 open)`. The deferred-response runtime and lazy-capability
-slice is committed as `56ea6f3`; `git rev-parse HEAD` and
-`git ls-remote origin refs/heads/main` resolve to the same full hash. This
-documentation-only refresh records that synchronized checkpoint. Preserve the
+`62.65% (104/166; 62 open)`. The image retry/cancellation implementation is
+the current local slice; its exact synchronized hash will be recorded in the
+follow-up documentation refresh after the immediate push. Preserve the
 pre-existing untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
 provider auth guidance, startup-timing, interactive cache-notice,
@@ -204,7 +204,7 @@ cargo test -p pi-coding-agent --offline --lib core::project_trust --quiet (7 pas
 cargo check -p pi-coding-agent --offline
 cargo fmt --all -- --check
 git diff --check
-node scripts/conversion-progress.mjs (62.05% = 103/166; 63 open)
+node scripts/conversion-progress.mjs (62.65% = 104/166; 62 open)
 ```
 
 S-036 is complete; the implementation and documentation changes are ready for

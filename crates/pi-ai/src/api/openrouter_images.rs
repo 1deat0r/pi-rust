@@ -6,6 +6,10 @@
 //! the returned text + `data:` URI images into `AssistantImages`.
 
 use serde_json::{json, Value};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use crate::images::{ImagesModel, ImagesOptions};
 use crate::types::{AssistantImages, ContentBlock, ImagesContext, ImagesStopReason, Usage};
@@ -138,7 +142,7 @@ pub async fn generate_images(
         }
     };
 
-    if options.aborted {
+    if is_aborted(&options) {
         output.stop_reason = ImagesStopReason::Aborted;
         output.error_message = Some("Request aborted".to_string());
         return output;
@@ -180,9 +184,14 @@ pub async fn generate_images(
     for attempt in 0.. {
         // Each retry rebuilds the request (fresh per upstream
         // retryProviderRequest, which notes X-Stainless-Retry-Count stays 0).
-        let attempt_result = make_request().send().await;
+        let attempt_result = send_request(make_request(), options.abort_signal.clone()).await;
         match attempt_result {
             Ok(resp) => {
+                if is_aborted(&options) {
+                    output.stop_reason = ImagesStopReason::Aborted;
+                    output.error_message = Some("Request aborted".to_string());
+                    return output;
+                }
                 let status = resp.status();
                 let should_retry = retryable_provider_status(
                     status.as_u16(),
@@ -202,12 +211,16 @@ pub async fn generate_images(
                     .collect::<std::collections::BTreeMap<_, _>>();
                 match retry_delay_ms(
                     &headers_map,
-                    retries_remaining,
+                    max_retries - retries_remaining,
                     options.max_retry_delay_ms,
                     status.as_u16(),
                 ) {
                     Ok(Some(delay)) => {
-                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        if !sleep_retry(delay, &options).await {
+                            output.stop_reason = ImagesStopReason::Aborted;
+                            output.error_message = Some("Request aborted".to_string());
+                            return output;
+                        }
                     }
                     Ok(None) => {}
                     Err(msg) => {
@@ -218,7 +231,12 @@ pub async fn generate_images(
                 retries_remaining -= 1;
                 let _ = attempt;
             }
-            Err(err) => {
+            Err(AttemptError::Aborted) => {
+                output.stop_reason = ImagesStopReason::Aborted;
+                output.error_message = Some("Request aborted".to_string());
+                return output;
+            }
+            Err(AttemptError::Transport(err)) => {
                 // Transport errors retry only while budget remains (upstream
                 // treats undefined status as retryable).
                 if retries_remaining == 0 {
@@ -226,7 +244,11 @@ pub async fn generate_images(
                     break;
                 }
                 let delay = exponential_retry_delay(max_retries - retries_remaining);
-                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                if !sleep_retry(delay, &options).await {
+                    output.stop_reason = ImagesStopReason::Aborted;
+                    output.error_message = Some("Request aborted".to_string());
+                    return output;
+                }
                 retries_remaining -= 1;
             }
         }
@@ -234,7 +256,7 @@ pub async fn generate_images(
     let response = match response {
         Some(resp) => resp,
         None => {
-            output.stop_reason = if options.aborted {
+            output.stop_reason = if is_aborted(&options) {
                 ImagesStopReason::Aborted
             } else {
                 ImagesStopReason::Error
@@ -259,9 +281,14 @@ pub async fn generate_images(
             &model.as_chat_model(),
         );
     }
-    let body = match response.bytes().await {
+    let body = match read_response_body(response, options.abort_signal.clone()).await {
         Ok(body) => body,
-        Err(err) => {
+        Err(AttemptError::Aborted) => {
+            output.stop_reason = ImagesStopReason::Aborted;
+            output.error_message = Some("Request aborted".to_string());
+            return output;
+        }
+        Err(AttemptError::Transport(err)) => {
             output.stop_reason = ImagesStopReason::Error;
             output.error_message = Some(format!("Request body failed: {err}"));
             return output;
@@ -363,8 +390,89 @@ fn retry_delay_ms(
             let delay = (seconds * 1000.0) as u64;
             return validate_retry_delay(delay, max_retry_delay_ms, status);
         }
+        if let Some(retry_at_ms) = parse_http_date_epoch_ms(retry_after) {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as i128)
+                .unwrap_or(0);
+            let delay = retry_at_ms.saturating_sub(now_ms).max(0) as u64;
+            return validate_retry_delay(delay, max_retry_delay_ms, status);
+        }
     }
     Ok(Some(exponential_retry_delay(retry_index)))
+}
+
+/// Parse the IMF-fixdate form required by HTTP `Retry-After` into Unix epoch
+/// milliseconds. The upstream uses `Date.parse`; keeping this small parser
+/// local avoids a new runtime dependency while accepting the same wire form.
+fn parse_http_date_epoch_ms(value: &str) -> Option<i128> {
+    let fields: Vec<&str> = value.split_whitespace().collect();
+    if fields.len() != 6 || fields[5] != "GMT" {
+        return None;
+    }
+    let day = fields[1].parse::<u32>().ok()?;
+    let year = fields[3].parse::<i64>().ok()?;
+    let month = match fields[2] {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    };
+    if !(1..=31).contains(&day) || year < 1 {
+        return None;
+    }
+    let mut time = fields[4].split(':');
+    let hour = time.next()?.parse::<u32>().ok()?;
+    let minute = time.next()?.parse::<u32>().ok()?;
+    let second = time.next()?.parse::<u32>().ok()?;
+    if time.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day)?;
+    Some(
+        (days as i128 * 86_400 + hour as i128 * 3_600 + minute as i128 * 60 + second as i128)
+            * 1000,
+    )
+}
+
+/// Days from the proleptic Gregorian calendar to 1970-01-01, adapted from
+/// the civil-date algorithm used by standard library date implementations.
+fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
+    let max_day = match month {
+        2 => {
+            if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        }
+        4 | 6 | 9 | 11 => 30,
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => return None,
+    };
+    if day == 0 || day > max_day {
+        return None;
+    }
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = if adjusted_year >= 0 {
+        adjusted_year / 400
+    } else {
+        (adjusted_year - 399) / 400
+    };
+    let year_of_era = adjusted_year - era * 400;
+    let month_prime = i64::from(month) + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
 }
 
 fn validate_retry_delay(
@@ -396,6 +504,82 @@ fn rand01() -> f64 {
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
     (n % 1_000_000) as f64 / 1_000_000.0
+}
+
+enum AttemptError {
+    Aborted,
+    Transport(String),
+}
+
+fn is_aborted(options: &ImagesOptions) -> bool {
+    options.aborted
+        || options
+            .abort_signal
+            .as_ref()
+            .is_some_and(|signal| signal.load(Ordering::SeqCst))
+}
+
+async fn wait_for_abort(signal: Arc<AtomicBool>) {
+    while !signal.load(Ordering::SeqCst) {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+async fn send_request(
+    request: reqwest::RequestBuilder,
+    signal: Option<Arc<AtomicBool>>,
+) -> Result<reqwest::Response, AttemptError> {
+    if signal
+        .as_ref()
+        .is_some_and(|value| value.load(Ordering::SeqCst))
+    {
+        return Err(AttemptError::Aborted);
+    }
+    if let Some(signal) = signal {
+        tokio::select! {
+            result = request.send() => result.map_err(|error| AttemptError::Transport(error.to_string())),
+            _ = wait_for_abort(signal) => Err(AttemptError::Aborted),
+        }
+    } else {
+        request
+            .send()
+            .await
+            .map_err(|error| AttemptError::Transport(error.to_string()))
+    }
+}
+
+async fn read_response_body(
+    response: reqwest::Response,
+    signal: Option<Arc<AtomicBool>>,
+) -> Result<Vec<u8>, AttemptError> {
+    if let Some(signal) = signal {
+        tokio::select! {
+            result = response.bytes() => result
+                .map(|bytes| bytes.to_vec())
+                .map_err(|error| AttemptError::Transport(error.to_string())),
+            _ = wait_for_abort(signal) => Err(AttemptError::Aborted),
+        }
+    } else {
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| AttemptError::Transport(error.to_string()))
+    }
+}
+
+async fn sleep_retry(delay_ms: u64, options: &ImagesOptions) -> bool {
+    if is_aborted(options) {
+        return false;
+    }
+    let Some(signal) = options.abort_signal.clone() else {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        return !is_aborted(options);
+    };
+    tokio::select! {
+        _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms) ) => !is_aborted(options),
+        _ = wait_for_abort(signal) => false,
+    }
 }
 
 fn parse_data_uri(uri: &str) -> Option<(String, String)> {
@@ -568,6 +752,21 @@ mod retry_tests {
         assert!((3000..=4000).contains(&delay3), "{delay3}");
     }
 
+    #[test]
+    fn parses_http_date_retry_after_and_applies_cap() {
+        assert_eq!(
+            parse_http_date_epoch_ms("Wed, 21 Oct 2015 07:28:00 GMT"),
+            Some(1_445_412_480_000)
+        );
+        let mut headers = BTreeMap::new();
+        headers.insert(
+            "retry-after".to_string(),
+            "Tue, 01 Jan 2030 00:00:00 GMT".to_string(),
+        );
+        let error = retry_delay_ms(&headers, 0, Some(60_000), 429).unwrap_err();
+        assert!(error.contains("retry delay"), "{error}");
+    }
+
     #[tokio::test]
     async fn retries_429_then_succeeds() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -620,5 +819,52 @@ mod retry_tests {
             "expected an image block"
         );
         assert!(serve.await.unwrap() >= 2, "expected at least one retry");
+    }
+
+    #[tokio::test]
+    async fn aborts_retry_backoff_without_a_second_request() {
+        use std::sync::atomic::AtomicBool;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            let response = "HTTP/1.1 429 Too Many Requests\r\nretry-after-ms: 1000\r\ncontent-length: 5\r\n\r\nerror";
+            socket.write_all(response.as_bytes()).await.unwrap();
+            1usize
+        });
+        let model = crate::images::catalog_images("openrouter")
+            .into_iter()
+            .find(|candidate| candidate.id == "black-forest-labs/flux.2-pro")
+            .expect("openrouter image model");
+        let signal = Arc::new(AtomicBool::new(false));
+        let task_signal = signal.clone();
+        let options = ImagesOptions {
+            api_key: Some("test-key".to_string()),
+            max_retries: Some(2),
+            abort_signal: Some(task_signal),
+            ..Default::default()
+        };
+        let task = tokio::spawn(async move {
+            generate_images(
+                &ImagesModel {
+                    base_url: format!("http://{addr}"),
+                    ..model
+                },
+                &ImagesContext { input: vec![] },
+                &options,
+                reqwest::Client::new(),
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        signal.store(true, Ordering::SeqCst);
+        let output = task.await.unwrap();
+        assert_eq!(output.stop_reason, ImagesStopReason::Aborted);
+        assert_eq!(server.await.unwrap(), 1);
     }
 }

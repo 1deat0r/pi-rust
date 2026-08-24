@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 62.05% — 103 of 166 ledger tasks complete; 63 open.**
+**Conversion progress: 62.65% — 104 of 166 ledger tasks complete; 62 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -22,11 +22,11 @@ compaction, RPC controls, TUI components, and client/server support. Remaining
 work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
 
-The current implementation slice wires deferred-response fetch/cancel through
-the shared model runtime and all four faux mode entry points. Implementation
-commit `56ea6f3` and its push to `origin/main` are verified; GitHub CLI
-authentication is configured for the HTTPS remote, so checkpoints are pushed
-and hash-verified immediately.
+The current implementation slice completes OpenRouter image retry,
+HTTP-date-delay, and cancellation parity on top of the deferred-response
+runtime checkpoint `56ea6f3`; it is being committed and pushed with this
+documentation refresh. GitHub CLI authentication is configured for the HTTPS
+remote, so checkpoints are pushed and hash-verified immediately.
 
 The shared `AgentHarness` now exposes durable main and secondary lane views:
 lanes branch from session leaves, seed independent provider context, persist
@@ -141,6 +141,14 @@ the selected provider capabilities and shared models store, while the lazy API
 surface exposes only declared capabilities and preserves the upstream missing-
 capability diagnostics. Faux runtime tests cover submit, poll-to-resolution,
 cancellation, and mode registration.
+
+### Image generation
+
+OpenRouter image generation now follows the upstream retry contract: status and
+`x-should-retry` classification, numeric/HTTP-date `Retry-After`, server-delay
+caps, zero-based exponential backoff, and abort-aware request/body/backoff
+handling. Quota/billing errors remain terminal in the shared assistant retry
+classifier, and image failures stay encoded as `AssistantImages` results.
 
 ## Workspace
 

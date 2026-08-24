@@ -8,6 +8,7 @@
 //! implementation, matching upstream's `imagesApiProviderRegistry`.
 
 use serde_json::Value;
+use std::sync::{atomic::AtomicBool, Arc};
 
 use crate::model::{ModelCost, ModelInput};
 use crate::types::{AssistantImages, ContentBlock, ImagesContext, ImagesStopReason};
@@ -45,7 +46,7 @@ impl ImagesModel {
     }
 }
 
-/// Options for image generation (subset of upstream `ImagesOptions`).
+/// Options for image generation (upstream `ImagesOptions` request controls).
 #[derive(Clone, Default)]
 pub struct ImagesOptions {
     pub api_key: Option<String>,
@@ -54,6 +55,11 @@ pub struct ImagesOptions {
     pub max_retries: Option<u32>,
     pub max_retry_delay_ms: Option<u64>,
     pub on_response: Option<crate::model::OnResponseFn>,
+    /// Shared cancellation flag. This is the Rust equivalent of the
+    /// upstream `AbortSignal`; the image adapter observes it while sending,
+    /// reading, and sleeping between retry attempts.
+    pub abort_signal: Option<Arc<AtomicBool>>,
+    /// Legacy request-granular abort switch retained for synchronous callers.
     pub aborted: bool,
 }
 
@@ -175,15 +181,12 @@ pub fn register_builtin_images_api_providers() {
             // The openrouter_images adaptor is async; run it on a fresh current-
             // thread runtime so the sync images facade can reuse `generate_images`.
             let client = reqwest::Client::new();
-            let mut opts = options.clone();
-            let aborted = opts.aborted;
+            let opts = options.clone();
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("images runtime");
             rt.block_on(async move {
-                // The abort signal is a request-granular flag in this bridge.
-                opts.aborted = aborted;
                 openrouter_images::generate_images(model, context, &opts, client).await
             })
         },
