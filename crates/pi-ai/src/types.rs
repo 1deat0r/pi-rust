@@ -631,6 +631,13 @@ impl AssistantMessage {
             AssistantMessage::Assistant { error_message, .. } => error_message.as_deref(),
         }
     }
+    pub fn set_error_message(&mut self, message: impl Into<String>) {
+        match self {
+            AssistantMessage::Assistant { error_message, .. } => {
+                *error_message = Some(message.into());
+            }
+        }
+    }
     pub fn usage(&self) -> Option<&Usage> {
         match self {
             AssistantMessage::Assistant { usage, .. } => usage.as_ref(),

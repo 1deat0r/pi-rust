@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 58.43% (97/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 59.04% (98/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1361,6 +1361,36 @@ fork, resume, switch, and import boundary.
   `git ls-remote origin refs/heads/main` both resolve to
   `711a25e7878c6f403214611651128d90734c09a0`.
 - S-026 is complete. S-021/S-022 harness ownership, S-027 extension runtime,
+  and the remaining provider/TUI/client/server/evaluation audits remain open.
+
+### Session 42 — 2026-08-24 — Provider auth guidance across mode boundaries (S-032)
+Scope: finish the upstream provider-specific no-key/auth guidance at every
+user-visible print, JSON, interactive, and RPC error boundary.
+
+- Added a shared auth-failure classifier and formatter that preserves the
+  upstream `/login` plus docs message for API-key failures, emits the
+  provider-specific re-authentication instruction for OAuth-capable providers,
+  and leaves ordinary network/provider errors unchanged. Assistant terminal
+  messages are rewritten in place so usage, model, and stop-reason fields are
+  retained.
+- Wired the formatter through print-mode terminal errors, JSON message-update
+  envelopes, interactive turn events/transcripts, and both detached and
+  synchronous RPC event paths. Added the RPC wire regression and formatter
+  unit cases.
+- Evidence (unit/mock): `cargo test -p pi-coding-agent --offline --lib
+  core::auth_guidance::tests --quiet` (4 passed), the RPC auth-envelope
+  regression (1 passed), `cargo test -p pi-coding-agent --offline --lib
+  interactive:: --quiet` (33 passed), `cargo test -p pi-coding-agent
+  --offline --lib modes::rpc::tests --quiet` (41 passed), `cargo test -p
+  pi-coding-agent --offline --test cli_json_mode --quiet` (2 passed),
+  `cargo test -p pi-coding-agent --offline --test cli_print_parity --quiet`
+  (7 passed), `cargo check -p pi-coding-agent --offline`, `cargo fmt --all
+  -- --check`, and `git diff --check`.
+- The full workspace retry was blocked by host resource failures while an
+  unrelated OpenHuman release build ran: rustc was SIGKILLed, then rust-lld
+  reported SIGBUS, and the isolated retry reached `Disk quota exceeded`.
+  Re-run the full workspace gate after the host build/cache pressure clears.
+- S-032 is complete. S-021/S-022 harness ownership, S-027 extension runtime,
   and the remaining provider/TUI/client/server/evaluation audits remain open.
 
 ### Open (carry-forward)

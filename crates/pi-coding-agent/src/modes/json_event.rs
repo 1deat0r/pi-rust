@@ -25,6 +25,7 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         !crate::run::has_explicit_provider(args.provider.as_deref()),
     );
 
+    let mut selected_provider_uses_oauth = false;
     let (model, stream_fn): (pi_ai::model::Model, crate::run::StreamFn) = if provider == "faux" {
         let core = pi_ai::providers::FauxProviderCore::new(
             &pi_ai::providers::RegisterFauxProviderOptions::default(),
@@ -73,6 +74,9 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
                 "provider {provider:?} is not registered in the model registry"
             ));
         }
+        selected_provider_uses_oauth = models
+            .get_provider(&provider)
+            .is_some_and(|registered| registered.auth.oauth.is_some());
         let model = crate::core::model_runtime::resolve_run_model_for_provider(
             &models,
             &provider,
@@ -173,10 +177,19 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
     // mode, never in json mode.
     for event in rich_events {
         if let RichAgentEvent::MessageUpdate {
-            assistant_message_event,
+            mut assistant_message_event,
             ..
         } = event
         {
+            if let pi_ai::types::AssistantMessageEvent::Error { error_message, .. } =
+                &mut assistant_message_event
+            {
+                crate::core::auth_guidance::rewrite_assistant_error(
+                    error_message,
+                    &provider,
+                    selected_provider_uses_oauth,
+                );
+            }
             let update = crate::modes::rpc::to_json_message_update(&assistant_message_event);
             println!("{}", serialize_json_line(&update));
         }

@@ -219,6 +219,7 @@ struct RpcPromptRun {
     prompts: Vec<pi_agent::types::AgentMessage>,
     context: AgentContext,
     config: RichAgentLoopConfig,
+    provider_uses_oauth: bool,
 }
 
 /// A message-end record plus the session-only termination marker carried by
@@ -309,7 +310,16 @@ enum RpcTaskMessage {
     Bash(RpcBashTaskResult),
 }
 
+#[cfg(test)]
 fn serialize_rpc_prompt_event(event: RichAgentEvent) -> Option<String> {
+    serialize_rpc_prompt_event_with_auth(event, None, false)
+}
+
+fn serialize_rpc_prompt_event_with_auth(
+    event: RichAgentEvent,
+    provider: Option<&str>,
+    provider_uses_oauth: bool,
+) -> Option<String> {
     match event {
         RichAgentEvent::AgentStart => Some(serialize_json_line(&serde_json::json!({
             "type": "agent_start",
@@ -364,11 +374,22 @@ fn serialize_rpc_prompt_event(event: RichAgentEvent) -> Option<String> {
             "message": message,
         }))),
         RichAgentEvent::MessageUpdate {
-            assistant_message_event,
+            mut assistant_message_event,
             ..
-        } => Some(serialize_json_line(&to_json_message_update(
-            &assistant_message_event,
-        ))),
+        } => {
+            if let (Some(provider), AssistantMessageEvent::Error { error_message, .. }) =
+                (provider, &mut assistant_message_event)
+            {
+                crate::core::auth_guidance::rewrite_assistant_error(
+                    error_message,
+                    provider,
+                    provider_uses_oauth,
+                );
+            }
+            Some(serialize_json_line(&to_json_message_update(
+                &assistant_message_event,
+            )))
+        }
         RichAgentEvent::MessageEnd { message } => Some(serialize_json_line(&serde_json::json!({
             "type": "message_end",
             "message": message,
@@ -467,7 +488,9 @@ async fn run_rpc_prompt(run: RpcPromptRun, events: UnboundedSender<RpcPromptTask
         prompts,
         mut context,
         config,
+        provider_uses_oauth,
     } = run;
+    let provider = config.model.provider.clone();
     let persisted_messages = Arc::new(Mutex::new(Vec::new()));
     let persisted_for_loop = persisted_messages.clone();
     let events_for_loop = events.clone();
@@ -478,7 +501,9 @@ async fn run_rpc_prompt(run: RpcPromptRun, events: UnboundedSender<RpcPromptTask
             &mut pending_terminations,
             &mut persisted_for_loop.lock().unwrap(),
         );
-        if let Some(line) = serialize_rpc_prompt_event(event) {
+        if let Some(line) =
+            serialize_rpc_prompt_event_with_auth(event, Some(&provider), provider_uses_oauth)
+        {
             let _ = events_for_loop.send(RpcPromptTaskMessage::Event(line));
         }
     });
@@ -1110,6 +1135,10 @@ impl RpcRuntime {
             prompts,
             context,
             config,
+            provider_uses_oauth: self
+                .models
+                .get_provider(&self.provider)
+                .is_some_and(|registered| registered.auth.oauth.is_some()),
         }
     }
 
@@ -1565,7 +1594,9 @@ impl RpcRuntime {
                     prompts,
                     mut context,
                     config,
+                    provider_uses_oauth,
                 } = self.prepare_prompt_run(&message);
+                let provider = config.model.provider.clone();
                 let persisted_messages = Arc::new(Mutex::new(Vec::new()));
                 let persisted_for_loop = persisted_messages.clone();
                 let telemetry = HarnessTelemetryContext::default();
@@ -1590,7 +1621,11 @@ impl RpcRuntime {
                                     &mut pending_terminations,
                                     &mut persisted_for_loop.lock().unwrap(),
                                 );
-                                if let Some(line) = serialize_rpc_prompt_event(event) {
+                                if let Some(line) = serialize_rpc_prompt_event_with_auth(
+                                    event,
+                                    Some(&provider),
+                                    provider_uses_oauth,
+                                ) {
                                     captured_events.push(line);
                                 }
                             })
@@ -3220,6 +3255,33 @@ mod tests {
     }
 
     #[test]
+    fn rpc_provider_auth_errors_include_login_guidance() {
+        let mut message = pi_ai::types::AssistantMessage::new();
+        message.set_api_provider_model("google", "google", "gemini");
+        message.set_stop_reason(pi_ai::types::StopReason::Error);
+        message.set_error_message("Provider is not configured: google");
+        let line = serialize_rpc_prompt_event_with_auth(
+            RichAgentEvent::MessageUpdate {
+                message: pi_agent::types::AgentMessage::Core(Message::Assistant(message.clone())),
+                assistant_message_event: AssistantMessageEvent::Error {
+                    reason: pi_ai::types::ErrorReason::Error,
+                    error_message: message,
+                },
+            },
+            Some("google"),
+            false,
+        )
+        .expect("error event should serialize");
+        let json: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        let error = &json["assistantMessageEvent"]["error"]["errorMessage"];
+        assert!(error
+            .as_str()
+            .unwrap()
+            .starts_with("No API key found for google."));
+        assert!(error.as_str().unwrap().contains("Use /login"));
+    }
+
+    #[test]
     fn retry_terminal_event_preserves_usage_and_stop_reason() {
         let mut message = pi_ai::types::AssistantMessage::new();
         message.set_api_provider_model("faux", "faux", "faux-1");
@@ -3333,6 +3395,7 @@ mod tests {
             prompts: vec![pi_agent::agent::user_text_prompt("retry", 1)],
             context,
             config,
+            provider_uses_oauth: false,
         };
         let (sender, mut receiver) = mpsc::unbounded_channel();
         run_rpc_prompt(run, sender).await;
@@ -3808,6 +3871,7 @@ mod tests {
             prompts: vec![pi_agent::agent::user_text_prompt("hello", 1)],
             context,
             config,
+            provider_uses_oauth: false,
         };
         let (sender, mut receiver) = mpsc::unbounded_channel();
         run_rpc_prompt(run, sender).await;

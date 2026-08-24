@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-58.43% = 97 completed / 166 total tasks
-69 tasks remain open
+59.04% = 98 completed / 166 total tasks
+68 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,8 +26,9 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest implementation checkpoint is the committed S-026 CLI session-routing
-slice `711a25e`, after the parity checkpoint `eaa36ba` and the committed S-029
+The latest implementation checkpoint is the S-032 provider-auth-guidance slice
+in the working tree, after the committed S-026 CLI session-routing slice
+`711a25e`, the parity checkpoint `eaa36ba`, and the committed S-029
 install-telemetry slice `3d6f1fc` and the committed
 S-030 interactive cache-notice slice `7356dd3`,
 `ef640ce`,
@@ -58,12 +59,50 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`58.43% (97/166; 69 open)`. The S-026 implementation checkpoint `711a25e` is
-synchronized with `origin/main`. Preserve the pre-existing untracked
-`AGENTS.md`.
+`59.04% (98/166; 68 open)`. The latest committed parity checkpoint is
+`28ebf0d`; the S-032 implementation is currently in the working tree.
+Preserve the pre-existing untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
-startup-timing, interactive cache-notice, install-telemetry contracts, and the
-synchronized-doc workflow. The pre-existing `AGENTS.md` remains untouched.
+provider auth guidance, startup-timing, interactive cache-notice,
+install-telemetry contracts, and the synchronized-doc workflow. The
+pre-existing `AGENTS.md` remains untouched.
+
+## Current S-032 working-tree checkpoint
+
+Provider auth failures now receive the upstream actionable guidance at all
+user-visible mode boundaries:
+
+- Print mode rewrites terminal no-key/unauthorized errors to the provider
+  `/login` plus docs message, while OAuth-capable providers receive the
+  provider-specific re-authentication instruction.
+- JSON message updates, interactive turn events/transcripts, and both detached
+  and synchronous RPC event paths use the same formatter. Ordinary network
+  errors remain unchanged, and assistant usage/model/stop-reason fields are
+  preserved.
+- The formatter has unit coverage and the RPC wire envelope has a dedicated
+  regression. The focused interactive, RPC, JSON, print, check, formatter,
+  formatting, and diff gates passed.
+
+Focused evidence is recorded in the plan and ledger. The exact focused
+commands were:
+
+```text
+cargo test -p pi-coding-agent --offline --lib core::auth_guidance::tests --quiet (4 passed)
+cargo test -p pi-coding-agent --offline --lib modes::rpc::tests::rpc_provider_auth_errors_include_login_guidance --quiet (1 passed)
+cargo test -p pi-coding-agent --offline --lib interactive:: --quiet (33 passed)
+cargo test -p pi-coding-agent --offline --lib modes::rpc::tests --quiet (41 passed)
+cargo test -p pi-coding-agent --offline --test cli_json_mode --quiet (2 passed)
+cargo test -p pi-coding-agent --offline --test cli_print_parity --quiet (7 passed)
+cargo check -p pi-coding-agent --offline
+cargo fmt --all -- --check
+git diff --check
+```
+
+The full workspace retry is not currently a code failure: while an unrelated
+OpenHuman release build was active, one attempt was SIGKILLed during rustc,
+the next hit `rust-lld`/SIGBUS, and a clean isolated retry hit `Disk quota
+exceeded`. The temporary target was removed; re-run the workspace gate after
+host build/cache pressure is clear.
 
 The compiled self-update checkpoint was checked immediately after its commit:
 
@@ -536,7 +575,7 @@ items just because a similarly named Rust module exists.
 
 The operator has requested commit + push after each checkpoint. GitHub device
 authentication and the HTTPS credential helper are now configured; the
-accumulated branch is verified at parity with `origin/main` at `711a25e`.
-Before continuing, inspect
+accumulated branch is verified at parity with `origin/main` at `28ebf0d`; the
+S-032 working tree must be committed and pushed next. Before continuing, inspect
 `git status`, read this handoff, run the progress checker, and treat all
 existing dirty changes as user-owned work.

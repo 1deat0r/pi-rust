@@ -64,6 +64,60 @@ pub fn format_no_api_key_found_message(provider: &str) -> String {
     )
 }
 
+/// Match the auth failures emitted by the pi-ai facade and provider
+/// adaptors. The coding-agent layer owns the actionable `/login` guidance,
+/// so every mode can normalize these low-level messages at its output
+/// boundary without changing provider wire errors or retry behavior.
+pub fn is_auth_failure_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("no api key")
+        || lower.contains("provider is not configured")
+        || lower.contains("authheader requires")
+        || lower.contains("authentication failed")
+        || lower.contains("unauthorized")
+        || lower.contains("status 401")
+        || lower.contains("http 401")
+        || lower.contains(" 401")
+}
+
+/// Format the upstream OAuth-specific guidance or the provider API-key
+/// guidance for a low-level provider error. Already-normalized messages are
+/// returned unchanged so retry/error envelopes cannot accumulate duplicate
+/// documentation blocks.
+pub fn format_provider_auth_failure(provider: &str, oauth_capable: bool, message: &str) -> String {
+    if message.contains("Use /login")
+        || (message.starts_with("Authentication failed for ") && message.contains("Run '/login "))
+    {
+        return message.to_string();
+    }
+    if !is_auth_failure_message(message) {
+        return message.to_string();
+    }
+    if oauth_capable {
+        format!(
+            "Authentication failed for \"{provider}\". Credentials may have expired or network is unavailable. Run '/login {provider}' to re-authenticate."
+        )
+    } else {
+        format_no_api_key_found_message(provider)
+    }
+}
+
+/// Rewrite an assistant terminal error in place while preserving its model,
+/// usage, and stop-reason fields.
+pub fn rewrite_assistant_error(
+    message: &mut pi_ai::types::AssistantMessage,
+    provider: &str,
+    oauth_capable: bool,
+) {
+    let Some(raw) = message.error_message() else {
+        return;
+    };
+    let formatted = format_provider_auth_failure(provider, oauth_capable, raw);
+    if formatted != raw {
+        message.set_error_message(formatted);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +148,24 @@ mod tests {
         let lines: Vec<&str> = help.lines().collect();
         assert!(lines[1].ends_with("/docs/providers.md"));
         assert!(lines[2].ends_with("/docs/models.md"));
+    }
+
+    #[test]
+    fn provider_failures_get_one_actionable_auth_message() {
+        let key =
+            format_provider_auth_failure("google", false, "Provider is not configured: google");
+        assert_eq!(key.matches("Use /login").count(), 1);
+        assert!(key.starts_with("No API key found for google."));
+
+        let oauth = format_provider_auth_failure(
+            "openrouter",
+            true,
+            "Provider is not configured: openrouter",
+        );
+        assert!(oauth.contains("Authentication failed for \"openrouter\""));
+        assert!(oauth.contains("Run '/login openrouter'"));
+
+        let normal = format_provider_auth_failure("google", false, "network timeout");
+        assert_eq!(normal, "network timeout");
     }
 }

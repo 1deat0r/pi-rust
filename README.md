@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 58.43% — 97 of 166 ledger tasks complete; 69 open.**
+**Conversion progress: 59.04% — 98 of 166 ledger tasks complete; 68 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -81,6 +81,14 @@ the Rust distribution. When that exact value is requested, `pi` prints a
 warning and points to `/usr/bin/time -p pi ...` for supported process-level
 startup timing; other values remain silent, matching upstream's exact-one
 enable gate.
+
+### Provider authentication guidance
+
+Provider auth failures in print, JSON, interactive, and RPC modes preserve
+the upstream actionable guidance: API-key failures name the provider and point
+to `/login` plus the bundled provider/model docs; OAuth-capable failures point
+to `/login <provider>`. Network and non-auth errors retain their original
+diagnostics.
 
 ## Workspace
 

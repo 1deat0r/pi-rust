@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **58.43% (97/166; 69 open)**. Run
+- The exhaustive checker reports **59.04% (98/166; 68 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -19,7 +19,8 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the S-026 CLI session-routing checkpoint `711a25e` on `main`, after
+- HEAD is the S-026 CLI session-routing checkpoint `711a25e` on `main`, with
+  the S-032 auth-guidance slice currently in the working tree, after
   the startup-timing compatibility and compiled-binary self-update contracts,
   the print-path harness ownership, AgentTool harness/termination,
   schema-validator, panic-safe telemetry, install telemetry, update/version,
@@ -743,8 +744,20 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       (unit): `cargo test -p pi-coding-agent --offline
       core::timings::tests::matches_upstream_exact_one_gate_and_fallback_text`,
       `PI_TIMING=1 ./target/debug/pi --version` (mock binary smoke).
-- [ ] S-032 Wire provider-specific no-key/auth guidance into every model
+- [x] S-032 Wire provider-specific no-key/auth guidance into every model
       resolution and provider error path, preserving upstream help text.
+      Print, JSON, interactive, and RPC terminal provider errors now normalize
+      pi-ai auth failures to the upstream `/login`/docs guidance, including
+      OAuth-capable providers and preserving non-auth/network errors. Evidence
+      (unit/mock): `cargo test -p pi-coding-agent --offline --lib
+      core::auth_guidance::tests --quiet` (4 passed), the RPC auth-envelope
+      regression (1 passed), `cargo test -p pi-coding-agent --offline --lib
+      interactive:: --quiet` (33 passed), `cargo test -p pi-coding-agent
+      --offline --lib modes::rpc::tests --quiet` (41 passed), `cargo test -p
+      pi-coding-agent --offline --test cli_json_mode --quiet` (2 passed),
+      `cargo test -p pi-coding-agent --offline --test cli_print_parity
+      --quiet` (7 passed), `cargo check -p pi-coding-agent --offline`,
+      `cargo fmt --all -- --check`, and `git diff --check`.
 - [ ] S-033 Complete interactive slash-command behavior audits for export,
       import, share, trust, login/logout, new/resume, fork/clone, tree, and
       reload; each command needs a real terminal or fixture transcript.

@@ -142,6 +142,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     // providers route through the pi-ai Models facade (catalog-backed model
     // resolution + auth application + api dispatch). `faux` keeps its
     // scripted path for tests.
+    let mut selected_provider_uses_oauth = false;
     let (model, stream_fn, summary_stream_fn): (pi_ai::model::Model, StreamFn, StreamFn) =
         if provider == "faux" {
             let core = pi_ai::providers::FauxProviderCore::new(
@@ -221,6 +222,9 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
                     "provider {provider:?} is not registered in the model registry"
                 ));
             }
+            selected_provider_uses_oauth = models
+                .get_provider(&provider)
+                .is_some_and(|registered| registered.auth.oauth.is_some());
             let model = crate::core::model_runtime::resolve_run_model_for_provider(
                 &models,
                 &provider,
@@ -398,7 +402,11 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
                 .error_message()
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| format!("Request {}", a.stop_reason().unwrap().as_str()));
-            return Err(msg);
+            return Err(crate::core::auth_guidance::format_provider_auth_failure(
+                a.provider().unwrap_or(&provider),
+                selected_provider_uses_oauth,
+                &msg,
+            ));
         }
     }
 

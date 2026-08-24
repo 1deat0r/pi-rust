@@ -95,6 +95,9 @@ async fn stream_turn(
         ..Default::default()
     };
     let provider = runtime.provider.clone();
+    let provider_uses_oauth = models
+        .get_provider(&provider)
+        .is_some_and(|registered| registered.auth.oauth.is_some());
     let stream_fn: crate::run::StreamFn = if provider == "faux" {
         let core = pi_ai::providers::FauxProviderCore::new(
             &pi_ai::providers::RegisterFauxProviderOptions::default(),
@@ -132,16 +135,34 @@ async fn stream_turn(
     {
         return Vec::new();
     }
-    let Ok((new_messages, rich_events)) = harness.run_prompt_with_events(vec![prompt]).await else {
+    let Ok((mut new_messages, rich_events)) = harness.run_prompt_with_events(vec![prompt]).await
+    else {
         return Vec::new();
     };
     for event in rich_events {
         if let pi_agent::rich_agent::RichAgentEvent::MessageUpdate {
-            assistant_message_event,
+            mut assistant_message_event,
             ..
         } = event
         {
+            if let AssistantMessageEvent::Error { error_message, .. } = &mut assistant_message_event
+            {
+                crate::core::auth_guidance::rewrite_assistant_error(
+                    error_message,
+                    &provider,
+                    provider_uses_oauth,
+                );
+            }
             on_event(&assistant_message_event);
+        }
+    }
+    for message in &mut new_messages {
+        if let pi_agent::types::AgentMessage::Core(Message::Assistant(assistant)) = message {
+            crate::core::auth_guidance::rewrite_assistant_error(
+                assistant,
+                &provider,
+                provider_uses_oauth,
+            );
         }
     }
     for m in new_messages.iter().skip(1) {
