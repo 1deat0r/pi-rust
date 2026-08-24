@@ -26,7 +26,7 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local working-tree checkpoint is the partial legacy-session
+The latest local checkpoint is `ef640ce`, the partial legacy-session
 integration slice, after committed startup timing (`869ae6d`) and
 the committed compiled-binary self-update contract (`db97b89`) and interactive
 turn harness ownership
@@ -175,6 +175,17 @@ tree, without a new ledger checkbox:
   transcript, interactive harness regression, formatter, and diff check are
   the evidence for this slice. CLI --continue/--resume/--fork and the complete
   S-026 path audit remain open.
+
+The legacy-session checkpoint was verified against the remote immediately
+after commit:
+
+- `git rev-parse HEAD`: `ef640ce09d60b158e2062a03bf31e12d7a4e3f74`
+- `git ls-remote origin refs/heads/main`:
+  `90a5b931591eaeaea20f1fd9c0d10f72d7614a7b`
+- Immediate `git push origin main` failed with:
+  `fatal: could not read Username for 'https://github.com': No such device or address`.
+- `gh auth status` still reports no authenticated GitHub host; local and
+  remote parity is not claimed.
 
 ## Earlier completed code changes
 
