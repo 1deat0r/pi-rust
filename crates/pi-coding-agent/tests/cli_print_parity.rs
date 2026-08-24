@@ -87,6 +87,11 @@ fn count_assistants(path: &Path) -> usize {
     content.matches("\"role\":\"assistant\"").count()
 }
 
+fn read_header(path: &Path) -> serde_json::Value {
+    let content = fs::read_to_string(path).expect("session JSONL");
+    serde_json::from_str(content.lines().next().expect("session header")).expect("valid header")
+}
+
 #[test]
 fn multiple_messages_are_prompted_as_sequential_turns() {
     let sandbox = Sandbox::new("multi-turn");
@@ -222,5 +227,134 @@ fn print_mode_auto_compaction_persists_and_continues() {
     assert!(
         session.matches("\"type\":\"message\"").count() >= 4,
         "expected both turns to remain in session history"
+    );
+}
+
+#[test]
+fn continue_reopens_the_newest_session_and_appends_in_place() {
+    let sandbox = Sandbox::new("continue");
+    let cwd = sandbox.root.clone();
+
+    let first = sandbox.pi(
+        &cwd,
+        &["-p", "--provider", "faux", "--model", "faux-1", "first"],
+    );
+    assert!(first.status.success(), "stderr: {}", sandbox.stderr(&first));
+
+    let before = walk_jsonl(&sandbox.sessions);
+    assert_eq!(before.len(), 1, "first run creates one session");
+
+    let continued = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--continue",
+            "second",
+        ],
+    );
+    assert!(
+        continued.status.success(),
+        "stderr: {}",
+        sandbox.stderr(&continued)
+    );
+    assert!(sandbox
+        .stdout(&continued)
+        .contains("faux response to: second"));
+
+    let after = walk_jsonl(&sandbox.sessions);
+    assert_eq!(after.len(), 1, "--continue must not create a new session");
+    assert_eq!(count_assistants(&after[0]), 2);
+    let content = fs::read_to_string(&after[0]).unwrap();
+    assert!(content.contains("faux response to: first"));
+    assert!(content.contains("faux response to: second"));
+}
+
+#[test]
+fn resume_reopens_the_only_session_without_rewriting_it() {
+    let sandbox = Sandbox::new("resume");
+    let cwd = sandbox.root.clone();
+    let first = sandbox.pi(
+        &cwd,
+        &["-p", "--provider", "faux", "--model", "faux-1", "first"],
+    );
+    assert!(first.status.success(), "stderr: {}", sandbox.stderr(&first));
+
+    let resumed = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--resume",
+            "second",
+        ],
+    );
+    assert!(
+        resumed.status.success(),
+        "stderr: {}",
+        sandbox.stderr(&resumed)
+    );
+    let files = walk_jsonl(&sandbox.sessions);
+    assert_eq!(files.len(), 1);
+    assert_eq!(count_assistants(&files[0]), 2);
+}
+
+#[test]
+fn fork_accepts_a_session_path_and_persists_parent_metadata() {
+    let sandbox = Sandbox::new("fork");
+    let cwd = sandbox.root.clone();
+    let first = sandbox.pi(
+        &cwd,
+        &["-p", "--provider", "faux", "--model", "faux-1", "first"],
+    );
+    assert!(first.status.success(), "stderr: {}", sandbox.stderr(&first));
+    let source = walk_jsonl(&sandbox.sessions)
+        .into_iter()
+        .next()
+        .expect("source session");
+    let source_id = read_header(&source)["id"].as_str().unwrap().to_string();
+
+    let source_arg = source.to_string_lossy().into_owned();
+    let forked = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--fork",
+            &source_arg,
+            "child",
+        ],
+    );
+    assert!(
+        forked.status.success(),
+        "stderr: {}",
+        sandbox.stderr(&forked)
+    );
+    assert!(sandbox.stdout(&forked).contains("faux response to: child"));
+
+    let files = walk_jsonl(&sandbox.sessions);
+    assert_eq!(files.len(), 2, "fork must create a child file");
+    let child = files
+        .iter()
+        .find(|path| {
+            read_header(path)
+                .get("parentSessionId")
+                .and_then(serde_json::Value::as_str)
+                == Some(source_id.as_str())
+        })
+        .expect("fork header parentSessionId");
+    assert_eq!(
+        count_assistants(child),
+        2,
+        "fork copies history then appends"
     );
 }

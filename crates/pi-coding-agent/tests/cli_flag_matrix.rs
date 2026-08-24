@@ -214,11 +214,15 @@ fn newly_added_value_flags_are_not_unknown() {
         !stderr.contains("unknown flags"),
         "expected no unknown-flag diagnostic, got: {stderr}"
     );
-    assert!(out.status.success(), "stderr: {stderr}");
+    // `--fork` is now wired through the session resolver, so this deliberately
+    // nonexistent dummy target reaches a semantic error after parsing. The
+    // matrix still proves that the value flag is recognized rather than
+    // reported as unknown.
     assert!(
-        sandbox.stdout(&out).contains("faux response to: hi"),
-        "no faux reply"
+        stderr.contains("session not found: abc123"),
+        "expected fork target diagnostic, got: {stderr}"
     );
+    assert!(!stderr.contains("unknown flags"));
 }
 
 #[test]

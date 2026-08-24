@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 57.83% (96/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 58.43% (97/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1331,6 +1331,34 @@ offline, opt-out, retry, timeout, and settings-selector behavior.
   --quiet`, `cargo fmt --all`, and `git diff --check`.
 - S-029 is complete. The remaining S-026 CLI routing audit and S-021/S-022
   harness ownership work remain open.
+
+### Session 41 — 2026-08-24 — Complete CLI session routing and legacy import audit (S-026)
+
+Scope: finish the v1/v2/v3-to-v4 integration at every CLI, interactive, RPC,
+fork, resume, switch, and import boundary.
+
+- The one-shot path now migrates the configured session root before inventory,
+  resolves `--continue`/`--resume`/`--session` by newest, exact, path, or
+  unambiguous id prefix, and opens the selected session before constructing the
+  stateful harness. `--fork` creates a tree child with parent metadata; new
+  prompts append directly to the selected durable file, and the existing
+  branch is rebuilt into provider context.
+- Interactive and RPC startup now apply the same durable selector behavior.
+  Interactive `/import` migrates legacy files into the configured session
+  directory and derives metadata from the resulting v4 header; direct RPC
+  `switch_session`, startup scans, and fork/clone paths retain the atomic
+  migration boundary.
+- Added binary regressions for continue, resume, and fork path behavior and
+  updated the flag matrix for the now-semantic fork-target diagnostic.
+- Evidence (unit/integration): `cargo test -p pi-coding-agent --offline --test
+  cli_print_parity --quiet` (7 passed), `cargo test -p pi-coding-agent
+  --offline --test cli_flag_matrix --quiet` (5 passed), `cargo test -p
+  pi-coding-agent --offline --lib interactive:: --quiet` (33 passed), `cargo
+  test -p pi-coding-agent --offline --lib modes::rpc::tests --quiet` (40
+  passed), `cargo test --workspace --offline --quiet`, `cargo fmt --all --
+  --check`, and `git diff --check`.
+- S-026 is complete. S-021/S-022 harness ownership, S-027 extension runtime,
+  and the remaining provider/TUI/client/server/evaluation audits remain open.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

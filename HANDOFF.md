@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-57.83% = 96 completed / 166 total tasks
-72 tasks remain open
+58.43% = 97 completed / 166 total tasks
+69 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,8 +26,9 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is the documentation parity checkpoint `a1c3e92`,
-after the committed S-029 install-telemetry slice `3d6f1fc` and the committed
+The latest implementation checkpoint is the S-026 CLI session-routing slice
+(the next commit after parity checkpoint `eaa36ba`), after the committed S-029
+install-telemetry slice `3d6f1fc` and the committed
 S-030 interactive cache-notice slice `7356dd3`,
 `ef640ce`,
 the partial legacy-session
@@ -57,13 +58,12 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`57.83% (96/166; 70 open)`. Local `HEAD` and `origin/main` both point to
-`a1c3e9268cd74d8992bcbd4c62f995ff20a5382d`. Preserve the pre-existing
-untracked `AGENTS.md`.
-The README now records the legacy-session integration, startup-timing,
-interactive cache-notice, and install-telemetry contracts and the
-synchronized-doc workflow. All staged checkpoint changes are intentional local
-work ahead of the remote; the pre-existing `AGENTS.md` remains untouched.
+`58.43% (97/166; 69 open)`. The S-026 implementation is currently in the
+working tree; the previous parity checkpoint `eaa36ba` is synchronized with
+`origin/main`. Preserve the pre-existing untracked `AGENTS.md`.
+The README now records the legacy-session integration, CLI session routing,
+startup-timing, interactive cache-notice, install-telemetry contracts, and the
+synchronized-doc workflow. The pre-existing `AGENTS.md` remains untouched.
 
 The compiled self-update checkpoint was checked immediately after its commit:
 
@@ -244,16 +244,16 @@ The startup-timing compatibility checkpoint is complete in the working tree:
   `pi 0.84.2`. S-031 is closed; session migration integration, install
   telemetry, cache notices, and harness ownership remain open.
 
-The partial legacy-session integration checkpoint is complete in the working
-tree, without a new ledger checkbox:
+The earlier partial legacy-session integration checkpoint is complete in the
+working tree; S-026 is now closed by the CLI routing slice:
 
 - Legacy v1/v2/v3 files are atomically converted before interactive session
   inventory and direct RPC switch_session loads. Fork/clone inherit the
   converted v4 source; /import keeps its existing copy-and-convert path.
 - The three converter/file-system tests, direct RPC migration test, RPC golden
-  transcript, interactive harness regression, formatter, and diff check are
-  the evidence for this slice. CLI --continue/--resume/--fork and the complete
-  S-026 path audit remain open.
+  transcript, interactive harness regression, CLI continue/resume/fork tests,
+  interactive/RPC unit suites, workspace gate, formatter, and diff check are
+  the evidence for the completed audit.
 
 The legacy-session checkpoint was verified against the remote immediately
 after commit:
@@ -536,6 +536,7 @@ items just because a similarly named Rust module exists.
 
 The operator has requested commit + push after each checkpoint. GitHub device
 authentication and the HTTPS credential helper are now configured; the
-accumulated branch is verified at parity with `origin/main`. Before continuing, inspect
+accumulated branch is verified at parity with `origin/main`; the S-026 working
+tree must be committed and pushed next. Before continuing, inspect
 `git status`, read this handoff, run the progress checker, and treat all
 existing dirty changes as user-owned work.

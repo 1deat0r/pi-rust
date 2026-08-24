@@ -8,6 +8,7 @@
 //!   settings.json `defaultProvider`/`defaultModel` (project merged over
 //!   global) → hard default `google` / provider default.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use pi_agent::fs::StdFileSystem;
@@ -18,8 +19,8 @@ use pi_agent::harness::SimpleModels;
 use pi_agent::harness::{AgentHarness, AgentHarnessOptions, HarnessTool};
 use pi_agent::session::context::{build_session_context, SessionContextBuildOptions};
 use pi_agent::session::memory::{in_memory_metadata, InMemorySessionStorage};
-use pi_agent::session::types::{Entry, EntryNoStats};
-use pi_agent::session::{CreateOptions, JsonlSessionRepo, Session};
+use pi_agent::session::types::{Entry, EntryNoStats, SessionMetadata};
+use pi_agent::session::{CreateOptions, ForkOptions, JsonlSessionRepo, Session};
 use pi_agent::tools::image::{
     detect_supported_image_mime_type, process_image, ProcessImageOptions,
 };
@@ -265,14 +266,12 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         tools.push(crate::core::tools::find_tool(cwd.clone()));
         tools.push(crate::core::tools::grep_tool(cwd.clone()));
     }
-    // The harness owns the stateful Agent and a lane/session transcript for
-    // the duration of print mode. The final JSONL persistence step below
-    // replays that transcript into the selected durable session repository.
-    let harness_storage = Arc::new(Mutex::new(InMemorySessionStorage::new(in_memory_metadata(
-        "print-run",
-        None,
-    ))));
-    let harness_session: Session<StdFileSystem> = Session::from_in_memory(harness_storage);
+    // Resolve the durable session before creating the harness. This is the
+    // point where the CLI session selectors become observable: continue and
+    // resume open the selected v4 file, fork creates a child whose parent is
+    // the selected session, and a normal run creates a fresh file. Legacy
+    // files are migrated before inventory so every selector sees one format.
+    let (harness_session, durable_session_path) = prepare_run_session(args, &cwd).await?;
     let harness_tools = tools
         .iter()
         .map(HarnessTool::from_agent_tool)
@@ -285,6 +284,23 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     let (mut harness, _suspended) = AgentHarness::create(harness_options)
         .await
         .map_err(|error| format!("create agent harness: {error}"))?;
+
+    // A resumed or forked session must rebuild the provider context before the
+    // first new prompt. AgentHarness owns the live Agent state, while the
+    // session file remains the source of truth for compaction boundaries and
+    // derived model/tool settings.
+    let existing_entries = harness
+        .transcript()
+        .await
+        .map_err(|error| format!("read existing session transcript: {error}"))?;
+    if !existing_entries.is_empty() {
+        let context =
+            build_session_context(&existing_entries, &SessionContextBuildOptions::default());
+        harness
+            .set_agent_messages(context.messages)
+            .await
+            .map_err(|error| format!("restore session context: {error}"))?;
+    }
 
     // Expand `/template` prompt-template invocations in positional messages
     // (upstream `expandPromptTemplate`).
@@ -402,51 +418,243 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         })
         .unwrap_or_default();
 
-    // Persist the session unless --no-session.
-    let mut session_path = None;
-    if !args.no_session {
-        let session_root = args
-            .session_dir
-            .clone()
-            .map(|d| config::expand_tilde_path(&d))
-            .unwrap_or_else(|| config::get_session_dir().to_string_lossy().into_owned());
-        std::fs::create_dir_all(&session_root).map_err(|e| format!("create session dir: {e}"))?;
-        let mut repo = JsonlSessionRepo::new(pi_agent::fs::StdFileSystem::new(&cwd), &session_root);
-        let id = args
-            .session_id
-            .clone()
-            .or_else(|| std::env::var(config::ENV_SESSION_ID).ok())
-            .unwrap_or_else(pi_agent::session::new_id);
-        let mut session = repo
-            .create(CreateOptions {
-                id: Some(id.clone()),
-                cwd: cwd.clone(),
-                parent_session_id: None,
-                metadata: None,
-                fork_options: pi_agent::session::ForkOptions::Tree,
-            })
-            .await
-            .map_err(|e| format!("create session: {e}"))?;
-        let harness_entries = harness
-            .transcript()
-            .await
-            .map_err(|error| format!("read final harness transcript: {error}"))?;
-        for entry in harness_entries {
-            session
-                .append_entry(entry.to_no_stats(), "main")
-                .await
-                .map_err(|e| format!("append entry: {e}"))?;
-        }
-        if let Some(name) = &args.name {
-            let _ = session.set_name(Some(name)).await;
-        }
-        let meta = session.get_metadata().await;
-        session_path = Some(meta.path);
-    }
-
     Ok(RunOutcome {
         final_text,
-        session_path,
+        session_path: durable_session_path,
+    })
+}
+
+/// Select or create the session used by the one-shot CLI path.
+///
+/// The TypeScript CLI resolves these selectors before `runPrintMode` starts:
+/// `--continue` chooses the newest session for the current directory,
+/// `--resume` resolves a session target (or the newest available target in
+/// non-interactive mode), and `--fork` opens a child created from the selected
+/// source. Keeping that decision here means the harness can append directly to
+/// the selected durable file instead of replaying a fresh in-memory transcript
+/// into a second session at shutdown.
+async fn prepare_run_session(
+    args: &Args,
+    cwd: &str,
+) -> Result<(Session<StdFileSystem>, Option<String>), String> {
+    let selects_existing =
+        args.continue_session || args.resume || args.session.is_some() || args.fork.is_some();
+
+    if args.no_session {
+        if selects_existing {
+            return Err(
+                "--continue, --resume, --session, and --fork require session persistence"
+                    .to_string(),
+            );
+        }
+        let storage = Arc::new(Mutex::new(InMemorySessionStorage::new(in_memory_metadata(
+            "print-run",
+            None,
+        ))));
+        return Ok((Session::from_in_memory(storage), None));
+    }
+
+    let session_root = args
+        .session_dir
+        .clone()
+        .map(|directory| config::expand_tilde_path(&directory))
+        .unwrap_or_else(|| config::get_session_dir().to_string_lossy().into_owned());
+    let session_root_path = PathBuf::from(&session_root);
+    std::fs::create_dir_all(&session_root_path)
+        .map_err(|error| format!("create session dir {session_root}: {error}"))?;
+
+    // Migrate all files visible to the normal repository inventory before
+    // resolving a selector. An explicit path outside the configured root is
+    // migrated below as well.
+    crate::core::session_migration::migrate_legacy_sessions_in_root(&session_root_path)
+        .map_err(|error| format!("migrate legacy sessions: {error}"))?;
+
+    let fs = StdFileSystem::new(cwd);
+    let mut repo = JsonlSessionRepo::new(fs, &session_root);
+    let source_selector = args.fork.as_deref().or(args.session.as_deref());
+    let source = if let Some(selector) = source_selector {
+        let path = PathBuf::from(config::expand_tilde_path(selector));
+        if path.is_file() {
+            crate::core::session_migration::migrate_legacy_session_file(&path)
+                .map_err(|error| format!("migrate selected session: {error}"))?;
+        }
+        Some(resolve_session_metadata(&repo, selector).await?)
+    } else if args.continue_session || args.resume {
+        let mut sessions = repo
+            .list(Some(cwd))
+            .await
+            .map_err(|error| format!("list sessions: {error}"))?;
+        sessions.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
+        Some(sessions.into_iter().next().ok_or_else(|| {
+            if args.resume {
+                "no sessions found to resume in this directory".to_string()
+            } else {
+                "no previous session found to continue in this directory".to_string()
+            }
+        })?)
+    } else {
+        None
+    };
+
+    let mut session = if let Some(source) = source {
+        if args.fork.is_some() {
+            repo.fork(
+                &source,
+                CreateOptions {
+                    id: args
+                        .session_id
+                        .clone()
+                        .or_else(|| std::env::var(config::ENV_SESSION_ID).ok()),
+                    cwd: cwd.to_string(),
+                    parent_session_id: None,
+                    metadata: None,
+                    fork_options: ForkOptions::Tree,
+                },
+            )
+            .await
+            .map_err(|error| format!("fork session {}: {error}", source.id))?
+        } else {
+            repo.open(&source)
+                .await
+                .map_err(|error| format!("open session {}: {error}", source.id))?
+        }
+    } else {
+        repo.create(CreateOptions {
+            id: args
+                .session_id
+                .clone()
+                .or_else(|| std::env::var(config::ENV_SESSION_ID).ok()),
+            cwd: cwd.to_string(),
+            parent_session_id: None,
+            metadata: None,
+            fork_options: ForkOptions::Tree,
+        })
+        .await
+        .map_err(|error| format!("create session: {error}"))?
+    };
+
+    if let Some(name) = &args.name {
+        session
+            .set_name(Some(name))
+            .await
+            .map_err(|error| format!("set session name: {error}"))?;
+    }
+    let path = session.get_metadata().await.path;
+    Ok((session, Some(path)))
+}
+
+/// Resolve a CLI session selector by path, exact id, or an unambiguous id
+/// prefix. Paths may refer to a file outside the configured session root;
+/// those files are opened through a metadata projection after migration.
+pub(crate) async fn resolve_session_metadata(
+    repo: &JsonlSessionRepo<StdFileSystem>,
+    selector: &str,
+) -> Result<SessionMetadata, String> {
+    let expanded = config::expand_tilde_path(selector);
+    let requested_path = PathBuf::from(&expanded);
+    let path_like = requested_path.is_file()
+        || selector.ends_with(".jsonl")
+        || selector.contains(std::path::MAIN_SEPARATOR)
+        || selector.contains('/')
+        || selector.contains('\\');
+
+    let sessions = repo
+        .list(None)
+        .await
+        .map_err(|error| format!("list sessions: {error}"))?;
+    let requested_canonical = if requested_path.exists() {
+        std::fs::canonicalize(&requested_path).ok()
+    } else {
+        None
+    };
+
+    let mut matches: Vec<SessionMetadata> = sessions
+        .into_iter()
+        .filter(|metadata| {
+            if path_like {
+                if metadata.path == expanded {
+                    return true;
+                }
+                return requested_canonical.as_ref().is_some_and(|requested| {
+                    std::fs::canonicalize(&metadata.path)
+                        .ok()
+                        .is_some_and(|candidate| candidate == *requested)
+                });
+            }
+            metadata.id == selector || metadata.id.starts_with(selector)
+        })
+        .collect();
+
+    if matches.is_empty() && path_like && requested_path.is_file() {
+        return metadata_from_session_path(&requested_path);
+    }
+    if matches.is_empty() {
+        return Err(format!("session not found: {selector}"));
+    }
+    if matches.len() > 1 {
+        matches.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
+        let ids = matches
+            .iter()
+            .map(|metadata| metadata.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("session selector {selector:?} is ambiguous: {ids}"));
+    }
+
+    Ok(matches.remove(0))
+}
+
+/// Read the v4 header for an explicit session file that is not in the
+/// configured repository root. The repository only needs this metadata to
+/// validate/open the file; entries remain decoded by `JsonlSessionRepo::open`.
+pub(crate) fn metadata_from_session_path(path: &Path) -> Result<SessionMetadata, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|error| format!("read session {}: {error}", path.display()))?;
+    let first_line = content
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| format!("session {} is empty", path.display()))?;
+    let header: serde_json::Value = serde_json::from_str(first_line)
+        .map_err(|error| format!("parse session header {}: {error}", path.display()))?;
+    if header.get("kind").and_then(serde_json::Value::as_str) != Some("header") {
+        return Err(format!("session {} is not a v4 JSONL file", path.display()));
+    }
+    let id = header
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("session {} header is missing id", path.display()))?;
+    let modified_at = std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    Ok(SessionMetadata {
+        id: id.to_string(),
+        created_at: header
+            .get("createdAt")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        cwd: header
+            .get("cwd")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        path: path.to_string_lossy().into_owned(),
+        modified_at,
+        source_format: header
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(4),
+        parent_session_id: header
+            .get("parentSessionId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        legacy_parent_session_path: header
+            .get("legacyParentSessionPath")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        metadata: header.get("metadata").cloned(),
     })
 }
 

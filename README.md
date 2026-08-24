@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 57.83% — 96 of 166 ledger tasks complete; 70 open.**
+**Conversion progress: 58.43% — 97 of 166 ledger tasks complete; 69 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -22,13 +22,24 @@ compaction, RPC controls, TUI components, and client/server support. Remaining
 work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
 
-The current local and GitHub `main` checkpoints are synchronized at
-`a1c3e92`. GitHub CLI authentication is configured for the HTTPS remote, so
-future implementation checkpoints are pushed and hash-verified immediately.
+The last verified local and GitHub `main` checkpoint is `eaa36ba`. GitHub CLI
+authentication is configured for the HTTPS remote, so implementation
+checkpoints are pushed and hash-verified immediately.
 
-Legacy v1/v2/v3 session files are now atomically migrated before interactive
-resume inventory and direct RPC session switches. The CLI continue/resume/fork
-surface still has an explicit follow-up audit in the conversion ledger.
+Legacy v1/v2/v3 session files are atomically migrated before session inventory,
+CLI continue/resume/session/fork selection, interactive startup and `/import`,
+and direct RPC switches. Selected sessions restore their branch context and
+append in place; forks preserve parent metadata. The complete routing audit is
+tracked as S-026 in the conversion ledger.
+
+### Session routing
+
+`--continue` and `--resume` reopen the newest session for the current working
+directory, `--session` accepts a session path or unambiguous id prefix, and
+`--fork` creates a durable child from a path or id. These selectors run before
+the print, interactive, and RPC harnesses are created, so resumed context and
+new messages share one JSONL file. Legacy v1/v2/v3 files are converted
+atomically at the inventory or explicit-path boundary.
 
 ### Updating compiled Rust installs
 

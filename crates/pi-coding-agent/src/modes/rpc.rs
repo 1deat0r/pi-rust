@@ -622,26 +622,80 @@ impl RpcRuntime {
         ))
         .map_err(|e| format!("migrate legacy sessions: {e}"))?;
         let mut repo = JsonlSessionRepo::new(pi_agent::fs::StdFileSystem::new(&cwd), &session_root);
-        let session_id = args
-            .session_id
-            .clone()
-            .or_else(|| std::env::var(config::ENV_SESSION_ID).ok())
-            .unwrap_or_else(pi_agent::session::new_id);
-        let session = repo
-            .create(CreateOptions {
-                id: Some(session_id.clone()),
+        let source_selector = args.fork.as_deref().or(args.session.as_deref());
+        let mut session = if let Some(selector) = source_selector {
+            let selected_path = config::expand_tilde_path(selector);
+            if std::path::Path::new(&selected_path).is_file() {
+                crate::core::session_migration::migrate_legacy_session_file(std::path::Path::new(
+                    &selected_path,
+                ))
+                .map_err(|e| format!("migrate selected session: {e}"))?;
+            }
+            let source = crate::run::resolve_session_metadata(&repo, selector).await?;
+            if args.fork.is_some() {
+                repo.fork(
+                    &source,
+                    CreateOptions {
+                        id: args
+                            .session_id
+                            .clone()
+                            .or_else(|| std::env::var(config::ENV_SESSION_ID).ok()),
+                        cwd: cwd.clone(),
+                        parent_session_id: None,
+                        metadata: None,
+                        fork_options: ForkOptions::Tree,
+                    },
+                )
+                .await
+                .map_err(|e| format!("fork session {}: {e}", source.id))?
+            } else {
+                repo.open(&source)
+                    .await
+                    .map_err(|e| format!("open session {}: {e}", source.id))?
+            }
+        } else if args.continue_session || args.resume {
+            let mut sessions = repo
+                .list(Some(&cwd))
+                .await
+                .map_err(|e| format!("list sessions: {e}"))?;
+            sessions.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
+            let source = sessions.into_iter().next().ok_or_else(|| {
+                if args.resume {
+                    "no sessions found to resume in this directory".to_string()
+                } else {
+                    "no previous session found to continue in this directory".to_string()
+                }
+            })?;
+            repo.open(&source)
+                .await
+                .map_err(|e| format!("open session {}: {e}", source.id))?
+        } else {
+            repo.create(CreateOptions {
+                id: args
+                    .session_id
+                    .clone()
+                    .or_else(|| std::env::var(config::ENV_SESSION_ID).ok()),
                 cwd: cwd.clone(),
                 parent_session_id: None,
                 metadata: None,
                 fork_options: ForkOptions::Tree,
             })
             .await
-            .map_err(|e| format!("create session: {e}"))?;
+            .map_err(|e| format!("create session: {e}"))?
+        };
+        if let Some(name) = &args.name {
+            session
+                .set_name(Some(name))
+                .await
+                .map_err(|e| format!("set session name: {e}"))?;
+        }
         let meta = session.get_metadata().await;
         let session_path = Some(meta.path.clone());
+        let session_id = meta.id.clone();
+        let session_name = session.get_name().await;
 
         let system_prompt = args.system_prompt.clone();
-        Ok(Self {
+        let mut runtime = Self {
             cwd,
             agent_dir,
             settings,
@@ -657,7 +711,7 @@ impl RpcRuntime {
             session_root,
             session_path,
             session_id,
-            session_name: None,
+            session_name,
             auto_compaction_enabled,
             auto_retry_enabled,
             messages: Vec::new(),
@@ -678,7 +732,9 @@ impl RpcRuntime {
             )))),
             system_prompt,
             tools_enabled: !args.no_tools,
-        })
+        };
+        runtime.messages = runtime.load_context_messages().await?;
+        Ok(runtime)
     }
 
     /// Available models snapshot (all catalog models across providers).

@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **57.83% (96/166)**. Run
+- The exhaustive checker reports **58.43% (97/166; 69 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -19,12 +19,12 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the documentation parity checkpoint `a1c3e92` on `main`, after
+- HEAD is the documentation parity checkpoint `eaa36ba` on `main`, after
   the startup-timing compatibility and compiled-binary self-update contracts,
   the print-path harness ownership, AgentTool harness/termination,
   schema-validator, panic-safe telemetry, install telemetry, update/version,
   and model-catalog work. GitHub authentication is configured through `gh
-  auth setup-git`, and `origin/main` matches local `HEAD` at `a1c3e92`.
+  auth setup-git`, and `origin/main` matches local `HEAD` at `eaa36ba`.
 - The workspace is green under `cargo test --workspace --offline`; the focused
   tool-contract, RPC, image/read, print-mode compaction, malformed-call, and
   harness-owned print-path suites pass. The one-shot path now owns a
@@ -674,13 +674,21 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       pi-coding-agent --offline --test cli_print_parity` (4 passed), including
       the forced JSONL compaction/continuation test; `cargo check --workspace
       --offline`.
-- [ ] S-026 Complete legacy v1/v2/v3-to-v4 import integration for every resume,
+- [x] S-026 Complete legacy v1/v2/v3-to-v4 import integration for every resume,
       switch, fork, and `/import` path, not only the standalone converter.
-      Partial integration now atomically migrates legacy files under the
-      session root before interactive resume inventory and migrates direct RPC
-      switch paths before opening them; migration tests cover idempotence and
-      the RPC-loaded transcript. CLI `--continue`/`--resume`/`--fork` routing
-      and the remaining full-path audit are still open.
+      CLI `--continue`/`--resume`/`--session`/`--fork` now select durable
+      sessions before harness creation, restore the active branch context, and
+      append directly to the selected file. Interactive and RPC startup use
+      the same selector behavior; root scans and explicit switch/import paths
+      atomically migrate legacy files, and `/import` honors a custom session
+      directory while reading the migrated v4 header metadata. Evidence:
+      `cargo test -p pi-coding-agent --offline --test cli_print_parity --quiet`
+      (7 passed), `cargo test -p pi-coding-agent --offline --test
+      cli_flag_matrix --quiet` (5 passed), `cargo test -p pi-coding-agent
+      --offline --lib interactive:: --quiet` (33 passed), `cargo test -p
+      pi-coding-agent --offline --lib modes::rpc::tests --quiet` (40 passed),
+      `cargo test --workspace --offline --quiet`, `cargo fmt --all -- --check`,
+      `git diff --check`, and `node scripts/conversion-progress.mjs`.
 - [ ] S-027 Port TypeScript extension execution semantics or provide a proven
       equivalent embedded runtime; cover extension commands, hooks, renderers,
       and failure isolation.

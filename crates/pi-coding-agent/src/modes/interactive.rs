@@ -809,17 +809,104 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     ))
     .map_err(|e| format!("migrate legacy sessions: {e}"))?;
     let mut repo = JsonlSessionRepo::new(pi_agent::fs::StdFileSystem::new(&cwd), &session_root);
-    let session_id = pi_agent::session::new_id();
-    let session = repo
-        .create(CreateOptions {
-            id: Some(session_id.clone()),
+    let mut initial_status_banner = String::new();
+    let source_selector = args.fork.as_deref().or(args.session.as_deref());
+    let mut session = if let Some(selector) = source_selector {
+        let selected_path = config::expand_tilde_path(selector);
+        if std::path::Path::new(&selected_path).is_file() {
+            crate::core::session_migration::migrate_legacy_session_file(std::path::Path::new(
+                &selected_path,
+            ))
+            .map_err(|e| format!("migrate selected session: {e}"))?;
+        }
+        let source = crate::run::resolve_session_metadata(&repo, selector).await?;
+        if args.fork.is_some() {
+            let new_id = args
+                .session_id
+                .clone()
+                .or_else(|| std::env::var(config::ENV_SESSION_ID).ok())
+                .unwrap_or_else(pi_agent::session::new_id);
+            let session = repo
+                .fork(
+                    &source,
+                    CreateOptions {
+                        id: Some(new_id.clone()),
+                        cwd: cwd.clone(),
+                        parent_session_id: None,
+                        metadata: None,
+                        fork_options: ForkOptions::Tree,
+                    },
+                )
+                .await
+                .map_err(|e| format!("fork session {}: {e}", source.id))?;
+            initial_status_banner = format!(
+                "forked session {} into {}",
+                source.id.get(..8).unwrap_or(&source.id),
+                new_id.get(..8).unwrap_or(&new_id)
+            );
+            session
+        } else {
+            let session = repo
+                .open(&source)
+                .await
+                .map_err(|e| format!("open session {}: {e}", source.id))?;
+            initial_status_banner = format!(
+                "resumed session {}",
+                source.id.get(..8).unwrap_or(&source.id)
+            );
+            session
+        }
+    } else if args.continue_session || args.resume {
+        let mut sessions = repo
+            .list(Some(&cwd))
+            .await
+            .map_err(|e| format!("list sessions: {e}"))?;
+        sessions.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
+        let source = sessions.into_iter().next().ok_or_else(|| {
+            if args.resume {
+                "no sessions found to resume in this directory".to_string()
+            } else {
+                "no previous session found to continue in this directory".to_string()
+            }
+        })?;
+        let session = repo
+            .open(&source)
+            .await
+            .map_err(|e| format!("open session {}: {e}", source.id))?;
+        initial_status_banner = if args.resume {
+            format!(
+                "resumed session {}",
+                source.id.get(..8).unwrap_or(&source.id)
+            )
+        } else {
+            format!(
+                "continued session {}",
+                source.id.get(..8).unwrap_or(&source.id)
+            )
+        };
+        session
+    } else {
+        repo.create(CreateOptions {
+            id: args
+                .session_id
+                .clone()
+                .or_else(|| std::env::var(config::ENV_SESSION_ID).ok()),
             cwd: cwd.clone(),
             parent_session_id: None,
             metadata: None,
             fork_options: ForkOptions::Tree,
         })
         .await
-        .map_err(|e| format!("create session: {e}"))?;
+        .map_err(|e| format!("create session: {e}"))?
+    };
+    if let Some(name) = &args.name {
+        session
+            .set_name(Some(name))
+            .await
+            .map_err(|e| format!("set session name: {e}"))?;
+    }
+    let session_id = session.get_metadata().await.id;
+    let session_name = session.get_name().await;
 
     let mut runtime = InteractiveRuntime {
         cwd: cwd.clone(),
@@ -831,7 +918,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         repo,
         session_root: session_root.clone(),
         session_id: session_id.clone(),
-        session_name: None,
+        session_name,
         system_prompt: args.system_prompt.clone(),
         tools_enabled: !args.no_tools,
         auto_resize_images: settings.get_image_auto_resize(),
@@ -901,12 +988,24 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         None,
     )));
 
+    // CLI startup selectors (`--continue`, `--resume`, `--session`, and
+    // `--fork`) open the target before the TUI starts. Rehydrate the visible
+    // transcript and cache shadow now so the first rendered frame and the
+    // first prompt observe the same history as slash-command resume/import.
+    if !initial_status_banner.is_empty() {
+        let (messages, cache_entries) =
+            rehydrate_transcript(&runtime, &transcript_md, hide_thinking).await;
+        runtime.messages = messages;
+        runtime.cache_entries = cache_entries;
+        runtime.persisted_until = runtime.messages.len();
+    }
+
     let mut tree = Tree::new(Arc::new(Mutex::new(terminal)));
 
     let footer_text: Arc<Mutex<Text>> = Arc::new(Mutex::new(Text::new(String::new(), 0, 0, None)));
 
     let mut modal: Option<Modal> = None;
-    let mut status_banner = String::new();
+    let mut status_banner = initial_status_banner;
     let stream_buffer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let mut streaming = false;
     let mut pending_text = String::new();
@@ -1348,9 +1447,10 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                             status_banner = "usage: /import <session.jsonl>".to_string();
                                         }
                                         Some(path) => {
-                                            if !std::path::Path::new(path).exists() {
+                                            let input_path = config::expand_tilde_path(path);
+                                            if !std::path::Path::new(&input_path).exists() {
                                                 status_banner = format!("file not found: {path}");
-                                            } else if let Ok(content) = std::fs::read_to_string(path) {
+                                            } else if let Ok(content) = std::fs::read_to_string(&input_path) {
                                                 let header_id = content.lines().next().and_then(|line| {
                                                     serde_json::from_str::<serde_json::Value>(line)
                                                         .ok()
@@ -1373,13 +1473,12 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                             .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string()))
                                                             == Some("header".to_string());
                                                         let resolved_path: Option<String> = if is_v4 {
-                                                            Some(path.to_string())
+                                                            Some(input_path.clone())
                                                         } else {
                                                             match crate::core::session_migration::convert_legacy_to_v4(&content) {
                                                                 Ok(v4_content) => {
-                                                                    let session_root = config::get_session_dir().to_string_lossy().into_owned();
-                                                                    let _ = std::fs::create_dir_all(&session_root);
-                                                                    let converted = std::path::Path::new(&session_root)
+                                                                    let _ = std::fs::create_dir_all(&runtime.session_root);
+                                                                    let converted = std::path::Path::new(&runtime.session_root)
                                                                         .join(format!("imported-{header_id}.jsonl"));
                                                                     match std::fs::write(&converted, v4_content) {
                                                                         Ok(()) => Some(converted.to_string_lossy().into_owned()),
@@ -1399,16 +1498,14 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                             return Ok(());
                                                         };
                                                         import_path = Some(resolved_path.clone());
-                                                        let metadata = pi_agent::session::types::SessionMetadata {
-                                                            id: header_id,
-                                                            created_at: 0,
-                                                            cwd: runtime.cwd.clone(),
-                                                            path: resolved_path,
-                                                            modified_at: 0,
-                                                            source_format: 4,
-                                                            parent_session_id: None,
-                                                            legacy_parent_session_path: None,
-                                                            metadata: None,
+                                                        let metadata = match crate::run::metadata_from_session_path(
+                                                            std::path::Path::new(&resolved_path),
+                                                        ) {
+                                                            Ok(metadata) => metadata,
+                                                            Err(error) => {
+                                                                status_banner = format!("import failed: {error}");
+                                                                return Ok(());
+                                                            }
                                                         };
                                                         match runtime.repo.open(&metadata).await {
                                                             Ok(session) => {
