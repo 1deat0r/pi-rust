@@ -23,10 +23,10 @@ work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
 
 The current implementation slice wires deferred-response fetch/cancel through
-the shared model runtime and all four faux mode entry points; its synchronized
-checkpoint is being committed and pushed with this documentation refresh.
-GitHub CLI authentication is configured for the HTTPS remote, so implementation
-checkpoints are pushed and hash-verified immediately.
+the shared model runtime and all four faux mode entry points. Implementation
+commit `56ea6f3` and its push to `origin/main` are verified; GitHub CLI
+authentication is configured for the HTTPS remote, so checkpoints are pushed
+and hash-verified immediately.
 
 The shared `AgentHarness` now exposes durable main and secondary lane views:
 lanes branch from session leaves, seed independent provider context, persist

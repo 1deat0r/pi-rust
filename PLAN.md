@@ -1577,6 +1577,9 @@ lazy capability declarations and models-store overrides.
 - S-005 and S-006 are complete. Next provider parity item is S-007 image
   retry/error classification; broader harness, provider, TUI, client/server,
   evaluation, and final-audit work remains open.
+- Checkpoint: commit `56ea6f3`; local `HEAD` and `origin/main` were verified
+  equal immediately after the implementation push. This documentation refresh
+  follows that push.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

@@ -26,7 +26,8 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest implementation checkpoint is the committed S-033
+The latest implementation checkpoint is the committed deferred-response
+runtime/lazy-capability slice `56ea6f3`, after the committed S-033
 interactive slash-command PTY fixture slice `3b4d350`, after the committed
 S-032
 provider-auth-guidance slice `50c2103`, after the committed S-026 CLI
@@ -62,9 +63,10 @@ additions/renames include:
 
 Current status at pause: branch `main`, progress checker reports
 `62.05% (103/166; 63 open)`. The deferred-response runtime and lazy-capability
-implementation slice is staged for the next local commit and immediate push;
-the exact synchronized hash will be recorded in the follow-up documentation
-refresh. Preserve the pre-existing untracked `AGENTS.md`.
+slice is committed as `56ea6f3`; `git rev-parse HEAD` and
+`git ls-remote origin refs/heads/main` resolve to the same full hash. This
+documentation-only refresh records that synchronized checkpoint. Preserve the
+pre-existing untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
 provider auth guidance, startup-timing, interactive cache-notice,
 install-telemetry contracts, the interactive slash-command PTY checkpoint, the
