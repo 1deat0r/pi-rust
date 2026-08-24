@@ -1104,7 +1104,7 @@ owners.
 Progress checker:
 
 ```text
-Conversion progress: 85.54% (142/166; 24 open)
+Conversion progress: 87.95% (146/166; 20 open)
 ```
 
 Evidence synchronized here:
@@ -1123,8 +1123,13 @@ Evidence synchronized here:
   `interactive_slash_pty` passed 1 case; stty, ANSI, tmux, resize,
   Ctrl-C/Ctrl-D, and exact diagnostics were asserted under tmux. Owned
   rustfmt and diff checks passed.
+- D1b: `/home/mustbearnold/.cargo/bin/cargo test -p pi-server --offline
+  --quiet` — 55 total tests passed, including 32 expanded conformance cases;
+  strict all-target clippy, package formatting, and the 4-case reconnect
+  lease suite also passed. The server harness now covers deferred operations,
+  malformed/handshake errors, snapshots, lifecycle, queues, and cleanup.
 
-Active next leaves are D1b expanded server conformance and F2 parity fixtures.
-After those complete, reverify D3/R3 and run the full workspace tests, strict
-clippy, release suite, parity suite, and independent final source/TODO audit.
+Active next leave is F2 parity fixtures. After it completes, run the full
+workspace tests, strict clippy, release suite, parity suite, and independent
+final source/TODO audit, including the remaining extension-runtime decision.
 Full conversion remains open.

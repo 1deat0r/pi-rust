@@ -2,6 +2,9 @@
 //! session on a live PiServer over a Unix socket, drive prompt/steer/abort/
 //! set_model/set_thinking through the handle, verify snapshot subscription
 //! fanout and detach/dispose semantics.
+//!
+//! Upstream oracle: upstream_pi/packages/server/test/sessions.test.ts and
+//! upstream_pi/packages/server/src/testing/service.ts.
 
 use std::sync::{Arc, Mutex};
 

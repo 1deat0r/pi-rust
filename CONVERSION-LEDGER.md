@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **85.54% (142/166; 24 open)**. Run
+- The exhaustive checker reports **87.95% (146/166; 20 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -359,8 +359,15 @@ Recut of the remaining work by user impact + risk:
       validation on server.
 - [x] 50. Session lock + terminal-close semantics + command queuing.
 - [x] 51. Subscription segment control for prompt/steer concurrency.
-- [ ] 52. Port `testing/service.ts` parity harness + conformance suite.
-- [ ] 53. Server conformance tests (30+ cases). (unit)
+- [x] 52. Port `testing/service.ts` parity harness + conformance suite.
+      (unit/mock) `cargo test -p pi-server --offline --quiet` passes the
+      deferred service/runtime, test-client, snapshot, and lifecycle harness
+      cases; the expanded server suite contains 32 conformance cases.
+- [x] 53. Server conformance tests (30+ cases). (unit)
+      `cargo test -p pi-server --offline --quiet` passes 55 total tests,
+      including malformed frames, handshake rejection, snapshots,
+      attach/detach/exclusive/dispose, queues, subscriptions, errors, and
+      cleanup/order cases.
 - [x] 54. Client reconnect state machine + connection-state listeners. (mock)
       `PiClient` now exposes `Disconnected`/`Connecting`/`Connected`, reconnects
       through a fresh Unix handshake with connection epochs, invalidates
@@ -1084,11 +1091,15 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 
 ### S1-F — pi-server/pi-client auxiliary library parity
 
-- [ ] S-043 Port the upstream `testing/service.ts`, test client, deferred
-      helpers, and test-server fixtures.
-- [ ] S-044 Run the complete server protocol/service conformance suite,
+- [x] S-043 Port the upstream `testing/service.ts`, test client, deferred
+      helpers, and test-server fixtures. Evidence: unit/mock — the 55-test
+      `pi-server` suite covers deferred operations, test service/runtime,
+      snapshots, and the local Unix test client.
+- [x] S-044 Run the complete server protocol/service conformance suite,
       including malformed frames, handshake errors, snapshots, and lifecycle
-      events.
+      events. Evidence: unit/live-local — 32 expanded `server_e2e` cases and
+      4 reconnect lease cases pass; strict server clippy and formatting also
+      pass.
 - [x] S-045 Port client reconnect/backoff and connection-state listener
       behavior, including in-flight request failure and replay rules. Evidence:
       mock/socket — `cargo test -p pi-client --offline --test auxiliary_parity`

@@ -15,6 +15,7 @@ pub struct ServerSnapshotPublisher {
     sessions: Arc<Mutex<Vec<SessionMetadata>>>,
     models: Arc<Mutex<Vec<pi_protocol::ModelMetadata>>>,
     connections: Arc<Mutex<Vec<Arc<dyn ByteConnection>>>>,
+    broadcast_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ServerSnapshotPublisher {
@@ -30,11 +31,24 @@ impl ServerSnapshotPublisher {
             sessions: Arc::new(Mutex::new(Vec::new())),
             models: Arc::new(Mutex::new(models)),
             connections: Arc::new(Mutex::new(Vec::new())),
+            broadcast_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// Seed the cached session metadata without advancing the mutation
+    /// revision. The upstream publisher starts at revision zero and obtains
+    /// its initial session list during the hello snapshot.
+    pub fn initialize(&self, sessions: Vec<SessionMetadata>) {
+        *self.sessions.lock().unwrap() = sessions;
     }
 
     pub fn register_connection(&self, connection: Arc<dyn ByteConnection>) {
         self.connections.lock().unwrap().push(connection);
+    }
+
+    pub fn revoke_connection_for(&self, connection: &Arc<dyn ByteConnection>) {
+        let mut conns = self.connections.lock().unwrap();
+        conns.retain(|candidate| !Arc::ptr_eq(candidate, connection));
     }
 
     pub fn revoke_connection(&self, id: &str) {
@@ -67,6 +81,7 @@ impl ServerSnapshotPublisher {
     /// Broadcast a per-session snapshot event to all connected clients
     /// (upstream Snapshots.publishSessionSnapshot).
     pub async fn broadcast_session_event(&self, session: SessionSnapshot) {
+        let _broadcast_guard = self.broadcast_lock.lock().await;
         let conns = {
             let conns = self.connections.lock().unwrap().clone();
             if conns.is_empty() {
@@ -87,6 +102,7 @@ impl ServerSnapshotPublisher {
     }
 
     pub async fn broadcast(&self) {
+        let _broadcast_guard = self.broadcast_lock.lock().await;
         let snapshot = {
             let conns = self.connections.lock().unwrap().clone();
             if conns.is_empty() {

@@ -53,6 +53,9 @@ pub struct ConnectionState {
     pub stage: ConnectionStage,
     pub disconnected: bool,
     pub handshake_complete: bool,
+    /// Requests received in the same transport turn as hello are held until
+    /// the handshake has sent its server hello, matching the upstream queue.
+    pub pending_requests: Vec<(String, pi_protocol::Command)>,
 }
 
 impl ConnectionState {
@@ -69,6 +72,7 @@ impl ConnectionState {
             stage: "awaitingHello",
             disconnected: false,
             handshake_complete: false,
+            pending_requests: Vec::new(),
         }
     }
 }

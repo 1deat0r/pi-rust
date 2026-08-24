@@ -134,11 +134,23 @@ impl LiveSessionManager {
         service: Arc<Mutex<dyn PiServerService>>,
         snapshots: Arc<ServerSnapshotPublisher>,
     ) -> Self {
+        Self::new_with_closing(
+            service,
+            snapshots,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+    }
+
+    pub fn new_with_closing(
+        service: Arc<Mutex<dyn PiServerService>>,
+        snapshots: Arc<ServerSnapshotPublisher>,
+        closing: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
         Self {
             service,
             snapshots,
             live: Arc::new(Mutex::new(HashMap::new())),
-            closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            closing,
             error_reporter: Arc::new(Mutex::new(None)),
         }
     }
@@ -312,9 +324,11 @@ impl LiveSessionManager {
                     self.attach(&mut connection, &runtime)?;
                 }
                 let view = conn.lock().unwrap().clone();
-                Ok(CommandResult::Create {
-                    session: self.broadcast_snapshot(&runtime, &view)?,
-                })
+                let mut session = self.broadcast_snapshot(&runtime, &view)?;
+                if !self.create_result_attached() {
+                    session.attached = false;
+                }
+                Ok(CommandResult::Create { session })
             }
             Command::Attach { session_id } => {
                 let runtime = self.acquire(&session_id, || {
@@ -417,6 +431,12 @@ impl LiveSessionManager {
         let outcome = async {
             result?;
             if let Some(wait) = pending {
+                // A deferred prompt has already entered its turn before its
+                // completion future is awaited. Publish that intermediate
+                // snapshot now so steer/abort callers and wire clients can
+                // observe the same ordering as upstream.
+                let current = conn.lock().unwrap().clone();
+                self.broadcast_snapshot(&runtime, &current)?;
                 wait.wait().await?;
             }
             let current = conn.lock().unwrap().clone();
@@ -536,8 +556,9 @@ impl LiveSessionManager {
         let live = self.live.clone();
         let snapshots = self.snapshots.clone();
         let service = self.service.clone();
+        let error_reporter = self.error_reporter.clone();
         let listener: EventListener = Arc::new(move |event| {
-            manager_handle_event(&live, &snapshots, &service, &id, event);
+            manager_handle_event(&live, &snapshots, &service, &error_reporter, &id, event);
         });
         runtime.lock().unwrap().subscribe(listener).ok()
     }
@@ -648,6 +669,10 @@ impl LiveSessionManager {
         Ok(snap)
     }
 
+    fn create_result_attached(&self) -> bool {
+        self.service.lock().unwrap().create_result_attached()
+    }
+
     /// Broadcast the session snapshot (updating server metadata revision) and
     /// return the per-connection `attached` form (upstream `broadcastSnapshot`
     /// + `forConnection`).
@@ -656,12 +681,25 @@ impl LiveSessionManager {
         runtime: &Arc<Mutex<dyn PiSessionRuntime>>,
         conn: &ConnectionHandle,
     ) -> Result<SessionSnapshot, PiServerError> {
-        let mut snap = self.normalized_snapshot(runtime)?;
+        let snap = self.normalized_snapshot(runtime)?;
+        let event_sinks = self
+            .live
+            .lock()
+            .unwrap()
+            .get(&snap.id)
+            .map(|live| live.event_sinks.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for sink in event_sinks {
+            sink(ServerEvent::SessionSnapshot {
+                snapshot: snap.clone(),
+            });
+        }
         // attached reflects this connection's attachment.
-        snap.attached = conn.session_ids.contains(&snap.id);
+        let mut per_connection = snap.clone();
+        per_connection.attached = conn.session_ids.contains(&snap.id);
         let metadata = self.list_metadata()?;
         self.snapshots.refresh(metadata);
-        Ok(snap)
+        Ok(per_connection)
     }
 
     /// Session metadata merging stored sessions with live snapshot overrides
@@ -673,6 +711,9 @@ impl LiveSessionManager {
     /// Dispose a live session iff it is idle, attached by no one, not
     /// mid-operation, and not already disposing (upstream `maybeDispose`).
     fn maybe_dispose(&self, id: &str) {
+        if self.closing.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         let should = {
             let mut guard = self.live.lock().unwrap();
             match guard.get_mut(id) {
@@ -828,6 +869,7 @@ fn manager_handle_event(
     live: &Arc<Mutex<HashMap<String, LiveSession>>>,
     snapshots: &Arc<ServerSnapshotPublisher>,
     service: &Arc<Mutex<dyn PiServerService>>,
+    error_reporter: &ErrorReporter,
     id: &str,
     event: crate::service::PiSessionRuntimeEvent,
 ) {
@@ -836,35 +878,66 @@ fn manager_handle_event(
             if let Some(meta) = compute_metadata_event(service, live) {
                 snapshots.refresh(meta);
             }
+            if let Some((snapshot, sinks)) = session_event_payload(live, id) {
+                for sink in sinks {
+                    sink(ServerEvent::SessionSnapshot {
+                        snapshot: snapshot.clone(),
+                    });
+                }
+            }
             // A snapshot may carry an idle+unattached session after a concurrent
             // prompt/steer; dispose it so it does not leak (upstream
             // scheduleMaybeDispose).
             maybe_dispose_event(live, snapshots, service, id);
         }
         crate::service::PiSessionRuntimeEvent::Progress(progress) => {
-            let sinks: Vec<ProgressSink> = {
+            let (sinks, event_sinks): (Vec<ProgressSink>, Vec<EventSink>) = {
                 let guard = live.lock().unwrap();
                 match guard.get(id) {
-                    Some(sess) => sess.progress_sinks.values().cloned().collect(),
-                    None => Vec::new(),
+                    Some(sess) => (
+                        sess.progress_sinks.values().cloned().collect(),
+                        sess.event_sinks.values().cloned().collect(),
+                    ),
+                    None => (Vec::new(), Vec::new()),
                 }
             };
             for sink in sinks {
                 sink(&progress);
             }
+            for sink in event_sinks {
+                sink(ServerEvent::SessionProgress {
+                    session_id: id.to_string(),
+                    progress: progress.clone(),
+                });
+            }
             maybe_dispose_event(live, snapshots, service, id);
         }
-        crate::service::PiSessionRuntimeEvent::Error(_error) => {
-            // Mark terminal + dispose. The synchronous manager closes the
-            // session's lifecycle; transport closure/error reporting is the
-            // connection layer's concern. Disposal runs on a background thread
-            // so a still-held in-op runtime guard on this thread cannot block.
+        crate::service::PiSessionRuntimeEvent::Error(error) => {
+            if let Some(reporter) = error_reporter.lock().unwrap().clone() {
+                reporter(&error);
+            }
+            let close_sinks = {
+                let mut guard = live.lock().unwrap();
+                let Some(sess) = guard.get_mut(id) else {
+                    return;
+                };
+                if sess.terminal {
+                    return;
+                }
+                sess.terminal = true;
+                sess.close_sinks.values().cloned().collect::<Vec<_>>()
+            };
+            for close in close_sinks {
+                close();
+            }
+
+            // Mark terminal + dispose. Disposal runs on a background thread
+            // when a still-held runtime guard would otherwise block this stack.
             let defer = {
                 let mut guard = live.lock().unwrap();
                 let mut defer = false;
                 if let Some(sess) = guard.get_mut(id) {
-                    if !sess.terminal && !sess.disposing {
-                        sess.terminal = true;
+                    if !sess.disposing {
                         defer = sess.operation_count > 0;
                     }
                 }
@@ -913,6 +986,20 @@ fn manager_handle_event(
             }
         }
     }
+}
+
+fn session_event_payload(
+    live: &Arc<Mutex<HashMap<String, LiveSession>>>,
+    id: &str,
+) -> Option<(SessionSnapshot, Vec<EventSink>)> {
+    let guard = live.lock().ok()?;
+    let session = guard.get(id)?;
+    let mut runtime = session.runtime.try_lock().ok()?;
+    let mut snapshot = runtime.snapshot().ok()?;
+    snapshot.phase = runtime.get_phase();
+    snapshot.locked = true;
+    snapshot.attached = !session.connections.is_empty();
+    Some((snapshot, session.event_sinks.values().cloned().collect()))
 }
 
 /// Best-effort metadata merge for the event handler: unlike [`compute_metadata`],

@@ -238,7 +238,10 @@ async fn read_loop(
         let n = match reader.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => n,
-            Err(_) => break,
+            Err(error) => {
+                handler.lock().unwrap().on_error(error.to_string());
+                break;
+            }
         };
         handler.lock().unwrap().on_data(&buf[..n], &handler);
     }

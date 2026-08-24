@@ -26,7 +26,10 @@ pub use errors::{
 };
 pub use listener::{validate_unix_socket_path, PiServerListener, UnixListener};
 pub use server::PiServer;
-pub use service::{InMemoryService, PiServerService, PiSessionRuntime, PiSessionRuntimeEvent};
+pub use service::{
+    test_model, Deferred, InMemoryService, PiServerService, PiSessionRuntime,
+    PiSessionRuntimeEvent, TestServerService, TestSessionRuntime,
+};
 pub use snapshots::ServerSnapshotPublisher;
 pub use types::CreateSessionOptions;
 pub use types::{PiServerOptions, PromptInput, SteerInput};
