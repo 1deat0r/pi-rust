@@ -92,6 +92,14 @@ impl Tree {
         consumed
     }
 
+    /// Force the next render to redraw every line after the terminal size
+    /// changes. Terminals and multiplexers may clear or reposition the
+    /// visible screen while delivering a resize event, so a differential
+    /// frame based on the old dimensions is not safe to reuse.
+    pub fn invalidate(&mut self) {
+        self.last_lines.clear();
+    }
+
     pub fn leave_alt_screen(&mut self) {
         let mut term = self.terminal.lock().unwrap();
         let _ = term.leave_raw();

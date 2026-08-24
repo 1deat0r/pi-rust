@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 48.19% (80/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 48.80% (81/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -918,8 +918,25 @@ PTY lifecycle coverage remains separately tracked by S-056.
   interactive::config_selector` (8 passed, including global/project render
   snapshots); `cargo test -p pi-coding-agent
   --offline` (436 unit tests plus all integration targets); `cargo test -p
-  pi-tui --offline` (186 passed). #59 and #60 are marked done; PTY exercise
-  remains in S-056.
+  pi-tui --offline` (186 passed). #59 and #60 are marked done; the PTY
+  selector exercise is now recorded in S-035 and the full matrix remains in
+  S-056.
+
+### Session 23 — 2026-08-24 — ConfigSelector PTY and resize lifecycle
+Scope: T5 S-035 ConfigSelector terminal evidence; the full interactive slash-
+command matrix remains S-056.
+
+- Added `tests/config_selector_pty.rs`, a deterministic tmux harness around the
+  real `pi config --approve` binary. It captures a global render snapshot,
+  checks Unicode footer glyphs, resizes the pane, navigates and toggles global
+  and project rows, verifies synchronous settings writes, and checks raw
+  alternate-screen/cursor entry and cleanup sequences.
+- Fixed a real resize lifecycle gap: `pi-tui::Tree` now exposes invalidation,
+  and both config and interactive loops invalidate differential render state
+  on `TerminalEvent::Resize` before redrawing.
+- Evidence (PTY/mock): `cargo test -p pi-coding-agent --offline --test
+  config_selector_pty` (1 passed), plus the existing selector snapshot suite.
+  S-035 is complete; #61/#62 and S-056 remain open.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
@@ -931,9 +948,9 @@ PTY lifecycle coverage remains separately tracked by S-056.
   templates, context files, session-cwd, auth-guidance, model registry/
   resolver/runtime, config/auth/list-models commands, RPC/json/jsonl modes,
   `/share`, `--export`). Tracked forward in NEXT-100.md, not here.
-- **T5 remaining (tracked in NEXT-100):** ConfigSelector PTY exercise
-  (S-056), alt-screen full swap (#61/62), terminal feature probes (#65/66),
-  editor IME edge (#69), and interactive E2E tmux coverage (#70).
+- **T5 remaining (tracked in NEXT-100):** full interactive slash-command PTY
+  coverage (S-056), alt-screen full swap (#61/62), terminal feature probes
+  (#65/66), editor IME edge (#69), and interactive E2E tmux coverage (#70).
 - Signed usage adjustments are closed in Session 16: pi-ai `Usage` and session
   ledger stats preserve negative token/cost corrections, with C-neg conformance
   coverage in both backends.

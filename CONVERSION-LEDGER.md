@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **47.59% (79/166)**. Run
+- The exhaustive checker reports **48.80% (81/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -28,7 +28,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   device-code flows, codex WebSocket transport (SSE fallback today),
   `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
   full TUI component, `update --models` pi.dev fetch seam, models.json runtime
-  merge seam, ConfigSelector render snapshots/PTY coverage, TUI alt-screen full
+  merge seam, full interactive slash-command PTY coverage, TUI alt-screen full
   swap + terminal feature probes, server/client
   concurrency surfaces (leases, reconnect, queuing). Signed usage adjustment
   parity is closed in Session 16.
@@ -304,15 +304,16 @@ Recut of the remaining work by user impact + risk:
       project inherit/load/unload cycling, inherited-resource rendering, and
       synchronous settings flushes before exit. The component is wired through
       `commands/config.rs`; `cargo test -p pi-coding-agent --offline
-      interactive::config_selector` passes 7 tests. The underlying data model
+      interactive::config_selector` passes 8 tests. The underlying data model
       and `PackageManager::resolve()` producer remain covered by the prior
-      5+8+integration tests. PTY/snapshot coverage stays in #60/S-056.
+      5+8+integration tests. PTY coverage is recorded in S-035; the full
+      interactive matrix remains S-056.
 - [x] 60. ConfigSelector snapshot tests. (mock) Five buildGroups tests, eight
       resolve() producer tests, `resolve_feeds_build_groups` integration, two
       interactive behavior tests, and a deterministic global/project render
       snapshot test now cover the selector surface. Verified with `cargo test
-      -p pi-coding-agent --offline interactive::config_selector`; PTY exercise
-      remains separately tracked by S-056.
+      -p pi-coding-agent --offline interactive::config_selector`; the real
+      terminal exercise is recorded in S-035, with the full matrix in S-056.
 - [ ] 61. Full alt-screen screen-swap parity (save/restore around overlays).
 - [ ] 62. Alt-screen swap tmux probe.
 - [x] 63. ICU word segmentation (replace regex word-nav with unicode parity).
@@ -605,8 +606,17 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 - [ ] S-034 Finish ConfigSelector project/global inheritance, package pattern
       toggles, search/navigation, write-scope persistence, and close behavior
       against the upstream component.
-- [ ] S-035 Add PTY snapshot/golden tests for ConfigSelector rendering,
-      resizing, glyph probes, keyboard navigation, and settings writes.
+- [x] S-035 Add PTY snapshot/golden tests for ConfigSelector rendering,
+      resizing, glyph probes, keyboard navigation, and settings writes. Added
+      `crates/pi-coding-agent/tests/config_selector_pty.rs`, which drives the
+      real `pi config --approve` binary through tmux, checks the visible global
+      snapshot and Unicode footer, resizes the pane, navigates/toggles global
+      and project rows, verifies both settings files, and inspects raw
+      alternate-screen/cursor cleanup sequences. The resize boundary now
+      invalidates `pi-tui::Tree` differential state before the next redraw.
+      Evidence: `cargo test -p pi-coding-agent --offline --test
+      config_selector_pty` (1 passed). The broader slash-command PTY matrix
+      remains S-056.
 - [ ] S-036 Complete project-trust safety matrix for all commands and resource
       loaders, including saved trust, default trust, `-a`, `-na`, and prompts.
 

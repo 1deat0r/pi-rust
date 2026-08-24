@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-48.19% = 80 completed / 166 total tasks
-86 tasks remain open
+48.80% = 81 completed / 166 total tasks
+85 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,11 +26,11 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is the current `HEAD` (`feat(config): complete
-selector interaction`) after the client reconnect/timeout hardening. The
-one-shot auto-compaction, covered client criteria, and selector behavior are
-implemented, verified, and committed locally. Pushes are blocked because the
-HTTPS remote requires GitHub credentials.
+The latest local checkpoint is the current `HEAD` (`test(config): add PTY
+selector lifecycle coverage`) after the client reconnect/timeout hardening.
+The one-shot auto-compaction, covered client criteria, selector behavior, and
+selector PTY/resize lifecycle are implemented, verified, and committed locally.
+Pushes are blocked because the HTTPS remote requires GitHub credentials.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
 
@@ -47,8 +47,8 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, no cargo/rustc process still running,
-progress checker reports `48.19% (80/166; 86 open)`, with the local client and
-selector checkpoints ahead of the remote and no cargo/rustc process running.
+progress checker reports `48.80% (81/166; 85 open)`, with the local client,
+selector, and PTY checkpoints ahead of the remote and no cargo/rustc process running.
 
 ## Verification already completed
 
@@ -65,6 +65,7 @@ These checks passed during the session:
 /home/mustbearnold/.cargo/bin/cargo test -p pi-server --offline
 /home/mustbearnold/.cargo/bin/cargo check --workspace --offline
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline interactive::config_selector
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test config_selector_pty
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
 /home/mustbearnold/.cargo/bin/cargo test -p pi-tui --offline
 /home/mustbearnold/.cargo/bin/cargo test -p pi-tui terminal_image --offline
@@ -110,7 +111,7 @@ working tree:
   supplemental S-045/S-047 remain open; this is auxiliary T4 hardening, not a
   claim that the full upstream client library is complete.
 
-The ConfigSelector interactive milestone (#59) is the latest local checkpoint:
+The ConfigSelector interactive milestone (#59) is complete locally:
 
 - The selector now supports search/filtering, circular/page navigation, global
   toggles, project inherit/load/unload cycling, inherited-resource indicators,
@@ -118,8 +119,20 @@ The ConfigSelector interactive milestone (#59) is the latest local checkpoint:
 - The focused selector suite has 8 passing tests, including deterministic
   global/project render snapshots; the full coding-agent suite
   has 436 unit tests plus its integration targets, and the full pi-tui suite
-  has 186 passing tests. #59/#60 are complete; PTY coverage remains S-056,
-  followed by #61/#62 and the remaining terminal probes.
+  has 186 passing tests. #59/#60 are complete; the focused PTY exercise is
+  recorded in S-035, followed by #61/#62 and the remaining terminal probes.
+
+The focused ConfigSelector PTY milestone (S-035) is also complete locally:
+
+- `tests/config_selector_pty.rs` drives the real `pi config --approve` binary
+  through tmux, asserts a visible global render snapshot and Unicode footer,
+  survives pane resize, navigates/toggles global and project rows, verifies
+  both settings files, and checks raw alternate-screen/cursor cleanup.
+- A resize event now invalidates `pi-tui::Tree` differential state in both the
+  config selector and main interactive loop, fixing the stale-frame behavior
+  exposed by the PTY test.
+- The focused PTY suite passes one test. The full interactive slash-command
+  matrix remains S-056; alt-screen mode switching remains #61/#62.
 
 ## Major parity work already present
 
@@ -147,9 +160,9 @@ items just because a similarly named Rust module exists.
 ## Recommended next sequence
 
 1. Retry `git push origin main` after credentials are available; the current
-   client/selector checkpoint is local and is not remote yet.
-2. Add PTY coverage for S-056, then continue with the remaining alt-screen and
-   terminal-probe work.
+   client/selector/PTY checkpoint is local and is not remote yet.
+2. Continue with #61/#62 alt-screen swap work and the broader S-056
+   interactive slash-command matrix.
 3. Keep `CONVERSION-LEDGER.md`, `PLAN.md`, and this handoff synchronized;
    only mark a task complete with an evidence tier and exact command/fixture.
 

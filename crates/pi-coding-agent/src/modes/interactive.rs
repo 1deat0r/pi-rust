@@ -753,6 +753,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             let key_str = match ev {
                 pi_tui::terminal::TerminalEvent::Key(k) => k,
                 pi_tui::terminal::TerminalEvent::Resize(_w, h) => {
+                    tree.invalidate();
                     editor.lock().unwrap().set_terminal_rows(h as usize);
                     continue;
                 }

@@ -2,11 +2,11 @@
 //! `packages/coding-agent/src/cli/config-selector.ts` + the
 //! `handleConfigCommand` dispatch in `package-manager-cli.ts`.
 //!
-//! Upstream opens a full TUI resource selector (the ConfigSelectorComponent,
-//! ported in parallel by the pi-tui agent). This port implements the same
-//! command surface and data/settings flow (scope selection, project-trust
-//! gating, write-scope resolution, resolved resource lists) and renders a
-//! minimal non-TUI summary with the selector seam marked as a TODO.
+//! Upstream opens a full TUI resource selector (the ConfigSelectorComponent).
+//! This port implements the same command surface and data/settings flow
+//! (scope selection, project-trust gating, write-scope resolution, resolved
+//! resource lists), using the selector for TTYs and a deterministic summary
+//! for non-TTY callers.
 
 use crate::config::{self, APP_NAME, CONFIG_DIR_NAME};
 use crate::core::package_manager::PackageManager;
@@ -226,13 +226,15 @@ fn run_config_selector(
             .unwrap()
             .next_event()
             .map_err(|e| format!("read terminal: {e}"))?;
-        if let TerminalEvent::Key(raw) = event {
-            if !raw.is_empty() {
+        match event {
+            TerminalEvent::Resize(_, _) => tree.invalidate(),
+            TerminalEvent::Key(raw) if !raw.is_empty() => {
                 if tree.consume_cell_size_response(&raw) {
                     continue;
                 }
                 tree.dispatch(&parse_key(&raw));
             }
+            TerminalEvent::Key(_) => {}
         }
         if component.lock().unwrap().is_closed() {
             break;
