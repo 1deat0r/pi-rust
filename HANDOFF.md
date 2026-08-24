@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-63.25% = 105 completed / 166 total tasks
-61 tasks remain open
+63.86% = 106 completed / 166 total tasks
+60 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -31,10 +31,13 @@ grammar parity slice. The pre-existing untracked `AGENTS.md` remains untouched
 and must be preserved. Do not use `git reset --hard`, `git checkout --`, broad
 revert commands, or `git clean`.
 
-Current status after the focused push: branch `main`, progress checker reports
-`63.25% (105/166; 61 open)`. The S-008 implementation commit is
-`7a72f2fe104cf660f946f29a822c88da556a37d1`; local and `origin/main` matched
-that hash immediately after push. The current S-008 changes include:
+Current status after the validated S-009 checkpoint: branch `main`, progress
+checker reports `63.86% (106/166; 60 open)`. The S-009 implementation and
+documentation changes are the current logical checkpoint. The pre-existing
+untracked `AGENTS.md` remains untouched and must not be staged. The preceding
+S-008 implementation commit is `7a72f2fe104cf660f946f29a822c88da556a37d1`;
+local and `origin/main` matched that hash immediately after its push. Its
+changes include:
 
 - `crates/pi-ai/src/api/constrained_sampling.rs`, the shared strict-schema and
   grammar resolver plus streaming JSON-delta helper.
@@ -108,6 +111,38 @@ was pushed to `origin/main`; the final documentation-sync commit is
 `3f649fec8ea6a33860e5acfe50d96e92b02a09ad`. Current `git rev-parse HEAD` and
 `git ls-remote origin refs/heads/main` both resolve to the documentation-sync
 hash. Next dependency-safe work is S-009 Codex WebSocket session caching/reuse.
+
+## Current checkpoint — 2026-08-24 — S-009 complete in the working tree
+
+S-009 completes Codex WebSocket session caching/reuse and the
+`websocket-cached` transport behavior. The implementation in
+`crates/pi-ai/src/api/openai_codex_responses.rs` now has process-global
+session/account cache keying, busy-entry isolation, cached-context request
+deltas, 5-minute idle eviction, 55-minute max-age eviction, cache-retention
+opt-out, missing-continuation retry, and cleanup on all WebSocket error paths.
+Plain `websocket` reuses sockets without delta-context construction, while
+`auto` keeps the SSE fallback behavior.
+
+Evidence and review:
+
+```text
+cargo test -p pi-ai --offline --lib api::openai_codex_responses --quiet (34 passed)
+cargo test -p pi-ai --offline --quiet (313 library, 4 + 9 + 2 integration tests)
+cargo check -p pi-ai --offline
+cargo clippy -p pi-ai --offline --all-targets -- -D warnings
+cargo fmt --all -- --check
+git diff --check
+node scripts/conversion-progress.mjs
+```
+
+All listed checks pass. The local mock fixtures cover socket reuse and input
+deltas, missing `previous_response_id` recovery, eviction guards, and
+authenticated-account scoping. Independent reviewer bat compared the Rust
+implementation with `upstream_pi/packages/ai/src/api/openai-codex-responses.ts`
+and returned **APPROVE** with no blockers. The checker reports exactly
+`Conversion progress: 63.86% (106/166; 60 open)`. The next dependency-safe
+task is S-010 AWS credential/profile-file and region resolution parity for
+Bedrock. Commit and push this focused checkpoint before starting it.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 

@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **63.25% (105/166; 61 open)**. Run
+- The exhaustive checker reports **63.86% (106/166; 60 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -14,6 +14,11 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   pi-ai tests, strict clippy, workspace check, formatting, and diff gates pass;
   a workspace test link was resource-blocked by SIGKILL 9 in an unrelated
   pi-coding-agent test binary.
+- S-009 Codex WebSocket session caching/reuse is complete with mock/unit
+  evidence. The implementation covers session/account cache keying, cached
+  context deltas, idle/max-age eviction, missing-continuation recovery, and
+  explicit WebSocket/SSE transport behavior; see the ledger row below for the
+  exact fixtures and commands.
 - The original 100 entries remain the historical work queue. The supplemental
   S1 section is authoritative for residual provider, harness, runtime, TUI,
   RPC, auxiliary client/server, evaluation, and final-audit work.
@@ -56,8 +61,8 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   statuses and panic propagation; the shared TUI image-capability fixtures
   are serialized for deterministic workspace runs.
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
-  device-code flows, codex WebSocket transport (SSE fallback today),
-  `/share` GitHub-gist OAuth (in-progress in the working tree), models.json
+  device-code flows, `/share` GitHub-gist OAuth (in-progress in the working
+  tree), models.json
   runtime merge seam, full interactive
   slash-command PTY coverage, TUI alt-screen full swap + terminal feature
   probes, server/client
@@ -655,9 +660,23 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       --check`, and `git diff --check` also pass. An independent parity review
       against upstream commit `5cd93f688aaab89dbb6dfa4aca535f21796ae185`
       approved the implementation with no blockers.
-- [ ] S-009 Complete Codex WebSocket session caching/reuse and the
+- [x] S-009 Complete Codex WebSocket session caching/reuse and the
       `websocket-cached` transport behavior, including eviction and close/error
-      recovery.
+      recovery. Evidence (mock/unit): session+account cache keying, cached
+      context deltas, busy-socket isolation, 5-minute idle and 55-minute
+      max-age eviction, `cacheRetention: "none"`, missing-continuation retry,
+      explicit WebSocket/SSE fallback, and error cleanup are covered by
+      `cargo test -p pi-ai --offline --lib api::openai_codex_responses --quiet`
+      (34 passed), including the local mock WebSocket fixtures
+      `websocket_cached_reuses_session_socket_and_sends_input_delta`,
+      `websocket_cached_reopens_after_missing_previous_response`, and
+      `websocket_session_cache_is_scoped_by_authenticated_account`. The
+      independent review against upstream
+      `upstream_pi/packages/ai/src/api/openai-codex-responses.ts` returned
+      APPROVE with no blockers. Supporting gates pass with `cargo check -p
+      pi-ai --offline`, `cargo clippy -p pi-ai --offline --all-targets -- -D
+      warnings`, `cargo test -p pi-ai --offline --quiet`, `cargo fmt --all --
+      --check`, and `git diff --check`.
 - [ ] S-010 Complete AWS credential/profile-file and region resolution parity
       for Bedrock, with environment/config precedence fixtures.
 - [ ] S-011 Complete Google Vertex ADC file, token URI, scope, refresh, and

@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 63.25% (105/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 63.86% (106/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1702,6 +1702,37 @@ errors.
   dependency-safe work is S-009 Codex WebSocket session caching/reuse; S-010
   through S-017 and the broader harness/TUI/server/client/final-audit tasks
   remain open.
+
+### Session 54 — 2026-08-24 — S-009 Codex WebSocket session caching/reuse
+
+Scope: complete the Codex WebSocket session cache, cached-context delta
+requests, `websocket-cached` transport behavior, eviction, and close/error
+recovery against the upstream `openai-codex-responses.ts` implementation.
+
+- Added process-global session/account WebSocket cache state with busy-entry
+  isolation, 5-minute idle eviction, 55-minute max-age eviction, and
+  generation-safe timer cleanup. `cacheRetention: "none"` bypasses the cache.
+- Added continuation state and request-body delta construction for `auto` and
+  `websocket-cached`, preserving full-body behavior for fresh or incompatible
+  continuations. Plain `websocket` reuses sockets without enabling the cached
+  context delta body, matching upstream transport selection.
+- Added cleanup on send/read/parse/map/process/output failures and one retry for
+  `previous_response_not_found`; `auto` retains SSE fallback while explicit
+  `websocket` returns the WebSocket error. Account-scoped mock fixtures verify
+  that sessions do not cross authentication boundaries.
+- Independent reviewer bat compared the Rust implementation, tests, and
+  `upstream_pi/packages/ai/src/api/openai-codex-responses.ts` line-by-line and
+  returned **APPROVE** with no blockers. The only follow-up was correcting a
+  stale module comment, now synchronized.
+- Evidence (mock/unit): `cargo test -p pi-ai --offline --lib
+  api::openai_codex_responses --quiet` (34 passed),
+  `cargo test -p pi-ai --offline --quiet` (313 library, 4 + 9 + 2 integration
+  tests), `cargo check -p pi-ai --offline`, `cargo clippy -p pi-ai --offline
+  --all-targets -- -D warnings`, `cargo fmt --all -- --check`, and
+  `git diff --check` pass. The authoritative checker reports exactly
+  `Conversion progress: 63.86% (106/166; 60 open)`.
+- S-009 is complete. The next dependency-safe action is S-010 AWS
+  credential/profile-file and region resolution parity for Bedrock.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

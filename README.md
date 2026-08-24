@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 63.25% — 105 of 166 ledger tasks complete; 61 open.**
+**Conversion progress: 63.86% — 106 of 166 ledger tasks complete; 60 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
