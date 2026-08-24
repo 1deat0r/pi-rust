@@ -7,9 +7,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_agent::agent::{run_agent_loop, AgentContext, AgentLoopConfig};
-use pi_agent::harness::events::HarnessEventBus;
-use pi_agent::harness::{run_with_harness_lifecycle, HarnessTelemetryContext};
+use pi_agent::harness::{AgentHarness, AgentHarnessOptions, HarnessTool};
+use pi_agent::rich_agent::RichAgentEvent;
 use pi_ai::types::{ContentBlock, Message, UserContent};
 
 use crate::args::Args;
@@ -19,7 +18,6 @@ use crate::core::settings::SettingsManager;
 /// Run `--mode json`: stream the prompt and emit JSON event lines.
 pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(), String> {
     let cwd = config::cwd();
-    let agent_dir = config::get_agent_dir();
     let provider = crate::run::resolve_run_provider(args.provider.as_deref(), &settings);
     let model_hint = crate::run::resolve_run_model(
         args.model.as_deref(),
@@ -97,27 +95,25 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         (model, stream_fn)
     };
 
-    let mut context = AgentContext::new(args.system_prompt.clone(), Vec::new());
-    context.block_images = settings.get_block_images();
-    if !args.no_tools {
-        context.tools.push(pi_agent::tools::bash_tool(cwd.clone()));
-        context.tools.push(pi_agent::tools::read_tool_with_options(
-            cwd.clone(),
-            pi_agent::tools::image::ProcessImageOptions {
-                auto_resize_images: settings.get_image_auto_resize(),
-                ..Default::default()
-            },
-        ));
-        context.tools.push(pi_agent::tools::write_tool(cwd.clone()));
-        context.tools.push(pi_agent::tools::edit_tool(cwd.clone()));
-        context.tools.push(crate::core::tools::ls_tool(cwd.clone()));
-        context
-            .tools
-            .push(crate::core::tools::find_tool(cwd.clone()));
-        context
-            .tools
-            .push(crate::core::tools::grep_tool(cwd.clone()));
-    }
+    let tools: Vec<pi_agent::tools::AgentTool> = if !args.no_tools {
+        vec![
+            pi_agent::tools::bash_tool(cwd.clone()),
+            pi_agent::tools::read_tool_with_options(
+                cwd.clone(),
+                pi_agent::tools::image::ProcessImageOptions {
+                    auto_resize_images: settings.get_image_auto_resize(),
+                    ..Default::default()
+                },
+            ),
+            pi_agent::tools::write_tool(cwd.clone()),
+            pi_agent::tools::edit_tool(cwd.clone()),
+            crate::core::tools::ls_tool(cwd.clone()),
+            crate::core::tools::find_tool(cwd.clone()),
+            crate::core::tools::grep_tool(cwd.clone()),
+        ]
+    } else {
+        Vec::new()
+    };
 
     let prepared_files = crate::run::prepare_file_arguments(
         &args.file_args,
@@ -152,52 +148,40 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         })
         .collect();
 
-    let cfg = AgentLoopConfig {
-        model,
-        stream_fn,
-        signal: None,
-        stop_after_turn: true,
-        on_stream_event: None,
-    };
-
-    // Emit each assistant event as a JSON line (upstream toJsonEvent).
-    let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let observer: Arc<dyn Fn(&pi_ai::types::AssistantMessageEvent) + Send + Sync> = {
-        let sink = events.clone();
-        Arc::new(move |event: &pi_ai::types::AssistantMessageEvent| {
-            let update = crate::modes::rpc::to_json_message_update(event);
-            sink.lock().unwrap().push(serialize_json_line(&update));
-        })
-    };
-    let mut cfg = cfg;
-    cfg.on_stream_event = Some(observer);
-
-    let telemetry = HarnessTelemetryContext::default();
-    let mut lifecycle = HarnessEventBus::new();
-    run_with_harness_lifecycle(
-        &telemetry,
-        &mut lifecycle,
-        "main",
-        "json-mode",
-        String::new(),
-        move |_span| async move {
-            run_agent_loop(prompts, &mut context, &cfg, &mut |_| {}).await;
-            Ok(())
-        },
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let storage = Arc::new(Mutex::new(
+        pi_agent::session::memory::InMemorySessionStorage::new(
+            pi_agent::session::memory::in_memory_metadata("json-mode", None),
+        ),
+    ));
+    let session = pi_agent::session::Session::<pi_agent::fs::MemoryFs>::from_in_memory(storage);
+    let mut options = AgentHarnessOptions::new(session, model);
+    options.stream_fn = Some(stream_fn);
+    options.system_prompt = args.system_prompt.clone();
+    options.block_images = settings.get_block_images();
+    options.tools = Some(tools.iter().map(HarnessTool::from_agent_tool).collect());
+    let (mut harness, _) = AgentHarness::create(options)
+        .await
+        .map_err(|error| error.to_string())?;
+    let (_, rich_events) = harness
+        .run_prompt_with_events(prompts)
+        .await
+        .map_err(|error| error.to_string())?;
 
     // Emit the captured events in wire order. A streamed terminal model error
     // is delivered as a JSON event line and the process exits 0 — upstream
     // `runPrintMode` only treats Error/Aborted as a nonzero exit in *text*
     // mode, never in json mode.
-    let captured = events.lock().unwrap().drain(..).collect::<Vec<String>>();
-    for line in captured {
-        println!("{line}");
+    for event in rich_events {
+        if let RichAgentEvent::MessageUpdate {
+            assistant_message_event,
+            ..
+        } = event
+        {
+            let update = crate::modes::rpc::to_json_message_update(&assistant_message_event);
+            println!("{}", serialize_json_line(&update));
+        }
     }
 
-    let _ = agent_dir;
     Ok(())
 }
 

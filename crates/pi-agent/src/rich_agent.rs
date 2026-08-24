@@ -1263,7 +1263,19 @@ where
                     });
                 }
             }
-            AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
+            AssistantMessageEvent::Done { message, .. }
+            | AssistantMessageEvent::Error {
+                error_message: message,
+                ..
+            } => {
+                // Raw stream observers see terminal events too. Preserve
+                // them in the rich stream so JSON/RPC callers do not lose a
+                // provider error when they run through this loop.
+                emit_ref(RichAgentEvent::MessageUpdate {
+                    message: AgentMessage::Core(Message::Assistant(message.clone())),
+                    assistant_message_event: event.clone(),
+                });
+            }
         })
         .await;
     if is_aborted(config.signal.as_ref()) {
@@ -1316,7 +1328,19 @@ async fn stream_assistant_attempt(
                         });
                 }
             }
-            AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
+            AssistantMessageEvent::Done { message, .. }
+            | AssistantMessageEvent::Error {
+                error_message: message,
+                ..
+            } => {
+                events_for_stream
+                    .lock()
+                    .unwrap()
+                    .push(RichAgentEvent::MessageUpdate {
+                        message: AgentMessage::Core(Message::Assistant(message.clone())),
+                        assistant_message_event: event.clone(),
+                    });
+            }
         })
         .await;
 
@@ -1554,6 +1578,15 @@ impl Agent {
         self.run_prompt_messages(messages, false).await
     }
 
+    /// Run prompts and return both the durable message delta and the rich
+    /// lifecycle events produced by this invocation.
+    pub async fn prompt_messages_with_events(
+        &self,
+        messages: Vec<AgentMessage>,
+    ) -> (Vec<AgentMessage>, Vec<RichAgentEvent>) {
+        self.run_prompt_messages_with_events(messages, false).await
+    }
+
     /// Continue from the current transcript (upstream `Agent.continue`).
     pub async fn continue_(&self) {
         let last = {
@@ -1584,6 +1617,17 @@ impl Agent {
         messages: Vec<AgentMessage>,
         skip_initial_steering: bool,
     ) -> Vec<AgentMessage> {
+        let (messages, _) = self
+            .run_prompt_messages_with_events(messages, skip_initial_steering)
+            .await;
+        messages
+    }
+
+    async fn run_prompt_messages_with_events(
+        &self,
+        messages: Vec<AgentMessage>,
+        skip_initial_steering: bool,
+    ) -> (Vec<AgentMessage>, Vec<RichAgentEvent>) {
         let mut skip = skip_initial_steering;
         let (model, system_prompt, tools) = {
             let state = self.state.lock().unwrap();
@@ -1617,7 +1661,7 @@ impl Agent {
             let mut state = self.state.lock().unwrap();
             state.messages = context.messages;
         }
-        new_messages
+        (new_messages, events)
     }
 
     async fn run_continuation(&self) {

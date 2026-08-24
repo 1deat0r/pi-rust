@@ -1235,6 +1235,17 @@ impl<F: FileSystem> AgentHarness<F> {
         &mut self,
         prompts: Vec<AgentMessage>,
     ) -> Result<Vec<AgentMessage>, HarnessError> {
+        self.run_prompt_with_events(prompts)
+            .await
+            .map(|(messages, _)| messages)
+    }
+
+    /// Run prompts through the configured stateful Agent and return the
+    /// durable message delta together with the rich events from that run.
+    pub async fn run_prompt_with_events(
+        &mut self,
+        prompts: Vec<AgentMessage>,
+    ) -> Result<(Vec<AgentMessage>, Vec<crate::rich_agent::RichAgentEvent>), HarnessError> {
         if self.is_closed() {
             return Err(HarnessError::closed());
         }
@@ -1253,7 +1264,10 @@ impl<F: FileSystem> AgentHarness<F> {
         let span_session_id = session_id;
         let span_lane = self.name.clone();
         let session = &mut self.session;
-        let run_result: Result<Vec<AgentMessage>, HarnessError> = telemetry
+        let run_result: Result<
+            (Vec<AgentMessage>, Vec<crate::rich_agent::RichAgentEvent>),
+            HarnessError,
+        > = telemetry
             .start_span_async(
                 SpanOptions {
                     name: "pi.harness.run".to_string(),
@@ -1276,7 +1290,7 @@ impl<F: FileSystem> AgentHarness<F> {
                 },
                 move |span| async move {
                     span.add_event("run_start", None);
-                    let messages = agent.prompt_messages(prompts).await;
+                    let (messages, events) = agent.prompt_messages_with_events(prompts).await;
                     for message in &messages {
                         if let Err(error) = session.append_message(message.clone()).await {
                             span.set_status(SpanStatus::Error {
@@ -1293,7 +1307,7 @@ impl<F: FileSystem> AgentHarness<F> {
                         serde_json::json!("completed"),
                     )]));
                     span.add_event("run_end", None);
-                    Ok(messages)
+                    Ok((messages, events))
                 },
             )
             .await;
