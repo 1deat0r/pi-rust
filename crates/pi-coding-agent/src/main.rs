@@ -76,11 +76,8 @@ async fn main() {
             {
                 let cwd = pi_coding_agent::config::cwd();
                 let agent_dir = pi_coding_agent::config::get_agent_dir();
-                let settings = pi_coding_agent::core::settings::SettingsManager::create(
-                    &cwd,
-                    &agent_dir.display().to_string(),
-                    pi_coding_agent::core::settings::SettingsManagerCreateOptions::default(),
-                );
+                let settings =
+                    pi_coding_agent::run::create_mode_settings(&args, &cwd, &agent_dir, true);
                 let result =
                     pi_coding_agent::modes::interactive::run_interactive_mode(&args, settings)
                         .await;
@@ -94,11 +91,8 @@ async fn main() {
             if args.mode.as_deref() == Some("json") {
                 let cwd = pi_coding_agent::config::cwd();
                 let agent_dir = pi_coding_agent::config::get_agent_dir();
-                let settings = pi_coding_agent::core::settings::SettingsManager::create(
-                    &cwd,
-                    &agent_dir.display().to_string(),
-                    pi_coding_agent::core::settings::SettingsManagerCreateOptions::default(),
-                );
+                let settings =
+                    pi_coding_agent::run::create_mode_settings(&args, &cwd, &agent_dir, false);
                 if let Err(err) =
                     pi_coding_agent::modes::json_event::run_json_mode(&args, settings).await
                 {
@@ -111,11 +105,8 @@ async fn main() {
             if args.mode.as_deref() == Some("rpc") {
                 let cwd = pi_coding_agent::config::cwd();
                 let agent_dir = pi_coding_agent::config::get_agent_dir();
-                let settings = pi_coding_agent::core::settings::SettingsManager::create(
-                    &cwd,
-                    &agent_dir.display().to_string(),
-                    pi_coding_agent::core::settings::SettingsManagerCreateOptions::default(),
-                );
+                let settings =
+                    pi_coding_agent::run::create_mode_settings(&args, &cwd, &agent_dir, false);
                 if let Err(err) = pi_coding_agent::modes::rpc::run_rpc_mode(&args, settings).await {
                     eprintln!("rpc error: {err}");
                     std::process::exit(1);

@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-60.24% = 100 completed / 166 total tasks
-66 tasks remain open
+60.84% = 101 completed / 166 total tasks
+65 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -61,14 +61,15 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`60.24% (100/166; 66 open)`. The latest committed implementation checkpoint is
+`60.84% (101/166; 65 open)`. The latest committed implementation checkpoint is
 `9599298`, synchronized with `origin/main`; this documentation-only hash
 refresh follows it. Preserve the pre-existing
 untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
 provider auth guidance, startup-timing, interactive cache-notice,
 install-telemetry contracts, the interactive slash-command PTY checkpoint, and
-the synchronized-doc workflow. The pre-existing `AGENTS.md` remains untouched.
+the project-trust safety matrix, and the synchronized-doc workflow. The
+pre-existing `AGENTS.md` remains untouched.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 
@@ -181,6 +182,32 @@ S-033 is complete with the live command fixture evidence above. The broader
 S-056 command-by-command terminal matrix remains open. The implementation
 checkpoint `9599298` is committed and pushed; this follow-up keeps the handoff
 hash and evidence aligned with `origin/main`.
+
+## Current project-trust safety checkpoint (S-036 complete)
+
+Trust resolution now precedes settings and resource loading in print, JSON,
+RPC, interactive, config, and package entry points. The precedence is explicit
+CLI override, saved directory decision, global `defaultProjectTrust`, then an
+interactive startup prompt; unresolved headless `ask` remains untrusted.
+The prompt runs before raw mode, saves its answer, and is covered by a real
+tmux test. The trust store uses an exclusive sidecar lock, and resource-marker,
+ancestor, and concurrent-write behavior are covered by focused tests.
+
+Evidence:
+
+```text
+cargo test -p pi-coding-agent --offline --test cli_trust --quiet (7 passed)
+cargo test -p pi-coding-agent --offline --test cli_commands --quiet (28 passed)
+cargo test -p pi-coding-agent --offline --lib core::project_trust --quiet (7 passed)
+cargo check -p pi-coding-agent --offline
+cargo fmt --all -- --check
+git diff --check
+node scripts/conversion-progress.mjs (60.84% = 101/166; 65 open)
+```
+
+S-036 is complete; the implementation and documentation changes are ready for
+the required local commit and immediate remote push. The broader S-056,
+extension, provider, harness, server/client, and final-audit tasks remain open.
 
 ## Current S-032 committed checkpoint
 

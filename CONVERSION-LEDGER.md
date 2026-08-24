@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **60.24% (100/166; 66 open)**. Run
+- The exhaustive checker reports **60.84% (101/166; 65 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The focused workspace checks and tests for the current harness-lane slice
@@ -811,8 +811,23 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       Evidence: `cargo test -p pi-coding-agent --offline --test
       config_selector_pty` (1 passed). The broader slash-command PTY matrix
       remains S-056.
-- [ ] S-036 Complete project-trust safety matrix for all commands and resource
+- [x] S-036 Complete project-trust safety matrix for all commands and resource
       loaders, including saved trust, default trust, `-a`, `-na`, and prompts.
+      Trust resolution now runs before settings/resource construction in print,
+      JSON, RPC, interactive, config, and package entry points, with explicit
+      overrides taking precedence over saved decisions and global
+      `defaultProjectTrust` values. Interactive `ask` startup prompts before
+      raw mode and persists the selected decision; headless `ask` remains
+      untrusted. The trust store now uses a sidecar create-exclusive lock for
+      read/modify/write operations. Evidence (live/unit): `cargo test -p
+      pi-coding-agent --offline --test cli_trust --quiet` (7 passed, including
+      saved/default trust, JSON startup, `-a`/`-na`, and a real tmux prompt),
+      `cargo test -p pi-coding-agent --offline --test cli_commands --quiet`
+      (28 passed), `cargo test -p pi-coding-agent --offline --lib
+      core::project_trust --quiet` (7 passed, including all resource markers,
+      ancestor lookup, and concurrent writes), `cargo check -p
+      pi-coding-agent --offline`, `cargo fmt --all -- --check`, and `git diff
+      --check`.
 
 ### S1-E — RPC behavior and concurrency
 

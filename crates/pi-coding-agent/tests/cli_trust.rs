@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use pi_coding_agent::core::project_trust::ProjectTrustStore;
 use serde_json::json;
 
 struct Sandbox {
@@ -36,6 +37,8 @@ impl Sandbox {
             .current_dir(cwd)
             .env("HOME", &self.home)
             .env("PI_CODING_AGENT_DIR", &self.agent_dir)
+            .env("PI_OFFLINE", "1")
+            .env("PI_SKIP_VERSION_CHECK", "1")
             .env_remove("PI_PROVIDER")
             .env_remove("PI_MODEL")
             .env_remove("PI_KEY")
@@ -116,4 +119,149 @@ fn trust_flags_parse_and_help_lists_them() {
         stdout.contains("--no-approve, -na"),
         "help must list --no-approve: {stdout}"
     );
+}
+
+fn write_global_settings(sandbox: &Sandbox, settings: serde_json::Value) {
+    fs::write(
+        sandbox.agent_dir.join("settings.json"),
+        serde_json::to_string(&settings).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn saved_trust_allows_project_settings_without_an_override() {
+    let sandbox = Sandbox::new("saved-trust");
+    let cwd = trust_requiring_project(&sandbox);
+    let store = ProjectTrustStore::new(sandbox.agent_dir.to_str().unwrap());
+    store.set(cwd.to_str().unwrap(), Some(true));
+
+    let out = sandbox.pi(&cwd, &["--print", "hello"]);
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    assert!(
+        sandbox.stdout(&out).contains("faux response"),
+        "saved trust did not load project settings: {}",
+        sandbox.stdout(&out)
+    );
+}
+
+#[test]
+fn global_default_project_trust_controls_headless_resolution() {
+    let always = Sandbox::new("default-always");
+    let always_cwd = trust_requiring_project(&always);
+    write_global_settings(&always, json!({ "defaultProjectTrust": "always" }));
+    let approved = always.pi(&always_cwd, &["--print", "hello"]);
+    assert!(
+        approved.status.success(),
+        "stderr: {}",
+        always.stderr(&approved)
+    );
+    assert!(always.stdout(&approved).contains("faux response"));
+
+    let never = Sandbox::new("default-never");
+    let never_cwd = trust_requiring_project(&never);
+    write_global_settings(&never, json!({ "defaultProjectTrust": "never" }));
+    let denied = never.pi(&never_cwd, &["--print", "hello"]);
+    let combined = format!("{}\n{}", never.stdout(&denied), never.stderr(&denied));
+    assert!(
+        !combined.contains("faux response"),
+        "defaultProjectTrust=never loaded project provider: {combined}"
+    );
+}
+
+#[test]
+fn saved_trust_is_applied_to_json_mode_startup() {
+    let sandbox = Sandbox::new("json-saved-trust");
+    let cwd = trust_requiring_project(&sandbox);
+    let store = ProjectTrustStore::new(sandbox.agent_dir.to_str().unwrap());
+    store.set(cwd.to_str().unwrap(), Some(true));
+
+    let out = sandbox.pi(&cwd, &["--mode", "json", "hello"]);
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    assert!(
+        sandbox.stdout(&out).contains("faux response"),
+        "JSON mode ignored saved project trust: {}",
+        sandbox.stdout(&out)
+    );
+}
+
+#[cfg(unix)]
+mod interactive_prompt {
+    use super::*;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    fn tmux(args: &[&str]) -> std::process::Output {
+        Command::new("tmux")
+            .args(args)
+            .output()
+            .expect("tmux must be installed for the trust prompt test")
+    }
+
+    fn shell_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
+
+    fn capture(session: &str) -> String {
+        let output = tmux(&["capture-pane", "-p", "-t", session]);
+        assert!(output.status.success(), "capture failed");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    fn wait_for(session: &str, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            let output = capture(session);
+            if output.contains(needle) {
+                return output;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {needle:?}"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    #[test]
+    fn interactive_ask_prompt_saves_project_trust() {
+        let sandbox = Sandbox::new("interactive-prompt");
+        let cwd = trust_requiring_project(&sandbox);
+        let session = format!("pi-trust-prompt-{}", uuid::Uuid::new_v4());
+        let created = tmux(&[
+            "new-session",
+            "-d",
+            "-x",
+            "100",
+            "-y",
+            "30",
+            "-c",
+            cwd.to_str().unwrap(),
+            "-s",
+            &session,
+        ]);
+        assert!(created.status.success(), "tmux session creation failed");
+
+        let command = format!(
+            "env HOME={} PI_CODING_AGENT_DIR={} PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 {} --provider faux --model faux-1",
+            shell_quote(sandbox.home.to_str().unwrap()),
+            shell_quote(sandbox.agent_dir.to_str().unwrap()),
+            shell_quote(env!("CARGO_BIN_EXE_pi")),
+        );
+        let launched = tmux(&["send-keys", "-t", &session, &command, "Enter"]);
+        assert!(launched.status.success(), "interactive launch failed");
+        wait_for(&session, "Trust project folder?");
+
+        let answered = tmux(&["send-keys", "-t", &session, "y", "Enter"]);
+        assert!(answered.status.success(), "trust answer failed");
+        wait_for(&session, "(faux/Faux Model)");
+
+        let quit = tmux(&["send-keys", "-t", &session, "/quit", "Enter"]);
+        assert!(quit.status.success(), "interactive quit failed");
+        thread::sleep(Duration::from_millis(150));
+        let _ = tmux(&["kill-session", "-t", &session]);
+
+        let store = ProjectTrustStore::new(sandbox.agent_dir.to_str().unwrap());
+        assert_eq!(store.get(cwd.to_str().unwrap()), Some(true));
+    }
 }

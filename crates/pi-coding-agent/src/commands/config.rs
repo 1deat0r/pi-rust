@@ -67,13 +67,13 @@ pub fn handle_config_command(args: &[String]) -> bool {
 
     let cwd = config::cwd();
     let agent_dir = config::get_agent_dir();
-    let trusted = project_trust_override.unwrap_or(false);
-    let mut settings = SettingsManager::create(
+    let has_ui = std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let mut settings = crate::run::create_settings_with_project_trust(
         &cwd,
-        &agent_dir.display().to_string(),
-        SettingsManagerCreateOptions {
-            project_trusted: trusted,
-        },
+        &agent_dir,
+        project_trust_override,
+        has_ui,
     );
     if local && !settings.is_project_trusted() {
         eprintln!("Project is not trusted. Use --approve to modify local resource config.");

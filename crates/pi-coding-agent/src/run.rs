@@ -85,7 +85,8 @@ pub fn has_explicit_provider(cli_provider: Option<&str>) -> bool {
 /// loading project settings (which are themselves trust-gated).
 fn settings_default_project_trust(agent_dir: &std::path::Path) -> Option<String> {
     let path = agent_dir.join("settings.json");
-    let content = std::fs::read_to_string(path).ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let content = crate::core::settings::strip_bom(&raw);
     let value: serde_json::Value = serde_json::from_str(&content).ok()?;
     value
         .get("defaultProjectTrust")
@@ -93,32 +94,86 @@ fn settings_default_project_trust(agent_dir: &std::path::Path) -> Option<String>
         .map(|s| s.to_string())
 }
 
-pub async fn run(args: &Args) -> Result<RunOutcome, String> {
-    let cwd = config::cwd();
-    let agent_dir = config::get_agent_dir();
-    // Project trust: -a/--approve and -na/--no-approve override the stored
-    // decision / settings default (upstream resolveProjectTrusted).
-    let trust_override = if args.approve {
+fn project_trust_override(args: &Args) -> Option<bool> {
+    if args.approve {
         Some(true)
     } else if args.no_approve {
         Some(false)
     } else {
         None
-    };
+    }
+}
+
+fn prompt_project_trust(
+    cwd: &str,
+    trust_store: &crate::core::project_trust::ProjectTrustStore,
+) -> bool {
+    use std::io::Write;
+
+    println!(
+        "Trust project folder?\n{cwd}\n\nThis allows pi to load .pi settings and resources, install missing project packages, and execute project extensions."
+    );
+    print!("Trust project folder? [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    let trusted = std::io::stdin()
+        .read_line(&mut answer)
+        .map(|_| matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+        .unwrap_or(false);
+    trust_store.set(cwd, Some(trusted));
+    trusted
+}
+
+/// Create settings for a mode after applying the upstream project-trust
+/// precedence: explicit CLI override, saved directory decision, global
+/// `defaultProjectTrust`, then an interactive startup prompt when UI exists.
+/// Headless modes deliberately treat an unresolved `ask` decision as
+/// untrusted, so project resources cannot execute merely because a mode
+/// bypassed the normal interactive startup.
+pub fn create_settings_with_project_trust(
+    cwd: &str,
+    agent_dir: &std::path::Path,
+    trust_override: Option<bool>,
+    has_ui: bool,
+) -> SettingsManager {
     let trust_store =
         crate::core::project_trust::ProjectTrustStore::new(&agent_dir.display().to_string());
-    let default_project_trust = settings_default_project_trust(&agent_dir);
-    let project_trusted = crate::core::project_trust::resolve_project_trusted(
-        &cwd,
-        &trust_store,
-        trust_override,
-        default_project_trust.as_deref(),
-    );
-    let mut settings = SettingsManager::create(
-        &cwd,
+    let project_trusted = if let Some(override_value) = trust_override {
+        override_value
+    } else if !crate::core::project_trust::has_trust_requiring_project_resources(cwd) {
+        true
+    } else if let Some(saved) = trust_store.get(cwd) {
+        saved
+    } else {
+        match settings_default_project_trust(agent_dir).as_deref() {
+            Some("always") => true,
+            Some("never") => false,
+            _ if has_ui => prompt_project_trust(cwd, &trust_store),
+            _ => false,
+        }
+    };
+    SettingsManager::create(
+        cwd,
         &agent_dir.display().to_string(),
         crate::core::settings::SettingsManagerCreateOptions { project_trusted },
-    );
+    )
+}
+
+/// Mode entry points share one trust gate so interactive, JSON, and RPC do
+/// not accidentally load project-local resources with their default settings.
+pub fn create_mode_settings(
+    args: &Args,
+    cwd: &str,
+    agent_dir: &std::path::Path,
+    has_ui: bool,
+) -> SettingsManager {
+    create_settings_with_project_trust(cwd, agent_dir, project_trust_override(args), has_ui)
+}
+
+pub async fn run(args: &Args) -> Result<RunOutcome, String> {
+    let cwd = config::cwd();
+    let agent_dir = config::get_agent_dir();
+    let mut settings = create_mode_settings(args, &cwd, &agent_dir, false);
     // Surface settings load errors as diagnostics (never silently ignore a
     // malformed settings.json that the user expects to take effect).
     let settings_errors = settings.drain_errors();

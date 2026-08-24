@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 60.24% — 100 of 166 ledger tasks complete; 66 open.**
+**Conversion progress: 60.84% — 101 of 166 ledger tasks complete; 65 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -114,7 +114,8 @@ exercise are covered by the selector and ConfigSelector tests.
 Interactive `/compact` now uses the same compaction path as automatic context
 management, accepts optional summary instructions, persists the compaction
 entry, replaces the live context, and resets cache accounting. The remaining
-interactive slash-command terminal audits are tracked as partial S-033 work.
+interactive slash-command terminal matrix remains tracked under S-056; S-033
+command behavior itself is complete.
 
 S-033 is now complete at the command-behavior audit level. Its real tmux PTY
 fixture covers `/resume` picker selection and transcript rehydration alongside
@@ -124,6 +125,12 @@ the existing `/help`,
 alternate-screen and cursor cleanup assertions. It also fixes the first-hit
 terminal capability probe so an uncached interactive startup cannot deadlock;
 the broader S-056 command matrix remains open.
+
+Project trust is resolved before any project settings or resources load across
+print, JSON, RPC, interactive, config, and package commands. Saved decisions,
+global `defaultProjectTrust`, `--approve/-a`, and `--no-approve/-na` follow the
+upstream precedence; interactive `ask` prompts before raw mode and persists the
+answer, while headless unresolved prompts remain untrusted.
 
 ## Workspace
 

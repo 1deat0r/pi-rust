@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 60.24% (100/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 60.84% (101/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1527,6 +1527,33 @@ the S-033 command-behavior audit while leaving the broader S-056 matrix open.
   remains open.
 - Implementation commit `9599298` was committed and pushed immediately after
   this entry; the documentation-only hash refresh follows it.
+
+### Session 47 — 2026-08-24 — Project-trust safety matrix (S-036)
+
+Scope: align project-trust resolution and persistence across every coding-agent
+entry point and verify saved/default/override/prompt behavior against the
+upstream trust manager contract.
+
+- Added one shared settings-construction gate for print, JSON, RPC, and
+  interactive startup. Config and package commands now use the same precedence
+  rather than forcing project trust false or loading project settings by
+  default. Explicit `--approve/-a` and `--no-approve/-na` remain highest
+  priority; saved directory trust and global `defaultProjectTrust` follow.
+- Interactive `ask` now presents the project-trust prompt before raw mode and
+  saves the selected decision. Headless modes deny unresolved `ask` decisions.
+- Added an exclusive sidecar lock around trust-store reads and writes and
+  expanded resource detection coverage for every `.pi` marker plus ancestor
+  `.agents/skills`; concurrent decision writes are regression-tested.
+- Evidence (live/unit/check):
+  `cargo test -p pi-coding-agent --offline --test cli_trust --quiet` (7
+  passed), including the live tmux prompt;
+  `cargo test -p pi-coding-agent --offline --test cli_commands --quiet` (28
+  passed); `cargo test -p pi-coding-agent --offline --lib
+  core::project_trust --quiet` (7 passed); `cargo check -p pi-coding-agent
+  --offline`; `cargo fmt --all -- --check`; and `git diff --check`.
+- S-036 is complete. Remaining trust-adjacent work is limited to the broader
+  extension/resource parity and final clean-room audits already tracked by
+  S-027, S-065, and S-066.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

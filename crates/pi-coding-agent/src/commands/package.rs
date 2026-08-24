@@ -492,16 +492,16 @@ pub async fn handle_package_command(args: &[String]) -> bool {
         PackageCommandKind::Install | PackageCommandKind::Remove
     ) && options.local;
 
-    // Package commands use saved project trust only (upstream
-    // `useSavedProjectTrustOnly` for update; interactive prompt for
-    // install/remove — the port defaults to untrusted without a prompt).
-    let settings_trusted = options.project_trust_override.unwrap_or(false);
-    let mut settings = SettingsManager::create(
+    // Resolve project trust before constructing any package/resource loader;
+    // local package settings must never be loaded merely because this command
+    // bypassed the generic run path.
+    let has_ui = std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let mut settings = crate::run::create_settings_with_project_trust(
         &cwd,
-        &agent_dir.display().to_string(),
-        crate::core::settings::SettingsManagerCreateOptions {
-            project_trusted: settings_trusted,
-        },
+        &agent_dir,
+        options.project_trust_override,
+        has_ui,
     );
     if writes_project_package_config && !settings.is_project_trusted() {
         eprintln!("Project is not trusted. Use --approve to modify local package config.");

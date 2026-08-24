@@ -9,7 +9,11 @@
 //! applies the CLI override, stored decision, or settings default.
 
 use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 /// Trust-requiring entries under `<cwd>/.pi` (upstream
 /// `TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES`).
@@ -87,10 +91,51 @@ pub struct ProjectTrustStore {
     trust_path: PathBuf,
 }
 
+struct TrustFileLock {
+    path: PathBuf,
+}
+
+impl Drop for TrustFileLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Acquire the same sidecar lock used by the upstream trust manager. Trust
+/// decisions are written by more than one process in normal use (for example,
+/// a foreground CLI and an interactive session), so a read/modify/write must
+/// not allow one decision to erase another.
+fn acquire_trust_file_lock(path: &Path) -> TrustFileLock {
+    let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent).expect("create project-trust lock directory");
+    }
+    for _ in 0..100 {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(_) => return TrustFileLock { path: lock_path },
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("acquire project-trust lock {lock_path:?}: {error}"),
+        }
+    }
+    panic!("timed out acquiring project-trust lock {lock_path:?}");
+}
+
+fn with_trust_file_lock<T>(path: &Path, operation: impl FnOnce() -> T) -> T {
+    let _lock = acquire_trust_file_lock(path);
+    operation()
+}
+
 impl ProjectTrustStore {
     pub fn new(agent_dir: &str) -> Self {
+        let agent_dir = crate::config::expand_tilde_path(agent_dir);
         Self {
-            trust_path: Path::new(agent_dir).join("trust.json"),
+            trust_path: Path::new(&agent_dir).join("trust.json"),
         }
     }
 
@@ -104,25 +149,27 @@ impl ProjectTrustStore {
     }
 
     pub fn get_entry(&self, cwd: &str) -> Option<ProjectTrustStoreEntry> {
-        let data = read_trust_file(&self.trust_path).ok()?;
-        let mut current = normalize_cwd(cwd);
-        loop {
-            if let Some(value) = data.get(&current) {
-                if let Some(decision) = value {
-                    return Some(ProjectTrustStoreEntry {
-                        path: current.clone(),
-                        decision: *decision,
-                    });
+        with_trust_file_lock(&self.trust_path, || {
+            let data = read_trust_file(&self.trust_path).ok()?;
+            let mut current = normalize_cwd(cwd);
+            loop {
+                if let Some(value) = data.get(&current) {
+                    if let Some(decision) = value {
+                        return Some(ProjectTrustStoreEntry {
+                            path: current.clone(),
+                            decision: *decision,
+                        });
+                    }
+                }
+                let parent = Path::new(&current)
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned());
+                match parent {
+                    Some(parent) if parent != current => current = parent,
+                    _ => return None,
                 }
             }
-            let parent = Path::new(&current)
-                .parent()
-                .map(|p| p.to_string_lossy().into_owned());
-            match parent {
-                Some(parent) if parent != current => current = parent,
-                _ => return None,
-            }
-        }
+        })
     }
 
     pub fn set(&self, cwd: &str, decision: Option<bool>) {
@@ -133,19 +180,21 @@ impl ProjectTrustStore {
     }
 
     pub fn set_many(&self, updates: &[ProjectTrustUpdate]) {
-        let mut data = read_trust_file(&self.trust_path).unwrap_or_default();
-        for update in updates {
-            let key = normalize_cwd(&update.path);
-            match update.decision {
-                Some(decision) => {
-                    data.insert(key, Some(decision));
-                }
-                None => {
-                    data.remove(&key);
+        with_trust_file_lock(&self.trust_path, || {
+            let mut data = read_trust_file(&self.trust_path).unwrap_or_default();
+            for update in updates {
+                let key = normalize_cwd(&update.path);
+                match update.decision {
+                    Some(decision) => {
+                        data.insert(key, Some(decision));
+                    }
+                    None => {
+                        data.remove(&key);
+                    }
                 }
             }
-        }
-        write_trust_file(&self.trust_path, &data);
+            write_trust_file(&self.trust_path, &data);
+        });
     }
 }
 
@@ -346,6 +395,47 @@ mod tests {
     }
 
     #[test]
+    fn every_project_resource_marker_requires_trust() {
+        let root = sandbox("resource-matrix");
+        let cwd = root.join("proj");
+        std::fs::create_dir_all(cwd.join(".pi")).unwrap();
+        for resource in [
+            "settings.json",
+            "extensions",
+            "skills",
+            "prompts",
+            "themes",
+            "SYSTEM.md",
+            "APPEND_SYSTEM.md",
+        ] {
+            let path = cwd.join(".pi").join(resource);
+            if resource.ends_with("s") {
+                std::fs::create_dir_all(&path).unwrap();
+            } else {
+                std::fs::write(&path, "").unwrap();
+            }
+            assert!(
+                has_trust_requiring_project_resources(cwd.to_str().unwrap()),
+                "resource marker {resource:?} was not gated"
+            );
+            if path.is_dir() {
+                std::fs::remove_dir_all(path).unwrap();
+            } else {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+
+        let ancestor = root.join("ancestor");
+        std::fs::create_dir_all(ancestor.join(".agents").join("skills")).unwrap();
+        let nested = ancestor.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert!(has_trust_requiring_project_resources(
+            nested.to_str().unwrap()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn resolve_applies_override_then_store_then_default() {
         let root = sandbox("resolve");
         let store = ProjectTrustStore::new(root.to_str().unwrap());
@@ -382,6 +472,34 @@ mod tests {
         assert!(options[0].trusted);
         assert_eq!(options[3].label, "Do not trust");
         assert!(!options[3].trusted);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn concurrent_store_writes_preserve_decisions() {
+        let root = sandbox("concurrent");
+        let agent_dir = root.join("agent");
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let agent = agent_dir.to_string_lossy().into_owned();
+        let first_path = first.to_string_lossy().into_owned();
+        let second_path = second.to_string_lossy().into_owned();
+        let left = std::thread::spawn({
+            let agent = agent.clone();
+            move || ProjectTrustStore::new(&agent).set(&first_path, Some(true))
+        });
+        let right = std::thread::spawn({
+            let agent = agent.clone();
+            move || ProjectTrustStore::new(&agent).set(&second_path, Some(false))
+        });
+        left.join().unwrap();
+        right.join().unwrap();
+
+        let store = ProjectTrustStore::new(&agent);
+        assert_eq!(store.get(&first.to_string_lossy()), Some(true));
+        assert_eq!(store.get(&second.to_string_lossy()), Some(false));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
