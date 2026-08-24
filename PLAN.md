@@ -1263,6 +1263,31 @@ distribution's intentional lack of startup timing namespaces.
   session migration integration, and the remaining harness ownership work
   remain open.
 
+### Session 38 — 2026-08-24 — Legacy session integration (partial S-026)
+Scope: connect the existing v1/v2/v3-to-v4 converter to session inventory and
+direct switch paths without overstating the still-missing CLI routing.
+
+- Added an atomic `migrate_legacy_session_file` bridge and a session-root
+  scanner. Interactive startup and `/resume` refresh the root before listing
+  sessions, so legacy files become visible as v4 sessions. RPC startup scans
+  the root, and `switch_session` migrates an explicitly supplied legacy path
+  before loading it.
+- Fork/clone now inherit the converted v4 source when reached through these
+  paths. `/import` retains its existing copy-and-convert behavior. Missing
+  RPC paths preserve the established error wording.
+- Evidence (unit/integration):
+  `cargo test -p pi-coding-agent --offline
+  core::session_migration::filesystem_migration_tests` (3 passed),
+  `cargo test -p pi-coding-agent --offline
+  modes::rpc::tests::rpc_load_session_migrates_legacy_v3_file` (1 passed),
+  `cargo test -p pi-coding-agent --offline
+  modes::rpc::tests::rpc_command_golden_transcript_matches_fixture` (1 passed),
+  the interactive harness regression (1 passed), and
+  `cargo test --workspace --offline --quiet` (176 pi-agent, 286 pi-ai, 451
+  pi-coding-agent, and 186 pi-tui tests plus integration/doctest targets).
+- S-026 remains open for CLI `--continue`/`--resume`/`--fork` routing and the
+  complete resume/switch/fork/import audit.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

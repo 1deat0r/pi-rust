@@ -9,6 +9,7 @@
 //! the coding-agent session runtime (P4/P8).
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -439,6 +440,90 @@ pub fn convert_legacy_to_v4(content: &str) -> Result<String, String> {
     Ok(out)
 }
 
+/// Migrate one legacy v1/v2/v3 file in place before a v4 repository opens it.
+/// The converted content is staged beside the source and atomically renamed so
+/// a failed conversion never replaces the user's original session file.
+pub fn migrate_legacy_session_file(path: &Path) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let content = std::fs::read_to_string(path)
+        .map_err(|error| format!("read legacy session {}: {error}", path.display()))?;
+    let Some(first_line) = content.lines().find(|line| !line.trim().is_empty()) else {
+        return Ok(false);
+    };
+    let Ok(first_value) = serde_json::from_str::<Value>(first_line) else {
+        // The v4 repository already ignores files with malformed headers
+        // during inventory; migration must not make startup stricter.
+        return Ok(false);
+    };
+    if first_value.get("type").and_then(Value::as_str) != Some("session") {
+        return Ok(false);
+    }
+
+    let converted = convert_legacy_to_v4(&content)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "legacy session path has no valid filename: {}",
+                path.display()
+            )
+        })?;
+    let temporary_path = path.with_file_name(format!(".{file_name}.migration.tmp"));
+    std::fs::write(&temporary_path, converted).map_err(|error| {
+        format!(
+            "stage migrated session {}: {error}",
+            temporary_path.display()
+        )
+    })?;
+    if let Err(error) = std::fs::rename(&temporary_path, path) {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(format!(
+            "publish migrated session {}: {error}",
+            path.display()
+        ));
+    }
+    Ok(true)
+}
+
+/// Migrate every legacy session below a JSONL session root. Startup invokes
+/// this before creating/listing the active session so resume and fork/clone
+/// selectors see the same v4 inventory as newly-created sessions.
+pub fn migrate_legacy_sessions_in_root(root: &Path) -> Result<usize, String> {
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut directories: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(root)
+        .map_err(|error| format!("list session root {}: {error}", root.display()))?
+    {
+        let entry = entry.map_err(|error| format!("read session root entry: {error}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            directories.push(path);
+        }
+    }
+
+    let mut migrated = 0;
+    for directory in directories {
+        for entry in std::fs::read_dir(&directory)
+            .map_err(|error| format!("list session directory {}: {error}", directory.display()))?
+        {
+            let entry = entry.map_err(|error| format!("read session directory entry: {error}"))?;
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if migrate_legacy_session_file(&path)? {
+                migrated += 1;
+            }
+        }
+    }
+    Ok(migrated)
+}
+
 #[cfg(test)]
 mod v4_conversion_tests {
     use super::*;
@@ -549,5 +634,67 @@ mod repo_integration_tests {
             .unwrap();
         assert_eq!(entries.len(), 2, "both messages imported");
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod filesystem_migration_tests {
+    use super::*;
+
+    fn legacy_file() -> String {
+        [
+            r#"{"type":"session","version":3,"id":"legacy-file","timestamp":"2026-08-22T00:00:00.000Z","cwd":"/tmp"}"#,
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-08-22T00:00:01.000Z","message":{"role":"user","content":"hello"}}"#,
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn rewrites_a_legacy_file_as_v4_and_is_idempotent() {
+        let root = std::env::temp_dir().join(format!("pi-legacy-file-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.jsonl");
+        std::fs::write(&path, legacy_file()).unwrap();
+
+        assert!(migrate_legacy_session_file(&path).unwrap());
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated
+            .lines()
+            .next()
+            .unwrap()
+            .contains(r#""kind":"header""#));
+        assert!(!migrate_legacy_session_file(&path).unwrap());
+        assert!(!path.with_file_name(".session.jsonl.migration.tmp").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn migrates_all_jsonl_files_under_the_session_root() {
+        let root = std::env::temp_dir().join(format!("pi-legacy-root-{}", uuid::Uuid::new_v4()));
+        let directory = root.join("--tmp--");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("legacy.jsonl"), legacy_file()).unwrap();
+        std::fs::write(directory.join("already.txt"), "not a session").unwrap();
+
+        assert_eq!(migrate_legacy_sessions_in_root(&root).unwrap(), 1);
+        assert!(std::fs::read_to_string(directory.join("legacy.jsonl"))
+            .unwrap()
+            .starts_with("{\"kind\":\"header\""));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn leaves_non_session_or_malformed_files_untouched() {
+        let root = std::env::temp_dir().join(format!("pi-legacy-invalid-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let malformed = root.join("malformed.jsonl");
+        std::fs::write(&malformed, "not json\n").unwrap();
+        let regular = root.join("regular.jsonl");
+        std::fs::write(&regular, "{\"kind\":\"header\",\"version\":4}\n").unwrap();
+
+        assert!(!migrate_legacy_session_file(&malformed).unwrap());
+        assert!(!migrate_legacy_session_file(&regular).unwrap());
+        assert_eq!(std::fs::read_to_string(&malformed).unwrap(), "not json\n");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

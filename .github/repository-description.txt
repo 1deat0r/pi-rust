@@ -1,1 +1,1 @@
-1:1 Rust port of Pi coding agent v0.84.2: CLI, sessions, providers, tools, TUI, RPC, wire parity, and documented Rust fallbacks.
+1:1 Rust port of Pi coding agent v0.84.2: CLI, sessions, legacy imports, providers, tools, TUI, RPC, wire parity, and Rust fallbacks.

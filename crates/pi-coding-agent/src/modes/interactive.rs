@@ -41,6 +41,7 @@ struct InteractiveRuntime {
     messages: Vec<pi_agent::types::AgentMessage>,
     session: JsonlSession<pi_agent::fs::StdFileSystem>,
     repo: JsonlSessionRepo<pi_agent::fs::StdFileSystem>,
+    session_root: String,
     session_id: String,
     session_name: Option<String>,
     system_prompt: Option<String>,
@@ -622,6 +623,10 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         .map(|d| config::expand_tilde_path(&d))
         .unwrap_or_else(|| config::get_session_dir().to_string_lossy().into_owned());
     std::fs::create_dir_all(&session_root).map_err(|e| format!("create session dir: {e}"))?;
+    crate::core::session_migration::migrate_legacy_sessions_in_root(std::path::Path::new(
+        &session_root,
+    ))
+    .map_err(|e| format!("migrate legacy sessions: {e}"))?;
     let mut repo = JsonlSessionRepo::new(pi_agent::fs::StdFileSystem::new(&cwd), &session_root);
     let session_id = pi_agent::session::new_id();
     let session = repo
@@ -643,6 +648,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         messages: Vec::new(),
         session,
         repo,
+        session_root: session_root.clone(),
         session_id: session_id.clone(),
         session_name: None,
         system_prompt: args.system_prompt.clone(),
@@ -1059,27 +1065,34 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     }
                                 }
                                 "resume" => {
-                                    match runtime.repo.list(Some(&runtime.cwd)).await {
-                                        Ok(sessions) if !sessions.is_empty() => {
-                                            // Exclude the current session so the picker offers
-                                            // other sessions (newest-first default).
-                                            let sessions: Vec<_> = sessions
-                                                .into_iter()
-                                                .filter(|s| s.id != runtime.session_id)
-                                                .collect();
-                                            let picker = it::session_picker_items(sessions);
-                                            let items = it::picker_select_items(&picker);
-                                            modal = Some(Modal::Resume(
-                                                Arc::new(Mutex::new(ListSelector::new(items, 10))),
-                                                picker,
-                                            ));
-                                        }
-                                        Ok(_) => {
-                                            status_banner =
-                                                "no sessions found to resume in this directory".to_string();
-                                        }
+                                    match crate::core::session_migration::migrate_legacy_sessions_in_root(
+                                        std::path::Path::new(&runtime.session_root),
+                                    ) {
+                                        Ok(_) => match runtime.repo.list(Some(&runtime.cwd)).await {
+                                            Ok(sessions) if !sessions.is_empty() => {
+                                                // Exclude the current session so the picker offers
+                                                // other sessions (newest-first default).
+                                                let sessions: Vec<_> = sessions
+                                                    .into_iter()
+                                                    .filter(|s| s.id != runtime.session_id)
+                                                    .collect();
+                                                let picker = it::session_picker_items(sessions);
+                                                let items = it::picker_select_items(&picker);
+                                                modal = Some(Modal::Resume(
+                                                    Arc::new(Mutex::new(ListSelector::new(items, 10))),
+                                                    picker,
+                                                ));
+                                            }
+                                            Ok(_) => {
+                                                status_banner =
+                                                    "no sessions found to resume in this directory".to_string();
+                                            }
+                                            Err(e) => {
+                                                status_banner = format!("list sessions failed: {e}");
+                                            }
+                                        },
                                         Err(e) => {
-                                            status_banner = format!("list sessions failed: {e}");
+                                            status_banner = format!("migrate legacy sessions failed: {e}");
                                         }
                                     }
                                 }
@@ -1594,6 +1607,7 @@ mod tests {
             messages: Vec::new(),
             session,
             repo,
+            session_root: session_root.to_string_lossy().into_owned(),
             session_id,
             session_name: None,
             system_prompt: None,

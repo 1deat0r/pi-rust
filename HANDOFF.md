@@ -26,8 +26,8 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is `869ae6d`, the startup-timing compatibility
-slice, after
+The latest local working-tree checkpoint is the partial legacy-session
+integration slice, after committed startup timing (`869ae6d`) and
 the committed compiled-binary self-update contract (`db97b89`) and interactive
 turn harness ownership
 checkpoint (`0cd9d03`) and documentation-hook checkpoint (`d56d8ba`), JSON-mode
@@ -54,7 +54,8 @@ additions/renames include:
 
 Current status at pause: branch `main`, progress checker reports
 `56.63% (94/166; 72 open)`. Preserve the pre-existing untracked `AGENTS.md`.
-The README now records the startup-timing compatibility contract and the
+The README now records the legacy-session integration and startup-timing
+compatibility contracts and the
 synchronized-doc workflow. All staged checkpoint changes are intentional local
 work ahead of the remote; the pre-existing `AGENTS.md` remains untouched.
 
@@ -127,8 +128,8 @@ A full `cargo test --workspace --offline` passed after the image/read changes,
 including 162 `pi-agent` unit tests, the coding-agent integration targets, 186
 `pi-tui` unit tests, and all workspace doctests.
 
-The latest full gate after the startup-timing compatibility checkpoint passed:
-176 `pi-agent` tests, 286 `pi-ai` unit tests, 448 `pi-coding-agent` unit tests plus
+The latest full gate after the partial legacy-session integration checkpoint
+passed: 176 `pi-agent` tests, 286 `pi-ai` unit tests, 451 `pi-coding-agent` unit tests plus
 all integration targets (including the malformed-call and print-parity
 fixtures), 186 `pi-tui` unit tests, and all workspace doctests.
 
@@ -163,6 +164,17 @@ The startup-timing compatibility checkpoint is complete in the working tree:
   `PI_TIMING=1 ./target/debug/pi --version` prints the warning before
   `pi 0.84.2`. S-031 is closed; session migration integration, install
   telemetry, cache notices, and harness ownership remain open.
+
+The partial legacy-session integration checkpoint is complete in the working
+tree, without a new ledger checkbox:
+
+- Legacy v1/v2/v3 files are atomically converted before interactive session
+  inventory and direct RPC switch_session loads. Fork/clone inherit the
+  converted v4 source; /import keeps its existing copy-and-convert path.
+- The three converter/file-system tests, direct RPC migration test, RPC golden
+  transcript, interactive harness regression, formatter, and diff check are
+  the evidence for this slice. CLI --continue/--resume/--fork and the complete
+  S-026 path audit remain open.
 
 ## Earlier completed code changes
 

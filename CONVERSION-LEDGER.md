@@ -19,8 +19,8 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the local startup-timing compatibility checkpoint on `main`, after
-  the compiled-binary self-update contract,
+- HEAD is the local legacy-session integration checkpoint on `main`, after
+  the startup-timing compatibility and compiled-binary self-update contracts,
   the print-path harness ownership, AgentTool harness/termination,
   schema-validator, panic-safe telemetry, update/version, and model-catalog
   work; the HTTPS remote is still behind because GitHub credentials are
@@ -673,6 +673,11 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       --offline`.
 - [ ] S-026 Complete legacy v1/v2/v3-to-v4 import integration for every resume,
       switch, fork, and `/import` path, not only the standalone converter.
+      Partial integration now atomically migrates legacy files under the
+      session root before interactive resume inventory and migrates direct RPC
+      switch paths before opening them; migration tests cover idempotence and
+      the RPC-loaded transcript. CLI `--continue`/`--resume`/`--fork` routing
+      and the remaining full-path audit are still open.
 - [ ] S-027 Port TypeScript extension execution semantics or provide a proven
       equivalent embedded runtime; cover extension commands, hooks, renderers,
       and failure isolation.

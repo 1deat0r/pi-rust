@@ -617,6 +617,10 @@ impl RpcRuntime {
             .map(|d| config::expand_tilde_path(&d))
             .unwrap_or_else(|| config::get_session_dir().to_string_lossy().into_owned());
         std::fs::create_dir_all(&session_root).map_err(|e| format!("create session dir: {e}"))?;
+        crate::core::session_migration::migrate_legacy_sessions_in_root(std::path::Path::new(
+            &session_root,
+        ))
+        .map_err(|e| format!("migrate legacy sessions: {e}"))?;
         let mut repo = JsonlSessionRepo::new(pi_agent::fs::StdFileSystem::new(&cwd), &session_root);
         let session_id = args
             .session_id
@@ -2388,6 +2392,8 @@ impl RpcRuntime {
         // Load directly from the supplied path rather than looking it up in
         // the current session root: RPC clients may switch to a session from
         // another cwd/session directory.
+        crate::core::session_migration::migrate_legacy_session_file(std::path::Path::new(path))
+            .map_err(|e| format!("migrate legacy session {path:?}: {e}"))?;
         let storage = pi_agent::session::JsonlSessionStorage::load(
             pi_agent::fs::StdFileSystem::new(&self.cwd),
             path,
@@ -4194,6 +4200,37 @@ mod tests {
         assert_eq!(fork_messages.len(), 1);
         assert_ne!(fork_messages[0]["entryId"], "-");
         assert_eq!(fork_messages[0]["text"], "hello");
+    }
+
+    #[tokio::test]
+    async fn rpc_load_session_migrates_legacy_v3_file() {
+        let mut runtime = runtime_for_test().await;
+        let current_path = runtime.session_path.clone().expect("session path exists");
+        let legacy_path = std::path::Path::new(&current_path).with_file_name("legacy-switch.jsonl");
+        let legacy = format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"legacy-switch\",\"timestamp\":\"2026-08-22T00:00:00.000Z\",\"cwd\":{}}}\n{{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"timestamp\":\"2026-08-22T00:00:01.000Z\",\"message\":{{\"role\":\"user\",\"content\":\"legacy prompt\"}}}}\n",
+            serde_json::to_string(&runtime.cwd).unwrap()
+        );
+        std::fs::write(&legacy_path, legacy).unwrap();
+
+        runtime
+            .load_session(&legacy_path.to_string_lossy())
+            .await
+            .expect("legacy switch should migrate and open");
+
+        assert_eq!(runtime.session_id, "legacy-switch");
+        assert!(std::fs::read_to_string(&legacy_path)
+            .unwrap()
+            .starts_with("{\"kind\":\"header\""));
+        let entries = runtime.get_entries().await.unwrap();
+        assert_eq!(entries.len(), 1);
+        let Some(pi_agent::types::AgentMessage::Core(Message::User(user))) =
+            entries[0].as_message()
+        else {
+            panic!("expected migrated user message");
+        };
+        assert_eq!(pi_agent::agent::user_content_text(user), "legacy prompt");
+        let _ = std::fs::remove_file(legacy_path);
     }
 
     #[tokio::test]
