@@ -26,15 +26,14 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest committed local checkpoint is the documentation-hook checkpoint
-(`d56d8ba`); the next code checkpoint routes interactive turns through the
-stateful harness after the JSON-mode harness ownership slice (`3fb8049`),
-print-path harness, lifecycle/termination,
-schema-validator, panic-safe telemetry, RPC runtime, update/version, and
-model-catalog checkpoints. The JSON-mode commit is `dd7a568`; the follow-up
-preserves the successful RPC golden envelope while forwarding terminal JSON
-provider errors. Pushes remain blocked because the HTTPS remote requires
-GitHub credentials.
+The latest committed local checkpoint is the interactive turn harness
+ownership slice (`0cd9d03`) after the documentation-hook checkpoint
+(`d56d8ba`), JSON-mode harness ownership (`3fb8049`), print-path harness,
+lifecycle/termination, schema-validator, panic-safe telemetry, RPC runtime,
+update/version, and model-catalog checkpoints. The JSON-mode implementation is
+`dd7a568`; its follow-up preserves the successful RPC golden envelope while
+forwarding terminal JSON provider errors. Pushes remain blocked because the
+HTTPS remote requires GitHub credentials.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
 
@@ -103,8 +102,8 @@ A full `cargo test --workspace --offline` passed after the image/read changes,
 including 162 `pi-agent` unit tests, the coding-agent integration targets, 186
 `pi-tui` unit tests, and all workspace doctests.
 
-The latest full gate after the shared mode lifecycle bridge passed: 176
-`pi-agent` tests, 286 `pi-ai` unit tests, 445 `pi-coding-agent` unit tests plus
+The latest full gate after the interactive turn harness checkpoint passed: 176
+`pi-agent` tests, 286 `pi-ai` unit tests, 446 `pi-coding-agent` unit tests plus
 all integration targets (including the malformed-call and print-parity
 fixtures), 186 `pi-tui` unit tests, and all workspace doctests.
 
@@ -297,7 +296,8 @@ The interactive turn harness ownership slice is the next checkpoint:
   TUI callback. The runtime continues to own durable JSONL persistence and
   session-switch behavior.
 - The focused interactive harness test and the full 446-test coding-agent
-  suite pass. This remains partial S-021/S-022: JSONL/RPC full harness
+  suite plus the full workspace gate pass. This remains partial S-021/S-022:
+  JSONL/RPC full harness
   ownership, lifecycle goldens, persistence, and secondary lanes remain open.
 
 The follow-up bash harness integration is included in the latest checkpoint:

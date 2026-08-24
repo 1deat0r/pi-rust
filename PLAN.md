@@ -1214,8 +1214,10 @@ the existing TUI transcript, session-switch, and stream-update surfaces.
   -- --nocapture` (1 passed), `/home/mustbearnold/.cargo/bin/cargo test -p
   pi-coding-agent --offline --quiet` (446 library tests plus integration
   targets), `/home/mustbearnold/.cargo/bin/cargo check -p pi-coding-agent
-  --offline`, `/home/mustbearnold/.cargo/bin/cargo fmt --all`, and
-  `git diff --check`.
+  --offline`, `/home/mustbearnold/.cargo/bin/cargo test --workspace --offline
+  --quiet` (176 pi-agent, 286 pi-ai, 446 pi-coding-agent, and 186 pi-tui
+  tests plus integration/doctest targets), `/home/mustbearnold/.cargo/bin/cargo
+  fmt --all`, and `git diff --check`.
 - S-021/S-022 remain open: JSONL/RPC full AgentHarness ownership,
   mode-specific lifecycle golden envelopes, persistence, and secondary lanes
   still need implementation and evidence.
