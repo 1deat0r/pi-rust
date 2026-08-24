@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **59.04% (98/166; 68 open)**. Run
+- The exhaustive checker reports **59.64% (99/166; 67 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The focused workspace checks and tests for the current harness-lane slice
@@ -19,14 +19,15 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the committed partial S-021/S-022 secondary-lane checkpoint `d8b589f`
-  on
-  `main`, after the S-026 CLI session-routing checkpoint `711a25e`,
+- The latest committed docs checkpoint is `79ab5e6` on `main`, containing the
+  partial S-021/S-022 secondary-lane implementation checkpoint `d8b589f`,
+  after the S-026 CLI session-routing checkpoint `711a25e`,
   the startup-timing compatibility and compiled-binary self-update contracts,
   the print-path harness ownership, AgentTool harness/termination,
   schema-validator, panic-safe telemetry, install telemetry, update/version,
   and model-catalog work. GitHub authentication is configured through `gh
-  auth setup-git`, and `origin/main` matches local `HEAD` at `d8b589f`.
+  auth setup-git`, and `origin/main` matches local `HEAD` at the latest
+  documentation checkpoint `79ab5e6`.
 - The focused tool-contract, RPC, image/read, print-mode compaction,
   malformed-call, harness-owned print-path, and secondary-lane suites pass.
   The last full workspace gate was green before the resource-constrained
@@ -47,8 +48,8 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   are serialized for deterministic workspace runs.
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
   device-code flows, codex WebSocket transport (SSE fallback today),
-  `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
-  full TUI component, models.json runtime merge seam, full interactive
+  `/share` GitHub-gist OAuth (in-progress in the working tree), models.json
+  runtime merge seam, full interactive
   slash-command PTY coverage, TUI alt-screen full swap + terminal feature
   probes, server/client
   concurrency surfaces (leases, reconnect, queuing). Signed usage adjustment
@@ -768,9 +769,19 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 - [ ] S-033 Complete interactive slash-command behavior audits for export,
       import, share, trust, login/logout, new/resume, fork/clone, tree, and
       reload; each command needs a real terminal or fixture transcript.
-- [ ] S-034 Finish ConfigSelector project/global inheritance, package pattern
+- [x] S-034 Finish ConfigSelector project/global inheritance, package pattern
       toggles, search/navigation, write-scope persistence, and close behavior
-      against the upstream component.
+      against the upstream component. The final audit aligns local package
+      sources across global/project bases, creates project-relative package
+      overrides, recognizes metadata-base top-level patterns, preserves the
+      upstream `autoload: false` empty-filter inheritance rule, and removes
+      empty project override objects when cycling back to inherit. Evidence:
+      `cargo test -p pi-coding-agent --offline --lib
+      interactive::config_selector --quiet` (11 passed), `cargo test -p
+      pi-coding-agent --offline --lib interactive:: --quiet` (36 passed),
+      `cargo test -p pi-coding-agent --offline --test config_selector_pty
+      --quiet` (1 passed), `cargo check -p pi-coding-agent --offline`,
+      `cargo fmt --all`, and `git diff --check`.
 - [x] S-035 Add PTY snapshot/golden tests for ConfigSelector rendering,
       resizing, glyph probes, keyboard navigation, and settings writes. Added
       `crates/pi-coding-agent/tests/config_selector_pty.rs`, which drives the

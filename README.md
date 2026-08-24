@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 59.04% — 98 of 166 ledger tasks complete; 68 open.**
+**Conversion progress: 59.64% — 99 of 166 ledger tasks complete; 67 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -22,7 +22,7 @@ compaction, RPC controls, TUI components, and client/server support. Remaining
 work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
 
-The last verified local and GitHub `main` checkpoint is `d8b589f`. GitHub CLI
+The last verified local and GitHub `main` checkpoint is `79ab5e6`. GitHub CLI
 authentication is configured for the HTTPS remote, so implementation
 checkpoints are pushed and hash-verified immediately.
 
@@ -102,6 +102,13 @@ The harness session tree supports `main` plus named secondary lanes. A lane
 created at a session leaf inherits that branch as provider context, then
 persists new user/assistant messages and advances only its own leaf pointer.
 Run lifecycle events and `pi.harness.run` spans include the lane name.
+
+The ConfigSelector now matches global/project package sources across their
+settings bases, writes project-relative local overrides, preserves inherited
+package filters, recognizes metadata-base resource patterns, and cleans empty
+project overrides when returning to inherit. Search, navigation, scope
+switching, synchronous writes, close behavior, and the real-terminal PTY
+exercise are covered by the selector and ConfigSelector tests.
 
 ## Workspace
 

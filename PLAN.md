@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 59.04% (98/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 59.64% (99/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1432,6 +1432,38 @@ callers.
 - Checkpoint: commit `d8b589f`; `git rev-parse HEAD` and
   `git ls-remote origin refs/heads/main` both resolve to
   `d8b589f3532847042405c2a1a474b0e761c943a7a`.
+
+### Session 44 — 2026-08-24 — ConfigSelector package/path parity (S-034)
+
+Scope: finish the remaining upstream ConfigSelector inheritance and package
+pattern audit after the existing search, navigation, persistence, and PTY
+coverage.
+
+- Project package overrides now match equivalent local sources resolved from
+  different global/project settings bases, write project-relative sources for
+  newly created local overrides, and clean empty `autoload: false` override
+  objects when cycling back to inherit. Package resource state now preserves
+  the upstream distinction between an absent type filter and an explicit empty
+  filter.
+- Top-level project override matching now includes the resource metadata base
+  directory, and inherited items use their absolute path for the force-load /
+  force-unload pair. Resource identity uses canonical paths when available,
+  matching the upstream inherited-resource map behavior.
+- Evidence (unit/mock/live):
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib
+  interactive::config_selector --quiet` (11 passed),
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib
+  interactive:: --quiet` (36 passed),
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+  --test config_selector_pty --quiet` (1 passed),
+  `/home/mustbearnold/.cargo/bin/cargo check -p pi-coding-agent --offline`,
+  `/home/mustbearnold/.cargo/bin/cargo fmt --all`, and `git diff --check`.
+- S-034 is complete. S-033 slash-command audits, S-021/S-022 full JSONL/RPC
+  harness ownership, and the remaining provider/TUI/client/server/evaluation
+  audits remain open.
+- The implementation and documentation checkpoint is committed and pushed
+  immediately after this entry; the exact parity hash is recorded in the
+  handoff once the push completes.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

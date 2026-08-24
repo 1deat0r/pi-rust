@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-59.04% = 98 completed / 166 total tasks
-68 tasks remain open
+59.64% = 99 completed / 166 total tasks
+67 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -59,8 +59,9 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`59.04% (98/166; 68 open)`. The latest committed parity checkpoint is
-`d8b589f`, synchronized with `origin/main`. Preserve the pre-existing
+`59.64% (99/166; 67 open)`. The latest committed documentation checkpoint is
+`79ab5e6`, synchronized with `origin/main`; the ConfigSelector parity
+implementation and its docs are the next immediate checkpoint. Preserve the pre-existing
 untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
 provider auth guidance, startup-timing, interactive cache-notice,
@@ -95,6 +96,31 @@ This remains partial S-021/S-022. JSONL/RPC full harness ownership,
 mode-specific golden envelopes, queue/control operations, complete persistence
 coverage, and the upstream event registry remain open. `AGENTS.md` is still
 pre-existing and untracked; it is not staged.
+
+## Current ConfigSelector package/path parity checkpoint (S-034)
+
+The remaining ConfigSelector audit is complete in the working tree and is
+being committed and pushed with this documentation refresh. Project package
+overrides now match local sources across global/project settings bases, create
+project-relative sources, preserve the upstream absent-vs-empty `autoload:
+false` filter distinction, and remove empty project override objects when
+cycling back to inherit. Top-level overrides also recognize resource metadata
+base directories, and inherited resource identity uses canonical paths when
+available.
+
+Evidence:
+
+```text
+cargo test -p pi-coding-agent --offline --lib interactive::config_selector --quiet (11 passed)
+cargo test -p pi-coding-agent --offline --lib interactive:: --quiet (36 passed)
+cargo test -p pi-coding-agent --offline --test config_selector_pty --quiet (1 passed)
+cargo check -p pi-coding-agent --offline
+cargo fmt --all
+git diff --check
+```
+
+S-034 is now complete. The exact local/remote commit hash is added here after
+the immediate push; `AGENTS.md` remains pre-existing and untracked.
 
 ## Current S-032 committed checkpoint
 
