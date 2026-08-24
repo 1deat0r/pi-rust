@@ -27,7 +27,7 @@ pub enum SlashKind {
     Quit,
     /// Shows the available commands.
     Help,
-    /// Not yet wired (documented divergence): shows a status notice.
+    /// Stateful commands handled by name in the interactive loop.
     Unsupported,
 }
 
@@ -226,4 +226,14 @@ pub fn command_autocomplete_items() -> Vec<pi_tui::autocomplete::AutocompleteIte
             }
         })
         .collect()
+}
+
+/// Render the built-in command summary shown by `/help`.
+pub fn help_banner() -> String {
+    let names = BUILTIN_SLASH_COMMANDS
+        .iter()
+        .map(|command| format!("/{}", command.name))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("commands: {names}")
 }

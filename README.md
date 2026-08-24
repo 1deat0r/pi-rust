@@ -115,6 +115,13 @@ management, accepts optional summary instructions, persists the compaction
 entry, replaces the live context, and resets cache accounting. The remaining
 interactive slash-command terminal audits are tracked as partial S-033 work.
 
+The current S-033 checkpoint adds a real tmux PTY fixture for `/help`,
+`/export`, `/import`, `/share`, `/trust`, `/login`, `/logout`, `/name`,
+`/copy`, `/new`, `/fork`, `/clone`, `/tree`, and `/reload`, including
+alternate-screen and cursor cleanup assertions. It also fixes the first-hit
+terminal capability probe so an uncached interactive startup cannot deadlock;
+the broader `/resume` picker and S-056 command matrix remain open.
+
 ## Workspace
 
 ```text

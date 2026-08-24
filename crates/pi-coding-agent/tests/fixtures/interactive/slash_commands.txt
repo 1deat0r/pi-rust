@@ -1,0 +1,16 @@
+# Each row is submitted through the real interactive editor in a tmux PTY.
+# The right-hand side is an observable substring of the rendered transcript.
+/help|commands: /settings /model /thinking
+/trust allow|default project trust: allow
+/reload|reloaded settings
+/share|share skipped
+/logout|usage: /logout
+/login faux|no OAuth login available
+/copy|no assistant message
+/name slash fixture|session name: slash fixture
+/new|started new session
+/tree|tree: empty session
+/fork|fork session
+/clone|clone session
+/export $HTML|exported session to
+/import $MISSING|file not found

@@ -157,12 +157,30 @@ pub fn parse_tmux_client_termfeatures(termfeatures: &str) -> bool {
 }
 
 pub fn get_capabilities() -> TerminalCapabilities {
-    let cached = CAPS.read().unwrap_or_else(|e| e.into_inner());
+    cached_capabilities(&CAPS, detect_capabilities)
+}
+
+/// Read the capability cache, detect on a miss, and publish the result.
+///
+/// The explicit read-guard drop is important: a cache miss must release the
+/// read lock before acquiring the write lock, including on the first TTY
+/// render in a fresh process.
+fn cached_capabilities<F>(
+    cache: &RwLock<Option<TerminalCapabilities>>,
+    detect: F,
+) -> TerminalCapabilities
+where
+    F: FnOnce() -> TerminalCapabilities,
+{
+    let cached = cache.read().unwrap_or_else(|e| e.into_inner());
     if let Some(caps) = *cached {
         return caps;
     }
-    let caps = detect_capabilities();
-    set_capabilities(caps);
+    drop(cached);
+
+    let caps = detect();
+    let mut guard = cache.write().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(caps);
     caps
 }
 
@@ -465,5 +483,19 @@ mod tests {
         set_cell_dimensions(0, 0);
         assert_eq!(get_cell_dimensions(), (11, 22));
         set_cell_dimensions(original.0, original.1);
+    }
+
+    #[test]
+    fn uncached_capability_detection_releases_read_lock_before_write() {
+        let cache = RwLock::new(None);
+        let expected = TerminalCapabilities {
+            images: None,
+            true_color: true,
+            hyperlinks: false,
+        };
+
+        let actual = cached_capabilities(&cache, || expected);
+        assert!(actual.true_color);
+        assert!(cache.read().unwrap().is_some());
     }
 }

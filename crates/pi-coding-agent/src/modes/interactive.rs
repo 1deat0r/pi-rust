@@ -1370,7 +1370,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 status_banner = "hotkeys: enter submit · shift+enter newline · ctrl+c quit · ↑/↓ history · ctrl+w word-delete".to_string();
                             }
                             SlashKind::Help => {
-                                status_banner = "commands: /settings /model /thinking /theme /session /compact /clear /hotkeys /help /quit".to_string();
+                                status_banner = it::slash::help_banner();
                             }
                             SlashKind::Quit => {
                                 return Ok(());

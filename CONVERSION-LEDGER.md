@@ -771,10 +771,15 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 - [ ] S-033 Complete interactive slash-command behavior audits for export,
       import, share, trust, login/logout, new/resume, fork/clone, tree, and
       reload; each command needs a real terminal or fixture transcript. A
-      partial checkpoint now wires interactive `/compact` through the shared
-      forced compaction path with optional custom instructions, durable
-      compaction entries, context replacement, and cache reset; the remaining
-      command-by-command terminal matrix stays open.
+      real tmux PTY fixture now covers `/help`, `/export`, `/import`, `/share`,
+      `/trust`, `/login`, `/logout`, `/name`, `/copy`, `/new`, `/fork`,
+      `/clone`, `/tree`, and `/reload`, including temporary-path export/import,
+      persisted project trust, and alternate-screen/cursor cleanup assertions.
+      The fixture also exposed and fixed a first-hit terminal capability-cache
+      deadlock caused by holding a read lock while acquiring the write lock;
+      the uncached detection path now has a focused regression test. The
+      `/resume` picker and broader S-056 command matrix remain open, so this
+      supplemental task is not complete.
 - [x] S-034 Finish ConfigSelector project/global inheritance, package pattern
       toggles, search/navigation, write-scope persistence, and close behavior
       against the upstream component. The final audit aligns local package

@@ -65,8 +65,8 @@ refresh follows it. Preserve the pre-existing
 untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
 provider auth guidance, startup-timing, interactive cache-notice,
-install-telemetry contracts, and the synchronized-doc workflow. The
-pre-existing `AGENTS.md` remains untouched.
+install-telemetry contracts, the interactive slash-command PTY checkpoint, and
+the synchronized-doc workflow. The pre-existing `AGENTS.md` remains untouched.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 
@@ -146,6 +146,38 @@ git diff --check
 This is partial S-033. The implementation push was verified at
 `514cca9`; real-terminal/fixture audits for export, import, share,
 trust, login/logout, new/resume, fork/clone, tree, and reload remain open.
+
+## Current interactive slash-command PTY fixture checkpoint (partial S-033)
+
+The working tree now contains a real tmux PTY fixture for `/help`, `/export`,
+`/import`, `/share`, `/trust`, `/login`, `/logout`, `/name`, `/copy`, `/new`,
+`/fork`, `/clone`, `/tree`, and `/reload`. It drives the actual interactive
+binary, substitutes temporary export/import paths, verifies the HTML artifact,
+checks project trust after `/reload`, and inspects alternate-screen/cursor
+cleanup in the raw pane log.
+
+The first uncached interactive startup also exposed a lock-order bug in the
+terminal image capability cache: capability detection tried to take a write
+lock while still holding a read lock. The read guard is now released before
+detection and storage, and the regression is covered in `pi-tui`.
+
+Evidence:
+
+```text
+cargo test -p pi-coding-agent --offline --test interactive_slash_pty --quiet (1 passed)
+cargo test -p pi-coding-agent --offline --lib interactive:: --quiet (37 passed)
+cargo test -p pi-tui --offline terminal_image::tests::uncached_capability_detection_releases_read_lock_before_write --quiet (1 passed)
+cargo check -p pi-coding-agent --offline
+cargo fmt --all -- --check
+git diff --check
+node scripts/conversion-progress.mjs (59.64% = 99/166; 67 open)
+```
+
+This remains partial S-033: the interactive `/resume` selector and the
+broader S-056 command-by-command terminal matrix are still open. The
+implementation and documentation changes are ready for the required local
+commit and immediate remote push; refresh the checkpoint hash here after the
+commit is created.
 
 ## Current S-032 committed checkpoint
 

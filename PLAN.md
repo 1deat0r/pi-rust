@@ -1492,6 +1492,38 @@ matrix open.
 - Implementation commit `514cca9` was committed and pushed immediately after
   this entry; the documentation refresh is the follow-up checkpoint.
 
+### Session 46 — 2026-08-24 — Interactive slash-command PTY fixture checkpoint (partial S-033)
+
+Scope: exercise the real interactive binary through a tmux PTY and close the
+first observable slash-command fixture gap without claiming the full S-033 or
+S-056 matrix complete.
+
+- Added a fixture-driven transcript for `/help`, `/export`, `/import`,
+  `/share`, `/trust`, `/login`, `/logout`, `/name`, `/copy`, `/new`, `/fork`,
+  `/clone`, `/tree`, and `/reload`. The fixture substitutes temporary paths,
+  verifies the exported HTML, checks that trust survives a reload, and asserts
+  alternate-screen/cursor cleanup in the raw terminal log.
+- The live PTY exposed a first-use deadlock in the terminal image capability
+  cache: the read guard was held while detection acquired the write lock. The
+  cache now releases the read guard before detection/storage, with a focused
+  regression test.
+- `/help` derives its command banner from the built-in command registry, so the
+  interactive surface cannot silently advertise only the original core subset.
+- Evidence (live/unit/check):
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+  --test interactive_slash_pty --quiet` (1 passed),
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib
+  interactive:: --quiet` (37 passed),
+  `/home/mustbearnold/.cargo/bin/cargo test -p pi-tui --offline
+  terminal_image::tests::uncached_capability_detection_releases_read_lock_before_write
+  --quiet` (1 passed),
+  `/home/mustbearnold/.cargo/bin/cargo check -p pi-coding-agent --offline`,
+  `/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check`,
+  `git diff --check`, and `node scripts/conversion-progress.mjs` reporting
+  `59.64% (99/166; 67 open)`.
+- S-033 remains open for the interactive `/resume` selector and any uncovered
+  command behavior; the broader S-056 terminal matrix also remains open.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration
