@@ -26,16 +26,15 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The current logical checkpoint is S-008 constrained-sampling/grammar parity.
-The implementation and its required documentation are currently uncommitted;
-the pre-existing untracked `AGENTS.md` remains untouched and must be preserved.
-Do not use `git reset --hard`, `git checkout --`, broad revert commands, or
-`git clean`.
+The current logical checkpoint is the pushed S-008 constrained-sampling/
+grammar parity slice. The pre-existing untracked `AGENTS.md` remains untouched
+and must be preserved. Do not use `git reset --hard`, `git checkout --`, broad
+revert commands, or `git clean`.
 
-Current status before the focused commit: branch `main`, progress checker
-reports `63.25% (105/166; 61 open)`. The last pushed baseline is local/remote
-commit `4523cd61f2f92a65f459b1cd9f290abbe874fa5f`; the S-008 files are the
-working-tree delta. The current S-008 changes include:
+Current status after the focused push: branch `main`, progress checker reports
+`63.25% (105/166; 61 open)`. The S-008 implementation commit is
+`7a72f2fe104cf660f946f29a822c88da556a37d1`; local and `origin/main` matched
+that hash immediately after push. The current S-008 changes include:
 
 - `crates/pi-ai/src/api/constrained_sampling.rs`, the shared strict-schema and
   grammar resolver plus streaming JSON-delta helper.
@@ -46,8 +45,9 @@ working-tree delta. The current S-008 changes include:
 - Adaptor/unit fixtures covering rewrites, unsupported schemas, grammar
   precedence/inference, request shapes, replay, and SSE deltas.
 
-The required local commit and immediate push remain pending. Preserve the
-existing broader worktree and the untracked `AGENTS.md`.
+The implementation commit is pushed and hash-verified. Only this final
+handoff synchronization is being recorded; preserve the broader worktree and
+the untracked `AGENTS.md`.
 
 ## Current strict-verification cleanup
 
@@ -68,7 +68,7 @@ did not change the ledger count at that earlier checkpoint (`62.65%`, 104/166).
 The verified implementation checkpoint is `7b3db53`; local `HEAD` and
 `origin/main` matched immediately after its push.
 
-## Current checkpoint — 2026-08-24 — S-008 complete, commit/push pending
+## Current checkpoint — 2026-08-24 — S-008 complete and pushed
 
 S-008 is implemented and marked complete in `CONVERSION-LEDGER.md`. The shared
 resolver now clones and strictifies supported JSON schemas, wraps optional
@@ -95,17 +95,18 @@ node scripts/conversion-progress.mjs
 ```
 
 All listed focused checks pass; the checker reports exactly
-`Conversion progress: 63.25% (105/166; 61 open)`. An independent reviewer
+`Conversion progress: 63.25% (105/166; 61 open)`. Independent reviewers
 compared the implementation with upstream commit
 `5cd93f688aaab89dbb6dfa4aca535f21796ae185` and returned APPROVE with no parity
-blockers. A full `cargo test --workspace --offline --quiet` attempt was not a
+blockers, including custom item-ID omission and namespace preservation. A full `cargo test --workspace --offline --quiet` attempt was not a
 code failure: the linker was killed with SIGKILL 9 while linking the unrelated
 `pi-coding-agent` `export_html_parity` test binary. The focused `pi-ai` suite
 is green; rerun the workspace test gate when host linker pressure permits.
 
-Next dependency-safe work is S-009 Codex WebSocket session caching/reuse. The
-S-008 focused commit, immediate push, and post-push hash verification are still
-required before claiming remote parity.
+The S-008 implementation commit `7a72f2fe104cf660f946f29a822c88da556a37d1`
+was pushed to `origin/main`; `git rev-parse HEAD` and `git ls-remote origin
+refs/heads/main` matched exactly. Next dependency-safe work is S-009 Codex
+WebSocket session caching/reuse.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 

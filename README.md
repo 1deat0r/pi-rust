@@ -27,9 +27,9 @@ OpenAI grammar custom-tool parity across the advertised pi-ai adaptors. Strict
 schemas are cloned and rewritten without mutating caller input; unsupported
 required schemas return the upstream diagnostics, and grammar tool input is
 assembled monotonically through streaming Responses/Completions events. The
-S-008 implementation and documentation are ready for the focused commit and
-immediate push; the image retry/cancellation and telemetry checkpoints below
-remain part of the pushed baseline.
+S-008 implementation commit `7a72f2fe104cf660f946f29a822c88da556a37d1`
+is pushed to `origin/main` and hash-verified; the image retry/cancellation and
+telemetry checkpoints below remain part of the pushed baseline.
 
 The shared `AgentHarness` now exposes durable main and secondary lane views:
 lanes branch from session leaves, seed independent provider context, persist
@@ -165,8 +165,8 @@ rather than serializing `null`.
 
 The `pi-telemetry` and `pi-ai` strict all-target clippy gates pass. Full `pi-ai`
 tests pass (307 library, 4 + 9 + 2 integration tests), and the workspace check
-passes offline. S-008 is marked complete in the ledger; the focused commit and
-remote push are pending this checkpoint's commit gate.
+passes offline. S-008 is marked complete in the ledger; implementation commit
+`7a72f2fe104cf660f946f29a822c88da556a37d1` is pushed and hash-verified.
 
 ## Workspace
 

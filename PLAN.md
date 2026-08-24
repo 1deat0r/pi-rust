@@ -1696,9 +1696,12 @@ errors.
   test link attempt was resource-blocked by `ld` receiving SIGKILL 9 during
   the `pi-coding-agent` `export_html_parity` test binary link; the focused
   pi-ai suite is green.
-- S-008 is complete. Next dependency-safe work is S-009 Codex WebSocket
-  session caching/reuse; S-010 through S-017 and the broader harness/TUI/
-  server/client/final-audit tasks remain open.
+- S-008 is complete. Implementation commit
+  `7a72f2fe104cf660f946f29a822c88da556a37d1` was pushed to `origin/main`, and
+  local/remote hashes matched immediately after the push. Next
+  dependency-safe work is S-009 Codex WebSocket session caching/reuse; S-010
+  through S-017 and the broader harness/TUI/server/client/final-audit tasks
+  remain open.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

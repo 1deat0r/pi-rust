@@ -20,10 +20,12 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- The latest committed image retry/cancellation checkpoint is `2b92195` on
-  `main`, containing S-007 after the deferred-response runtime/lazy-capability
-  checkpoint `56ea6f3`, containing S-005/S-006 parity wiring after the
-  interactive slash-command PTY slice `3b4d350`, containing the interactive
+- The latest committed S-008 constrained-sampling/grammar checkpoint is
+  `7a72f2fe104cf660f946f29a822c88da556a37d1` on `main`, pushed to
+  `origin/main` with matching local/remote hashes. It follows the S-007 image
+  retry/cancellation checkpoint `2b92195`, the deferred-response
+  runtime/lazy-capability checkpoint `56ea6f3`, containing S-005/S-006 parity
+  wiring after the interactive slash-command PTY slice `3b4d350`, containing the interactive
   manual-compaction checkpoint `514cca9`, the ConfigSelector implementation checkpoint
   `974bd1b` and the partial S-021/S-022 secondary-lane checkpoint `d8b589f`,
   after the S-026 CLI session-routing checkpoint `711a25e`,
