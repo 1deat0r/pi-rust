@@ -26,8 +26,10 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest implementation checkpoint is the committed image retry/cancellation
-slice `2b92195`, after the committed deferred-response runtime/lazy-capability
+The latest pushed implementation checkpoint is the committed image
+retry/cancellation slice `2b92195`, followed by documentation checkpoint
+`74c48a5`; a telemetry strict-verification cleanup is currently in the working
+tree. The deferred-response runtime/lazy-capability
 slice `56ea6f3`, after the committed S-033
 interactive slash-command PTY fixture slice `3b4d350`, after the committed
 S-032
@@ -73,6 +75,20 @@ provider auth guidance, startup-timing, interactive cache-notice,
 install-telemetry contracts, the interactive slash-command PTY checkpoint, the
 project-trust safety matrix, and deferred-response runtime parity. The
 pre-existing `AGENTS.md` remains untouched.
+
+## Current strict-verification cleanup
+
+The telemetry adapter's `InMemoryChildSpan::start_chapter_async` path now reads
+the parent id under its mutex, releases the guard, and only then awaits the
+callback or creates a child span. This removes the `await_holding_lock` clippy
+finding while preserving the settled-parent noop callback behavior.
+
+Evidence currently passing: `cargo test -p pi-telemetry --offline --quiet`
+(6 passed), `cargo clippy -p pi-telemetry --offline --all-targets -- -D
+warnings`, `cargo fmt --all -- --check`, `git diff --check`, and the progress
+checker. The full `cargo clippy -p pi-ai --offline --all-targets -- -D
+warnings` gate remains open with 52 diagnostics for the next cleanup slice.
+This cleanup does not change the ledger count (`62.65%`, 104/166).
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 

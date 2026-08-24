@@ -398,11 +398,17 @@ impl InMemoryChildSpan {
         let parent_id = {
             let guard = self.state.lock().unwrap();
             if guard.spans[self.index].settled {
-                return callback(SpanHandle::noop()).await;
+                None
+            } else {
+                Some(guard.spans[self.index].id)
             }
-            Some(guard.spans[self.index].id)
         };
-        start_span_with_parent_async(&self.state, parent_id, options, callback).await
+        match parent_id {
+            Some(parent_id) => {
+                start_span_with_parent_async(&self.state, Some(parent_id), options, callback).await
+            }
+            None => callback(SpanHandle::noop()).await,
+        }
     }
 }
 

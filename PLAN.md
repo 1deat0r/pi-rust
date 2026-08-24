@@ -1606,6 +1606,27 @@ implementation as an unverified divergence.
   equal immediately after the implementation push. This documentation refresh
   follows that push.
 
+### Session 50 — 2026-08-24 — Telemetry async lock cleanup and strict verification
+
+Scope: remove the `pi-telemetry` mutex guard held across an async callback and
+restore the crate-level strict clippy baseline before continuing the larger
+`pi-ai` warning cleanup.
+
+- `InMemoryChildSpan::start_chapter_async` now snapshots the parent id under
+  the lock, releases the guard, and only then awaits callback admission or
+  child-span creation. Settled parents still receive the noop span callback.
+- Evidence (unit): `cargo test -p pi-telemetry --offline --quiet` (6 passed),
+  `cargo clippy -p pi-telemetry --offline --all-targets -- -D warnings`,
+  `cargo fmt --all -- --check`, `git diff --check`, and the conversion progress
+  checker all pass.
+- The full `pi-ai` all-target clippy gate remains open and currently reports
+  52 diagnostics; those findings are the next cleanup leaf. The conversion
+  ledger remains 62.65% (104/166) because this is verification cleanup, not a
+  newly closed parity task.
+- Checkpoint: telemetry implementation and documentation are being prepared
+  for the next local commit and immediate push; the exact hash follows that
+  commit.
+
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);
   harness compaction + branch-summarization + legacy v1/v2/v3 migration

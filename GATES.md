@@ -1,8 +1,8 @@
 # Gates: interactive slash-command fixture checkpoint
 
-OWNS: crates/pi-ai/src/models.rs, crates/pi-ai/src/images.rs, crates/pi-ai/src/api/lazy.rs, crates/pi-ai/src/api/openrouter_images.rs, crates/pi-ai/src/providers/faux.rs, crates/pi-coding-agent/src/main.rs, crates/pi-coding-agent/src/run.rs, crates/pi-coding-agent/src/modes/interactive.rs, crates/pi-coding-agent/src/modes/rpc.rs, crates/pi-coding-agent/src/core/model_runtime.rs, crates/pi-coding-agent/src/core/model_registry.rs, crates/pi-coding-agent/src/core/provider_composer.rs, crates/pi-coding-agent/src/core/models_store.rs, crates/pi-coding-agent/tests, CONVERSION-LEDGER.md, PLAN.md, HANDOFF.md, README.md, .github/repository-description.txt
+OWNS: crates/pi-telemetry/src/lib.rs, crates/pi-ai/src/models.rs, crates/pi-ai/src/images.rs, crates/pi-ai/src/api/lazy.rs, crates/pi-ai/src/api/openrouter_images.rs, crates/pi-ai/src/providers/faux.rs, crates/pi-coding-agent/src/main.rs, crates/pi-coding-agent/src/run.rs, crates/pi-coding-agent/src/modes/interactive.rs, crates/pi-coding-agent/src/modes/rpc.rs, crates/pi-coding-agent/src/core/model_runtime.rs, crates/pi-coding-agent/src/core/model_registry.rs, crates/pi-coding-agent/src/core/provider_composer.rs, crates/pi-coding-agent/src/core/models_store.rs, crates/pi-coding-agent/tests, CONVERSION-LEDGER.md, PLAN.md, HANDOFF.md, README.md, .github/repository-description.txt
 
-Scope: preserve the completed interactive slash-command, project-trust, and deferred-response gates while closing provider image retry/cancellation parity across the shared image facade and OpenRouter adapter.
+Scope: preserve the completed interactive slash-command, project-trust, deferred-response, and image gates while restoring the strict zero-warning clippy baseline in the telemetry dependency path.
 
 - [x] G1: the interactive slash-command fixture exercises the registered command surface and records expected terminal outcomes
   CHECK: /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test interactive_slash_pty --quiet
@@ -147,3 +147,27 @@ Scope: preserve the completed interactive slash-command, project-trust, and defe
   CHECK: /bin/sh -c '/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check && git diff --check && node scripts/conversion-progress.mjs && printf "image-slice-checks-passed\\n"'
   EXPECT: image-slice-checks-passed
   EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=06dd37959781/23 entries; output=Conversion progress: 62.65% (104/166; 62 open) | image-slice-checks-passed
+
+## Next cleanup: restore the strict clippy baseline
+
+- [x] G26: the telemetry crate's async span path remains behaviorally green
+      while avoiding a mutex guard across an await
+  CHECK: /home/mustbearnold/.cargo/bin/cargo test -p pi-telemetry --offline --quiet
+  EXPECT: test result: ok
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; output=6 passed; 0 failed
+
+- [x] G27: pi-telemetry passes all-target clippy with warnings denied
+  CHECK: /home/mustbearnold/.cargo/bin/cargo clippy -p pi-telemetry --offline --all-targets -- -D warnings
+  EXPECT: Finished `dev` profile
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; output=Finished `dev` profile; no warnings
+
+- [ ] G28: pi-ai and its telemetry dependency pass the strict clippy gate
+  CHECK: /home/mustbearnold/.cargo/bin/cargo clippy -p pi-ai --offline --all-targets -- -D warnings
+  EXPECT: Finished `dev` profile
+  EVIDENCE: pending implementation; current run reports 52 pi-ai diagnostics
+
+- [x] G29: the cleanup checkpoint remains formatted, whitespace-clean, and
+      progress-accounted
+  CHECK: /bin/sh -c '/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check && git diff --check && node scripts/conversion-progress.mjs && printf "clippy-cleanup-checks-passed\\n"'
+  EXPECT: clippy-cleanup-checks-passed
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=06dd37959781/23 entries; output=Conversion progress: 62.65% (104/166; 62 open) | clippy-cleanup-checks-passed
