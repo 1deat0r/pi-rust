@@ -1357,6 +1357,9 @@ fork, resume, switch, and import boundary.
   test -p pi-coding-agent --offline --lib modes::rpc::tests --quiet` (40
   passed), `cargo test --workspace --offline --quiet`, `cargo fmt --all --
   --check`, and `git diff --check`.
+- Checkpoint: commit `711a25e`; `git rev-parse HEAD` and
+  `git ls-remote origin refs/heads/main` both resolve to
+  `711a25e7878c6f403214611651128d90734c09a0`.
 - S-026 is complete. S-021/S-022 harness ownership, S-027 extension runtime,
   and the remaining provider/TUI/client/server/evaluation audits remain open.
 

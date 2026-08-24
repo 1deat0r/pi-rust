@@ -26,8 +26,8 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest implementation checkpoint is the S-026 CLI session-routing slice
-(the next commit after parity checkpoint `eaa36ba`), after the committed S-029
+The latest implementation checkpoint is the committed S-026 CLI session-routing
+slice `711a25e`, after the parity checkpoint `eaa36ba` and the committed S-029
 install-telemetry slice `3d6f1fc` and the committed
 S-030 interactive cache-notice slice `7356dd3`,
 `ef640ce`,
@@ -58,9 +58,9 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`58.43% (97/166; 69 open)`. The S-026 implementation is currently in the
-working tree; the previous parity checkpoint `eaa36ba` is synchronized with
-`origin/main`. Preserve the pre-existing untracked `AGENTS.md`.
+`58.43% (97/166; 69 open)`. The S-026 implementation checkpoint `711a25e` is
+synchronized with `origin/main`. Preserve the pre-existing untracked
+`AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
 startup-timing, interactive cache-notice, install-telemetry contracts, and the
 synchronized-doc workflow. The pre-existing `AGENTS.md` remains untouched.
@@ -244,8 +244,8 @@ The startup-timing compatibility checkpoint is complete in the working tree:
   `pi 0.84.2`. S-031 is closed; session migration integration, install
   telemetry, cache notices, and harness ownership remain open.
 
-The earlier partial legacy-session integration checkpoint is complete in the
-working tree; S-026 is now closed by the CLI routing slice:
+The earlier partial legacy-session integration checkpoint is complete; S-026
+was closed by the CLI routing slice `711a25e`:
 
 - Legacy v1/v2/v3 files are atomically converted before interactive session
   inventory and direct RPC switch_session loads. Fork/clone inherit the
@@ -536,7 +536,7 @@ items just because a similarly named Rust module exists.
 
 The operator has requested commit + push after each checkpoint. GitHub device
 authentication and the HTTPS credential helper are now configured; the
-accumulated branch is verified at parity with `origin/main`; the S-026 working
-tree must be committed and pushed next. Before continuing, inspect
+accumulated branch is verified at parity with `origin/main` at `711a25e`.
+Before continuing, inspect
 `git status`, read this handoff, run the progress checker, and treat all
 existing dirty changes as user-owned work.
