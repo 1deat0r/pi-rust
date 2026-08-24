@@ -157,7 +157,7 @@ The telemetry async span path now releases its in-memory mutex before invoking
 an async callback, preserving settled-parent behavior without holding a guard
 across `.await`. The `pi-telemetry` and `pi-ai` strict all-target clippy gates
 now pass. Full `pi-ai` tests pass (290 library, 4 + 8 + 2 integration tests);
-the structural cleanup is committed as `8aba4db` and pushed to `origin/main`.
+the structural cleanup is committed as `7b3db53` and pushed to `origin/main`.
 
 ## Workspace
 

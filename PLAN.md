@@ -1663,6 +1663,8 @@ the adapter cleanup.
   clippy, formatting, diff, and progress gates all pass.
 - G28 is now met. The ledger remains 62.65% (104/166) because this closes a
   verification baseline rather than a new parity task.
+- Checkpoint: strict-clippy restoration commit `7b3db53` is pushed and
+  hash-verified; this documentation refresh follows that implementation push.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

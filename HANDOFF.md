@@ -26,9 +26,9 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest pushed implementation checkpoint is the `pi-ai` adapter strict-
-clippy cleanup `8aba4db`, following the telemetry strict-verification fix
-`45e6d64` and the committed image retry/cancellation slice `2b92195`;
+The latest pushed implementation checkpoint is the full `pi-ai` strict-clippy
+restoration `7b3db53`, following the adapter cleanup `8aba4db`, telemetry
+strict-verification fix `45e6d64`, and image retry/cancellation slice `2b92195`;
 metadata/documentation sync is `788f9c5`. The deferred-response
 runtime/lazy-capability
 slice `56ea6f3`, after the committed S-033
@@ -92,8 +92,8 @@ cleanup covered derived defaults, option flattening, guard patterns, copy-field
 moves, test fixtures, provider lock scopes, and the faux/provider enum layout.
 Full `pi-ai` tests pass (290 library, 4 + 8 + 2 integration tests). This cleanup
 does not change the ledger count (`62.65%`, 104/166).
-The verified implementation checkpoint is `8aba4db`; the next docs refresh
-will record the structural checkpoint hash.
+The verified implementation checkpoint is `7b3db53`; local `HEAD` and
+`origin/main` matched immediately after its push.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 

@@ -96,8 +96,9 @@ its focused tests and crate gate pass. Full `pi-ai` strict clippy now passes
 with zero diagnostics after the adapter and structural cleanup; this cleanup
 does not change the ledger count.
 
-The adapter cleanup checkpoint is committed as `8aba4db` on `main`; local and
-remote hashes were verified equal immediately after its push.
+The adapter cleanup checkpoint is `8aba4db`, followed by the full strict-clippy
+restoration `7b3db53` on `main`; local and remote hashes were verified equal
+immediately after each push.
 
 ## Standing process rules (binding)
 
