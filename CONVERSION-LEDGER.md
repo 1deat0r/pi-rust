@@ -29,10 +29,11 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   the startup-timing compatibility and compiled-binary self-update contracts,
   the print-path harness ownership, AgentTool harness/termination,
   schema-validator, panic-safe telemetry, install telemetry, update/version,
-  and model-catalog work. GitHub authentication is configured through `gh
-  auth setup-git`, and `origin/main` matched local `HEAD` at
-  `2b92195` immediately after the implementation push. This documentation
-  refresh is the follow-up commit.
+  and model-catalog work. The telemetry strict-verification cleanup is
+  implemented in `45e6d64`; its metadata/documentation sync is `788f9c5`.
+  GitHub authentication is configured through `gh auth setup-git`, and
+  `origin/main` matched local `HEAD` after each push. This documentation
+  refresh follows those synchronized checkpoints.
 - The focused tool-contract, RPC, image/read, print-mode compaction,
   malformed-call, harness-owned print-path, and secondary-lane suites pass.
   The last full workspace gate was green before the resource-constrained

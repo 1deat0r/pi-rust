@@ -1623,9 +1623,9 @@ restore the crate-level strict clippy baseline before continuing the larger
   52 diagnostics; those findings are the next cleanup leaf. The conversion
   ledger remains 62.65% (104/166) because this is verification cleanup, not a
   newly closed parity task.
-- Checkpoint: telemetry implementation and documentation are being prepared
-  for the next local commit and immediate push; the exact hash follows that
-  commit.
+- Checkpoint: telemetry implementation commit `45e6d64` and the follow-up
+  metadata sync `788f9c5` are pushed; local `HEAD` and `origin/main` matched
+  after each push. This documentation refresh follows those checkpoints.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

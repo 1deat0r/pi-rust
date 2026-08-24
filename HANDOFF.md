@@ -26,10 +26,10 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest pushed implementation checkpoint is the committed image
-retry/cancellation slice `2b92195`, followed by documentation checkpoint
-`74c48a5`; a telemetry strict-verification cleanup is currently in the working
-tree. The deferred-response runtime/lazy-capability
+The latest pushed implementation checkpoint is the telemetry strict-
+verification fix `45e6d64`, following the committed image retry/cancellation
+slice `2b92195`; metadata/documentation sync is `788f9c5`. The deferred-response
+runtime/lazy-capability
 slice `56ea6f3`, after the committed S-033
 interactive slash-command PTY fixture slice `3b4d350`, after the committed
 S-032
@@ -65,11 +65,10 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`62.65% (104/166; 62 open)`. The image retry/cancellation implementation is
-committed as `2b92195`; `git rev-parse HEAD` and `git ls-remote origin
-refs/heads/main` resolve to the same full hash. This documentation-only
-refresh records that synchronized checkpoint. Preserve the pre-existing
-untracked `AGENTS.md`.
+`62.65% (104/166; 62 open)`. The telemetry implementation `45e6d64` and
+metadata sync `788f9c5` are pushed; `git rev-parse HEAD` and
+`git ls-remote origin refs/heads/main` resolve to the same full hash.
+Preserve the pre-existing untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
 provider auth guidance, startup-timing, interactive cache-notice,
 install-telemetry contracts, the interactive slash-command PTY checkpoint, the
