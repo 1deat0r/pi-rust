@@ -637,6 +637,9 @@ fn env_api_key_auth_with_env_check() -> Arc<dyn crate::auth::ApiKeyAuth> {
             if env("AWS_BEARER_TOKEN_BEDROCK").is_some()
                 || env("AWS_PROFILE").is_some()
                 || (env("AWS_ACCESS_KEY_ID").is_some() && env("AWS_SECRET_ACCESS_KEY").is_some())
+                || env("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI").is_some()
+                || env("AWS_CONTAINER_CREDENTIALS_FULL_URI").is_some()
+                || env("AWS_WEB_IDENTITY_TOKEN_FILE").is_some()
             {
                 return Some(crate::auth::AuthCheck {
                     source: Some("AWS credentials".to_string()),
@@ -695,6 +698,22 @@ fn env_api_key_auth_with_env_check() -> Arc<dyn crate::auth::ApiKeyAuth> {
                     auth: crate::auth::ModelAuth::default(),
                     env: None,
                     source: Some("AWS access keys".to_string()),
+                });
+            }
+            if env("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI").is_some()
+                || env("AWS_CONTAINER_CREDENTIALS_FULL_URI").is_some()
+            {
+                return Some(crate::auth::AuthResult {
+                    auth: crate::auth::ModelAuth::default(),
+                    env: None,
+                    source: Some("ECS task role".to_string()),
+                });
+            }
+            if env("AWS_WEB_IDENTITY_TOKEN_FILE").is_some() {
+                return Some(crate::auth::AuthResult {
+                    auth: crate::auth::ModelAuth::default(),
+                    env: None,
+                    source: Some("web identity token".to_string()),
                 });
             }
             None
@@ -1254,6 +1273,48 @@ mod tests {
             );
             assert!(!err.contains("no API implementation"), "got: {err}");
         });
+    }
+
+    #[test]
+    fn amazon_bedrock_auth_recognizes_ecs_and_web_identity_sources() {
+        let provider = amazon_bedrock_provider();
+        let auth = provider
+            .auth
+            .api_key
+            .as_ref()
+            .expect("Bedrock api-key auth");
+
+        for (name, value, expected_source) in [
+            (
+                "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+                "/v2/credentials/123",
+                "ECS task role",
+            ),
+            (
+                "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                "http://169.254.170.2/credentials",
+                "ECS task role",
+            ),
+            (
+                "AWS_WEB_IDENTITY_TOKEN_FILE",
+                "/var/run/secrets/eks.amazonaws.com/serviceaccount/token",
+                "web identity token",
+            ),
+        ] {
+            let env = std::collections::BTreeMap::from([(name.to_string(), value.to_string())]);
+            let ctx = crate::auth::AuthContext {
+                env: Arc::new(move |key| env.get(key).cloned()),
+                file_exists: Arc::new(|_: &str| false),
+            };
+            let check = auth
+                .check(&ctx, None)
+                .expect("auth source should be detected");
+            assert_eq!(check.auth_type, "api_key");
+            let resolved = auth
+                .resolve(&ctx, None)
+                .expect("auth source should resolve");
+            assert_eq!(resolved.source.as_deref(), Some(expected_source));
+        }
     }
 
     #[allow(clippy::await_holding_lock)]

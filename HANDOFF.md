@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-63.86% = 106 completed / 166 total tasks
-60 tasks remain open
+64.46% = 107 completed / 166 total tasks
+59 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,17 +26,18 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The current logical checkpoint is the pushed S-008 constrained-sampling/
-grammar parity slice. The pre-existing untracked `AGENTS.md` remains untouched
-and must be preserved. Do not use `git reset --hard`, `git checkout --`, broad
-revert commands, or `git clean`.
+The current logical checkpoint is the validated S-010 Bedrock credential/profile
+and region-resolution parity slice. The pre-existing untracked `AGENTS.md`
+remains untouched and must be preserved. Do not use `git reset --hard`,
+`git checkout --`, broad revert commands, or `git clean`.
 
-Current status after the pushed S-009 checkpoint: branch `main`, progress
-checker reports `63.86% (106/166; 60 open)`. The S-009 implementation and
-documentation commit is `c3d6109f32abb2f1a4efbda6eb2c90a35383dd98`; the
-pre-existing untracked `AGENTS.md` remains untouched and unstaged. The preceding
-S-008 implementation commit is `7a72f2fe104cf660f946f29a822c88da556a37d1`;
-local and `origin/main` matched that hash immediately after its push. Its
+Current status before the S-010 publication commit: branch `main`, progress
+checker reports `64.46% (107/166; 59 open)`, and the working tree contains only
+the focused S-010 changes plus the preserved untracked `AGENTS.md`. The S-009
+implementation and documentation commit is
+`c3d6109f32abb2f1a4efbda6eb2c90a35383dd98`; the preceding S-008 implementation
+commit is `7a72f2fe104cf660f946f29a822c88da556a37d1`. The exact S-010 commit
+hash must be recorded after commit, push, and local/remote verification. Its
 changes include:
 
 - `crates/pi-ai/src/api/constrained_sampling.rs`, the shared strict-schema and
@@ -146,6 +147,43 @@ Bedrock. The implementation commit is pushed, the documentation-sync commit
 containing this handoff is pushed, and local/remote hashes were verified after
 the push. The worktree is clean except for the preserved untracked
 `AGENTS.md`.
+
+## Current checkpoint — 2026-08-24 — S-010 validated, reviewed, and ready to publish
+
+S-010 completes Bedrock credential/profile-file and region-resolution parity.
+The adaptor now honors explicit and scoped profile precedence over ambient
+access keys, ambient profile env-key precedence, shared credentials files,
+selected-profile `AWS_CONFIG_FILE` regions, ARN/env/option endpoint-region
+precedence, bearer and skip-auth modes, ECS task-role credentials, and web
+identity STS credentials. ECS relative/full URI requests support authorization
+tokens and token files. STS `AssumeRoleWithWebIdentity` responses are parsed as
+XML and temporary session tokens are included in SigV4 signing. Provider auth
+uses the upstream source labels `ECS task role` and `web identity token`.
+
+Evidence and review:
+
+```text
+$HOME/.cargo/bin/cargo test -p pi-ai --offline --lib api::bedrock_converse --quiet (41 passed)
+$HOME/.cargo/bin/cargo test -p pi-ai --offline --lib providers::all::tests::amazon_bedrock_auth_recognizes_ecs_and_web_identity_sources --quiet (1 passed)
+$HOME/.cargo/bin/cargo check -p pi-ai --offline
+$HOME/.cargo/bin/cargo clippy -p pi-ai --offline --all-targets -- -D warnings
+$HOME/.cargo/bin/cargo test -p pi-ai --offline --quiet (323 library, 4 + 9 + 2 integration tests)
+$HOME/.cargo/bin/cargo fmt --all -- --check
+git diff --check
+node scripts/conversion-progress.mjs
+```
+
+The local mock fixtures cover profile precedence, config-file region loading,
+ECS JSON parsing and retrieval, container authorization, STS XML parsing and
+form submission, and provider source labels. Independent reviewer cow compared
+the implementation and tests with the upstream Bedrock API/provider/env-key
+sources and credential/endpoint fixtures and returned **APPROVE** with no
+blockers. SSO- or process-backed profiles and EC2 metadata remain outside the
+manual signer scope. The checker reports exactly `Conversion progress: 64.46%
+(107/166; 59 open)`. The next dependency-safe task is S-011 Google Vertex ADC
+file, token URI, scope, refresh, and project/location precedence parity. The
+S-010 implementation/documentation commit and its post-push documentation
+synchronization remain to be created and hash-verified.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 

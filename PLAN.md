@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 63.86% (106/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 64.46% (107/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1736,6 +1736,49 @@ recovery against the upstream `openai-codex-responses.ts` implementation.
   focused S-009 implementation/documentation commit
   `c3d6109f32abb2f1a4efbda6eb2c90a35383dd98` is pushed to `origin/main`, and
   local/remote hashes match.
+
+### Session 55 — 2026-08-24 — S-010 Bedrock credential/profile and region parity
+
+Scope: complete the Bedrock credential/profile-file, selected-profile region,
+environment precedence, endpoint-region, and provider-auth parity anchored to
+`upstream_pi/packages/ai/src/api/bedrock-converse-stream.ts`,
+`upstream_pi/packages/ai/src/providers/amazon-bedrock.ts`,
+`upstream_pi/packages/ai/src/env-api-keys.ts`, and the upstream credential and
+endpoint fixtures.
+
+- Added shared AWS credentials-file profile selection with explicit/scoped
+  profile precedence over ambient access keys, ambient profile env-key
+  precedence, and `AWS_CONFIG_FILE`/`~/.aws/config` selected-profile region
+  loading. Region precedence now covers inference-profile ARN, option/env,
+  selected profile config, standard endpoint, and fallback cases while
+  preserving custom endpoint behavior.
+- Added runtime ECS task-role credential retrieval for relative/full metadata
+  URIs, optional container authorization token/file support, and web-identity
+  token-file retrieval through an STS `AssumeRoleWithWebIdentity` form request.
+  STS responses are parsed from their actual XML wire format and temporary
+  session tokens are included in SigV4 signing. Provider auth reports the exact
+  upstream sources `ECS task role` and `web identity token`.
+- Added deterministic profile, region, parser, local mock HTTP, and provider
+  auth fixtures. SSO- or process-backed profiles and EC2 metadata remain an
+  intentional limitation of the hand-rolled signer and are not claimed as
+  complete.
+- Independent reviewer cow compared the current Rust implementation and tests
+  line-by-line with the upstream Bedrock API/provider/env-key sources and
+  credential/endpoint fixtures and returned **APPROVE** with no blockers. The
+  reviewer specifically confirmed the previous ECS/web-identity runtime gap
+  and STS JSON/XML defect were resolved.
+- Evidence (unit/mock): `cargo test -p pi-ai --offline --lib
+  api::bedrock_converse --quiet` (41 passed), the targeted provider-auth test
+  (1 passed), `cargo check -p pi-ai --offline`,
+  `cargo clippy -p pi-ai --offline --all-targets -- -D warnings`,
+  `cargo test -p pi-ai --offline --quiet` (323 library, 4 + 9 + 2 integration
+  tests), `cargo fmt --all -- --check`, and `git diff --check` pass. The
+  authoritative checker reports exactly `Conversion progress: 64.46%
+  (107/166; 59 open)`.
+- S-010 is complete. The next dependency-safe action is S-011 Google Vertex
+  ADC file, token URI, scope, refresh, and project/location precedence parity.
+  The focused implementation/documentation commit and its post-push
+  documentation synchronization are the next publication gate.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

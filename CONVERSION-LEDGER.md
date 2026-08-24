@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **63.86% (106/166; 60 open)**. Run
+- The exhaustive checker reports **64.46% (107/166; 59 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -19,6 +19,13 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   context deltas, idle/max-age eviction, missing-continuation recovery, and
   explicit WebSocket/SSE transport behavior; see the ledger row below for the
   exact fixtures and commands.
+- S-010 Bedrock credential/profile and region-resolution parity is complete with
+  unit/mock evidence. The implementation covers explicit/scoped/ambient
+  profile precedence, shared credentials and `AWS_CONFIG_FILE` profile regions,
+  ARN/env/option endpoint-region precedence, ECS task-role credentials, web
+  identity STS credentials, bearer/skip-auth behavior, and exact provider auth
+  source labels. SSO- or process-backed profiles and EC2 metadata remain
+  outside the hand-rolled signer scope.
 - The original 100 entries remain the historical work queue. The supplemental
   S1 section is authoritative for residual provider, harness, runtime, TUI,
   RPC, auxiliary client/server, evaluation, and final-audit work.
@@ -29,6 +36,10 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   `c3d6109f32abb2f1a4efbda6eb2c90a35383dd98` on `main` and pushed to
   `origin/main`. The only remaining worktree item is the pre-existing
   untracked `AGENTS.md`, which is preserved and unstaged.
+- The S-010 Bedrock credential/profile and region-resolution checkpoint is
+  validated and ready for its focused implementation/documentation commit. Its
+  exact pushed hash will be recorded in the next documentation synchronization
+  after the commit/push gate.
 - The latest committed S-008 constrained-sampling/grammar checkpoint is
   `7a72f2fe104cf660f946f29a822c88da556a37d1` on `main`, pushed to
   `origin/main` with matching local/remote hashes. It follows the S-007 image
@@ -681,8 +692,31 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       pi-ai --offline`, `cargo clippy -p pi-ai --offline --all-targets -- -D
       warnings`, `cargo test -p pi-ai --offline --quiet`, `cargo fmt --all --
       --check`, and `git diff --check`.
-- [ ] S-010 Complete AWS credential/profile-file and region resolution parity
-      for Bedrock, with environment/config precedence fixtures.
+- [x] S-010 Complete AWS credential/profile-file and region resolution parity
+      for Bedrock, with environment/config precedence fixtures. Evidence
+      (unit/mock): `cargo test -p pi-ai --offline --lib
+      api::bedrock_converse --quiet` (41 passed) covers
+      `explicit_profile_ignores_ambient_access_keys_and_loads_profile_credentials`,
+      `scoped_profile_ignores_ambient_access_keys`,
+      `ambient_profile_preserves_env_key_precedence`,
+      `aws_config_file_region_resolves_selected_profile`, and
+      `region_precedence_is_arn_then_option_then_env_then_config_then_default`.
+      The same suite covers `parses_ecs_credentials_response`,
+      `parses_sts_web_identity_response`,
+      `resolves_ecs_full_uri_credentials_with_authorization_token`, and
+      `resolves_web_identity_credentials_with_mock_sts`. Provider auth source
+      labels are covered by `cargo test -p pi-ai --offline --lib
+      providers::all::tests::amazon_bedrock_auth_recognizes_ecs_and_web_identity_sources
+      --quiet` (1 passed). Supporting evidence: `cargo check -p pi-ai
+      --offline`, `cargo clippy -p pi-ai --offline --all-targets -- -D
+      warnings`, `cargo test -p pi-ai --offline --quiet` (323 library, 4 + 9 +
+      2 integration tests), `cargo fmt --all -- --check`, and `git diff
+      --check`. Upstream parity references:
+      `upstream_pi/packages/ai/src/api/bedrock-converse-stream.ts:144-205,1165-1204`,
+      `upstream_pi/packages/ai/src/providers/amazon-bedrock.ts:54-79`,
+      `upstream_pi/packages/ai/src/env-api-keys.ts:167-184`,
+      `upstream_pi/packages/ai/test/bedrock-credentials.test.ts:66-115`, and
+      `upstream_pi/packages/ai/test/bedrock-endpoint-resolution.test.ts:96-208`.
 - [ ] S-011 Complete Google Vertex ADC file, token URI, scope, refresh, and
       project/location precedence parity.
 - [ ] S-012 Complete Cloudflare AI Gateway account/gateway binding and all

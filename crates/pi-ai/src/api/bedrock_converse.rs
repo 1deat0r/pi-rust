@@ -13,8 +13,12 @@
 //! `AWS_SESSION_TOKEN`) are signed with the resolved region/service
 //! (`bedrock`). `AWS_BEDROCK_SKIP_AUTH=1` signs with dummy credentials
 //! (upstream proxy mode). The AWS profile credential-chain config file path
-//! (`~/.aws/credentials` + `AWS_PROFILE`) is NOT ported — documented
-//! divergence; the seam is `TODO(profile)` below.
+//! (`AWS_SHARED_CREDENTIALS_FILE`/`~/.aws/credentials` plus `AWS_PROFILE`) and
+//! selected-profile region config (`AWS_CONFIG_FILE`/`~/.aws/config`) are
+//! loaded for the manual signer. Runtime ECS task-role and web-identity STS
+//! credentials are resolved asynchronously before signing. Other SDK-chain
+//! sources such as SSO- or process-backed profiles and EC2 metadata remain
+//! unavailable to this hand-rolled signer.
 //!
 //! Error diagnostics (`bedrock_response_failure` on the assistant message)
 //! are not attached because the ported `AssistantMessage` type has no
@@ -22,6 +26,7 @@
 //! retry classification are preserved verbatim.
 
 use base64::Engine as _;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -217,6 +222,66 @@ pub fn aws_profile_credentials(
     }
 }
 
+fn aws_profile_section_matches(section: &str, profile: &str, config_file: bool) -> bool {
+    let section = section.trim();
+    if profile == "default" {
+        section == "default"
+    } else if config_file {
+        section.strip_prefix("profile ") == Some(profile)
+    } else {
+        section.strip_prefix("profile ").unwrap_or(section) == profile
+    }
+}
+
+fn aws_ini_profile_value(
+    content: &str,
+    profile: &str,
+    key: &str,
+    config_file: bool,
+) -> Option<String> {
+    let mut in_target = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            in_target = aws_profile_section_matches(&line[1..line.len() - 1], profile, config_file);
+            continue;
+        }
+        if !in_target {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            if k.trim() == key {
+                let v = v.trim();
+                if !v.is_empty() {
+                    return Some(v.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Load a profile region from the shared AWS config file (`AWS_CONFIG_FILE` or
+/// `~/.aws/config`). Non-default profile sections are named `[profile name]`,
+/// matching the AWS SDK's config-file profile convention.
+pub fn aws_profile_region(
+    profile: Option<&str>,
+    env: Option<&crate::types::ProviderEnv>,
+) -> Option<String> {
+    let path = get_provider_env_value("AWS_CONFIG_FILE", env)
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            let home = std::env::var("HOME").ok()?;
+            Some(std::path::PathBuf::from(home).join(".aws").join("config"))
+        })?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let profile = profile.filter(|p| !p.is_empty()).unwrap_or("default");
+    aws_ini_profile_value(&content, profile, "region", true)
+}
+
 /// ARN-embedded region extraction for inference profile ids (upstream
 /// `arnRegionMatch`).
 pub fn arn_region(model_id: &str) -> Option<String> {
@@ -265,11 +330,19 @@ pub fn resolve_config(
             .cloned()
             .filter(|v| !v.is_empty())
     });
-    let ambient_profile = get_provider_env_value("AWS_PROFILE", env);
+    // Upstream distinguishes a scoped profile (`options.env.AWS_PROFILE`) from
+    // an ambient process profile when deciding whether the SDK should pin the
+    // catalog endpoint. Preserve that distinction for the manual signer.
+    let ambient_profile = std::env::var("AWS_PROFILE")
+        .ok()
+        .filter(|value| !value.is_empty());
     let profile = options_profile.clone().or_else(|| ambient_profile.clone());
 
     let configured_region = get_configured_bedrock_region(options);
     let has_ambient_configured_profile = ambient_profile.is_some();
+    let config_file_region = profile
+        .as_deref()
+        .and_then(|selected| aws_profile_region(Some(selected), env));
     let endpoint_region = get_standard_bedrock_endpoint_region(&model.base_url);
     let use_explicit_endpoint = should_use_explicit_bedrock_endpoint(
         &model.base_url,
@@ -282,13 +355,16 @@ pub fn resolve_config(
         arn
     } else if let Some(region) = configured_region {
         region
+    } else if let Some(region) = config_file_region {
+        region
     } else if let (Some(endpoint_region), true) = (endpoint_region, use_explicit_endpoint) {
         endpoint_region
     } else if !has_ambient_configured_profile {
         "us-east-1".to_string()
     } else {
-        // Ambient profile handles region resolution through its config file.
-        // Documented divergence (TODO(profile)): we fall back to us-east-1.
+        // The selected profile's config-file region was checked above. If it
+        // is absent, the manual signer has no SDK default-chain resolver to
+        // consult, so retain the documented us-east-1 fallback.
         "us-east-1".to_string()
     };
 
@@ -327,15 +403,24 @@ pub fn resolve_config(
 
     let (access_key, secret_key, session_token): (Option<String>, Option<String>, Option<String>) =
         if bearer_token.is_none() {
-            // Env keys take precedence; otherwise fall back to the shared AWS
-            // credentials file for the configured (or default) profile.
-            get_configured_bedrock_credentials(env)
-                .map(|(a, s, t)| (Some(a), Some(s), t))
-                .unwrap_or_else(|| {
-                    aws_profile_credentials(profile.as_deref(), env)
-                        .map(|(a, s, t)| (Some(a), Some(s), t))
-                        .unwrap_or((None, None, None))
-                })
+            if options_profile.is_some() {
+                // Explicit/scoped profiles must not be shadowed by ambient env
+                // access keys. This mirrors upstream leaving SDK credentials
+                // unset when a profile is explicitly configured.
+                aws_profile_credentials(profile.as_deref(), env)
+                    .map(|(a, s, t)| (Some(a), Some(s), t))
+                    .unwrap_or((None, None, None))
+            } else {
+                // Preserve ambient/default chain behavior: env keys win, then
+                // the selected or default shared credentials profile.
+                get_configured_bedrock_credentials(env)
+                    .map(|(a, s, t)| (Some(a), Some(s), t))
+                    .unwrap_or_else(|| {
+                        aws_profile_credentials(profile.as_deref(), env)
+                            .map(|(a, s, t)| (Some(a), Some(s), t))
+                            .unwrap_or((None, None, None))
+                    })
+            }
         } else {
             (None, None, None)
         };
@@ -353,6 +438,164 @@ pub fn resolve_config(
         session_token,
         skip_auth,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AwsRuntimeCredentials {
+    access_key: String,
+    secret_key: String,
+    session_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct EcsCredentialsResponse {
+    access_key_id: String,
+    secret_access_key: String,
+    token: Option<String>,
+}
+
+async fn resolve_runtime_bedrock_credentials(
+    client: &reqwest::Client,
+    config: &BedrockResolvedConfig,
+    env: Option<&crate::types::ProviderEnv>,
+) -> Result<Option<AwsRuntimeCredentials>, String> {
+    if config.bearer_token.is_some()
+        || config.skip_auth
+        || (config.access_key.is_some() && config.secret_key.is_some())
+    {
+        return Ok(None);
+    }
+    if let Some(creds) = resolve_web_identity_credentials(client, &config.region, env).await? {
+        return Ok(Some(creds));
+    }
+    resolve_ecs_credentials(client, env).await
+}
+
+async fn resolve_ecs_credentials(
+    client: &reqwest::Client,
+    env: Option<&crate::types::ProviderEnv>,
+) -> Result<Option<AwsRuntimeCredentials>, String> {
+    let url = if let Some(full) = get_provider_env_value("AWS_CONTAINER_CREDENTIALS_FULL_URI", env)
+    {
+        full
+    } else if let Some(relative) =
+        get_provider_env_value("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", env)
+    {
+        format!(
+            "http://169.254.170.2{}",
+            if relative.starts_with('/') {
+                relative
+            } else {
+                format!("/{relative}")
+            }
+        )
+    } else {
+        return Ok(None);
+    };
+    let mut request = client.get(&url);
+    if let Some(token) = get_provider_env_value("AWS_CONTAINER_AUTHORIZATION_TOKEN", env) {
+        request = request.header("authorization", token);
+    } else if let Some(path) = get_provider_env_value("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", env)
+    {
+        let token = tokio::fs::read_to_string(&path).await.map_err(|err| {
+            format!("Failed to read AWS container authorization token file {path}: {err}")
+        })?;
+        request = request.header("authorization", token.trim());
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("Failed to load ECS task role credentials: {err}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| format!("Failed to read ECS task role credentials: {err}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Failed to load ECS task role credentials: {status}: {body}"
+        ));
+    }
+    parse_ecs_credentials_response(&body).map(Some)
+}
+
+fn parse_ecs_credentials_response(body: &str) -> Result<AwsRuntimeCredentials, String> {
+    let parsed: EcsCredentialsResponse = serde_json::from_str(body)
+        .map_err(|err| format!("Failed to parse ECS task role credentials: {err}"))?;
+    Ok(AwsRuntimeCredentials {
+        access_key: parsed.access_key_id,
+        secret_key: parsed.secret_access_key,
+        session_token: parsed.token,
+    })
+}
+
+async fn resolve_web_identity_credentials(
+    client: &reqwest::Client,
+    region: &str,
+    env: Option<&crate::types::ProviderEnv>,
+) -> Result<Option<AwsRuntimeCredentials>, String> {
+    let Some(token_file) = get_provider_env_value("AWS_WEB_IDENTITY_TOKEN_FILE", env) else {
+        return Ok(None);
+    };
+    let role_arn = get_provider_env_value("AWS_ROLE_ARN", env)
+        .ok_or_else(|| "AWS_WEB_IDENTITY_TOKEN_FILE requires AWS_ROLE_ARN".to_string())?;
+    let token = tokio::fs::read_to_string(&token_file)
+        .await
+        .map_err(|err| format!("Failed to read AWS web identity token file {token_file}: {err}"))?;
+    let session_name = get_provider_env_value("AWS_ROLE_SESSION_NAME", env)
+        .unwrap_or_else(|| "pi-rust-bedrock".to_string());
+    let endpoint = get_provider_env_value("AWS_STS_ENDPOINT", env)
+        .unwrap_or_else(|| format!("https://sts.{region}.amazonaws.com"));
+    let response = client
+        .post(endpoint)
+        .form(&[
+            ("Action", "AssumeRoleWithWebIdentity"),
+            ("Version", "2011-06-15"),
+            ("RoleArn", role_arn.as_str()),
+            ("RoleSessionName", session_name.as_str()),
+            ("WebIdentityToken", token.trim()),
+        ])
+        .send()
+        .await
+        .map_err(|err| format!("Failed to assume AWS web identity role: {err}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| format!("Failed to read AWS web identity credentials: {err}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Failed to assume AWS web identity role: {status}: {body}"
+        ));
+    }
+    parse_sts_web_identity_response(&body).map(Some)
+}
+
+fn parse_sts_web_identity_response(body: &str) -> Result<AwsRuntimeCredentials, String> {
+    let access_key = xml_tag_value(body, "AccessKeyId").ok_or_else(|| {
+        "Failed to parse AWS web identity credentials: missing AccessKeyId".to_string()
+    })?;
+    let secret_key = xml_tag_value(body, "SecretAccessKey").ok_or_else(|| {
+        "Failed to parse AWS web identity credentials: missing SecretAccessKey".to_string()
+    })?;
+    let session_token = xml_tag_value(body, "SessionToken").ok_or_else(|| {
+        "Failed to parse AWS web identity credentials: missing SessionToken".to_string()
+    })?;
+    Ok(AwsRuntimeCredentials {
+        access_key,
+        secret_key,
+        session_token: Some(session_token),
+    })
+}
+
+fn xml_tag_value(body: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = body.find(&open)? + open.len();
+    let end = body[start..].find(&close)? + start;
+    let value = body[start..end].trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1920,14 +2163,23 @@ async fn run_bedrock_stream(
     if let Some(bearer) = &config.bearer_token {
         request = request.header("authorization", format!("Bearer {bearer}"));
     } else {
-        let access_key = config
-            .access_key
-            .clone()
+        let runtime_credentials =
+            resolve_runtime_bedrock_credentials(&client, &config, options.base.base.env.as_ref())
+                .await?;
+        let access_key = runtime_credentials
+            .as_ref()
+            .map(|c| c.access_key.clone())
+            .or_else(|| config.access_key.clone())
             .ok_or_else(|| "Could not load credentials from any providers".to_string())?;
-        let secret_key = config
-            .secret_key
-            .clone()
+        let secret_key = runtime_credentials
+            .as_ref()
+            .map(|c| c.secret_key.clone())
+            .or_else(|| config.secret_key.clone())
             .ok_or_else(|| "Could not load credentials from any providers".to_string())?;
+        let session_token = runtime_credentials
+            .as_ref()
+            .and_then(|c| c.session_token.as_deref())
+            .or(config.session_token.as_deref());
         let signed_headers = sign_aws4_request_with_headers(
             "POST",
             &uri,
@@ -1936,7 +2188,7 @@ async fn run_bedrock_stream(
             &body_bytes,
             &access_key,
             &secret_key,
-            config.session_token.as_deref(),
+            session_token,
             &config.region,
             "bedrock",
             crate::types::now_ms(),
@@ -2182,6 +2434,150 @@ mod tests {
             messages: vec![Message::User(UserContent::string(text, 1))],
             tools: vec![],
         }
+    }
+
+    async fn one_shot_http_server(
+        response_body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0_u8; 1024];
+            loop {
+                let n = tokio::io::AsyncReadExt::read(&mut socket, &mut buf)
+                    .await
+                    .unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let content_type = if response_body.trim_start().starts_with('<') {
+                "application/xml"
+            } else {
+                "application/json"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes())
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&request).to_string()
+        });
+        (url, handle)
+    }
+
+    #[test]
+    fn parses_ecs_credentials_response() {
+        let creds = parse_ecs_credentials_response(
+            r#"{"AccessKeyId":"AKIAECS","SecretAccessKey":"secret","Token":"session"}"#,
+        )
+        .unwrap();
+        assert_eq!(creds.access_key, "AKIAECS");
+        assert_eq!(creds.secret_key, "secret");
+        assert_eq!(creds.session_token.as_deref(), Some("session"));
+    }
+
+    #[test]
+    fn parses_sts_web_identity_response() {
+        let creds = parse_sts_web_identity_response(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleWithWebIdentityResult>
+    <Credentials>
+      <AccessKeyId>AKIASTS</AccessKeyId>
+      <SecretAccessKey>secret</SecretAccessKey>
+      <SessionToken>token</SessionToken>
+    </Credentials>
+  </AssumeRoleWithWebIdentityResult>
+</AssumeRoleWithWebIdentityResponse>"#,
+        )
+        .unwrap();
+        assert_eq!(creds.access_key, "AKIASTS");
+        assert_eq!(creds.secret_key, "secret");
+        assert_eq!(creds.session_token.as_deref(), Some("token"));
+    }
+
+    #[tokio::test]
+    async fn resolves_ecs_full_uri_credentials_with_authorization_token() {
+        let (url, request) = one_shot_http_server(
+            r#"{"AccessKeyId":"AKIAMOCK","SecretAccessKey":"secret","Token":"session"}"#,
+        )
+        .await;
+        let env = crate::types::ProviderEnv::from([
+            ("AWS_CONTAINER_CREDENTIALS_FULL_URI".to_string(), url),
+            (
+                "AWS_CONTAINER_AUTHORIZATION_TOKEN".to_string(),
+                "Bearer container-token".to_string(),
+            ),
+        ]);
+        let creds = resolve_ecs_credentials(&reqwest::Client::new(), Some(&env))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(creds.access_key, "AKIAMOCK");
+        assert_eq!(creds.session_token.as_deref(), Some("session"));
+        let request = request.await.unwrap();
+        assert!(request.starts_with("GET / HTTP/1.1"));
+        assert!(request.contains("authorization: Bearer container-token"));
+    }
+
+    #[tokio::test]
+    async fn resolves_web_identity_credentials_with_mock_sts() {
+        let token_path = std::env::temp_dir().join(format!(
+            "pi-rust-web-identity-token-{}",
+            crate::types::now_ms()
+        ));
+        tokio::fs::write(&token_path, "jwt-token\n").await.unwrap();
+        let (url, request) = one_shot_http_server(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleWithWebIdentityResult>
+    <Credentials>
+      <AccessKeyId>AKIAWEB</AccessKeyId>
+      <SecretAccessKey>secret</SecretAccessKey>
+      <SessionToken>sts-token</SessionToken>
+    </Credentials>
+  </AssumeRoleWithWebIdentityResult>
+</AssumeRoleWithWebIdentityResponse>"#,
+        )
+        .await;
+        let env = crate::types::ProviderEnv::from([
+            (
+                "AWS_WEB_IDENTITY_TOKEN_FILE".to_string(),
+                token_path.to_string_lossy().to_string(),
+            ),
+            (
+                "AWS_ROLE_ARN".to_string(),
+                "arn:aws:iam::123:role/test".to_string(),
+            ),
+            (
+                "AWS_ROLE_SESSION_NAME".to_string(),
+                "session-name".to_string(),
+            ),
+            ("AWS_STS_ENDPOINT".to_string(), url),
+        ]);
+        let creds =
+            resolve_web_identity_credentials(&reqwest::Client::new(), "us-west-2", Some(&env))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(creds.access_key, "AKIAWEB");
+        assert_eq!(creds.session_token.as_deref(), Some("sts-token"));
+        let request = request.await.unwrap();
+        assert!(request.starts_with("POST / HTTP/1.1"));
+        assert!(request.contains("Action=AssumeRoleWithWebIdentity"));
+        assert!(request.contains("RoleSessionName=session-name"));
+        assert!(request.contains("WebIdentityToken=jwt-token"));
+        let _ = tokio::fs::remove_file(token_path).await;
     }
 
     #[test]
@@ -3061,15 +3457,46 @@ mod tests {
 #[cfg(test)]
 mod profile_credentials_tests {
     use super::*;
+    use crate::model::Model;
 
-    fn write_credentials(tag: &str, content: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("pi-bedrock-creds-{}-{}", std::process::id(), tag));
+    fn base_model() -> Model {
+        let mut m = Model::new(
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "Claude Sonnet 4.5 (US)",
+            "bedrock-converse-stream",
+            "amazon-bedrock",
+        );
+        m.base_url = "https://bedrock-runtime.us-east-1.amazonaws.com".to_string();
+        m
+    }
+
+    fn write_aws_file(tag: &str, name: &str, content: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pi-bedrock-aws-{}-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test"),
+            tag
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("credentials");
+        let path = dir.join(name);
         std::fs::write(&path, content).unwrap();
         path
+    }
+
+    fn write_credentials(tag: &str, content: &str) -> std::path::PathBuf {
+        write_aws_file(tag, "credentials", content)
+    }
+
+    fn write_config(tag: &str, content: &str) -> std::path::PathBuf {
+        write_aws_file(tag, "config", content)
+    }
+
+    fn provider_env(pairs: &[(&str, &str)]) -> crate::types::ProviderEnv {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
     }
 
     #[test]
@@ -3138,5 +3565,185 @@ mod profile_credentials_tests {
         std::env::remove_var("AWS_ACCESS_KEY_ID");
         std::env::remove_var("AWS_SECRET_ACCESS_KEY");
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn explicit_profile_ignores_ambient_access_keys_and_loads_profile_credentials() {
+        let _guard = crate::utils::env_lock();
+        let file = write_credentials(
+            "explicit-precedence",
+            "[default]\naws_access_key_id = AKIADEFAULT\naws_secret_access_key = defaultsecret\n\n[staging]\naws_access_key_id = AKIASTAGING\naws_secret_access_key = stagingsecret\naws_session_token = stagingtoken\n",
+        );
+        unsafe {
+            std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file);
+            std::env::set_var("AWS_ACCESS_KEY_ID", "AKIAENV");
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "envsecret");
+        }
+        let options = BedrockOptions {
+            profile: Some("staging".to_string()),
+            ..Default::default()
+        };
+        let config = resolve_config(&base_model(), &options, None).unwrap();
+        assert_eq!(config.profile.as_deref(), Some("staging"));
+        assert_eq!(config.access_key.as_deref(), Some("AKIASTAGING"));
+        assert_eq!(config.secret_key.as_deref(), Some("stagingsecret"));
+        assert_eq!(config.session_token.as_deref(), Some("stagingtoken"));
+        unsafe {
+            std::env::remove_var("AWS_SHARED_CREDENTIALS_FILE");
+            std::env::remove_var("AWS_ACCESS_KEY_ID");
+            std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        }
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn scoped_profile_ignores_ambient_access_keys() {
+        let _guard = crate::utils::env_lock();
+        let file = write_credentials(
+            "scoped-precedence",
+            "[team]\naws_access_key_id = AKIATEAM\naws_secret_access_key = teamsecret\n",
+        );
+        unsafe {
+            std::env::set_var("AWS_ACCESS_KEY_ID", "AKIAENV");
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "envsecret");
+        }
+        let options = BedrockOptions {
+            base: StreamOptions {
+                base: crate::types::ProviderRequestOptions {
+                    env: Some(provider_env(&[
+                        ("AWS_SHARED_CREDENTIALS_FILE", file.to_str().unwrap()),
+                        ("AWS_PROFILE", "team"),
+                    ])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config = resolve_config(&base_model(), &options, None).unwrap();
+        assert_eq!(config.profile.as_deref(), Some("team"));
+        assert_eq!(config.access_key.as_deref(), Some("AKIATEAM"));
+        unsafe {
+            std::env::remove_var("AWS_ACCESS_KEY_ID");
+            std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        }
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn ambient_profile_preserves_env_key_precedence() {
+        let _guard = crate::utils::env_lock();
+        let file = write_credentials(
+            "ambient-profile",
+            "[ambient]\naws_access_key_id = AKIAAMBIENT\naws_secret_access_key = ambientsecret\n",
+        );
+        unsafe {
+            std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &file);
+            std::env::set_var("AWS_PROFILE", "ambient");
+            std::env::set_var("AWS_ACCESS_KEY_ID", "AKIAENV");
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "envsecret");
+        }
+        let config = resolve_config(&base_model(), &BedrockOptions::default(), None).unwrap();
+        assert_eq!(config.profile.as_deref(), Some("ambient"));
+        assert_eq!(config.access_key.as_deref(), Some("AKIAENV"));
+        unsafe {
+            std::env::remove_var("AWS_SHARED_CREDENTIALS_FILE");
+            std::env::remove_var("AWS_PROFILE");
+            std::env::remove_var("AWS_ACCESS_KEY_ID");
+            std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        }
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn aws_config_file_region_resolves_selected_profile() {
+        let _guard = crate::utils::env_lock();
+        let config_file = write_config(
+            "region-profile",
+            "[default]\nregion = us-west-1\n\n[profile staging]\nregion = eu-central-1\n",
+        );
+        let options = BedrockOptions {
+            base: StreamOptions {
+                base: crate::types::ProviderRequestOptions {
+                    env: Some(provider_env(&[
+                        ("AWS_CONFIG_FILE", config_file.to_str().unwrap()),
+                        ("AWS_PROFILE", "staging"),
+                    ])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config = resolve_config(&base_model(), &options, None).unwrap();
+        assert_eq!(config.region, "eu-central-1");
+        assert_eq!(
+            config.endpoint,
+            "https://bedrock-runtime.us-east-1.amazonaws.com"
+        );
+        let _ = std::fs::remove_dir_all(config_file.parent().unwrap());
+    }
+
+    #[test]
+    fn region_precedence_is_arn_then_option_then_env_then_config_then_default() {
+        let _guard = crate::utils::env_lock();
+        let config_file = write_config("region-precedence", "[default]\nregion = ap-south-1\n");
+        let mut model = base_model();
+        let options = BedrockOptions {
+            base: StreamOptions {
+                base: crate::types::ProviderRequestOptions {
+                    env: Some(provider_env(&[
+                        ("AWS_CONFIG_FILE", config_file.to_str().unwrap()),
+                        ("AWS_REGION", "us-west-2"),
+                    ])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            region: Some("eu-west-1".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_config(&model, &options, None).unwrap().region,
+            "eu-west-1"
+        );
+        model.id = "arn:aws:bedrock:ap-northeast-1:123456789012:application-inference-profile/abc"
+            .to_string();
+        assert_eq!(
+            resolve_config(&model, &options, None).unwrap().region,
+            "ap-northeast-1"
+        );
+
+        let env_options = BedrockOptions {
+            base: options.base.clone(),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_config(&base_model(), &env_options, None)
+                .unwrap()
+                .region,
+            "us-west-2"
+        );
+
+        let config_options = BedrockOptions {
+            base: StreamOptions {
+                base: crate::types::ProviderRequestOptions {
+                    env: Some(provider_env(&[
+                        ("AWS_CONFIG_FILE", config_file.to_str().unwrap()),
+                        ("AWS_PROFILE", "default"),
+                    ])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_config(&base_model(), &config_options, None)
+                .unwrap()
+                .region,
+            "ap-south-1"
+        );
+        let _ = std::fs::remove_dir_all(config_file.parent().unwrap());
     }
 }

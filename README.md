@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 63.86% — 106 of 166 ledger tasks complete; 60 open.**
+**Conversion progress: 64.46% — 107 of 166 ledger tasks complete; 59 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -36,6 +36,14 @@ lanes branch from session leaves, seed independent provider context, persist
 their own prompt turns, and emit lane-attributed lifecycle telemetry. Full
 JSONL/RPC harness ownership and mode-specific golden persistence remain open
 under S-021/S-022.
+
+Bedrock credential/profile and region-resolution parity now covers explicit and
+scoped profile precedence, shared credentials and selected-profile config
+regions, ARN/env/option endpoint-region precedence, ECS task-role retrieval,
+web-identity STS XML credentials, bearer/skip-auth modes, and exact provider
+auth source labels. Deterministic local fixtures cover the profile, region,
+ECS, STS, and provider-auth paths. SSO- or process-backed profiles and EC2
+metadata remain outside the hand-rolled signer scope.
 
 Legacy v1/v2/v3 session files are atomically migrated before session inventory,
 CLI continue/resume/session/fork selection, interactive startup and `/import`,
