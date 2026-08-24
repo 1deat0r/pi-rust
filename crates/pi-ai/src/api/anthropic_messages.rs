@@ -17,6 +17,10 @@ use crate::types::{
     StopReason, StreamOptions, ToolChoice, Usage,
 };
 
+use super::constrained_sampling::{
+    get_json_schema_tool_parameters, resolve_json_schema_strict_sampling,
+};
+
 pub const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
@@ -211,21 +215,55 @@ fn tool_result_content(block: &ContentBlock) -> Value {
     }
 }
 
-/// Converts unified tools to Anthropic `ToolParam`s (subset of
-/// `convertTools`; no eager-input-streaming / strict / deferral flags).
-pub fn convert_tools(tools: &[crate::types::Tool], cache_control: bool) -> Vec<Value> {
+/// Converts unified tools to Anthropic `ToolParam`s, including the provider's
+/// strict-schema extension when the model advertises it.
+pub fn convert_tools(
+    tools: &[crate::types::Tool],
+    cache_control: bool,
+    supports_strict_tools: bool,
+) -> Result<Vec<Value>, String> {
     tools
         .iter()
         .map(|tool| {
+            let strict = resolve_json_schema_strict_sampling(tool, supports_strict_tools)?;
+            let parameters = get_json_schema_tool_parameters(tool, strict)?;
+            let schema = parameters.as_object();
+            let mut legacy_input_schema = json!({
+                "type": "object",
+                "properties": schema
+                    .and_then(|schema| schema.get("properties"))
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+                "required": schema
+                    .and_then(|schema| schema.get("required"))
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+            });
+            let input_schema = if strict == Some(true) {
+                let mut full = parameters.clone();
+                if let (Some(full), Some(legacy)) =
+                    (full.as_object_mut(), legacy_input_schema.as_object_mut())
+                {
+                    for (key, value) in legacy.iter() {
+                        full.insert(key.clone(), value.clone());
+                    }
+                }
+                full
+            } else {
+                legacy_input_schema
+            };
             let mut value = json!({
                 "name": tool.name,
                 "description": tool.description,
-                "input_schema": tool.parameters,
+                "input_schema": input_schema,
             });
+            if strict == Some(true) {
+                value["strict"] = json!(true);
+            }
             if cache_control {
                 value["cache_control"] = json!({"type": "ephemeral"});
             }
-            value
+            Ok(value)
         })
         .collect()
 }
@@ -244,7 +282,11 @@ fn resolve_cache_retention(
 
 /// Assembles a request-body value (port of `buildParams`, subset without
 /// deferred tools / fallbacks / OAuth).
-pub fn build_params(model: &Model, context: &Context, options: &AnthropicOptions) -> Value {
+pub fn build_params(
+    model: &Model,
+    context: &Context,
+    options: &AnthropicOptions,
+) -> Result<Value, String> {
     let cache_retention = resolve_cache_retention(
         options.base.cache_retention.as_ref(),
         options.base.base.env.as_ref(),
@@ -281,7 +323,17 @@ pub fn build_params(model: &Model, context: &Context, options: &AnthropicOptions
     }
 
     if !context.tools.is_empty() {
-        params["tools"] = json!(convert_tools(&context.tools, cache_control.is_some()));
+        let supports_strict_tools = model
+            .compat
+            .as_ref()
+            .and_then(|compat| compat.get("supportsStrictTools"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        params["tools"] = json!(convert_tools(
+            &context.tools,
+            cache_control.is_some(),
+            supports_strict_tools,
+        )?);
     }
 
     // Thinking: budget-based `enabled` when the model has reasoning on and
@@ -335,7 +387,7 @@ pub fn build_params(model: &Model, context: &Context, options: &AnthropicOptions
         }
     }
 
-    params
+    Ok(params)
 }
 
 fn empty_usage() -> Usage {
@@ -768,7 +820,20 @@ pub fn stream(
 
     let handle = tokio::spawn(async move {
         let mut pusher = crate::event_stream::StreamSinkAdapter::new(sender);
-        let params = build_params(&model, &context, &options);
+        let params = match build_params(&model, &context, &options) {
+            Ok(params) => params,
+            Err(error) => {
+                let mut message = new_output(&model);
+                message.set_stop_reason(StopReason::Error);
+                set_error_message(&mut message, error);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+        };
         let mut request = client
             .post(format!("{base_url}/v1/messages"))
             .header("content-type", "application/json")

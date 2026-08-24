@@ -8,6 +8,9 @@ use crate::types::{
     ContentBlock, Context, Message, ModelThinkingLevel, StopReason, UserContent, UserContentBody,
 };
 
+use super::constrained_sampling::{
+    get_json_schema_tool_parameters, resolve_json_schema_strict_sampling,
+};
 use super::transform_messages::transform_messages;
 
 /// Google API thinking level values (mirrors Google's ThinkingLevel enum).
@@ -428,15 +431,15 @@ pub fn convert_tools(
     tools: &[crate::types::Tool],
     use_parameters: bool,
     supports_strict_mode: bool,
-) -> Option<Value> {
+) -> Result<Option<Value>, String> {
     if tools.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let declarations: Vec<Value> = tools
+    let declarations: Result<Vec<Value>, String> = tools
         .iter()
         .map(|tool| {
-            let strict = supports_google_strict_tool_sampling_check(tool, supports_strict_mode);
-            let parameters = tool_json_schema_parameters(tool, strict);
+            let strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)?;
+            let parameters = get_json_schema_tool_parameters(tool, strict)?;
             let mut decl = json!({
                 "name": tool.name,
                 "description": tool.description,
@@ -446,37 +449,10 @@ pub fn convert_tools(
             } else {
                 decl["parametersJsonSchema"] = parameters;
             }
-            decl
+            Ok(decl)
         })
         .collect();
-    Some(json!([{ "functionDeclarations": declarations }]))
-}
-
-/// Resolve strict-sampling preference for a tool (upstream
-/// `resolveJsonSchemaStrictSampling`).
-fn supports_google_strict_tool_sampling_check(
-    tool: &crate::types::Tool,
-    supports_strict_mode: bool,
-) -> bool {
-    match &tool.constrained_sampling {
-        Some(crate::types::ConstrainedSampling::JsonSchema { strict }) => {
-            supports_strict_mode && matches!(strict, crate::types::StrictPreference::Require)
-        }
-        _ => false,
-    }
-}
-
-/// Get JSON-schema tool parameters (upstream `getJsonSchemaToolParameters`).
-fn tool_json_schema_parameters(tool: &crate::types::Tool, strict: bool) -> Value {
-    let mut params = tool.parameters.clone();
-    if strict && params.is_object() {
-        if let Some(obj) = params.as_object_mut() {
-            if !obj.contains_key("additionalProperties") {
-                obj.insert("additionalProperties".to_string(), json!(false));
-            }
-        }
-    }
-    params
+    Ok(Some(json!([{ "functionDeclarations": declarations? }])))
 }
 
 /// Gemini 3+ enforces required function parameters in validated modes.
@@ -499,22 +475,20 @@ pub fn resolve_google_function_calling_mode(
     tools: &[crate::types::Tool],
     tool_choice: Option<&str>,
     supports_strict_mode: bool,
-) -> Option<String> {
-    let use_strict_mode = tools.iter().any(|tool| {
-        matches!(
-            tool.constrained_sampling,
-            Some(crate::types::ConstrainedSampling::JsonSchema {
-                strict: crate::types::StrictPreference::Require,
-            })
-        ) && supports_strict_mode
-    });
+) -> Result<Option<String>, String> {
+    let mut use_strict_mode = false;
+    for tool in tools {
+        if resolve_json_schema_strict_sampling(tool, supports_strict_mode)? == Some(true) {
+            use_strict_mode = true;
+        }
+    }
     if matches!(tool_choice, Some("none") | Some("any")) {
-        return Some(map_tool_choice(tool_choice.unwrap()).to_string());
+        return Ok(Some(map_tool_choice(tool_choice.unwrap()).to_string()));
     }
     if use_strict_mode {
-        return Some("VALIDATED".to_string());
+        return Ok(Some("VALIDATED".to_string()));
     }
-    tool_choice.map(|c| map_tool_choice(c).to_string())
+    Ok(tool_choice.map(|c| map_tool_choice(c).to_string()))
 }
 
 /// Map Gemini FinishReason to the unified StopReason.
@@ -642,7 +616,7 @@ mod tests {
             "run a command",
             &json!({ "type": "object", "properties": {} }),
         )];
-        let out = convert_tools(&tools, false, true).unwrap();
+        let out = convert_tools(&tools, false, true).unwrap().unwrap();
         assert_eq!(out[0]["functionDeclarations"][0]["name"], "bash");
         assert!(out[0]["functionDeclarations"][0]["parametersJsonSchema"].is_object());
     }

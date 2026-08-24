@@ -292,7 +292,7 @@ pub fn stream(
             let location =
                 resolve_location(options.location.as_deref(), options.base.base.env.as_ref())?;
 
-            let params = build_params(&model, &context, &to_google_options(&options));
+            let params = build_params(&model, &context, &to_google_options(&options))?;
 
             let bearer = if api_key.is_none() {
                 resolve_adc_access_token(options.base.base.env.as_ref()).await

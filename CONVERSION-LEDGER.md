@@ -6,13 +6,14 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **62.65% (104/166; 62 open)**. Run
+- The exhaustive checker reports **63.25% (105/166; 61 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
-  value is copied into `PLAN.md`.
-- The focused workspace checks and tests for the current harness-lane slice
-  pass offline, including pi-agent, RPC, interactive, and one-shot parity
-  suites. The last full-workspace gate is historical; resource pressure
-  blocked its S-032 retry, so do not infer a fresh full-workspace result here.
+  value is copied into `PLAN.md` and `HANDOFF.md`.
+- S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
+  complete with unit/mock evidence in the pi-ai adaptor suite. The focused
+  pi-ai tests, strict clippy, workspace check, formatting, and diff gates pass;
+  a workspace test link was resource-blocked by SIGKILL 9 in an unrelated
+  pi-coding-agent test binary.
 - The original 100 entries remain the historical work queue. The supplemental
   S1 section is authoritative for residual provider, harness, runtime, TUI,
   RPC, auxiliary client/server, evaluation, and final-audit work.
@@ -634,9 +635,24 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       passed), `cargo test -p pi-ai --offline --lib utils::retry --quiet`
       (16 passed), `cargo test -p pi-ai --offline --lib images --quiet` (19
       passed), and the full pi-ai library suite (290 passed).
-- [ ] S-008 Complete constrained-sampling/grammar tool support for every
+- [x] S-008 Complete constrained-sampling/grammar tool support for every
       adaptor that advertises strict or grammar tools; reject unsupported
-      schemas with the upstream diagnostics.
+      schemas with the upstream diagnostics. Evidence (unit/mock): shared
+      strict-schema rewrites, optional-property/null handling, unsupported-key
+      diagnostics, grammar precedence/inference, and monotonic streaming JSON
+      deltas are covered by `cargo test -p pi-ai --offline --lib
+      api::constrained_sampling --quiet`; OpenAI Completions custom-tool wire
+      shape and stream replay by `cargo test -p pi-ai --offline --lib
+      api::openai_completions --quiet`; Responses/Azure/Codex shared custom
+      shapes, replay, and exact errors by `cargo test -p pi-ai --offline --lib
+      api::openai_responses_shared --quiet`, the Azure/Codex module tests, and
+      the Anthropic/Bedrock/Google adaptor fixtures. The complete adaptor suite
+      passes with `cargo test -p pi-ai --offline --quiet` (307 library, 4 + 9
+      + 2 integration tests); `cargo clippy -p pi-ai --offline --all-targets
+      -- -D warnings`, `cargo check --workspace --offline`, `cargo fmt --all --
+      --check`, and `git diff --check` also pass. An independent parity review
+      against upstream commit `5cd93f688aaab89dbb6dfa4aca535f21796ae185`
+      approved the implementation with no blockers.
 - [ ] S-009 Complete Codex WebSocket session caching/reuse and the
       `websocket-cached` transport behavior, including eviction and close/error
       recovery.

@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-62.65% = 104 completed / 166 total tasks
-62 tasks remain open
+63.25% = 105 completed / 166 total tasks
+61 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,55 +26,28 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest pushed implementation checkpoint is the full `pi-ai` strict-clippy
-restoration `7b3db53`, following the adapter cleanup `8aba4db`, telemetry
-strict-verification fix `45e6d64`, and image retry/cancellation slice `2b92195`;
-metadata/documentation sync is `7f44350`. The deferred-response
-runtime/lazy-capability
-slice `56ea6f3`, after the committed S-033
-interactive slash-command PTY fixture slice `3b4d350`, after the committed
-S-032
-provider-auth-guidance slice `50c2103`, after the committed S-026 CLI
-session-routing slice `711a25e`, the parity checkpoint `eaa36ba`, and the committed S-029
-install-telemetry slice `3d6f1fc` and the committed
-S-030 interactive cache-notice slice `7356dd3`,
-`ef640ce`,
-the partial legacy-session
-integration slice, after committed startup timing (`869ae6d`) and
-the committed compiled-binary self-update contract (`db97b89`) and interactive
-turn harness ownership
-checkpoint (`0cd9d03`) and documentation-hook checkpoint (`d56d8ba`), JSON-mode
-harness ownership (`3fb8049`), print-path harness,
-lifecycle/termination, schema-validator, panic-safe telemetry, RPC runtime,
-update/version, and model-catalog checkpoints. The JSON-mode implementation is
-`dd7a568`; its follow-up preserves the successful RPC golden envelope while
-forwarding terminal JSON provider errors. GitHub authentication is now
-configured through `gh`, and the accumulated branch has been pushed.
-Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
-broad revert commands.
+The current logical checkpoint is S-008 constrained-sampling/grammar parity.
+The implementation and its required documentation are currently uncommitted;
+the pre-existing untracked `AGENTS.md` remains untouched and must be preserved.
+Do not use `git reset --hard`, `git checkout --`, broad revert commands, or
+`git clean`.
 
-The worktree is very large because the baseline was already heavily changed
-and `cargo fmt --all` reformatted many Rust files. The meaningful current
-additions/renames include:
+Current status before the focused commit: branch `main`, progress checker
+reports `63.25% (105/166; 61 open)`. The last pushed baseline is local/remote
+commit `4523cd61f2f92a65f459b1cd9f290abbe874fa5f`; the S-008 files are the
+working-tree delta. The current S-008 changes include:
 
-- `CONVERSION-LEDGER.md` replaces the old `NEXT-100.md` tracker.
-- `scripts/conversion-progress.mjs` validates task IDs and computes the
-  percentage.
-- `crates/pi-coding-agent/src/core/version_check.rs` adds the update-check
-  seam.
-- Runtime/model catalog, RPC, config selector, TUI, provider, session, CLI,
-  and parity work is spread across the modified crates.
+- `crates/pi-ai/src/api/constrained_sampling.rs`, the shared strict-schema and
+  grammar resolver plus streaming JSON-delta helper.
+- OpenAI Completions/Responses/Azure/Codex custom grammar wire conversion,
+  message replay, and stream assembly.
+- Anthropic, Bedrock, Google/Vertex, and Mistral strict-schema propagation with
+  exact required-constraint diagnostics.
+- Adaptor/unit fixtures covering rewrites, unsupported schemas, grammar
+  precedence/inference, request shapes, replay, and SSE deltas.
 
-Current status at pause: branch `main`, progress checker reports
-`62.65% (104/166; 62 open)`. The strict-clippy implementation `7b3db53` and
-handoff/docs refresh `7f44350` are pushed; `git rev-parse HEAD` and
-`git ls-remote origin refs/heads/main` resolve to the same full hash.
-Preserve the pre-existing untracked `AGENTS.md`.
-The README now records the legacy-session integration, CLI session routing,
-provider auth guidance, startup-timing, interactive cache-notice,
-install-telemetry contracts, the interactive slash-command PTY checkpoint, the
-project-trust safety matrix, and deferred-response runtime parity. The
-pre-existing `AGENTS.md` remains untouched.
+The required local commit and immediate push remain pending. Preserve the
+existing broader worktree and the untracked `AGENTS.md`.
 
 ## Current strict-verification cleanup
 
@@ -91,23 +64,48 @@ warnings` gate now passes with zero diagnostics. The adapter and structural
 cleanup covered derived defaults, option flattening, guard patterns, copy-field
 moves, test fixtures, provider lock scopes, and the faux/provider enum layout.
 Full `pi-ai` tests pass (290 library, 4 + 8 + 2 integration tests). This cleanup
-does not change the ledger count (`62.65%`, 104/166).
+did not change the ledger count at that earlier checkpoint (`62.65%`, 104/166).
 The verified implementation checkpoint is `7b3db53`; local `HEAD` and
 `origin/main` matched immediately after its push.
 
-## Stop point — 2026-08-24
+## Current checkpoint — 2026-08-24 — S-008 complete, commit/push pending
 
-Implementation is intentionally stopped here at the user's request. No S-008
-code has been started. The next ledger item is constrained-sampling/grammar
-support across every adaptor that advertises strict or grammar tools (S-008),
-after an upstream audit and new gates are written.
+S-008 is implemented and marked complete in `CONVERSION-LEDGER.md`. The shared
+resolver now clones and strictifies supported JSON schemas, wraps optional
+properties as nullable required fields, rejects the upstream unsupported subset
+with exact diagnostics, resolves non-empty Lark before regex grammar variants,
+infers the single required string input property, and emits monotonic streaming
+JSON deltas. OpenAI Completions, Responses, Azure, and Codex support grammar
+custom tools; Anthropic, Bedrock, Google/Vertex, Mistral, and the Responses
+family support strict-schema conversion. Required schemas are never silently
+dropped or downgraded.
 
-The repository is public at [1deat0r/pi-rust](https://github.com/1deat0r/pi-rust),
-uses `main`, and local/remote full hashes match `7f44350`. The earlier GitHub
-metadata failure was HTTP 422 because the description exceeded GitHub's 350
-character limit; the description is now 271 characters and the authenticated
-pre-commit hook syncs it successfully. `AGENTS.md` remains pre-existing,
-untracked, and untouched.
+Evidence:
+
+```text
+cargo test -p pi-ai --offline --lib api::constrained_sampling --quiet
+cargo test -p pi-ai --offline --lib api::openai_completions --quiet
+cargo test -p pi-ai --offline --lib api::openai_responses_shared --quiet
+cargo test -p pi-ai --offline --quiet (307 library, 4 + 9 + 2 integration tests)
+cargo clippy -p pi-ai --offline --all-targets -- -D warnings
+cargo check --workspace --offline
+cargo fmt --all -- --check
+git diff --check
+node scripts/conversion-progress.mjs
+```
+
+All listed focused checks pass; the checker reports exactly
+`Conversion progress: 63.25% (105/166; 61 open)`. An independent reviewer
+compared the implementation with upstream commit
+`5cd93f688aaab89dbb6dfa4aca535f21796ae185` and returned APPROVE with no parity
+blockers. A full `cargo test --workspace --offline --quiet` attempt was not a
+code failure: the linker was killed with SIGKILL 9 while linking the unrelated
+`pi-coding-agent` `export_html_parity` test binary. The focused `pi-ai` suite
+is green; rerun the workspace test gate when host linker pressure permits.
+
+Next dependency-safe work is S-009 Codex WebSocket session caching/reuse. The
+S-008 focused commit, immediate push, and post-push hash verification are still
+required before claiming remote parity.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
 
@@ -240,7 +238,7 @@ cargo test -p pi-coding-agent --offline --lib core::project_trust --quiet (7 pas
 cargo check -p pi-coding-agent --offline
 cargo fmt --all -- --check
 git diff --check
-node scripts/conversion-progress.mjs (62.65% = 104/166; 62 open)
+node scripts/conversion-progress.mjs (62.65% = 104/166; 62 open at that earlier checkpoint)
 ```
 
 S-036 is complete; the implementation and documentation changes are ready for

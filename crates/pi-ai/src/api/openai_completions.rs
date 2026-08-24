@@ -11,8 +11,9 @@
 //! with strict JSON-schema where supported), buildParams (incl. the
 //! per-provider thinking formats), chunk usage parsing, stop-reason mapping,
 //! and the streaming event loop (text/thinking/tool-call deltas with
-//! streaming JSON for tool arguments). Grammar tools and chat-template kwargs
-//! are documented as deferred (see TODO).
+//! streaming JSON for tool arguments). OpenAI grammar custom tools are
+//! converted and replayed through the same streaming path; chat-template kwargs
+//! remain documented as deferred (see TODO).
 
 use std::collections::BTreeMap;
 
@@ -27,6 +28,14 @@ use crate::types::{
     Tool, ToolChoice, Usage,
 };
 use crate::AssistantMessageEventStream;
+
+use super::constrained_sampling::{
+    append_grammar_tool_input_json_delta, create_grammar_tool_input_properties,
+    get_grammar_tool_input, get_json_schema_tool_parameters,
+    resolve_grammar_constrained_sampling as shared_resolve_grammar_constrained_sampling,
+    resolve_json_schema_strict_sampling as shared_resolve_json_schema_strict_sampling,
+    GrammarToolInputJsonBuffer,
+};
 
 // ---------------------------------------------------------------------------
 // Compatibility
@@ -370,13 +379,27 @@ fn normalize_tool_call_id(id: &str, provider: &str) -> String {
 // Message conversion
 // ---------------------------------------------------------------------------
 
-/// Port of `convertMessages` in openai-completions.ts. Produces the
-/// `messages` array for the Chat Completions request.
+/// Compatibility wrapper for callers that only need ordinary function-tool
+/// replay. It remains fallible so required grammar/strict constraints are
+/// never silently ignored.
 pub fn convert_messages(
     model: &Model,
     context: &Context,
     compat: &OpenAiCompletionsCompat,
-) -> Vec<Value> {
+) -> Result<Vec<Value>, String> {
+    let grammar_properties =
+        create_grammar_tool_input_properties(&context.tools, compat.supports_openai_grammar_tools)?;
+    convert_messages_with_grammar(model, context, compat, &grammar_properties)
+}
+
+/// Port of `convertMessages` in openai-completions.ts. Produces the
+/// `messages` array for the Chat Completions request.
+pub fn convert_messages_with_grammar(
+    model: &Model,
+    context: &Context,
+    compat: &OpenAiCompletionsCompat,
+    grammar_tool_input_properties: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, String> {
     let mut params: Vec<Value> = Vec::new();
     let _provider = model.provider.clone();
 
@@ -527,22 +550,35 @@ pub fn convert_messages(
                 }
 
                 if !tool_calls.is_empty() {
-                    let converted: Vec<Value> = tool_calls
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::ToolCall { id, name, arguments, .. } => {
-                                Some(json!({
-                                    "id": id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": name,
-                                        "arguments": serde_json::to_string(arguments).unwrap_or_else(|_| "{}".into())
-                                    }
-                                }))
-                            }
-                            _ => None,
-                        })
-                        .collect();
+                    let mut converted = Vec::with_capacity(tool_calls.len());
+                    for block in &tool_calls {
+                        let ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } = block
+                        else {
+                            continue;
+                        };
+                        if let Some(input_property) = grammar_tool_input_properties.get(name) {
+                            let input = get_grammar_tool_input(name, arguments, input_property)?;
+                            converted.push(json!({
+                                "id": id,
+                                "type": "custom",
+                                "custom": { "name": name, "input": input },
+                            }));
+                        } else {
+                            converted.push(json!({
+                                "id": id,
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": serde_json::to_string(arguments).unwrap_or_else(|_| "{}".into())
+                                }
+                            }));
+                        }
+                    }
                     assistant_msg.insert("tool_calls".into(), json!(converted));
                 }
 
@@ -642,7 +678,7 @@ pub fn convert_messages(
         i += 1;
     }
 
-    params
+    Ok(params)
 }
 
 // ---------------------------------------------------------------------------
@@ -830,184 +866,37 @@ fn is_openai_completions_reasoning_field(field: &str) -> bool {
     matches!(field, "reasoning_content" | "reasoning" | "reasoning_text")
 }
 
-fn make_strict_json_schema(schema: &Value) -> Result<Value, String> {
-    // Full upstream makeStrictJsonSchema; ported for tool strict mode.
-    let mut cloned = schema.clone();
-    make_json_schema_node_strict(&mut cloned)?;
-    if cloned.get("type").and_then(|v| v.as_str()) != Some("object") {
-        return Err("root schema must have type object".to_string());
-    }
-    Ok(cloned)
-}
-
-fn make_json_schema_node_strict(schema: &mut Value) -> Result<(), String> {
-    let Some(obj) = schema.as_object_mut() else {
-        return Err("boolean schemas are unsupported".to_string());
-    };
-    for key in [
-        "anyOf",
-        "items",
-        "properties",
-        "required",
-        "additionalProperties",
-    ] {
-        if obj.contains_key(key) {
-            // handled below per-key
-        }
-    }
-    if let Some(any_of) = obj.get("anyOf") {
-        let variants = any_of
-            .as_array()
-            .ok_or("anyOf must contain at least one schema")?;
-        if variants.is_empty() {
-            return Err("anyOf must contain at least one schema".to_string());
-        }
-        for variant in variants {
-            let is_structured = variant
-                .as_object()
-                .and_then(|o| o.get("type"))
-                .and_then(|t| t.as_str())
-                .map(|t| t == "object" || t == "array")
-                .unwrap_or(false);
-            if is_structured {
-                return Err("object and array unions are unsupported".to_string());
-            }
-        }
-        // Recurse clones (upstream mutates each variant in place).
-        for variant in variants {
-            let mut v = variant.clone();
-            make_json_schema_node_strict(&mut v)?;
-        }
-    }
-    if let Some(items) = obj.get("items") {
-        if items.is_array() {
-            return Err("tuple schemas are unsupported".to_string());
-        }
-        let mut v = items.clone();
-        make_json_schema_node_strict(&mut v)?;
-    }
-    let is_object_schema = obj.get("type").and_then(|v| v.as_str()) == Some("object");
-    if obj.contains_key("properties") && !is_object_schema {
-        return Err("properties require type object".to_string());
-    }
-    if !is_object_schema {
-        return Ok(());
-    }
-    if let Some(ap) = obj.get("additionalProperties") {
-        if ap.as_bool() != Some(false) {
-            return Err("schema-valued or true additionalProperties is unsupported".to_string());
-        }
-    }
-    if let Some(props) = obj.get("properties") {
-        if !props.is_object() {
-            return Err("object properties must be a schema map".to_string());
-        }
-    }
-    if let Some(required) = obj.get("required") {
-        if !required.is_array() || required.as_array().unwrap().iter().any(|k| !k.is_string()) {
-            return Err("object required must be a string array".to_string());
-        }
-    }
-
-    let properties = obj.get("properties").cloned().unwrap_or_else(|| json!({}));
-    let properties_obj = properties.as_object().cloned().unwrap_or_default();
-    let property_names: Vec<String> = properties_obj.keys().cloned().collect();
-    let required: std::collections::BTreeSet<String> = obj
-        .get("required")
-        .and_then(|r| r.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|k| k.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-    for key in &required {
-        if !property_names.contains(key) {
-            return Err("required contains an unknown property".to_string());
-        }
-    }
-    let mut new_properties = serde_json::Map::new();
-    for (key, property) in &properties_obj {
-        let mut prop = property.clone();
-        make_json_schema_node_strict(&mut prop)?;
-        if required.contains(key) || schema_allows_null(&prop) {
-            new_properties.insert(key.clone(), prop);
-        } else {
-            new_properties.insert(key.clone(), json!({ "anyOf": [prop, { "type": "null" }] }));
-        }
-    }
-    obj.insert("properties".into(), Value::Object(new_properties));
-    obj.insert("required".into(), json!(property_names));
-    obj.insert("additionalProperties".into(), json!(false));
-    Ok(())
-}
-
-fn schema_allows_null(schema: &Value) -> bool {
-    match schema.get("type").and_then(|v| v.as_str()) {
-        Some("null") => true,
-        _ => {
-            if let Some(any_of) = schema.get("anyOf").and_then(|v| v.as_array()) {
-                any_of.iter().any(schema_allows_null)
-            } else {
-                false
-            }
-        }
-    }
-}
-
-fn resolve_json_schema_strict_sampling(
-    tool: &Tool,
-    supports_strict_mode: bool,
-) -> Result<Option<bool>, String> {
-    let Some(config) = &tool.constrained_sampling else {
-        return Ok(None);
-    };
-    let crate::types::ConstrainedSampling::JsonSchema { strict } = config else {
-        return Ok(None);
-    };
-    if supports_strict_mode {
-        match make_strict_json_schema(&tool.parameters) {
-            Ok(_) => Ok(Some(true)),
-            Err(e) => {
-                if *strict == crate::types::StrictPreference::Require {
-                    Err(format!(
-                        "Tool \"{}\" requires JSON-schema constrained sampling, but {}.",
-                        tool.name, e
-                    ))
-                } else {
-                    Ok(None)
-                }
-            }
-        }
-    } else if *strict == crate::types::StrictPreference::Require {
-        Err(format!(
-            "Tool \"{}\" requires JSON-schema constrained sampling, but strict tools are unsupported.",
-            tool.name
-        ))
-    } else {
-        Ok(None)
-    }
-}
-
-/// Port of `convertTools` (grammar tools deferred: the port's grammar custom
-/// tools are documented in TODO; function tools with strict mode are active).
-pub fn convert_tools(tools: &[Tool], compat: &OpenAiCompletionsCompat) -> Vec<Value> {
+/// Port of `convertTools`, including OpenAI custom grammar tools and strict
+/// JSON-schema resolution. Unsupported required constraints are returned to the
+/// caller instead of silently dropping the tool.
+pub fn convert_tools(
+    tools: &[Tool],
+    compat: &OpenAiCompletionsCompat,
+) -> Result<Vec<Value>, String> {
     let mut out = Vec::new();
     for tool in tools {
-        let strict = match resolve_json_schema_strict_sampling(tool, compat.supports_strict_mode) {
-            Ok(s) => s,
-            Err(e) => {
-                // Upstream throws; surface as a tool that always fails? For the
-                // port we propagate the error to the caller via Result.
-                tracing::warn!("strict tool conversion failed: {e}");
-                continue;
-            }
-        };
-        let parameters = match strict {
-            Some(true) => make_strict_json_schema(&tool.parameters)
-                .unwrap_or_else(|_| tool.parameters.clone()),
-            _ => tool.parameters.clone(),
-        };
+        if let Some(grammar) =
+            shared_resolve_grammar_constrained_sampling(tool, compat.supports_openai_grammar_tools)?
+        {
+            out.push(json!({
+                "type": "custom",
+                "custom": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "format": {
+                        "type": "grammar",
+                        "grammar": {
+                            "syntax": grammar.format,
+                            "definition": grammar.definition,
+                        }
+                    }
+                }
+            }));
+            continue;
+        }
+
+        let strict = shared_resolve_json_schema_strict_sampling(tool, compat.supports_strict_mode)?;
+        let parameters = get_json_schema_tool_parameters(tool, strict)?;
         let mut function = serde_json::Map::new();
         function.insert("name".into(), json!(tool.name));
         function.insert("description".into(), json!(tool.description));
@@ -1017,7 +906,7 @@ pub fn convert_tools(tools: &[Tool], compat: &OpenAiCompletionsCompat) -> Vec<Va
         }
         out.push(json!({ "type": "function", "function": Value::Object(function) }));
     }
-    out
+    Ok(out)
 }
 
 fn get_compat_cache_control(
@@ -1049,8 +938,10 @@ pub fn build_params(
     options: Option<&StreamOptions>,
     compat: &OpenAiCompletionsCompat,
     cache_retention: &str,
-) -> Value {
-    let messages = convert_messages(model, context, compat);
+) -> Result<Value, String> {
+    let grammar_properties =
+        create_grammar_tool_input_properties(&context.tools, compat.supports_openai_grammar_tools)?;
+    let messages = convert_messages_with_grammar(model, context, compat, &grammar_properties)?;
     let cache_control = get_compat_cache_control(compat, cache_retention);
 
     let mut params = serde_json::Map::new();
@@ -1098,7 +989,7 @@ pub fn build_params(
     // Tools: active (non-deferred) tools; empty array when conversation has tool history.
     let active_tools = context.tools.clone();
     if !active_tools.is_empty() {
-        params.insert("tools".into(), json!(convert_tools(&active_tools, compat)));
+        params.insert("tools".into(), json!(convert_tools(&active_tools, compat)?));
         if compat.zai_tool_stream {
             params.insert("tool_stream".into(), json!(true));
         }
@@ -1115,7 +1006,7 @@ pub fn build_params(
     // Thinking formats.
     apply_thinking_params(model, options, compat, &mut params);
 
-    Value::Object(params)
+    Ok(Value::Object(params))
 }
 
 fn thinking_level_from_str(s: &str) -> crate::types::ModelThinkingLevel {
@@ -1447,15 +1338,46 @@ pub fn stream(
             options.base.cache_retention.as_ref(),
             options.base.base.env.as_ref(),
         );
-        let params = build_params(
+        let params = match build_params(
             &model,
             &context,
             Some(&options.base),
             &compat,
             &cache_retention,
-        );
+        ) {
+            Ok(params) => params,
+            Err(error) => {
+                let mut message = new_output(&model);
+                message.set_stop_reason(StopReason::Error);
+                set_error_message(&mut message, error);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+        };
 
         // Resolve the api key: options first, else env var for common providers.
+        let grammar_properties = match create_grammar_tool_input_properties(
+            &context.tools,
+            compat.supports_openai_grammar_tools,
+        ) {
+            Ok(properties) => properties,
+            Err(error) => {
+                let mut message = new_output(&model);
+                message.set_stop_reason(StopReason::Error);
+                set_error_message(&mut message, error);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+        };
+
         let resolved_key = match api_key {
             Some(k) => k,
             None => {
@@ -1566,9 +1488,13 @@ pub fn stream(
             partial: new_output(&model),
         });
 
-        match process_completions_events(&model, &events, &compat, |event| {
-            pusher.push(event);
-        }) {
+        match process_completions_events_with_grammar(
+            &model,
+            &events,
+            &compat,
+            &grammar_properties,
+            |event| pusher.push(event),
+        ) {
             Ok(message) => {
                 if message.stop_reason() == Some(StopReason::Error) {
                     let err_text = message
@@ -1664,6 +1590,8 @@ struct StreamingBlock {
     tool_name: String,
     tool_arguments: Value,
     partial_args: String,
+    custom_input_property: Option<String>,
+    grammar_buffer: Option<GrammarToolInputJsonBuffer>,
 }
 
 enum BlockKind {
@@ -1672,13 +1600,23 @@ enum BlockKind {
     ToolCall,
 }
 
-/// Process SSE data events into the unified stream protocol. Mirrors the
-/// upstream for-await loop (text/thinking/tool-call deltas, usage, finish
-/// reason).
+/// Process SSE data events using ordinary function-tool semantics.
 pub fn process_completions_events(
     model: &Model,
     events: &[crate::sse::SseEvent],
     compat: &OpenAiCompletionsCompat,
+    on_event: impl FnMut(AssistantMessageEvent),
+) -> Result<AssistantMessage, String> {
+    process_completions_events_with_grammar(model, events, compat, &BTreeMap::new(), on_event)
+}
+
+/// Process SSE data events into the unified stream protocol. Mirrors the
+/// upstream for-await loop, including OpenAI custom grammar tool deltas.
+pub fn process_completions_events_with_grammar(
+    model: &Model,
+    events: &[crate::sse::SseEvent],
+    compat: &OpenAiCompletionsCompat,
+    grammar_tool_input_properties: &BTreeMap<String, String>,
     mut on_event: impl FnMut(AssistantMessageEvent),
 ) -> Result<AssistantMessage, String> {
     let mut output = new_output(model);
@@ -1814,25 +1752,35 @@ pub fn process_completions_events(
                     .and_then(|i| i.as_str())
                     .unwrap_or("")
                     .to_string();
-                let name = tool_call
-                    .get("function")
+                let function = tool_call.get("function");
+                let custom = tool_call.get("custom");
+                let name = function
                     .and_then(|f| f.get("name"))
+                    .or_else(|| custom.and_then(|f| f.get("name")))
                     .and_then(|n| n.as_str())
                     .unwrap_or("")
                     .to_string();
+                let custom_input_property = if function.is_none() && custom.is_some() {
+                    grammar_tool_input_properties
+                        .get(&name)
+                        .cloned()
+                        .or_else(|| Some("input".to_string()))
+                } else {
+                    None
+                };
                 let idx = ensure_tool_call_block(
                     &mut blocks,
                     index,
                     &id,
                     &name,
+                    custom_input_property.as_deref(),
                     &mut tool_calls_by_index,
                     &mut tool_calls_by_id,
                     &mut on_event,
                     &output,
                 );
                 let mut delta_str = String::new();
-                if let Some(args) = tool_call
-                    .get("function")
+                if let Some(args) = function
                     .and_then(|f| f.get("arguments"))
                     .and_then(|a| a.as_str())
                 {
@@ -1840,6 +1788,28 @@ pub fn process_completions_events(
                     if let Some(block) = blocks.get_mut(idx) {
                         block.partial_args += args;
                         block.tool_arguments = parse_streaming_json(&block.partial_args);
+                    }
+                } else if let Some(input) =
+                    custom.and_then(|f| f.get("input")).and_then(|a| a.as_str())
+                {
+                    if let Some(block) = blocks.get_mut(idx) {
+                        let property = block
+                            .custom_input_property
+                            .as_deref()
+                            .unwrap_or("input")
+                            .to_string();
+                        let current = block.tool_arguments[&property]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_string();
+                        let next = format!("{current}{input}");
+                        let buffer = block
+                            .grammar_buffer
+                            .get_or_insert_with(GrammarToolInputJsonBuffer::default);
+                        delta_str =
+                            append_grammar_tool_input_json_delta(buffer, &property, &next, false)?
+                                .unwrap_or_default();
+                        block.tool_arguments = json!({ property: next });
                     }
                 }
                 if !delta_str.is_empty() {
@@ -1855,7 +1825,29 @@ pub fn process_completions_events(
 
     // finishBlock for every block, in order.
     let mut finished: Vec<AssistantMessageEvent> = Vec::new();
-    for (idx, block) in blocks.iter().enumerate() {
+    for (idx, block) in blocks.iter_mut().enumerate() {
+        let closing_delta = if let Some(property) = block.custom_input_property.clone() {
+            let current = block.tool_arguments[&property]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            let buffer = block
+                .grammar_buffer
+                .get_or_insert_with(GrammarToolInputJsonBuffer::default);
+            let delta = append_grammar_tool_input_json_delta(buffer, &property, &current, true)?;
+            block.tool_arguments = json!({ property: current });
+            delta
+        } else {
+            None
+        };
+        if let Some(delta) = closing_delta {
+            on_event(AssistantMessageEvent::ToolCallDelta {
+                content_index: idx,
+                delta,
+                partial: output.clone(),
+            });
+        }
+
         match block.kind {
             BlockKind::Text => {
                 finished.push(AssistantMessageEvent::TextEnd {
@@ -1957,6 +1949,8 @@ fn ensure_text_block(
             tool_name: String::new(),
             tool_arguments: Value::Null,
             partial_args: String::new(),
+            custom_input_property: None,
+            grammar_buffer: None,
         });
         let idx = blocks.len() - 1;
         *text_block = Some(idx);
@@ -1985,6 +1979,8 @@ fn ensure_thinking_block(
             tool_name: String::new(),
             tool_arguments: Value::Null,
             partial_args: String::new(),
+            custom_input_property: None,
+            grammar_buffer: None,
         });
         let idx = blocks.len() - 1;
         *thinking_block = Some(idx);
@@ -2002,6 +1998,7 @@ fn ensure_tool_call_block(
     stream_index: Option<usize>,
     id: &str,
     name: &str,
+    custom_input_property: Option<&str>,
     by_index: &mut BTreeMap<usize, usize>,
     by_id: &mut BTreeMap<String, usize>,
     on_event: &mut impl FnMut(AssistantMessageEvent),
@@ -2025,9 +2022,18 @@ fn ensure_tool_call_block(
             if block.tool_name.is_empty() && !name.is_empty() {
                 block.tool_name = name.to_string();
             }
+            if let Some(property) = custom_input_property {
+                if block.custom_input_property.is_none() {
+                    block.custom_input_property = Some(property.to_string());
+                    block.tool_arguments = json!({ property: "" });
+                    block.grammar_buffer = Some(GrammarToolInputJsonBuffer::default());
+                    block.partial_args.clear();
+                }
+            }
         }
         return idx;
     }
+    let is_custom = custom_input_property.is_some();
     blocks.push(StreamingBlock {
         kind: BlockKind::ToolCall,
         text: String::new(),
@@ -2035,8 +2041,12 @@ fn ensure_tool_call_block(
         thinking_signature: String::new(),
         tool_id: id.to_string(),
         tool_name: name.to_string(),
-        tool_arguments: serde_json::Map::new().into(),
+        tool_arguments: custom_input_property
+            .map(|property| json!({ property: "" }))
+            .unwrap_or_else(|| serde_json::Map::new().into()),
         partial_args: String::new(),
+        custom_input_property: custom_input_property.map(str::to_string),
+        grammar_buffer: is_custom.then(GrammarToolInputJsonBuffer::default),
     });
     let idx = blocks.len() - 1;
     if let Some(i) = stream_index {
@@ -2154,7 +2164,7 @@ mod tests {
             )],
         );
         let compat = OpenAiCompletionsCompat::get(&m);
-        let messages = convert_messages(&m, &ctx, &compat);
+        let messages = convert_messages(&m, &ctx, &compat).unwrap();
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[0]["content"], "You are helpful");
@@ -2173,7 +2183,7 @@ mod tests {
         m.reasoning = true;
         let ctx = context(Some("sys"), vec![], vec![]);
         let compat = OpenAiCompletionsCompat::get(&m);
-        let messages = convert_messages(&m, &ctx, &compat);
+        let messages = convert_messages(&m, &ctx, &compat).unwrap();
         assert_eq!(messages[0]["role"], "developer");
     }
 
@@ -2185,7 +2195,7 @@ mod tests {
             &json!({"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}),
         )];
         let compat = OpenAiCompletionsCompat::get(&model("gpt-5", "openai"));
-        let converted = convert_tools(&tools, &compat);
+        let converted = convert_tools(&tools, &compat).unwrap();
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0]["type"], "function");
         assert_eq!(converted[0]["function"]["name"], "bash");
@@ -2202,7 +2212,7 @@ mod tests {
             vec![],
         );
         let compat = OpenAiCompletionsCompat::get(&m);
-        let params = build_params(&m, &ctx, None, &compat, "short");
+        let params = build_params(&m, &ctx, None, &compat, "short").unwrap();
         assert_eq!(params["model"], "gpt-5");
         assert_eq!(params["stream"], true);
         assert_eq!(params["stream_options"]["include_usage"], true);
@@ -2283,6 +2293,71 @@ data: [DONE]
             }
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn converts_grammar_tools_to_openai_custom_shape() {
+        let mut tool = crate::types::json_tool(
+            "sample",
+            "sample text",
+            &json!({
+                "type": "object",
+                "properties": {"payload": {"type": "string"}},
+                "required": ["payload"]
+            }),
+        );
+        let mut variants = BTreeMap::new();
+        variants.insert("openai_lark".to_string(), "start: /[a-z]+/".to_string());
+        tool.constrained_sampling = Some(crate::types::ConstrainedSampling::Grammar { variants });
+        let mut compat = OpenAiCompletionsCompat::get(&model("gpt-5", "openai"));
+        compat.supports_openai_grammar_tools = true;
+        let converted = convert_tools(&[tool], &compat).unwrap();
+        assert_eq!(converted[0]["type"], "custom");
+        assert_eq!(converted[0]["custom"]["format"]["type"], "grammar");
+        assert_eq!(
+            converted[0]["custom"]["format"]["grammar"]["syntax"],
+            "lark"
+        );
+    }
+
+    #[test]
+    fn process_events_grammar_custom_tool_stream() {
+        let sse = r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"custom","custom":{"name":"sample","input":"ab"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+"#;
+        let m = model("gpt-5", "openai");
+        let compat = OpenAiCompletionsCompat::get(&m);
+        let events = crate::sse::SseParser::parse_text(sse);
+        let mut properties = BTreeMap::new();
+        properties.insert("sample".to_string(), "payload".to_string());
+        let result =
+            process_completions_events_with_grammar(&m, &events, &compat, &properties, |_| {})
+                .unwrap();
+        assert_eq!(result.stop_reason(), Some(StopReason::ToolUse));
+        assert_eq!(
+            result.content()[0],
+            ContentBlock::tool_call("call_1", "sample", json!({"payload":"ab"}))
+        );
+    }
+
+    #[test]
+    fn required_unsupported_schema_returns_upstream_diagnostic() {
+        let mut tool = crate::types::json_tool(
+            "sample",
+            "sample text",
+            &json!({"type":"object","properties":{},"allOf":[]}),
+        );
+        tool.constrained_sampling = Some(crate::types::ConstrainedSampling::JsonSchema {
+            strict: crate::types::StrictPreference::Require,
+        });
+        let compat = OpenAiCompletionsCompat::get(&model("gpt-5", "openai"));
+        assert_eq!(
+            convert_tools(&[tool], &compat).unwrap_err(),
+            "Tool \"sample\" requires JSON-schema constrained sampling, but allOf schemas are unsupported."
+        );
     }
 
     #[test]

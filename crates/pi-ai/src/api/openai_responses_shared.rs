@@ -2,10 +2,11 @@
 //! `packages/ai/src/api/openai-responses-shared.ts`.
 //!
 //! Message/tool conversion and the SSE stream processor. Deferred-tools
-//! (additional-tools / tool-search placement) and grammar constraints are
-//! not yet ported (documented; `deferred` is empty and grammar properties
-//! resolve to None), so the standard OpenAI flow is faithful while those
-//! paths remain stubs that upstream only exercises for compat providers.
+//! (additional-tools / tool-search placement) remain documented as a separate
+//! gap; strict JSON-schema and OpenAI grammar custom tools are handled here for
+//! all Responses-family adaptors.
+
+use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
@@ -16,6 +17,11 @@ use crate::types::{
     UserContent, UserContentBody,
 };
 
+use super::constrained_sampling::{
+    append_grammar_tool_input_json_delta, get_grammar_tool_input, get_json_schema_tool_parameters,
+    resolve_grammar_constrained_sampling, resolve_json_schema_strict_sampling,
+    GrammarToolInputJsonBuffer,
+};
 use super::openai_completions::short_hash;
 use super::transform_messages::transform_messages;
 
@@ -106,12 +112,14 @@ fn convert_tool_result_output(model: &Model, content: &[ContentBlock]) -> Value 
 
 pub struct ConvertResponsesMessagesOptions {
     pub include_system_prompt: bool,
+    pub grammar_tool_input_properties: BTreeMap<String, String>,
 }
 
 impl Default for ConvertResponsesMessagesOptions {
     fn default() -> Self {
         Self {
             include_system_prompt: true,
+            grammar_tool_input_properties: BTreeMap::new(),
         }
     }
 }
@@ -144,13 +152,24 @@ fn build_foreign_responses_item_id(item_id: &str) -> String {
     }
 }
 
-/// Convert unified messages to the OpenAI Responses `input` array.
+/// Compatibility wrapper for callers that need the standard name while still
+/// preserving fallible grammar argument validation.
 pub fn convert_responses_messages(
     model: &Model,
     context: &Context,
     allowed_tool_call_providers: &[&str],
     options: &ConvertResponsesMessagesOptions,
-) -> Vec<Value> {
+) -> Result<Vec<Value>, String> {
+    convert_responses_messages_checked(model, context, allowed_tool_call_providers, options)
+}
+
+/// Convert unified messages to the OpenAI Responses `input` array.
+pub fn convert_responses_messages_checked(
+    model: &Model,
+    context: &Context,
+    allowed_tool_call_providers: &[&str],
+    options: &ConvertResponsesMessagesOptions,
+) -> Result<Vec<Value>, String> {
     let mut messages: Vec<Value> = Vec::new();
 
     let normalize_tool_call_id =
@@ -293,26 +312,56 @@ pub fn convert_responses_messages(
                                 .split_once('|')
                                 .map(|(a, b)| (a.to_string(), Some(b.to_string())))
                                 .unwrap_or_else(|| (id.clone(), None));
+                            let is_custom_tool =
+                                options.grammar_tool_input_properties.contains_key(name);
                             let mut item_id = item_id_raw;
-                            if (is_different_model
-                                && item_id.as_deref().is_some_and(|s| s.starts_with("fc_")))
-                                || !item_id.as_deref().is_some_and(|s| s.starts_with("fc_"))
+                            let has_fc_item_id =
+                                item_id.as_deref().is_some_and(|s| s.starts_with("fc_"));
+                            if (is_different_model && has_fc_item_id)
+                                || (!is_custom_tool && !has_fc_item_id)
                             {
                                 item_id = None;
                             }
-                            let mut item = json!({
-                                "type": "function_call",
-                                "id": item_id,
-                                "call_id": call_id,
-                                "name": name,
-                                "arguments": serde_json::to_string(arguments).unwrap_or_else(|_| "{}".into()),
-                            });
-                            if is_same_model {
-                                if let Some(ns) = namespace {
-                                    item["namespace"] = json!(ns);
+                            let omit_item_id = item_id.is_none();
+                            if let Some(input_property) =
+                                options.grammar_tool_input_properties.get(name)
+                            {
+                                let input =
+                                    get_grammar_tool_input(name, arguments, input_property)?;
+                                let mut item = json!({
+                                    "type": "custom_tool_call",
+                                    "id": item_id,
+                                    "call_id": call_id,
+                                    "name": name,
+                                    "input": input,
+                                });
+                                if omit_item_id {
+                                    item.as_object_mut().unwrap().remove("id");
                                 }
+                                if is_same_model {
+                                    if let Some(ns) = namespace {
+                                        item["namespace"] = json!(ns);
+                                    }
+                                }
+                                output.push(item);
+                            } else {
+                                let mut item = json!({
+                                    "type": "function_call",
+                                    "id": item_id,
+                                    "call_id": call_id,
+                                    "name": name,
+                                    "arguments": serde_json::to_string(arguments).unwrap_or_else(|_| "{}".into()),
+                                });
+                                if omit_item_id {
+                                    item.as_object_mut().unwrap().remove("id");
+                                }
+                                if is_same_model {
+                                    if let Some(ns) = namespace {
+                                        item["namespace"] = json!(ns);
+                                    }
+                                }
+                                output.push(item);
                             }
-                            output.push(item);
                         }
                         _ => {}
                     }
@@ -329,8 +378,16 @@ pub fn convert_responses_messages(
                     .map(|(a, b)| (a.to_string(), Some(b.to_string())))
                     .unwrap_or_else(|| (result.tool_call_id().to_string(), None));
                 let output = convert_tool_result_output(model, result.content());
+                let item_type = if options
+                    .grammar_tool_input_properties
+                    .contains_key(result.tool_name())
+                {
+                    "custom_tool_call_output"
+                } else {
+                    "function_call_output"
+                };
                 messages.push(json!({
-                    "type": "function_call_output",
+                    "type": item_type,
                     "call_id": call_id,
                     "output": output,
                 }));
@@ -338,7 +395,7 @@ pub fn convert_responses_messages(
         }
         msg_index += 1;
     }
-    messages
+    Ok(messages)
 }
 
 // ---------------------------------------------------------------------------
@@ -361,53 +418,46 @@ impl Default for ConvertResponsesToolsOptions {
     }
 }
 
-fn tool_json_schema_parameters(tool: &crate::types::Tool, strict: bool) -> Value {
-    let mut params = tool.parameters.clone();
-    if strict && params.is_object() {
-        if let Some(obj) = params.as_object_mut() {
-            if !obj.contains_key("additionalProperties") {
-                obj.insert("additionalProperties".to_string(), json!(false));
-            }
-        }
-    }
-    params
-}
-
-fn resolve_strict(tool: &crate::types::Tool, supports_strict_mode: bool) -> Option<bool> {
-    match &tool.constrained_sampling {
-        Some(crate::types::ConstrainedSampling::JsonSchema { strict }) => {
-            if supports_strict_mode {
-                Some(matches!(strict, crate::types::StrictPreference::Require))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Convert tools to OpenAI Responses `tools` array.
+/// Convert tools to OpenAI Responses `tools` array. Required unsupported
+/// constraints are returned as the upstream diagnostic instead of being
+/// downgraded or dropped.
 pub fn convert_responses_tools(
     tools: &[crate::types::Tool],
     options: &ConvertResponsesToolsOptions,
-) -> Vec<Value> {
+) -> Result<Vec<Value>, String> {
     let default_strict = options.strict.unwrap_or(false);
     let mut result: Vec<Value> = Vec::new();
     for tool in tools {
-        let constrained = resolve_strict(tool, options.supports_strict_mode);
+        if let Some(grammar) =
+            resolve_grammar_constrained_sampling(tool, options.supports_openai_grammar_tools)?
+        {
+            result.push(json!({
+                "type": "custom",
+                "name": tool.name,
+                "description": tool.description,
+                "format": {
+                    "type": "grammar",
+                    "syntax": grammar.format,
+                    "definition": grammar.definition,
+                },
+            }));
+            continue;
+        }
+
+        let constrained = resolve_json_schema_strict_sampling(tool, options.supports_strict_mode)?;
         let strict = constrained.unwrap_or(default_strict);
         let mut function_tool = json!({
             "type": "function",
             "name": tool.name,
             "description": tool.description,
-            "parameters": tool_json_schema_parameters(tool, strict),
+            "parameters": get_json_schema_tool_parameters(tool, Some(strict))?,
         });
         if options.supports_strict_mode {
             function_tool["strict"] = json!(strict);
         }
         result.push(function_tool);
     }
-    result
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -425,12 +475,15 @@ enum ResponsesSlot {
     ToolCall {
         content_index: usize,
         partial_json: String,
+        custom_input_property: Option<String>,
+        grammar_buffer: Option<GrammarToolInputJsonBuffer>,
     },
 }
 
 #[derive(Default)]
 pub struct ProcessResponsesOptions {
     pub service_tier: Option<String>,
+    pub grammar_tool_input_properties: BTreeMap<String, String>,
 }
 
 /// Multiplexed stream processor (port of `processResponsesStream`).
@@ -530,7 +583,10 @@ pub fn process_responses_stream(
                             name,
                             arguments: json!({}),
                             thought_signature: None,
-                            namespace: None,
+                            namespace: item
+                                .get("namespace")
+                                .and_then(|v| v.as_str())
+                                .map(|v| v.to_string()),
                         };
                         output.content_mut().push(block);
                         let content_index = output.content_len().saturating_sub(1);
@@ -539,6 +595,60 @@ pub fn process_responses_stream(
                             ResponsesSlot::ToolCall {
                                 content_index,
                                 partial_json: arguments,
+                                custom_input_property: None,
+                                grammar_buffer: None,
+                            },
+                        );
+                        push(AssistantMessageEvent::ToolCallStart {
+                            content_index,
+                            partial: output.clone(),
+                        });
+                    }
+                    "custom_tool_call" => {
+                        let name = item
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let call_id = item
+                            .get("call_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let id = item
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let input_property = options
+                            .grammar_tool_input_properties
+                            .get(&name)
+                            .cloned()
+                            .unwrap_or_else(|| "input".to_string());
+                        let input = item
+                            .get("input")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let block = ContentBlock::ToolCall {
+                            id: format!("{call_id}|{id}"),
+                            name,
+                            arguments: json!({ input_property.clone(): input }),
+                            thought_signature: None,
+                            namespace: item
+                                .get("namespace")
+                                .and_then(|v| v.as_str())
+                                .map(|v| v.to_string()),
+                        };
+                        output.content_mut().push(block);
+                        let content_index = output.content_len().saturating_sub(1);
+                        output_slots.insert(
+                            output_index,
+                            ResponsesSlot::ToolCall {
+                                content_index,
+                                partial_json: input,
+                                custom_input_property: Some(input_property),
+                                grammar_buffer: Some(GrammarToolInputJsonBuffer::default()),
                             },
                         );
                         push(AssistantMessageEvent::ToolCallStart {
@@ -633,6 +743,7 @@ pub fn process_responses_stream(
                 if let Some(ResponsesSlot::ToolCall {
                     content_index,
                     partial_json,
+                    ..
                 }) = output_slots.get_mut(&output_index)
                 {
                     *partial_json += &delta;
@@ -649,6 +760,81 @@ pub fn process_responses_stream(
                     });
                 }
             }
+            "response.custom_tool_call_input.delta" => {
+                let output_index = parsed
+                    .get("output_index")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let delta = parsed
+                    .get("delta")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Some(ResponsesSlot::ToolCall {
+                    content_index,
+                    partial_json,
+                    custom_input_property: Some(input_property),
+                    grammar_buffer: Some(buffer),
+                    ..
+                }) = output_slots.get_mut(&output_index)
+                {
+                    let next_input = format!("{partial_json}{delta}");
+                    let json_delta = append_grammar_tool_input_json_delta(
+                        buffer,
+                        input_property,
+                        &next_input,
+                        false,
+                    )?;
+                    *partial_json = next_input.clone();
+                    if let Some(ContentBlock::ToolCall { arguments, .. }) =
+                        output.content_mut().get_mut(*content_index)
+                    {
+                        *arguments = json!({ input_property.clone(): next_input });
+                    }
+                    if let Some(json_delta) = json_delta {
+                        push(AssistantMessageEvent::ToolCallDelta {
+                            content_index: *content_index,
+                            delta: json_delta,
+                            partial: output.clone(),
+                        });
+                    }
+                }
+            }
+            "response.custom_tool_call_input.done" => {
+                let output_index = parsed
+                    .get("output_index")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let input = parsed
+                    .get("input")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if let Some(ResponsesSlot::ToolCall {
+                    content_index,
+                    partial_json,
+                    custom_input_property: Some(input_property),
+                    grammar_buffer: Some(buffer),
+                    ..
+                }) = output_slots.get_mut(&output_index)
+                {
+                    let json_delta =
+                        append_grammar_tool_input_json_delta(buffer, input_property, &input, true)?;
+                    *partial_json = input.clone();
+                    if let Some(ContentBlock::ToolCall { arguments, .. }) =
+                        output.content_mut().get_mut(*content_index)
+                    {
+                        *arguments = json!({ input_property.clone(): input });
+                    }
+                    if let Some(json_delta) = json_delta {
+                        push(AssistantMessageEvent::ToolCallDelta {
+                            content_index: *content_index,
+                            delta: json_delta,
+                            partial: output.clone(),
+                        });
+                    }
+                }
+            }
             "response.function_call_arguments.done" => {
                 let output_index = parsed
                     .get("output_index")
@@ -662,6 +848,7 @@ pub fn process_responses_stream(
                 if let Some(ResponsesSlot::ToolCall {
                     content_index,
                     partial_json,
+                    ..
                 }) = output_slots.get_mut(&output_index)
                 {
                     let previous = partial_json.clone();
@@ -827,6 +1014,7 @@ pub fn process_responses_stream(
                         if let Some(ResponsesSlot::ToolCall {
                             content_index,
                             partial_json,
+                            ..
                         }) = output_slots.get_mut(&output_index)
                         {
                             let idx = *content_index;
@@ -840,10 +1028,67 @@ pub fn process_responses_stream(
                             } else {
                                 &final_args
                             });
-                            if let Some(ContentBlock::ToolCall { arguments, .. }) =
-                                output.content_mut().get_mut(idx)
+                            if let Some(ContentBlock::ToolCall {
+                                arguments,
+                                namespace,
+                                ..
+                            }) = output.content_mut().get_mut(idx)
                             {
                                 *arguments = parsed_args;
+                                if let Some(value) = item.get("namespace").and_then(|v| v.as_str())
+                                {
+                                    *namespace = Some(value.to_string());
+                                }
+                            }
+                            let tool_call = output.content()[idx].clone();
+                            push(AssistantMessageEvent::ToolCallEnd {
+                                content_index: idx,
+                                tool_call,
+                                partial: output.clone(),
+                            });
+                            output_slots.remove(&output_index);
+                        }
+                    }
+                    "custom_tool_call" => {
+                        if let Some(ResponsesSlot::ToolCall {
+                            content_index,
+                            custom_input_property: Some(input_property),
+                            grammar_buffer: Some(buffer),
+                            partial_json,
+                            ..
+                        }) = output_slots.get_mut(&output_index)
+                        {
+                            let idx = *content_index;
+                            let input = item
+                                .get("input")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(partial_json)
+                                .to_string();
+                            let json_delta = append_grammar_tool_input_json_delta(
+                                buffer,
+                                input_property,
+                                &input,
+                                true,
+                            )?;
+                            *partial_json = input.clone();
+                            if let Some(ContentBlock::ToolCall {
+                                arguments,
+                                namespace,
+                                ..
+                            }) = output.content_mut().get_mut(idx)
+                            {
+                                *arguments = json!({ input_property.clone(): input });
+                                if let Some(value) = item.get("namespace").and_then(|v| v.as_str())
+                                {
+                                    *namespace = Some(value.to_string());
+                                }
+                            }
+                            if let Some(json_delta) = json_delta {
+                                push(AssistantMessageEvent::ToolCallDelta {
+                                    content_index: idx,
+                                    delta: json_delta,
+                                    partial: output.clone(),
+                                });
                             }
                             let tool_call = output.content()[idx].clone();
                             push(AssistantMessageEvent::ToolCallEnd {
@@ -1109,10 +1354,132 @@ mod tests {
                 strict: Some(true),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
         assert_eq!(out[0]["type"], "function");
         assert_eq!(out[0]["strict"], true);
         assert_eq!(out[0]["parameters"]["additionalProperties"], false);
+    }
+
+    #[test]
+    fn converts_responses_grammar_tools_and_rejects_required_schema() {
+        let mut grammar = json_tool(
+            "sample",
+            "sample text",
+            &json!({
+                "type": "object",
+                "properties": {"payload": {"type": "string"}},
+                "required": ["payload"]
+            }),
+        );
+        let mut variants = BTreeMap::new();
+        variants.insert("openai_regex".to_string(), "[a-z]+".to_string());
+        grammar.constrained_sampling = Some(ConstrainedSampling::Grammar { variants });
+        let custom = convert_responses_tools(
+            &[grammar],
+            &ConvertResponsesToolsOptions {
+                supports_openai_grammar_tools: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(custom[0]["type"], "custom");
+        assert_eq!(custom[0]["format"]["syntax"], "regex");
+
+        let mut unsupported = json_tool(
+            "required",
+            "required",
+            &json!({"type":"object","properties":{},"$ref":"bad"}),
+        );
+        unsupported.constrained_sampling = Some(ConstrainedSampling::JsonSchema {
+            strict: StrictPreference::Require,
+        });
+        assert_eq!(
+            convert_responses_tools(
+                &[unsupported],
+                &ConvertResponsesToolsOptions::default(),
+            )
+            .unwrap_err(),
+            "Tool \"required\" requires JSON-schema constrained sampling, but $ref schemas are unsupported."
+        );
+    }
+
+    #[test]
+    fn processes_responses_grammar_custom_tool_stream() {
+        let sse = r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"sample","input":"","namespace":"ns"}}
+
+data: {"type":"response.custom_tool_call_input.delta","output_index":0,"delta":"abc"}
+
+data: {"type":"response.custom_tool_call_input.done","output_index":0,"input":"abc"}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"sample","input":"abc","namespace":"ns"}}
+
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
+"#;
+        let events = crate::sse::SseParser::parse_text(sse);
+        let mut output = AssistantMessage::new();
+        output.set_api_provider_model("openai-responses", "openai", "gpt-test");
+        output.set_stop_reason(StopReason::Pending);
+        let mut properties = BTreeMap::new();
+        properties.insert("sample".to_string(), "payload".to_string());
+        process_responses_stream(
+            &events,
+            &mut output,
+            &mut |_| {},
+            &model("gpt-test"),
+            &ProcessResponsesOptions {
+                grammar_tool_input_properties: properties,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(output.stop_reason(), Some(StopReason::ToolUse));
+        match &output.content()[0] {
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+                namespace,
+                ..
+            } => {
+                assert_eq!(id, "call_1|ctc_1");
+                assert_eq!(name, "sample");
+                assert_eq!(arguments, &json!({"payload":"abc"}));
+                assert_eq!(namespace.as_deref(), Some("ns"));
+            }
+            other => panic!("expected custom tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn custom_tool_message_replay_preserves_custom_item_id() {
+        let m = model("gpt-5");
+        let mut assistant = AssistantMessage::new();
+        assistant.set_api_provider_model("openai-responses", "openai", "gpt-5");
+        assistant.set_content(vec![ContentBlock::tool_call(
+            "call_1|ctc_1",
+            "sample",
+            json!({"payload": "abc"}),
+        )]);
+        let ctx = Context {
+            messages: vec![Message::Assistant(assistant)],
+            ..Default::default()
+        };
+        let mut properties = BTreeMap::new();
+        properties.insert("sample".to_string(), "payload".to_string());
+        let out = convert_responses_messages(
+            &m,
+            &ctx,
+            &["openai"],
+            &ConvertResponsesMessagesOptions {
+                grammar_tool_input_properties: properties,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(out[0]["type"], "custom_tool_call");
+        assert_eq!(out[0]["id"], "ctc_1");
+        assert_eq!(out[0]["input"], "abc");
     }
 
     #[test]
@@ -1128,7 +1495,8 @@ mod tests {
             &ctx,
             &["openai"],
             &ConvertResponsesMessagesOptions::default(),
-        );
+        )
+        .unwrap();
         assert_eq!(out[0]["role"], "developer");
         assert_eq!(out[0]["content"], "be good");
         assert_eq!(out[1]["role"], "user");
@@ -1151,7 +1519,8 @@ mod tests {
             &ctx,
             &["openai"],
             &ConvertResponsesMessagesOptions::default(),
-        );
+        )
+        .unwrap();
         assert_eq!(out[0]["type"], "function_call_output");
         assert_eq!(out[0]["call_id"], "call_1");
         assert_eq!(out[0]["output"], "out");
@@ -1177,7 +1546,8 @@ mod tests {
             &ctx,
             &["openai"],
             &ConvertResponsesMessagesOptions::default(),
-        );
+        )
+        .unwrap();
         let arr = out[0]["output"].as_array().unwrap();
         assert_eq!(arr[0]["type"], "input_text");
         assert_eq!(arr[1]["type"], "input_image");

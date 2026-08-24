@@ -141,14 +141,25 @@ impl OpenAIResponsesOptions {
 }
 
 /// Assemble the Responses request body (port of `buildParams`).
-pub fn build_params(model: &Model, context: &Context, options: &OpenAIResponsesOptions) -> Value {
+pub fn build_params(
+    model: &Model,
+    context: &Context,
+    options: &OpenAIResponsesOptions,
+) -> Result<Value, String> {
     let compat = OpenAIResponsesCompat::get(model);
-    let messages = convert_responses_messages(
+    let grammar_properties = super::constrained_sampling::create_grammar_tool_input_properties(
+        &context.tools,
+        compat.supports_openai_grammar_tools,
+    )?;
+    let messages = convert_responses_messages_checked(
         model,
         context,
         &["openai", "openai-codex", "opencode"],
-        &ConvertResponsesMessagesOptions::default(),
-    );
+        &ConvertResponsesMessagesOptions {
+            grammar_tool_input_properties: grammar_properties.clone(),
+            ..Default::default()
+        },
+    )?;
 
     let cache_retention = resolve_cache_retention(options.base.cache_retention.as_deref());
     let disable_implicit_cache =
@@ -191,7 +202,7 @@ pub fn build_params(model: &Model, context: &Context, options: &OpenAIResponsesO
             },
         );
         // null-remove: only set when non-empty
-        params["tools"] = json!(tools);
+        params["tools"] = json!(tools?);
     }
     if let Some(tool_choice) = &options.tool_choice {
         params["tool_choice"] = tool_choice.clone();
@@ -249,7 +260,7 @@ pub fn build_params(model: &Model, context: &Context, options: &OpenAIResponsesO
         }
     }
 
-    params
+    Ok(params)
 }
 
 fn new_output(model: &Model) -> AssistantMessage {
@@ -296,7 +307,39 @@ pub fn stream(
 
     let handle = tokio::spawn(async move {
         let mut pusher = crate::event_stream::StreamSinkAdapter::new(sender);
-        let params = build_params(&model, &context, &options);
+        let params = match build_params(&model, &context, &options) {
+            Ok(params) => params,
+            Err(error) => {
+                let mut message = new_output(&model);
+                message.set_stop_reason(StopReason::Error);
+                super::anthropic_messages::set_error_message(&mut message, error);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+        };
+        let compat = OpenAIResponsesCompat::get(&model);
+        let grammar_properties =
+            match super::constrained_sampling::create_grammar_tool_input_properties(
+                &context.tools,
+                compat.supports_openai_grammar_tools,
+            ) {
+                Ok(properties) => properties,
+                Err(error) => {
+                    let mut message = new_output(&model);
+                    message.set_stop_reason(StopReason::Error);
+                    super::anthropic_messages::set_error_message(&mut message, error);
+                    pusher.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Error,
+                        error_message: message.clone(),
+                    });
+                    pusher.end(Some(message));
+                    return;
+                }
+            };
 
         let endpoint = format!("{base_url}/responses");
         let mut request = client
@@ -396,6 +439,7 @@ pub fn stream(
         let mut output = new_output(&model);
         let proc_options = ProcessResponsesOptions {
             service_tier: options.service_tier.clone(),
+            grammar_tool_input_properties: grammar_properties,
         };
         match process_responses_stream(
             &events,
@@ -520,7 +564,7 @@ mod tests {
     #[test]
     fn build_params_shape() {
         let m = model("gpt-5");
-        let params = build_params(&m, &ctx(), &OpenAIResponsesOptions::default());
+        let params = build_params(&m, &ctx(), &OpenAIResponsesOptions::default()).unwrap();
         assert_eq!(params["model"], "gpt-5");
         assert_eq!(params["stream"], true);
         assert_eq!(params["store"], false);
@@ -542,7 +586,7 @@ mod tests {
             service_tier: None,
             tool_choice: None,
         };
-        let params = build_params(&m, &ctx(), &opts);
+        let params = build_params(&m, &ctx(), &opts).unwrap();
         assert_eq!(params["reasoning"]["effort"], "high");
         assert_eq!(params["reasoning"]["summary"], "detailed");
         assert_eq!(params["include"][0], "reasoning.encrypted_content");
@@ -561,7 +605,7 @@ mod tests {
             service_tier: None,
             tool_choice: None,
         };
-        let params = build_params(&m, &ctx(), &opts);
+        let params = build_params(&m, &ctx(), &opts).unwrap();
         assert_eq!(
             params["max_output_tokens"],
             OPENAI_RESPONSES_MIN_OUTPUT_TOKENS
@@ -579,7 +623,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let params = build_params(&m, &ctx(), &opts);
+        let params = build_params(&m, &ctx(), &opts).unwrap();
         assert_eq!(params["prompt_cache_key"].as_str().unwrap().len(), 64);
     }
 

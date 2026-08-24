@@ -33,6 +33,9 @@ use crate::types::{
     ToolResultMessage, Usage, UserContent, UserContentBody,
 };
 
+use super::constrained_sampling::{
+    get_json_schema_tool_parameters, resolve_json_schema_strict_sampling,
+};
 use super::transform_messages::transform_messages;
 
 /// Matches the placeholder the Anthropic path uses for redacted thinking.
@@ -942,28 +945,6 @@ fn build_tool_result_block(tool_result: &ToolResultMessage) -> Value {
     })
 }
 
-fn resolve_json_schema_strict_sampling(tool: &Tool) -> bool {
-    matches!(
-        tool.constrained_sampling,
-        Some(crate::types::ConstrainedSampling::JsonSchema {
-            strict: crate::types::StrictPreference::Require
-        })
-    )
-}
-
-fn get_json_schema_tool_parameters(tool: &Tool, strict: bool) -> Value {
-    let mut params = tool.parameters.clone();
-    if strict {
-        if let Some(obj) = params.as_object_mut() {
-            // Upstream resolves `additionalProperties: false` + required for
-            // strict mode through TypeBox; keey the parameters as-authored and
-            // mark strict in the toolSpec wrapper.
-            let _ = obj;
-        }
-    }
-    params
-}
-
 fn compat_supports_strict_mode(model: &Model) -> bool {
     model
         .compat
@@ -978,30 +959,31 @@ pub fn convert_tool_config(
     tools: &[Tool],
     tool_choice: Option<&Value>,
     supports_strict_mode: bool,
-) -> Option<Value> {
+) -> Result<Option<Value>, String> {
     if tools.is_empty() {
-        return None;
+        return Ok(None);
     }
     if tool_choice.and_then(|v| v.as_str()) == Some("none") {
-        return None;
+        return Ok(None);
     }
-    let bedrock_tools: Vec<Value> = tools
+    let bedrock_tools: Result<Vec<Value>, String> = tools
         .iter()
         .map(|tool| {
-            let strict = supports_strict_mode && resolve_json_schema_strict_sampling(tool);
+            let strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)?;
             let mut spec = json!({
                 "toolSpec": {
                     "name": tool.name,
                     "description": tool.description,
-                    "inputSchema": { "json": get_json_schema_tool_parameters(tool, strict) },
+                    "inputSchema": { "json": get_json_schema_tool_parameters(tool, strict)? },
                 }
             });
-            if strict {
+            if strict == Some(true) {
                 spec["toolSpec"]["strict"] = json!(true);
             }
-            spec
+            Ok(spec)
         })
         .collect();
+    let bedrock_tools = bedrock_tools?;
 
     let mut bedrock_tool_choice: Option<Value> = None;
     match tool_choice {
@@ -1020,7 +1002,7 @@ pub fn convert_tool_config(
     if let Some(choice) = bedrock_tool_choice {
         config.insert("toolChoice".to_string(), choice);
     }
-    Some(Value::Object(config))
+    Ok(Some(Value::Object(config)))
 }
 
 /// `mapThinkingLevelToEffort` (Claude adaptive output_config.effort).
@@ -1137,7 +1119,11 @@ pub fn map_stop_reason(reason: Option<&str>) -> (StopReason, Option<String>) {
 
 /// Build the ConverseStream request body (upstream `commandInput` without the
 /// SDK wrapper).
-pub fn build_command_input(model: &Model, context: &Context, options: &BedrockOptions) -> Value {
+pub fn build_command_input(
+    model: &Model,
+    context: &Context,
+    options: &BedrockOptions,
+) -> Result<Value, String> {
     let env = options.base.base.env.as_ref();
     let cache_retention = resolve_cache_retention(options.base.cache_retention.as_ref(), env);
     let inference_max_tokens = options.max_tokens.or(options.base.max_tokens).or_else(|| {
@@ -1177,7 +1163,7 @@ pub fn build_command_input(model: &Model, context: &Context, options: &BedrockOp
         &context.tools,
         options.tool_choice.as_ref(),
         compat_supports_strict_mode(model),
-    ) {
+    )? {
         body.insert("toolConfig".to_string(), tool_config);
     }
     if let Some(fields) = build_additional_model_request_fields(model, options) {
@@ -1186,7 +1172,7 @@ pub fn build_command_input(model: &Model, context: &Context, options: &BedrockOp
     if let Some(metadata) = &options.request_metadata {
         body.insert("requestMetadata".to_string(), json!(metadata));
     }
-    Value::Object(body)
+    Ok(Value::Object(body))
 }
 
 // ---------------------------------------------------------------------------
@@ -1897,7 +1883,7 @@ async fn run_bedrock_stream(
     push: &mut (dyn FnMut(AssistantMessageEvent) + Send),
 ) -> Result<AssistantMessage, String> {
     let config = resolve_config(model, options, api_key)?;
-    let body = build_command_input(model, context, options);
+    let body = build_command_input(model, context, options)?;
     let body_bytes =
         serde_json::to_vec(&body).map_err(|e| format!("Failed to serialize request: {e}"))?;
 
@@ -2196,6 +2182,42 @@ mod tests {
             messages: vec![Message::User(UserContent::string(text, 1))],
             tools: vec![],
         }
+    }
+
+    #[test]
+    fn strict_tool_schema_is_rewritten_and_required_errors() {
+        let mut tool = Tool {
+            name: "read".into(),
+            description: "Read".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+            constrained_sampling: Some(crate::types::ConstrainedSampling::JsonSchema {
+                strict: crate::types::StrictPreference::Prefer,
+            }),
+        };
+        let config = convert_tool_config(&[tool.clone()], None, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(config["tools"][0]["toolSpec"]["strict"], true);
+        assert_eq!(
+            config["tools"][0]["toolSpec"]["inputSchema"]["json"]["required"],
+            json!(["path"])
+        );
+        assert_eq!(
+            config["tools"][0]["toolSpec"]["inputSchema"]["json"]["additionalProperties"],
+            false
+        );
+        tool.parameters["allOf"] = json!([]);
+        tool.constrained_sampling = Some(crate::types::ConstrainedSampling::JsonSchema {
+            strict: crate::types::StrictPreference::Require,
+        });
+        assert_eq!(
+            convert_tool_config(&[tool], None, true).unwrap_err(),
+            "Tool \"read\" requires JSON-schema constrained sampling, but allOf schemas are unsupported."
+        );
     }
 
     #[test]

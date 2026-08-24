@@ -147,13 +147,26 @@ fn build_params(
     context: &Context,
     options: &AzureOpenAIResponsesOptions,
     deployment_name: &str,
-) -> Value {
-    let messages = convert_responses_messages(
+) -> Result<Value, String> {
+    let supports_openai_grammar_tools = model
+        .compat
+        .as_ref()
+        .and_then(|c| c.get("supportsOpenAIGrammarTools"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let grammar_properties = super::constrained_sampling::create_grammar_tool_input_properties(
+        &context.tools,
+        supports_openai_grammar_tools,
+    )?;
+    let messages = convert_responses_messages_checked(
         model,
         context,
         &AZURE_TOOL_CALL_PROVIDERS,
-        &ConvertResponsesMessagesOptions::default(),
-    );
+        &ConvertResponsesMessagesOptions {
+            grammar_tool_input_properties: grammar_properties.clone(),
+            ..Default::default()
+        },
+    )?;
 
     let mut params = json!({
         "model": deployment_name,
@@ -183,9 +196,9 @@ fn build_params(
             &ConvertResponsesToolsOptions {
                 strict: None,
                 supports_strict_mode: supports_strict,
-                supports_openai_grammar_tools: false,
+                supports_openai_grammar_tools,
             },
-        ));
+        )?);
     }
     if let Some(tool_choice) = &options.tool_choice {
         params["tool_choice"] = tool_choice.clone();
@@ -237,7 +250,7 @@ fn build_params(
             }
         }
     }
-    params
+    Ok(params)
 }
 
 fn new_output(model: &Model) -> AssistantMessage {
@@ -299,7 +312,44 @@ pub fn stream(
                 return;
             }
         };
-        let params = build_params(&model, &context, &options, &deployment_name);
+        let params = match build_params(&model, &context, &options, &deployment_name) {
+            Ok(params) => params,
+            Err(error) => {
+                let mut message = new_output(&model);
+                message.set_stop_reason(StopReason::Error);
+                super::anthropic_messages::set_error_message(&mut message, error);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+        };
+        let supports_openai_grammar_tools = model
+            .compat
+            .as_ref()
+            .and_then(|c| c.get("supportsOpenAIGrammarTools"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let grammar_properties =
+            match super::constrained_sampling::create_grammar_tool_input_properties(
+                &context.tools,
+                supports_openai_grammar_tools,
+            ) {
+                Ok(properties) => properties,
+                Err(error) => {
+                    let mut message = new_output(&model);
+                    message.set_stop_reason(StopReason::Error);
+                    super::anthropic_messages::set_error_message(&mut message, error);
+                    pusher.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Error,
+                        error_message: message.clone(),
+                    });
+                    pusher.end(Some(message));
+                    return;
+                }
+            };
         let endpoint =
             format!("{base_url}/deployments/{deployment_name}/responses?api-version={api_version}");
         let mut request = client
@@ -391,7 +441,10 @@ pub fn stream(
             &mut output,
             &mut |event| pusher.push(event),
             &model,
-            &ProcessResponsesOptions::default(),
+            &ProcessResponsesOptions {
+                grammar_tool_input_properties: grammar_properties,
+                ..Default::default()
+            },
         ) {
             Ok(()) => {
                 let reason = match output.stop_reason().unwrap_or(StopReason::Stop) {
@@ -529,11 +582,39 @@ mod tests {
         unsafe {
             std::env::remove_var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP");
         }
-        let params = build_params(&m, &ctx(), &AzureOpenAIResponsesOptions::default(), "gpt-5");
+        let params =
+            build_params(&m, &ctx(), &AzureOpenAIResponsesOptions::default(), "gpt-5").unwrap();
         assert_eq!(params["model"], "gpt-5");
         assert_eq!(params["stream"], true);
         assert_eq!(params["input"][0]["role"], "developer");
         assert_eq!(params["tools"][0]["name"], "bash");
+    }
+
+    #[test]
+    fn params_support_grammar_capability_override() {
+        let mut m = model("gpt-5");
+        m.compat = Some(json!({
+            "supportsStrictMode": true,
+            "supportsOpenAIGrammarTools": true
+        }));
+        let mut context = ctx();
+        let mut variants = std::collections::BTreeMap::new();
+        variants.insert("openai_regex".to_string(), "[a-z]+".to_string());
+        context.tools[0].parameters = json!({
+            "type": "object",
+            "properties": {"payload": {"type": "string"}},
+            "required": ["payload"]
+        });
+        context.tools[0].constrained_sampling = Some(ConstrainedSampling::Grammar { variants });
+        let params = build_params(
+            &m,
+            &context,
+            &AzureOpenAIResponsesOptions::default(),
+            "gpt-5",
+        )
+        .unwrap();
+        assert_eq!(params["tools"][0]["type"], "custom");
+        assert_eq!(params["tools"][0]["format"]["syntax"], "regex");
     }
 
     #[test]

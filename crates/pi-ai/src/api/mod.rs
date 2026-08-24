@@ -9,6 +9,7 @@
 //! `pi_messages`, `openrouter_images`, `google_vertex`, `bedrock_converse`.
 
 pub mod anthropic_messages;
+pub mod constrained_sampling;
 pub mod mistral_conversations;
 pub mod openai_completions;
 

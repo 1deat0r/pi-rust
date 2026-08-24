@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 62.65% (104/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 63.25% (105/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1665,6 +1665,40 @@ the adapter cleanup.
   verification baseline rather than a new parity task.
 - Checkpoint: strict-clippy restoration commit `7b3db53` is pushed and
   hash-verified; this documentation refresh follows that implementation push.
+
+### Session 53 — 2026-08-24 — S-008 constrained sampling and grammar tools
+
+Scope: complete strict JSON-schema and OpenAI grammar custom-tool parity for
+all pi-ai adaptors that advertise those capabilities, including request
+conversion, message replay, streaming deltas, and exact required-constraint
+errors.
+
+- Added `api/constrained_sampling.rs` as the shared strict-schema/grammar
+  resolver. It clones schemas before strictification, rewrites optional fields
+  as nullable required properties, rejects the upstream unsupported schema
+  subset, selects non-empty Lark before regex definitions, infers the one
+  required string input property, and emits monotonic JSON deltas for custom
+  tool streams.
+- Integrated strict and grammar paths into OpenAI Completions, Responses,
+  Azure, and Codex; strict schema conversion into Anthropic Messages, Bedrock
+  Converse, Google Generative/Vertex, and Mistral. Required unsupported
+  schemas now return the upstream diagnostic instead of silently dropping or
+  downgrading a tool. Responses-family custom tool events are assembled and
+  replayed through `custom_tool_call` / `custom_tool_call_output` wire shapes.
+- Added focused schema, exact-diagnostic, grammar-wire, message-replay, and
+  SSE fixture tests across the adaptors. Independent reviewer sign-off against
+  upstream commit `5cd93f688aaab89dbb6dfa4aca535f21796ae185`: APPROVE, no
+  correctness or parity blockers.
+- Evidence (unit/mock): `cargo test -p pi-ai --offline --quiet` (307 library,
+  4 + 9 + 2 integration tests), `cargo clippy -p pi-ai --offline
+  --all-targets -- -D warnings`, `cargo check --workspace --offline`,
+  `cargo fmt --all -- --check`, and `git diff --check` pass. The full workspace
+  test link attempt was resource-blocked by `ld` receiving SIGKILL 9 during
+  the `pi-coding-agent` `export_html_parity` test binary link; the focused
+  pi-ai suite is green.
+- S-008 is complete. Next dependency-safe work is S-009 Codex WebSocket
+  session caching/reuse; S-010 through S-017 and the broader harness/TUI/
+  server/client/final-audit tasks remain open.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

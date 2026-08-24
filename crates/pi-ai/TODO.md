@@ -59,9 +59,9 @@ Core types/stream infra + faux + anthropic landed. 128 workspace tests, 0 warnin
 - providers/all.rs wiring: amazon-bedrock, google-vertex, cloudflare-ai-gateway/workers-ai,
   github-copilot, mistral, openai-codex all route to their adaptors; no_stream() helper removed.
 - Tests: pi-ai 265 (was 142 at Session 10 baseline release).
-- Remaining (documented divergences, TODO-marked): codex WebSocket transport, OAuth device-code flows,
+- Remaining (documented divergences, TODO-marked): OAuth device-code flows,
   DeferredHandles fetch machinery, provider-models.json runtime merge (seam in coding-agent), images
-  retry loop, WS transports, constrained-sampling grammar tools.
+  retry loop, deferred tools, and the codex WebSocket/session-cache parity audit.
 
 ## Done (Session 10 — adaptor completion)
 - api/: google-generative-ai (REST SSE + thought signatures + family
@@ -72,11 +72,9 @@ Core types/stream infra + faux + anthropic landed. 128 workspace tests, 0 warnin
   normalization), transform-messages (cross-model safety rules). Provider
   registry now dispatches google→google, openai→responses, opencode(s)→ByApi,
   vercel-ai-gateway→anthropic.
-- Remaining api/: openai-codex-responses (1650 LOC), mistral-conversations
-  (936; mistral currently routed through openai-completions — documented
-  divergence), bedrock-converse, cloudflare (+cloudflare-stream/
-  cloudflare-auth), github-copilot headers, google-vertex, pi-messages,
-  openrouter-images, constrained-sampling grammar tools, deferred tools.
+- Remaining api: deferred tools and the residual provider-specific audits;
+  constrained JSON-schema and OpenAI grammar tool sampling is implemented in
+  the shared resolver and all adaptors that advertise those capabilities.
 
 - providers/: all 39 factories registered with catalogs + auth (Session 9);
   non-anthropic providers stream the upstream no-API-implementation error
@@ -90,7 +88,7 @@ Core types/stream infra + faux + anthropic landed. 128 workspace tests, 0 warnin
   lazyOAuth helpers, login/logout orchestration on the facade.
 - images API (openrouter-images)
 - transform-messages.ts (message transformers: deferred tools, session
-  affinity); websocket transports; constrained sampling
+  affinity); residual websocket transports; deferred constrained-tool loading
 - Anthropic gaps: deferred tools (tool_reference), server-side fallback
   (fallbacks), OAuth Claude-Code name mapping, adaptive-thinking replay
   (forceAdaptiveThinking), eager input streaming beta header, client

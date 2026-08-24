@@ -265,7 +265,8 @@ fn converts_messages_to_anthropic_params() {
             tool_choice: Some(ToolChoice::Auto),
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     assert_eq!(params["model"], "claude-opus-4-8");
     assert_eq!(params["system"][0]["text"], "You are helpful");
     assert_eq!(params["max_tokens"], 64000);
@@ -278,6 +279,37 @@ fn converts_messages_to_anthropic_params() {
     assert_eq!(messages[2]["content"][0]["type"], "tool_result");
     assert_eq!(params["tools"][0]["name"], "read");
     assert_eq!(params["tool_choice"], serde_json::json!({"type": "auto"}));
+}
+
+#[test]
+fn strict_tool_schema_is_rewritten_and_emits_strict_flag() {
+    let mut model = model();
+    model.compat = Some(serde_json::json!({"supportsStrictTools": true}));
+    let context = Context {
+        tools: vec![pi_ai::types::Tool {
+            name: "read".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+            constrained_sampling: Some(pi_ai::types::ConstrainedSampling::JsonSchema {
+                strict: pi_ai::types::StrictPreference::Prefer,
+            }),
+        }],
+        ..Default::default()
+    };
+    let params = build_params(&model, &context, &Default::default()).unwrap();
+    assert_eq!(params["tools"][0]["strict"], true);
+    assert_eq!(
+        params["tools"][0]["input_schema"]["required"],
+        serde_json::json!(["path"])
+    );
+    assert_eq!(
+        params["tools"][0]["input_schema"]["additionalProperties"],
+        false
+    );
 }
 
 #[test]
@@ -321,7 +353,8 @@ fn build_params_thinking_budget_and_metadata() {
             },
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     assert_eq!(params["thinking"]["type"], "enabled");
     assert_eq!(params["thinking"]["budget_tokens"], 2048);
     assert_eq!(params["metadata"]["user_id"], "u-1");

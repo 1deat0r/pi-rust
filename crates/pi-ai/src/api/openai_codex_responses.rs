@@ -43,6 +43,10 @@ use crate::types::{
     SimpleStreamOptions, StopReason, StreamOptions, Tool, ToolChoice, Usage,
 };
 
+use super::constrained_sampling::{
+    create_grammar_tool_input_properties, get_json_schema_tool_parameters,
+    resolve_grammar_constrained_sampling, resolve_json_schema_strict_sampling,
+};
 use super::mistral_conversations::pi_user_agent;
 use super::openai_responses_shared::*;
 
@@ -199,32 +203,32 @@ fn build_codex_headers(
 
 /// Codex-specific tool conversion (upstream `convertResponsesTools` with
 /// `{ strict: null }`): unconstrained tools carry an explicit `strict: null`,
-/// constrained `prefer`/`require` tools resolve through the strict JSON-schema
-/// converter, and the strict field is only emitted when strict mode applies.
+/// while constrained JSON-schema and OpenAI grammar tools use the shared
+/// resolver.
 fn convert_codex_tools(
     tools: &[Tool],
     supports_strict_mode: bool,
     supports_openai_grammar_tools: bool,
 ) -> Result<Vec<Value>, String> {
-    let default_strict = Value::Null;
     let mut result: Vec<Value> = Vec::new();
     for tool in tools {
-        // Grammar tools are not ported (upstream resolves them to `custom`
-        // tools when the model supports them). Documented divergence.
-        let _ = supports_openai_grammar_tools;
-        let constrained_strict = super::mistral_conversations::resolve_json_schema_strict_sampling(
-            tool,
-            supports_strict_mode,
-        )?;
-        let strict = match constrained_strict {
-            Some(v) => Value::Bool(v),
-            None => default_strict.clone(),
-        };
-        let parameters = if constrained_strict == Some(true) {
-            super::mistral_conversations::make_strict_json_schema(&tool.parameters)?
-        } else {
-            tool.parameters.clone()
-        };
+        if let Some(grammar) =
+            resolve_grammar_constrained_sampling(tool, supports_openai_grammar_tools)?
+        {
+            result.push(json!({
+                "type": "custom",
+                "name": tool.name,
+                "description": tool.description,
+                "format": {
+                    "type": "grammar",
+                    "syntax": grammar.format,
+                    "definition": grammar.definition,
+                },
+            }));
+            continue;
+        }
+        let constrained_strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)?;
+        let parameters = get_json_schema_tool_parameters(tool, constrained_strict)?;
         let mut function_tool = json!({
             "type": "function",
             "name": tool.name,
@@ -232,7 +236,7 @@ fn convert_codex_tools(
             "parameters": parameters,
         });
         if supports_strict_mode {
-            function_tool["strict"] = strict;
+            function_tool["strict"] = constrained_strict.map(Value::Bool).unwrap_or(Value::Null);
         }
         result.push(function_tool);
     }
@@ -256,14 +260,17 @@ fn build_request_body(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let messages = convert_responses_messages(
+    let grammar_properties =
+        create_grammar_tool_input_properties(&context.tools, supports_openai_grammar_tools)?;
+    let messages = convert_responses_messages_checked(
         model,
         context,
         &CODEX_TOOL_CALL_PROVIDERS,
         &ConvertResponsesMessagesOptions {
             include_system_prompt: false,
+            grammar_tool_input_properties: grammar_properties,
         },
-    );
+    )?;
 
     let mut body = json!({
         "model": model.id,
@@ -320,6 +327,19 @@ fn build_request_body(
         });
     }
     Ok(body)
+}
+
+fn create_codex_grammar_properties(
+    model: &Model,
+    context: &Context,
+) -> Result<BTreeMap<String, String>, String> {
+    let supports = model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.get("supportsOpenAIGrammarTools"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    create_grammar_tool_input_properties(&context.tools, supports)
 }
 
 // ---------------------------------------------------------------------------
@@ -828,6 +848,7 @@ async fn run_stream_ws(
     let normalized = map_codex_events(&sse_events, &mut output, options.service_tier.as_deref())?;
     let proc_options = ProcessResponsesOptions {
         service_tier: options.service_tier.clone(),
+        grammar_tool_input_properties: create_codex_grammar_properties(model, context)?,
     };
     process_responses_stream(&normalized, &mut output, push, model, &proc_options)
         .map_err(|e| e.to_string())?;
@@ -1018,6 +1039,7 @@ async fn run_stream(
     let normalized = map_codex_events(&events, &mut output, options.service_tier.as_deref())?;
     let proc_options = ProcessResponsesOptions {
         service_tier: options.service_tier.clone(),
+        grammar_tool_input_properties: create_codex_grammar_properties(model, context)?,
     };
     process_responses_stream(&normalized, &mut output, push, model, &proc_options)
         .map_err(|e| e.to_string())?;
@@ -1395,6 +1417,27 @@ mod tests {
     }
 
     #[test]
+    fn codex_grammar_tools_use_custom_responses_shape() {
+        let mut tool = crate::types::Tool {
+            name: "sample".to_string(),
+            description: "sample".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"payload": {"type": "string"}},
+                "required": ["payload"]
+            }),
+            constrained_sampling: None,
+        };
+        let mut variants = BTreeMap::new();
+        variants.insert("openai_lark".to_string(), "start: /[a-z]+/".to_string());
+        tool.constrained_sampling = Some(crate::types::ConstrainedSampling::Grammar { variants });
+        let out = convert_codex_tools(&[tool], true, true).unwrap();
+        assert_eq!(out[0]["type"], "custom");
+        assert_eq!(out[0]["format"]["syntax"], "lark");
+        assert_eq!(out[0]["format"]["definition"], "start: /[a-z]+/");
+    }
+
+    #[test]
     fn reuses_shared_message_conversion_without_system_prompt() {
         let model = codex_model("gpt-5.5");
         let context = codex_ctx();
@@ -1404,8 +1447,10 @@ mod tests {
             &CODEX_TOOL_CALL_PROVIDERS,
             &ConvertResponsesMessagesOptions {
                 include_system_prompt: false,
+                ..Default::default()
             },
-        );
+        )
+        .unwrap();
         assert_eq!(messages[0]["role"], "user");
     }
 
@@ -1521,6 +1566,11 @@ mod tests {
         let mut pushed = Vec::new();
         let proc_options = ProcessResponsesOptions {
             service_tier: options.service_tier.clone(),
+            grammar_tool_input_properties: create_codex_grammar_properties(
+                model,
+                &Context::default(),
+            )
+            .unwrap_or_default(),
         };
         process_responses_stream(
             &normalized,

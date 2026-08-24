@@ -153,7 +153,11 @@ pub fn google_budget(
 }
 
 /// Assemble the GenerateContentRequest body (port of `buildParams`).
-pub fn build_params(model: &Model, context: &Context, options: &GoogleOptions) -> Value {
+pub fn build_params(
+    model: &Model,
+    context: &Context,
+    options: &GoogleOptions,
+) -> Result<Value, String> {
     let contents = convert_messages(model, context);
 
     let mut generation_config = json!({});
@@ -170,7 +174,7 @@ pub fn build_params(model: &Model, context: &Context, options: &GoogleOptions) -
             &context.tools,
             options.tool_choice.as_deref(),
             supports_strict,
-        )
+        )?
     } else {
         None
     };
@@ -189,7 +193,7 @@ pub fn build_params(model: &Model, context: &Context, options: &GoogleOptions) -
         }
     }
     if !context.tools.is_empty() {
-        if let Some(tools) = convert_tools(&context.tools, false, supports_strict) {
+        if let Some(tools) = convert_tools(&context.tools, false, supports_strict)? {
             config["tools"] = tools;
         }
     }
@@ -222,7 +226,7 @@ pub fn build_params(model: &Model, context: &Context, options: &GoogleOptions) -
             body[k] = v.clone();
         }
     }
-    body
+    Ok(body)
 }
 
 // ---------------------------------------------------------------------------
@@ -659,7 +663,20 @@ pub fn stream(
 
     let handle = tokio::spawn(async move {
         let mut pusher = crate::event_stream::StreamSinkAdapter::new(sender);
-        let params = build_params(&model, &context, &options);
+        let params = match build_params(&model, &context, &options) {
+            Ok(params) => params,
+            Err(error) => {
+                let mut message = new_output(&model);
+                message.set_stop_reason(StopReason::Error);
+                super::anthropic_messages::set_error_message(&mut message, error);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+        };
 
         let endpoint = format!(
             "{base_url}/models/{}:streamGenerateContent?alt=sse",
@@ -907,7 +924,8 @@ mod tests {
             &m,
             &ctx(),
             &GoogleOptions::from_stream_options(StreamOptions::default()),
-        );
+        )
+        .unwrap();
         assert_eq!(params["contents"][0]["role"], "user");
         assert_eq!(
             params["systemInstruction"]["parts"][0]["text"],
@@ -916,6 +934,62 @@ mod tests {
         assert_eq!(
             params["tools"][0]["functionDeclarations"][0]["name"],
             "bash"
+        );
+    }
+
+    #[test]
+    fn build_params_uses_validated_mode_for_strict_sampling() {
+        let m = model("gemini-3-pro");
+        let mut context = ctx();
+        context.tools[0].parameters = json!({
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"]
+        });
+        context.tools[0].constrained_sampling = Some(ConstrainedSampling::JsonSchema {
+            strict: StrictPreference::Prefer,
+        });
+        let params = build_params(
+            &m,
+            &context,
+            &GoogleOptions::from_stream_options(StreamOptions::default()),
+        )
+        .unwrap();
+        assert_eq!(
+            params["toolConfig"]["functionCallingConfig"]["mode"],
+            "VALIDATED"
+        );
+        assert_eq!(
+            params["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]["required"],
+            json!(["path"])
+        );
+        assert_eq!(
+            params["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]
+                ["additionalProperties"],
+            false
+        );
+    }
+
+    #[test]
+    fn build_params_rejects_required_unsupported_schema() {
+        let m = model("gemini-3-pro");
+        let mut context = ctx();
+        context.tools[0].parameters = json!({
+            "type": "object",
+            "properties": {},
+            "allOf": []
+        });
+        context.tools[0].constrained_sampling = Some(ConstrainedSampling::JsonSchema {
+            strict: StrictPreference::Require,
+        });
+        assert_eq!(
+            build_params(
+                &m,
+                &context,
+                &GoogleOptions::from_stream_options(StreamOptions::default()),
+            )
+            .unwrap_err(),
+            "Tool \"bash\" requires JSON-schema constrained sampling, but allOf schemas are unsupported."
         );
     }
 
@@ -931,7 +1005,7 @@ mod tests {
                 level: None,
             }),
         };
-        let params = build_params(&m, &ctx(), &opts);
+        let params = build_params(&m, &ctx(), &opts).unwrap();
         assert_eq!(params["thinkingConfig"]["includeThoughts"], true);
         assert_eq!(params["thinkingConfig"]["thinkingBudget"], 8192);
     }
@@ -948,7 +1022,7 @@ mod tests {
                 level: Some("HIGH"),
             }),
         };
-        let params = build_params(&m, &ctx(), &opts);
+        let params = build_params(&m, &ctx(), &opts).unwrap();
         assert_eq!(params["thinkingConfig"]["thinkingLevel"], "HIGH");
     }
 

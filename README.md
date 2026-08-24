@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 62.65% — 104 of 166 ledger tasks complete; 62 open.**
+**Conversion progress: 63.25% — 105 of 166 ledger tasks complete; 61 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -22,12 +22,14 @@ compaction, RPC controls, TUI components, and client/server support. Remaining
 work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
 
-The current implementation slice completes OpenRouter image retry,
-HTTP-date-delay, and cancellation parity on top of the deferred-response
-runtime checkpoint `56ea6f3`. Implementation commit `2b92195` and its push to
-`origin/main` are verified. The follow-on telemetry strict-verification fix is
-implemented in `45e6d64`, with metadata sync in `788f9c5`; both are pushed and
-hash-verified through the authenticated HTTPS remote.
+The current implementation slice completes constrained JSON-schema and
+OpenAI grammar custom-tool parity across the advertised pi-ai adaptors. Strict
+schemas are cloned and rewritten without mutating caller input; unsupported
+required schemas return the upstream diagnostics, and grammar tool input is
+assembled monotonically through streaming Responses/Completions events. The
+S-008 implementation and documentation are ready for the focused commit and
+immediate push; the image retry/cancellation and telemetry checkpoints below
+remain part of the pushed baseline.
 
 The shared `AgentHarness` now exposes durable main and secondary lane views:
 lanes branch from session leaves, seed independent provider context, persist
@@ -151,13 +153,20 @@ caps, zero-based exponential backoff, and abort-aware request/body/backoff
 handling. Quota/billing errors remain terminal in the shared assistant retry
 classifier, and image failures stay encoded as `AssistantImages` results.
 
-### Strict verification
+### Constrained sampling and strict verification
 
-The telemetry async span path now releases its in-memory mutex before invoking
-an async callback, preserving settled-parent behavior without holding a guard
-across `.await`. The `pi-telemetry` and `pi-ai` strict all-target clippy gates
-now pass. Full `pi-ai` tests pass (290 library, 4 + 8 + 2 integration tests);
-the structural cleanup is committed as `7b3db53` and pushed to `origin/main`.
+The shared pi-ai constrained-sampling resolver now handles strict JSON-schema
+rewrites, exact unsupported-schema diagnostics, grammar precedence and input
+property inference, and monotonic custom-tool JSON deltas. OpenAI
+Completions/Responses, Azure, and Codex support grammar custom tools; Anthropic,
+Bedrock, Google/Vertex, and Mistral support strict-schema conversion. The
+Responses replay path preserves custom item IDs/namespaces and omits absent IDs
+rather than serializing `null`.
+
+The `pi-telemetry` and `pi-ai` strict all-target clippy gates pass. Full `pi-ai`
+tests pass (307 library, 4 + 9 + 2 integration tests), and the workspace check
+passes offline. S-008 is marked complete in the ledger; the focused commit and
+remote push are pending this checkpoint's commit gate.
 
 ## Workspace
 
