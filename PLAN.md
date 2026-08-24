@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 60.84% (101/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 62.05% (103/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1554,6 +1554,29 @@ upstream trust manager contract.
 - S-036 is complete. Remaining trust-adjacent work is limited to the broader
   extension/resource parity and final clean-room audits already tracked by
   S-027, S-065, and S-066.
+
+### Session 48 — 2026-08-24 — Deferred-response runtime and lazy capability parity (S-005/S-006)
+
+Scope: carry deferred fetch/cancel through the shared coding-agent runtime,
+provider-composer overlays, and every faux mode registration, then preserve
+lazy capability declarations and models-store overrides.
+
+- `ModelRuntime` now owns auth-applied stream, simple-stream, deferred-fetch,
+  and deferred-cancel dispatch. The faux provider is registered through the
+  same `Models` facade in print, interactive, JSON, and RPC modes; RPC keeps a
+  separate summary core so its existing compaction golden remains unchanged.
+- Provider composition replaces only the model catalog, retaining provider
+  stream/deferred hooks and the shared models store. `api::lazy` loads only
+  declared deferred capabilities and preserves the exact upstream diagnostics
+  for unsupported fetch and cancellation.
+- Evidence (unit/mock/live fixture): deferred runtime (1), provider composer
+  (15), mode wiring (1), interactive mode (13), RPC mode (45), lazy API (2),
+  full pi-ai unit suite (288), model registry (8), and the real
+  `interactive_slash_pty` fixture (1) all pass offline; formatting, diff, and
+  progress checks are recorded in `GATES.md`.
+- S-005 and S-006 are complete. Next provider parity item is S-007 image
+  retry/error classification; broader harness, provider, TUI, client/server,
+  evaluation, and final-audit work remains open.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

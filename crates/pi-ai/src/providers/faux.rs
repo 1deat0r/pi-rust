@@ -432,10 +432,11 @@ impl FauxProviderCore {
         outer
     }
 
-    /// Fetch a previously-deferred response (upstream faux `fetchDeferred`).
-    /// Resolves the stored entry: while `pending_fetches > 0` the deferred
-    /// message is re-emitted; otherwise the step is resolved and streamed.
-    pub async fn fetch_deferred(
+    /// Build a stream for a previously-deferred response (the synchronous
+    /// provider hook used by `Models::fetch_deferred`). Resolves the stored
+    /// entry: while `pending_fetches > 0` the deferred message is re-emitted;
+    /// otherwise the step is resolved and streamed.
+    pub fn fetch_deferred_stream(
         &self,
         request_model: &Model,
         handle: &DeferredHandle,
@@ -492,6 +493,16 @@ impl FauxProviderCore {
             }
         }));
         outer
+    }
+
+    /// Async compatibility wrapper retained for direct faux-core callers.
+    pub async fn fetch_deferred(
+        &self,
+        request_model: &Model,
+        handle: &DeferredHandle,
+        options: Option<&SimpleStreamOptions>,
+    ) -> AssistantMessageEventStream {
+        self.fetch_deferred_stream(request_model, handle, options)
     }
 
     /// Cancel a deferred response (upstream faux `cancelDeferred`).

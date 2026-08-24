@@ -26,6 +26,6 @@ pub use all::{
 pub use anthropic::{anthropic_models, AnthropicProvider};
 pub use faux::{
     faux_assistant_message, faux_text, faux_thinking, faux_tool_call, FauxAssistantOptions,
-    FauxModelDefinition, FauxProviderCore, FauxProviderState, FauxResponseStep, FauxTokenSize,
-    RegisterFauxProviderOptions, DEFAULT_PROVIDER,
+    FauxDeferredOptions, FauxModelDefinition, FauxProviderCore, FauxProviderState,
+    FauxResponseStep, FauxTokenSize, RegisterFauxProviderOptions, DEFAULT_PROVIDER,
 };

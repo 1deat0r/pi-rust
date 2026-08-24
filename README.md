@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 60.84% — 101 of 166 ledger tasks complete; 65 open.**
+**Conversion progress: 62.05% — 103 of 166 ledger tasks complete; 63 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -22,10 +22,11 @@ compaction, RPC controls, TUI components, and client/server support. Remaining
 work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
 
-The last verified implementation checkpoint is `3b4d350`; the synchronized
-documentation follow-up is pushed with it. GitHub CLI authentication is
-configured for the HTTPS remote, so implementation checkpoints are pushed and
-hash-verified immediately.
+The current implementation slice wires deferred-response fetch/cancel through
+the shared model runtime and all four faux mode entry points; its synchronized
+checkpoint is being committed and pushed with this documentation refresh.
+GitHub CLI authentication is configured for the HTTPS remote, so implementation
+checkpoints are pushed and hash-verified immediately.
 
 The shared `AgentHarness` now exposes durable main and secondary lane views:
 lanes branch from session leaves, seed independent provider context, persist
@@ -131,6 +132,15 @@ print, JSON, RPC, interactive, config, and package commands. Saved decisions,
 global `defaultProjectTrust`, `--approve/-a`, and `--no-approve/-na` follow the
 upstream precedence; interactive `ask` prompts before raw mode and persists the
 answer, while headless unresolved prompts remain untrusted.
+
+### Deferred responses
+
+The shared `ModelRuntime` now preserves deferred fetch/cancel dispatch through
+print, interactive, JSON, and RPC mode wiring. Provider-composer overlays keep
+the selected provider capabilities and shared models store, while the lazy API
+surface exposes only declared capabilities and preserves the upstream missing-
+capability diagnostics. Faux runtime tests cover submit, poll-to-resolution,
+cancellation, and mode registration.
 
 ## Workspace
 

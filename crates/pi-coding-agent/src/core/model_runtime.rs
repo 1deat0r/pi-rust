@@ -4,8 +4,182 @@
 //! `provider/model:thinking`-style hint, catalog glob-scoped lookup, and the
 //! upstream per-provider default model table.
 
+use std::sync::Arc;
+
+use pi_ai::auth::{ApiKeyAuth, AuthCheck, AuthContext, AuthResult, ModelAuth, ProviderAuth};
+use pi_ai::event_stream::AssistantMessageEventStream;
 use pi_ai::model::Model;
-use pi_ai::models::Models;
+use pi_ai::models::{
+    create_provider, DeferredCancelOptions, DeferredFetchOptions, Models, ProviderApiSpec,
+    ProviderStreams,
+};
+use pi_ai::providers::{FauxProviderCore, RegisterFauxProviderOptions};
+use pi_ai::types::{AssistantMessage, Context, DeferredHandle, SimpleStreamOptions, StreamOptions};
+
+/// The coding-agent-facing runtime facade. It keeps the auth-applied
+/// `pi-ai::Models` collection as the single dispatch seam for normal streams,
+/// simple streams, deferred resolution, and cancellation.
+#[derive(Clone)]
+pub struct ModelRuntime {
+    models: Models,
+}
+
+impl ModelRuntime {
+    pub fn new(models: Models) -> Self {
+        Self { models }
+    }
+
+    pub fn models(&self) -> Models {
+        self.models.clone()
+    }
+
+    pub fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<&StreamOptions>,
+    ) -> AssistantMessageEventStream {
+        self.models.stream(model, context, options)
+    }
+
+    pub fn stream_simple(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<&SimpleStreamOptions>,
+    ) -> AssistantMessageEventStream {
+        self.models.stream_simple(model, context, options)
+    }
+
+    pub async fn complete_simple(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<&SimpleStreamOptions>,
+    ) -> AssistantMessage {
+        self.models.complete_simple(model, context, options).await
+    }
+
+    pub async fn fetch_deferred(
+        &self,
+        model: &Model,
+        handle: &DeferredHandle,
+        options: Option<&DeferredFetchOptions>,
+    ) -> Result<AssistantMessage, pi_ai::models::ModelsError> {
+        self.models.fetch_deferred(model, handle, options).await
+    }
+
+    pub async fn cancel_deferred(
+        &self,
+        model: &Model,
+        handle: &DeferredHandle,
+        options: Option<&DeferredCancelOptions>,
+    ) -> Result<(), pi_ai::models::ModelsError> {
+        self.models.cancel_deferred(model, handle, options).await
+    }
+}
+
+/// Auth implementation for the deterministic faux provider. Faux ignores the
+/// key, but facade-backed calls still need a configured provider to exercise
+/// the same `Models::apply_auth` path as production providers.
+struct FauxApiKeyAuth;
+
+impl ApiKeyAuth for FauxApiKeyAuth {
+    fn name(&self) -> &str {
+        "Faux API key"
+    }
+
+    fn check(
+        &self,
+        _ctx: &AuthContext,
+        _credential: Option<&pi_ai::auth::ApiKeyCredential>,
+    ) -> Option<AuthCheck> {
+        Some(AuthCheck {
+            source: Some("faux".to_string()),
+            auth_type: "api_key",
+        })
+    }
+
+    fn resolve(
+        &self,
+        _ctx: &AuthContext,
+        _credential: Option<&pi_ai::auth::ApiKeyCredential>,
+    ) -> Option<AuthResult> {
+        Some(AuthResult {
+            auth: ModelAuth {
+                api_key: Some("faux-key".to_string()),
+                ..Default::default()
+            },
+            env: None,
+            source: Some("faux".to_string()),
+        })
+    }
+}
+
+/// Register a faux provider with every stream capability, including deferred
+/// fetch/cancel. Returning the core lets callers seed deterministic responses
+/// while all subsequent operations travel through the shared Models facade.
+pub fn register_faux_provider(
+    models: &Models,
+    options: &RegisterFauxProviderOptions,
+) -> FauxProviderCore {
+    let core = FauxProviderCore::new(options);
+
+    let stream_core = core.clone();
+    let stream = Arc::new(
+        move |model: &Model, context: &Context, options: Option<&StreamOptions>| {
+            let simple_options = options.map(|options| SimpleStreamOptions {
+                base: options.clone(),
+                ..Default::default()
+            });
+            stream_core.stream(model, context, simple_options.as_ref())
+        },
+    );
+
+    let simple_core = core.clone();
+    let stream_simple = Arc::new(
+        move |model: &Model, context: &Context, options: Option<&SimpleStreamOptions>| {
+            simple_core.stream(model, context, options)
+        },
+    );
+
+    let fetch_core = core.clone();
+    let fetch_deferred = Arc::new(
+        move |model: &Model, handle: &DeferredHandle, _options: &DeferredFetchOptions| {
+            fetch_core.fetch_deferred_stream(model, handle, None)
+        },
+    );
+
+    let cancel_core = core.clone();
+    let cancel_deferred = Arc::new(
+        move |_model: &Model, handle: &DeferredHandle, _options: &DeferredCancelOptions| {
+            let core = cancel_core.clone();
+            let handle = handle.clone();
+            Box::pin(async move { core.cancel_deferred(&handle).await })
+                as pi_ai::models::DeferredCancelFuture
+        },
+    );
+
+    models.set_provider(create_provider(pi_ai::models::CreateProviderOptions {
+        id: core.provider.clone(),
+        name: Some("Faux".to_string()),
+        base_url: None,
+        headers: None,
+        auth: ProviderAuth {
+            api_key: Some(Arc::new(FauxApiKeyAuth)),
+            oauth: None,
+        },
+        models: core.models.clone(),
+        api: ProviderApiSpec::Single(ProviderStreams {
+            stream,
+            stream_simple,
+            fetch_deferred: Some(fetch_deferred),
+            cancel_deferred: Some(cancel_deferred),
+        }),
+        filter_models: None,
+    }));
+    core
+}
 
 /// Default model IDs per provider (upstream `defaultModelPerProvider`).
 pub fn default_model_per_provider(provider: &str) -> Option<&'static str> {
@@ -128,6 +302,8 @@ pub fn resolve_run_model_for_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pi_ai::providers::{faux_assistant_message, FauxAssistantOptions, FauxResponseStep};
+    use pi_ai::types::{ContentBlock, DeferredOption, StopReason};
 
     #[test]
     fn strip_provider_prefix_and_thinking() {
@@ -199,5 +375,83 @@ mod tests {
                 "{p} missing default"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn deferred_runtime_submits_resolves_and_cancels() {
+        let models = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
+        let core = register_faux_provider(
+            &models,
+            &RegisterFauxProviderOptions {
+                deferred: Some(pi_ai::providers::FauxDeferredOptions {
+                    pending_fetches: Some(1),
+                    poll_after_ms: Some(5),
+                }),
+                ..Default::default()
+            },
+        );
+        core.set_responses(vec![
+            FauxResponseStep::Message(faux_assistant_message(
+                vec![ContentBlock::text("ready")],
+                FauxAssistantOptions::default(),
+            )),
+            FauxResponseStep::Message(faux_assistant_message(
+                vec![ContentBlock::text("cancelled")],
+                FauxAssistantOptions::default(),
+            )),
+        ]);
+
+        let runtime = ModelRuntime::new(models.clone());
+        let model = models.get_model("faux", "faux-1").expect("faux model");
+        let deferred_options = SimpleStreamOptions {
+            deferred: Some(DeferredOption::Bool(true)),
+            ..Default::default()
+        };
+        let submission = runtime
+            .complete_simple(&model, &Context::default(), Some(&deferred_options))
+            .await;
+        assert_eq!(submission.stop_reason(), Some(StopReason::Deferred));
+        let handle = submission.deferred().cloned().expect("deferred handle");
+
+        let pending = runtime
+            .fetch_deferred(&model, &handle, None)
+            .await
+            .expect("deferred poll");
+        assert_eq!(pending.stop_reason(), Some(StopReason::Deferred));
+        let ready = runtime
+            .fetch_deferred(
+                &model,
+                &handle,
+                Some(&DeferredFetchOptions {
+                    wait: Some(0),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .expect("deferred resolution");
+        assert_eq!(ready.stop_reason(), Some(StopReason::Stop));
+
+        let cancelled_submission = runtime
+            .complete_simple(&model, &Context::default(), Some(&deferred_options))
+            .await;
+        let cancelled_handle = cancelled_submission
+            .deferred()
+            .cloned()
+            .expect("second deferred handle");
+        runtime
+            .cancel_deferred(&model, &cancelled_handle, None)
+            .await
+            .expect("deferred cancellation");
+        let cancelled = runtime
+            .fetch_deferred(&model, &cancelled_handle, None)
+            .await
+            .expect("cancellation is an in-band provider result");
+        assert_eq!(cancelled.stop_reason(), Some(StopReason::Error));
+        assert!(cancelled
+            .error_message()
+            .unwrap_or_default()
+            .contains("cancelled"));
+        assert_eq!(core.state.lock().unwrap().deferred_fetch_count, 3);
+        assert_eq!(core.state.lock().unwrap().cancelled_deferred.len(), 1);
     }
 }

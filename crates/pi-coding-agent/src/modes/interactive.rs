@@ -37,6 +37,10 @@ use pi_tui::tui::{Component, SharedComponent, Tree};
 struct InteractiveRuntime {
     cwd: String,
     models: pi_ai::models::Models,
+    /// Shared faux core for deterministic mode tests and the local provider;
+    /// registering it through Models keeps deferred hooks available to the
+    /// interactive runtime instead of bypassing the provider facade.
+    faux_core: Option<pi_ai::providers::FauxProviderCore>,
     provider: String,
     model: Model,
     messages: Vec<pi_agent::types::AgentMessage>,
@@ -99,9 +103,12 @@ async fn stream_turn(
         .get_provider(&provider)
         .is_some_and(|registered| registered.auth.oauth.is_some());
     let stream_fn: crate::run::StreamFn = if provider == "faux" {
-        let core = pi_ai::providers::FauxProviderCore::new(
-            &pi_ai::providers::RegisterFauxProviderOptions::default(),
-        );
+        let core = runtime.faux_core.clone().unwrap_or_else(|| {
+            crate::core::model_runtime::register_faux_provider(
+                &models,
+                &pi_ai::providers::RegisterFauxProviderOptions::default(),
+            )
+        });
         core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
             pi_ai::providers::faux_assistant_message(
                 vec![pi_ai::types::ContentBlock::text(format!(
@@ -110,7 +117,9 @@ async fn stream_turn(
                 pi_ai::providers::FauxAssistantOptions::default(),
             ),
         )]);
-        Arc::new(move |model, ctx| core.stream(model, ctx, None))
+        let stream_models = models.clone();
+        let faux_stream_options = stream_options.clone();
+        Arc::new(move |model, ctx| stream_models.stream(model, ctx, Some(&faux_stream_options)))
     } else {
         Arc::new(move |model, ctx| models.stream(model, ctx, Some(&stream_options)))
     };
@@ -822,8 +831,27 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         &settings,
         !crate::run::has_explicit_provider(args.provider.as_deref()),
     );
+    let faux_core = if provider == "faux" {
+        Some(crate::core::model_runtime::register_faux_provider(
+            &models,
+            &pi_ai::providers::RegisterFauxProviderOptions::default(),
+        ))
+    } else {
+        None
+    };
     let model = if provider == "faux" {
-        crate::run::build_faux_model(model_hint.as_deref())?
+        let core = faux_core.as_ref().expect("faux core registered");
+        match model_hint.as_deref() {
+            Some(hint) => core
+                .get_model(Some(hint.rsplit('/').next().unwrap_or(hint)))
+                .cloned()
+                .ok_or_else(|| format!("unknown faux model {hint:?}"))?,
+            None => core
+                .models
+                .first()
+                .cloned()
+                .ok_or_else(|| "no faux model".to_string())?,
+        }
     } else {
         crate::core::model_runtime::resolve_run_model_for_provider(
             &models,
@@ -946,6 +974,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     let mut runtime = InteractiveRuntime {
         cwd: cwd.clone(),
         models,
+        faux_core,
         provider: provider.clone(),
         model: model.clone(),
         messages: Vec::new(),
@@ -1967,10 +1996,18 @@ mod tests {
             .unwrap();
         let models =
             pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
-        let model = crate::run::build_faux_model(None).unwrap();
+        let faux_core = Some(crate::core::model_runtime::register_faux_provider(
+            &models,
+            &pi_ai::providers::RegisterFauxProviderOptions::default(),
+        ));
+        let model = faux_core
+            .as_ref()
+            .and_then(|core| core.models.first().cloned())
+            .expect("faux model");
         InteractiveRuntime {
             cwd,
             models,
+            faux_core,
             provider: "faux".to_string(),
             model,
             messages: Vec::new(),

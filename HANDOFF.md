@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-60.84% = 101 completed / 166 total tasks
-65 tasks remain open
+62.05% = 103 completed / 166 total tasks
+63 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -61,14 +61,14 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`60.84% (101/166; 65 open)`. The latest committed implementation checkpoint is
-`3b4d350`, synchronized with `origin/main`; this documentation-only hash
-refresh follows it. Preserve the pre-existing
-untracked `AGENTS.md`.
+`62.05% (103/166; 63 open)`. The deferred-response runtime and lazy-capability
+implementation slice is staged for the next local commit and immediate push;
+the exact synchronized hash will be recorded in the follow-up documentation
+refresh. Preserve the pre-existing untracked `AGENTS.md`.
 The README now records the legacy-session integration, CLI session routing,
 provider auth guidance, startup-timing, interactive cache-notice,
-install-telemetry contracts, the interactive slash-command PTY checkpoint, and
-the project-trust safety matrix, and the synchronized-doc workflow. The
+install-telemetry contracts, the interactive slash-command PTY checkpoint, the
+project-trust safety matrix, and deferred-response runtime parity. The
 pre-existing `AGENTS.md` remains untouched.
 
 ## Current secondary-lane committed checkpoint (partial S-021/S-022)
@@ -202,7 +202,7 @@ cargo test -p pi-coding-agent --offline --lib core::project_trust --quiet (7 pas
 cargo check -p pi-coding-agent --offline
 cargo fmt --all -- --check
 git diff --check
-node scripts/conversion-progress.mjs (60.84% = 101/166; 65 open)
+node scripts/conversion-progress.mjs (62.05% = 103/166; 63 open)
 ```
 
 S-036 is complete; the implementation and documentation changes are ready for

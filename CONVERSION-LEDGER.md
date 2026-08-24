@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **60.84% (101/166; 65 open)**. Run
+- The exhaustive checker reports **62.05% (103/166; 63 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The focused workspace checks and tests for the current harness-lane slice
@@ -578,11 +578,36 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 
 ### S1-B — pi-ai residual provider and transport parity
 
-- [ ] S-005 Wire deferred-response fetch/cancel through the coding-agent model
+- [x] S-005 Wire deferred-response fetch/cancel through the coding-agent model
       runtime, interactive mode, RPC mode, and provider-composer path; test a
       deferred response from request through resolution and cancellation.
-- [ ] S-006 Complete lazy API capability propagation for deferred fetch/cancel,
+      Evidence (unit/mock): `ModelRuntime` now owns auth-applied stream,
+      simple-stream, deferred-fetch, and deferred-cancel dispatch; the faux
+      provider is registered through that facade in print, interactive, JSON,
+      and RPC modes. The deferred runtime test submits a deferred response,
+      polls it to a final message, then cancels a second response and verifies
+      the in-band provider error. Provider-composer and mode-wiring tests
+      verify the hooks survive catalog composition. Verified with
+      `cargo test -p pi-coding-agent --offline --lib
+      core::model_runtime::tests::deferred_runtime --quiet` (1 passed),
+      `cargo test -p pi-coding-agent --offline --lib
+      core::provider_composer --quiet` (15 passed),
+      `cargo test -p pi-coding-agent --offline --lib deferred_mode_wiring
+      --quiet` (1 passed), `cargo test -p pi-coding-agent --offline --lib
+      modes::interactive --quiet` (13 passed), `cargo test -p pi-coding-agent
+      --offline --lib modes::rpc --quiet` (45 passed), and the real
+      `interactive_slash_pty` fixture (1 passed).
+- [x] S-006 Complete lazy API capability propagation for deferred fetch/cancel,
       including missing-capability error text and models-store overrides.
+      Evidence (unit): `pi-ai/src/api/lazy.rs` now exposes only declared
+      deferred capabilities, lazily loads implementations, and preserves the
+      upstream `API does not support deferred responses` and `API cannot cancel
+      deferred responses` diagnostics. Model-registry overlays retain the
+      shared credentials/models store and provider deferred hooks. Verified
+      with `cargo test -p pi-ai --offline --lib api::lazy --quiet` (2 passed),
+      `cargo test -p pi-ai --offline --lib --quiet` (288 passed), and
+      `cargo test -p pi-coding-agent --offline --lib core::model_registry
+      --quiet` (8 passed).
 - [ ] S-007 Port the upstream image retry loop and its abort/quota/error
       classification for image generation requests.
 - [ ] S-008 Complete constrained-sampling/grammar tool support for every

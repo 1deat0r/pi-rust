@@ -27,7 +27,9 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
 
     let mut selected_provider_uses_oauth = false;
     let (model, stream_fn): (pi_ai::model::Model, crate::run::StreamFn) = if provider == "faux" {
-        let core = pi_ai::providers::FauxProviderCore::new(
+        let models = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
+        let core = crate::core::model_runtime::register_faux_provider(
+            &models,
             &pi_ai::providers::RegisterFauxProviderOptions::default(),
         );
         let model = match model_hint.as_deref() {
@@ -56,9 +58,10 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
                 pi_ai::providers::FauxAssistantOptions::default(),
             ),
         )]);
-        let core = core.clone();
-        let stream_fn: crate::run::StreamFn =
-            Arc::new(move |model, ctx| core.stream(model, ctx, None));
+        let stream_models = models.clone();
+        let stream_fn: crate::run::StreamFn = Arc::new(move |model, ctx| {
+            stream_models.stream(model, ctx, Some(&pi_ai::types::StreamOptions::default()))
+        });
         (model, stream_fn)
     } else {
         let models = {

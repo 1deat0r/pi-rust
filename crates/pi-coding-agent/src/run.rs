@@ -200,7 +200,10 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     let mut selected_provider_uses_oauth = false;
     let (model, stream_fn, summary_stream_fn): (pi_ai::model::Model, StreamFn, StreamFn) =
         if provider == "faux" {
-            let core = pi_ai::providers::FauxProviderCore::new(
+            let models =
+                pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
+            let core = crate::core::model_runtime::register_faux_provider(
+                &models,
                 &pi_ai::providers::RegisterFauxProviderOptions::default(),
             );
             let model = match model_hint.as_deref() {
@@ -238,11 +241,14 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
                 })
                 .collect();
             core.set_responses(responses);
-            let core = core.clone();
-            let stream_fn: StreamFn = Arc::new(move |model, ctx| core.stream(model, ctx, None));
-            // Keep compaction completions off the scripted user-response queue.
-            // The real provider uses the same stream path for both calls; faux is
-            // deliberately split so a summary cannot consume a later print turn.
+            let stream_models = models.clone();
+            let stream_fn: StreamFn = Arc::new(move |model, ctx| {
+                stream_models.stream(model, ctx, Some(&pi_ai::types::StreamOptions::default()))
+            });
+            // Keep compaction completions off the scripted user-response
+            // queue. The real provider uses the same stream path for both
+            // calls; faux is deliberately split so a summary cannot consume a
+            // later print turn.
             let summary_core = pi_ai::providers::FauxProviderCore::new(
                 &pi_ai::providers::RegisterFauxProviderOptions::default(),
             );
@@ -1146,6 +1152,34 @@ mod tests {
             [ContentBlock::Image { mime_type, .. }] if mime_type == "image/png"
         ));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn deferred_mode_wiring_keeps_fetch_and_cancel_hooks() {
+        for mode in ["print", "interactive", "json", "rpc"] {
+            let models =
+                pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
+            let core = crate::core::model_runtime::register_faux_provider(
+                &models,
+                &pi_ai::providers::RegisterFauxProviderOptions {
+                    deferred: Some(pi_ai::providers::FauxDeferredOptions {
+                        pending_fetches: Some(0),
+                        poll_after_ms: None,
+                    }),
+                    ..Default::default()
+                },
+            );
+            core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
+                pi_ai::providers::faux_assistant_message(
+                    vec![ContentBlock::text(format!("{mode} deferred"))],
+                    pi_ai::providers::FauxAssistantOptions::default(),
+                ),
+            )]);
+            let provider = models.get_provider("faux").expect("faux provider");
+            let streams = provider.single_streams.as_ref().expect("single API");
+            assert!(streams.fetch_deferred.is_some(), "{mode} fetch hook");
+            assert!(streams.cancel_deferred.is_some(), "{mode} cancel hook");
+        }
     }
 }
 

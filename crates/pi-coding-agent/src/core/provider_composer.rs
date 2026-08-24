@@ -12,10 +12,21 @@
 use std::collections::BTreeMap;
 
 use pi_ai::model::Model;
+use pi_ai::models::Provider;
 use pi_ai::types::ProviderHeaders;
 use serde_json::Value;
 
 use crate::core::model_config::{ModelsJsonModel, ModelsJsonModelOverride, ModelsJsonProvider};
+
+/// Apply a composed model catalog to a provider without rebuilding its
+/// dispatch surface. In particular, deferred fetch/cancel hooks belong to the
+/// provider's API implementation, not to an individual models.json entry, so
+/// catalog overlays must retain them verbatim.
+pub fn with_composed_models(provider: &Provider, models: Vec<Model>) -> Provider {
+    let mut composed = provider.clone();
+    composed.models = models;
+    composed
+}
 
 /// Shallow-merge two JSON compat objects, deep-merging the nested routing and
 /// template maps (upstream `mergeCompat`).
@@ -854,6 +865,41 @@ mod tests {
             validate_extension_provider("demo", &[model("demo", "base-1")], None, &extension)
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn provider_composer_preserves_deferred_capabilities_for_overlays() {
+        let models = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
+        let _core = crate::core::model_runtime::register_faux_provider(
+            &models,
+            &pi_ai::providers::RegisterFauxProviderOptions::default(),
+        );
+        let provider = models.get_provider("faux").expect("faux provider");
+        assert!(provider
+            .single_streams
+            .as_ref()
+            .and_then(|streams| streams.fetch_deferred.as_ref())
+            .is_some());
+        assert!(provider
+            .single_streams
+            .as_ref()
+            .and_then(|streams| streams.cancel_deferred.as_ref())
+            .is_some());
+
+        let mut overlay = provider.models[0].clone();
+        overlay.name = "Overlay Faux".to_string();
+        let composed = with_composed_models(&provider, vec![overlay]);
+        assert_eq!(composed.models[0].name, "Overlay Faux");
+        assert!(composed
+            .single_streams
+            .as_ref()
+            .and_then(|streams| streams.fetch_deferred.as_ref())
+            .is_some());
+        assert!(composed
+            .single_streams
+            .as_ref()
+            .and_then(|streams| streams.cancel_deferred.as_ref())
+            .is_some());
     }
 
     #[test]

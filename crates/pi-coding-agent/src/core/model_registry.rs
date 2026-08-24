@@ -17,7 +17,9 @@ use pi_ai::model::Model;
 use pi_ai::models::Models;
 
 use crate::core::model_config::ModelConfig;
-use crate::core::provider_composer::{apply_model_overrides, apply_models_json};
+use crate::core::provider_composer::{
+    apply_model_overrides, apply_models_json, with_composed_models,
+};
 
 /// A view of one provider's configured auth (upstream `AuthStatus`).
 pub use crate::core::provider_composer::AuthStatus;
@@ -115,11 +117,15 @@ impl ModelRegistry {
     /// (bundled + models.json overlay). Used by the run path so model
     /// resolution sees user overrides (upstream `applyModelsJson` wiring).
     pub fn into_models(&self) -> pi_ai::models::Models {
-        let merged = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
+        // Clone the facade instead of constructing a fresh one: this retains
+        // credential/auth context and the shared ModelsStore used by remote
+        // catalogs while replacing only each provider's composed model list.
+        let merged = self.models.clone();
         for provider in self.models.get_providers() {
-            let mut p = provider.clone();
-            p.models = self.get_merged_models(&p.id);
-            merged.set_provider(p);
+            merged.set_provider(with_composed_models(
+                &provider,
+                self.get_merged_models(&provider.id),
+            ));
         }
         merged
     }
@@ -321,6 +327,34 @@ mod run_path_merge_tests {
             .get_model("google", "gemini-3.1-pro-preview")
             .expect("catalog model in facade");
         assert_eq!(catalog.base_url, "https://overridden.example.com/v1");
+    }
+
+    #[test]
+    fn into_models_preserves_store_and_provider_capabilities() {
+        let store = std::sync::Arc::new(pi_ai::models::InMemoryModelsStore::new());
+        let store_trait: std::sync::Arc<dyn pi_ai::models::ModelsStore> = store.clone();
+        let models = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions {
+            models_store: Some(store_trait.clone()),
+            ..Default::default()
+        });
+        let _core = crate::core::model_runtime::register_faux_provider(
+            &models,
+            &pi_ai::providers::RegisterFauxProviderOptions::default(),
+        );
+        let registry = ModelRegistry::new(models.clone(), ModelConfig::default());
+        let facade = registry.into_models();
+        assert!(std::sync::Arc::ptr_eq(&store_trait, &facade.models_store()));
+        let provider = facade.get_provider("faux").expect("composed faux provider");
+        assert!(provider
+            .single_streams
+            .as_ref()
+            .and_then(|streams| streams.fetch_deferred.as_ref())
+            .is_some());
+        assert!(provider
+            .single_streams
+            .as_ref()
+            .and_then(|streams| streams.cancel_deferred.as_ref())
+            .is_some());
     }
 
     #[test]

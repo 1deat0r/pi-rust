@@ -1,8 +1,8 @@
 # Gates: interactive slash-command fixture checkpoint
 
-OWNS: crates/pi-coding-agent/src/main.rs, crates/pi-coding-agent/src/run.rs, crates/pi-coding-agent/src/commands/**, crates/pi-coding-agent/src/core/project_trust.rs, crates/pi-coding-agent/src/core/settings.rs, crates/pi-coding-agent/tests/cli_trust.rs, CONVERSION-LEDGER.md, PLAN.md, HANDOFF.md, README.md, .github/repository-description.txt
+OWNS: crates/pi-ai/src/models.rs, crates/pi-ai/src/api/lazy.rs, crates/pi-ai/src/providers/faux.rs, crates/pi-coding-agent/src/main.rs, crates/pi-coding-agent/src/run.rs, crates/pi-coding-agent/src/modes/interactive.rs, crates/pi-coding-agent/src/modes/rpc.rs, crates/pi-coding-agent/src/core/model_runtime.rs, crates/pi-coding-agent/src/core/model_registry.rs, crates/pi-coding-agent/src/core/provider_composer.rs, crates/pi-coding-agent/src/core/models_store.rs, crates/pi-coding-agent/tests, CONVERSION-LEDGER.md, PLAN.md, HANDOFF.md, README.md, .github/repository-description.txt
 
-Scope: preserve the completed interactive slash-command gates while closing the project-trust safety matrix across mode startup, resource loaders, saved/default decisions, CLI overrides, prompts, and lock-safe trust persistence.
+Scope: preserve the completed interactive slash-command and project-trust gates while closing deferred-response runtime/lazy capability parity across the shared model runtime, provider overlays, and print/interactive/JSON/RPC mode wiring.
 
 - [x] G1: the interactive slash-command fixture exercises the registered command surface and records expected terminal outcomes
   CHECK: /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test interactive_slash_pty --quiet
@@ -32,7 +32,7 @@ Scope: preserve the completed interactive slash-command gates while closing the 
 - [x] G6: the conversion ledger and synchronized docs report the measured progress
   CHECK: node scripts/conversion-progress.mjs
   EXPECT: /Conversion progress: [0-9]+\.[0-9]+% \([0-9]+\/[0-9]+; [0-9]+ open\)/
-  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=06dd37959781/23 entries; output=Conversion progress: 60.84% (101/166; 65 open)
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=06dd37959781/23 entries; output=Conversion progress: 62.05% (103/166; 63 open)
 
 ## Next slice: close the interactive `/resume` behavior audit
 
@@ -54,7 +54,7 @@ Scope: preserve the completed interactive slash-command gates while closing the 
 - [x] G10: the progress checker remains valid after the completed S-033 slice
   CHECK: node scripts/conversion-progress.mjs
   EXPECT: /Conversion progress: [0-9]+\.[0-9]+% \([0-9]+\/[0-9]+; [0-9]+ open\)/
-  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=06dd37959781/23 entries; output=Conversion progress: 60.84% (101/166; 65 open)
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=06dd37959781/23 entries; output=Conversion progress: 62.05% (103/166; 63 open)
 
 ## Next slice: close S-036 project-trust safety parity
 
@@ -80,5 +80,38 @@ Scope: preserve the completed interactive slash-command gates while closing the 
 
 - [x] G15: closing S-036 updates the exhaustive progress checker consistently
   CHECK: node scripts/conversion-progress.mjs
-  EXPECT: /Conversion progress: 60\.84% \(101\/166; 65 open\)/
-  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=06dd37959781/23 entries; output=Conversion progress: 60.84% (101/166; 65 open)
+  EXPECT: /Conversion progress: 62\.05% \(103\/166; 63 open\)/
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=06dd37959781/23 entries; output=Conversion progress: 62.05% (103/166; 63 open)
+
+## Next slice: close S-005/S-006 deferred-response runtime parity
+
+- [x] G16: the coding-agent deferred runtime can submit, resolve, and cancel a
+      faux deferred response through the same auth-applied Models facade used
+      by the modes
+  CHECK: /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::model_runtime::tests::deferred_runtime --quiet
+  EXPECT: test result: ok
+  EVIDENCE: exit=0; 1 passed; deferred submit, poll-to-resolution, and cancellation verified
+
+- [x] G17: provider composition and models.json overlays preserve deferred
+      fetch/cancel capabilities while dispatching by the selected model API
+  CHECK: /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::provider_composer --quiet
+  EXPECT: test result: ok
+  EVIDENCE: exit=0; 15 passed; provider capabilities and shared models store retained
+
+- [x] G18: interactive, print, JSON, and RPC faux mode registrations expose
+      deferred fetch/cancel instead of silently dropping the provider hooks
+  CHECK: /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib deferred_mode_wiring --quiet
+  EXPECT: test result: ok
+  EVIDENCE: exit=0; 1 passed; mode wiring plus interactive (13) and RPC (45) regressions green
+
+- [x] G19: lazy capability declarations expose only requested deferred methods
+      and return the upstream missing-capability diagnostics
+  CHECK: /home/mustbearnold/.cargo/bin/cargo test -p pi-ai --offline --lib api::lazy --quiet
+  EXPECT: test result: ok
+  EVIDENCE: exit=0; 2 passed; exact upstream missing-fetch/cancel diagnostics preserved
+
+- [x] G20: formatting, whitespace, and exhaustive conversion progress remain
+      clean after the deferred runtime slice
+  CHECK: /bin/sh -c '/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check && git diff --check && node scripts/conversion-progress.mjs && printf "deferred-slice-checks-passed\\n"'
+  EXPECT: deferred-slice-checks-passed
+  EVIDENCE: exit=0; deferred-slice checks passed; progress=62.05% (103/166; 63 open)

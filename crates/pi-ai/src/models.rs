@@ -6,6 +6,8 @@
 //! builds a `Models`; `createProvider` builds a `Provider` from parts.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::auth::{
@@ -122,15 +124,21 @@ pub type DeferredStreamFn = Arc<
 >;
 
 /// Cancellation for a deferred handle: `(model, handle, options)`.
-pub type DeferredCancelFn =
-    Arc<dyn Fn(&Model, &DeferredHandle, &DeferredFetchOptions) -> Result<(), String> + Send + Sync>;
+pub type DeferredCancelFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+pub type DeferredCancelFn = Arc<
+    dyn Fn(&Model, &DeferredHandle, &DeferredCancelOptions) -> DeferredCancelFuture + Send + Sync,
+>;
 
-/// Options for deferred fetch/cancel (upstream `DeferredFetchOptions`).
+/// Options for deferred fetch (upstream `DeferredFetchOptions`).
 #[derive(Clone, Default)]
 pub struct DeferredFetchOptions {
     pub base: crate::types::ProviderRequestOptions,
-    pub cancel_after_ms: Option<u64>,
+    /// Maximum provider long-poll duration. `None` performs one status check.
+    pub wait: Option<u64>,
 }
+
+/// Request options for best-effort deferred cancellation.
+pub type DeferredCancelOptions = crate::types::ProviderRequestOptions;
 
 #[derive(Clone)]
 pub struct ProviderStreams {
@@ -333,6 +341,13 @@ impl Models {
 
     pub fn get_provider(&self, id: &str) -> Option<Provider> {
         self.providers.read().unwrap().get(id).cloned()
+    }
+
+    /// Return the shared model-catalog store used by this facade. Coding-agent
+    /// composition keeps this handle when it overlays models.json so refresh
+    /// and runtime model overrides do not silently fall back to a new store.
+    pub fn models_store(&self) -> Arc<dyn ModelsStore> {
+        self.models_store.clone()
     }
 
     pub fn get_models(&self, provider: Option<&str>) -> Vec<Model> {
@@ -734,7 +749,7 @@ impl Models {
         let (request_model, request_options) = self.apply_auth(model, &base_options)?;
         let fetch_options = DeferredFetchOptions {
             base: request_options,
-            cancel_after_ms: options.and_then(|o| o.cancel_after_ms),
+            wait: options.and_then(|o| o.wait),
         };
         let stream = fetcher(&request_model, handle, &fetch_options);
         Ok(stream.for_each(|_| {}).await)
@@ -745,7 +760,7 @@ impl Models {
         &self,
         model: &Model,
         handle: &DeferredHandle,
-        options: Option<&DeferredFetchOptions>,
+        options: Option<&DeferredCancelOptions>,
     ) -> Result<(), ModelsError> {
         let provider = self.get_provider(&model.provider).ok_or_else(|| {
             ModelsError::new(
@@ -771,13 +786,10 @@ impl Models {
                 ),
             )
         })?;
-        let base_options = options.map(|o| o.base.clone()).unwrap_or_default();
+        let base_options = options.cloned().unwrap_or_default();
         let (request_model, request_options) = self.apply_auth(model, &base_options)?;
-        let cancel_options = DeferredFetchOptions {
-            base: request_options,
-            cancel_after_ms: options.and_then(|o| o.cancel_after_ms),
-        };
-        canceller(&request_model, handle, &cancel_options)
+        canceller(&request_model, handle, &request_options)
+            .await
             .map_err(|e| ModelsError::new(ModelsErrorCode::Provider, e))
     }
 }
