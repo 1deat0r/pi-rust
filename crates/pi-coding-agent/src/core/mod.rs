@@ -30,3 +30,11 @@ pub mod telemetry;
 pub mod tools;
 pub mod usage_totals;
 pub mod version_check;
+
+#[cfg(test)]
+pub(crate) async fn environment_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}

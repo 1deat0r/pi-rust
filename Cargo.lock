@@ -973,6 +973,7 @@ dependencies = [
  "base64",
  "crossterm",
  "dirs",
+ "futures-util",
  "indexmap",
  "pi-agent",
  "pi-ai",

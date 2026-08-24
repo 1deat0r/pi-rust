@@ -103,6 +103,20 @@ exit 0
             .expect("spawn pi")
     }
 
+    fn pi_offline(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
+        Command::new(env!("CARGO_BIN_EXE_pi"))
+            .current_dir(cwd)
+            .env("HOME", &self.home)
+            .env("PI_CODING_AGENT_DIR", &self.agent_dir)
+            .env("PI_OFFLINE", "1")
+            .env_remove("PI_PROVIDER")
+            .env_remove("PI_MODEL")
+            .env_remove("PI_KEY")
+            .args(args)
+            .output()
+            .expect("spawn pi")
+    }
+
     fn stdout(&self, output: &std::process::Output) -> String {
         String::from_utf8_lossy(&output.stdout).to_string()
     }
@@ -351,9 +365,9 @@ fn update_reports_extensions_skipped_for_default_self() {
     let sandbox = Sandbox::new("update-self");
     sandbox.write_global_settings(json!({ "packages": [] }));
     let cwd = project(&sandbox, "work");
-    let out = sandbox.pi(&cwd, &["update"]);
-    // Default target is self; the compiled port reports the upstream
-    // skip note then the cannot-self-update instruction.
+    let out = sandbox.pi_offline(&cwd, &["update"]);
+    // Offline update still resolves the self-update plan first, matching the
+    // upstream fetch failure instead of pretending the binary was updated.
     let stdout = sandbox.stdout(&out);
     assert!(
         stdout.contains("Extensions are skipped. Run pi update --extensions to update extensions."),
@@ -362,7 +376,7 @@ fn update_reports_extensions_skipped_for_default_self() {
     assert!(!out.status.success());
     let stderr = sandbox.stderr(&out);
     assert!(
-        stderr.contains("cannot self-update this installation"),
+        stderr.contains("Could not determine latest pi version"),
         "{stderr}"
     );
 }

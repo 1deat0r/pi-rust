@@ -9,6 +9,7 @@
 //! The Rust port implements the same merge/parse/freshness semantics and the
 //! live HTTP refresh used by `pi update --models`.
 
+use futures_util::future::join_all;
 use pi_ai::model::Model;
 use pi_ai::models::ModelsStore;
 use pi_ai::models::ModelsStoreEntry;
@@ -17,6 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_CATALOG_BASE_URL: &str = "https://pi.dev";
 pub const REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS: u64 = 4_000;
+pub const REMOTE_CATALOG_TOTAL_TIMEOUT_MS: u64 = 15_000;
 pub const REMOTE_CATALOG_REFRESH_INTERVAL_MS: u64 = 4 * 60 * 60 * 1000;
 
 fn now_ms() -> u64 {
@@ -31,6 +33,12 @@ fn catalog_url(provider_id: &str) -> Result<reqwest::Url, String> {
         .unwrap_or_else(|_| DEFAULT_CATALOG_BASE_URL.to_string());
     let mut url =
         reqwest::Url::parse(&base).map_err(|e| format!("invalid model catalog URL: {e}"))?;
+    // Match `new URL('/api/models/providers/<id>', base)` from upstream:
+    // a test/base URL's existing path and query must not leak into the API
+    // route.
+    url.set_path("");
+    url.set_query(None);
+    url.set_fragment(None);
     {
         let mut segments = url
             .path_segments_mut()
@@ -49,6 +57,26 @@ fn catalog_url(provider_id: &str) -> Result<reqwest::Url, String> {
 /// `models-store.json` entries used by the upstream runtime. Returns the
 /// number of providers successfully refreshed.
 pub async fn refresh_catalogs(agent_dir: &Path, force: bool) -> Result<usize, String> {
+    let provider_ids = pi_ai::model_catalog::get_builtin_providers();
+    match tokio::time::timeout(
+        Duration::from_millis(REMOTE_CATALOG_TOTAL_TIMEOUT_MS),
+        refresh_catalogs_for_providers(agent_dir, force, &provider_ids),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err("Model catalog refresh timed out.".to_string()),
+    }
+}
+
+/// Refresh a selected set of provider catalogs. The production entry point
+/// uses all built-in providers; keeping the provider list injectable makes the
+/// HTTP contract testable without contacting every provider in the catalog.
+pub async fn refresh_catalogs_for_providers(
+    agent_dir: &Path,
+    force: bool,
+    provider_ids: &[String],
+) -> Result<usize, String> {
     if std::env::var_os("PI_OFFLINE").is_some() {
         return Err("model catalog refresh is unavailable in offline mode".to_string());
     }
@@ -58,125 +86,155 @@ pub async fn refresh_catalogs(agent_dir: &Path, force: bool) -> Result<usize, St
         .map_err(|e| format!("create model catalog client: {e}"))?;
     let store =
         crate::core::models_store::FileModelsStore::new(agent_dir.join("models-store.json"));
+    let results = join_all(provider_ids.iter().cloned().map(|provider_id| {
+        let client = client.clone();
+        let store = store.clone();
+        async move { refresh_provider_catalog(&client, &store, &provider_id, force).await }
+    }))
+    .await;
     let mut refreshed = 0usize;
     let mut errors = Vec::new();
-    for provider_id in pi_ai::model_catalog::get_builtin_providers() {
-        let stored = store.read(&provider_id);
-        if !force && within_refresh_freshness_window(stored.as_ref(), now_ms()) {
-            continue;
+    for result in results {
+        match result {
+            Ok(count) => refreshed += count,
+            Err(error) => errors.push(error),
         }
-        let url = match catalog_url(&provider_id) {
-            Ok(url) => url,
-            Err(error) => {
-                errors.push(format!("{provider_id}: {error}"));
-                continue;
-            }
-        };
-        let mut request = client
-            .get(url)
-            .header("accept", "application/json")
-            .header("user-agent", format!("pi/{}", crate::config::VERSION));
-        if let Some(etag) = stored
-            .as_ref()
-            .and_then(|entry| entry.etag.as_deref())
-            .filter(|_| stored.as_ref().is_some_and(|e| !e.models.is_empty()))
-        {
-            request = request.header("if-none-match", etag);
-        }
-        let response = match request.send().await {
-            Ok(response) => response,
-            Err(error) => {
-                errors.push(format!("{provider_id}: {error}"));
-                continue;
-            }
-        };
-        let checked_at = now_ms();
-        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
-            if let Some(mut entry) = stored {
-                entry.checked_at = Some(checked_at);
-                store.write(&provider_id, &entry);
-                refreshed += 1;
-            }
-            continue;
-        }
-        if response.status() == reqwest::StatusCode::NOT_FOUND
-            || response.status() == reqwest::StatusCode::NOT_IMPLEMENTED
-        {
-            let models = stored
-                .as_ref()
-                .map(|entry| entry.models.clone())
-                .unwrap_or_default();
-            store.write(
-                &provider_id,
-                &ModelsStoreEntry {
-                    models,
-                    last_modified: Some(0),
-                    checked_at: Some(checked_at),
-                    etag: None,
-                },
-            );
-            refreshed += 1;
-            continue;
-        }
-        if !response.status().is_success() {
-            if let Some(mut entry) = stored {
-                // Keep a valid cached body/ETag while moving the freshness
-                // clock, matching upstream's transient-failure publication.
-                entry.checked_at = Some(checked_at);
-                store.write(&provider_id, &entry);
-            }
-            errors.push(format!(
-                "{provider_id}: model catalog request failed: {}",
-                response.status()
-            ));
-            continue;
-        }
-        let etag = response
-            .headers()
-            .get("etag")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        let last_modified = response
-            .headers()
-            .get("last-modified")
-            .and_then(|value| value.to_str().ok())
-            .and_then(parse_http_date_ms)
-            .unwrap_or(0);
-        let body = match response.json::<serde_json::Value>().await {
-            Ok(body) => body,
-            Err(error) => {
-                errors.push(format!(
-                    "{provider_id}: invalid model catalog JSON: {error}"
-                ));
-                continue;
-            }
-        };
-        let models = match parse_catalog(&provider_id, &body) {
-            Ok(models) => models,
-            Err(error) => {
-                errors.push(format!("{provider_id}: {error}"));
-                continue;
-            }
-        };
-        store.write(
-            &provider_id,
-            &ModelsStoreEntry {
-                models,
-                last_modified: Some(last_modified),
-                checked_at: Some(checked_at),
-                etag,
-            },
-        );
-        refreshed += 1;
     }
     if errors.is_empty() {
         Ok(refreshed)
     } else {
         Err(format!(
-            "could not refresh model catalogs: {}",
+            "Could not refresh model catalogs: {}",
             errors.join("; ")
         ))
     }
+}
+
+async fn refresh_provider_catalog(
+    client: &reqwest::Client,
+    store: &crate::core::models_store::FileModelsStore,
+    provider_id: &str,
+    force: bool,
+) -> Result<usize, String> {
+    let stored = store.read(provider_id);
+    if !force && within_refresh_freshness_window(stored.as_ref(), now_ms()) {
+        return Ok(0);
+    }
+    let url = catalog_url(provider_id)?;
+    let etag = stored
+        .as_ref()
+        .and_then(|entry| entry.etag.as_deref())
+        .filter(|_| stored.as_ref().is_some_and(|e| !e.models.is_empty()))
+        .map(str::to_string);
+    let response = send_catalog_request(client, url, provider_id, etag.as_deref()).await?;
+    let checked_at = now_ms();
+    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        if let Some(mut entry) = stored {
+            entry.checked_at = Some(checked_at);
+            store.write(provider_id, &entry);
+            return Ok(1);
+        }
+        return Err(format!(
+            "{provider_id}: model catalog returned 304 without a cached body"
+        ));
+    }
+    if response.status() == reqwest::StatusCode::NOT_FOUND
+        || response.status() == reqwest::StatusCode::NOT_IMPLEMENTED
+    {
+        let models = stored
+            .as_ref()
+            .map(|entry| entry.models.clone())
+            .unwrap_or_default();
+        store.write(
+            provider_id,
+            &ModelsStoreEntry {
+                models,
+                last_modified: Some(0),
+                checked_at: Some(checked_at),
+                etag: None,
+            },
+        );
+        return Ok(1);
+    }
+    if !response.status().is_success() {
+        if let Some(mut entry) = stored {
+            // Keep a valid cached body/ETag while moving the freshness clock,
+            // matching upstream's transient-failure publication.
+            entry.checked_at = Some(checked_at);
+            store.write(provider_id, &entry);
+        }
+        return Err(format!(
+            "{provider_id}: model catalog request failed: {}",
+            response.status()
+        ));
+    }
+    let etag = response
+        .headers()
+        .get("etag")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let last_modified = response
+        .headers()
+        .get("last-modified")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_http_date_ms)
+        .unwrap_or(0);
+    let body = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|error| format!("{provider_id}: invalid model catalog JSON: {error}"))?;
+    let models = parse_catalog(provider_id, &body)?;
+    store.write(
+        provider_id,
+        &ModelsStoreEntry {
+            models,
+            last_modified: Some(last_modified),
+            checked_at: Some(checked_at),
+            etag,
+        },
+    );
+    Ok(1)
+}
+
+async fn send_catalog_request(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+    provider_id: &str,
+    etag: Option<&str>,
+) -> Result<reqwest::Response, String> {
+    const RETRYABLE_STATUS_CODES: [reqwest::StatusCode; 7] = [
+        reqwest::StatusCode::REQUEST_TIMEOUT,
+        reqwest::StatusCode::TOO_EARLY,
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        reqwest::StatusCode::BAD_GATEWAY,
+        reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        reqwest::StatusCode::GATEWAY_TIMEOUT,
+    ];
+    let mut last_error = None;
+    for attempt in 0..3 {
+        let mut request = client
+            .get(url.clone())
+            .header("accept", "application/json")
+            .header("user-agent", format!("pi/{}", crate::config::VERSION));
+        if let Some(etag) = etag {
+            request = request.header("if-none-match", etag);
+        }
+        match request.send().await {
+            Ok(response) if RETRYABLE_STATUS_CODES.contains(&response.status()) && attempt < 2 => {
+                drop(response);
+            }
+            Ok(response) => return Ok(response),
+            Err(error) if attempt < 2 => {
+                last_error = Some(error.to_string());
+            }
+            Err(error) => return Err(format!("{provider_id}: {error}")),
+        }
+    }
+    Err(format!(
+        "{provider_id}: {}",
+        last_error.unwrap_or_else(|| "model catalog request failed".to_string())
+    ))
 }
 
 fn parse_http_date_ms(value: &str) -> Option<u64> {
@@ -382,9 +440,76 @@ pub fn within_refresh_freshness_window(entry: Option<&ModelsStoreEntry>, now_ms:
 mod tests {
     use super::*;
     use serde_json::json;
-
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     fn model(provider: &str, id: &str) -> Model {
         Model::new(id, id, "openai-responses", provider)
+    }
+
+    async fn env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        crate::core::environment_test_lock().await
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn serve_catalog(
+        status: &str,
+        headers: &str,
+        body: &str,
+        request_count: usize,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let status = status.to_string();
+        let headers = headers.to_string();
+        let body = body.as_bytes().to_vec();
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for _ in 0..request_count {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let read = stream.read(&mut request).unwrap_or(0);
+                requests.push(String::from_utf8_lossy(&request[..read]).to_string());
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{}",
+                    body.len(),
+                    String::from_utf8_lossy(&body)
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    fn catalog_body() -> &'static str {
+        r#"{"models":[{"id":"remote-demo","name":"Remote Demo","api":"openai-responses","baseUrl":"https://demo.example.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":128000,"maxTokens":16384}]}"#
     }
 
     #[test]
@@ -496,5 +621,82 @@ mod tests {
         };
         assert!(remote_models(Some(&entry), Some(1)).is_empty());
         assert!(within_refresh_freshness_window(Some(&entry), 1_001));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_fetches_and_persists_catalog_with_http_metadata() {
+        let _lock = env_lock().await;
+        let _offline = EnvGuard::remove("PI_OFFLINE");
+        let (base_url, server) = serve_catalog(
+            "200 OK",
+            "ETag: \"demo-etag\"\r\nLast-Modified: Sun, 06 Nov 1994 08:49:37 GMT\r\n",
+            catalog_body(),
+            1,
+        );
+        let _endpoint = EnvGuard::set("PI_MODEL_CATALOG_URL", &base_url);
+        let agent_dir = std::env::temp_dir().join(format!(
+            "pi-remote-catalog-success-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let providers = vec!["google".to_string()];
+        let refreshed = refresh_catalogs_for_providers(&agent_dir, true, &providers)
+            .await
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(refreshed, 1);
+        assert!(requests[0].contains("GET /api/models/providers/google HTTP/1.1"));
+        let store =
+            crate::core::models_store::FileModelsStore::new(agent_dir.join("models-store.json"));
+        let entry = store.read("google").unwrap();
+        assert_eq!(entry.models[0].id, "remote-demo");
+        assert_eq!(entry.models[0].provider, "google");
+        assert_eq!(entry.etag.as_deref(), Some("\"demo-etag\""));
+        assert_eq!(entry.last_modified, Some(784_111_777_000));
+        let _ = std::fs::remove_dir_all(agent_dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_retries_transient_http_failures_and_reports_final_status() {
+        let _lock = env_lock().await;
+        let _offline = EnvGuard::remove("PI_OFFLINE");
+        let (base_url, server) = serve_catalog("500 Internal Server Error", "", "{}", 3);
+        let _endpoint = EnvGuard::set("PI_MODEL_CATALOG_URL", &base_url);
+        let agent_dir = std::env::temp_dir().join(format!(
+            "pi-remote-catalog-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let providers = vec!["google".to_string()];
+        let error = refresh_catalogs_for_providers(&agent_dir, true, &providers)
+            .await
+            .unwrap_err();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(
+            error.contains("Could not refresh model catalogs"),
+            "{error}"
+        );
+        assert!(
+            error.contains("google: model catalog request failed: 500"),
+            "{error}"
+        );
+        let _ = std::fs::remove_dir_all(agent_dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refresh_is_unavailable_in_offline_mode() {
+        let _lock = env_lock().await;
+        let _offline = EnvGuard::set("PI_OFFLINE", "1");
+        let providers = vec!["google".to_string()];
+        let error = refresh_catalogs_for_providers(
+            &std::env::temp_dir().join(format!(
+                "pi-remote-catalog-offline-{}",
+                uuid::Uuid::new_v4()
+            )),
+            true,
+            &providers,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("unavailable in offline mode"), "{error}");
     }
 }

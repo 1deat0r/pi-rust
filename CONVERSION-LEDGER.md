@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **51.20% (85/166)**. Run
+- The exhaustive checker reports **52.41% (87/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -27,9 +27,9 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 - Documented remaining gaps (PLAN.md carry-forward + per-crate TODOs): OAuth
   device-code flows, codex WebSocket transport (SSE fallback today),
   `/share` GitHub-gist OAuth (in-progress in the working tree), ConfigSelector
-  full TUI component, `update --models` pi.dev fetch seam, models.json runtime
-  merge seam, full interactive slash-command PTY coverage, TUI alt-screen full
-  swap + terminal feature probes, server/client
+  full TUI component, models.json runtime merge seam, full interactive
+  slash-command PTY coverage, TUI alt-screen full swap + terminal feature
+  probes, server/client
   concurrency surfaces (leases, reconnect, queuing). Signed usage adjustment
   parity is closed in Session 16.
 - The alt-screen hardening now invalidates differential frames after
@@ -490,9 +490,16 @@ Recut of the remaining work by user impact + risk:
       rpc_runtime_control_commands_update_settings_and_state`, the existing
       `rpc_applies_settings_to_stream_compaction_retry_and_queues`, queue-mode
       drain tests, and the full RPC suite.
-- [ ] 89. `pi update` parity: version check + `--models` pi.dev fetch seam;
-      `PI_SKIP_VERSION_CHECK`.
-- [ ] 90. Update/tests (offline, skip-check, fetch failure paths). (mock)
+- [x] 89. `pi update` parity: version-plan checks use the upstream latest-release
+      endpoint/retry semantics; `--models` refreshes the pi.dev catalogs with
+      bounded parallel requests, retries, freshness/ETag handling, persistence,
+      and the existing `PI_SKIP_VERSION_CHECK` startup seam. (unit; mock)
+- [x] 90. Update tests cover offline/skip-check behavior, normalized release
+      payloads, model-catalog success and transient HTTP failure paths, and the
+      offline CLI update error. (unit; mock) Evidence: `cargo test -p
+      pi-coding-agent --offline --lib core::version_check::tests`, `cargo test
+      -p pi-coding-agent --offline --lib core::remote_catalog_provider::tests`,
+      and `cargo test -p pi-coding-agent --offline --test cli_commands update_`.
 
 ## T8 — Evals, packaging, parity suite
 

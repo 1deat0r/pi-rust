@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 51.20% (85/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 52.41% (87/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -616,8 +616,7 @@ decision, TUI alt-screen full swap + ICU word segmentation.
   represented with signed i64 counts and preserved in ledger totals.
 - Remaining documented gaps: provider OAuth device-code flows (openai-codex/
   github-copilot/radius), codex WebSocket transport (SSE fallback), ConfigSelector
-  full TUI component, `update --models` pi.dev fetch seam (domain not in egress
-  allowlist), and TUI alt-screen full swap.
+  full TUI component, and TUI alt-screen full swap.
 
 ### Session 13 (planning) — 2026-08-23 — NEXT-100 tracker authored
 Agent: pi (Claude)   HEAD: 83e55cb (planning only, no code)
@@ -1015,6 +1014,27 @@ auto-retry, steering mode, and follow-up mode commands.
   rpc_runtime_control_commands_update_settings_and_state`, the focused RPC
   suite, and `cargo test --workspace --offline`.
 - #88 is complete. #89–90 and the supplemental eval/fixture tasks remain open.
+
+### Session 28 — 2026-08-24 — update/version and model-catalog parity
+Scope: T7 #89–90, closing the visible `pi update` version and model-catalog
+fetch contract.
+
+- `pi update` now follows the upstream latest-release plan: three-attempt
+  retrying transport checks for transient failures, normalized release metadata,
+  semver prerelease/build precedence, current-version/`--force` decisions, and
+  a truthful compiled-binary self-update fallback.
+- `pi update --models` now refreshes built-in provider catalogs concurrently
+  under the upstream 15-second total bound, retries transient HTTP statuses,
+  handles 304/404/501 and ETag/Last-Modified persistence, and reports the
+  upstream success/error lines. The selected-provider seam keeps this behavior
+  mock-testable without contacting every provider.
+- Evidence (unit/mock): `cargo test -p pi-coding-agent --offline --lib
+  core::version_check::tests`, `cargo test -p pi-coding-agent --offline --lib
+  core::remote_catalog_provider::tests`, `cargo test -p pi-coding-agent
+  --offline --test cli_commands update_`, `cargo check --workspace --offline`,
+  `cargo test --workspace --offline`, and `cargo fmt --all -- --check`.
+- #89 and #90 are complete. S-016/S-017 remain open for atomic-write and
+  provider-shape/runtime-merge fixture expansion beyond this update command.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

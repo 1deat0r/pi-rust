@@ -8,8 +8,8 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-51.20% = 85 completed / 166 total tasks
-81 tasks remain open
+52.41% = 87 completed / 166 total tasks
+79 tasks remain open
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
@@ -26,14 +26,12 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local code checkpoint is the AgentTool contract/update work after
-the selector PTY/resize and screen-epoch checkpoints. The one-shot
-auto-compaction, covered client criteria, selector behavior, selector
-PTY/resize lifecycle, screen-epoch redraw invalidation, edit argument
-preparation, streamed tool updates, and terminate-batch handling are
-implemented and verified locally. The bash harness follow-up, RPC runtime
-audit test, and synchronized docs are currently uncommitted; pushes are
-blocked because the HTTPS remote requires GitHub credentials.
+The latest committed local checkpoint is the RPC runtime audit after the
+selector PTY/resize, screen-epoch, AgentTool, and bash-harness checkpoints.
+The current working tree adds the `pi update` version-plan and model-catalog
+HTTP parity slice plus synchronized docs; it is being verified before the
+next local commit. Pushes remain blocked because the HTTPS remote requires
+GitHub credentials.
 Preserve existing changes; do not use `git reset --hard`, `git checkout --`, or
 broad revert commands.
 
@@ -50,7 +48,7 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`51.20% (85/166; 81 open)`. Preserve the pre-existing untracked `AGENTS.md`;
+`52.41% (87/166; 79 open)`. Preserve the pre-existing untracked `AGENTS.md`;
 all other changes in this checkpoint are intentional local work ahead of the
 remote.
 
@@ -81,6 +79,9 @@ These checks passed during the session:
 /home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline --test tools bash_tool_streams_partial_updates_through_agent_contract
 /home/mustbearnold/.cargo/bin/cargo test -p pi-agent --offline --test tools edit_tool_registers_prepare_arguments_before_validation
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline rpc_runtime_control_commands_update_settings_and_state
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::version_check::tests
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::remote_catalog_provider::tests
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test cli_commands update_
 git diff --check
 node scripts/conversion-progress.mjs
 ```
@@ -88,6 +89,10 @@ node scripts/conversion-progress.mjs
 A full `cargo test --workspace --offline` passed after the image/read changes,
 including 162 `pi-agent` unit tests, the coding-agent integration targets, 186
 `pi-tui` unit tests, and all workspace doctests.
+
+The latest full gate after the update/version slice also passed: 164 `pi-agent`
+unit tests, 286 `pi-ai` unit tests, 444 `pi-coding-agent` unit tests plus all
+integration targets, 186 `pi-tui` unit tests, and all workspace doctests.
 
 ## Last code change
 
@@ -187,8 +192,27 @@ The RPC runtime audit is now complete locally:
   persisted settings, queue modes, and the `get_state` response. Existing
   stream/compaction/retry/provider-setting and queue-drain tests cover the
   downstream behavior.
-- #88 is marked complete. #89–90 and the supplemental eval/fixture work remain
-  open.
+- #88 is marked complete. The update/version and model-catalog slice closes
+  #89–90; S-016/S-017 remain open for atomic-write and broader provider-shape
+  fixture expansion.
+
+The update/version and model-catalog checkpoint is now complete locally:
+
+- `pi update` now performs the upstream latest-release plan with normalized
+  metadata, semver prerelease/build comparison, transient retry behavior,
+  current-version/`--force` handling, and a truthful compiled-binary
+  self-update fallback.
+- `pi update --models` refreshes built-in providers concurrently within the
+  upstream 15-second bound, retries transient HTTP statuses, persists
+  ETag/Last-Modified/freshness state, handles 304/404/501, and keeps the
+  `PI_MODEL_CATALOG_URL` seam for mock tests. The user-facing success/error
+  lines now match upstream.
+- Version tests cover offline and `PI_SKIP_VERSION_CHECK` short-circuiting,
+  normalized release JSON, and malformed endpoint failures. Catalog tests
+  cover persisted success and three-attempt transient failure behavior; the
+  binary update test covers offline self-update failure.
+- #89 and #90 are marked complete. The supplemental S-016/S-017 rows remain
+  open deliberately.
 
 ## Major parity work already present
 
@@ -215,8 +239,9 @@ items just because a similarly named Rust module exists.
 
 ## Recommended next sequence
 
-1. Commit the bash harness/RPC audit follow-up, retry `git push origin main`, and
-   report the HTTPS credential blocker if it persists.
+1. Commit the update/version and model-catalog checkpoint, retry
+   `git push origin main`, and report the HTTPS credential blocker if it
+   persists.
 2. Continue with S-018/S-020 harness fixture parity, then the full
    regular/fullscreen #61/#62 swap work and broader S-056 interactive matrix.
 3. Keep `CONVERSION-LEDGER.md`, `PLAN.md`, and this handoff synchronized;

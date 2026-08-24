@@ -11,10 +11,13 @@
 //! Divergence: `pi update --self` cannot self-update a compiled Rust binary;
 //! the port prints the upstream-style "cannot self-update" instruction.
 
-use crate::config::{self, APP_NAME, CONFIG_DIR_NAME};
+use crate::config::{self, APP_NAME, CONFIG_DIR_NAME, VERSION};
 use crate::core::package_manager::PackageManager;
 use crate::core::remote_catalog_provider::refresh_catalogs;
 use crate::core::settings::SettingsManager;
+use crate::core::version_check::{get_latest_pi_release, is_newer_package_version};
+
+const PACKAGE_NAME: &str = "@earendil-works/pi-coding-agent";
 
 /// Package command kind (upstream `PackageCommand`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +35,36 @@ pub enum UpdateTarget {
     Self_,
     Extensions { source: Option<String> },
     Models,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelfUpdatePlan {
+    package_name: String,
+    install_spec: String,
+    version: String,
+    note: Option<String>,
+    should_run: bool,
+}
+
+async fn get_self_update_plan(force: bool) -> Result<SelfUpdatePlan, String> {
+    let latest_release = get_latest_pi_release(VERSION, true)
+        .await
+        .map_err(|error| format!("Could not determine latest {APP_NAME} version: {error}"))?
+        .ok_or_else(|| format!("Could not determine latest {APP_NAME} version."))?;
+    let package_name = latest_release
+        .package_name
+        .unwrap_or_else(|| PACKAGE_NAME.to_string());
+    let install_spec = format!("{package_name}@{}", latest_release.version);
+    let should_run = force
+        || package_name != PACKAGE_NAME
+        || is_newer_package_version(&latest_release.version, VERSION);
+    Ok(SelfUpdatePlan {
+        package_name,
+        install_spec,
+        version: latest_release.version,
+        note: latest_release.note,
+        should_run,
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -433,8 +466,10 @@ pub async fn handle_package_command(args: &[String]) -> bool {
         && matches!(options.update_target, Some(UpdateTarget::Models))
     {
         match refresh_catalogs(&agent_dir_for_catalog(), true).await {
-            Ok(updated) => {
-                println!("Model catalogs refreshed ({updated} providers)");
+            Ok(_) => {
+                // Keep the user-facing line identical to the upstream CLI;
+                // the provider count is an implementation detail.
+                println!("Model catalogs refreshed");
                 return true;
             }
             Err(error) => {
@@ -582,11 +617,29 @@ pub async fn handle_package_command(args: &[String]) -> bool {
                 }
             }
             if includes_self {
-                // The compiled Rust port cannot self-update; use the
-                // upstream-style unavailable instruction (documented
-                // divergence).
+                let plan = match get_self_update_plan(options.force).await {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        eprintln!("Error: {error}");
+                        std::process::exit(1);
+                    }
+                };
+                if !plan.should_run {
+                    println!("{APP_NAME} is already up to date (v{})", plan.version);
+                    return true;
+                }
+
+                // The compiled Rust port cannot replace its own executable;
+                // preserve the upstream decision point and report the exact
+                // install target so a package manager/wrapper can finish it.
                 eprintln!("error: {APP_NAME} cannot self-update this installation.");
-                eprintln!("Update pi using the package manager, wrapper, or source checkout that provides this installation.");
+                if let Some(note) = plan.note.as_deref().filter(|note| !note.trim().is_empty()) {
+                    eprintln!("Update note: {}", note.trim());
+                }
+                eprintln!(
+                    "Update {} using the package manager, wrapper, or source checkout that provides this installation.",
+                    plan.install_spec
+                );
                 std::process::exit(1);
             }
         }
