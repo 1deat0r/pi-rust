@@ -33,10 +33,10 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   attributes. JSON mode now also owns a stateful in-memory `AgentHarness`
   transcript and replays rich stream updates, including terminal provider
   errors, without changing the established successful RPC wire envelope. A
-  shared lifecycle adapter wraps the JSON and RPC loop paths, while interactive
-  turns now run through a configured harness as well; complete mode-specific
-  golden envelopes and persistence/secondary-lane assertions remain open
-  under S-021/S-022. Telemetry callback panics now
+  configured harnesses cover print, JSON, and interactive turns, while the
+  shared lifecycle adapter covers the remaining RPC loop paths; complete
+  mode-specific golden envelopes and persistence/secondary-lane assertions
+  remain open under S-021/S-022. Telemetry callback panics now
   settle in-memory spans as automatic errors while preserving explicit
   statuses and panic propagation; the shared TUI image-capability fixtures
   are serialized for deterministic workspace runs.
