@@ -3,7 +3,7 @@
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-**Conversion progress: 56.63% (94/166 exhaustive ledger tasks complete).** The
+**Conversion progress: 57.23% (95/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -1259,7 +1259,7 @@ distribution's intentional lack of startup timing namespaces.
   `PI_TIMING=1 ./target/debug/pi --version` (mock binary smoke) prints the
   warning before `pi 0.84.2`; the full workspace check/test and documentation
   gate are green before the checkpoint commit (448 coding-agent tests).
-- S-031 is complete as an explicit, user-visible non-port. S-029/S-030,
+- S-031 is complete as an explicit, user-visible non-port. S-029,
   session migration integration, and the remaining harness ownership work
   remain open.
 
@@ -1287,6 +1287,30 @@ direct switch paths without overstating the still-missing CLI routing.
   pi-coding-agent, and 186 pi-tui tests plus integration/doctest targets).
 - S-026 remains open for CLI `--continue`/`--resume`/`--fork` routing and the
   complete resume/switch/fork/import audit.
+
+### Session 39 — 2026-08-24 — Interactive cache notices and re-billing (S-030)
+Scope: connect the already-ported prompt-cache accounting to the interactive
+transcript, footer/session usage, settings selector, and context reset paths.
+
+- Added a serialized shadow of interactive session entries because the local
+  TUI defers JSONL persistence until exit. Cache misses are re-derived from
+  those entries and injected after the matching assistant timestamp, so the
+  notices are not persisted and remain correctly placed after compaction.
+- Exposed and wired the upstream-off `showCacheMissNotices` setting. The
+  notice formatter preserves the upstream 20k-token/$0.10 thresholds, model
+  switch/idle labels, and compact token/cost text. `/session` now includes the
+  cumulative `Cache Re-billed` tokens/cost/miss-count line.
+- Footer usage now reads the shadow entries, preserving assistant,
+  tool-result, and compaction/summary usage across post-compaction context
+  replacement. Auto-compaction and `/clear` add reset markers; new session,
+  resume, and import clear/reload the shadow state.
+- Evidence (unit/integration): `cargo test -p pi-coding-agent --offline
+  --lib interactive::` (33 passed), `cargo test -p pi-coding-agent --offline
+  --quiet` (455 coding-agent unit tests plus integration targets),
+  `cargo check --workspace --offline`, `cargo test --workspace --offline
+  --quiet`, `cargo fmt --all`, and `git diff --check`.
+- S-030 is complete. S-029, the remaining S-026 CLI routing audit, and
+  S-021/S-022 harness ownership work remain open.
 
 ### Open (carry-forward)
 - P2 phase COMPLETE (evidence above). P3 data layer COMPLETE (Session 7);

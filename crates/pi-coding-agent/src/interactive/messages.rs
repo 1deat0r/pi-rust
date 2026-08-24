@@ -136,6 +136,17 @@ pub fn render_message(message: &AgentMessage, hide_thinking: bool) -> Option<(St
 
 /// Build the full transcript markdown given the message list.
 pub fn build_transcript(messages: &[AgentMessage], hide_thinking: bool) -> String {
+    build_transcript_with_cache_notices(messages, hide_thinking, &[])
+}
+
+/// Build the transcript and re-inject non-persisted cache-miss notices after
+/// the assistant message that paid for each miss. Notices are keyed by the
+/// assistant timestamp so they survive compaction and session rehydration.
+pub fn build_transcript_with_cache_notices(
+    messages: &[AgentMessage],
+    hide_thinking: bool,
+    cache_notices: &[(u64, String)],
+) -> String {
     let mut out = String::new();
     for message in messages {
         if let Some((kind, text)) = render_message(message, hide_thinking) {
@@ -150,6 +161,17 @@ pub fn build_transcript(messages: &[AgentMessage], hide_thinking: bool) -> Strin
                     out.push_str("\n\n");
                 }
                 _ => {}
+            }
+
+            if let AgentMessage::Core(Message::Assistant(assistant)) = message {
+                if let Some((_, notice)) = cache_notices
+                    .iter()
+                    .find(|(timestamp, _)| *timestamp == assistant.timestamp())
+                {
+                    out.push_str("> ");
+                    out.push_str(notice);
+                    out.push_str("\n\n");
+                }
             }
         }
     }

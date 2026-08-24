@@ -224,6 +224,11 @@ pub fn settings_selector_items(
     } else {
         "off"
     };
+    let cache_miss_notices = if settings.get_show_cache_miss_notices() {
+        "true"
+    } else {
+        "false"
+    };
     vec![
         SettingEntry::cycle(
             "theme",
@@ -249,6 +254,13 @@ pub fn settings_selector_items(
             images.to_string(),
             vec!["on".to_string(), "off".to_string()],
         ),
+        SettingEntry::cycle(
+            "cache-miss-notices",
+            "Cache miss notices",
+            cache_miss_notices.to_string(),
+            vec!["true".to_string(), "false".to_string()],
+        )
+        .describe("Show transcript notices for significant prompt-cache misses"),
         SettingEntry::info("model", "Default model", model_id),
     ]
 }

@@ -14,7 +14,8 @@ use pi_agent::session::state::ForkOptions;
 use pi_agent::session::types::EntryNoStats;
 use pi_agent::session::JsonlSessionRepo;
 use pi_ai::model::Model;
-use pi_ai::types::AssistantMessageEvent;
+use pi_ai::types::{AssistantMessageEvent, Message};
+use serde_json::{json, Value};
 
 use crate::args::Args;
 use crate::config;
@@ -52,6 +53,9 @@ struct InteractiveRuntime {
     /// session. Session-switch operations (resume/fork/clone) advance it so
     /// the exit persist only appends messages added after the switch.
     persisted_until: usize,
+    /// Serialized session entries used to derive cache notices and cumulative
+    /// footer/session usage before the deferred exit persist runs.
+    cache_entries: Vec<Value>,
 }
 
 /// Stream a prompt through the agent loop, observing raw events.
@@ -226,12 +230,20 @@ async fn maybe_auto_compact(runtime: &mut InteractiveRuntime) -> Result<bool, St
                 retained_tail: result.retained_tail,
                 tokens_before: result.tokens_before,
                 details: None,
-                usage: result.usage,
+                usage: result.usage.clone(),
             },
             "main",
         )
         .await
         .map_err(|e| format!("auto-compact: persist: {e}"))?;
+    // Keep a reset marker in the deferred display-entry shadow so the next
+    // request cannot be mistaken for a continuation of the pre-compaction
+    // prompt cache.
+    runtime.cache_entries.push(json!({
+        "type": "compaction",
+        "timestamp": pi_ai::types::now_ms(),
+        "usage": result.usage,
+    }));
     runtime.persisted_until = runtime.messages.len();
     Ok(true)
 }
@@ -252,6 +264,7 @@ fn meta_short_cwd(cwd: &str) -> String {
 /// Aggregate cumulative usage + the latest assistant turn's cache-hit rate
 /// from the in-memory transcript, for the footer token totals (upstream
 /// `FooterComponent.render`).
+#[cfg(test)]
 fn footer_usage_from_messages(
     messages: &[pi_agent::types::AgentMessage],
 ) -> (Option<crate::core::usage_totals::UsageTotals>, Option<f64>) {
@@ -289,7 +302,7 @@ async fn rehydrate_transcript(
     runtime: &InteractiveRuntime,
     transcript_md: &Arc<Mutex<Markdown>>,
     hide_thinking: bool,
-) -> Vec<pi_agent::types::AgentMessage> {
+) -> (Vec<pi_agent::types::AgentMessage>, Vec<Value>) {
     let entries = runtime
         .session
         .find_entries(&pi_agent::session::state::EntryQuery {
@@ -308,11 +321,179 @@ async fn rehydrate_transcript(
             messages.push(message.clone());
         }
     }
+    let cache_entries = entries
+        .iter()
+        .filter_map(|entry| serde_json::to_value(entry).ok())
+        .collect();
     transcript_md
         .lock()
         .unwrap()
         .set_text(it::compose_transcript(&messages, hide_thinking, ""));
-    messages
+    (messages, cache_entries)
+}
+
+/// Serialize one in-memory agent message into the session-entry shape used by
+/// the cache and usage analyzers. Interactive turns are persisted on exit, so
+/// keeping this shadow list lets the footer and `/session` stay current.
+fn cache_entry_from_message(message: &pi_agent::types::AgentMessage) -> Option<Value> {
+    let timestamp = match message {
+        pi_agent::types::AgentMessage::Core(Message::User(user)) => user.timestamp(),
+        pi_agent::types::AgentMessage::Core(Message::Assistant(assistant)) => assistant.timestamp(),
+        pi_agent::types::AgentMessage::Core(Message::ToolResult(tool)) => tool.timestamp(),
+        pi_agent::types::AgentMessage::Custom(custom) => custom.timestamp(),
+    };
+    Some(json!({
+        "type": "message",
+        "timestamp": timestamp,
+        "message": serde_json::to_value(message).ok()?,
+    }))
+}
+
+fn append_cache_entries_from_messages(
+    entries: &mut Vec<Value>,
+    messages: &[pi_agent::types::AgentMessage],
+) {
+    entries.extend(messages.iter().filter_map(cache_entry_from_message));
+}
+
+/// Format one significant cache miss using the upstream labels and thresholds.
+fn format_cache_miss_notice(miss: &crate::core::cache_stats::CacheMiss) -> Option<String> {
+    if miss.missed_tokens < crate::core::cache_stats::CACHE_NOTICE_MIN_TOKENS
+        && miss.missed_cost < crate::core::cache_stats::CACHE_NOTICE_MIN_COST
+    {
+        return None;
+    }
+    let cost = if miss.missed_cost >= 0.01 {
+        format!(" (~${:.2})", miss.missed_cost)
+    } else {
+        String::new()
+    };
+    let rebilled = format!(
+        "{} tokens re-billed{}",
+        it::messages::format_tokens(miss.missed_tokens),
+        cost
+    );
+    let label = if miss.model_changed {
+        "Cache miss after model switch".to_string()
+    } else if miss.idle_ms >= crate::core::cache_stats::CACHE_TTL_MS {
+        format!(
+            "Cache miss after {}m idle",
+            (miss.idle_ms as f64 / 60_000.0).round() as u64
+        )
+    } else {
+        "Cache miss".to_string()
+    };
+    Some(format!("⚠ {label}: {rebilled}"))
+}
+
+/// Re-derive transcript notices from the current shadow session entries. The
+/// notices are keyed by the assistant entry timestamp, not vector position,
+/// so compaction can replace the in-memory context without misplacing them.
+fn cache_notice_timestamps(entries: &[Value]) -> Vec<(u64, String)> {
+    let misses = crate::core::cache_stats::collect_cache_misses(
+        entries,
+        &crate::core::cache_stats::NoPrices,
+    );
+    misses
+        .into_iter()
+        .filter_map(|(index, miss)| {
+            let entry = entries.get(index)?;
+            if entry.get("type").and_then(Value::as_str) != Some("message")
+                || entry
+                    .get("message")
+                    .and_then(|message| message.get("role"))
+                    .and_then(Value::as_str)
+                    != Some("assistant")
+            {
+                return None;
+            }
+            let timestamp = entry.get("timestamp").and_then(Value::as_u64)?;
+            Some((timestamp, format_cache_miss_notice(&miss)?))
+        })
+        .collect()
+}
+
+/// Aggregate cumulative usage from serialized entries, including summary and
+/// tool-result usage that is not present in the post-compaction context.
+fn footer_usage_from_entries(
+    entries: &[Value],
+) -> (Option<crate::core::usage_totals::UsageTotals>, Option<f64>) {
+    use crate::core::usage_totals as ut;
+    let mut totals = ut::create_usage_totals();
+    let mut saw_any = false;
+    let mut cache_hit_rate = None;
+    for entry in entries {
+        match ut::parse_session_entry(entry) {
+            ut::SessionEntryUsageView::Assistant { usage, .. } => {
+                if let Some(usage) = usage {
+                    saw_any = true;
+                    ut::add_usage_to_totals(&mut totals, &usage);
+                    let prompt_tokens = usage.input + usage.cache_read + usage.cache_write;
+                    cache_hit_rate = if prompt_tokens > 0 {
+                        Some((usage.cache_read as f64 / prompt_tokens as f64) * 100.0)
+                    } else {
+                        None
+                    };
+                }
+            }
+            ut::SessionEntryUsageView::ToolResult { usage }
+            | ut::SessionEntryUsageView::Summary { usage } => {
+                saw_any = true;
+                ut::add_usage_to_totals(&mut totals, &usage);
+            }
+            ut::SessionEntryUsageView::Other => {}
+        }
+    }
+    if saw_any {
+        (Some(totals), cache_hit_rate)
+    } else {
+        (None, None)
+    }
+}
+
+fn format_cache_waste_line(waste: crate::core::cache_stats::CacheWasteTotals) -> Option<String> {
+    if waste.missed_tokens == 0 {
+        return None;
+    }
+    let miss_label = if waste.miss_count == 1 {
+        "1 miss".to_string()
+    } else {
+        format!("{} misses", waste.miss_count)
+    };
+    let detail = format!("{} tokens, {}", waste.missed_tokens, miss_label);
+    if waste.missed_cost >= 0.0001 {
+        Some(format!(
+            "Cache Re-billed: ${:.3} ({detail})",
+            waste.missed_cost
+        ))
+    } else {
+        Some(format!("Cache Re-billed: {detail}"))
+    }
+}
+
+fn session_status(runtime: &InteractiveRuntime) -> String {
+    let waste = crate::core::cache_stats::compute_cache_waste(
+        &runtime.cache_entries,
+        &crate::core::cache_stats::NoPrices,
+    );
+    let (usage, _) = footer_usage_from_entries(&runtime.cache_entries);
+    let mut status = format!(
+        "session {} — {} messages in transcript",
+        runtime.session_id.get(..8).unwrap_or(&runtime.session_id),
+        runtime.messages.len()
+    );
+    if let Some(usage) = usage {
+        status.push_str(&format!(
+            "\nusage: {} tokens, ${:.3}",
+            usage.input + usage.output + usage.cache_read + usage.cache_write,
+            usage.cost
+        ));
+    }
+    if let Some(line) = format_cache_waste_line(waste) {
+        status.push('\n');
+        status.push_str(&line);
+    }
+    status
 }
 
 /// Append in-memory messages to a session's main lane (idempotent per call).
@@ -656,6 +837,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         auto_resize_images: settings.get_image_auto_resize(),
         block_images: settings.get_block_images(),
         persisted_until: 0,
+        cache_entries: Vec::new(),
     };
 
     // Match the upstream non-blocking startup check: the TUI becomes usable
@@ -729,7 +911,17 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             {
                 let mut md = transcript_md.lock().unwrap();
                 let stream = stream_buffer.lock().unwrap().clone();
-                let composed = it::compose_transcript(&runtime.messages, hide_thinking, &stream);
+                let cache_notices = if settings.get_show_cache_miss_notices() {
+                    cache_notice_timestamps(&runtime.cache_entries)
+                } else {
+                    Vec::new()
+                };
+                let composed = it::compose_transcript_with_cache_notices(
+                    &runtime.messages,
+                    hide_thinking,
+                    &stream,
+                    &cache_notices,
+                );
                 let mut text = composed;
                 if !status_banner.is_empty() {
                     if !text.is_empty() {
@@ -742,7 +934,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
 
             // 2) Footer.
             {
-                let (usage, cache_hit_rate) = footer_usage_from_messages(&runtime.messages);
+                let (usage, cache_hit_rate) = footer_usage_from_entries(&runtime.cache_entries);
                 let fd = FooterData {
                     cwd: cwd.clone(),
                     branch: footer::git_branch(&cwd),
@@ -875,7 +1067,10 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                     runtime.session = session;
                                                     runtime.session_id = meta.id.clone();
                                                     runtime.session_name = None;
-                                                    runtime.messages = rehydrate_transcript(&runtime, &transcript_md, hide_thinking).await;
+                                                    let (messages, cache_entries) =
+                                                        rehydrate_transcript(&runtime, &transcript_md, hide_thinking).await;
+                                                    runtime.messages = messages;
+                                                    runtime.cache_entries = cache_entries;
                                                     runtime.persisted_until = runtime.messages.len();
                                                     status_banner = format!(
                                                         "resumed session {} ({} prior messages)",
@@ -919,6 +1114,9 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 "images" => {
                                     settings.set_show_images(value == "on");
                                 }
+                                "cache-miss-notices" => {
+                                    settings.set_show_cache_miss_notices(value == "true");
+                                }
                                 _ => {}
                             }
                             status_banner = format!("/settings {id} → {value}");
@@ -954,6 +1152,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 match action {
                     SubmitAction::Prompt(prompt) => {
                         editor.lock().unwrap().add_to_history(&prompt);
+                        let message_start = runtime.messages.len();
                         streaming = true;
                         pending_text = " …".to_string();
                         *stream_buffer.lock().unwrap() = String::new();
@@ -966,6 +1165,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             })
                         };
                         let _ = stream_turn(&mut runtime, prompt, on_event).await;
+                        let new_messages = runtime.messages[message_start..].to_vec();
+                        append_cache_entries_from_messages(&mut runtime.cache_entries, &new_messages);
                         streaming = false;
                         pending_text = String::new();
                         *stream_buffer.lock().unwrap() = String::new();
@@ -996,14 +1197,17 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 modal = Some(Modal::Settings(Arc::new(Mutex::new(SettingsPanel::new(entries)))));
                             }
                             SlashKind::Session => {
-                                status_banner = format!(
-                                    "session {} — {} messages in transcript",
-                                    runtime.session_id.get(..8).unwrap_or(&runtime.session_id),
-                                    runtime.messages.len()
-                                );
+                                status_banner = session_status(&runtime);
                             }
                             SlashKind::Clear => {
                                 runtime.messages.clear();
+                                // `/clear` starts a fresh prompt-cache segment
+                                // while retaining the session's historical
+                                // accounting.
+                                runtime.cache_entries.push(json!({
+                                    "type": "compaction",
+                                    "timestamp": pi_ai::types::now_ms(),
+                                }));
                                 transcript_md.lock().unwrap().set_text("");
                             }
                             SlashKind::Hotkeys => {
@@ -1051,6 +1255,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                             runtime.session = new_session;
                                             runtime.session_id = new_id;
                                             runtime.messages.clear();
+                                            runtime.cache_entries.clear();
                                             runtime.persisted_until = 0;
                                             transcript_md.lock().unwrap().set_text("");
                                             status_banner = format!(
@@ -1189,12 +1394,14 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                                 runtime.session_id =
                                                                     runtime.session.get_metadata().await.id;
                                                                 runtime.session_name = None;
-                                                                runtime.messages = rehydrate_transcript(
+                                                                let (messages, cache_entries) = rehydrate_transcript(
                                                                     &runtime,
                                                                     &transcript_md,
                                                                     hide_thinking,
                                                                 )
                                                                 .await;
+                                                                runtime.messages = messages;
+                                                                runtime.cache_entries = cache_entries;
                                                                 runtime.persisted_until = runtime.messages.len();
                                                                 status_banner = format!(
                                                                     "imported {} ({} prior messages)",
@@ -1615,6 +1822,7 @@ mod tests {
             auto_resize_images: true,
             block_images: false,
             persisted_until: 0,
+            cache_entries: Vec::new(),
         }
     }
 
@@ -1927,5 +2135,136 @@ mod tests {
         let (totals, hit_rate) = footer_usage_from_messages(&messages);
         assert!(totals.is_none());
         assert!(hit_rate.is_none());
+    }
+
+    #[test]
+    fn cache_notice_is_rederived_with_idle_label_and_threshold() {
+        let entries = vec![
+            json!({
+                "type": "message",
+                "timestamp": 1_000,
+                "message": {
+                    "role": "assistant",
+                    "provider": "anthropic",
+                    "model": "claude",
+                    "usage": {
+                        "input": 0,
+                        "output": 1,
+                        "cacheRead": 0,
+                        "cacheWrite": 25_000,
+                        "totalTokens": 25_001,
+                        "cost": {
+                            "input": 0.0,
+                            "output": 0.01,
+                            "cache_read": 0.0,
+                            "cache_write": 100.0,
+                            "total": 100.01
+                        }
+                    }
+                }
+            }),
+            json!({
+                "type": "message",
+                "timestamp": 301_001,
+                "message": {
+                    "role": "assistant",
+                    "provider": "anthropic",
+                    "model": "claude",
+                    "usage": {
+                        "input": 24_000,
+                        "output": 1,
+                        "cacheRead": 1_000,
+                        "cacheWrite": 0,
+                        "totalTokens": 25_001,
+                        "cost": {
+                            "input": 72_000.0,
+                            "output": 0.01,
+                            "cache_read": 300.0,
+                            "cache_write": 0.0,
+                            "total": 72_300.01
+                        }
+                    }
+                }
+            }),
+        ];
+
+        let notices = cache_notice_timestamps(&entries);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].0, 301_001);
+        assert!(notices[0].1.contains("Cache miss after 5m idle"));
+        assert!(notices[0].1.contains("24k tokens re-billed"));
+    }
+
+    #[test]
+    fn footer_entries_include_summary_usage_and_cache_rebilling_line() {
+        let entries = vec![
+            json!({
+                "type": "message",
+                "timestamp": 1,
+                "message": {
+                    "role": "assistant",
+                    "provider": "anthropic",
+                    "model": "claude",
+                    "usage": {
+                        "input": 5_000,
+                        "output": 10,
+                        "cacheRead": 0,
+                        "cacheWrite": 5_000,
+                        "totalTokens": 10_010,
+                        "cost": {"input": 1.0, "output": 0.1, "cache_read": 0.0, "cache_write": 2.0, "total": 3.1}
+                    }
+                }
+            }),
+            json!({
+                "type": "compaction",
+                "timestamp": 2,
+                "usage": {
+                    "input": 100,
+                    "output": 20,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "totalTokens": 120,
+                    "cost": {"input": 0.2, "output": 0.1, "cache_read": 0.0, "cache_write": 0.0, "total": 0.3}
+                }
+            }),
+        ];
+        let (usage, _) = footer_usage_from_entries(&entries);
+        let usage = usage.expect("usage");
+        assert_eq!(usage.input, 5_100);
+        assert_eq!(usage.output, 30);
+        assert!((usage.cost - 3.4).abs() < 1e-9);
+        let waste = crate::core::cache_stats::compute_cache_waste(
+            &entries,
+            &crate::core::cache_stats::NoPrices,
+        );
+        assert_eq!(format_cache_waste_line(waste), None);
+        assert_eq!(
+            format_cache_waste_line(crate::core::cache_stats::CacheWasteTotals {
+                missed_tokens: 24_000,
+                missed_cost: 0.25,
+                miss_count: 2,
+            }),
+            Some("Cache Re-billed: $0.250 (24000 tokens, 2 misses)".to_string())
+        );
+    }
+
+    #[test]
+    fn transcript_reinjects_cache_notice_after_matching_assistant() {
+        let mut assistant = pi_ai::providers::faux_assistant_message(
+            vec![pi_ai::types::ContentBlock::text("answer")],
+            pi_ai::providers::FauxAssistantOptions::default(),
+        );
+        assistant = assistant.with_timestamp(42);
+        let messages = vec![pi_agent::types::AgentMessage::Core(Message::Assistant(
+            assistant,
+        ))];
+        let transcript = it::compose_transcript_with_cache_notices(
+            &messages,
+            false,
+            "",
+            &[(42, "⚠ Cache miss: 24k tokens re-billed".to_string())],
+        );
+        assert!(transcript.contains("answer"));
+        assert!(transcript.contains("> ⚠ Cache miss: 24k tokens re-billed"));
     }
 }

@@ -8,7 +8,7 @@ The requested progress percentage is now based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-56.63% = 94 completed / 166 total tasks
+57.23% = 95 completed / 166 total tasks
 72 tasks remain open
 ```
 
@@ -26,7 +26,8 @@ freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest local checkpoint is `ef640ce`, the partial legacy-session
+The latest local checkpoint is the working-tree S-030 interactive cache-notice
+slice, after `ef640ce`, the partial legacy-session
 integration slice, after committed startup timing (`869ae6d`) and
 the committed compiled-binary self-update contract (`db97b89`) and interactive
 turn harness ownership
@@ -53,9 +54,9 @@ additions/renames include:
   and parity work is spread across the modified crates.
 
 Current status at pause: branch `main`, progress checker reports
-`56.63% (94/166; 72 open)`. Preserve the pre-existing untracked `AGENTS.md`.
-The README now records the legacy-session integration and startup-timing
-compatibility contracts and the
+`57.23% (95/166; 71 open)`. Preserve the pre-existing untracked `AGENTS.md`.
+The README now records the legacy-session integration, startup-timing
+compatibility, and interactive cache-notice contracts and the
 synchronized-doc workflow. All staged checkpoint changes are intentional local
 work ahead of the remote; the pre-existing `AGENTS.md` remains untouched.
 
@@ -118,11 +119,32 @@ These checks passed during the session:
 /home/mustbearnold/.cargo/bin/cargo test -p pi-tui --offline --quiet
 /home/mustbearnold/.cargo/bin/cargo test --workspace --offline --quiet
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test cli_json_mode --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib interactive:: --quiet
 /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib modes::rpc::tests::rpc_command_golden_transcript_matches_fixture
 /home/mustbearnold/.cargo/bin/cargo fmt --all -- --check
 git diff --check
 node scripts/conversion-progress.mjs
 ```
+
+The S-030 interactive cache-notice checkpoint is complete in the working tree:
+
+- Interactive mode maintains serialized shadow entries while its JSONL writes
+  remain deferred until exit. Cache misses are re-derived and injected after
+  matching assistant timestamps, with the upstream 20k-token/$0.10 display
+  thresholds and model-switch/idle labels.
+- The settings selector now exposes and persists `showCacheMissNotices`.
+  Footer usage reads the shadow entries so assistant, tool-result, and
+  compaction/summary usage survives context replacement. `/session` now shows
+  `Cache Re-billed` tokens, cost, and miss count; auto-compaction, `/clear`,
+  new-session, resume, and import reset/reload the cache shadow appropriately.
+- Evidence: `cargo test -p pi-coding-agent --offline --lib interactive::`
+  (33 passed), `cargo test -p pi-coding-agent --offline --quiet` (455
+  coding-agent unit tests plus integration targets),
+  `cargo check --workspace --offline`, `cargo test --workspace --offline
+  --quiet`, `cargo fmt --all`, and `git diff --check`.
+
+S-030 is closed. S-029, the remaining CLI session-routing audit (S-026), and
+the remaining S-021/S-022 harness ownership work are still open.
 
 A full `cargo test --workspace --offline` passed after the image/read changes,
 including 162 `pi-agent` unit tests, the coding-agent integration targets, 186

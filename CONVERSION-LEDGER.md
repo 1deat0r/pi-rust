@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-24)
 
-- The exhaustive checker reports **56.63% (94/166)**. Run
+- The exhaustive checker reports **57.23% (95/166)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md`.
 - The workspace currently checks and tests successfully offline, including the
@@ -19,7 +19,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current state (verified 2026-08-24)
 
-- HEAD is the local legacy-session integration checkpoint on `main`, after
+- HEAD is the local cache-notice interactive checkpoint on `main`, after
   the startup-timing compatibility and compiled-binary self-update contracts,
   the print-path harness ownership, AgentTool harness/termination,
   schema-validator, panic-safe telemetry, update/version, and model-catalog
@@ -430,10 +430,13 @@ Recut of the remaining work by user impact + risk:
       `ModelPriceSource` (per-million cacheRead price) with `NoPrices`/fn-ptr
       sources. 7 fixture tests (first-turn, counted miss + cost math, noise
       floor, compaction reset, model change, price-source fallback, pending-
-      message detect). The interactive consumers (cache-miss transcript
-      notices + the "Cache Re-billed" stats line, gated by the already-wired
-      `showCacheMissNotices` setting) are PTY/render-bound and land with the
-      remaining interactive surface. `timings.ts` (a `PI_TIMING=1`-gated stderr
+      message detect). The interactive consumers are now wired: the settings
+      selector persists `showCacheMissNotices`, the transcript re-derives
+      timestamp-keyed cache-miss notices, the footer aggregates shadow session
+      entries across summary/tool usage, and `/session` renders the
+      "Cache Re-billed" line. Compaction, `/clear`, new-session, resume, and
+      import boundaries reset/reload the shadow cache ledger. `timings.ts` (a
+      `PI_TIMING=1`-gated stderr
       startup profiler) is a deliberate non-port — the Rust binary has no
       equivalent startup-timing namespace, so the module would be dead code.
 - [x] 78. Port `core/auth-guidance.ts` messages parity. New `core/auth_guidance.rs`:
@@ -694,8 +697,22 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       and `cargo test --workspace --offline --quiet`.
 - [ ] S-029 Complete install-telemetry report transport, opt-out, retry, and
       offline behavior where the upstream CLI performs the network ping.
-- [ ] S-030 Wire cache-miss notices and “cache re-billed” display data into the
+- [x] S-030 Wire cache-miss notices and “cache re-billed” display data into the
       interactive transcript/footer, including setting gates and reset events.
+      `modes/interactive.rs` maintains a serialized shadow of deferred
+      interactive entries so `cache_stats` can re-derive notices before exit
+      persistence, while cumulative footer usage includes assistant,
+      tool-result, and summary usage. The settings selector exposes the
+      upstream-off `showCacheMissNotices` gate; `/session` renders the
+      `Cache Re-billed` token/cost/miss-count line; auto-compaction, `/clear`,
+      new-session, resume, and import reset or reload the cache segment.
+      Evidence (unit/integration):
+      `cargo test -p pi-coding-agent --offline --lib interactive::` (33
+      passed), `cargo test -p pi-coding-agent --offline --quiet` (455
+      coding-agent unit tests plus integration targets),
+      `cargo check --workspace --offline`, and
+      `cargo test --workspace --offline --quiet` (176 pi-agent, 286 pi-ai,
+      455 pi-coding-agent, 186 pi-tui, plus integration/doctest targets).
 - [x] S-031 Port the `PI_TIMING=1` startup timing surface or prove/document its
       intentional non-port with a compatibility test and user-facing fallback.
       The Rust distribution deliberately does not expose upstream's startup

@@ -19,6 +19,15 @@ pub const CACHE_TTL_MS: u64 = 5 * 60 * 1000;
 /// Per-turn misses at or below this are cache breakpoint granularity noise.
 const NOISE_FLOOR_TOKENS: u64 = 1024;
 
+/// Minimum miss size shown in the interactive transcript. Smaller misses are
+/// still included in the session accounting when they clear the noise floor,
+/// but are too easy to mistake for a meaningful billing event in the TUI.
+pub const CACHE_NOTICE_MIN_TOKENS: u64 = 20_000;
+
+/// Minimum extra cost shown in the interactive transcript when a miss is
+/// smaller than [`CACHE_NOTICE_MIN_TOKENS`].
+pub const CACHE_NOTICE_MIN_COST: f64 = 0.1;
+
 /// A counted cache miss on a single assistant message (upstream `CacheMiss`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CacheMiss {

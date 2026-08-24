@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 56.63% — 94 of 166 ledger tasks complete; 72 open.**
+**Conversion progress: 57.23% — 95 of 166 ledger tasks complete; 71 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -41,6 +41,15 @@ For a source checkout, rebuild with `cargo build --release -p pi-coding-agent`
 and replace the installed `pi` binary using the mechanism that installed it.
 This is the supported replacement behavior for the Rust distribution; the
 command does not claim that the running executable was updated.
+
+### Prompt-cache notices
+
+Interactive mode keeps cache accounting live even though it defers JSONL
+persistence until exit. Enable `Cache miss notices` in `/settings` to inject
+significant cache-miss notices into the transcript; `/session` reports
+cumulative `Cache Re-billed` tokens, cost, and miss count. Auto-compaction,
+`/clear`, new sessions, resume, and import boundaries reset or reload the
+cache segment so notices stay attached to the correct prompt history.
 
 ### Startup timing
 

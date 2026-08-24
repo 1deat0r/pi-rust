@@ -168,7 +168,20 @@ pub fn compose_transcript(
     hide_thinking: bool,
     stream_text: &str,
 ) -> String {
-    let mut text = messages::build_transcript(messages, hide_thinking);
+    compose_transcript_with_cache_notices(messages, hide_thinking, stream_text, &[])
+}
+
+/// Compose the current transcript while re-injecting derived cache notices.
+/// Notices are deliberately not persisted as messages; they are recomputed
+/// from session usage whenever the setting is enabled.
+pub fn compose_transcript_with_cache_notices(
+    messages: &[AgentMessage],
+    hide_thinking: bool,
+    stream_text: &str,
+    cache_notices: &[(u64, String)],
+) -> String {
+    let mut text =
+        messages::build_transcript_with_cache_notices(messages, hide_thinking, cache_notices);
     if !stream_text.trim().is_empty() {
         if !text.is_empty() {
             text.push('\n');
