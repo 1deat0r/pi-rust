@@ -26,10 +26,11 @@ ledger freeze. Do not claim 100% before the final source/TODO audit.
 
 ## Important working-tree state
 
-The latest pushed checkpoint before the current implementation slice is
-`b41bc6f6df52e4cd97f5cae345b28af73e07fe6e`. The current worktree contains an
-uncommitted S-027 extension-runtime increment and synchronized documentation.
-The
+The latest pushed checkpoint is
+`61719f8ef1596b90f6898ef019885211555cbd4e`, containing the S-027 graph and
+lifecycle increment plus synchronized documentation. Local `HEAD` and
+`origin/main` match this hash. The current worktree has no tracked changes;
+the
 pre-existing untracked `AGENTS.md` remains untouched and must be preserved.
 Do not use `git reset --hard`,
 `git checkout --`, broad revert commands, or `git clean`.
@@ -45,9 +46,8 @@ implemented and locally validated. The remaining S-027 residuals are a
 genuine in-process compiled-Bun/Node-SEA host, full interactive theme
 metadata/activation, and session-before-fork coverage. The clean-room gate is
 green; the next gate is the S-027 residual review followed by the final S-066
-audit after S-027 is resolved. A focused commit and push for this increment
-are pending. The pre-existing untracked `AGENTS.md` remains preserved and
-unstaged.
+audit after S-027 is resolved. The pre-existing untracked `AGENTS.md` remains
+preserved and unstaged.
 
 All sections below whose headings say “Current checkpoint” and which contain
 older percentages or commits are historical snapshots from earlier turns.
