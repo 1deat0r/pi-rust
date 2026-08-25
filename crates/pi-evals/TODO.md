@@ -1,8 +1,15 @@
-# pi-evals — port status (P9)
+# pi-evals — current conversion notes (P9)
 
-## Done (Session 11)
-- Eval harness (pi-harness), vitest-evals equivalents (harness-table/summary/reporter/artifacts),
-  smoke + extensions scenarios, `cargo run -p pi-evals -- --faux --binary ./target/release/pi` runner.
-  20 tests.
-- Divergences: eval tasks run the real `pi` binary as a subprocess (usage tokens 0); extension
-  scenario reports unscorable diagnostics under faux.
+The subprocess harness, session-usage/cost extraction, smoke scenario,
+extension scenario, artifacts, harness table, reporter, and summary are
+covered by checked ledger rows #91–92 and S-058–S-059.
+
+Evidence:
+
+- cargo test -p pi-evals --offline --quiet
+- cargo test -p pi-evals --offline --test session_usage --quiet
+- cargo test -p pi-evals --offline --test extensions --quiet
+
+The faux run intentionally reports deterministic fixture usage and a
+schema-1 extension-authoring diagnostic; it is not a stale usage-zero or
+unscorable claim.

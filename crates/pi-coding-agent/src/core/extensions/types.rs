@@ -102,6 +102,19 @@ pub enum ExtensionHostAction {
     SetModel,
     GetThinkingLevel,
     SetThinkingLevel,
+    GetModel,
+    GetScopedModels,
+    IsIdle,
+    IsProjectTrusted,
+    GetSignal,
+    Abort,
+    HasPendingMessages,
+    Shutdown,
+    GetContextUsage,
+    Compact,
+    GetSystemPrompt,
+    GetSystemPromptOptions,
+    ToolUpdate,
 }
 
 impl ExtensionHostAction {
@@ -120,6 +133,19 @@ impl ExtensionHostAction {
             "setModel" => Self::SetModel,
             "getThinkingLevel" => Self::GetThinkingLevel,
             "setThinkingLevel" => Self::SetThinkingLevel,
+            "getModel" => Self::GetModel,
+            "getScopedModels" => Self::GetScopedModels,
+            "isIdle" => Self::IsIdle,
+            "isProjectTrusted" => Self::IsProjectTrusted,
+            "getSignal" => Self::GetSignal,
+            "abort" => Self::Abort,
+            "hasPendingMessages" => Self::HasPendingMessages,
+            "shutdown" => Self::Shutdown,
+            "getContextUsage" => Self::GetContextUsage,
+            "compact" => Self::Compact,
+            "getSystemPrompt" => Self::GetSystemPrompt,
+            "getSystemPromptOptions" => Self::GetSystemPromptOptions,
+            "toolUpdate" => Self::ToolUpdate,
             _ => return None,
         })
     }
@@ -141,6 +167,14 @@ pub trait ExtensionHostActions: Send + Sync {
     /// defaults.
     fn snapshot(&self) -> Value {
         Value::Object(Default::default())
+    }
+
+    /// Return a callback-scoped snapshot. The default preserves the original
+    /// host snapshot contract; hosts that execute parallel tools can use the
+    /// request's tool-call id to select the matching signal state.
+    fn snapshot_for(&self, request: &Value) -> Value {
+        let _ = request;
+        self.snapshot()
     }
 }
 
@@ -579,6 +613,15 @@ impl ExtensionRuntime {
             .unwrap_or_else(|| Value::Object(Default::default())))
     }
 
+    pub fn host_action_snapshot_for(&self, request: &Value) -> Result<Value, String> {
+        self.assert_active()?;
+        Ok(self
+            .host_actions
+            .as_ref()
+            .map(|actions| actions.snapshot_for(request))
+            .unwrap_or_else(|| Value::Object(Default::default())))
+    }
+
     pub fn has_host_actions(&self) -> bool {
         self.host_actions.is_some()
     }
@@ -653,5 +696,36 @@ mod tests {
         assert!(!runtime.is_initialized());
         runtime.bind_core();
         assert!(runtime.is_initialized());
+    }
+
+    #[test]
+    fn context_host_action_names_are_typed() {
+        for (name, expected) in [
+            ("getModel", ExtensionHostAction::GetModel),
+            ("getScopedModels", ExtensionHostAction::GetScopedModels),
+            ("isIdle", ExtensionHostAction::IsIdle),
+            ("isProjectTrusted", ExtensionHostAction::IsProjectTrusted),
+            ("getSignal", ExtensionHostAction::GetSignal),
+            ("abort", ExtensionHostAction::Abort),
+            (
+                "hasPendingMessages",
+                ExtensionHostAction::HasPendingMessages,
+            ),
+            ("shutdown", ExtensionHostAction::Shutdown),
+            ("getContextUsage", ExtensionHostAction::GetContextUsage),
+            ("compact", ExtensionHostAction::Compact),
+            ("getSystemPrompt", ExtensionHostAction::GetSystemPrompt),
+            (
+                "getSystemPromptOptions",
+                ExtensionHostAction::GetSystemPromptOptions,
+            ),
+            ("toolUpdate", ExtensionHostAction::ToolUpdate),
+        ] {
+            assert_eq!(
+                ExtensionHostAction::from_protocol_name(name),
+                Some(expected)
+            );
+        }
+        assert_eq!(ExtensionHostAction::from_protocol_name("unknown"), None);
     }
 }

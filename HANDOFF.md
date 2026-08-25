@@ -1,15 +1,15 @@
 # Pi → pi-rust conversion handoff
 
-Date: 2026-08-24 (Pacific/Auckland)
+Date: 2026-08-25 (Pacific/Auckland)
 
 ## Where the work stopped
 
-The requested progress percentage is based on the exhaustive conversion
+The current requested progress percentage is based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-95.18% = 158 completed / 166 total tasks
-8 tasks remain open
+96.99% = 161 completed / 166 total tasks
+5 tasks remain open
 
 ```
 
@@ -21,23 +21,29 @@ edit with:
 node scripts/conversion-progress.mjs
 ```
 
-The denominator is intentionally provisional until S-001, S-002, and S-066
-finish the source inventory, stale-document reconciliation, and final ledger
-freeze. Do not claim 100% before the final clean-room audit.
+The denominator is intentionally provisional until S-066 finishes the final
+ledger freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The current logical checkpoint is the validated S-012 Cloudflare AI Gateway
-binding and provider-precedence parity slice. The pre-existing untracked
-`AGENTS.md` remains untouched and must be preserved. Do not use
+The current logical checkpoint is the pushed extension context-action slice
+at bf313c541e8f5bb384152eeff14a1d2ac86e25e2, with S-001, S-002, and #99 now
+evidenced in the worktree and the S-027 context-extension worker still under
+review. The pre-existing
+untracked `AGENTS.md` remains untouched and must be preserved. Do not use
 `git reset --hard`, `git checkout --`, broad revert commands, or `git clean`.
 
 Current status: branch `main`, progress checker reports
-`95.18% (158/166; 8 open)`. The latest pushed checkpoint is
-`41d3107c2e33ef9eeb5ec7fb65581fe5ac3c8346`; the pre-existing untracked
+`96.99% (161/166; 5 open)`. The latest pushed checkpoint is
+`bf313c541e8f5bb384152eeff14a1d2ac86e25e2`; the pre-existing untracked
 `AGENTS.md` remains untouched and must stay unstaged. The current worktree
-contains the next extension-loader/tool-result hardening and progress-checker
-test changes; push parity must be re-established after this checkpoint.
+contains the S-001/S-002/#99 reconciliation and ignored audit artifacts; the
+next logical checkpoint must review the S-027 worker, run the narrow crate
+tests, checker, diff gate, commit, push, and hash verification.
+
+All sections below whose headings say “Current checkpoint” and which contain
+older percentages or commits are historical snapshots from earlier turns.
+The latest active sections near the end of this file supersede them.
 
 ## Current strict-verification cleanup
 
@@ -1390,3 +1396,28 @@ No ledger checkbox changed in this code-only S-027 increment; the checker
 remains `Conversion progress: 95.18% (158/166; 8 open)`. The next action is to
 review and integrate the independent S-001, S-002, and #99 reports before the
 fresh S-004 reviewer gate.
+
+## Active checkpoint — 2026-08-25 — inventory closure and callback-context parity
+
+S-001, S-002, and #99 are now checked in the ledger with the current source/
+export census, documentation reconciliation, and isolated real-binary audit
+artifacts. The latest extension-context implementation also covers
+model/scoped-model snapshots, idle/trust state, context usage/system prompt
+access, callback-scoped signal/abort, compact/shutdown queues, and ordered
+mid-execution tool updates. The focused Rust suites pass 4 integration tests
+and 14 external-extension parity tests. S-027 remains open for pinned
+jiti/module virtualization, native provider callback execution and live model
+registry wiring, and Bun-specific verification.
+
+Current authoritative checker:
+
+```text
+Conversion progress: 96.99% (161/166; 5 open)
+```
+
+Remaining rows are S-004, S-027, S-065, S-066, and #100. The current worktree
+also contains the uncommitted documentation/ledger reconciliation and the
+reviewed extension-context code; the next checkpoint must run the full narrow
+extension tests, inspect the native-provider leaf, then commit and push with
+local/remote hash verification. The pre-existing untracked `AGENTS.md` stays
+unstaged.

@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **95.18% (158/166; 8 open)**. Run
+- The exhaustive checker reports **96.99% (161/166; 5 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -641,8 +641,14 @@ Recut of the remaining work by user impact + risk:
 
 ## T9 — Final 100% verification pass
 
-- [ ] 99. Full-surface audit: §2.2 env vars, §2.3 on-disk formats, §4.4 RPC
-      taxonomy — each demos against the real binary. (live)
+- [x] 99. Full-surface audit: §2.2 env vars, §2.3 on-disk formats, §4.4 RPC
+      taxonomy — each demos against the real binary. (live) Evidence (live):
+      `.unlazy/full-conversion-20260825/gates/leaf-99-current.md` records the
+      isolated release-binary print probe, explicit session-id probe, direct
+      RPC lifecycle/taxonomy probe, on-disk session checks, environment
+      matrix, and the exact `node scripts/parity-suite.mjs` result:
+      `checks: 40 passed, 0 failed, 1 not-run, 41 total`; the credentialed
+      network smoke remains explicitly not-run.
 - [ ] 100. Final clean-room check: fresh clone → workspace tests green,
       0 warnings, clippy -D warnings clean, flag/env/tool/provider matrix
       recorded in PLAN.md with tiers, milestone tagged.
@@ -660,12 +666,26 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 
 ### S1-A — inventory and evidence control
 
-- [ ] S-001 Complete a source-to-source inventory of every upstream exported
+- [x] S-001 Complete a source-to-source inventory of every upstream exported
       runtime surface and record one ledger ID per observable behavior; freeze
       the denominator only after the inventory and all TODO files reconcile.
-- [ ] S-002 Reconcile stale `TODO.md`, session reports, README, and PLAN claims
+      Evidence (unit/mock): `.unlazy/full-conversion-20260825/gates/leaf-S1-current.md`
+      records the upstream module/export census, Rust ownership census, direct
+      runtime declaration census, public runtime-name census, crate TODO-line
+      census, and the explicit module-to-ledger ownership map. The report also
+      records the pinned upstream revision and the exact inventory commands;
+      `node scripts/conversion-progress.mjs` is the reproducible ledger check.
+      The current denominator is 166 and remains subject to the final S-066
+      freeze; no final 100% claim is made here.
+- [x] S-002 Reconcile stale `TODO.md`, session reports, README, and PLAN claims
       against the current source and replace every “done” claim lacking an
-      exact test or live command with an open task.
+      exact test or live command with an open task. Evidence (unit/mock): all
+      ten crate TODO files, the four dated session/reviewer reports, and the
+      current `README.md`, `PLAN.md`, and `HANDOFF.md` were reconciled; the
+      historical reports are explicitly labeled as snapshots and current
+      claims carry exact commands or evidence references. `git diff --check`
+      passes, and the targeted stale-claim scan is recorded in
+      `.unlazy/full-conversion-20260825/gates/leaf-S2-current.md`.
 - [x] S-003 Add a reproducible ledger-progress checker that counts only
       checked/unchecked tasks in this file and fails on malformed checklist
       lines or duplicate task IDs. Evidence (unit/mock):
@@ -931,17 +951,20 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       failure isolation. The production print, JSON, RPC, and interactive
       mode paths now load configured extensions, bind the host-action state,
       publish tool/command catalogs, expose live extension tools to their
-      agent contexts, and invalidate runtimes on shutdown. The task remains
-      open because pinned upstream jiti/module virtualization, native provider
-      callbacks, Bun-specific verification, and the full context object
-      (`model`, session manager, UI, compaction, and signal) remain outside
-      the bridge; mid-execution signal/update forwarding also remains open.
+      agent contexts, and invalidate runtimes on shutdown. The latest
+      context/action fixture also covers model/scoped-model snapshots,
+      idle/trust state, context usage/system prompt access, callback-scoped
+      signal/abort, compact and shutdown queues, and ordered mid-execution
+      tool updates. The task remains open because pinned upstream
+      jiti/module virtualization, native provider callback execution,
+      Bun-specific verification, and wiring registered providers into the live
+      pi-ai model registry remain outside the proven bridge surface.
       No completion checkbox is claimed. Evidence:
       `cargo test -p pi-coding-agent --offline --test extensions_parity --quiet`
-      (13 passed), `cargo test -p pi-coding-agent --offline --lib
+      (14 passed), `cargo test -p pi-coding-agent --offline --lib
       core::extensions::loader::tests --quiet` (15 passed), `cargo test -p
       pi-coding-agent --offline --lib core::extensions::integration::tests
-      --quiet` (3 passed), and `cargo test -p pi-coding-agent --offline --lib
+      --quiet` (4 passed), and `cargo test -p pi-coding-agent --offline --lib
       --quiet` (476 passed). The package-wide target `cargo test -p
       pi-coding-agent --offline --quiet`, the live context fixture, strict
       coding-agent clippy, package formatting, and `git diff --check` also

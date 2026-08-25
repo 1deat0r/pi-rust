@@ -1,5 +1,8 @@
 # Session 11 Report — 2026-08-22 — Parallel completion of adaptors / TUI / coding-agent / P9 / agent-harness
 
+> Historical snapshot. Its remaining-gap section is intentionally retained as
+> a dated record and is superseded by the current ledger and handoff.
+
 HEAD: e6ce100 (session-10 end) -> 8c6fa30
 Model: parent (pi/Claude) + 6 RLM subagents (A1/A2/B/C/D/E) in dedicated git worktrees, branches merged to main after each completion.
 

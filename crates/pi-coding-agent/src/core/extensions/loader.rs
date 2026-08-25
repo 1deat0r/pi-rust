@@ -401,7 +401,17 @@ const state = {
     allTools: [],
     commands: [],
     thinkingLevel: "medium",
+    model: undefined,
+    scopedModels: [],
+    isIdle: true,
+    isProjectTrusted: true,
+    signal: undefined,
+    hasPendingMessages: false,
+    contextUsage: undefined,
+    systemPrompt: "",
+    systemPromptOptions: {},
   },
+  toolSignalAborted: false,
 };
 
 // A logging extension must not be able to write an invalid protocol frame.
@@ -445,7 +455,7 @@ function hostAction(action, args = {}) {
   if (state.loading) throw new Error(NOT_INITIALIZED);
   const id = `host-${state.nextHostActionId++}`;
   const promise = new Promise((resolve, reject) => {
-    state.pendingHostActions.set(id, { resolve, reject });
+  state.pendingHostActions.set(id, { resolve, reject, action });
   });
   // Preserve the upstream fire-and-forget shape for callers that do not await
   // a void action, without turning a rejected host callback into an
@@ -473,13 +483,28 @@ function syncHostSnapshot(snapshot, bound) {
     allTools: Array.isArray(value.allTools) ? value.allTools : [],
     commands: Array.isArray(value.commands) ? value.commands : [],
     thinkingLevel: typeof value.thinkingLevel === "string" ? value.thinkingLevel : "medium",
+    model: value.model ?? undefined,
+    scopedModels: Array.isArray(value.scopedModels) ? value.scopedModels : [],
+    isIdle: typeof value.isIdle === "boolean" ? value.isIdle : true,
+    isProjectTrusted: typeof value.isProjectTrusted === "boolean" ? value.isProjectTrusted : true,
+    signal: value.signal && typeof value.signal === "object"
+      ? { aborted: Boolean(value.signal.aborted) }
+      : undefined,
+    hasPendingMessages: Boolean(value.hasPendingMessages),
+    contextUsage: value.contextUsage ?? undefined,
+    systemPrompt: typeof value.systemPrompt === "string" ? value.systemPrompt : "",
+    systemPromptOptions: value.systemPromptOptions && typeof value.systemPromptOptions === "object"
+      ? value.systemPromptOptions
+      : {},
   };
+  state.toolSignalAborted = Boolean(state.syncHost.signal?.aborted);
 }
 
 function resolveHostAction(message) {
   const pending = state.pendingHostActions.get(String(message.id));
   if (!pending) return;
   state.pendingHostActions.delete(String(message.id));
+  if (pending.action === "abort" && message.ok !== false) state.toolSignalAborted = true;
   if (message.ok === false) {
     pending.reject(new Error(message.error ?? "Extension host action failed"));
   } else {
@@ -633,12 +658,70 @@ function metadata() {
   };
 }
 
+function createSignalLike() {
+  const signal = {};
+  Object.defineProperty(signal, "aborted", {
+    configurable: false,
+    enumerable: true,
+    get: () => state.toolSignalAborted,
+  });
+  signal.throwIfAborted = () => {
+    if (signal.aborted) throw new Error("Operation aborted");
+  };
+  return signal;
+}
+
 function contextFor(request) {
   syncHostSnapshot(request.hostState, request.hostBound);
   const context = { ...(request.context ?? {}) };
   // Extension tool callbacks receive the same host-bound action surface as
   // the extension API. Keep void actions fire-and-forget, while getters read
   // the per-request snapshot synchronously and setModel remains awaitable.
+  context.model = state.syncHost.model;
+  context.scopedModels = [...state.syncHost.scopedModels];
+  context.isIdle = () => {
+    assertSyncHostReady();
+    return state.syncHost.isIdle;
+  };
+  context.isProjectTrusted = () => {
+    assertSyncHostReady();
+    return state.syncHost.isProjectTrusted;
+  };
+  context.signal = state.syncHost.signal ? createSignalLike() : undefined;
+  context.abort = () => {
+    assertSyncHostReady();
+    state.toolSignalAborted = true;
+    fireHostAction("abort", { toolCallId: request.toolCallId ?? null });
+  };
+  context.hasPendingMessages = () => {
+    assertSyncHostReady();
+    return state.syncHost.hasPendingMessages;
+  };
+  context.shutdown = () => {
+    assertSyncHostReady();
+    fireHostAction("shutdown", { toolCallId: request.toolCallId ?? null });
+  };
+  context.getContextUsage = () => {
+    assertSyncHostReady();
+    return state.syncHost.contextUsage;
+  };
+  context.compact = (options) => {
+    assertSyncHostReady();
+    fireHostAction("compact", {
+      options: options ?? null,
+      toolCallId: request.toolCallId ?? null,
+    });
+  };
+  context.getSystemPrompt = () => {
+    assertSyncHostReady();
+    return typeof request.event?.systemPrompt === "string"
+      ? request.event.systemPrompt
+      : state.syncHost.systemPrompt;
+  };
+  context.getSystemPromptOptions = () => {
+    assertSyncHostReady();
+    return request.event?.systemPromptOptions ?? state.syncHost.systemPromptOptions;
+  };
   context.sendMessage = (message, options) => fireHostAction("sendMessage", { message, options: options ?? null });
   context.sendUserMessage = (content, options) => fireHostAction("sendUserMessage", { content, options: options ?? null });
   context.appendEntry = (customType, data) => fireHostAction("appendEntry", { customType, data: data ?? null });
@@ -687,9 +770,6 @@ function contextFor(request) {
       return state.syncHost.thinkingLevel;
     },
   });
-  if (request.kind === "handler" && request.name === "before_agent_start") {
-    context.getSystemPrompt = () => request.event?.systemPrompt ?? "";
-  }
   return context;
 }
 
@@ -714,11 +794,18 @@ async function invoke(request) {
   if (request.kind === "tool") {
     const tool = state.tools.get(request.name);
     if (!tool) throw new Error(`Extension tool not found: ${request.name}`);
+    const signal = createSignalLike();
+    const onUpdate = (partialResult) => {
+      fireHostAction("toolUpdate", {
+        toolCallId: request.toolCallId ?? "",
+        result: partialResult ?? null,
+      });
+    };
     return await tool.execute(
       request.toolCallId ?? "",
       request.params ?? {},
-      undefined,
-      undefined,
+      signal,
+      onUpdate,
       context,
     );
   }
@@ -998,7 +1085,10 @@ impl ExternalExtensionProcess {
                 .runtime
                 .lock()
                 .map_err(|_| "Extension runtime lock poisoned".to_string())?;
-            (runtime.host_action_snapshot()?, runtime.has_host_actions())
+            (
+                runtime.host_action_snapshot_for(&request)?,
+                runtime.has_host_actions(),
+            )
         };
         let request_object = request
             .as_object_mut()

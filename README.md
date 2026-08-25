@@ -4,7 +4,7 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 95.18% — 158 of 166 ledger tasks complete; 8 open.**
+**Conversion progress: 96.99% — 161 of 166 ledger tasks complete; 5 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
@@ -16,7 +16,9 @@ node scripts/conversion-progress.mjs
 ```
 
 The 2026-08-25 completion run is coordinated through the scoped execution
-tree in `.unlazy/full-conversion-20260825/`. The source inventory is complete;
+tree in `.unlazy/full-conversion-20260825/`. The source/export census and
+stale-claim reconciliation are now evidenced by S-001/S-002; the independent
+S-004 review and final audit remain gated;
 focused OAuth, Anthropic, catalog, proxy, protocol, server, TUI, eval, provider
 matrix, client, harness, reconnect, strict-clippy, live PTY, expanded server,
 and offline parity checks are green, while extension-runtime and final-audit
@@ -26,12 +28,14 @@ dependency-safe action.
 
 The extension boundary now uses a persistent Node/Bun JSONL bridge with
 deterministic command, hook, renderer, provider-config, local JS/TS import,
-live-tool, host-action, context-action, thinking/model, stale-process, timeout,
+live-tool, host-action, context-action, thinking/model, callback-scoped signal,
+stale-process, timeout,
 protocol, and failure-isolation fixtures, plus a shared-runtime bind helper. Print,
 JSON, RPC, and interactive modes load configured extensions and expose live
 extension tools through their agent contexts. Full S-027 remains open for
-pinned jiti/module virtualization, native provider callbacks, Bun-specific
-runtime verification, and full agent-loop tool/result semantics.
+pinned jiti/module virtualization, native provider callback execution/model-
+registry wiring, Bun-specific runtime verification, and the remaining full
+agent-loop provider/tool semantics.
 
 The port already includes substantial CLI and runtime work, including the
 in-process agent loop, stateful harness-backed print, JSON, and interactive

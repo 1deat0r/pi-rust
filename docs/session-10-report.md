@@ -1,5 +1,9 @@
 # pi → pi-rust 1:1 port — Session 10 report (2026-08-22)
 
+> Historical snapshot. Its landed/remaining lists describe the 2026-08-22
+> checkpoint and are not the current conversion status. Use
+> CONVERSION-LEDGER.md, PLAN.md, and HANDOFF.md for current evidence.
+
 **HEAD:** 37ca48c → cca3a30 — 8 commits, all pushed. **Tests:** 411 → 529 passing, 0 warnings, deterministic.
 
 ## Landed this session

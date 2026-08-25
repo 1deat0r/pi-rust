@@ -1,10 +1,16 @@
-# pi-session-backends — port status (P9)
+# pi-session-backends — current conversion notes (P9)
 
-## Done (Session 11)
-- SqliteSessionRepository + storage layer over rusqlite (bundled): sessions/entries/lanes/records/
-  facts/branch-entries/branch-tips/session-sequences/session-stats/writer-leases; migrations
-  001_initial.sql byte-identical; sql.ts/types.ts/branch-cache.ts ports.
-- Upstream conformance suite 30/30 against the SQLite backend; migrations/sql/facts/writer-leases/
-  repository/search/branch-query/log-query/branch-cache suites ported. 85 tests.
-- Divergences: rusqlite mock-injection tests adapted to observable equivalents; metadata/lanes return
-  Result; usage optional fields normalize to ""/0.
+SQLite repository/storage, migrations, entries, lanes, records, facts,
+branch-cache/search, session sequences/stats, writer leases, and repository
+conformance are covered by checked rows S-061–S-062 and #91–100/P9.
+
+Evidence:
+
+- cargo test -p pi-session-backends --offline --quiet
+- cargo test --workspace --offline --quiet -- --test-threads=2
+- the release session/settings/auth/models fixture matrix recorded in
+  S-061/S-062
+
+The Rust API uses Result for storage failures and normalizes optional usage
+fields at its typed boundary; those are explicit implementation-shape
+differences, not untracked missing work.

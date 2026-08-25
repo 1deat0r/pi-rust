@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
 
+use pi_coding_agent::core::extensions::integration::ExtensionHostState;
 use pi_coding_agent::core::extensions::loader::{
     create_extension_runtime, discover_extensions_in_dir, load_extension_from_factory,
     load_extensions, load_extensions_with_host_actions, run_external_extension,
@@ -116,6 +117,19 @@ impl ExtensionHostActions for RecordingHost {
                 .lock()
                 .expect("thinking level lock")
                 .clone())),
+            ExtensionHostAction::GetModel
+            | ExtensionHostAction::GetScopedModels
+            | ExtensionHostAction::IsIdle
+            | ExtensionHostAction::IsProjectTrusted
+            | ExtensionHostAction::GetSignal
+            | ExtensionHostAction::Abort
+            | ExtensionHostAction::HasPendingMessages
+            | ExtensionHostAction::Shutdown
+            | ExtensionHostAction::GetContextUsage
+            | ExtensionHostAction::Compact
+            | ExtensionHostAction::GetSystemPrompt
+            | ExtensionHostAction::GetSystemPromptOptions
+            | ExtensionHostAction::ToolUpdate => Ok(Value::Null),
         }
     }
 
@@ -752,6 +766,129 @@ export default async function (pi) {
         .first()
         .expect("loaded bridge extension");
     assert_eq!(loaded_extension.source_info.source, "local");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn node_bridge_handler_context_exposes_safe_snapshot_and_control_actions() {
+    if std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!(
+        "pi-extension-bridge-context-handler-{}",
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir_all(&root).expect("context handler fixture dir");
+    let entry = root.join("context-handler.ts");
+    fs::write(
+        &entry,
+        r#"
+export default function (pi) {
+  pi.on("input", (event, ctx) => {
+    const before = {
+      model: ctx.model,
+      scopedModels: ctx.scopedModels,
+      idle: ctx.isIdle(),
+      trusted: ctx.isProjectTrusted(),
+      signal: ctx.signal?.aborted ?? null,
+      pending: ctx.hasPendingMessages(),
+      usage: ctx.getContextUsage(),
+      prompt: ctx.getSystemPrompt(),
+      options: ctx.getSystemPromptOptions(),
+    };
+    ctx.abort();
+    ctx.compact({ customInstructions: "handler compact" });
+    ctx.shutdown();
+    return {
+      action: "transform",
+      text: JSON.stringify({ before, afterAborted: ctx.signal?.aborted ?? null }),
+    };
+  });
+}
+"#,
+    )
+    .expect("context handler fixture");
+
+    let host = Arc::new(ExtensionHostState::default());
+    host.set_model(Some(json!({"provider": "fixture", "id": "model-1"})));
+    host.set_scoped_models(vec![json!({
+        "model": {"provider": "fixture", "id": "scoped-1"},
+        "thinkingLevel": "high",
+    })]);
+    host.set_idle(false);
+    host.set_project_trusted(false);
+    host.set_signal(Some(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+    host.set_has_pending_messages(true);
+    host.set_context_usage(Some(json!({
+        "tokens": 12,
+        "contextWindow": 100,
+        "percent": 0.12,
+    })));
+    host.set_system_prompt("fixture system prompt");
+    host.set_system_prompt_options(json!({
+        "cwd": root.to_string_lossy(),
+        "selectedTools": ["bridge-tool"],
+    }));
+
+    let result = load_extensions_with_host_actions(
+        &[entry.to_string_lossy().to_string()],
+        &root.to_string_lossy(),
+        None,
+        Some("node"),
+        host.clone(),
+    );
+    assert!(result.errors.is_empty(), "load errors: {:?}", result.errors);
+    let runtime = Arc::clone(&result.runtime);
+    let runner = ExtensionRunner::new(result.extensions, runtime, root.to_string_lossy().into());
+    let transformed = runner.emit_input("hello", None, "interactive", None);
+    let payload: Value = serde_json::from_str(
+        transformed
+            .text
+            .as_deref()
+            .expect("handler transformed text"),
+    )
+    .expect("handler returned JSON snapshot");
+    assert_eq!(
+        payload["before"],
+        json!({
+            "model": {"provider": "fixture", "id": "model-1"},
+            "scopedModels": [{
+                "model": {"provider": "fixture", "id": "scoped-1"},
+                "thinkingLevel": "high",
+            }],
+            "idle": false,
+            "trusted": false,
+            "signal": false,
+            "pending": true,
+            "usage": {"tokens": 12, "contextWindow": 100, "percent": 0.12},
+            "prompt": "fixture system prompt",
+            "options": {
+                "cwd": root.to_string_lossy(),
+                "selectedTools": ["bridge-tool"],
+            },
+        })
+    );
+    assert_eq!(payload["afterAborted"], true);
+    assert!(host
+        .snapshot()
+        .get("signal")
+        .and_then(Value::as_object)
+        .and_then(|signal| signal.get("aborted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false));
+    assert_eq!(
+        host.drain_pending_actions(),
+        vec![
+            json!({"type": "abort"}),
+            json!({"type": "compact", "options": {"customInstructions": "handler compact"}}),
+            json!({"type": "shutdown"}),
+        ]
+    );
+    runner.invalidate(Some("context handler test complete"));
     let _ = fs::remove_dir_all(root);
 }
 

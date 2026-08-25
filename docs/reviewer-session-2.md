@@ -1,5 +1,9 @@
 # Reviewer Session 2 — Independent Expert Review (pi-rust P2 completion gate)
 
+> Historical P2 review. This report is retained for its exact old commands
+> and findings; it does not supersede the current 95.18% ledger or the fresh
+> S-004 reviewer gate.
+
 **Reviewer:** independent expert (round 2, fresh session)
 **Project:** pi-rust — Rust 1:1 port of the pi agent harness
 **Upstream pinned:** `5cd93f688aaab89dbb6dfa4aca535f21796ae185` (v0.84.2)

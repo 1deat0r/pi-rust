@@ -1,16 +1,15 @@
-# pi-server — port status
+# pi-server — current conversion notes
 
-P6 landed (Session 10): UnixSocketListener (stale-socket probe, private bind
-symlink, mode), PiServer (hello handshake + version check + hello_error,
-Command dispatch to PiServerService, ServerMessage response envelopes,
-snapshot publisher with revision/broadcast, protocol error mapping), plus
-the InMemoryService test service. E2E over a real unix socket
-(client_server_roundtrip, bad_protocol_version_gets_hello_error) +
-codec framing probe.
+The Unix listener, stale-socket handling, handshake/version errors, command
+dispatch, response envelopes, snapshots, live-session lifecycle, deferred
+test service, malformed frames, and reconnect/lease fixtures are covered by
+checked ledger rows S-043–S-044 and #49–58.
 
-## Not yet ported (upstream mapping)
-- LiveSessionManager acquire/release exclusivity and attach/detach
-  validation (the service layer is shared-safe for the in-memory service).
-- Session lock/terminal-close semantics, command queuing, subscription
-  segment control for prompt/steer concurrency.
-- testing/service.ts parity harness + conformance suite (package tests).
+Evidence:
+
+- cargo test -p pi-server --offline --quiet
+- cargo test -p pi-server --offline --test reconnect_lease_e2e --quiet
+- cargo clippy -p pi-server --offline --all-targets -- -D warnings
+
+No stale “not yet ported” claim is retained. New protocol/service exports must
+be assigned by the source/export audit before the denominator is frozen.

@@ -4,11 +4,13 @@
 
 The existing conversion goal is resumed under the scoped unlazy contract
 `.unlazy/full-conversion-20260825/`. The current authoritative checker output
-is **Conversion progress: 95.18% (158/166; 8 open)**. The source inventory
-and claim-reconciliation audit is complete; the current wave has unit, mock,
+is **Conversion progress: 96.99% (161/166; 5 open)**. S-001 and S-002 are now
+closed with the current source/export census and claim-reconciliation
+artifacts; the current wave has unit, mock,
 and live evidence across providers, client/server, harness, and reconnects.
 
-The first implementation wave completed the audit (`leaf-A1`), Copilot OAuth
+The first implementation wave completed the audited implementation leaves
+(`leaf-A1`), Copilot OAuth
 fixtures (`leaf-B1`), Anthropic fixtures (`leaf-B2`), model-catalog fixtures
 (`leaf-B3`), the proxy seam (#75), the Rust-native extension fixture slice
 (`leaf-C2`), server lifecycle fixes (`leaf-D1`), protocol strict-clippy
@@ -27,17 +29,20 @@ documentation.
 The current extension bridge (`leaf-C2d`) is a persistent Node/Bun JSONL
 boundary with deterministic async command/hook/renderer/provider fixtures,
 local JS/TS imports, live external-tool callbacks, a production-shaped shared
-runtime bind, synchronous getter snapshots, stale-process invalidation, and
+runtime bind, synchronous getter snapshots, callback-scoped context signal and
+control actions, ordered tool updates, stale-process invalidation, and
 timeout/protocol cleanup. S-027 remains open for pinned jiti/module
-virtualization, native provider callbacks, Bun-specific runtime verification,
-full context-object parity (`model`, session manager, UI, compaction, and
-signal), and mid-execution signal/update forwarding.
+virtualization, native provider callback execution, Bun-specific runtime
+verification, and wiring registered providers into the live pi-ai model
+registry.
 
 ## Checkpoint 2026-08-25 — progress gate and release verification
 
-S-003 is closed with the unit/mock checker suite (`node --test
+S-001, S-002, S-003, and #99 are closed with their recorded inventory,
+documentation, checker, and real-binary evidence. The unit/mock checker suite
+(`node --test
 scripts/conversion-progress.test.mjs`, 7 passed), and the authoritative
-checker is **Conversion progress: 95.18% (158/166; 8 open)**. The extension
+checker is **Conversion progress: 96.99% (161/166; 5 open)**. The extension
 loader now has native Node TypeScript stripping and deterministic TSX/virtual-
 module boundary diagnostics; the live mode adapter maps extension tool results,
 host actions, and synchronous context snapshots and is covered by 15 loader
@@ -53,7 +58,7 @@ final denominator/documentation freeze.
 
 The final convergence review is anchored to upstream commit
 `5cd93f688aaab89dbb6dfa4aca535f21796ae185` and the live checker output
-`Conversion progress: 95.18% (158/166; 8 open)`. The reviewer must use the
+`Conversion progress: 96.99% (161/166; 5 open)`. The reviewer must use the
 ledger as the acceptance index, verify every checked row's evidence tier and
 exact command, and treat any source/TODO/export surface without a ledger ID
 as a blocker to S-001/S-066.
@@ -67,7 +72,7 @@ Current review matrix:
 | TUI and terminal | unit/mock/live rows S-050–S-057 | rerun the bounded PTY/release command and inspect the default-parallel timeout note |
 | Extensions | 13 parity tests, 15 loader tests, 3 integration tests, production print/JSON/RPC/interactive binding | inspect S-027's jiti, native-provider, Bun, context, signal/update, and active-tool residuals |
 | Evals and release | parity rows S-058–S-064 and #97 live release suite | verify the command is reproducible from the current checkout |
-| Inventory and documentation | S-001/S-002/S-065/S-066 still open | require the fresh source/TODO reports and no stale current claim |
+| Inventory and documentation | S-004/S-065/S-066 remain open | review the fresh source/TODO reports, then perform final synchronization and denominator freeze |
 
 The fresh reviewer must be independent of the implementation agents, read
 `CONVERSION-LEDGER.md`, this plan, `HANDOFF.md`, the current unlazy audit
@@ -123,7 +128,7 @@ leaf is reviewed, reverified, and integrated before its ledger status changes.
 Target: https://github.com/earendil-works/pi (Pi Agent Harness, v0.84.2, commit 5cd93f6)
 Goal: Functional 1:1 port to idiomatic Rust. Same CLI surface, same data formats on disk and on the wire, same behavior — different implementation language.
 
-- **Conversion progress: 65.66% (109/166 exhaustive ledger tasks complete).** The
+- **Historical baseline (superseded): 65.66% (109/166 exhaustive ledger tasks complete).** The
 percentage is `checked / (checked + open)` over the full
 [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), including its supplemental
 source-audit tasks. It is not capped at the original 100-item work queue;
@@ -301,7 +306,8 @@ Global `~/.pi/agent/settings.json` + project `./.pi/settings.json`, merged (proj
 
 ## 6. Phased roadmap
 
-P0 — Research & mapping. **DONE** (this doc; source inventory above).
+P0 — Research & mapping. **Historical baseline recorded** (the current
+source/export ownership audit is gated by S-001 and the final freeze).
 P1 — Workspace + foundations: pi-protocol (CBOR/framing/codec/schemas, tests), pi-telemetry (contracts/memory/noop, tests). Criterion: cbor round-trips match upstream test vectors; frame decoder matches; protocol messages validate.
 P2 — pi-ai core: types, model catalog model, transports (SSE), partial-json, faux provider, anthropic+openai providers, event stream. Criterion: faux provider E2E streaming; recorded SSE fixtures decode; partial-json cases.
 P3 — pi-agent data + harness core: AgentMessage/AgentState, session JSONL v4 codec + repo (read/write/append/migrate v3), memory, env abstraction, tools (read/write/edit/edit-diff/bash) with mutation queue. Criterion: JSONL round-trip incl. v3 migration; tool tests over tmp dirs.
@@ -313,6 +319,10 @@ P8 — coding-agent parity completion: compaction, export-html, extensions, pack
 P9 — session-backends sqlite, evals, packaging, parity suite: golden transcripts, session-file fixtures, CLI matrix test against upstream behavior.
 
 ## 7. Session ledger
+
+> The dated entries below are historical checkpoints. Their percentages,
+> remaining lists, and implementation descriptions are superseded by the
+> active status at the top of this file and by the current ledger.
 
 ### Session 1 — 2026-08-21 — workspace, foundations, ai-core skeleton
 Agent: pi (Claude)   HEAD: no git yet (see Risk R-1)

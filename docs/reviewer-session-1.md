@@ -1,5 +1,9 @@
 # Independent Expert Review — Session 1 (pi-rust, phase P2 gate)
 
+> Historical P2 review. This report records an earlier gate and is not a
+> current full-conversion verdict; current reviewer evidence belongs under the
+> active Session-13 gate in PLAN.md and the scoped audit directory.
+
 Reviewer: fresh session, no implementation involvement
 Date: 2026-08-21
 Scope: PLAN.md governance+ledger (S0/S7/S8/S9), pi-protocol/pi-telemetry green claims,

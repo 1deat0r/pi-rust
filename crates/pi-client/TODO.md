@@ -1,13 +1,14 @@
-# pi-client — port status
+# pi-client — current conversion notes
 
-P6 landed (Session 10): PiClient over a Unix socket — hello handshake
-(snapshot awaited), request/response correlation over a pending map,
-ServerEvent fanout to subscribers, live ServerSnapshot state, clean close.
-E2E-verified against pi-server.
+The Unix client, reconnect state/listeners, lease and exclusive-attach
+reconciliation, request timeouts, late-response suppression, disposal, and
+transport-factory seams are implemented and owned by ledger rows S-045–S-049.
 
-## Not yet ported (upstream mapping)
-- Reconnect state machine + connection-state listeners.
-- Session lease/exclusive-attach management (SessionHandle with
-  acquire/release/reconcile), snapshot reconciliation, detach-on-close.
-- dispose semantics beyond close, promise timeouts, transport factory
-  abstraction beyond unix.
+Evidence:
+
+- cargo test -p pi-client --offline --test auxiliary_parity --quiet
+- cargo test -p pi-client --offline --quiet
+- cargo clippy -p pi-client --offline --all-targets -- -D warnings
+
+This file contains no open “not yet ported” claim. Any newly discovered
+client/protocol behavior must be assigned by the final S-001/S-066 audit.

@@ -4,6 +4,7 @@
 //! module owns the small adapter needed by the agent loop: a host-action state
 //! object, extension-tool conversion, and mode-scoped loading policy.
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,17 +20,57 @@ use super::loader::{discover_and_load_extensions, load_extensions_with_host_acti
 use super::runner::ExtensionRunner;
 use super::types::{ExtensionHostAction, ExtensionHostActions, ExtensionLoadError, RegisteredTool};
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ExtensionHostStateInner {
     session_name: Option<String>,
     active_tools: Vec<String>,
     all_tools: Vec<Value>,
     commands: Vec<Value>,
     thinking_level: String,
+    model: Option<Value>,
+    scoped_models: Vec<Value>,
+    is_idle: bool,
+    is_project_trusted: bool,
+    signal: Option<Arc<AtomicBool>>,
+    tool_signals: BTreeMap<String, Arc<AtomicBool>>,
+    has_pending_messages: bool,
+    context_usage: Option<Value>,
+    system_prompt: String,
+    system_prompt_options: Value,
     requested_model: Option<Value>,
     pending_messages: Vec<Value>,
     pending_entries: Vec<Value>,
+    pending_actions: Vec<Value>,
+    pending_tool_updates: Vec<(Option<String>, Value)>,
     labels: Vec<Value>,
+}
+
+impl Default for ExtensionHostStateInner {
+    fn default() -> Self {
+        Self {
+            session_name: None,
+            active_tools: Vec::new(),
+            all_tools: Vec::new(),
+            commands: Vec::new(),
+            thinking_level: "medium".to_string(),
+            model: None,
+            scoped_models: Vec::new(),
+            is_idle: true,
+            is_project_trusted: true,
+            signal: None,
+            tool_signals: BTreeMap::new(),
+            has_pending_messages: false,
+            context_usage: None,
+            system_prompt: String::new(),
+            system_prompt_options: json!({}),
+            requested_model: None,
+            pending_messages: Vec::new(),
+            pending_entries: Vec::new(),
+            pending_actions: Vec::new(),
+            pending_tool_updates: Vec::new(),
+            labels: Vec::new(),
+        }
+    }
 }
 
 /// Host-owned state shared by an extension bridge and the active mode.
@@ -75,6 +116,100 @@ impl ExtensionHostState {
             .unwrap_or_default()
     }
 
+    pub fn set_model(&self, model: Option<Value>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.model = model;
+        }
+    }
+
+    pub fn set_scoped_models(&self, scoped_models: Vec<Value>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.scoped_models = scoped_models;
+        }
+    }
+
+    pub fn set_idle(&self, is_idle: bool) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.is_idle = is_idle;
+        }
+    }
+
+    pub fn set_project_trusted(&self, is_project_trusted: bool) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.is_project_trusted = is_project_trusted;
+        }
+    }
+
+    /// Bind the signal for the currently executing agent tool. The bridge
+    /// receives only an `aborted` snapshot; the shared flag still lets an
+    /// external `ctx.abort()` action cancel the Rust-side operation.
+    pub fn set_signal(&self, signal: Option<Arc<AtomicBool>>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.signal = signal;
+        }
+    }
+
+    pub fn set_has_pending_messages(&self, has_pending_messages: bool) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.has_pending_messages = has_pending_messages;
+        }
+    }
+
+    pub fn set_context_usage(&self, context_usage: Option<Value>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.context_usage = context_usage;
+        }
+    }
+
+    pub fn set_system_prompt(&self, system_prompt: impl Into<String>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.system_prompt = system_prompt.into();
+        }
+    }
+
+    pub fn set_system_prompt_options(&self, system_prompt_options: Value) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.system_prompt_options = system_prompt_options;
+        }
+    }
+
+    /// Start a tool callback boundary and clear updates left by a prior call.
+    pub fn begin_tool_execution(&self, tool_call_id: &str, signal: Option<Arc<AtomicBool>>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            if let Some(signal) = signal {
+                inner.tool_signals.insert(tool_call_id.to_string(), signal);
+            } else {
+                inner.tool_signals.remove(tool_call_id);
+            }
+            inner
+                .pending_tool_updates
+                .retain(|(call_id, _)| call_id.as_deref() != Some(tool_call_id));
+        }
+    }
+
+    /// End a tool callback boundary, returning bridge updates in protocol
+    /// arrival order. Clearing the signal prevents it leaking into the next
+    /// handler or tool request.
+    pub fn end_tool_execution(&self, tool_call_id: &str) -> Vec<Value> {
+        self.inner
+            .lock()
+            .map(|mut inner| {
+                inner.tool_signals.remove(tool_call_id);
+                let mut updates = Vec::new();
+                let mut remaining = Vec::new();
+                for (call_id, update) in std::mem::take(&mut inner.pending_tool_updates) {
+                    if call_id.as_deref() == Some(tool_call_id) {
+                        updates.push(update);
+                    } else {
+                        remaining.push((call_id, update));
+                    }
+                }
+                inner.pending_tool_updates = remaining;
+                updates
+            })
+            .unwrap_or_default()
+    }
+
     /// Drain asynchronous messages requested by extensions.  The current
     /// mode owns delivery semantics; retaining them here prevents a bridge
     /// callback from recursively entering the agent loop.
@@ -92,15 +227,55 @@ impl ExtensionHostState {
             .unwrap_or_default()
     }
 
-    fn snapshot_value(&self) -> Value {
+    pub fn drain_pending_actions(&self) -> Vec<Value> {
+        self.inner
+            .lock()
+            .map(|mut inner| std::mem::take(&mut inner.pending_actions))
+            .unwrap_or_default()
+    }
+
+    pub fn drain_pending_tool_updates(&self) -> Vec<Value> {
+        self.inner
+            .lock()
+            .map(|mut inner| {
+                std::mem::take(&mut inner.pending_tool_updates)
+                    .into_iter()
+                    .map(|(_, update)| update)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn snapshot_value_for(&self, tool_call_id: Option<&str>) -> Value {
         let inner = self.inner.lock().expect("extension host state lock");
+        let signal = tool_call_id
+            .and_then(|tool_call_id| inner.tool_signals.get(tool_call_id))
+            .or(inner.signal.as_ref())
+            .map(|signal| {
+                json!({
+                    "aborted": signal.load(Ordering::Acquire),
+                })
+            });
         json!({
             "sessionName": inner.session_name,
             "activeTools": inner.active_tools,
             "allTools": inner.all_tools,
             "commands": inner.commands,
             "thinkingLevel": inner.thinking_level,
+            "model": inner.model,
+            "scopedModels": inner.scoped_models,
+            "isIdle": inner.is_idle,
+            "isProjectTrusted": inner.is_project_trusted,
+            "signal": signal,
+            "hasPendingMessages": inner.has_pending_messages,
+            "contextUsage": inner.context_usage,
+            "systemPrompt": inner.system_prompt,
+            "systemPromptOptions": inner.system_prompt_options,
         })
+    }
+
+    fn snapshot_value(&self) -> Value {
+        self.snapshot_value_for(None)
     }
 
     fn dispatch_action(&self, action: ExtensionHostAction, args: &Value) -> Result<Value, String> {
@@ -171,6 +346,7 @@ impl ExtensionHostState {
             ExtensionHostAction::GetCommands => Ok(Value::Array(inner.commands.clone())),
             ExtensionHostAction::SetModel => {
                 inner.requested_model = args.get("model").cloned();
+                inner.model = inner.requested_model.clone();
                 Ok(Value::Bool(true))
             }
             ExtensionHostAction::GetThinkingLevel => {
@@ -180,6 +356,84 @@ impl ExtensionHostState {
                 if let Some(level) = args.get("level").and_then(Value::as_str) {
                     inner.thinking_level = level.to_string();
                 }
+                Ok(Value::Null)
+            }
+            ExtensionHostAction::GetModel => Ok(inner.model.clone().unwrap_or(Value::Null)),
+            ExtensionHostAction::GetScopedModels => Ok(Value::Array(inner.scoped_models.clone())),
+            ExtensionHostAction::IsIdle => Ok(Value::Bool(inner.is_idle)),
+            ExtensionHostAction::IsProjectTrusted => Ok(Value::Bool(inner.is_project_trusted)),
+            ExtensionHostAction::GetSignal => {
+                let signal = args
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .and_then(|tool_call_id| inner.tool_signals.get(tool_call_id))
+                    .or(inner.signal.as_ref());
+                Ok(signal
+                    .map(|signal| json!({"aborted": signal.load(Ordering::Acquire)}))
+                    .unwrap_or(Value::Null))
+            }
+            ExtensionHostAction::Abort => {
+                let tool_call_id = args.get("toolCallId").and_then(Value::as_str);
+                if let Some(signal) = tool_call_id
+                    .and_then(|tool_call_id| inner.tool_signals.get(tool_call_id))
+                    .or(inner.signal.as_ref())
+                {
+                    signal.store(true, Ordering::Release);
+                }
+                let mut action = serde_json::Map::new();
+                action.insert("type".to_string(), Value::String("abort".to_string()));
+                if let Some(tool_call_id) = tool_call_id {
+                    action.insert(
+                        "toolCallId".to_string(),
+                        Value::String(tool_call_id.to_string()),
+                    );
+                }
+                inner.pending_actions.push(Value::Object(action));
+                Ok(Value::Null)
+            }
+            ExtensionHostAction::HasPendingMessages => Ok(Value::Bool(inner.has_pending_messages)),
+            ExtensionHostAction::Shutdown => {
+                let mut action = serde_json::Map::new();
+                action.insert("type".to_string(), Value::String("shutdown".to_string()));
+                if let Some(tool_call_id) = args.get("toolCallId").and_then(Value::as_str) {
+                    action.insert(
+                        "toolCallId".to_string(),
+                        Value::String(tool_call_id.to_string()),
+                    );
+                }
+                inner.pending_actions.push(Value::Object(action));
+                Ok(Value::Null)
+            }
+            ExtensionHostAction::GetContextUsage => {
+                Ok(inner.context_usage.clone().unwrap_or(Value::Null))
+            }
+            ExtensionHostAction::Compact => {
+                let mut action = serde_json::Map::new();
+                action.insert("type".to_string(), Value::String("compact".to_string()));
+                action.insert(
+                    "options".to_string(),
+                    args.get("options").cloned().unwrap_or(Value::Null),
+                );
+                if let Some(tool_call_id) = args.get("toolCallId").and_then(Value::as_str) {
+                    action.insert(
+                        "toolCallId".to_string(),
+                        Value::String(tool_call_id.to_string()),
+                    );
+                }
+                inner.pending_actions.push(Value::Object(action));
+                Ok(Value::Null)
+            }
+            ExtensionHostAction::GetSystemPrompt => Ok(Value::String(inner.system_prompt.clone())),
+            ExtensionHostAction::GetSystemPromptOptions => Ok(inner.system_prompt_options.clone()),
+            ExtensionHostAction::ToolUpdate => {
+                let tool_call_id = args
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                inner.pending_tool_updates.push((
+                    tool_call_id,
+                    args.get("result").cloned().unwrap_or(Value::Null),
+                ));
                 Ok(Value::Null)
             }
         }
@@ -193,6 +447,10 @@ impl ExtensionHostActions for ExtensionHostState {
 
     fn snapshot(&self) -> Value {
         self.snapshot_value()
+    }
+
+    fn snapshot_for(&self, request: &Value) -> Value {
+        self.snapshot_value_for(request.get("toolCallId").and_then(Value::as_str))
     }
 }
 
@@ -219,6 +477,7 @@ pub fn load_for_mode(
     thinking_level: impl Into<String>,
 ) -> LoadedExtensions {
     let host = Arc::new(ExtensionHostState::new(session_name, thinking_level));
+    host.set_system_prompt_options(json!({"cwd": cwd}));
     let mut configured_paths = args.extensions.clone();
     if !args.no_extensions {
         configured_paths.extend(settings.get_extension_paths());
@@ -329,11 +588,15 @@ fn extension_agent_tool(
                     return Err("Operation aborted".to_string());
                 }
                 let before = host.active_tools();
-                let value = tokio::task::spawn_blocking(move || {
-                    runner.execute_tool(&tool_name, &tool_call_id, params)
+                host.begin_tool_execution(&tool_call_id, signal.clone());
+                let execution_tool_call_id = tool_call_id.clone();
+                let execution = tokio::task::spawn_blocking(move || {
+                    runner.execute_tool(&tool_name, &execution_tool_call_id, params)
                 })
-                .await
-                .map_err(|error| format!("extension tool task failed: {error}"))??;
+                .await;
+                let pending_updates = host.end_tool_execution(&tool_call_id);
+                let value =
+                    execution.map_err(|error| format!("extension tool task failed: {error}"))??;
                 let mut result = extension_tool_result(value)?;
                 let after = host.active_tools();
                 let before_set = before.iter().map(String::as_str).collect::<BTreeSet<_>>();
@@ -355,6 +618,10 @@ fn extension_agent_tool(
                     }
                 }
                 if let Some(on_update) = on_update {
+                    for update in pending_updates {
+                        let update = extension_tool_result(update)?;
+                        on_update(&update);
+                    }
                     on_update(&result);
                 }
                 Ok(result)
@@ -606,6 +873,158 @@ mod tests {
         );
 
         loaded.runner.invalidate(Some("test complete"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn external_tool_context_forwards_signal_updates_and_control_actions() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let root = fixture_root("context-actions");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("fixture directory");
+        let extension = root.join("index.js");
+        std::fs::write(
+            &extension,
+            r#"export default function (pi) {
+  pi.registerTool({
+    name: "context-tool",
+    description: "context action fixture",
+    parameters: { type: "object", properties: {} },
+    execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+      signal.throwIfAborted();
+      const before = {
+        model: ctx.model,
+        scopedModels: ctx.scopedModels,
+        idle: ctx.isIdle(),
+        trusted: ctx.isProjectTrusted(),
+        contextSignal: ctx.signal?.aborted ?? null,
+        toolSignal: signal.aborted,
+        pending: ctx.hasPendingMessages(),
+        usage: ctx.getContextUsage(),
+        prompt: ctx.getSystemPrompt(),
+        options: ctx.getSystemPromptOptions(),
+      };
+      onUpdate({ content: [{ type: "text", text: "partial" }], details: { sequence: 1 } });
+      ctx.abort();
+      ctx.compact({ customInstructions: "tool compact" });
+      ctx.shutdown();
+      return {
+        content: [{ type: "text", text: `${toolCallId}:${params.value}` }],
+        details: { before, afterAborted: signal.aborted },
+      };
+    },
+  });
+}"#,
+        )
+        .expect("write extension fixture");
+
+        let args = Args {
+            extensions: vec![extension.to_string_lossy().into_owned()],
+            no_extensions: true,
+            ..Default::default()
+        };
+        let loaded = load_for_mode(
+            &args,
+            &SettingsManager::in_memory(SettingsMap::new()),
+            &root.to_string_lossy(),
+            &root.join("agent").to_string_lossy(),
+            "print",
+            false,
+            Some("fixture-session".to_string()),
+            "medium",
+        );
+        assert!(loaded.errors.is_empty(), "load errors: {:?}", loaded.errors);
+        loaded
+            .host
+            .set_model(Some(json!({"provider": "fixture", "id": "model-1"})));
+        loaded.host.set_scoped_models(vec![json!({
+            "model": {"provider": "fixture", "id": "scoped-1"},
+            "thinkingLevel": "high",
+        })]);
+        loaded.host.set_idle(false);
+        loaded.host.set_project_trusted(false);
+        loaded.host.set_has_pending_messages(true);
+        loaded.host.set_context_usage(Some(json!({
+            "tokens": 12,
+            "contextWindow": 100,
+            "percent": 0.12,
+        })));
+        loaded.host.set_system_prompt("fixture system prompt");
+        loaded.host.set_system_prompt_options(json!({
+            "cwd": root.to_string_lossy(),
+            "selectedTools": ["context-tool"],
+        }));
+
+        let mut tools = Vec::new();
+        install_tools(&loaded, &mut tools, true);
+        assert_eq!(tools.len(), 1);
+        let signal = Arc::new(AtomicBool::new(false));
+        let updates = Arc::new(Mutex::new(Vec::<AgentToolResult>::new()));
+        let updates_for_callback = Arc::clone(&updates);
+        let result = (tools[0].execute)(
+            "call-context".to_string(),
+            json!({"value": 7}),
+            Some(Arc::clone(&signal)),
+            Some(Arc::new(move |update| {
+                updates_for_callback
+                    .lock()
+                    .expect("update lock")
+                    .push(update.clone());
+            })),
+        )
+        .await
+        .expect("extension tool execution");
+
+        assert_eq!(result.content, vec![ContentBlock::text("call-context:7")]);
+        let details = result.details.as_ref().expect("tool details");
+        assert_eq!(
+            details["before"],
+            json!({
+                "model": {"provider": "fixture", "id": "model-1"},
+                "scopedModels": [{
+                    "model": {"provider": "fixture", "id": "scoped-1"},
+                    "thinkingLevel": "high",
+                }],
+                "idle": false,
+                "trusted": false,
+                "contextSignal": false,
+                "toolSignal": false,
+                "pending": true,
+                "usage": {"tokens": 12, "contextWindow": 100, "percent": 0.12},
+                "prompt": "fixture system prompt",
+                "options": {
+                    "cwd": root.to_string_lossy(),
+                    "selectedTools": ["context-tool"],
+                },
+            })
+        );
+        assert_eq!(details["afterAborted"], true);
+        assert!(signal.load(Ordering::Acquire));
+
+        let updates = updates.lock().expect("update lock");
+        assert_eq!(updates.len(), 2, "partial update must precede final update");
+        assert_eq!(updates[0].content, vec![ContentBlock::text("partial")]);
+        assert_eq!(updates[1].content, result.content);
+        drop(updates);
+
+        assert_eq!(
+            loaded.host.drain_pending_actions(),
+            vec![
+                json!({"type": "abort", "toolCallId": "call-context"}),
+                json!({"type": "compact", "options": {"customInstructions": "tool compact"}, "toolCallId": "call-context"}),
+                json!({"type": "shutdown", "toolCallId": "call-context"}),
+            ]
+        );
+        assert!(loaded.host.snapshot()["signal"].is_null());
+        loaded
+            .runner
+            .invalidate(Some("context action test complete"));
         let _ = std::fs::remove_dir_all(root);
     }
 
