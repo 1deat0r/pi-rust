@@ -26,12 +26,11 @@ ledger freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The latest pushed checkpoint before the current implementation slice is
-`2fd84716f542e9ea83c94e7aff315299eb43d843`. The current worktree contains
-uncommitted S-027 extension-runtime work in `loader.rs`, `types.rs`,
-`interactive.rs`, `extensions_parity.rs`, `Cargo.toml`/`Cargo.lock`, and the
-new `data/extension-runtime/` assets. The pre-existing untracked `AGENTS.md`
-remains untouched and must be preserved. Do not use `git reset --hard`,
+The latest pushed checkpoint is
+`b425babdc64f3fb52f2547e95e7d269d1c3407b8`, containing the S-027
+extension-runtime implementation and synchronized documentation. The
+pre-existing untracked `AGENTS.md` remains untouched and must be preserved.
+Do not use `git reset --hard`,
 `git checkout --`, broad revert commands, or `git clean`.
 
 Current status: branch `main`, progress checker reports
@@ -43,7 +42,10 @@ The remaining S-027 residuals are the built-in pi/TypeBox JS module graph,
 compiled-Bun/Node-SEA virtual-module branches, and full reload
 lifecycle/resource/flag evidence. After documentation synchronization, make
 one focused commit, push it immediately, verify local/remote hashes, then run
-the fresh clean-room and final S-004/S-065/S-066/#100 gates.
+the fresh clean-room and final S-004/S-065/S-066/#100 gates. At this
+checkpoint `git rev-parse HEAD` and `git ls-remote origin refs/heads/main`
+both equal `b425babdc64f3fb52f2547e95e7d269d1c3407b8`; the worktree is clean
+except for the preserved `AGENTS.md`.
 
 All sections below whose headings say “Current checkpoint” and which contain
 older percentages or commits are historical snapshots from earlier turns.
