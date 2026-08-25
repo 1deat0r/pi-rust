@@ -30,4 +30,5 @@ full reload lifecycle/resource/flag evidence. The current context/action
 object and ordered mid-execution signal/update path are covered by the focused
 integration and external-bridge fixtures; the remaining provider/runtime
 leaves are intentionally not repeated as done claims here.
-The final process gates are S-004, S-065, S-066, and #100.
+The final clean-room gate #100 is recorded as passed in the ledger. The
+remaining process gates are S-004, S-065, and S-066.

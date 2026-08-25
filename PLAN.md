@@ -4,10 +4,12 @@
 
 The existing conversion goal is resumed under the scoped unlazy contract
 `.unlazy/full-conversion-20260825/`. The current authoritative checker output
-is **Conversion progress: 96.99% (161/166; 5 open)**. S-001 and S-002 are now
+is **Conversion progress: 97.59% (162/166; 4 open)**. S-001 and S-002 are now
 closed with the current source/export census and claim-reconciliation
 artifacts; the current wave has unit, mock,
 and live evidence across providers, client/server, harness, and reconnects.
+The final clean-room gate (#100) is now green; S-004, S-027, S-065, and S-066
+remain open.
 
 The first implementation wave completed the audited implementation leaves
 (`leaf-A1`), Copilot OAuth
@@ -49,7 +51,7 @@ S-001, S-002, S-003, and #99 are closed with their recorded inventory,
 documentation, checker, and real-binary evidence. The unit/mock checker suite
 (`node --test
 scripts/conversion-progress.test.mjs`, 7 passed), and the authoritative
-checker is **Conversion progress: 96.99% (161/166; 5 open)**. The extension
+checker is **Conversion progress: 97.59% (162/166; 4 open)**. The extension
 loader now embeds pinned `jiti@2.7.0`/Babel assets, transforms TS/TSX through
 `jiti/static`, covers configured alias/virtual-module loading, and emits
 deterministic known-module diagnostics; the live mode adapter maps extension
@@ -60,15 +62,17 @@ refreshes the tool catalog. #97 is closed with
 `cargo build --workspace --release --offline` and the full release suite using
 `cargo test --workspace --release --offline --quiet -- --test-threads=2`.
 The bounded test concurrency is required to keep the live tmux/PTY fixtures
-from being starved by the host's default test fan-out. The next gates are the
-independent source/TODO reviewer, full real-binary audit, clean-room run, and
-final denominator/documentation freeze.
+from being starved by the host's default test fan-out. The independent
+clean-room gate (#100) is green in
+`.unlazy/full-conversion-20260825/gates/clean-room-current.md`; the next gates
+are the independent S-004 review and the final S-065/S-066
+source/TODO-denominator freeze.
 
 ## Session 13 reviewer preparation — 2026-08-25 (§0.3)
 
 The final convergence review is anchored to upstream commit
 `5cd93f688aaab89dbb6dfa4aca535f21796ae185` and the live checker output
-`Conversion progress: 96.99% (161/166; 5 open)`. The reviewer must use the
+`Conversion progress: 97.59% (162/166; 4 open)`. The reviewer must use the
 ledger as the acceptance index, verify every checked row's evidence tier and
 exact command, and treat any source/TODO/export surface without a ledger ID
 as a blocker to S-001/S-066.

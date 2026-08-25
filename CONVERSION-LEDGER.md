@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **96.99% (161/166; 5 open)**. Run
+- The exhaustive checker reports **97.59% (162/166; 4 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - The current S-027 implementation checkpoint vendors byte-identical
@@ -657,9 +657,21 @@ Recut of the remaining work by user impact + risk:
       matrix, and the exact `node scripts/parity-suite.mjs` result:
       `checks: 40 passed, 0 failed, 1 not-run, 41 total`; the credentialed
       network smoke remains explicitly not-run.
-- [ ] 100. Final clean-room check: fresh clone → workspace tests green,
+- [x] 100. Final clean-room check: fresh clone → workspace tests green,
       0 warnings, clippy -D warnings clean, flag/env/tool/provider matrix
-      recorded in PLAN.md with tiers, milestone tagged.
+      recorded in PLAN.md with tiers, milestone tagged. Evidence (live):
+      `.unlazy/full-conversion-20260825/gates/clean-room-current.md` records
+      a fresh clone at `07e0623cde0ba5caf18275c773df31e56ee37ad1` with the
+      pinned `upstream_pi` oracle at
+      `5cd93f688aaab89dbb6dfa4aca535f21796ae185`. The isolated gates pass:
+      `cargo fmt --all -- --check`,
+      `cargo clippy --workspace --all-targets --offline -- -D warnings`,
+      `cargo build --workspace --release --offline`,
+      `cargo test --workspace --offline --quiet -- --test-threads=2`,
+      `node scripts/conversion-progress.test.mjs` (7 passed), the release
+      parity command in the report (40 passed, 0 failed, 1 not-run), and
+      `git diff --check`. The credentialed live branch remains explicitly
+      not-run; the known fake-node failure was not reproduced.
 
 ---
 

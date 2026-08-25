@@ -8,8 +8,8 @@ The current requested progress percentage is based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-96.99% = 161 completed / 166 total tasks
-5 tasks remain open
+97.59% = 162 completed / 166 total tasks
+4 tasks remain open
 
 ```
 
@@ -22,7 +22,7 @@ node scripts/conversion-progress.mjs
 ```
 
 The denominator is intentionally provisional until S-066 finishes the final
-ledger freeze. Do not claim 100% before the final clean-room audit.
+ledger freeze. Do not claim 100% before the final source/TODO audit.
 
 ## Important working-tree state
 
@@ -34,18 +34,18 @@ Do not use `git reset --hard`,
 `git checkout --`, broad revert commands, or `git clean`.
 
 Current status: branch `main`, progress checker reports
-`96.99% (161/166; 5 open)`. No ledger checkbox changed in this slice. The
+`97.59% (162/166; 4 open)`. Ledger row #100 is now checked with the
+independent clean-room evidence below. The
 embedded `jiti@2.7.0`/Babel runtime, Node/Bun option branching, configured
 alias/virtual-module fixtures, upstream-style path normalization, and
 interactive reload re-evaluation are implemented and locally validated.
 The remaining S-027 residuals are the built-in pi/TypeBox JS module graph,
 compiled-Bun/Node-SEA virtual-module branches, and full reload
-lifecycle/resource/flag evidence. The documentation synchronization is
-already pushed; the next gates are the fresh clean-room and final
-S-004/S-065/S-066/#100 audit. At this checkpoint `git rev-parse HEAD` and
-`git ls-remote origin refs/heads/main` both equal
-`07e0623cde0ba5caf18275c773df31e56ee37ad1`; the worktree is clean except
-for the preserved `AGENTS.md`.
+lifecycle/resource/flag evidence. The clean-room gate is green; the next
+gates are the independent S-004 review and final S-065/S-066 audit. The
+current pushed checkpoint is `e9d63b0ac6ce8fc8da854b8ba8fbd5adaf80fbeb`;
+the synchronized ledger/docs update is pending its focused commit. The
+pre-existing untracked `AGENTS.md` remains preserved and unstaged.
 
 All sections below whose headings say “Current checkpoint” and which contain
 older percentages or commits are historical snapshots from earlier turns.
@@ -83,15 +83,16 @@ cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings
 cargo fmt --all -- --check
 git diff --check
 node scripts/conversion-progress.mjs
-  Conversion progress: 96.99% (161/166; 5 open)
+  Conversion progress: 97.59% (162/166; 4 open)
 ```
 
 The ignored S-027 audit remains APPROVE-WITH-CONDITIONS and correctly keeps
-S-027 open. The next dependency-safe action is to decide whether to supply a
-supported JS module graph/adapter for the 20 built-in upstream aliases and
-compiled-Bun/SEA branches; if not, record that intentional boundary and run
-the final independent S-004/S-065/S-066/#100 audit. Do not claim 100% until
-the ledger, plan, handoff, clean-room, and remote hash gates agree.
+S-027 open. The clean-room gate passed in a fresh clone with the pinned
+oracle; its exact evidence is recorded in
+`.unlazy/full-conversion-20260825/gates/clean-room-current.md`. The next
+dependency-safe action is the independent S-004 review and final S-065/S-066
+source/TODO denominator audit. Do not claim 100% until the ledger, plan,
+handoff, final audit, and remote hash gates agree.
 
 ## Current strict-verification cleanup
 
@@ -1463,7 +1464,7 @@ Current authoritative checker:
 Conversion progress: 96.99% (161/166; 5 open)
 ```
 
-Remaining rows are S-004, S-027, S-065, S-066, and #100. The current worktree
+Remaining rows are S-004, S-027, S-065, and S-066. The current worktree
 also contains the uncommitted documentation/ledger reconciliation and the
 reviewed extension-context code; the next checkpoint must run the full narrow
 extension tests, inspect the native-provider leaf, then commit and push with
@@ -1558,3 +1559,27 @@ node scripts/parity-suite.mjs
 node scripts/conversion-progress.mjs
 Conversion progress: 96.99% (161/166; 5 open)
 ```
+
+## Active checkpoint — 2026-08-25 — clean-room gate and residual boundary
+
+Ledger row #100 is now checked. An independent clean-room clone at
+`07e0623cde0ba5caf18275c773df31e56ee37ad1` passed workspace formatting,
+strict workspace clippy, release build, workspace tests with two test threads,
+the conversion-progress tests (7/7), the release-binary parity matrix (40
+passed, 0 failed, 1 intentionally not-run), and `git diff --check`. The
+credentialed network branch remains explicitly not-run, and the known
+fake-node failure was not reproduced. Full evidence is in
+`.unlazy/full-conversion-20260825/gates/clean-room-current.md`.
+
+The authoritative checker after the ledger update is:
+
+```text
+Conversion progress: 97.59% (162/166; 4 open)
+```
+
+The remaining rows are S-004, S-027, S-065, and S-066. Two bounded S-027
+reviews confirmed that the built-in pi/TypeBox JavaScript graph and genuine
+compiled-Bun/Node-SEA identities are not present in the current distribution,
+and that the Rust interactive host has no session-bound resource loader for
+full upstream reload events/resources. Keep those boundaries explicit; do
+not close S-027 with mock-only detection or a path-based module fixture.
