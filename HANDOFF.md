@@ -26,20 +26,20 @@ ledger freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The current logical checkpoint is the pushed extension context-action slice
-at bf313c541e8f5bb384152eeff14a1d2ac86e25e2, with S-001, S-002, and #99 now
-evidenced in the worktree and the S-027 context-extension worker still under
-review. The pre-existing
-untracked `AGENTS.md` remains untouched and must be preserved. Do not use
+The current logical checkpoint is the pushed typed native-provider adapter at
+`1ba47071a820ba60d681848ccd767cfb69cebd5b`, with S-001, S-002, and #99
+evidenced and S-027 still open for its remaining runtime leaves. The
+pre-existing untracked `AGENTS.md` remains untouched and must be preserved. Do not use
 `git reset --hard`, `git checkout --`, broad revert commands, or `git clean`.
 
 Current status: branch `main`, progress checker reports
 `96.99% (161/166; 5 open)`. The latest pushed checkpoint is
-`bf313c541e8f5bb384152eeff14a1d2ac86e25e2`; the pre-existing untracked
-`AGENTS.md` remains untouched and must stay unstaged. The current worktree
-contains the S-001/S-002/#99 reconciliation and ignored audit artifacts; the
-next logical checkpoint must review the S-027 worker, run the narrow crate
-tests, checker, diff gate, commit, push, and hash verification.
+`1ba47071a820ba60d681848ccd767cfb69cebd5b`; local `HEAD` and
+`git ls-remote origin refs/heads/main` match. The current worktree is clean
+except for the pre-existing untracked `AGENTS.md`, which remains untouched and
+unstaged. The next logical checkpoint is production mode/model-registry wiring
+for native providers, followed by the independent S-004 review and final audit
+gates.
 
 All sections below whose headings say “Current checkpoint” and which contain
 older percentages or commits are historical snapshots from earlier turns.
