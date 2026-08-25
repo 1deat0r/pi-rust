@@ -1569,7 +1569,8 @@ the conversion-progress tests (7/7), the release-binary parity matrix (40
 passed, 0 failed, 1 intentionally not-run), and `git diff --check`. The
 credentialed network branch remains explicitly not-run, and the known
 fake-node failure was not reproduced. Full evidence is in
-`.unlazy/full-conversion-20260825/gates/clean-room-current.md`.
+`.unlazy/full-conversion-20260825/gates/clean-room-current.md`. The checkpoint
+is tagged `conversion-97.59-clean-room`.
 
 The authoritative checker after the ledger update is:
 

@@ -659,7 +659,8 @@ Recut of the remaining work by user impact + risk:
       network smoke remains explicitly not-run.
 - [x] 100. Final clean-room check: fresh clone → workspace tests green,
       0 warnings, clippy -D warnings clean, flag/env/tool/provider matrix
-      recorded in PLAN.md with tiers, milestone tagged. Evidence (live):
+      recorded in PLAN.md with tiers. Milestone tag:
+      `conversion-97.59-clean-room`. Evidence (live):
       `.unlazy/full-conversion-20260825/gates/clean-room-current.md` records
       a fresh clone at `07e0623cde0ba5caf18275c773df31e56ee37ad1` with the
       pinned `upstream_pi` oracle at
