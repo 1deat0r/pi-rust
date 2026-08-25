@@ -2,24 +2,19 @@
 //! `packages/coding-agent/src/modes/interactive/theme/theme.ts` (the
 //! data/JSON resolution side used by HTML export and, later, the TUI).
 //!
-//! Scope note (documented divergence): the upstream module additionally
-//! carries a `Theme` class that paints ANSI strings for the TUI (fg/bg
-//! sequences, truecolor/256 fallback), a global theme proxy, file watchers,
-//! and registered-theme management. This port covers the JSON side needed by
-//! export-html (and by the upcoming TUI theming): builtin theme data
-//! (embedded), custom-theme loading from `~/.pi/agent/themes`, variable
-//! resolution, 256-color conversion, and the resolved CSS colors / export
-//! colors. The ANSI painting side will land with the interactive TUI work.
+//! The ANSI painting layer lives in `interactive::tui_theme`; this module owns
+//! the parsed JSON registry shared by HTML export, selectors, and the TUI.
 
-use std::path::PathBuf;
-
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 
 use indexmap::IndexMap;
 
 use serde::Deserialize;
 
 use crate::config;
+use crate::core::extensions::SourceInfo;
 
 pub const DEFAULT_THEME: &str = "dark";
 pub const LIGHT_THEME: &str = "light";
@@ -40,7 +35,7 @@ pub enum ColorValue {
 /// Unknown fields are ignored (upstream validates with typebox; we keep the
 /// same acceptance by parsing the shipped files and rejecting malformed
 /// shapes only when a needed field is missing).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ThemeJson {
     #[serde(rename = "$schema")]
     pub schema: Option<String>,
@@ -52,7 +47,7 @@ pub struct ThemeJson {
     pub export: Option<ThemeExportSection>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeExportSection {
     #[serde(default)]
@@ -65,7 +60,257 @@ pub struct ThemeExportSection {
 
 fn parse_theme_json(label: &str, content: &str) -> Result<ThemeJson, String> {
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
-    serde_json::from_str(content).map_err(|e| format!("Failed to parse theme {label}: {e}"))
+    let theme: ThemeJson =
+        serde_json::from_str(content).map_err(|e| format!("Failed to parse theme {label}: {e}"))?;
+    if theme.name.contains('/') {
+        return Err(format!(
+            "Invalid theme name \"{}\": theme names cannot contain \"/\"",
+            theme.name
+        ));
+    }
+    Ok(theme)
+}
+
+/// Parsed theme identity exposed to resource consumers and selectors.
+///
+/// Builtin themes are embedded for runtime use but retain the shipped source
+/// path for provenance and selector/resource metadata. Custom and registered
+/// themes carry the resolved source path that produced them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThemeInfo {
+    pub name: String,
+    pub source_path: Option<PathBuf>,
+    /// Owning extension metadata for themes discovered through an extension
+    /// resource hook. Builtins, user settings, and custom themes have no
+    /// extension owner and therefore keep this field empty.
+    pub source_info: Option<SourceInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct RegisteredTheme {
+    info: ThemeInfo,
+    json: ThemeJson,
+}
+
+static REGISTERED_THEMES: OnceLock<RwLock<BTreeMap<String, RegisteredTheme>>> = OnceLock::new();
+
+fn registered_theme_store() -> &'static RwLock<BTreeMap<String, RegisteredTheme>> {
+    REGISTERED_THEMES.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+fn resolved_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn resolve_input_path(raw_path: &str, cwd: &Path) -> PathBuf {
+    let expanded = config::expand_tilde_path(raw_path.trim());
+    let path = Path::new(&expanded);
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    resolved_path(&joined)
+}
+
+fn theme_files_in_path(path: &Path) -> Vec<PathBuf> {
+    if path.is_file() {
+        return if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            vec![resolved_path(path)]
+        } else {
+            Vec::new()
+        };
+    }
+    if !path.is_dir() {
+        return Vec::new();
+    }
+
+    let mut files: Vec<PathBuf> = std::fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|entry| {
+            entry.is_file() && entry.extension().and_then(|ext| ext.to_str()) == Some("json")
+        })
+        .map(|entry| resolved_path(&entry))
+        .collect();
+    files.sort();
+    files
+}
+
+fn parse_theme_file(
+    path: &Path,
+    source_info: Option<SourceInfo>,
+) -> Result<RegisteredTheme, String> {
+    let source_path = resolved_path(path);
+    let content = std::fs::read_to_string(&source_path)
+        .map_err(|error| format!("Failed to read theme {}: {error}", source_path.display()))?;
+    let json = parse_theme_json(&source_path.display().to_string(), &content)?;
+    let name = json.name.clone();
+    Ok(RegisteredTheme {
+        info: ThemeInfo {
+            name,
+            source_path: Some(source_path),
+            source_info,
+        },
+        json,
+    })
+}
+
+fn registered_theme_infos_impl() -> Vec<ThemeInfo> {
+    registered_theme_store()
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .values()
+        .map(|theme| theme.info.clone())
+        .collect()
+}
+
+/// Replace the extension theme registry with the valid themes found at
+/// `paths`.
+///
+/// Paths are resolved relative to `cwd`; each path may be a `.json` file or a
+/// directory whose immediate `.json` files are loaded. Invalid paths/themes
+/// are ignored here, matching the resource loader's warning-and-continue
+/// behavior. Duplicate files and duplicate parsed names are deduplicated with
+/// the first path winning. Calling this during reload replaces stale entries;
+/// it never accumulates them.
+pub fn register_theme_paths(paths: &[String], cwd: &Path) -> Vec<ThemeInfo> {
+    let sources = paths
+        .iter()
+        .map(|path| (path.clone(), None))
+        .collect::<Vec<_>>();
+    register_theme_sources(&sources, cwd)
+}
+
+/// Register settings/CLI themes together with extension-discovered themes,
+/// retaining the owning extension's `SourceInfo` on every parsed theme.
+pub fn register_theme_sources(
+    paths: &[(String, Option<SourceInfo>)],
+    cwd: &Path,
+) -> Vec<ThemeInfo> {
+    let mut seen_paths = HashSet::new();
+    let mut seen_names = HashSet::new();
+    let mut loaded = Vec::new();
+
+    for (raw_path, source_info) in paths {
+        for path in theme_files_in_path(&resolve_input_path(raw_path, cwd)) {
+            if !seen_paths.insert(path.clone()) {
+                continue;
+            }
+            let Ok(theme) = parse_theme_file(&path, source_info.clone()) else {
+                continue;
+            };
+            if !seen_names.insert(theme.info.name.clone()) {
+                continue;
+            }
+            loaded.push(theme);
+        }
+    }
+
+    let mut registry = registered_theme_store()
+        .write()
+        .unwrap_or_else(|error| error.into_inner());
+    registry.clear();
+    for theme in loaded {
+        registry.insert(theme.info.name.clone(), theme);
+    }
+    registry.values().map(|theme| theme.info.clone()).collect()
+}
+
+/// Reload one registered theme in place without discarding sibling extension
+/// themes. This is the file-watcher equivalent of upstream's
+/// `registeredThemes.set(...)`; startup/reload still uses `register_theme_paths`
+/// to replace the complete discovered set.
+pub fn reload_registered_theme_path(path: &Path) -> Result<ThemeInfo, String> {
+    let source_info = registered_theme_store()
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .values()
+        .find(|theme| theme.info.source_path.as_deref() == Some(path))
+        .and_then(|theme| theme.info.source_info.clone());
+    let theme = parse_theme_file(path, source_info)?;
+    let info = theme.info.clone();
+    registered_theme_store()
+        .write()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(info.name.clone(), theme);
+    Ok(info)
+}
+
+/// Return the currently registered extension themes, sorted by parsed name.
+pub fn registered_theme_infos() -> Vec<ThemeInfo> {
+    registered_theme_infos_impl()
+}
+
+/// Return all selector-visible themes, with duplicate parsed names removed.
+/// Builtins win the listing position, followed by custom themes and then the
+/// registered extension themes, matching upstream `getAvailableThemesWithPaths`.
+pub fn available_themes_with_paths() -> Vec<ThemeInfo> {
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    let mut add = |info: ThemeInfo| {
+        if seen.insert(info.name.clone()) {
+            result.push(info);
+        }
+    };
+
+    for name in builtin_themes().keys() {
+        add(ThemeInfo {
+            name: name.clone(),
+            // Keep the same discoverable source path as upstream's shipped
+            // theme files, even though the Rust build embeds their contents.
+            source_path: Some(builtin_theme_path(name)),
+            source_info: None,
+        });
+    }
+    for info in custom_theme_infos() {
+        add(info);
+    }
+    for info in registered_theme_infos_impl() {
+        add(info);
+    }
+
+    result.sort_by(|left, right| left.name.cmp(&right.name));
+    result
+}
+
+fn builtin_theme_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("data")
+        .join("themes")
+        .join(format!("{name}.json"))
+}
+
+/// Return selector-visible theme names in upstream sort order.
+pub fn available_theme_names() -> Vec<String> {
+    available_themes_with_paths()
+        .into_iter()
+        .map(|theme| theme.name)
+        .collect()
+}
+
+fn custom_theme_infos() -> Vec<ThemeInfo> {
+    theme_files_in_path(&custom_themes_dir())
+        .into_iter()
+        .filter_map(|path| parse_theme_file(&path, None).ok().map(|theme| theme.info))
+        .collect()
+}
+
+fn registered_theme(name: &str) -> Option<RegisteredTheme> {
+    registered_theme_store()
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(name)
+        .cloned()
+}
+
+#[cfg(test)]
+pub(crate) fn test_theme_registry_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
 /// Built-in theme registry (embedded copies of the shipped dark/light JSON).
@@ -87,9 +332,13 @@ pub fn custom_themes_dir() -> PathBuf {
     config::get_agent_dir().join("themes")
 }
 
-/// Load a theme JSON by name: builtin first, then the custom themes dir.
-/// Mirrors upstream `loadThemeJson`.
+/// Load a theme JSON by name: registered extension themes first, then builtin
+/// and custom themes. Registered themes take activation/resolution precedence
+/// over a custom or builtin theme with the same parsed name.
 pub fn load_theme_json(name: &str) -> Result<ThemeJson, String> {
+    if let Some(theme) = registered_theme(name) {
+        return Ok(theme.json);
+    }
     let builtins = builtin_themes();
     if let Some(theme) = builtins.get(name) {
         return Ok(theme.clone());
@@ -361,6 +610,17 @@ pub fn resolve_theme_setting(theme_setting: Option<&str>, terminal_theme: &str) 
 mod tests {
     use super::*;
 
+    fn test_theme_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("pi-theme-{label}-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn write_test_theme(path: &Path, name: &str, accent: &str) {
+        let mut value: serde_json::Value = serde_json::from_str(BUILTIN_DARK).unwrap();
+        value["name"] = serde_json::Value::String(name.to_string());
+        value["colors"]["accent"] = serde_json::Value::String(accent.to_string());
+        std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
     #[test]
     fn builtin_themes_parse() {
         let themes = builtin_themes();
@@ -369,6 +629,23 @@ mod tests {
         assert_eq!(themes["light"].name, "light");
         assert!(themes["dark"].colors.contains_key("accent"));
         assert!(themes["dark"].export.is_some());
+    }
+
+    #[test]
+    fn available_builtin_themes_retain_shipped_source_paths() {
+        let infos = available_themes_with_paths();
+        for name in ["dark", "light"] {
+            let info = infos.iter().find(|info| info.name == name).unwrap();
+            assert_eq!(
+                info.source_path.as_deref(),
+                Some(builtin_theme_path(name).as_path())
+            );
+            assert!(
+                info.source_path.as_ref().is_some_and(|path| path.is_file()),
+                "shipped builtin theme path must exist: {:?}",
+                info.source_path
+            );
+        }
     }
 
     #[test]
@@ -489,6 +766,78 @@ mod tests {
     fn unknown_theme_errors() {
         assert!(get_resolved_theme_colors(Some("nope")).is_err());
         assert!(load_theme_json("nope").is_err());
+    }
+
+    #[test]
+    fn extension_theme_registration_parses_name_source_dedupes_and_replaces() {
+        let _lock = test_theme_registry_lock().lock().unwrap();
+        let dir = test_theme_dir("registration");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("a.json");
+        let duplicate = dir.join("b.json");
+        let name = format!("extension-theme-{}", uuid::Uuid::new_v4());
+        write_test_theme(&first, &name, "#123456");
+        write_test_theme(&duplicate, &name, "#654321");
+
+        let paths = vec![
+            dir.to_string_lossy().into_owned(),
+            first.to_string_lossy().into_owned(),
+        ];
+        let registered = register_theme_paths(&paths, Path::new("."));
+        assert_eq!(registered.len(), 1);
+        assert_eq!(registered[0].name, name);
+        assert_eq!(
+            registered[0].source_path,
+            Some(std::fs::canonicalize(&first).unwrap())
+        );
+        assert!(available_theme_names().contains(&name));
+        assert_eq!(
+            get_resolved_theme_colors(Some(&name))
+                .unwrap()
+                .get("accent")
+                .map(String::as_str),
+            Some("#123456")
+        );
+        assert_eq!(load_theme_json(&name).unwrap().name, name);
+
+        // Reload replaces the previous registry instead of accumulating it.
+        assert!(register_theme_paths(&[], Path::new(".")).is_empty());
+        assert!(!available_theme_names().contains(&name));
+        assert!(get_resolved_theme_colors(Some(&name)).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn extension_theme_registration_retains_source_info() {
+        let _lock = test_theme_registry_lock().lock().unwrap();
+        let dir = test_theme_dir("source-info");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("extension.json");
+        let name = format!("extension-source-info-{}", uuid::Uuid::new_v4());
+        write_test_theme(&path, &name, "#123456");
+        let source_info = SourceInfo {
+            path: "/extensions/example.ts".to_string(),
+            source: "extension:example".to_string(),
+            scope: "temporary".to_string(),
+            origin: "top-level".to_string(),
+            base_dir: Some(dir.to_string_lossy().into_owned()),
+        };
+
+        let registered = register_theme_sources(
+            &[(
+                path.to_string_lossy().into_owned(),
+                Some(source_info.clone()),
+            )],
+            Path::new("."),
+        );
+        assert_eq!(registered[0].source_info, Some(source_info));
+        assert_eq!(
+            registered[0].source_path,
+            Some(std::fs::canonicalize(&path).unwrap())
+        );
+
+        assert!(register_theme_paths(&[], Path::new(".")).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

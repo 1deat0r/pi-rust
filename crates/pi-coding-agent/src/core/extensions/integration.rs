@@ -7,7 +7,8 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use pi_agent::tools::{AgentTool, AgentToolResult, ToolExecuteFn, ToolUpdateCallback};
 use pi_ai::auth::{ApiKeyAuth, ApiKeyCredential, AuthCheck, AuthContext, AuthResult, ModelAuth};
@@ -28,8 +29,9 @@ use crate::core::settings::SettingsManager;
 use super::loader::{discover_and_load_extensions, load_extensions_with_host_actions};
 use super::runner::{ExtensionRunner, ResourceDiscovery};
 use super::types::{
-    ExtensionHostAction, ExtensionHostActions, ExtensionLoadError,
-    PendingNativeProviderRegistration, RegisteredTool,
+    ExtensionHostAction, ExtensionHostActionOutcome, ExtensionHostActions, ExtensionLoadError,
+    LifecycleCompletionSink, PendingHostAction, PendingNativeProviderRegistration, RegisteredTool,
+    RequestedHostChanges,
 };
 
 fn native_context_value(context: &Context) -> Value {
@@ -527,9 +529,11 @@ struct ExtensionHostStateInner {
     system_prompt: String,
     system_prompt_options: Value,
     requested_model: Option<Value>,
+    requested_model_request: Option<PendingHostAction>,
+    requested_active_tools: Option<Vec<String>>,
     pending_messages: Vec<Value>,
     pending_entries: Vec<Value>,
-    pending_actions: Vec<Value>,
+    pending_actions: Vec<PendingHostAction>,
     pending_tool_updates: Vec<(Option<String>, Value)>,
     labels: Vec<Value>,
 }
@@ -553,6 +557,8 @@ impl Default for ExtensionHostStateInner {
             system_prompt: String::new(),
             system_prompt_options: json!({}),
             requested_model: None,
+            requested_model_request: None,
+            requested_active_tools: None,
             pending_messages: Vec::new(),
             pending_entries: Vec::new(),
             pending_actions: Vec::new(),
@@ -564,12 +570,44 @@ impl Default for ExtensionHostStateInner {
 
 /// Host-owned state shared by an extension bridge and the active mode.
 ///
-/// The mode can consume the queued message/entry requests after a turn, while
-/// synchronous getters are served from the same snapshot that the bridge
-/// receives for every callback.
-#[derive(Clone, Debug, Default)]
+/// The mode can consume the queued message/entry/session requests after a
+/// callback, while synchronous getters are served from the same snapshot that
+/// the bridge receives for every callback. Session replacement is deliberately
+/// queued at this non-reentrant boundary; a cross-process callback cannot
+/// provide upstream's callback-scoped `withSession` continuation.
+#[derive(Clone)]
 pub struct ExtensionHostState {
     inner: Arc<Mutex<ExtensionHostStateInner>>,
+    idle_wakeup: Arc<Condvar>,
+    lifecycle_completion_sink: Arc<Mutex<Option<LifecycleCompletionSink>>>,
+}
+
+impl std::fmt::Debug for ExtensionHostState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let has_lifecycle_completion_sink = self
+            .lifecycle_completion_sink
+            .lock()
+            .map(|sink| sink.is_some())
+            .unwrap_or(false);
+        formatter
+            .debug_struct("ExtensionHostState")
+            .field("inner", &self.inner)
+            .field(
+                "has_lifecycle_completion_sink",
+                &has_lifecycle_completion_sink,
+            )
+            .finish()
+    }
+}
+
+impl Default for ExtensionHostState {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ExtensionHostStateInner::default())),
+            idle_wakeup: Arc::new(Condvar::new()),
+            lifecycle_completion_sink: Arc::new(Mutex::new(None)),
+        }
+    }
 }
 
 impl ExtensionHostState {
@@ -605,6 +643,32 @@ impl ExtensionHostState {
             .unwrap_or_default()
     }
 
+    /// Return the latest model request without consuming it. The mode can use
+    /// this to inspect work before deciding when to apply it.
+    pub fn requested_model(&self) -> Option<Value> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.requested_model.clone())
+    }
+
+    /// Return the latest model request, including bridge continuation data,
+    /// without consuming it.
+    pub fn requested_model_change(&self) -> Option<PendingHostAction> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.requested_model_request.clone())
+    }
+
+    /// Return the latest active-tool request without consuming it.
+    pub fn requested_active_tools(&self) -> Option<Vec<String>> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.requested_active_tools.clone())
+    }
+
     pub fn set_model(&self, model: Option<Value>) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.model = model;
@@ -626,7 +690,48 @@ impl ExtensionHostState {
     pub fn set_idle(&self, is_idle: bool) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.is_idle = is_idle;
+            self.idle_wakeup.notify_all();
         }
+    }
+
+    /// Maximum time the bridge-facing `waitForIdle` action may block.
+    pub const MAX_WAIT_FOR_IDLE: Duration = Duration::from_secs(60);
+
+    /// Wait until the host reports idle, using the bounded production timeout.
+    pub fn wait_for_idle(&self) -> Result<(), String> {
+        self.wait_for_idle_timeout(Self::MAX_WAIT_FOR_IDLE)
+    }
+
+    /// Wait until the host reports idle or the supplied bound expires.
+    ///
+    /// The condition is checked while holding the same mutex that `set_idle`
+    /// updates, and `set_idle` wakes all waiters. This avoids polling and also
+    /// avoids a lost wakeup between the check and the sleep.
+    pub fn wait_for_idle_timeout(&self, timeout: Duration) -> Result<(), String> {
+        let started = Instant::now();
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "Extension host state lock poisoned".to_string())?;
+        while !inner.is_idle {
+            let remaining = timeout
+                .checked_sub(started.elapsed())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| {
+                    format!("Timed out waiting for extension host to become idle after {timeout:?}")
+                })?;
+            let (next, wait_result) = self
+                .idle_wakeup
+                .wait_timeout(inner, remaining)
+                .map_err(|_| "Extension host state lock poisoned".to_string())?;
+            inner = next;
+            if wait_result.timed_out() && !inner.is_idle {
+                return Err(format!(
+                    "Timed out waiting for extension host to become idle after {timeout:?}"
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn set_project_trusted(&self, is_project_trusted: bool) {
@@ -722,11 +827,163 @@ impl ExtensionHostState {
             .unwrap_or_default()
     }
 
+    /// Consume the latest model request, if any.
+    pub fn drain_requested_model(&self) -> Option<Value> {
+        self.inner.lock().ok().and_then(|mut inner| {
+            inner.requested_model_request.take();
+            inner.requested_model.take()
+        })
+    }
+
+    /// Consume the latest model request with its typed action and optional
+    /// bridge continuation metadata intact.
+    pub fn drain_requested_model_change(&self) -> Option<PendingHostAction> {
+        self.inner.lock().ok().and_then(|mut inner| {
+            let request = inner.requested_model_request.take();
+            inner.requested_model.take();
+            request
+        })
+    }
+
+    /// Consume the latest active-tool request, if any.
+    pub fn drain_requested_active_tools(&self) -> Option<Vec<String>> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|mut inner| inner.requested_active_tools.take())
+    }
+
+    /// Atomically consume all model and active-tool requests currently
+    /// waiting for mode application.
+    pub fn drain_requested_changes(&self) -> RequestedHostChanges {
+        self.inner
+            .lock()
+            .map(|mut inner| RequestedHostChanges {
+                model: inner.requested_model.take(),
+                model_request: inner.requested_model_request.take(),
+                active_tools: inner.requested_active_tools.take(),
+            })
+            .unwrap_or_default()
+    }
+
     pub fn drain_pending_actions(&self) -> Vec<Value> {
+        self.inner
+            .lock()
+            .map(|mut inner| {
+                std::mem::take(&mut inner.pending_actions)
+                    .into_iter()
+                    .map(|action| action.payload)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Drain only session/lifecycle actions so message, abort, shutdown, and
+    /// compaction requests remain owned by the mode-specific dispatcher.
+    /// Lifecycle actions are consumed at a non-reentrant mode boundary after
+    /// the callback that enqueued them has returned.
+    pub fn drain_pending_lifecycle_actions(&self) -> Vec<Value> {
+        self.inner
+            .lock()
+            .map(|mut inner| {
+                let mut lifecycle = Vec::new();
+                let mut remaining = Vec::new();
+                for action in std::mem::take(&mut inner.pending_actions) {
+                    if action.is_lifecycle() {
+                        lifecycle.push(action.payload);
+                    } else {
+                        remaining.push(action);
+                    }
+                }
+                inner.pending_actions = remaining;
+                lifecycle
+            })
+            .unwrap_or_default()
+    }
+
+    /// Drain lifecycle requests with their typed action and original bridge
+    /// arguments intact for the completion-aware loader bridge.
+    pub fn drain_pending_lifecycle_action_metadata(&self) -> Vec<PendingHostAction> {
+        self.inner
+            .lock()
+            .map(|mut inner| {
+                let mut lifecycle = Vec::new();
+                let mut remaining = Vec::new();
+                for action in std::mem::take(&mut inner.pending_actions) {
+                    if action.is_lifecycle() {
+                        lifecycle.push(action);
+                    } else {
+                        remaining.push(action);
+                    }
+                }
+                inner.pending_actions = remaining;
+                lifecycle
+            })
+            .unwrap_or_default()
+    }
+
+    /// Alias with an explicit name for mode integrations that need the
+    /// continuation-bearing form rather than the legacy payload-only drain.
+    pub fn drain_pending_lifecycle_actions_with_metadata(&self) -> Vec<PendingHostAction> {
+        self.drain_pending_lifecycle_action_metadata()
+    }
+
+    /// Drain all queued actions with their original arguments and optional
+    /// bridge continuation metadata intact.
+    pub fn drain_pending_action_metadata(&self) -> Vec<PendingHostAction> {
         self.inner
             .lock()
             .map(|mut inner| std::mem::take(&mut inner.pending_actions))
             .unwrap_or_default()
+    }
+
+    /// Install the callback that emits a lifecycle completion after the mode
+    /// has applied a drained action. The callback is invoked outside all host
+    /// state locks so it may safely write to the bridge.
+    pub fn set_lifecycle_completion_sink(&self, sink: LifecycleCompletionSink) {
+        if let Ok(mut current) = self.lifecycle_completion_sink.lock() {
+            *current = Some(sink);
+        }
+    }
+
+    /// Complete a lifecycle request after the mode has applied it.
+    ///
+    /// The request is removed only after a configured sink accepts the result.
+    /// Without a sink this returns an explicit error and leaves the request
+    /// pending, so a mode cannot accidentally claim a bridge completion that
+    /// has nowhere to go.
+    pub fn complete_lifecycle_action(
+        &self,
+        request: PendingHostAction,
+        result: Value,
+    ) -> Result<(), String> {
+        if !request.is_lifecycle() {
+            return Err(format!(
+                "{} is not a lifecycle host action",
+                request.action.protocol_name()
+            ));
+        }
+        let sink = self
+            .lifecycle_completion_sink
+            .lock()
+            .map_err(|_| "Extension lifecycle completion sink lock poisoned".to_string())?
+            .clone();
+        let sink = sink.ok_or_else(|| {
+            "No lifecycle completion sink configured; action remains pending".to_string()
+        })?;
+        sink(request.clone(), result)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "Extension host state lock poisoned".to_string())?;
+        if let Some(index) = inner
+            .pending_actions
+            .iter()
+            .position(|pending| pending == &request)
+        {
+            inner.pending_actions.remove(index);
+        }
+        Ok(())
     }
 
     pub fn drain_pending_tool_updates(&self) -> Vec<Value> {
@@ -773,12 +1030,128 @@ impl ExtensionHostState {
         self.snapshot_value_for(None)
     }
 
+    /// Return the current host snapshot without requiring callers to import
+    /// the object-safe action trait for a point-in-time read.
+    pub fn snapshot(&self) -> Value {
+        self.snapshot_value()
+    }
+
     fn dispatch_action(&self, action: ExtensionHostAction, args: &Value) -> Result<Value, String> {
+        match self.dispatch_with_outcome(action, args)? {
+            ExtensionHostActionOutcome::Completed(result) => Ok(result),
+            ExtensionHostActionOutcome::Pending(request) => Ok(match request.action {
+                // Native callers use `dispatch` as the fire-and-forget host
+                // surface. Preserve the upstream provisional lifecycle shape;
+                // the external bridge uses `dispatch_with_outcome` and keeps
+                // the request pending until the mode sends its completion.
+                ExtensionHostAction::NewSession
+                | ExtensionHostAction::Fork
+                | ExtensionHostAction::NavigateTree
+                | ExtensionHostAction::SwitchSession => json!({"cancelled": false}),
+                ExtensionHostAction::Reload => Value::Null,
+                ExtensionHostAction::SetModel => Value::Bool(true),
+                _ => unreachable!("non-queued host action returned Pending"),
+            }),
+        }
+    }
+
+    /// Dispatch a host action without collapsing queued work into a success
+    /// value. This is the explicit seam the mode/loader bridge uses to retain
+    /// a request and complete its bridge promise later.
+    pub fn dispatch_with_outcome(
+        &self,
+        action: ExtensionHostAction,
+        args: &Value,
+    ) -> Result<ExtensionHostActionOutcome, String> {
+        if action == ExtensionHostAction::WaitForIdle {
+            self.wait_for_idle()?;
+            return Ok(ExtensionHostActionOutcome::Completed(Value::Null));
+        }
+
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| "Extension host state lock poisoned".to_string())?;
+        let pending = |inner: &mut ExtensionHostStateInner, payload: Value| {
+            let request = PendingHostAction::new(action, args.clone(), payload);
+            inner.pending_actions.push(request.clone());
+            ExtensionHostActionOutcome::Pending(request)
+        };
         match action {
+            ExtensionHostAction::NewSession => Ok(pending(
+                &mut inner,
+                json!({
+                    "type": "new_session",
+                    "options": args.get("options").cloned().unwrap_or(Value::Null),
+                }),
+            )),
+            ExtensionHostAction::Fork => Ok(pending(
+                &mut inner,
+                json!({
+                    "type": "fork",
+                    "entryId": args.get("entryId").cloned().unwrap_or(Value::Null),
+                    "options": args.get("options").cloned().unwrap_or(Value::Null),
+                }),
+            )),
+            ExtensionHostAction::NavigateTree => Ok(pending(
+                &mut inner,
+                json!({
+                    "type": "navigate_tree",
+                    "targetId": args.get("targetId").cloned().unwrap_or(Value::Null),
+                    "options": args.get("options").cloned().unwrap_or(Value::Null),
+                }),
+            )),
+            ExtensionHostAction::SwitchSession => Ok(pending(
+                &mut inner,
+                json!({
+                    "type": "switch_session",
+                    "sessionPath": args.get("sessionPath").cloned().unwrap_or(Value::Null),
+                    "options": args.get("options").cloned().unwrap_or(Value::Null),
+                }),
+            )),
+            ExtensionHostAction::Reload => Ok(pending(
+                &mut inner,
+                json!({
+                    "type": "reload",
+                    "options": args.get("options").cloned().unwrap_or(Value::Null),
+                }),
+            )),
+            ExtensionHostAction::SetModel => {
+                let model = args.get("model").cloned();
+                inner.requested_model = model.clone();
+                let request = PendingHostAction::new(
+                    action,
+                    args.clone(),
+                    json!({
+                        "type": "set_model",
+                        "model": model.unwrap_or(Value::Null),
+                    }),
+                );
+                inner.requested_model_request = Some(request.clone());
+                Ok(ExtensionHostActionOutcome::Pending(request))
+            }
+            _ => Ok(ExtensionHostActionOutcome::Completed(
+                self.dispatch_immediate_action_locked(&mut inner, action, args)?,
+            )),
+        }
+    }
+
+    fn dispatch_immediate_action_locked(
+        &self,
+        inner: &mut ExtensionHostStateInner,
+        action: ExtensionHostAction,
+        args: &Value,
+    ) -> Result<Value, String> {
+        match action {
+            ExtensionHostAction::WaitForIdle
+            | ExtensionHostAction::NewSession
+            | ExtensionHostAction::Fork
+            | ExtensionHostAction::NavigateTree
+            | ExtensionHostAction::SwitchSession
+            | ExtensionHostAction::Reload
+            | ExtensionHostAction::SetModel => {
+                unreachable!("queued host action must be handled before immediate dispatch")
+            }
             ExtensionHostAction::SendMessage => {
                 inner.pending_messages.push(json!({
                     "type": "send_message",
@@ -828,7 +1201,7 @@ impl ExtensionHostState {
             )),
             ExtensionHostAction::GetAllTools => Ok(Value::Array(inner.all_tools.clone())),
             ExtensionHostAction::SetActiveTools => {
-                inner.active_tools = args
+                let active_tools = args
                     .get("toolNames")
                     .and_then(Value::as_array)
                     .into_iter()
@@ -836,14 +1209,10 @@ impl ExtensionHostState {
                     .filter_map(Value::as_str)
                     .map(ToOwned::to_owned)
                     .collect();
+                inner.requested_active_tools = Some(active_tools);
                 Ok(Value::Null)
             }
             ExtensionHostAction::GetCommands => Ok(Value::Array(inner.commands.clone())),
-            ExtensionHostAction::SetModel => {
-                inner.requested_model = args.get("model").cloned();
-                inner.model = inner.requested_model.clone();
-                Ok(Value::Bool(true))
-            }
             ExtensionHostAction::GetThinkingLevel => {
                 Ok(Value::String(inner.thinking_level.clone()))
             }
@@ -883,7 +1252,11 @@ impl ExtensionHostState {
                         Value::String(tool_call_id.to_string()),
                     );
                 }
-                inner.pending_actions.push(Value::Object(action));
+                inner.pending_actions.push(PendingHostAction::new(
+                    ExtensionHostAction::Abort,
+                    args.clone(),
+                    Value::Object(action),
+                ));
                 Ok(Value::Null)
             }
             ExtensionHostAction::HasPendingMessages => Ok(Value::Bool(inner.has_pending_messages)),
@@ -896,7 +1269,11 @@ impl ExtensionHostState {
                         Value::String(tool_call_id.to_string()),
                     );
                 }
-                inner.pending_actions.push(Value::Object(action));
+                inner.pending_actions.push(PendingHostAction::new(
+                    ExtensionHostAction::Shutdown,
+                    args.clone(),
+                    Value::Object(action),
+                ));
                 Ok(Value::Null)
             }
             ExtensionHostAction::GetContextUsage => {
@@ -915,7 +1292,11 @@ impl ExtensionHostState {
                         Value::String(tool_call_id.to_string()),
                     );
                 }
-                inner.pending_actions.push(Value::Object(action));
+                inner.pending_actions.push(PendingHostAction::new(
+                    ExtensionHostAction::Compact,
+                    args.clone(),
+                    Value::Object(action),
+                ));
                 Ok(Value::Null)
             }
             ExtensionHostAction::GetSystemPrompt => Ok(Value::String(inner.system_prompt.clone())),
@@ -938,6 +1319,18 @@ impl ExtensionHostState {
 impl ExtensionHostActions for ExtensionHostState {
     fn dispatch(&self, action: ExtensionHostAction, args: &Value) -> Result<Value, String> {
         self.dispatch_action(action, args)
+    }
+
+    fn dispatch_with_outcome(
+        &self,
+        action: ExtensionHostAction,
+        args: &Value,
+    ) -> Result<ExtensionHostActionOutcome, String> {
+        ExtensionHostState::dispatch_with_outcome(self, action, args)
+    }
+
+    fn set_lifecycle_completion_sink(&self, sink: LifecycleCompletionSink) {
+        ExtensionHostState::set_lifecycle_completion_sink(self, sink);
     }
 
     fn snapshot(&self) -> Value {
@@ -1339,7 +1732,6 @@ fn compact_json(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::settings::{SettingsManager, SettingsMap};
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -1350,79 +1742,333 @@ mod tests {
         ))
     }
 
-    #[tokio::test]
-    async fn mode_loader_exposes_live_extension_tools_and_host_snapshot() {
-        if std::process::Command::new("node")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            return;
-        }
-        let root = fixture_root("tool");
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("fixture directory");
-        let extension = root.join("index.js");
-        std::fs::write(
-            &extension,
-            r#"export default function (pi) {
-  pi.registerTool({
-    name: "mode-tool",
-    description: "mode integration fixture",
-    parameters: { type: "object", properties: {} },
-    execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-      const before = {
-        session: ctx.getSessionName() ?? null,
-        active: ctx.getActiveTools(),
-        all: ctx.getAllTools().map((tool) => tool.name),
-        commands: ctx.getCommands().map((command) => command.name),
-        thinking: ctx.getThinkingLevel(),
-        propertyThinking: ctx.thinkingLevel,
-      };
-      ctx.sendMessage({ customType: "tool-message", content: "from-tool" });
-      ctx.sendUserMessage("from-tool-user");
-      ctx.appendEntry("tool-entry", { source: "fixture" });
-      ctx.setSessionName("from-context");
-      ctx.setActiveTools(["mode-tool", "context-added"]);
-      ctx.setThinkingLevel("high");
-      const modelSet = await ctx.setModel({ id: "fixture-model" });
-      return {
-        content: [{ type: "text", text: `${toolCallId}:${params.value}` }],
-        details: {
-          source: "fixture",
-          before,
-          after: {
-            session: ctx.getSessionName(),
-            active: ctx.getActiveTools(),
-            thinking: ctx.getThinkingLevel(),
-            propertyThinking: ctx.thinkingLevel,
-            modelSet,
-          },
-        },
-      };
-    },
-  });
-  pi.registerCommand("mode-command", { description: "command", handler: async () => ({ ok: true }) });
-}"#,
+    fn loaded_native_extension<F>(
+        cwd: &str,
+        mode: &str,
+        has_ui: bool,
+        factory: F,
+    ) -> LoadedExtensions
+    where
+        F: for<'a> FnOnce(
+                &mut crate::core::extensions::loader::ExtensionApi<'a>,
+            ) -> Result<(), String>
+            + 'static,
+    {
+        let runtime = crate::core::extensions::loader::create_extension_runtime();
+        let extension = crate::core::extensions::loader::load_extension_from_factory(
+            factory,
+            cwd,
+            runtime.clone(),
+            "<inline:integration>",
         )
-        .expect("write extension fixture");
+        .expect("Rust-native extension factory");
+        let host = Arc::new(ExtensionHostState::new(None, "medium"));
+        let mut runner = ExtensionRunner::new(vec![extension], runtime.clone(), cwd.to_string());
+        runner.set_ui_context(mode, has_ui);
+        runner.bind_core_with_actions(host.clone());
+        LoadedExtensions {
+            runner: Arc::new(runner),
+            host,
+            runtime,
+            errors: Vec::new(),
+            resources: ResourceDiscovery::default(),
+        }
+    }
 
-        let args = Args {
-            extensions: vec![extension.to_string_lossy().into_owned()],
-            no_extensions: true,
-            ..Default::default()
-        };
-        let loaded = load_for_mode(
-            &args,
-            &SettingsManager::in_memory(SettingsMap::new()),
-            &root.to_string_lossy(),
-            &root.join("agent").to_string_lossy(),
-            "print",
-            false,
-            None,
-            "medium",
+    #[test]
+    fn host_lifecycle_actions_retain_pending_metadata_without_completion() {
+        let host = ExtensionHostState::new(None, "medium");
+        let requests = [
+            (
+                ExtensionHostAction::NewSession,
+                json!({
+                    "options": {
+                        "parentSession": "parent",
+                        "__bridgeContinuation": {"id": "bridge-1"},
+                    },
+                }),
+            ),
+            (
+                ExtensionHostAction::Fork,
+                json!({"entryId": "entry", "options": {"position": "at"}}),
+            ),
+            (
+                ExtensionHostAction::NavigateTree,
+                json!({"targetId": "leaf", "options": {"summarize": false}}),
+            ),
+            (
+                ExtensionHostAction::SwitchSession,
+                json!({"sessionPath": "/tmp/session.jsonl", "options": null}),
+            ),
+            (ExtensionHostAction::Reload, json!({})),
+        ];
+        for (action, args) in requests {
+            let outcome = host
+                .dispatch_with_outcome(action, &args)
+                .expect("lifecycle outcome");
+            match outcome {
+                ExtensionHostActionOutcome::Pending(request) => {
+                    assert_eq!(request.args, args);
+                    assert_eq!(
+                        request.payload["options"],
+                        args.get("options").cloned().unwrap_or(Value::Null)
+                    );
+                }
+                ExtensionHostActionOutcome::Completed(result) => {
+                    panic!("{action:?} completed early with {result}")
+                }
+            }
+        }
+        assert_eq!(
+            host.dispatch(ExtensionHostAction::Reload, &json!({})),
+            Ok(Value::Null)
         );
-        assert!(loaded.errors.is_empty(), "load errors: {:?}", loaded.errors);
+        let metadata = host.drain_pending_lifecycle_action_metadata();
+        assert_eq!(metadata.len(), 6);
+        assert_eq!(metadata[0].action, ExtensionHostAction::NewSession);
+        assert_eq!(
+            metadata[0].continuation_metadata(),
+            Some(&json!({"id": "bridge-1"}))
+        );
+        assert_eq!(
+            metadata[0].args["options"],
+            json!({
+                "parentSession": "parent",
+                "__bridgeContinuation": {"id": "bridge-1"},
+            })
+        );
+        assert_eq!(
+            metadata[0].payload,
+            json!({
+                "type": "new_session",
+                "options": {
+                    "parentSession": "parent",
+                    "__bridgeContinuation": {"id": "bridge-1"},
+                },
+            })
+        );
+        assert_eq!(
+            metadata
+                .iter()
+                .map(|request| request.action)
+                .collect::<Vec<_>>(),
+            vec![
+                ExtensionHostAction::NewSession,
+                ExtensionHostAction::Fork,
+                ExtensionHostAction::NavigateTree,
+                ExtensionHostAction::SwitchSession,
+                ExtensionHostAction::Reload,
+                ExtensionHostAction::Reload,
+            ]
+        );
+    }
+
+    #[test]
+    fn host_wait_for_idle_wakes_and_times_out_with_a_bound() {
+        let host = ExtensionHostState::new(None, "medium");
+        host.set_idle(false);
+        let waiter = host.clone();
+        let join = std::thread::spawn(move || {
+            waiter.wait_for_idle_timeout(std::time::Duration::from_secs(1))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        host.set_idle(true);
+        assert_eq!(join.join().expect("idle waiter thread"), Ok(()));
+        assert_eq!(
+            host.dispatch(ExtensionHostAction::WaitForIdle, &json!({})),
+            Ok(Value::Null)
+        );
+
+        host.set_idle(false);
+        let started = std::time::Instant::now();
+        let error = host
+            .wait_for_idle_timeout(std::time::Duration::from_millis(20))
+            .expect_err("busy host must hit the wait bound");
+        assert!(error.contains("Timed out waiting"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        host.set_idle(true);
+    }
+
+    #[test]
+    fn host_requested_changes_are_readable_and_drained_without_mutating_snapshot() {
+        let host = ExtensionHostState::new(None, "medium");
+        host.set_catalog(vec!["before".to_string()], Vec::new(), Vec::new());
+        host.set_model(Some(json!({"provider": "old", "id": "old-model"})));
+        let model_outcome = host
+            .dispatch_with_outcome(
+                ExtensionHostAction::SetModel,
+                &json!({
+                    "model": {"provider": "new", "id": "new-model"},
+                    "__bridgeContinuation": {"id": "model-1"},
+                }),
+            )
+            .expect("model outcome");
+        assert!(matches!(
+            model_outcome,
+            ExtensionHostActionOutcome::Pending(_)
+        ));
+        host.dispatch(
+            ExtensionHostAction::SetActiveTools,
+            &json!({"toolNames": ["after", "extension-tool"]}),
+        )
+        .expect("active-tool request is fire-and-forget");
+
+        assert_eq!(
+            host.snapshot()["model"],
+            json!({"provider": "old", "id": "old-model"})
+        );
+        assert_eq!(host.active_tools(), vec!["before"]);
+        assert_eq!(
+            host.requested_model(),
+            Some(json!({"provider": "new", "id": "new-model"}))
+        );
+        assert_eq!(
+            host.requested_active_tools(),
+            Some(vec!["after".to_string(), "extension-tool".to_string()])
+        );
+        assert_eq!(
+            host.requested_model_change()
+                .expect("model metadata")
+                .continuation_metadata(),
+            Some(&json!({"id": "model-1"}))
+        );
+
+        let changes = host.drain_requested_changes();
+        assert_eq!(
+            changes.model,
+            Some(json!({"provider": "new", "id": "new-model"}))
+        );
+        assert_eq!(
+            changes.active_tools,
+            Some(vec!["after".to_string(), "extension-tool".to_string()])
+        );
+        assert_eq!(
+            changes
+                .model_request
+                .expect("drained model metadata")
+                .action,
+            ExtensionHostAction::SetModel
+        );
+        assert!(host.requested_model().is_none());
+        assert!(host.requested_active_tools().is_none());
+    }
+
+    #[test]
+    fn lifecycle_completion_sink_receives_only_explicit_mode_completion() {
+        let host = ExtensionHostState::new(None, "medium");
+        let completions = Arc::new(Mutex::new(Vec::<(PendingHostAction, Value)>::new()));
+        let completions_for_sink = Arc::clone(&completions);
+        host.set_lifecycle_completion_sink(Arc::new(move |request, result| {
+            completions_for_sink
+                .lock()
+                .map_err(|_| "completion lock poisoned".to_string())?
+                .push((request, result));
+            Ok(())
+        }));
+        let request = match host
+            .dispatch_with_outcome(
+                ExtensionHostAction::SwitchSession,
+                &json!({
+                    "sessionPath": "/tmp/session.jsonl",
+                    "options": {
+                        "withSession": null,
+                        "__bridgeContinuation": {"id": "switch-2"},
+                    },
+                }),
+            )
+            .expect("switch outcome")
+        {
+            ExtensionHostActionOutcome::Pending(request) => request,
+            ExtensionHostActionOutcome::Completed(_) => panic!("switch completed early"),
+        };
+        assert_eq!(
+            request.continuation_metadata(),
+            Some(&json!({"id": "switch-2"}))
+        );
+        host.complete_lifecycle_action(request.clone(), json!({"cancelled": false}))
+            .expect("completion sink");
+        let completions = completions.lock().expect("completion lock");
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].0, request);
+        assert_eq!(completions[0].1, json!({"cancelled": false}));
+        assert!(host.drain_pending_lifecycle_action_metadata().is_empty());
+    }
+
+    #[test]
+    fn lifecycle_completion_without_sink_stays_pending() {
+        let host = ExtensionHostState::new(None, "medium");
+        let request = match host
+            .dispatch_with_outcome(
+                ExtensionHostAction::NewSession,
+                &json!({"options": {"__bridgeContinuation": {"id": "new-1"}}}),
+            )
+            .expect("new-session outcome")
+        {
+            ExtensionHostActionOutcome::Pending(request) => request,
+            ExtensionHostActionOutcome::Completed(_) => panic!("new session completed early"),
+        };
+        let error = host
+            .complete_lifecycle_action(request.clone(), json!({"cancelled": false}))
+            .expect_err("completion without sink must be explicit");
+        assert!(error.contains("No lifecycle completion sink configured"));
+        assert_eq!(
+            host.drain_pending_lifecycle_action_metadata(),
+            vec![request]
+        );
+    }
+
+    #[test]
+    fn host_actions_trait_is_object_safe_for_pending_lifecycle_dispatch() {
+        let host: Arc<dyn ExtensionHostActions> = Arc::new(ExtensionHostState::new(None, "medium"));
+        host.set_lifecycle_completion_sink(Arc::new(|_, _| Ok(())));
+        let outcome = host
+            .dispatch_with_outcome(
+                ExtensionHostAction::Reload,
+                &json!({"options": {"__bridgeContinuation": {"id": "reload-1"}}}),
+            )
+            .expect("reload outcome");
+        assert!(matches!(outcome, ExtensionHostActionOutcome::Pending(_)));
+    }
+
+    #[test]
+    fn host_queues_non_reentrant_session_actions() {
+        let host = ExtensionHostState::new(None, "medium");
+        host.dispatch(ExtensionHostAction::Abort, &json!({}))
+            .expect("abort queue");
+        assert_eq!(host.drain_pending_actions(), vec![json!({"type": "abort"})]);
+    }
+
+    #[tokio::test]
+    async fn native_factory_exposes_live_extension_tools_and_host_snapshot() {
+        let root = fixture_root("native-tool");
+        let loaded = loaded_native_extension(&root.to_string_lossy(), "print", false, |api| {
+            api.register_tool(RegisteredTool {
+                name: "mode-tool".to_string(),
+                description: "mode integration fixture".to_string(),
+                parameters: json!({"type": "object", "properties": {}}),
+                source_info: super::super::types::SourceInfo::synthetic(
+                    "<inline:mode-tool>",
+                    "rust-native",
+                    None,
+                ),
+                execute: Some(Arc::new(|request| {
+                    Ok(json!({
+                        "content": [{"type": "text", "text": format!("{}:{}", request.tool_call_id, request.params["value"])}],
+                        "details": {
+                            "mode": request.context.mode,
+                            "cwd": request.context.cwd,
+                            "hasUi": request.context.has_ui,
+                        },
+                    }))
+                })),
+            })?;
+            api.register_command(
+                "mode-command",
+                Some("command".to_string()),
+                Arc::new(|_, event| Ok(Some(json!({"args": event["args"]})))),
+            )?;
+            Ok(())
+        });
         let mut tools = Vec::new();
         install_tools(&loaded, &mut tools, true);
         assert_eq!(tools.len(), 1);
@@ -1440,267 +2086,127 @@ mod tests {
         assert_eq!(
             result.details,
             Some(json!({
-                "source": "fixture",
-                "before": {
-                    "session": null,
-                    "active": ["mode-tool"],
-                    "all": ["mode-tool"],
-                    "commands": ["mode-command"],
-                    "thinking": "medium",
-                    "propertyThinking": "medium",
-                },
-                "after": {
-                    "session": "from-context",
-                    "active": ["mode-tool", "context-added"],
-                    "thinking": "high",
-                    "propertyThinking": "high",
-                    "modelSet": true,
-                },
+                "mode": "print",
+                "cwd": root.to_string_lossy(),
+                "hasUi": false,
             }))
         );
-        assert_eq!(result.added_tool_names, vec!["context-added"]);
-        assert_eq!(loaded.host.snapshot()["sessionName"], "from-context");
-        assert_eq!(loaded.host.snapshot()["thinkingLevel"], "high");
-        assert_eq!(
-            loaded.host.drain_pending_messages(),
-            vec![
-                json!({
-                    "type": "send_message",
-                    "message": {"customType": "tool-message", "content": "from-tool"},
-                    "options": null,
-                }),
-                json!({
-                    "type": "send_user_message",
-                    "content": "from-tool-user",
-                    "options": null,
-                }),
-            ]
-        );
-        assert_eq!(
-            loaded.host.drain_pending_entries(),
-            vec![json!({
-                "customType": "tool-entry",
-                "data": {"source": "fixture"},
-            })]
-        );
+        assert!(result.added_tool_names.is_empty());
+        assert_eq!(loaded.host.snapshot()["activeTools"], json!(["mode-tool"]));
 
         loaded.runner.invalidate(Some("test complete"));
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
-    async fn mode_loader_emits_lifecycle_before_discovering_extension_resources() {
-        if std::process::Command::new("node")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            return;
-        }
+    async fn native_factory_emits_lifecycle_before_discovering_resources() {
         let root = fixture_root("resources");
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("fixture directory");
-        let extension = root.join("index.js");
-        std::fs::write(
-            &extension,
-            r#"let started = false;
-export default function (pi) {
-  pi.on("session_start", (event) => {
-    if (event.reason !== "startup") throw new Error("unexpected startup reason");
-    started = true;
-  });
-  pi.on("resources_discover", (event) => {
-    if (!started || event.reason !== "startup") throw new Error("lifecycle order mismatch");
-    return {
-      skillPaths: ["skills"],
-      promptPaths: ["prompts/default.md"],
-      themePaths: ["themes/dark.json"],
-    };
-  });
-  pi.on("session_shutdown", (event) => {
-    if (event.reason !== "test") throw new Error("unexpected shutdown reason");
-  });
-}"#,
-        )
-        .expect("write resource fixture");
-
-        let args = Args {
-            extensions: vec![extension.to_string_lossy().into_owned()],
-            no_extensions: true,
-            ..Default::default()
-        };
-        let loaded = load_for_mode(
-            &args,
-            &SettingsManager::in_memory(SettingsMap::new()),
-            &root.to_string_lossy(),
-            &root.join("agent").to_string_lossy(),
-            "print",
-            false,
-            None,
-            "medium",
-        );
-        assert!(loaded.errors.is_empty(), "load errors: {:?}", loaded.errors);
-        assert_eq!(loaded.resources.skill_paths, vec!["skills"]);
-        assert_eq!(loaded.resources.prompt_paths, vec!["prompts/default.md"]);
-        assert_eq!(loaded.resources.theme_paths, vec!["themes/dark.json"]);
+        let started = Arc::new(AtomicBool::new(false));
+        let started_for_start = started.clone();
+        let started_for_resources = started.clone();
+        let started_for_shutdown = started.clone();
+        let loaded = loaded_native_extension(&root.to_string_lossy(), "print", false, move |api| {
+            api.on(
+                "session_start",
+                Arc::new(move |_, event| {
+                    if event["reason"] != "startup" {
+                        return Err("unexpected startup reason".to_string());
+                    }
+                    started_for_start.store(true, Ordering::Release);
+                    Ok(None)
+                }),
+            )?;
+            api.on(
+                "resources_discover",
+                Arc::new(move |_, event| {
+                    if !started_for_resources.load(Ordering::Acquire)
+                        || event["reason"] != "startup"
+                    {
+                        return Err("lifecycle order mismatch".to_string());
+                    }
+                    Ok(Some(json!({
+                        "skillPaths": ["skills"],
+                        "promptPaths": ["prompts/default.md"],
+                        "themePaths": ["themes/dark.json"],
+                    })))
+                }),
+            )?;
+            api.on(
+                "session_shutdown",
+                Arc::new(move |_, event| {
+                    if event["reason"] != "test" {
+                        return Err("unexpected shutdown reason".to_string());
+                    }
+                    started_for_shutdown.store(false, Ordering::Release);
+                    Ok(None)
+                }),
+            )?;
+            Ok(())
+        });
+        loaded
+            .runner
+            .emit_session_start("startup")
+            .expect("startup handler");
+        let resources = loaded.runner.emit_resources_discover(&json!({
+            "type": "resources_discover",
+            "reason": "startup",
+        }));
+        assert_eq!(resources.skill_paths, vec!["skills"]);
+        assert_eq!(resources.prompt_paths, vec!["prompts/default.md"]);
+        assert_eq!(resources.theme_paths, vec!["themes/dark.json"]);
         loaded
             .runner
             .emit_session_shutdown("test")
             .expect("shutdown handler");
         loaded.runner.invalidate(Some("test complete"));
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
-    async fn external_tool_context_forwards_signal_updates_and_control_actions() {
-        if std::process::Command::new("node")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            return;
-        }
+    async fn native_tool_context_is_forwarded_through_the_runner() {
         let root = fixture_root("context-actions");
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("fixture directory");
-        let extension = root.join("index.js");
-        std::fs::write(
-            &extension,
-            r#"export default function (pi) {
-  pi.registerTool({
-    name: "context-tool",
-    description: "context action fixture",
-    parameters: { type: "object", properties: {} },
-    execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-      signal.throwIfAborted();
-      const before = {
-        model: ctx.model,
-        scopedModels: ctx.scopedModels,
-        idle: ctx.isIdle(),
-        trusted: ctx.isProjectTrusted(),
-        contextSignal: ctx.signal?.aborted ?? null,
-        toolSignal: signal.aborted,
-        pending: ctx.hasPendingMessages(),
-        usage: ctx.getContextUsage(),
-        prompt: ctx.getSystemPrompt(),
-        options: ctx.getSystemPromptOptions(),
-      };
-      onUpdate({ content: [{ type: "text", text: "partial" }], details: { sequence: 1 } });
-      ctx.abort();
-      ctx.compact({ customInstructions: "tool compact" });
-      ctx.shutdown();
-      return {
-        content: [{ type: "text", text: `${toolCallId}:${params.value}` }],
-        details: { before, afterAborted: signal.aborted },
-      };
-    },
-  });
-}"#,
-        )
-        .expect("write extension fixture");
-
-        let args = Args {
-            extensions: vec![extension.to_string_lossy().into_owned()],
-            no_extensions: true,
-            ..Default::default()
-        };
-        let loaded = load_for_mode(
-            &args,
-            &SettingsManager::in_memory(SettingsMap::new()),
-            &root.to_string_lossy(),
-            &root.join("agent").to_string_lossy(),
-            "print",
-            false,
-            Some("fixture-session".to_string()),
-            "medium",
-        );
-        assert!(loaded.errors.is_empty(), "load errors: {:?}", loaded.errors);
-        loaded
-            .host
-            .set_model(Some(json!({"provider": "fixture", "id": "model-1"})));
-        loaded.host.set_scoped_models(vec![json!({
-            "model": {"provider": "fixture", "id": "scoped-1"},
-            "thinkingLevel": "high",
-        })]);
-        loaded.host.set_idle(false);
-        loaded.host.set_project_trusted(false);
-        loaded.host.set_has_pending_messages(true);
-        loaded.host.set_context_usage(Some(json!({
-            "tokens": 12,
-            "contextWindow": 100,
-            "percent": 0.12,
-        })));
-        loaded.host.set_system_prompt("fixture system prompt");
-        loaded.host.set_system_prompt_options(json!({
-            "cwd": root.to_string_lossy(),
-            "selectedTools": ["context-tool"],
-        }));
+        let loaded = loaded_native_extension(&root.to_string_lossy(), "print", false, |api| {
+            api.register_tool(RegisteredTool {
+                name: "context-tool".to_string(),
+                description: "native context fixture".to_string(),
+                parameters: json!({"type": "object", "properties": {}}),
+                source_info: super::super::types::SourceInfo::synthetic(
+                    "<inline:context-tool>",
+                    "rust-native",
+                    None,
+                ),
+                execute: Some(Arc::new(|request| {
+                    Ok(json!({
+                        "content": [{"type": "text", "text": format!("{}:{}", request.tool_call_id, request.params["value"])}],
+                        "details": {
+                            "mode": request.context.mode,
+                            "cwd": request.context.cwd,
+                            "hasUi": request.context.has_ui,
+                        },
+                    }))
+                })),
+            })?;
+            Ok(())
+        });
 
         let mut tools = Vec::new();
         install_tools(&loaded, &mut tools, true);
         assert_eq!(tools.len(), 1);
-        let signal = Arc::new(AtomicBool::new(false));
-        let updates = Arc::new(Mutex::new(Vec::<AgentToolResult>::new()));
-        let updates_for_callback = Arc::clone(&updates);
-        let result = (tools[0].execute)(
-            "call-context".to_string(),
-            json!({"value": 7}),
-            Some(Arc::clone(&signal)),
-            Some(Arc::new(move |update| {
-                updates_for_callback
-                    .lock()
-                    .expect("update lock")
-                    .push(update.clone());
-            })),
-        )
-        .await
-        .expect("extension tool execution");
+        let result =
+            (tools[0].execute)("call-context".to_string(), json!({"value": 7}), None, None)
+                .await
+                .expect("extension tool execution");
 
         assert_eq!(result.content, vec![ContentBlock::text("call-context:7")]);
-        let details = result.details.as_ref().expect("tool details");
         assert_eq!(
-            details["before"],
-            json!({
-                "model": {"provider": "fixture", "id": "model-1"},
-                "scopedModels": [{
-                    "model": {"provider": "fixture", "id": "scoped-1"},
-                    "thinkingLevel": "high",
-                }],
-                "idle": false,
-                "trusted": false,
-                "contextSignal": false,
-                "toolSignal": false,
-                "pending": true,
-                "usage": {"tokens": 12, "contextWindow": 100, "percent": 0.12},
-                "prompt": "fixture system prompt",
-                "options": {
-                    "cwd": root.to_string_lossy(),
-                    "selectedTools": ["context-tool"],
-                },
-            })
+            result.details,
+            Some(json!({
+                "mode": "print",
+                "cwd": root.to_string_lossy(),
+                "hasUi": false,
+            }))
         );
-        assert_eq!(details["afterAborted"], true);
-        assert!(signal.load(Ordering::Acquire));
-
-        let updates = updates.lock().expect("update lock");
-        assert_eq!(updates.len(), 2, "partial update must precede final update");
-        assert_eq!(updates[0].content, vec![ContentBlock::text("partial")]);
-        assert_eq!(updates[1].content, result.content);
-        drop(updates);
-
-        assert_eq!(
-            loaded.host.drain_pending_actions(),
-            vec![
-                json!({"type": "abort", "toolCallId": "call-context"}),
-                json!({"type": "compact", "options": {"customInstructions": "tool compact"}, "toolCallId": "call-context"}),
-                json!({"type": "shutdown", "toolCallId": "call-context"}),
-            ]
-        );
-        assert!(loaded.host.snapshot()["signal"].is_null());
         loaded
             .runner
             .invalidate(Some("context action test complete"));
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

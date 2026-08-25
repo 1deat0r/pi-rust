@@ -1298,7 +1298,7 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
     /// without a stream function remains a scaffold and reports the same
     /// explicit `HarnessNotImplemented` error as upstream.
     pub async fn run_prompt(
-        &mut self,
+        &self,
         prompts: Vec<AgentMessage>,
     ) -> Result<Vec<AgentMessage>, HarnessError> {
         self.run_prompt_with_events(prompts)
@@ -1309,7 +1309,7 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
     /// Run prompts through the configured stateful Agent and return the
     /// durable message delta together with the rich events from that run.
     pub async fn run_prompt_with_events(
-        &mut self,
+        &self,
         prompts: Vec<AgentMessage>,
     ) -> Result<(Vec<AgentMessage>, Vec<crate::rich_agent::RichAgentEvent>), HarnessError> {
         self.run_prompt_with_events_for_lane(prompts)
@@ -1518,6 +1518,12 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
             return self.unavailable("prompt");
         };
         Ok(agent.state().messages().to_vec())
+    }
+
+    /// Return the stateful agent handle so interactive callers can enqueue
+    /// steering/follow-up messages while a harness run is in flight.
+    pub fn agent_handle(&self) -> Option<Arc<crate::rich_agent::Agent>> {
+        self.agent.clone()
     }
 
     async fn make_lane(&self, name: &str) -> Result<AgentHarness<F>, HarnessError> {

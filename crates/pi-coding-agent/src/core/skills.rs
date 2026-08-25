@@ -14,6 +14,7 @@ use pi_agent::harness::skills::IgnoreMatcher;
 
 use crate::config::CONFIG_DIR_NAME;
 use crate::core::diagnostics::{ResourceDiagnostic, ResourceDiagnosticKind};
+use crate::core::extensions::types::SourceInfo;
 
 pub const MAX_NAME_LENGTH: usize = 64;
 pub const MAX_DESCRIPTION_LENGTH: usize = 1024;
@@ -27,6 +28,7 @@ pub struct Skill {
     pub description: String,
     pub file_path: String,
     pub base_dir: String,
+    pub source_info: SourceInfo,
     pub disable_model_invocation: bool,
 }
 
@@ -113,6 +115,7 @@ fn load_skills_from_dir_internal(
     include_root_files: bool,
     matcher: &mut IgnoreMatcher,
     root_dir: &Path,
+    source: &str,
 ) -> DirOutcome {
     let mut skills = Vec::new();
     let mut diagnostics = Vec::new();
@@ -145,7 +148,7 @@ fn load_skills_from_dir_internal(
         let full_path = dir.join("SKILL.md");
         let rel = relative_posix(root_dir, &full_path);
         if !matcher.ignores(&rel) {
-            let result = load_skill_from_file(&full_path);
+            let result = load_skill_from_file(&full_path, source);
             if let Some(skill) = result.skill {
                 skills.push(skill);
             }
@@ -180,7 +183,8 @@ fn load_skills_from_dir_internal(
             continue;
         }
         if is_dir {
-            let mut out = load_skills_from_dir_internal(&full_path, false, matcher, root_dir);
+            let mut out =
+                load_skills_from_dir_internal(&full_path, false, matcher, root_dir, source);
             skills.append(&mut out.skills);
             diagnostics.append(&mut out.diagnostics);
             continue;
@@ -188,7 +192,7 @@ fn load_skills_from_dir_internal(
         if !include_root_files || !name.to_lowercase().ends_with(".md") {
             continue;
         }
-        let result = load_skill_from_file(&full_path);
+        let result = load_skill_from_file(&full_path, source);
         if let Some(skill) = result.skill {
             skills.push(skill);
         }
@@ -204,11 +208,11 @@ fn load_skills_from_dir_internal(
 pub fn load_skills_from_dir(dir: &str) -> LoadSkillsResult {
     let mut matcher = IgnoreMatcher::default();
     let root = Path::new(dir).to_path_buf();
-    let out = load_skills_from_dir_internal(Path::new(dir), true, &mut matcher, &root);
+    let out = load_skills_from_dir_internal(Path::new(dir), true, &mut matcher, &root, "path");
     (out.skills, out.diagnostics)
 }
 
-fn load_skill_from_file(file_path: &Path) -> SkillFileOutcome {
+fn load_skill_from_file(file_path: &Path, source: &str) -> SkillFileOutcome {
     let mut diagnostics = Vec::new();
     let is_declared_skill = file_path
         .file_name()
@@ -300,7 +304,8 @@ fn load_skill_from_file(file_path: &Path) -> SkillFileOutcome {
             name,
             description,
             file_path: path_to_string(file_path),
-            base_dir: skill_dir,
+            base_dir: skill_dir.clone(),
+            source_info: skill_source_info(file_path, &skill_dir, source),
             disable_model_invocation: frontmatter
                 .get("disable-model-invocation")
                 .and_then(|v| v.as_bool())
@@ -308,6 +313,25 @@ fn load_skill_from_file(file_path: &Path) -> SkillFileOutcome {
         }),
         diagnostics,
     }
+}
+
+fn skill_source_info(file_path: &Path, base_dir: &str, source: &str) -> SourceInfo {
+    let mut info = match source {
+        "user" | "project" | "path" => SourceInfo::synthetic(
+            &path_to_string(file_path),
+            "local",
+            Some(base_dir.to_string()),
+        ),
+        other => SourceInfo::synthetic(
+            &path_to_string(file_path),
+            other,
+            Some(base_dir.to_string()),
+        ),
+    };
+    if source == "user" || source == "project" {
+        info.scope = source.to_string();
+    }
+    info
 }
 
 struct SkillFileOutcome {
@@ -420,21 +444,33 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
     let mut all_diagnostics: Vec<ResourceDiagnostic> = Vec::new();
 
     // Defaults: user + project dirs.
-    let mut add_dir =
-        |dir: &Path, matcher: &mut IgnoreMatcher, diagnostics: &mut Vec<ResourceDiagnostic>| {
-            let out = load_skills_from_dir_internal(dir, true, matcher, dir);
-            for skill in out.skills {
-                if let Some((_, existing)) = skill_map.iter().find(|(n, _)| *n == skill.name) {
-                    diagnostics.push(collision_diagnostic(&skill, existing));
-                } else {
-                    skill_map.push((skill.name.clone(), skill));
-                }
+    let mut add_dir = |dir: &Path,
+                       source: &str,
+                       matcher: &mut IgnoreMatcher,
+                       diagnostics: &mut Vec<ResourceDiagnostic>| {
+        let out = load_skills_from_dir_internal(dir, true, matcher, dir, source);
+        for skill in out.skills {
+            if let Some((_, existing)) = skill_map.iter().find(|(n, _)| *n == skill.name) {
+                diagnostics.push(collision_diagnostic(&skill, existing));
+            } else {
+                skill_map.push((skill.name.clone(), skill));
             }
-            diagnostics.extend(out.diagnostics);
-        };
+        }
+        diagnostics.extend(out.diagnostics);
+    };
     let mut matcher = IgnoreMatcher::default();
-    add_dir(&agent_skills_dir, &mut matcher, &mut all_diagnostics);
-    add_dir(&project_skills_dir, &mut matcher, &mut all_diagnostics);
+    add_dir(
+        &agent_skills_dir,
+        "user",
+        &mut matcher,
+        &mut all_diagnostics,
+    );
+    add_dir(
+        &project_skills_dir,
+        "project",
+        &mut matcher,
+        &mut all_diagnostics,
+    );
 
     // Explicit `--skill` paths.
     for raw_path in &options.skill_paths {
@@ -457,7 +493,8 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
             }
         };
         if meta.is_dir() {
-            let out = load_skills_from_dir_internal(&resolved, true, &mut matcher, &resolved);
+            let out =
+                load_skills_from_dir_internal(&resolved, true, &mut matcher, &resolved, "path");
             for skill in out.skills {
                 if let Some((_, existing)) = skill_map.iter().find(|(n, _)| *n == skill.name) {
                     all_diagnostics.push(collision_diagnostic(&skill, existing));
@@ -467,7 +504,7 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
             }
             all_diagnostics.extend(out.diagnostics);
         } else if meta.is_file() && resolved.to_string_lossy().ends_with(".md") {
-            let result = load_skill_from_file(&resolved);
+            let result = load_skill_from_file(&resolved, "path");
             if let Some(skill) = result.skill {
                 if let Some((_, existing)) = skill_map.iter().find(|(n, _)| *n == skill.name) {
                     all_diagnostics.push(collision_diagnostic(&skill, existing));
@@ -541,6 +578,14 @@ mod tests {
         assert_eq!(skills.len(), 2);
         assert!(skills.iter().any(|s| s.name == "a"));
         assert!(skills.iter().any(|s| s.name == "b"));
+        assert!(skills.iter().all(|skill| {
+            skill.source_info.source == "local"
+                && skill
+                    .source_info
+                    .base_dir
+                    .as_deref()
+                    .is_some_and(|base| base == skill.base_dir)
+        }));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -618,6 +663,7 @@ mod tests {
                 description: "desc".into(),
                 file_path: "/s/a/SKILL.md".into(),
                 base_dir: "/s/a".into(),
+                source_info: SourceInfo::synthetic("/s/a/SKILL.md", "test", Some("/s/a".into())),
                 disable_model_invocation: false,
             },
             Skill {
@@ -625,6 +671,7 @@ mod tests {
                 description: "h".into(),
                 file_path: "/s/h/SKILL.md".into(),
                 base_dir: "/s/h".into(),
+                source_info: SourceInfo::synthetic("/s/h/SKILL.md", "test", Some("/s/h".into())),
                 disable_model_invocation: true,
             },
         ];

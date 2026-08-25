@@ -482,6 +482,18 @@ mod unix {
 
             let before = session.capture();
             session.send_line(&command);
+            if row
+                .get(2)
+                .is_some_and(|follow_up| *follow_up == "enter" || *follow_up == "enter-clear")
+            {
+                session.send_key("Enter");
+            }
+            if row
+                .get(2)
+                .is_some_and(|follow_up| follow_up == "enter-clear")
+            {
+                session.send_key("C-u");
+            }
             let mut matches = |capture: &str| {
                 if expected == "__clear_transcript__" {
                     capture != before && !capture.contains("faux response to: matrix prompt")

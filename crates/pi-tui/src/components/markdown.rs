@@ -1227,6 +1227,14 @@ impl Markdown {
         self.invalidate();
     }
 
+    /// Replace the style callbacks used by subsequent renders. Interactive
+    /// theme changes keep the same transcript component and only replace its
+    /// theme, matching the upstream TUI invalidation path.
+    pub fn set_theme(&mut self, theme: MarkdownTheme) {
+        self.theme = theme;
+        self.invalidate();
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }

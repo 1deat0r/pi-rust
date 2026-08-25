@@ -3,8 +3,8 @@
 //!
 //! Each test runs the real `pi` binary with a sandboxed $HOME and
 //! PI_CODING_AGENT_DIR so no real home directory or setting file is touched.
-//! A fake `npm` on PATH (via the settings `npmCommand` array) lets install/
-//! remove/update exercise the full flow without network.
+//! A fake `npm` configured through the settings `npmCommand` array lets the
+//! rejection tests prove that the disabled package manager is never invoked.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -137,6 +137,21 @@ fn project(sandbox: &Sandbox, name: &str) -> PathBuf {
     dir
 }
 
+fn assert_npm_rejected(sandbox: &Sandbox, out: &std::process::Output, source: &str) {
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stdout: {}",
+        sandbox.stdout(out)
+    );
+    assert_eq!(
+        sandbox.stderr(out),
+        format!(
+            "Error: Rust-native-only package policy: JavaScript/TypeScript package execution is disabled; npm, npx, and bun are not invoked. Register compiled Rust extensions or use local/git skills, prompts, and themes. Unsupported source: {source}\n"
+        )
+    );
+}
+
 // ---------------------------------------------------------------------------
 // pi list
 // ---------------------------------------------------------------------------
@@ -234,11 +249,9 @@ fn install_npm_with_fake_npm() {
     let cwd = project(&sandbox, "work");
 
     let out = sandbox.pi(&cwd, &["install", "npm:demo-pkg"]);
-    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
-    let stdout = sandbox.stdout(&out);
-    assert!(stdout.contains("Installed npm:demo-pkg"), "{stdout}");
+    assert_npm_rejected(&sandbox, &out, "npm:demo-pkg");
 
-    // The managed layout appeared under the agent dir npm root.
+    // The fake npm was not invoked, so no managed layout appeared.
     let installed = sandbox
         .agent_dir
         .join("npm")
@@ -246,17 +259,13 @@ fn install_npm_with_fake_npm() {
         .join("demo-pkg")
         .join("package.json");
     assert!(
-        installed.exists(),
-        "fake npm must create the managed install layout"
+        !installed.exists(),
+        "Rust-native rejection must not invoke fake npm"
     );
 
-    // The settings entry was persisted.
+    // The settings entry was not persisted.
     let settings = sandbox.read_global_settings();
-    assert!(settings["packages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|p| p == "npm:demo-pkg"));
+    assert!(settings.get("packages").is_none());
 }
 
 #[test]
@@ -277,15 +286,10 @@ fn remove_npm_package_updates_settings_and_layout() {
     let cwd = project(&sandbox, "work");
 
     let out = sandbox.pi(&cwd, &["remove", "npm:demo-pkg"]);
-    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
-    let stdout = sandbox.stdout(&out);
-    assert!(stdout.contains("Removed npm:demo-pkg"), "{stdout}");
+    assert_npm_rejected(&sandbox, &out, "npm:demo-pkg");
     let settings = sandbox.read_global_settings();
-    assert!(settings
-        .get("packages")
-        .map(|p| p.as_array().map(|a| a.is_empty()).unwrap_or(true))
-        .unwrap_or(true));
-    assert!(!sandbox
+    assert_eq!(settings["packages"], json!(["npm:demo-pkg"]));
+    assert!(sandbox
         .agent_dir
         .join("npm")
         .join("node_modules")
@@ -299,12 +303,7 @@ fn remove_unmatched_package_errors() {
     sandbox.write_global_settings(json!({}));
     let cwd = project(&sandbox, "work");
     let out = sandbox.pi(&cwd, &["remove", "npm:ghost"]);
-    assert_eq!(out.status.code(), Some(1));
-    let stderr = sandbox.stderr(&out);
-    assert!(
-        stderr.contains("No matching package found for npm:ghost"),
-        "{stderr}"
-    );
+    assert_npm_rejected(&sandbox, &out, "npm:ghost");
 }
 
 #[test]
@@ -313,9 +312,7 @@ fn uninstall_alias_works() {
     sandbox.write_global_settings(json!({ "packages": ["npm:ghost"] }));
     let cwd = project(&sandbox, "work");
     let out = sandbox.pi(&cwd, &["uninstall", "npm:ghost"]);
-    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
-    let stdout = sandbox.stdout(&out);
-    assert!(stdout.contains("Removed npm:ghost"), "{stdout}");
+    assert_npm_rejected(&sandbox, &out, "npm:ghost");
 }
 
 #[test]
@@ -409,9 +406,19 @@ fn update_extension_with_fake_npm() {
     let cwd = project(&sandbox, "work");
 
     let out = sandbox.pi(&cwd, &["update", "--extensions"]);
-    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
-    let stdout = sandbox.stdout(&out);
-    assert!(stdout.contains("Updated packages"), "{stdout}");
+    assert_npm_rejected(&sandbox, &out, "npm:demo-pkg");
+    assert_eq!(
+        fs::read_to_string(
+            sandbox
+                .agent_dir
+                .join("npm")
+                .join("node_modules")
+                .join("demo-pkg")
+                .join("package.json")
+        )
+        .unwrap(),
+        r#"{ "name": "demo-pkg", "version": "1.0.0" }"#
+    );
 }
 
 #[test]
@@ -442,9 +449,19 @@ fn update_single_extension_reports_updated_source() {
     let cwd = project(&sandbox, "work");
 
     let out = sandbox.pi(&cwd, &["update", "npm:demo-pkg"]);
-    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
-    let stdout = sandbox.stdout(&out);
-    assert!(stdout.contains("Updated npm:demo-pkg"), "{stdout}");
+    assert_npm_rejected(&sandbox, &out, "npm:demo-pkg");
+    assert_eq!(
+        fs::read_to_string(
+            sandbox
+                .agent_dir
+                .join("npm")
+                .join("node_modules")
+                .join("demo-pkg")
+                .join("package.json")
+        )
+        .unwrap(),
+        r#"{ "name": "demo-pkg", "version": "1.0.0" }"#
+    );
 }
 
 // ---------------------------------------------------------------------------

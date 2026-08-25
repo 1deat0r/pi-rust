@@ -227,7 +227,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     // resolution + auth application + api dispatch). `faux` keeps its
     // scripted path for tests.
     let mut selected_provider_uses_oauth = false;
-    let (model, stream_fn, summary_stream_fn): (pi_ai::model::Model, StreamFn, StreamFn) =
+    let (mut model, stream_fn, summary_stream_fn): (pi_ai::model::Model, StreamFn, StreamFn) =
         if provider == "faux" {
             let models =
                 pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
@@ -371,6 +371,11 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         tools.push(crate::core::tools::grep_tool(cwd.clone()));
     }
     crate::core::extensions::install_tools(&loaded_extensions, &mut tools, !args.no_tools);
+    loaded_extensions.host.set_model(
+        serde_json::to_value(&model)
+            .ok()
+            .filter(|value| !value.is_null()),
+    );
     if let Some(patch) = loaded_extensions.runner.emit_before_agent_start(
         args.messages
             .first()
@@ -387,12 +392,60 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             system_prompt = updated.to_string();
         }
     }
+    // `before_agent_start` may call the host's model/tool mutation APIs. Apply
+    // those requests to the actual print harness inputs before it is created;
+    // leaving them in ExtensionHostState would only update the callback
+    // snapshot and would be invisible to the first real turn.
+    let requested_changes = loaded_extensions.host.drain_requested_changes();
+    if let Some(requested_model) = requested_changes.model {
+        model = serde_json::from_value(requested_model)
+            .map_err(|error| format!("extension requested invalid run model: {error}"))?;
+        loaded_extensions.host.set_model(
+            serde_json::to_value(&model)
+                .ok()
+                .filter(|value| !value.is_null()),
+        );
+    }
+    if let Some(active_tool_names) = requested_changes.active_tools {
+        let all_tool_values = tools
+            .iter()
+            .map(|tool| {
+                serde_json::json!({
+                    "name": tool.tool.name,
+                    "description": tool.tool.description,
+                    "parameters": tool.tool.parameters,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut active_tool_names = active_tool_names
+            .into_iter()
+            .filter(|name| tools.iter().any(|tool| tool.tool.name == *name))
+            .collect::<Vec<_>>();
+        active_tool_names.dedup();
+        tools.retain(|tool| active_tool_names.iter().any(|name| name == &tool.tool.name));
+        let mut command_runner = loaded_extensions.runner.as_ref().clone();
+        let commands = command_runner
+            .get_registered_commands()
+            .into_iter()
+            .map(|command| {
+                serde_json::json!({
+                    "name": command.invocation_name,
+                    "description": command.description,
+                })
+            })
+            .collect();
+        loaded_extensions
+            .host
+            .set_catalog(active_tool_names, all_tool_values, commands);
+    }
     // Resolve the durable session before creating the harness. This is the
     // point where the CLI session selectors become observable: continue and
     // resume open the selected v4 file, fork creates a child whose parent is
     // the selected session, and a normal run creates a fresh file. Legacy
     // files are migrated before inventory so every selector sees one format.
-    let (harness_session, durable_session_path) = prepare_run_session(args, &cwd).await?;
+    let (harness_session, durable_session_path) =
+        prepare_run_session_with_lifecycle(args, &cwd, Some(loaded_extensions.runner.as_ref()))
+            .await?;
     let harness_tools = tools
         .iter()
         .map(HarnessTool::from_agent_tool)
@@ -563,6 +616,20 @@ pub(crate) async fn prepare_run_session(
     args: &Args,
     cwd: &str,
 ) -> Result<(Session<StdFileSystem>, Option<String>), String> {
+    prepare_run_session_with_lifecycle(args, cwd, None).await
+}
+
+/// Session selectors used by the initial CLI run are normally resolved before
+/// the agent loop exists. Keep that ordering, but still give the already
+/// loaded extension runtime the same veto point used by runtime session
+/// replacement. `--fork` has no entry selector, so its source session id is
+/// carried in the upstream `entryId` field as the only stable identifier
+/// available at this boundary.
+async fn prepare_run_session_with_lifecycle(
+    args: &Args,
+    cwd: &str,
+    extension_runner: Option<&crate::core::extensions::ExtensionRunner>,
+) -> Result<(Session<StdFileSystem>, Option<String>), String> {
     let selects_existing =
         args.continue_session || args.resume || args.session.is_some() || args.fork.is_some();
 
@@ -621,6 +688,49 @@ pub(crate) async fn prepare_run_session(
     } else {
         None
     };
+
+    if let (Some(runner), Some(source)) = (extension_runner, source.as_ref()) {
+        if args.fork.is_some() {
+            let cancelled =
+                runner
+                    .emit_session_before_fork(&source.id, "at")
+                    .map_err(|errors| {
+                        let details = errors
+                            .into_iter()
+                            .map(|error| {
+                                format!(
+                                    "{} [{}]: {}",
+                                    error.extension_path, error.event, error.error
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        format!("extension session_before_fork failed: {details}")
+                    })?;
+            if cancelled {
+                return Err("initial session fork cancelled by extension".to_string());
+            }
+        } else if args.session.is_some() || args.continue_session || args.resume {
+            let cancelled = runner
+                .emit_session_before_switch("resume", Some(&source.path))
+                .map_err(|errors| {
+                    let details = errors
+                        .into_iter()
+                        .map(|error| {
+                            format!(
+                                "{} [{}]: {}",
+                                error.extension_path, error.event, error.error
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    format!("extension session_before_switch failed: {details}")
+                })?;
+            if cancelled {
+                return Err("initial session resume cancelled by extension".to_string());
+            }
+        }
+    }
 
     let mut session = if let Some(source) = source {
         if args.fork.is_some() {
@@ -975,6 +1085,50 @@ fn resolve_prompt_input(input: &str, description: &str) -> String {
     input.to_string()
 }
 
+fn resource_contains_path(
+    resource: &crate::core::extensions::DiscoveredResource,
+    loaded_path: &str,
+    cwd: &str,
+) -> bool {
+    let resource_path = PathBuf::from(resource.resolved_path(cwd));
+    let loaded_path = crate::core::extensions::loader::resolve_relative_path(loaded_path, cwd);
+    loaded_path == resource_path || loaded_path.starts_with(&resource_path)
+}
+
+fn apply_extension_skill_source_info(
+    skills: &mut [crate::core::skills::Skill],
+    resources: &[crate::core::extensions::DiscoveredResource],
+    cwd: &str,
+) {
+    for skill in skills {
+        if let Some(resource) = resources
+            .iter()
+            .find(|resource| resource_contains_path(resource, &skill.file_path, cwd))
+        {
+            let mut source_info = resource.source_info.clone();
+            source_info.path = skill.file_path.clone();
+            skill.source_info = source_info;
+        }
+    }
+}
+
+fn apply_extension_prompt_source_info(
+    templates: &mut [crate::core::prompt_templates::PromptTemplate],
+    resources: &[crate::core::extensions::DiscoveredResource],
+    cwd: &str,
+) {
+    for template in templates {
+        if let Some(resource) = resources
+            .iter()
+            .find(|resource| resource_contains_path(resource, &template.file_path, cwd))
+        {
+            let mut source_info = resource.source_info.clone();
+            source_info.path = template.file_path.clone();
+            template.source_info = source_info;
+        }
+    }
+}
+
 /// Load skills (user + project + `--skill`) and render the `<available_skills>`
 /// system-prompt block, marking `-ns` disabled. Surfaces load diagnostics as
 /// warnings.
@@ -992,25 +1146,27 @@ pub(crate) fn build_skills_block(
     // `settings.skills` → skill paths).
     let mut skill_paths: Vec<String> = settings.get_skill_paths();
     skill_paths.extend(args.skills.iter().cloned());
-    skill_paths.extend(extension_resources.skill_paths.iter().cloned());
-    let result = crate::core::skills::load_skills(crate::core::skills::LoadSkillsOptions {
-        cwd: cwd.to_string(),
-        agent_dir: agent_dir.display().to_string(),
-        skill_paths,
-    });
-    for diagnostic in &result.1 {
+    skill_paths.extend(extension_resources.resolved_skill_paths(cwd));
+    let (mut skills, diagnostics) =
+        crate::core::skills::load_skills(crate::core::skills::LoadSkillsOptions {
+            cwd: cwd.to_string(),
+            agent_dir: agent_dir.display().to_string(),
+            skill_paths,
+        });
+    apply_extension_skill_source_info(&mut skills, &extension_resources.skill_resources, cwd);
+    for diagnostic in &diagnostics {
         tracing::warn!(
             path = ?diagnostic.path,
             message = %diagnostic.message,
             "skill load diagnostic"
         );
     }
-    crate::core::skills::format_skills_for_prompt(&result.0)
+    crate::core::skills::format_skills_for_prompt(&skills)
 }
 
 /// Load prompt templates (user + project + `--prompt-template`) for run-path
 /// expansion, marking `-np` / `-npt` disabled.
-fn load_prompt_templates_for_run(
+pub(crate) fn load_prompt_templates_for_run(
     args: &Args,
     cwd: &str,
     agent_dir: &std::path::Path,
@@ -1020,14 +1176,15 @@ fn load_prompt_templates_for_run(
         return Vec::new();
     }
     let mut prompt_paths = args.prompt_templates.clone();
-    prompt_paths.extend(extension_resources.prompt_paths.iter().cloned());
-    let (templates, diagnostics) = crate::core::prompt_templates::load_prompt_templates(
+    prompt_paths.extend(extension_resources.resolved_prompt_paths(cwd));
+    let (mut templates, diagnostics) = crate::core::prompt_templates::load_prompt_templates(
         cwd,
         &agent_dir.display().to_string(),
         &prompt_paths,
         true,
         args.no_prompt_templates,
     );
+    apply_extension_prompt_source_info(&mut templates, &extension_resources.prompt_resources, cwd);
     for diagnostic in &diagnostics {
         tracing::warn!(
             path = ?diagnostic.path,
@@ -1170,6 +1327,74 @@ mod tests {
     }
 
     #[test]
+    fn extension_resource_metadata_reaches_loaded_skill_and_prompt() {
+        let root =
+            std::env::temp_dir().join(format!("pi-run-resource-source-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let extension_dir = root.join(".pi/extensions");
+        let skill_dir = extension_dir.join("skills/demo");
+        let prompt_dir = extension_dir.join("prompts");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::create_dir_all(&prompt_dir).unwrap();
+        let skill_path = skill_dir.join("SKILL.md");
+        let prompt_path = prompt_dir.join("demo.md");
+        std::fs::write(
+            &skill_path,
+            "---\nname: demo\ndescription: extension skill\n---\nbody",
+        )
+        .unwrap();
+        std::fs::write(
+            &prompt_path,
+            "---\ndescription: extension prompt\n---\nbody",
+        )
+        .unwrap();
+
+        let extension_path = extension_dir.join("example.js");
+        let resource = crate::core::extensions::DiscoveredResource {
+            path: "skills".to_string(),
+            extension_path: extension_path.display().to_string(),
+            source_info: crate::core::extensions::SourceInfo {
+                path: extension_path.display().to_string(),
+                source: "extension:example".to_string(),
+                scope: "temporary".to_string(),
+                origin: "top-level".to_string(),
+                base_dir: Some(extension_dir.display().to_string()),
+            },
+        };
+        let prompt_resource = crate::core::extensions::DiscoveredResource {
+            path: "prompts".to_string(),
+            ..resource.clone()
+        };
+        let cwd = root.display().to_string();
+        let agent_dir = root.join("agent");
+        let args = Args::default();
+        let mut skill_resources = crate::core::extensions::ResourceDiscovery::default();
+        skill_resources.skill_resources.push(resource);
+        skill_resources.prompt_resources.push(prompt_resource);
+
+        let mut skills = crate::core::skills::load_skills(crate::core::skills::LoadSkillsOptions {
+            cwd: cwd.clone(),
+            agent_dir: agent_dir.display().to_string(),
+            skill_paths: skill_resources.resolved_skill_paths(&cwd),
+        })
+        .0;
+        apply_extension_skill_source_info(&mut skills, &skill_resources.skill_resources, &cwd);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].source_info.source, "extension:example");
+        assert_eq!(skills[0].source_info.scope, "temporary");
+        assert_eq!(skills[0].source_info.path, skill_path.display().to_string());
+
+        let templates = load_prompt_templates_for_run(&args, &cwd, &agent_dir, &skill_resources);
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].source_info.source, "extension:example");
+        assert_eq!(
+            templates[0].source_info.path,
+            prompt_path.display().to_string()
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn resolve_prompt_input_reads_file_or_passes_through() {
         let root = std::env::temp_dir().join(format!("pi-run-promptin-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -1227,6 +1452,92 @@ mod tests {
             !prompt_nc.contains("<project_instructions"),
             "-nc must skip context files"
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn initial_fork_and_resume_honor_extension_cancellation() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-run-initial-session-hooks-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let cwd = root.to_string_lossy().into_owned();
+        let session_dir = root.join("sessions");
+        let mut repo = JsonlSessionRepo::new(
+            StdFileSystem::new(&cwd),
+            session_dir.to_string_lossy().into_owned(),
+        );
+        let source = repo
+            .create(CreateOptions {
+                id: Some("source".to_string()),
+                cwd: cwd.clone(),
+                parent_session_id: None,
+                metadata: None,
+                fork_options: ForkOptions::Tree,
+            })
+            .await
+            .unwrap();
+        let source_path = source.get_metadata().await.path;
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_for_handler = Arc::clone(&events);
+        let handler = Arc::new(
+            move |_: &crate::core::extensions::ExtensionContext, event: &serde_json::Value| {
+                events_for_handler.lock().unwrap().push(event.clone());
+                Ok(Some(serde_json::json!({"cancel": true})))
+            },
+        ) as crate::core::extensions::HandlerFn;
+        let mut extension = crate::core::extensions::Extension {
+            path: "initial-session-hooks.js".to_string(),
+            ..Default::default()
+        };
+        extension.handlers.insert(
+            "session_before_fork".to_string(),
+            vec![Arc::clone(&handler)],
+        );
+        extension
+            .handlers
+            .insert("session_before_switch".to_string(), vec![handler]);
+        let extension_runtime = Arc::new(Mutex::new(
+            crate::core::extensions::types::ExtensionRuntime::new(),
+        ));
+        let runner = crate::core::extensions::ExtensionRunner::new(
+            vec![extension],
+            extension_runtime,
+            cwd.clone(),
+        );
+
+        let fork_args = Args {
+            session_dir: Some(session_dir.to_string_lossy().into_owned()),
+            fork: Some(source_path.clone()),
+            ..Default::default()
+        };
+        let fork_result = prepare_run_session_with_lifecycle(&fork_args, &cwd, Some(&runner)).await;
+        assert!(matches!(
+            fork_result,
+            Err(error) if error.contains("initial session fork cancelled")
+        ));
+
+        let resume_args = Args {
+            session_dir: Some(session_dir.to_string_lossy().into_owned()),
+            resume: true,
+            ..Default::default()
+        };
+        let resume_result =
+            prepare_run_session_with_lifecycle(&resume_args, &cwd, Some(&runner)).await;
+        assert!(matches!(
+            resume_result,
+            Err(error) if error.contains("initial session resume cancelled")
+        ));
+
+        let events = events.lock().unwrap();
+        assert_eq!(events[0]["type"], "session_before_fork");
+        assert_eq!(events[0]["entryId"], "source");
+        assert_eq!(events[0]["position"], "at");
+        assert_eq!(events[1]["type"], "session_before_switch");
+        assert_eq!(events[1]["reason"], "resume");
+        assert_eq!(events[1]["targetSessionFile"], source_path);
         std::fs::remove_dir_all(&root).ok();
     }
 

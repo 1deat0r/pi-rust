@@ -1,8 +1,12 @@
 //! SQLite FTS5 session search — port of
 //! `packages/session-backends/sqlite-node/src/sqlite/search-backend.ts`.
 
+use futures_util::{stream, Stream};
 use pi_agent::session::types::{SessionError, SessionErrorKind};
 use rusqlite::Connection;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::migrations::apply_migrations;
 use crate::sql::SqlQuery;
@@ -84,6 +88,7 @@ fn configure_sqlite_database(db: &Connection) -> rusqlite::Result<()> {
 
 /// SQLite FTS search over a co-located canonical session database (port of
 /// `SqliteSessionSearch`).
+#[derive(Debug, Clone)]
 pub struct SqliteSessionSearch {
     database_path: String,
 }
@@ -141,10 +146,83 @@ impl SqliteSessionSearch {
         if query_text.is_empty() || options.limit == Some(0) || !has_entry_types {
             return Ok(Vec::new());
         }
+        if options.is_aborted() {
+            return Err(options.abort_error());
+        }
         let db = self.open_database()?;
         let result = self.search_impl(&db, query_text, options);
         drop(db);
         result
+    }
+
+    /// Lazy stream facade matching the upstream `SessionSearch` async
+    /// iterable. Database setup and query execution begin on first poll; hits
+    /// are then delivered in order through the same abort-aware path as the
+    /// eager convenience method.
+    pub fn stream_search(
+        &self,
+        text: impl Into<String>,
+        options: SearchOptions,
+    ) -> Pin<Box<dyn Stream<Item = Result<SqliteSessionSearchHit, SessionError>> + Send>> {
+        struct StreamState {
+            search: SqliteSessionSearch,
+            text: String,
+            options: SearchOptions,
+            receiver:
+                Option<tokio::sync::mpsc::Receiver<Result<SqliteSessionSearchHit, SessionError>>>,
+        }
+
+        let state = StreamState {
+            search: self.clone(),
+            text: text.into(),
+            options,
+            receiver: None,
+        };
+        let stream = stream::unfold(state, |mut state| async move {
+            if state.receiver.is_none() {
+                let (sender, receiver) = tokio::sync::mpsc::channel(1);
+                let search = state.search.clone();
+                let text = std::mem::take(&mut state.text);
+                let options = state.options.clone();
+                tokio::task::spawn_blocking(move || {
+                    let query_text = text.trim();
+                    if query_text.is_empty()
+                        || options.limit == Some(0)
+                        || options
+                            .entry_types
+                            .as_ref()
+                            .is_some_and(|types| types.is_empty())
+                    {
+                        return;
+                    }
+                    if options.is_aborted() {
+                        let _ = sender.blocking_send(Err(options.abort_error()));
+                        return;
+                    }
+                    let sender_for_visit = sender.clone();
+                    let result = search.open_database().and_then(|db| {
+                        search.visit_hits(&db, query_text, &options, move |hit| {
+                            sender_for_visit.blocking_send(Ok(hit)).map_err(|_| {
+                                SessionError::new(
+                                    SessionErrorKind::Storage,
+                                    "Search stream receiver dropped",
+                                )
+                            })
+                        })
+                    });
+                    if let Err(error) = result {
+                        let _ = sender.blocking_send(Err(error));
+                    }
+                });
+                state.receiver = Some(receiver);
+            }
+            let item = match state.receiver.as_mut() {
+                Some(receiver) => receiver.recv().await,
+                None => None,
+            };
+            item.map(|item| (item, state))
+        });
+        Box::pin(stream)
     }
 
     fn search_impl(
@@ -153,6 +231,21 @@ impl SqliteSessionSearch {
         query_text: &str,
         options: &SearchOptions,
     ) -> Result<Vec<SqliteSessionSearchHit>, SessionError> {
+        let mut hits = Vec::new();
+        self.visit_hits(db, query_text, options, |hit| {
+            hits.push(hit);
+            Ok(())
+        })?;
+        Ok(hits)
+    }
+
+    fn visit_hits(
+        &self,
+        db: &Connection,
+        query_text: &str,
+        options: &SearchOptions,
+        mut visit: impl FnMut(SqliteSessionSearchHit) -> Result<(), SessionError>,
+    ) -> Result<(), SessionError> {
         // Quote the query so user text cannot expose FTS grammar.
         let quoted = format!("\"{}\"", query_text.replace('"', "\"\""));
         let mut predicates = vec!["session_search_fts MATCH ?".to_string()];
@@ -221,8 +314,14 @@ impl SqliteSessionSearch {
                 SessionError::new(SessionErrorKind::Storage, format!("Search failed: {error}"))
             })?;
 
-        let mut hits = Vec::new();
-        for row in rows {
+        for (row_index, row) in rows.enumerate() {
+            if options.is_aborted()
+                || options
+                    .abort_after_rows
+                    .is_some_and(|limit| row_index >= limit)
+            {
+                return Err(options.abort_error());
+            }
             let row = row.map_err(|error| {
                 SessionError::new(
                     SessionErrorKind::Storage,
@@ -240,15 +339,15 @@ impl SqliteSessionSearch {
             };
             let metadata = decode_session_metadata(&core_row, &self.database_path)
                 .map_err(|e| SessionError::new(e.kind, e.message))?;
-            hits.push(SqliteSessionSearchHit {
+            visit(SqliteSessionSearchHit {
                 session_id: metadata.id.clone(),
                 metadata,
                 entry_id: row.entry_id,
                 timestamp: row.timestamp as u64,
                 score: row.score,
-            });
+            })?;
         }
-        Ok(hits)
+        Ok(())
     }
 }
 
@@ -272,6 +371,37 @@ pub struct SearchOptions {
     pub entry_types: Option<Vec<String>>,
     /// Maximum number of hits to return.
     pub limit: Option<usize>,
+    /// Synchronous counterpart of the upstream `AbortSignal`.
+    pub abort_requested: bool,
+    /// Optional live cancellation flag checked before opening SQLite and
+    /// between yielded rows.
+    pub abort_signal: Option<Arc<AtomicBool>>,
+    /// Optional error text returned when cancellation is observed.
+    pub abort_reason: Option<String>,
+    /// Deterministic row-boundary cancellation hook used by conformance
+    /// tests to exercise the same between-row check as a live AbortSignal.
+    #[doc(hidden)]
+    pub abort_after_rows: Option<usize>,
+}
+
+impl SearchOptions {
+    fn is_aborted(&self) -> bool {
+        self.abort_requested
+            || self.abort_after_rows.is_some_and(|limit| limit == 0)
+            || self
+                .abort_signal
+                .as_ref()
+                .is_some_and(|signal| signal.load(Ordering::Acquire))
+    }
+
+    fn abort_error(&self) -> SessionError {
+        SessionError::new(
+            SessionErrorKind::InvalidQuery,
+            self.abort_reason
+                .clone()
+                .unwrap_or_else(|| "The operation was aborted".to_string()),
+        )
+    }
 }
 
 /// Convenience factory (port of `createSqliteSessionSearch`).

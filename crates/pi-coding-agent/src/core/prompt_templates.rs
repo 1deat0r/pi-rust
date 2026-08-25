@@ -7,6 +7,7 @@ use pi_agent::harness::frontmatter::parse_frontmatter;
 
 use crate::config::CONFIG_DIR_NAME;
 use crate::core::diagnostics::{ResourceDiagnostic, ResourceDiagnosticKind};
+use crate::core::extensions::types::SourceInfo;
 
 /// A prompt template loaded from a markdown file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +16,7 @@ pub struct PromptTemplate {
     pub description: String,
     pub argument_hint: Option<String>,
     pub content: String,
+    pub source_info: SourceInfo,
     pub file_path: String,
 }
 
@@ -164,7 +166,7 @@ fn strip_bom(s: &str) -> &str {
     s.strip_prefix('\u{feff}').unwrap_or(s)
 }
 
-fn load_template_from_file(file_path: &Path) -> Option<PromptTemplate> {
+fn load_template_from_file(file_path: &Path, source_info: SourceInfo) -> Option<PromptTemplate> {
     let raw_content = std::fs::read_to_string(file_path).ok()?;
     let raw_content = strip_bom(&raw_content);
     let (frontmatter, body) = parse_frontmatter(raw_content)?;
@@ -207,11 +209,12 @@ fn load_template_from_file(file_path: &Path) -> Option<PromptTemplate> {
         description,
         argument_hint,
         content: body,
+        source_info,
         file_path: file_path.to_string_lossy().into_owned(),
     })
 }
 
-fn load_templates_from_dir(dir: &Path) -> Vec<PromptTemplate> {
+fn load_templates_from_dir(dir: &Path, scope: &str) -> Vec<PromptTemplate> {
     let mut templates = Vec::new();
     if !dir.is_dir() {
         return templates;
@@ -223,7 +226,15 @@ fn load_templates_from_dir(dir: &Path) -> Vec<PromptTemplate> {
     for entry in entries.flatten() {
         let full_path = dir.join(entry.file_name());
         if full_path.is_file() && full_path.to_string_lossy().ends_with(".md") {
-            if let Some(template) = load_template_from_file(&full_path) {
+            let mut source_info = SourceInfo::synthetic(
+                &full_path.to_string_lossy(),
+                "local",
+                Some(dir.to_string_lossy().into_owned()),
+            );
+            if scope == "user" || scope == "project" {
+                source_info.scope = scope.to_string();
+            }
+            if let Some(template) = load_template_from_file(&full_path, source_info) {
                 templates.push(template);
             }
         }
@@ -256,8 +267,8 @@ pub fn load_prompt_templates(
     let project_dir = Path::new(cwd).join(CONFIG_DIR_NAME).join("prompts");
 
     if include_defaults && !no_prompt_templates {
-        templates.extend(load_templates_from_dir(&global_dir));
-        templates.extend(load_templates_from_dir(&project_dir));
+        templates.extend(load_templates_from_dir(&global_dir, "user"));
+        templates.extend(load_templates_from_dir(&project_dir, "project"));
     }
 
     for raw_path in prompt_paths {
@@ -272,9 +283,16 @@ pub fn load_prompt_templates(
             continue;
         }
         if resolved.is_dir() {
-            templates.extend(load_templates_from_dir(&resolved));
+            templates.extend(load_templates_from_dir(&resolved, "path"));
         } else if resolved.is_file() && resolved.to_string_lossy().ends_with(".md") {
-            if let Some(template) = load_template_from_file(&resolved) {
+            let source_info = SourceInfo::synthetic(
+                &resolved.to_string_lossy(),
+                "local",
+                resolved
+                    .parent()
+                    .map(|path| path.to_string_lossy().into_owned()),
+            );
+            if let Some(template) = load_template_from_file(&resolved, source_info) {
                 templates.push(template);
             }
         }
@@ -344,6 +362,7 @@ mod tests {
             description: "d".into(),
             argument_hint: None,
             content: "Summarize: $@".into(),
+            source_info: SourceInfo::synthetic("/t/summarize.md", "test", Some("/t".into())),
             file_path: "/t/summarize.md".into(),
         }];
         assert_eq!(expand_prompt_template("hello", &templates), "hello");
@@ -385,6 +404,10 @@ mod tests {
             .iter()
             .any(|t| t.name == "hello" && t.content.contains("Hello, $1")));
         assert!(templates.iter().any(|t| t.name == "README"));
+        let hello = templates.iter().find(|t| t.name == "hello").unwrap();
+        assert_eq!(hello.source_info.source, "local");
+        assert_eq!(hello.source_info.scope, "project");
+        assert_eq!(hello.source_info.base_dir.as_deref(), prompts_dir.to_str());
         std::fs::remove_dir_all(&dir).ok();
     }
 

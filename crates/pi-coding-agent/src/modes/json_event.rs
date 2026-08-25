@@ -26,6 +26,25 @@ impl Drop for JsonExtensionGuard {
     }
 }
 
+/// Keep the external extension host's idle condition aligned with the one
+/// detached JSON-mode agent run. `waitForIdle()` is a real condition wait, so
+/// it must observe the run as busy even though JSON mode has no interactive
+/// event loop to own that state.
+struct JsonIdleGuard(Arc<crate::core::extensions::ExtensionHostState>);
+
+impl JsonIdleGuard {
+    fn new(host: Arc<crate::core::extensions::ExtensionHostState>) -> Self {
+        host.set_idle(false);
+        Self(host)
+    }
+}
+
+impl Drop for JsonIdleGuard {
+    fn drop(&mut self) {
+        self.0.set_idle(true);
+    }
+}
+
 /// Run `--mode json`: stream the prompt and emit JSON event lines.
 pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(), String> {
     let cwd = config::cwd();
@@ -195,7 +214,7 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
     options.system_prompt = args.system_prompt.clone();
     options.block_images = settings.get_block_images();
     options.tools = Some(tools.iter().map(HarnessTool::from_agent_tool).collect());
-    let (mut harness, _) = AgentHarness::create(options)
+    let (harness, _) = AgentHarness::create(options)
         .await
         .map_err(|error| error.to_string())?;
     let existing_entries = harness
@@ -210,6 +229,7 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
             .await
             .map_err(|error| error.to_string())?;
     }
+    let _idle_guard = JsonIdleGuard::new(loaded_extensions.host.clone());
     let (_, rich_events) = harness
         .run_prompt_with_events(prompts)
         .await

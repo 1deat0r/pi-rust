@@ -35,6 +35,8 @@ pub enum Modal {
     Model(Arc<Mutex<selectors::ListSelector>>),
     Thinking(Arc<Mutex<selectors::ListSelector>>),
     Theme(Arc<Mutex<selectors::ListSelector>>),
+    /// User-message selector for `/fork`.
+    Fork(Arc<Mutex<selectors::ListSelector>>),
     Settings(Arc<Mutex<SettingsPanel>>),
     /// Session picker: selector + the metadata list it was built from.
     Resume(

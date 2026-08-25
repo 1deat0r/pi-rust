@@ -1,9 +1,12 @@
 //! SQLite FTS5 session search — port of `test/search.test.ts`.
 
+use futures_util::StreamExt;
 use pi_session_backends::repo::SqliteSessionRepository;
 use pi_session_backends::search::{create_sqlite_session_search, SearchOptions};
 use pi_session_backends::sql::SqlQuery;
 use pi_session_backends::types::{SqliteSessionCreateOptions, SqliteWriterLeaseOptions};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 mod test_utils;
 use test_utils::{create_temp_dir, get_sqlite_entries, user_message};
@@ -89,6 +92,146 @@ async fn matches_trigrams() {
     let uth_hits = search_all(&search, "uth");
     assert!(uth_hits.iter().any(|h| h.session_id == "included"));
     assert!(uth_hits.iter().any(|h| h.session_id == "excluded"));
+}
+
+#[tokio::test]
+async fn honors_limits_and_entry_type_filters() {
+    let root = create_temp_dir();
+    let (repo, search) = fixture(&root);
+    let mut session = repo
+        .create(&SqliteSessionCreateOptions {
+            id: Some("session-1".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    session
+        .append_message(user_message("auth first"))
+        .await
+        .unwrap();
+    session
+        .append_message(user_message("auth second"))
+        .await
+        .unwrap();
+
+    let limited = search
+        .search(
+            "auth",
+            &SearchOptions {
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(limited.len(), 1);
+
+    let messages = search
+        .search(
+            "auth",
+            &SearchOptions {
+                entry_types: Some(vec!["message".to_string()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(messages.len(), 2);
+
+    let none = search
+        .search(
+            "auth",
+            &SearchOptions {
+                entry_types: Some(Vec::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(none.is_empty());
+}
+
+#[tokio::test]
+async fn abort_signal_is_checked_before_opening_database() {
+    let root = create_temp_dir();
+    let database_path = root.join("sessions.sqlite");
+    let search = create_sqlite_session_search(database_path.to_string_lossy().into_owned());
+    let signal = Arc::new(AtomicBool::new(true));
+    let error = search
+        .search(
+            "auth",
+            &SearchOptions {
+                abort_signal: Some(Arc::clone(&signal)),
+                ..Default::default()
+            },
+        )
+        .expect_err("aborted search should fail before opening SQLite");
+    assert!(error.message.contains("aborted"));
+    assert!(signal.load(Ordering::Acquire));
+}
+
+#[tokio::test]
+async fn stream_search_is_lazy_and_preserves_hit_order() {
+    let root = create_temp_dir();
+    let (repo, search) = fixture(&root);
+    let mut session = repo
+        .create(&SqliteSessionCreateOptions {
+            id: Some("stream-session".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let first = session
+        .append_message(user_message("stream auth first"))
+        .await
+        .unwrap();
+    let second = session
+        .append_message(user_message("stream auth second"))
+        .await
+        .unwrap();
+
+    let mut hits = search.stream_search("auth", SearchOptions::default());
+    let first_hit = hits.next().await.unwrap().unwrap();
+    let second_hit = hits.next().await.unwrap().unwrap();
+    assert_eq!(first_hit.entry_id, first);
+    assert_eq!(second_hit.entry_id, second);
+    assert!(hits.next().await.is_none());
+}
+
+#[tokio::test]
+async fn stream_search_checks_abort_between_rows() {
+    let root = create_temp_dir();
+    let (repo, search) = fixture(&root);
+    let mut session = repo
+        .create(&SqliteSessionCreateOptions {
+            id: Some("stream-abort".into()),
+            cwd: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    session
+        .append_message(user_message("abort auth first"))
+        .await
+        .unwrap();
+    session
+        .append_message(user_message("abort auth second"))
+        .await
+        .unwrap();
+
+    let mut hits = search.stream_search(
+        "auth",
+        SearchOptions {
+            abort_after_rows: Some(1),
+            ..Default::default()
+        },
+    );
+    assert!(hits.next().await.unwrap().is_ok());
+    let error = hits
+        .next()
+        .await
+        .expect("abort should be yielded between rows")
+        .expect_err("second row should observe the abort");
+    assert!(error.message.contains("aborted"));
 }
 
 #[tokio::test]

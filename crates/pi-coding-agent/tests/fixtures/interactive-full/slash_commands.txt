@@ -1,7 +1,7 @@
 # Full Rust interactive slash-command matrix.
 # Rows are command|visible-substring|follow-up. A follow-up of "escape"
-# closes a selector modal; "clear" uses a seeded prompt before asserting that
-# the transcript was cleared.
+# closes a selector modal; "enter" confirms the default selector choice; "clear"
+# uses a seeded prompt before asserting that the transcript was cleared.
 /settings|Default thinking level|escape
 /model|faux/Faux Model|escape
 /thinking|low|escape
@@ -23,8 +23,8 @@
 /name|usage: /name <session-name>
 /resume|no sessions found to resume in this directory
 /tree|session tree:
-/fork|fork session
-/clone|clone session
+/fork|fork session|enter-clear
+/clone|Nothing to clone yet
 /new|started new session
 /export $HTML|exported session to
 /import $IMPORT|imported

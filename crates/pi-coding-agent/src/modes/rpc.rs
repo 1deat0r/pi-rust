@@ -24,8 +24,8 @@ use pi_agent::session::session::Session as JsonlSession;
 
 use pi_agent::harness::events::HarnessEventBus;
 use pi_agent::harness::{run_with_harness_lifecycle, HarnessTelemetryContext, SimpleModels};
-use pi_agent::session::state::{BranchBounds, EntryOrder, EntryQuery, ForkOptions};
-use pi_agent::session::types::{EntryNoStats, SessionMetadata};
+use pi_agent::session::state::{BranchBounds, EntryOrder, EntryQuery, ForkOptions, ForkPosition};
+use pi_agent::session::types::EntryNoStats;
 use pi_agent::session::JsonlSessionRepo;
 use pi_ai::model::Model;
 use pi_ai::models::Models;
@@ -35,8 +35,12 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::args::Args;
 use crate::config;
+use crate::core::extensions::types::{
+    ExtensionHostAction, ExtensionHostActions, PendingHostAction,
+};
 use crate::core::extensions::{
-    install_tools, load_for_mode, register_loaded_native_providers, LoadedExtensions,
+    install_tools, load_for_mode, load_for_mode_with_reason_and_flags_and_previous,
+    register_loaded_native_providers, LoadedExtensions,
 };
 use crate::core::settings::SettingsManager;
 
@@ -150,6 +154,9 @@ fn apply_provider_defaults(
 pub struct RpcRuntime {
     pub cwd: String,
     pub agent_dir: String,
+    /// The immutable CLI extension configuration is retained so a session
+    /// transition can construct the same extension set as startup.
+    extension_args: Args,
     pub settings: SettingsManager,
     pub models: Models,
     /// Shared faux registration used by headless mode so prompt, compaction,
@@ -195,6 +202,10 @@ pub struct RpcRuntime {
     pub system_prompt: Option<String>,
     pub tools_enabled: bool,
     pub builtin_tools_enabled: bool,
+    /// The live tool set used to construct the next prompt context. `None`
+    /// means the full mode-allowed registry is active; an extension
+    /// `setActiveTools` request changes this to the validated requested set.
+    active_tool_names: Option<Vec<String>>,
     /// One extension runtime is shared by all prompt contexts for this RPC
     /// session. Prompt tool closures retain the runner while detached.
     pub loaded_extensions: LoadedExtensions,
@@ -220,6 +231,12 @@ struct RpcPromptRun {
     context: AgentContext,
     config: RichAgentLoopConfig,
     provider_uses_oauth: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForkSessionResult {
+    selected_text: Option<String>,
+    cancelled: bool,
 }
 
 /// A message-end record plus the session-only termination marker carried by
@@ -744,6 +761,7 @@ impl RpcRuntime {
         let mut runtime = Self {
             cwd,
             agent_dir,
+            extension_args: args.clone(),
             settings,
             models,
             faux_core,
@@ -781,9 +799,19 @@ impl RpcRuntime {
             system_prompt,
             tools_enabled: !args.no_tools,
             builtin_tools_enabled: !args.no_builtin_tools,
+            active_tool_names: None,
             loaded_extensions,
         };
         runtime.refresh_extension_catalog();
+        runtime.loaded_extensions.host.set_model(
+            serde_json::to_value(&runtime.model)
+                .ok()
+                .filter(|value| !value.is_null()),
+        );
+        runtime
+            .dispatch_pending_extension_actions()
+            .await
+            .map_err(|error| format!("startup extension action failed: {error}"))?;
         runtime.messages = runtime.load_context_messages().await?;
         Ok(runtime)
     }
@@ -810,9 +838,183 @@ impl RpcRuntime {
 
     /// Publish the exact tool policy before the first prompt as well as when
     /// each prompt context is built.
-    fn refresh_extension_catalog(&self) {
+    fn all_tools(&self) -> Vec<pi_agent::tools::AgentTool> {
         let mut tools = self.base_tools();
         install_tools(&self.loaded_extensions, &mut tools, self.tools_enabled);
+        tools
+    }
+
+    fn active_tools_for_turn(&self) -> Vec<pi_agent::tools::AgentTool> {
+        let mut tools = self.all_tools();
+        if let Some(active_names) = &self.active_tool_names {
+            tools.retain(|tool| active_names.iter().any(|name| name == &tool.tool.name));
+        }
+        tools
+    }
+
+    fn refresh_extension_catalog(&mut self) {
+        let all_tools = self.all_tools();
+        let available_names = all_tools
+            .iter()
+            .map(|tool| tool.tool.name.clone())
+            .collect::<Vec<_>>();
+        let active_names = self.active_tool_names.clone().map_or_else(
+            || available_names.clone(),
+            |requested| {
+                requested
+                    .into_iter()
+                    .filter(|name| available_names.iter().any(|available| available == name))
+                    .collect()
+            },
+        );
+        self.active_tool_names = Some(active_names.clone());
+        let all_tool_values = all_tools
+            .iter()
+            .map(|tool| {
+                serde_json::json!({
+                    "name": tool.tool.name,
+                    "description": tool.tool.description,
+                    "parameters": tool.tool.parameters,
+                })
+            })
+            .collect();
+        let mut runner = self.loaded_extensions.runner.as_ref().clone();
+        let commands = runner
+            .get_registered_commands()
+            .into_iter()
+            .map(|command| {
+                serde_json::json!({
+                    "name": command.invocation_name,
+                    "description": command.description,
+                })
+            })
+            .collect();
+        self.loaded_extensions
+            .host
+            .set_catalog(active_names, all_tool_values, commands);
+    }
+
+    async fn apply_model_state(&mut self, model: Model, persist: bool) -> Result<(), String> {
+        let previous_thinking = self.thinking_level;
+        self.provider = model.provider.clone();
+        self.model = model.clone();
+        self.thinking_level = configured_thinking_level(&self.settings, &model);
+        self.loaded_extensions.host.set_model(
+            serde_json::to_value(&self.model)
+                .ok()
+                .filter(|value| !value.is_null()),
+        );
+        self.loaded_extensions
+            .host
+            .set_thinking_level(self.thinking_level.as_str());
+        if persist {
+            self.session
+                .append_entry(
+                    EntryNoStats::ModelChange {
+                        id: format!("model-{}", pi_agent::session::new_id()),
+                        provider: self.model.provider.clone(),
+                        model_id: self.model.id.clone(),
+                    },
+                    "main",
+                )
+                .await
+                .map_err(|error| format!("append model change: {error}"))?;
+            if self.thinking_level != previous_thinking {
+                self.session
+                    .append_entry(
+                        EntryNoStats::ThinkingLevel {
+                            id: format!("thinking-{}", pi_agent::session::new_id()),
+                            thinking_level: self.thinking_level.as_str().to_string(),
+                        },
+                        "main",
+                    )
+                    .await
+                    .map_err(|error| format!("append thinking level: {error}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_thinking_level(
+        &mut self,
+        requested: pi_ai::types::ModelThinkingLevel,
+        persist: bool,
+    ) -> Result<(), String> {
+        let next = pi_ai::model::clamp_thinking_level(&self.model, requested);
+        let previous = self.thinking_level;
+        self.thinking_level = next;
+        self.loaded_extensions
+            .host
+            .set_thinking_level(self.thinking_level.as_str());
+        if persist && next != previous {
+            self.session
+                .append_entry(
+                    EntryNoStats::ThinkingLevel {
+                        id: format!("thinking-{}", pi_agent::session::new_id()),
+                        thinking_level: next.as_str().to_string(),
+                    },
+                    "main",
+                )
+                .await
+                .map_err(|error| format!("append thinking level: {error}"))?;
+        }
+        Ok(())
+    }
+
+    async fn apply_active_tools(
+        &mut self,
+        requested: Vec<String>,
+        persist: bool,
+    ) -> Result<(), String> {
+        let available = self
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.tool.name)
+            .collect::<HashSet<_>>();
+        let mut active = Vec::new();
+        for name in requested {
+            if available.contains(&name) && !active.contains(&name) {
+                active.push(name);
+            }
+        }
+        self.active_tool_names = Some(active.clone());
+        self.refresh_extension_catalog();
+        if persist {
+            self.session
+                .append_entry(
+                    EntryNoStats::ActiveTools {
+                        id: format!("tools-{}", pi_agent::session::new_id()),
+                        active_tool_names: active,
+                    },
+                    "main",
+                )
+                .await
+                .map_err(|error| format!("append active tools: {error}"))?;
+        }
+        Ok(())
+    }
+
+    async fn apply_requested_extension_changes(&mut self) -> Result<(), String> {
+        let changes = self.loaded_extensions.host.drain_requested_changes();
+        if let Some(model_value) = changes.model {
+            let provider = model_value
+                .get("provider")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "extension model request is missing provider".to_string())?;
+            let model_id = model_value
+                .get("id")
+                .or_else(|| model_value.get("modelId"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "extension model request is missing id".to_string())?;
+            let model = self.models.get_model(provider, model_id).ok_or_else(|| {
+                format!("extension requested unknown model: {provider}/{model_id}")
+            })?;
+            self.apply_model_state(model, true).await?;
+        }
+        if let Some(active_tools) = changes.active_tools {
+            self.apply_active_tools(active_tools, true).await?;
+        }
+        Ok(())
     }
 
     /// Available models snapshot (all catalog models across providers).
@@ -1117,13 +1319,9 @@ impl RpcRuntime {
 
         // Seed the model context with prior history. The current prompt is
         // passed separately in `prompts`, matching the synchronous RPC path.
-        let mut context = AgentContext::new(self.system_prompt.clone(), self.base_tools());
+        let mut context =
+            AgentContext::new(self.system_prompt.clone(), self.active_tools_for_turn());
         context.messages = self.messages.clone();
-        install_tools(
-            &self.loaded_extensions,
-            &mut context.tools,
-            self.tools_enabled,
-        );
 
         // The rich loop owns the queue drain points. Control commands can
         // therefore enqueue messages while this run is detached from the
@@ -1260,6 +1458,13 @@ impl RpcRuntime {
         // its context/session message until the agent lifecycle is complete,
         // exactly as the upstream session does for pending bash messages.
         let _ = self.flush_pending_bash_messages().await;
+        if let Err(error) = self.dispatch_pending_extension_actions().await {
+            store.push(serialize_json_line(&serde_json::json!({
+                "type": "extension_error",
+                "event": "host_action",
+                "error": error,
+            })));
+        }
         store.push(serialize_json_line(
             &serde_json::json!({"type": "agent_settled"}),
         ));
@@ -1581,9 +1786,410 @@ impl RpcRuntime {
         }
     }
 
+    fn extension_lifecycle_error(
+        event: &str,
+        errors: Vec<crate::core::extensions::ExtensionError>,
+    ) -> String {
+        let details = errors
+            .into_iter()
+            .map(|error| {
+                format!(
+                    "{} [{}]: {}",
+                    error.extension_path, error.event, error.error
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!("extension {event} failed: {details}")
+    }
+
+    fn session_before_switch_allowed(
+        &self,
+        reason: &str,
+        target_session_file: Option<&str>,
+    ) -> Result<bool, String> {
+        self.loaded_extensions
+            .runner
+            .emit_session_before_switch(reason, target_session_file)
+            .map(|cancelled| !cancelled)
+            .map_err(|errors| Self::extension_lifecycle_error("session_before_switch", errors))
+    }
+
+    fn complete_pending_lifecycle(
+        &self,
+        request: Option<&PendingHostAction>,
+        result: serde_json::Value,
+    ) -> Result<(), String> {
+        let Some(request) = request else {
+            return Ok(());
+        };
+        // Native callers use the same queued host state but have no external
+        // continuation to resolve. The loader sink treats these as a no-op;
+        // avoiding the call also keeps hand-built test hosts compatible.
+        if request
+            .continuation_metadata()
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+        {
+            return Ok(());
+        }
+        self.loaded_extensions
+            .host
+            .complete_lifecycle_action(request.clone(), result)
+    }
+
+    fn install_replacement_extensions(
+        &mut self,
+        reason: &str,
+        previous_session_file: Option<&str>,
+        flag_values: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let loaded = load_for_mode_with_reason_and_flags_and_previous(
+            &self.extension_args,
+            &self.settings,
+            &self.cwd,
+            &self.agent_dir,
+            "rpc",
+            false,
+            self.session_name.clone(),
+            self.thinking_level.as_str(),
+            reason,
+            Some(flag_values),
+            previous_session_file,
+        );
+        for error in &loaded.errors {
+            tracing::warn!(path = %error.path, error = %error.error, "failed to load RPC extension");
+        }
+        self.loaded_extensions = loaded;
+        self.loaded_extensions.host.set_model(
+            serde_json::to_value(&self.model)
+                .ok()
+                .filter(|value| !value.is_null()),
+        );
+        self.loaded_extensions
+            .host
+            .set_thinking_level(self.thinking_level.as_str());
+        register_loaded_native_providers(&self.models, &self.loaded_extensions)
+            .map_err(|error| format!("failed to register RPC native providers: {error}"))?;
+        self.refresh_extension_catalog();
+        Ok(())
+    }
+
+    async fn replace_extension_runtime_for_reload_with_request(
+        &mut self,
+        request: Option<&PendingHostAction>,
+    ) -> Result<(), String> {
+        let old = self.loaded_extensions.clone();
+        let flags = old.runner.get_flag_values();
+        self.complete_pending_lifecycle(
+            request,
+            serde_json::json!({
+                "cancelled": false,
+                "result": "reload-started",
+                "context": {"mode": "rpc", "cwd": self.cwd, "hasUI": false},
+                "snapshot": old.host.snapshot(),
+            }),
+        )?;
+        if let Err(errors) = old.runner.emit_session_shutdown("reload") {
+            return Err(Self::extension_lifecycle_error("session_shutdown", errors));
+        }
+        old.runner.invalidate(Some("rpc extension reload"));
+        self.settings.reload().await;
+        self.install_replacement_extensions("reload", None, flags)
+    }
+
+    async fn replace_session_with_extensions(
+        &mut self,
+        session: JsonlSession<pi_agent::fs::StdFileSystem>,
+        reason: &str,
+        previous_session_file: Option<String>,
+        completion: Option<(&PendingHostAction, serde_json::Value)>,
+    ) -> Result<(), String> {
+        let old = self.loaded_extensions.clone();
+        let flags = old.runner.get_flag_values();
+        let target_session_file = session.get_metadata().await.path;
+        let target_session_id = session.get_metadata().await.id;
+        let target_session_name = session.get_name().await;
+        let _ = old.host.dispatch(
+            ExtensionHostAction::SetSessionName,
+            &serde_json::json!({"name": target_session_name}),
+        );
+        if let Some((request, mut result)) = completion {
+            if let Some(object) = result.as_object_mut() {
+                object.insert("snapshot".to_string(), old.host.snapshot());
+                if object.get("context").is_none() {
+                    object.insert(
+                        "context".to_string(),
+                        serde_json::json!({
+                            "mode": "rpc",
+                            "cwd": self.cwd,
+                            "hasUI": false,
+                            "sessionFile": target_session_file,
+                            "sessionId": target_session_id,
+                        }),
+                    );
+                }
+            }
+            self.complete_pending_lifecycle(Some(request), result)?;
+        }
+        if let Err(errors) = old
+            .runner
+            .emit_session_shutdown_with_target(reason, Some(&target_session_file))
+        {
+            return Err(Self::extension_lifecycle_error("session_shutdown", errors));
+        }
+        old.runner.invalidate(Some("rpc session replacement"));
+
+        let metadata = session.get_metadata().await;
+        self.session = session;
+        self.session_path = Some(metadata.path);
+        self.session_id = metadata.id;
+        self.session_name = self.session.get_name().await;
+        self.messages = self.load_context_messages().await?;
+        self.install_replacement_extensions(reason, previous_session_file.as_deref(), flags)
+    }
+
+    async fn new_session_action(
+        &mut self,
+        parent_session: Option<String>,
+        request: Option<&PendingHostAction>,
+    ) -> Result<serde_json::Value, String> {
+        if !self.session_before_switch_allowed("new", None)? {
+            return Ok(serde_json::json!({"cancelled": true}));
+        }
+        let previous_session_file = self.session_path.clone();
+        let session = self
+            .repo
+            .create(CreateOptions {
+                id: Some(pi_agent::session::new_id()),
+                cwd: self.cwd.clone(),
+                parent_session_id: parent_session,
+                metadata: None,
+                fork_options: ForkOptions::Tree,
+            })
+            .await
+            .map_err(|error| format!("create session: {error}"))?;
+        let target_session_file = session.get_metadata().await.path;
+        let target_session_id = session.get_metadata().await.id;
+        self.replace_session_with_extensions(
+            session,
+            "new",
+            previous_session_file,
+            request.map(|request| {
+                (
+                    request,
+                    serde_json::json!({
+                        "cancelled": false,
+                        "result": "new-session-created",
+                        "sessionFile": target_session_file,
+                        "sessionId": target_session_id,
+                    }),
+                )
+            }),
+        )
+        .await?;
+        Ok(serde_json::json!({"cancelled": false}))
+    }
+
+    async fn navigate_tree_action(
+        &mut self,
+        target_id: String,
+        options: &serde_json::Value,
+        request: Option<&PendingHostAction>,
+    ) -> Result<serde_json::Value, String> {
+        let current_leaf = self
+            .session
+            .get_leaf_id()
+            .await
+            .map_err(|error| error.to_string())?;
+        if current_leaf.as_deref() == Some(target_id.as_str()) {
+            return Ok(serde_json::json!({"cancelled": false}));
+        }
+        if self.session.get_entry(&target_id).await.is_none() {
+            return Err(format!("Entry {target_id} not found"));
+        }
+        if options
+            .get("summarize")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Err("navigateTree summarization is not available in RPC mode".to_string());
+        }
+        let preparation = serde_json::json!({
+            "targetId": target_id,
+            "oldLeafId": current_leaf,
+            "userWantsSummary": false,
+            "customInstructions": options.get("customInstructions"),
+            "replaceInstructions": options.get("replaceInstructions"),
+            "label": options.get("label"),
+        });
+        match self.loaded_extensions.runner.emit(
+            "session_before_tree",
+            &serde_json::json!({
+                "type": "session_before_tree",
+                "preparation": preparation,
+            }),
+        ) {
+            Ok(Some(result)) if result.get("cancel") == Some(&serde_json::Value::Bool(true)) => {
+                return Ok(serde_json::json!({"cancelled": true}));
+            }
+            Ok(_) => {}
+            Err(errors) => {
+                return Err(Self::extension_lifecycle_error(
+                    "session_before_tree",
+                    errors,
+                ));
+            }
+        }
+        self.session
+            .move_lane("main", Some(&target_id))
+            .await
+            .map_err(|error| format!("navigate tree: {error}"))?;
+        self.messages = self.load_context_messages().await?;
+        self.complete_pending_lifecycle(
+            request,
+            serde_json::json!({
+                "cancelled": false,
+                "result": "tree-navigated",
+                "targetId": target_id,
+                "snapshot": self.loaded_extensions.host.snapshot(),
+            }),
+        )?;
+        Ok(serde_json::json!({"cancelled": false}))
+    }
+
+    async fn dispatch_extension_action(
+        &mut self,
+        action: serde_json::Value,
+        request: Option<&PendingHostAction>,
+    ) -> Result<serde_json::Value, String> {
+        let action_type = action
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "pending extension action is missing type".to_string())?;
+        match action_type {
+            "new_session" => {
+                let options = action.get("options").cloned().unwrap_or_default();
+                let parent_session = options
+                    .get("parentSession")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned);
+                self.new_session_action(parent_session, request).await
+            }
+            "fork" => {
+                let entry_id = action
+                    .get("entryId")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "extension fork action is missing entryId".to_string())?
+                    .to_string();
+                let options = action.get("options").cloned().unwrap_or_default();
+                let position = match options.get("position").and_then(serde_json::Value::as_str) {
+                    None | Some("before") => ForkPosition::Before,
+                    Some("at") => ForkPosition::At,
+                    Some(value) => return Err(format!("invalid fork position: {value}")),
+                };
+                let result = self.fork_session(entry_id, position, request).await?;
+                Ok(serde_json::json!({
+                    "text": result.selected_text,
+                    "cancelled": result.cancelled,
+                }))
+            }
+            "navigate_tree" => {
+                let target_id = action
+                    .get("targetId")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "extension navigateTree action is missing targetId".to_string())?
+                    .to_string();
+                let options = action.get("options").cloned().unwrap_or_default();
+                self.navigate_tree_action(target_id, &options, request)
+                    .await
+            }
+            "switch_session" => {
+                let session_path = action
+                    .get("sessionPath")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        "extension switchSession action is missing sessionPath".to_string()
+                    })?;
+                self.load_session_result(session_path, request).await
+            }
+            "reload" => {
+                self.replace_extension_runtime_for_reload_with_request(request)
+                    .await?;
+                Ok(serde_json::Value::Null)
+            }
+            other => Err(format!("unsupported pending extension action: {other}")),
+        }
+    }
+
+    /// Consume lifecycle actions only after their extension callback has
+    /// returned. A session replacement invalidates the old host, so any other
+    /// action that was queued by the stale callback is intentionally discarded;
+    /// actions queued by the fresh runtime are drained on the next iteration.
+    async fn dispatch_pending_extension_actions(
+        &mut self,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let mut results = Vec::new();
+        loop {
+            self.apply_requested_extension_changes().await?;
+            let actions = self
+                .loaded_extensions
+                .host
+                .drain_pending_lifecycle_action_metadata();
+            if actions.is_empty() {
+                break;
+            }
+            for request in actions {
+                let action = request.payload.clone();
+                let replaces_runtime = matches!(
+                    action.get("type").and_then(serde_json::Value::as_str),
+                    Some("new_session" | "fork" | "switch_session" | "reload")
+                );
+                results.push(
+                    self.dispatch_extension_action(action, Some(&request))
+                        .await?,
+                );
+                if replaces_runtime {
+                    // Remaining requests belong to the invalidated callback
+                    // context. Do not replay them against the new session.
+                    break;
+                }
+            }
+        }
+        Ok(results)
+    }
+
     /// Execute a single parsed command; returns the JSON lines to write
     /// (responses + streamed events).
     pub async fn handle_command(
+        &mut self,
+        command: RpcCommand,
+        store: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let result = self.handle_command_inner(command, store).await;
+        let action_result = self.dispatch_pending_extension_actions().await;
+        match (result, action_result) {
+            (Err(command_error), Err(action_error)) => Err(format!(
+                "{command_error}; pending extension action failed: {action_error}"
+            )),
+            (Err(command_error), Ok(_)) => Err(command_error),
+            (Ok(()), Ok(_)) => Ok(()),
+            (Ok(()), Err(action_error)) => {
+                // The external bridge has already received its callback
+                // acknowledgement before the mode boundary can mutate the
+                // session. Preserve that command's successful wire response,
+                // but surface the real post-callback failure as an RPC event.
+                store.push(serialize_json_line(&serde_json::json!({
+                    "type": "extension_error",
+                    "event": "host_action",
+                    "error": action_error,
+                })));
+                Ok(())
+            }
+        }
+    }
+
+    async fn handle_command_inner(
         &mut self,
         command: RpcCommand,
         store: &mut Vec<String>,
@@ -1709,39 +2315,13 @@ impl RpcRuntime {
             }
 
             "new_session" => {
-                let parent = command.str_field("parentSession");
-                let session_id = pi_agent::session::new_id();
-                let session = match self
-                    .repo
-                    .create(CreateOptions {
-                        id: Some(session_id.clone()),
-                        cwd: self.cwd.clone(),
-                        parent_session_id: parent,
-                        metadata: None,
-                        fork_options: ForkOptions::Tree,
-                    })
+                match self
+                    .new_session_action(command.str_field("parentSession"), None)
                     .await
                 {
-                    Ok(session) => session,
-                    Err(e) => {
-                        fail(store, &id, &cmd, format!("create session: {e}"));
-                        return Ok(());
-                    }
-                };
-                let meta = session.get_metadata().await;
-                self.session_path = Some(meta.path.clone());
-                self.session_id = session_id.clone();
-                self.session_name = None;
-                self.messages.clear();
-                self.session = session;
-                respond(
-                    store,
-                    success(
-                        id.as_deref(),
-                        &cmd,
-                        Some(serde_json::json!({"cancelled": false})),
-                    ),
-                );
+                    Ok(result) => respond(store, success(id.as_deref(), &cmd, Some(result))),
+                    Err(error) => fail(store, &id, &cmd, error),
+                }
                 Ok(())
             }
 
@@ -1776,20 +2356,22 @@ impl RpcRuntime {
                 let model = self.models.get_model(&provider_name, &model_id);
                 match model {
                     Some(model) => {
-                        let thinking_level = configured_thinking_level(&self.settings, &model);
-                        self.provider = provider_name.clone();
-                        self.model = model.clone();
-                        self.thinking_level = thinking_level;
-                        respond(
-                            store,
-                            success(
-                                id.as_deref(),
-                                &cmd,
-                                Some(
-                                    serde_json::to_value(model).unwrap_or(serde_json::Value::Null),
+                        let model = model.clone();
+                        let result = self.apply_model_state(model.clone(), true).await;
+                        match result {
+                            Ok(()) => respond(
+                                store,
+                                success(
+                                    id.as_deref(),
+                                    &cmd,
+                                    Some(
+                                        serde_json::to_value(model)
+                                            .unwrap_or(serde_json::Value::Null),
+                                    ),
                                 ),
                             ),
-                        );
+                            Err(error) => fail(store, &id, &cmd, error),
+                        }
                         Ok(())
                     }
                     None => {
@@ -1813,15 +2395,17 @@ impl RpcRuntime {
                     Some(idx) if !available.is_empty() => {
                         let next = available[(idx + 1) % available.len()].clone();
                         let thinking_level = configured_thinking_level(&self.settings, &next);
-                        self.provider = next.provider.clone();
-                        self.model = next.clone();
-                        self.thinking_level = thinking_level;
-                        let data = serde_json::json!({
-                            "model": next,
-                            "thinkingLevel": thinking_level.as_str(),
-                            "isScoped": false,
-                        });
-                        respond(store, success(id.as_deref(), &cmd, Some(data)));
+                        match self.apply_model_state(next.clone(), true).await {
+                            Ok(()) => {
+                                let data = serde_json::json!({
+                                    "model": next,
+                                    "thinkingLevel": thinking_level.as_str(),
+                                    "isScoped": false,
+                                });
+                                respond(store, success(id.as_deref(), &cmd, Some(data)));
+                            }
+                            Err(error) => fail(store, &id, &cmd, error),
+                        }
                         Ok(())
                     }
                     _ => {
@@ -1858,7 +2442,13 @@ impl RpcRuntime {
                     .parse::<pi_ai::types::ModelThinkingLevel>()
                     .unwrap_or(pi_ai::types::ModelThinkingLevel::Off);
                 let previous = self.thinking_level;
-                self.thinking_level = pi_ai::model::clamp_thinking_level(&self.model, parsed);
+                match self.apply_thinking_level(parsed, true).await {
+                    Ok(()) => {}
+                    Err(error) => {
+                        fail(store, &id, &cmd, error);
+                        return Ok(());
+                    }
+                }
                 if self.thinking_level != previous {
                     store.push(serialize_json_line(&serde_json::json!({
                         "type": "thinking_level_changed",
@@ -1884,7 +2474,10 @@ impl RpcRuntime {
                     None => 0,
                 };
                 let previous = self.thinking_level;
-                self.thinking_level = available[next_idx];
+                if let Err(error) = self.apply_thinking_level(available[next_idx], true).await {
+                    fail(store, &id, &cmd, error);
+                    return Ok(());
+                }
                 if self.thinking_level != previous {
                     store.push(serialize_json_line(&serde_json::json!({
                         "type": "thinking_level_changed",
@@ -2279,16 +2872,9 @@ impl RpcRuntime {
                     fail(store, &id, &cmd, "missing sessionPath".to_string());
                     return Ok(());
                 };
-                match self.load_session(&session_path).await {
-                    Ok(()) => {
-                        respond(
-                            store,
-                            success(
-                                id.as_deref(),
-                                &cmd,
-                                Some(serde_json::json!({"cancelled": false})),
-                            ),
-                        );
+                match self.load_session_result(&session_path, None).await {
+                    Ok(result) => {
+                        respond(store, success(id.as_deref(), &cmd, Some(result)));
                         Ok(())
                     }
                     Err(e) => {
@@ -2303,16 +2889,19 @@ impl RpcRuntime {
                     fail(store, &id, &cmd, "missing entryId".to_string());
                     return Ok(());
                 };
-                match self.fork_session(Some(entry_id)).await {
-                    Ok(selected_text) => {
+                match self
+                    .fork_session(entry_id, ForkPosition::Before, None)
+                    .await
+                {
+                    Ok(result) => {
                         respond(
                             store,
                             success(
                                 id.as_deref(),
                                 &cmd,
                                 Some(serde_json::json!({
-                                    "text": selected_text.unwrap_or_default(),
-                                    "cancelled": false
+                                    "text": result.selected_text.unwrap_or_default(),
+                                    "cancelled": result.cancelled
                                 })),
                             ),
                         );
@@ -2326,7 +2915,7 @@ impl RpcRuntime {
             }
 
             "clone" => {
-                if self.session.get_leaf_id().await.ok().flatten().is_none() {
+                let Some(entry_id) = self.session.get_leaf_id().await.ok().flatten() else {
                     fail(
                         store,
                         &id,
@@ -2334,15 +2923,15 @@ impl RpcRuntime {
                         "Cannot clone session: no current entry selected".to_string(),
                     );
                     return Ok(());
-                }
-                match self.fork_session(None).await {
-                    Ok(_) => {
+                };
+                match self.fork_session(entry_id, ForkPosition::At, None).await {
+                    Ok(result) => {
                         respond(
                             store,
                             success(
                                 id.as_deref(),
                                 &cmd,
-                                Some(serde_json::json!({"cancelled": false})),
+                                Some(serde_json::json!({"cancelled": result.cancelled})),
                             ),
                         );
                         Ok(())
@@ -2515,10 +3104,23 @@ impl RpcRuntime {
         }
     }
 
+    #[cfg(test)]
+    #[cfg(test)]
     async fn load_session(&mut self, path: &str) -> Result<(), String> {
+        self.load_session_result(path, None).await.map(|_| ())
+    }
+
+    async fn load_session_result(
+        &mut self,
+        path: &str,
+        request: Option<&PendingHostAction>,
+    ) -> Result<serde_json::Value, String> {
         // Load directly from the supplied path rather than looking it up in
         // the current session root: RPC clients may switch to a session from
         // another cwd/session directory.
+        if !self.session_before_switch_allowed("resume", Some(path))? {
+            return Ok(serde_json::json!({"cancelled": true}));
+        }
         crate::core::session_migration::migrate_legacy_session_file(std::path::Path::new(path))
             .map_err(|e| format!("migrate legacy session {path:?}: {e}"))?;
         let storage = pi_agent::session::JsonlSessionStorage::load(
@@ -2528,17 +3130,63 @@ impl RpcRuntime {
         .await
         .map_err(|e| format!("failed to open session {path:?}: {e}"))?;
         let session = JsonlSession::new(storage);
-        let meta = session.get_metadata().await;
-        self.session = session;
-        self.session_path = Some(meta.path);
-        self.session_id = meta.id;
-        self.session_name = self.session.get_name().await;
-        self.messages = self.load_context_messages().await?;
-        Ok(())
+        let previous_session_file = self.session_path.clone();
+        let target_session_file = session.get_metadata().await.path;
+        let target_session_id = session.get_metadata().await.id;
+        self.replace_session_with_extensions(
+            session,
+            "resume",
+            previous_session_file,
+            request.map(|request| {
+                (
+                    request,
+                    serde_json::json!({
+                        "cancelled": false,
+                        "result": "session-switched",
+                        "sessionFile": target_session_file,
+                        "sessionId": target_session_id,
+                    }),
+                )
+            }),
+        )
+        .await?;
+        Ok(serde_json::json!({"cancelled": false}))
     }
 
-    async fn fork_session(&mut self, entry_id: Option<String>) -> Result<Option<String>, String> {
-        let selected_text = if let Some(entry_id) = entry_id.as_deref() {
+    fn session_fork_allowed(&self, entry_id: &str, position: ForkPosition) -> Result<bool, String> {
+        let position_name = match position {
+            ForkPosition::Before => "before",
+            ForkPosition::At => "at",
+        };
+        match self
+            .loaded_extensions
+            .runner
+            .emit_session_before_fork(entry_id, position_name)
+        {
+            Ok(cancelled) => Ok(!cancelled),
+            Err(errors) => Err(Self::extension_lifecycle_error(
+                "session_before_fork",
+                errors,
+            )),
+        }
+    }
+
+    async fn fork_session(
+        &mut self,
+        entry_id: String,
+        position: ForkPosition,
+        request: Option<&PendingHostAction>,
+    ) -> Result<ForkSessionResult, String> {
+        // Upstream emits this before entry lookup. This preserves the
+        // cancellation contract even for a stale/missing entry id.
+        if !self.session_fork_allowed(&entry_id, position)? {
+            return Ok(ForkSessionResult {
+                selected_text: None,
+                cancelled: true,
+            });
+        }
+
+        let selected_text = if position == ForkPosition::Before {
             let entries = self.get_entries().await?;
             let entry = entries
                 .iter()
@@ -2554,26 +3202,11 @@ impl RpcRuntime {
         } else {
             None
         };
-        let metadata = SessionMetadata {
-            id: self.session_id.clone(),
-            created_at: 0,
-            cwd: self.cwd.clone(),
-            path: self.session_path.clone().unwrap_or_default(),
-            modified_at: 0,
-            source_format: 4,
-            parent_session_id: None,
-            legacy_parent_session_path: None,
-            metadata: None,
-        };
-        let fork_options = match &entry_id {
-            Some(entry_id) => ForkOptions::Branch {
-                entry_id: Some(entry_id.clone()),
-                position: None,
-            },
-            None => ForkOptions::Branch {
-                entry_id: None,
-                position: None,
-            },
+        let metadata = self.session.get_metadata().await;
+        let previous_session_file = self.session_path.clone();
+        let fork_options = ForkOptions::Branch {
+            entry_id: Some(entry_id),
+            position: Some(position),
         };
         let session = self
             .repo
@@ -2589,13 +3222,30 @@ impl RpcRuntime {
             )
             .await
             .map_err(|e| format!("fork failed: {e}"))?;
-        let meta = session.get_metadata().await;
-        self.session = session;
-        self.session_path = Some(meta.path);
-        self.session_id = meta.id;
-        self.session_name = self.session.get_name().await;
-        self.messages = self.load_context_messages().await?;
-        Ok(selected_text)
+        let target_session_file = session.get_metadata().await.path;
+        let target_session_id = session.get_metadata().await.id;
+        self.replace_session_with_extensions(
+            session,
+            "fork",
+            previous_session_file,
+            request.map(|request| {
+                (
+                    request,
+                    serde_json::json!({
+                        "text": selected_text.clone(),
+                        "cancelled": false,
+                        "result": "session-forked",
+                        "sessionFile": target_session_file,
+                        "sessionId": target_session_id,
+                    }),
+                )
+            }),
+        )
+        .await?;
+        Ok(ForkSessionResult {
+            selected_text,
+            cancelled: false,
+        })
     }
 }
 
@@ -3214,10 +3864,190 @@ pub async fn run_rpc_mode(args: &Args, settings: SettingsManager) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
+    use crate::core::extensions::ExtensionHostActions;
+
     use super::*;
 
     async fn runtime_for_test() -> RpcRuntime {
         runtime_for_test_with_settings(SettingsManager::in_memory(Default::default())).await
+    }
+
+    #[tokio::test]
+    async fn rpc_fork_cancellation_happens_before_entry_validation() {
+        let mut runtime = runtime_for_test().await;
+        let events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let events_for_handler = Arc::clone(&events);
+        let handler = Arc::new(
+            move |_: &crate::core::extensions::ExtensionContext, event: &serde_json::Value| {
+                events_for_handler.lock().unwrap().push(event.clone());
+                Ok(Some(serde_json::json!({"cancel": true})))
+            },
+        ) as crate::core::extensions::HandlerFn;
+        let mut extension = crate::core::extensions::Extension {
+            path: "rpc-fork-hook.js".to_string(),
+            ..Default::default()
+        };
+        extension
+            .handlers
+            .insert("session_before_fork".to_string(), vec![handler]);
+        let extension_runtime = Arc::new(Mutex::new(
+            crate::core::extensions::types::ExtensionRuntime::new(),
+        ));
+        let runner = Arc::new(crate::core::extensions::ExtensionRunner::new(
+            vec![extension],
+            Arc::clone(&extension_runtime),
+            runtime.cwd.clone(),
+        ));
+        runtime.loaded_extensions = LoadedExtensions {
+            runner,
+            host: Arc::new(crate::core::extensions::ExtensionHostState::new(
+                None, "off",
+            )),
+            runtime: extension_runtime,
+            errors: Vec::new(),
+            resources: crate::core::extensions::ResourceDiscovery::default(),
+        };
+
+        let mut store = Vec::new();
+        runtime
+            .handle_command(
+                RpcCommand::parse(serde_json::json!({
+                    "id": "fork",
+                    "type": "fork",
+                    "entryId": "missing-entry"
+                }))
+                .unwrap(),
+                &mut store,
+            )
+            .await
+            .unwrap();
+
+        let response: serde_json::Value = serde_json::from_str(store[0].trim()).unwrap();
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"]["cancelled"], true);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![serde_json::json!({
+                "type": "session_before_fork",
+                "entryId": "missing-entry",
+                "position": "before"
+            })]
+        );
+    }
+
+    #[tokio::test]
+    async fn rpc_fork_success_shuts_down_old_runner_before_rebinding() {
+        let mut runtime = runtime_for_test().await;
+        run_test_prompt(&mut runtime, "hello").await;
+        let previous_session_file = runtime.session_path.clone().unwrap();
+        let entry_id = runtime
+            .get_entries()
+            .await
+            .unwrap()
+            .iter()
+            .find(|entry| entry.as_message().is_some())
+            .map(|entry| entry.id().to_string())
+            .unwrap();
+
+        let events = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let events_for_handler = Arc::clone(&events);
+        let handler = Arc::new(
+            move |_: &crate::core::extensions::ExtensionContext, event: &serde_json::Value| {
+                events_for_handler.lock().unwrap().push(event.clone());
+                Ok(None)
+            },
+        ) as crate::core::extensions::HandlerFn;
+        let mut extension = crate::core::extensions::Extension {
+            path: "rpc-fork-order.js".to_string(),
+            ..Default::default()
+        };
+        for event_type in ["session_before_fork", "session_shutdown", "session_start"] {
+            extension
+                .handlers
+                .insert(event_type.to_string(), vec![Arc::clone(&handler)]);
+        }
+        let extension_runtime = Arc::new(Mutex::new(
+            crate::core::extensions::types::ExtensionRuntime::new(),
+        ));
+        runtime.loaded_extensions = LoadedExtensions {
+            runner: Arc::new(crate::core::extensions::ExtensionRunner::new(
+                vec![extension],
+                Arc::clone(&extension_runtime),
+                runtime.cwd.clone(),
+            )),
+            host: Arc::new(crate::core::extensions::ExtensionHostState::new(
+                None, "off",
+            )),
+            runtime: extension_runtime,
+            errors: Vec::new(),
+            resources: crate::core::extensions::ResourceDiscovery::default(),
+        };
+        let old_runner = runtime.loaded_extensions.runner.clone();
+
+        let mut store = Vec::new();
+        runtime
+            .handle_command(
+                RpcCommand::parse(serde_json::json!({
+                    "id": "fork",
+                    "type": "fork",
+                    "entryId": entry_id
+                }))
+                .unwrap(),
+                &mut store,
+            )
+            .await
+            .unwrap();
+
+        let response: serde_json::Value = serde_json::from_str(store[0].trim()).unwrap();
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"]["cancelled"], false);
+        let target_session_file = runtime.session_path.clone().unwrap();
+        let events = events.lock().unwrap();
+        assert_eq!(events[0]["type"], "session_before_fork");
+        assert_eq!(events[0]["position"], "before");
+        assert_eq!(events[1]["type"], "session_shutdown");
+        assert_eq!(events[1]["reason"], "fork");
+        assert_eq!(events[1]["targetSessionFile"], target_session_file);
+        assert_eq!(events.len(), 2);
+        assert!(!Arc::ptr_eq(&old_runner, &runtime.loaded_extensions.runner));
+        assert_ne!(
+            runtime.session_path.as_deref(),
+            Some(previous_session_file.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn rpc_dispatches_queued_new_session_action_and_rebinds_runtime() {
+        let mut runtime = runtime_for_test().await;
+        let previous_session_id = runtime.session_id.clone();
+        let previous_session_path = runtime.session_path.clone();
+        let old_runner = runtime.loaded_extensions.runner.clone();
+        old_runner.set_flag_value("rpc-preserved-flag", serde_json::json!("kept"));
+
+        runtime
+            .loaded_extensions
+            .host
+            .dispatch(
+                crate::core::extensions::ExtensionHostAction::NewSession,
+                &serde_json::json!({"options": {}}),
+            )
+            .unwrap();
+
+        let results = runtime.dispatch_pending_extension_actions().await.unwrap();
+
+        assert_eq!(results, vec![serde_json::json!({"cancelled": false})]);
+        assert_ne!(runtime.session_id, previous_session_id);
+        assert_ne!(runtime.session_path, previous_session_path);
+        assert!(!Arc::ptr_eq(&old_runner, &runtime.loaded_extensions.runner));
+        assert_eq!(
+            runtime
+                .loaded_extensions
+                .runner
+                .get_flag_values()
+                .get("rpc-preserved-flag"),
+            Some(&serde_json::json!("kept"))
+        );
+        assert!(old_runner.emit_session_start("stale").is_err());
     }
 
     async fn runtime_for_test_with_settings(settings: SettingsManager) -> RpcRuntime {
@@ -3579,6 +4409,69 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(store[0].trim()).unwrap();
         assert_eq!(v["success"], true);
         assert_eq!(v["data"]["id"], "gemini-2.5-flash");
+    }
+
+    #[tokio::test]
+    async fn extension_model_and_tool_requests_update_next_rpc_turn() {
+        let mut runtime = runtime_for_test().await;
+        // The shared RPC fixture disables tools for hermetic prompt tests;
+        // this test specifically exercises the active-tool mutation path, so
+        // opt the built-in catalog back in for its isolated runtime.
+        runtime.tools_enabled = true;
+        runtime.builtin_tools_enabled = true;
+        runtime.refresh_extension_catalog();
+        let target = runtime
+            .models
+            .get_model("google", "gemini-2.5-flash")
+            .expect("test model is in the builtin catalog");
+        runtime
+            .loaded_extensions
+            .host
+            .dispatch_with_outcome(
+                crate::core::extensions::ExtensionHostAction::SetModel,
+                &serde_json::json!({"model": target}),
+            )
+            .unwrap();
+        runtime
+            .loaded_extensions
+            .host
+            .dispatch_with_outcome(
+                crate::core::extensions::ExtensionHostAction::SetActiveTools,
+                &serde_json::json!({"toolNames": ["read"]}),
+            )
+            .unwrap();
+
+        runtime
+            .dispatch_pending_extension_actions()
+            .await
+            .expect("host requests should be applied");
+
+        assert_eq!(runtime.model.provider, "google");
+        assert_eq!(runtime.model.id, "gemini-2.5-flash");
+        assert_eq!(runtime.loaded_extensions.host.active_tools(), vec!["read"]);
+        assert!(runtime
+            .loaded_extensions
+            .host
+            .requested_model_change()
+            .is_none());
+        assert!(runtime
+            .loaded_extensions
+            .host
+            .requested_active_tools()
+            .is_none());
+
+        let prompt = runtime.prepare_prompt_run("next turn");
+        assert_eq!(prompt.config.model.provider, "google");
+        assert_eq!(prompt.config.model.id, "gemini-2.5-flash");
+        assert_eq!(
+            prompt
+                .context
+                .tools
+                .iter()
+                .map(|tool| tool.tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["read"]
+        );
     }
 
     #[tokio::test]
@@ -4533,7 +5426,7 @@ mod tests {
         );
         let html = std::fs::read_to_string(&out).unwrap();
         assert!(html.starts_with("<!DOCTYPE html>"));
-        assert!(html.contains("Session Export"));
+        assert!(html.contains("Static zero-JavaScript export"));
         assert!(html.contains("message"));
         std::fs::remove_file(&out).ok();
         let _ = session_path;
@@ -4756,6 +5649,7 @@ mod tests {
                 if value.get("firstKeptEntryId").is_some() {
                     value["firstKeptEntryId"] = serde_json::json!("<entry-id>");
                 }
+                normalize_compaction_costs(&mut value);
                 value
             }
             "get_session_stats" => {
@@ -4820,6 +5714,45 @@ mod tests {
         }
     }
 
+    fn normalize_compaction_costs(value: &mut serde_json::Value) {
+        if let Some(cost) = value
+            .get_mut("usage")
+            .and_then(|usage| usage.get_mut("cost"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for amount in cost.values_mut() {
+                if amount.as_f64() == Some(0.0) {
+                    *amount = serde_json::json!(0);
+                }
+            }
+        }
+    }
+
+    fn normalize_rpc_error(error: &str) -> String {
+        fn is_uuid(value: &str) -> bool {
+            value.len() == 36
+                && value.chars().enumerate().all(|(index, character)| {
+                    character.is_ascii_hexdigit()
+                        || matches!(index, 8 | 13 | 18 | 23) && character == '-'
+                })
+        }
+
+        error
+            .split_whitespace()
+            .map(|token| {
+                if ["model-", "thinking-"]
+                    .iter()
+                    .any(|prefix| token.strip_prefix(prefix).is_some_and(is_uuid))
+                {
+                    "<entry-id>"
+                } else {
+                    token
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     fn rpc_wire_signature(value: &serde_json::Value) -> serde_json::Value {
         if value["type"] == "response" {
             let mut signature = serde_json::json!({
@@ -4833,7 +5766,12 @@ mod tests {
                     signature["data"] = data_signature(value["command"].as_str().unwrap(), data);
                 }
             } else {
-                signature["error"] = value["error"].clone();
+                signature["error"] = value
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .map(normalize_rpc_error)
+                    .map(serde_json::Value::String)
+                    .unwrap_or_else(|| value["error"].clone());
             }
             return signature;
         }
@@ -4863,6 +5801,7 @@ mod tests {
                 if value["result"].get("firstKeptEntryId").is_some() {
                     value["result"]["firstKeptEntryId"] = serde_json::json!("<entry-id>");
                 }
+                normalize_compaction_costs(&mut value["result"]);
                 value
             }
             "tool_execution_start" => serde_json::json!({
@@ -5557,7 +6496,7 @@ mod tests {
         .await;
         capture_rpc_command(
             &mut runtime,
-            "clone.success",
+            "clone.failure",
             serde_json::json!({"id":"clone","type":"clone"}),
             &mut transcript,
         )

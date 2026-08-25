@@ -29,14 +29,27 @@ mod unix {
             let agent_dir = home.join(".pi").join("agent");
             let project = root.join("project");
             let raw_log = root.join("tmux-output.log");
-            fs::create_dir_all(agent_dir.join("extensions")).unwrap();
-            fs::create_dir_all(project.join(".pi").join("extensions")).unwrap();
+            fs::create_dir_all(agent_dir.join("skills").join("alpha")).unwrap();
+            fs::create_dir_all(agent_dir.join("skills").join("beta")).unwrap();
+            fs::create_dir_all(project.join(".pi").join("skills").join("project")).unwrap();
 
-            fs::write(agent_dir.join("extensions").join("alpha.ts"), "export {}\n").unwrap();
-            fs::write(agent_dir.join("extensions").join("beta.ts"), "export {}\n").unwrap();
             fs::write(
-                project.join(".pi").join("extensions").join("project.ts"),
-                "export {}\n",
+                agent_dir.join("skills").join("alpha").join("SKILL.md"),
+                "# Alpha\n",
+            )
+            .unwrap();
+            fs::write(
+                agent_dir.join("skills").join("beta").join("SKILL.md"),
+                "# Beta\n",
+            )
+            .unwrap();
+            fs::write(
+                project
+                    .join(".pi")
+                    .join("skills")
+                    .join("project")
+                    .join("SKILL.md"),
+                "# Project\n",
             )
             .unwrap();
 
@@ -202,8 +215,8 @@ mod unix {
 
         let initial = session.wait_for(|capture| {
             capture.contains("Global Resources")
-                && capture.contains("[x] alpha.ts")
-                && capture.contains("[x] beta.ts")
+                && capture.contains("[x] alpha")
+                && capture.contains("[x] beta")
         });
         let initial_lines = normalized_lines(&initial);
         assert!(
@@ -215,9 +228,9 @@ mod unix {
                     "Search:",
                     "",
                     "  User (~/.pi/agent/)",
-                    "    Extensions",
-                    ">       [x] alpha.ts",
-                    "        [x] beta.ts",
+                    "    Skills",
+                    ">       [x] alpha",
+                    "        [x] beta",
                     "",
                     "↑/↓ select · PgUp/PgDn page · Space toggle · Tab switch scope · Esc close",
                 ]
@@ -228,26 +241,25 @@ mod unix {
         // Resize while the selector is active. The next event must update the
         // backend dimensions without closing the component or losing rows.
         session.resize("70", "18");
-        let resized = session.wait_for(|capture| {
-            capture.contains("Global Resources") && capture.contains("alpha.ts")
-        });
+        let resized = session
+            .wait_for(|capture| capture.contains("Global Resources") && capture.contains("alpha"));
         assert!(
-            resized.contains("beta.ts"),
+            resized.contains("beta"),
             "resize lost selector rows:\n{resized}"
         );
 
         // Down selects the second row and Space persists a global unload.
         session.send_key("Down");
-        let selected = session.wait_for(|capture| capture.contains(">       [x] beta.ts"));
+        let selected = session.wait_for(|capture| capture.contains(">       [x] beta"));
         assert!(
-            selected.contains("alpha.ts"),
+            selected.contains("alpha"),
             "keyboard navigation lost alpha row:\n{selected}"
         );
         session.send_key("Space");
-        session.wait_for(|capture| capture.contains(">       [ ] beta.ts"));
+        session.wait_for(|capture| capture.contains(">       [ ] beta"));
         let global_settings = sandbox.agent_dir.join("settings.json");
-        let global_json = wait_for_file(&global_settings, "-extensions/beta.ts");
-        assert!(global_json.contains("-extensions/beta.ts"));
+        let global_json = wait_for_file(&global_settings, "-skills/beta/SKILL.md");
+        assert!(global_json.contains("-skills/beta/SKILL.md"));
 
         // Tab enters project scope, Up returns to the inherited alpha row,
         // and Space records a project-local unload override.
@@ -260,14 +272,15 @@ mod unix {
             "-{}",
             sandbox
                 .agent_dir
-                .join("extensions")
-                .join("alpha.ts")
+                .join("skills")
+                .join("alpha")
+                .join("SKILL.md")
                 .display()
         );
         let project_json = wait_for_file(&project_settings, &project_needle);
         assert!(project_json.contains(&project_needle));
         let project_view =
-            session.wait_for(|capture| capture.contains("[-] alpha.ts  project unload"));
+            session.wait_for(|capture| capture.contains("[-] alpha  project unload"));
         assert!(project_view.contains("Project Local Resources"));
 
         session.send_key("Escape");

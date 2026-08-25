@@ -14,7 +14,7 @@ fi
 requires_docs=0
 while IFS= read -r path; do
   case "$path" in
-    README.md|PLAN.md|CONVERSION-LEDGER.md|HANDOFF.md|.githooks/*|.github/*|docs/*|scripts/conversion-progress.mjs)
+    README.md|PLAN.md|CONVERSION-LEDGER.md|HANDOFF.md|.githooks/*|.github/*|docs/*)
       ;;
     *)
       requires_docs=1
@@ -31,7 +31,7 @@ if [[ "$requires_docs" -eq 1 ]]; then
     fi
   done
 
-  progress_output="$(node scripts/conversion-progress.mjs)"
+  progress_output="$(/home/mustbearnold/.cargo/bin/cargo run -p pi-coding-agent --offline --quiet --bin conversion_audit -- progress)"
   progress_percent="$(sed -E 's/^Conversion progress: ([0-9]+\.[0-9]+)%.*/\1%/p' <<< "$progress_output")"
   if [[ -z "$progress_percent" ]]; then
     echo "pre-commit: unable to parse conversion-progress output" >&2

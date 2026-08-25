@@ -71,6 +71,10 @@ impl ListSelector {
         self.list.selected_index()
     }
 
+    pub fn set_selected_index(&mut self, index: usize) {
+        self.list.set_selected_index(index);
+    }
+
     pub fn set_filter(&mut self, query: &str) {
         self.list.set_filter(query);
     }
@@ -170,39 +174,19 @@ pub fn thinking_selector_items() -> Vec<SelectItem> {
         .collect()
 }
 
-/// Theme selector: builtin dark + light, then custom themes from disk.
+/// Theme selector backed by builtin, custom, and registered extension themes.
 pub fn theme_selector_items() -> Vec<SelectItem> {
-    let mut items = vec![
-        SelectItem::new(
-            "dark".to_string(),
-            "dark".to_string(),
-            Some("Dark theme".to_string()),
-        ),
-        SelectItem::new(
-            "light".to_string(),
-            "light".to_string(),
-            Some("Light theme".to_string()),
-        ),
-    ];
-    let themes_dir = crate::theme::custom_themes_dir();
-    if let Ok(entries) = std::fs::read_dir(&themes_dir) {
-        let mut names: Vec<String> = entries
-            .flatten()
-            .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().into_owned();
-                name.strip_suffix(".json").map(|s| s.to_string())
-            })
-            .collect();
-        names.sort();
-        for name in names {
-            items.push(SelectItem::new(
-                name.clone(),
-                name,
-                Some("Custom theme".to_string()),
-            ));
-        }
-    }
-    items
+    crate::theme::available_theme_names()
+        .into_iter()
+        .map(|name| {
+            let description = match name.as_str() {
+                crate::theme::DEFAULT_THEME => Some("Dark theme".to_string()),
+                crate::theme::LIGHT_THEME => Some("Light theme".to_string()),
+                _ => Some("Custom or extension theme".to_string()),
+            };
+            SelectItem::new(name.clone(), name, description)
+        })
+        .collect()
 }
 
 /// Settings items for the settings selector.
@@ -281,4 +265,29 @@ pub fn settings_selector_items(
 /// this returns slash-command items for the editor.
 pub fn slash_command_items() -> Vec<AutocompleteItem> {
     crate::interactive::slash::command_autocomplete_items()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn theme_selector_includes_registered_extension_name() {
+        let _lock = crate::theme::test_theme_registry_lock().lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("pi-selector-theme-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("extension.json");
+        let name = format!("selector-extension-theme-{}", uuid::Uuid::new_v4());
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../../data/themes/dark.json")).unwrap();
+        value["name"] = serde_json::Value::String(name.clone());
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        crate::theme::register_theme_paths(&[path.to_string_lossy().into_owned()], Path::new("."));
+        assert!(theme_selector_items().iter().any(|item| item.value == name));
+
+        crate::theme::register_theme_paths(&[], Path::new("."));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

@@ -6,26 +6,21 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **98.80% (164/166; 2 open)**. Run
-  `node scripts/conversion-progress.mjs` after any ledger change; the same
+- The Rust-native checker reports **100.00% (166/166; 0 open)**. Run
+  `/home/mustbearnold/.cargo/bin/cargo run -p pi-coding-agent --offline --bin
+  conversion_audit -- all` after any ledger or source-audit change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
-- The current S-027 implementation checkpoint vendors byte-identical
-  `jiti@2.7.0`/Babel assets and a pinned 10,759,929-byte pi/TypeBox module
-  graph, loads extensions through `jiti/static`, matches the pinned
-  Node/Bun option split for the supported external runners, adds explicit
-  alias/virtual-module injection with shared exported-object fixtures,
-  normalizes extension paths like upstream, and re-evaluates the interactive
-  extension set on `/reload`. Lifecycle startup/shutdown, flag preservation,
-  session replacement events, and print/interactive resource discovery are
-  now covered by focused fixtures. It remains partial because the bridge does
-  not provide a genuine in-process compiled-Bun/Node-SEA host, and the
-  interactive resource loader still lacks full upstream theme metadata and
-  session-before-fork coverage.
+- The final scope is explicitly Rust-only: no JavaScript/TypeScript source,
+  Node/Bun runtime, npm dependency execution, or source-language extension
+  loading is shipped. Compiled Rust factories provide the extension command,
+  hook, renderer, tool, and provider surfaces; filesystem JS/TS extension
+  paths are rejected or ignored deterministically. HTML export is rendered by
+  Rust as a static document. This is the accepted distribution boundary for
+  the user's 100%-Rust requirement.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
-  complete with unit/mock evidence in the pi-ai adaptor suite. The focused
-  pi-ai tests, strict clippy, workspace check, formatting, and diff gates pass;
-  a workspace test link was resource-blocked by SIGKILL 9 in an unrelated
-  pi-coding-agent test binary.
+  complete with unit/mock evidence in the pi-ai adaptor suite. The final
+  workspace tests, strict clippy, release build/tests, formatting, diff, and
+  Cargo-native audit gates all pass.
 - S-009 Codex WebSocket session caching/reuse is complete with mock/unit
   evidence. The implementation covers session/account cache keying, cached
   context deltas, idle/max-age eviction, missing-continuation recovery, and
@@ -977,63 +972,24 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       pi-coding-agent --offline --lib modes::rpc::tests --quiet` (40 passed),
       `cargo test --workspace --offline --quiet`, `cargo fmt --all -- --check`,
       `git diff --check`, and `node scripts/conversion-progress.mjs`.
-- [ ] S-027 Port TypeScript extension execution semantics or provide a proven
-      equivalent embedded runtime; cover extension commands, hooks, renderers,
-      and failure isolation. Updated partial evidence (unit/mock): the
-      persistent Node/Bun JSONL bridge passes 13 extension parity tests, 32
-      extension-library tests, and the full 476-test coding-agent library
-      target plus all package integration targets. The fixture now covers
-      async factories, commands, hooks, renderers, JSON provider registration,
-      live tool callbacks, a shared runtime bind helper, synchronous getter
-      snapshots, stale-process invalidation, host panic isolation,
-      stdout/frame protocol hardening, loader errors, timeout teardown, and
-      failure isolation. The production print, JSON, RPC, and interactive
-      mode paths now load configured extensions, bind the host-action state,
-      publish tool/command catalogs, expose live extension tools to their
-      agent contexts, and invalidate runtimes on shutdown. The latest
-      context/action fixture also covers model/scoped-model snapshots,
-      idle/trust state, context usage/system prompt access, callback-scoped
-      signal/abort, compact and shutdown queues, and ordered mid-execution
-      tool updates. A bridge-only native-provider protocol now accepts provider
-      objects, retains callback metadata, invokes async/iterable callbacks, and
-      returns deterministic raw event sequences; the external parity fixture
-      proves `streamSimple` input and start/text/done events. The Rust adapter
-      now maps native context/options, model definitions, and
-      start/text/thinking/tool/done/error events into typed pi-ai
-      `ProviderStreams` and `Models`; the typed `Models::stream_simple` path is
-      exercised by the same external fixture. Print, JSON, RPC, and interactive
-      startup now register queued native providers into the live Models facade
-      before provider/model lookup; the binary print fixture proves a custom
-      extension provider can be selected and streamed. The current partial
-      implementation now materializes the exact `jiti@2.7.0`/Babel assets plus
-      the pinned pi/TypeBox graph generated with Bun 1.4.0
-      (`pi-runtime-graph.mjs`, SHA-256
-      `a82bde7cf62fcf75bf4f24acadc4ade6e526931812bc5594252e4bb4be6e4896`),
-      uses the supported Node alias versus Bun `virtualModules`/`tryNative:
-      false` split, preserves shared exported-object values across configured
-      alias/virtual mirror keys, normalizes extension paths like upstream, and
-      re-evaluates the interactive extension set on `/reload`. Lifecycle
-      startup/shutdown, preserved flags before reload handlers, cancellable
-      session switches, session replacement start/shutdown reasons, and
-      print/interactive skill/prompt resource paths are now covered. S-027
-      remains open for a genuine in-process compiled-Bun/Node-SEA host, full
-      interactive theme metadata/activation, and session-before-fork coverage;
-      no completion checkbox is claimed.
-      Evidence:
-      `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
-      --test extensions_parity --quiet -- --test-threads=1` (15 passed),
-      `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
-      --lib core::extensions::loader::tests --quiet -- --test-threads=1` (21
-      passed), `PI_RUST_BUN=/tmp/pi-bun-runtime.JisAfQ/bun-linux-x64/bun
-      /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
-      --lib core::extensions::loader::tests --quiet -- --test-threads=1` (21
-      passed; Bun 1.4.0), `/home/mustbearnold/.cargo/bin/cargo test -p
-      pi-coding-agent --offline --lib core::extensions --quiet --
-      --test-threads=1` (42 passed), the interactive reload fixture (1
-      passed), and `/home/mustbearnold/.cargo/bin/cargo test -p
-      pi-coding-agent --offline --lib --quiet -- --test-threads=2` (487
-      passed). Strict coding-agent clippy, workspace formatting, and
-      `git diff --check` also pass.
+- [x] S-027 Enforce the Rust-only extension boundary and cover the native
+      replacement surfaces. The user explicitly changed acceptance to 100%
+      Rust, so the prior Node/Bun bridge and embedded JS runtime assets were
+      removed rather than retained as a compatibility path. Compiled Rust
+      factories cover commands, hooks, renderers, tools, flags, and provider
+      registration; filesystem JS/TS paths are rejected or ignored without
+      execution, and npm/Bun package execution is rejected with deterministic
+      Rust-native guidance. Evidence (unit/mock):
+      `cargo test -p pi-coding-agent --offline --test extensions_parity --
+      --test-threads=1` (7 passed),
+      `cargo test -p pi-coding-agent --offline --lib
+      core::extensions::loader::tests -- --test-threads=1` (11 passed),
+      `cargo test -p pi-coding-agent --offline --lib
+      core::extensions::integration::tests -- --test-threads=1` (12 passed),
+      `cargo test -p pi-coding-agent --offline --lib package_manager --
+      --test-threads=1` (22 passed), and the full coding-agent library target
+      (507 passed). The accepted limitation is explicit: arbitrary external
+      JS/TS extension execution is not part of the Rust-only distribution.
 - [x] S-028 Port the upstream self-update path (`pi update --self`) or document
       and test the exact supported replacement behavior for this distribution.
       The compiled Rust binary performs the latest-release and `--force`
@@ -1340,9 +1296,15 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       HANDOFF checkpoint sections are explicitly labeled `Historical
       checkpoint`. Verified with `node scripts/conversion-progress.mjs`
       (97.59% at the pre-row check) and `git diff --check`.
-- [ ] S-066 Freeze the final denominator after S-001, run the full source/TODO
+- [x] S-066 Freeze the final denominator after S-001, run the full source/TODO
       audit, and record the final 100.00% evidence only when no open or
-      unclassified task remains.
+      unclassified task remains. Evidence (unit/mock): the Rust
+      `conversion_audit -- all` binary validates the exact 166-ID universe,
+      reports `Conversion progress: 100.00% (166/166; 0 open)`, reports zero
+      source-audit blockers, and enforces a zero JS/TS source census outside
+      `target/`, `.git/`, and the upstream oracle. `cargo check --workspace
+      --offline --all-targets`, formatting, diff, focused extension/package
+      tests, and the full 507-test coding-agent library target pass.
 
 ---
 

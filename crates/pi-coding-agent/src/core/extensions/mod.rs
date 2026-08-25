@@ -18,8 +18,8 @@ pub use loader::{
     load_extensions_with_host_actions, resolve_extension_entries, ExtensionApi,
 };
 pub use runner::{
-    emit_project_trust_event, ExtensionRunner, KeybindingsConfig, ProjectTrustResult,
-    ResourceDiagnostic, ResourceDiscovery,
+    emit_project_trust_event, DiscoveredResource, ExtensionRunner, KeybindingsConfig,
+    ProjectTrustResult, ResourceDiagnostic, ResourceDiscovery,
 };
 pub use types::{
     EntryRenderer, Extension, ExtensionContext, ExtensionError, ExtensionFlag, ExtensionHostAction,

@@ -5,12 +5,14 @@
 //! transcript, slash-command dispatch with model/thinking/theme/settings
 //! selectors, a footer, and the agent turn loop.
 
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pi_agent::harness::{AgentHarness, AgentHarnessOptions, HarnessTool};
 use pi_agent::session::jsonl::repo::CreateOptions;
 use pi_agent::session::session::Session as JsonlSession;
-use pi_agent::session::state::ForkOptions;
+use pi_agent::session::state::{ForkOptions, ForkPosition};
 use pi_agent::session::types::EntryNoStats;
 use pi_agent::session::JsonlSessionRepo;
 use pi_ai::model::Model;
@@ -21,7 +23,8 @@ use crate::args::Args;
 use crate::config;
 use crate::core::extensions::{
     install_tools, load_for_mode, load_for_mode_with_reason_and_flags_and_previous,
-    register_loaded_native_providers, LoadedExtensions, ResourceDiscovery,
+    register_loaded_native_providers, ExtensionHostActions, ExtensionHostState, LoadedExtensions,
+    ResourceDiscovery,
 };
 use crate::core::settings::SettingsManager;
 use crate::interactive as it;
@@ -31,6 +34,7 @@ use crate::interactive::settings_panel::SettingsPanel;
 use crate::interactive::slash::SlashKind;
 use crate::interactive::{Modal, SubmitAction};
 
+use pi_tui::components::select_list::SelectItem;
 use pi_tui::components::{Editor, Markdown, Text};
 use pi_tui::keys::{parse_key, TuiKey};
 
@@ -58,6 +62,7 @@ struct InteractiveRuntime {
     builtin_tools_enabled: bool,
     extensions: LoadedExtensions,
     extension_resources: ResourceDiscovery,
+    prompt_templates: Vec<crate::core::prompt_templates::PromptTemplate>,
     native_provider_ids: Vec<String>,
     extension_args: Args,
     extension_agent_dir: String,
@@ -67,6 +72,9 @@ struct InteractiveRuntime {
     /// session. Session-switch operations (resume/fork/clone) advance it so
     /// the exit persist only appends messages added after the switch.
     persisted_until: usize,
+    /// Extension-requested active tool names, applied when the next actual
+    /// interactive turn builds its tool list.
+    active_tool_names: Option<Vec<String>>,
     /// Serialized session entries used to derive cache notices and cumulative
     /// footer/session usage before the deferred exit persist runs.
     cache_entries: Vec<Value>,
@@ -136,6 +144,9 @@ fn interactive_turn_tools(runtime: &InteractiveRuntime) -> Vec<pi_agent::tools::
         Vec::new()
     };
     install_tools(&runtime.extensions, &mut tools, runtime.tools_enabled);
+    if let Some(active_tool_names) = &runtime.active_tool_names {
+        tools.retain(|tool| active_tool_names.iter().any(|name| name == &tool.tool.name));
+    }
     tools
 }
 
@@ -168,6 +179,53 @@ fn interactive_system_prompt(
     (!sections.is_empty()).then(|| sections.join("\n"))
 }
 
+/// Refresh the process-local theme registry from settings, CLI paths, and
+/// extension-discovered resource paths. The registry is replaced on every
+/// load/reload so removed extension themes cannot remain selectable.
+fn register_interactive_themes(
+    args: &Args,
+    settings: &SettingsManager,
+    resources: &ResourceDiscovery,
+    cwd: &str,
+) {
+    let mut paths = if args.no_themes {
+        Vec::new()
+    } else {
+        settings.get_theme_paths()
+    };
+    paths.extend(args.themes.iter().cloned());
+    let mut sources = paths
+        .into_iter()
+        .map(|path| (path, None))
+        .collect::<Vec<_>>();
+    sources.extend(resources.theme_resources.iter().map(|resource| {
+        (
+            resource.resolved_path(cwd),
+            Some(resource.source_info.clone()),
+        )
+    }));
+    if resources.theme_resources.is_empty() {
+        sources.extend(
+            resources
+                .resolved_theme_paths(cwd)
+                .into_iter()
+                .map(|path| (path, None)),
+        );
+    }
+    let _ = crate::theme::register_theme_sources(&sources, std::path::Path::new(cwd));
+}
+
+fn load_interactive_theme(name: &str) {
+    it::tui_theme::load_theme(name);
+    it::tui_theme::watch_active_theme();
+}
+
+fn load_interactive_theme_checked(name: &str) -> Result<(), String> {
+    it::tui_theme::try_load_theme(name)?;
+    it::tui_theme::watch_active_theme();
+    Ok(())
+}
+
 fn loaded_native_provider_ids(loaded: &LoadedExtensions) -> Vec<String> {
     loaded
         .runtime
@@ -191,21 +249,19 @@ fn reload_extensions(
     settings: &SettingsManager,
     thinking_level: &str,
 ) -> Vec<String> {
+    shutdown_extensions_before_session_replace(runtime, "reload", None);
     replace_extensions(runtime, settings, thinking_level, "reload", None, None)
 }
 
-/// Replace the mode-scoped extension runtime for `/reload` and session
-/// replacement.  This mirrors the upstream teardown order and ensures the
-/// new runtime sees preserved flags before its start/resource events.
-fn replace_extensions(
-    runtime: &mut InteractiveRuntime,
-    settings: &SettingsManager,
-    thinking_level: &str,
+/// Shut down the current extension runtime while it still belongs to the old
+/// session. Replacement callers must invoke this before assigning
+/// `runtime.session`; reload uses the same helper even though its session is
+/// not replaced.
+fn shutdown_extensions_before_session_replace(
+    runtime: &InteractiveRuntime,
     reason: &str,
-    previous_session_file: Option<&str>,
     target_session_file: Option<&str>,
-) -> Vec<String> {
-    let previous_flag_values = runtime.extensions.runner.get_flag_values();
+) {
     let _ = runtime
         .extensions
         .runner
@@ -214,6 +270,20 @@ fn replace_extensions(
         .extensions
         .runner
         .invalidate(Some("interactive extension replacement"));
+}
+
+/// Replace the mode-scoped extension runtime for `/reload` and session
+/// replacement. The caller has already shut down and invalidated the old
+/// runner so no old-session hook can observe replacement state.
+fn replace_extensions(
+    runtime: &mut InteractiveRuntime,
+    settings: &SettingsManager,
+    thinking_level: &str,
+    reason: &str,
+    previous_session_file: Option<&str>,
+    _target_session_file: Option<&str>,
+) -> Vec<String> {
+    let previous_flag_values = runtime.extensions.runner.get_flag_values();
     let reloaded_extensions = load_for_mode_with_reason_and_flags_and_previous(
         &runtime.extension_args,
         settings,
@@ -238,11 +308,23 @@ fn replace_extensions(
     let reloaded_extensions = reloaded_extensions;
     runtime.extension_resources = reloaded_extensions.resources.clone();
     let _old_extensions = std::mem::replace(&mut runtime.extensions, reloaded_extensions);
+    register_interactive_themes(
+        &runtime.extension_args,
+        settings,
+        &runtime.extension_resources,
+        &runtime.cwd,
+    );
     runtime.system_prompt = interactive_system_prompt(
         &runtime.extension_args,
         &runtime.cwd,
         &runtime.extension_agent_dir,
         settings,
+        &runtime.extension_resources,
+    );
+    runtime.prompt_templates = crate::run::load_prompt_templates_for_run(
+        &runtime.extension_args,
+        &runtime.cwd,
+        std::path::Path::new(&runtime.extension_agent_dir),
         &runtime.extension_resources,
     );
     runtime.native_provider_ids = loaded_native_provider_ids(&runtime.extensions);
@@ -281,14 +363,622 @@ fn session_switch_allowed(
     }
 }
 
+fn session_fork_allowed(runtime: &InteractiveRuntime, entry_id: &str, position: &str) -> bool {
+    match runtime
+        .extensions
+        .runner
+        .emit_session_before_fork(entry_id, position)
+    {
+        Ok(true) => false,
+        Ok(false) => true,
+        Err(errors) => {
+            for error in errors {
+                tracing::warn!(
+                    extension = %error.extension_path,
+                    event = %error.event,
+                    error = %error.error,
+                    "extension session-before-fork handler failed"
+                );
+            }
+            true
+        }
+    }
+}
+
+/// Execute an extension command that is not one of the built-in slash
+/// commands. Built-ins deliberately win name conflicts so existing interactive
+/// behavior is unchanged.
+fn execute_interactive_extension_command(
+    runtime: &InteractiveRuntime,
+    submitted: &str,
+) -> Option<String> {
+    let (Some(name), args) = it::slash::parse_invocation(submitted.trim()) else {
+        return None;
+    };
+    if it::slash::find_command(name).is_some() {
+        return None;
+    }
+    let mut runner = runtime.extensions.runner.as_ref().clone();
+    runner.get_command(name)?;
+    let result = runner.execute_command(name, args);
+    Some(match result {
+        Ok(Some(value)) => {
+            let rendered = value.to_string();
+            let rendered = rendered.chars().take(240).collect::<String>();
+            format!("/{name}: {rendered}")
+        }
+        Ok(None) => format!("/{name} completed"),
+        Err(error) => format!("/{name} failed: {error}"),
+    })
+}
+
+/// Build the upstream `/fork` user-message selector from durable session
+/// entries. Forking before a user message is the only valid `before` target;
+/// `/clone` remains the separate current-leaf `at` operation.
+async fn fork_selector_items(
+    session: &JsonlSession<pi_agent::fs::StdFileSystem>,
+) -> Vec<SelectItem> {
+    let entries = session
+        .find_entries(&pi_agent::session::state::EntryQuery {
+            order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or_default();
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let pi_agent::session::types::Entry::Message { id, message, .. } = entry else {
+                return None;
+            };
+            let pi_agent::types::AgentMessage::Core(Message::User(user)) = message else {
+                return None;
+            };
+            let text = pi_agent::agent::user_content_text(&user);
+            if text.trim().is_empty() {
+                return None;
+            }
+            let label = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let label = label.chars().take(80).collect::<String>();
+            Some(SelectItem::new(id, label, Some(text)))
+        })
+        .collect()
+}
+
+/// Execute a selected fork/clone after the cancellable hook has allowed it.
+struct InteractiveForkResult {
+    status: String,
+    /// `/fork` restores the selected user prompt into the editor; `/clone`
+    /// clears it after creating the new session.
+    editor_text: Option<String>,
+}
+
+struct InteractiveForkContext<'a> {
+    settings: &'a SettingsManager,
+    thinking_level: &'a str,
+    transcript_md: &'a Arc<Mutex<Markdown>>,
+    hide_thinking: bool,
+}
+
+async fn execute_interactive_fork(
+    runtime: &mut InteractiveRuntime,
+    command_name: &str,
+    entry_id: String,
+    position: ForkPosition,
+    context: InteractiveForkContext<'_>,
+    lifecycle_request: Option<(
+        Arc<ExtensionHostState>,
+        crate::core::extensions::types::PendingHostAction,
+    )>,
+) -> InteractiveForkResult {
+    let position_name = match position {
+        ForkPosition::Before => "before",
+        ForkPosition::At => "at",
+    };
+    if !session_fork_allowed(runtime, &entry_id, position_name) {
+        if let Some((host, request)) = lifecycle_request.as_ref() {
+            let _ = host.complete_lifecycle_action(
+                request.clone(),
+                json!({"cancelled": true, "context": host.snapshot()}),
+            );
+        }
+        return InteractiveForkResult {
+            status: "session fork cancelled by extension".to_string(),
+            editor_text: None,
+        };
+    }
+
+    let selected_text = if position == ForkPosition::Before {
+        runtime
+            .session
+            .find_entry(&pi_agent::session::state::EntryQuery {
+                id: Some(entry_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .ok()
+            .flatten()
+            .and_then(|entry| match entry {
+                pi_agent::session::types::Entry::Message {
+                    message: pi_agent::types::AgentMessage::Core(Message::User(user)),
+                    ..
+                } => Some(pi_agent::agent::user_content_text(&user)),
+                _ => None,
+            })
+    } else {
+        None
+    };
+    let source_metadata = runtime.session.get_metadata().await;
+    let previous_session_file = source_metadata.path.clone();
+    if runtime.messages.len() > runtime.persisted_until {
+        let pending = runtime.messages[runtime.persisted_until..].to_vec();
+        if let Err(error) = persist_messages_checked(&mut runtime.session, &pending).await {
+            return InteractiveForkResult {
+                status: format!("{command_name} failed: {error}"),
+                editor_text: None,
+            };
+        }
+        runtime.persisted_until = runtime.messages.len();
+    }
+    let new_id = pi_agent::session::new_id();
+    let fork_result = runtime
+        .repo
+        .fork(
+            &source_metadata,
+            CreateOptions {
+                id: Some(new_id.clone()),
+                cwd: runtime.cwd.clone(),
+                parent_session_id: None,
+                metadata: None,
+                fork_options: ForkOptions::Branch {
+                    entry_id: Some(entry_id),
+                    position: Some(position),
+                },
+            },
+        )
+        .await;
+    let mut session = match fork_result {
+        Ok(session) => session,
+        Err(error) => {
+            return InteractiveForkResult {
+                status: format!("{command_name} failed: {error}"),
+                editor_text: None,
+            }
+        }
+    };
+    let target_session_file = session.get_metadata().await.path;
+
+    let (messages, cache_entries) = {
+        let runtime_session = &mut session;
+        let entries = runtime_session
+            .find_entries(&pi_agent::session::state::EntryQuery {
+                order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
+                ..Default::default()
+            })
+            .await
+            .unwrap_or_default();
+        let messages = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                pi_agent::session::types::Entry::Message { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let cache_entries = entries
+            .iter()
+            .filter_map(|entry| serde_json::to_value(entry).ok())
+            .collect::<Vec<_>>();
+        (messages, cache_entries)
+    };
+
+    if let Some((host, request)) = lifecycle_request {
+        let _ = host.complete_lifecycle_action(
+            request,
+            json!({
+                "cancelled": false,
+                "result": "fork-created",
+                "sessionFile": target_session_file.clone(),
+                "sessionId": new_id.clone(),
+                "context": {"sessionFile": target_session_file.clone(), "sessionId": new_id.clone()},
+            }),
+        );
+    }
+    shutdown_extensions_before_session_replace(runtime, "fork", Some(&target_session_file));
+
+    runtime.session = session;
+    runtime.session_id = new_id;
+    runtime.session_name = runtime.session.get_name().await;
+    runtime.messages = messages;
+    runtime.cache_entries = cache_entries;
+    runtime.persisted_until = runtime.messages.len();
+    context
+        .transcript_md
+        .lock()
+        .unwrap()
+        .set_text(it::compose_transcript(
+            &runtime.messages,
+            context.hide_thinking,
+            "",
+        ));
+    let notes = replace_extensions(
+        runtime,
+        context.settings,
+        context.thinking_level,
+        "fork",
+        Some(&previous_session_file),
+        Some(&target_session_file),
+    );
+    let mut status = format!(
+        "{command_name} session {} ({} prior messages)",
+        runtime.session_id.get(..8).unwrap_or(&runtime.session_id),
+        runtime.messages.len()
+    );
+    if !notes.is_empty() {
+        status.push_str(&format!(" (extensions: {})", notes.join("; ")));
+    }
+    InteractiveForkResult {
+        status,
+        editor_text: Some(match position {
+            ForkPosition::Before => selected_text.unwrap_or_default(),
+            ForkPosition::At => String::new(),
+        }),
+    }
+}
+
+/// Consume lifecycle requests emitted by an external extension callback at a
+/// non-reentrant turn boundary. The bridge cannot await a Rust mode while its
+/// callback is active, so the mode owns the actual session mutation here and
+/// reports cancellation or storage failures instead of treating a queued
+/// request as a successful no-op.
+async fn apply_pending_extension_lifecycle_actions(
+    runtime: &mut InteractiveRuntime,
+    settings: &mut SettingsManager,
+    thinking_level: &str,
+    transcript_md: &Arc<Mutex<Markdown>>,
+    hide_thinking: bool,
+) -> Vec<String> {
+    let actions = runtime
+        .extensions
+        .host
+        .drain_pending_lifecycle_action_metadata();
+    let mut notes = Vec::new();
+    for request in actions {
+        let action = request.payload.clone();
+        let action_type = action.get("type").and_then(Value::as_str).unwrap_or("");
+        let options = action.get("options").unwrap_or(&Value::Null);
+        let request_host = runtime.extensions.host.clone();
+        let mut completion_sent = false;
+        let result: Result<String, String> = match action_type {
+            "new_session" => {
+                (async {
+                    if !session_switch_allowed(runtime, "new", None) {
+                        return Err("new session cancelled by extension".to_string());
+                    }
+                    let previous_session_file = runtime.session.get_metadata().await.path;
+                    let new_id = pi_agent::session::new_id();
+                    let parent_session_id = options
+                        .get("parentSession")
+                        .or_else(|| options.get("parentSessionId"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned);
+                    let session = runtime
+                        .repo
+                        .create(CreateOptions {
+                            id: Some(new_id.clone()),
+                            cwd: runtime.cwd.clone(),
+                            parent_session_id,
+                            metadata: None,
+                            fork_options: ForkOptions::Tree,
+                        })
+                        .await
+                        .map_err(|error| format!("new session failed: {error}"))?;
+                    let target_session_file = session.get_metadata().await.path;
+                    let request_host = runtime.extensions.host.clone();
+                    // The replacement callback must observe the target
+                    // session while the old bridge is still alive. Update the
+                    // shared synchronous snapshot before sending completion;
+                    // the durable runtime/session swap follows immediately
+                    // after the callback acknowledgement.
+                    let _ = request_host.dispatch(
+                        crate::core::extensions::ExtensionHostAction::SetSessionName,
+                        &json!({"name": null}),
+                    );
+                    let _ = request_host.complete_lifecycle_action(
+                        request.clone(),
+                        json!({
+                            "cancelled": false,
+                            "result": "new-session-created",
+                            "sessionFile": target_session_file.clone(),
+                            "sessionId": new_id.clone(),
+                            "context": {"sessionFile": target_session_file.clone(), "sessionId": new_id.clone()},
+                            "snapshot": request_host.snapshot(),
+                        }),
+                    );
+                    completion_sent = true;
+                    shutdown_extensions_before_session_replace(
+                        runtime,
+                        "new",
+                        Some(&target_session_file),
+                    );
+                    runtime.session = session;
+                    runtime.session_id = new_id;
+                    runtime.session_name = None;
+                    runtime.messages.clear();
+                    runtime.cache_entries.clear();
+                    runtime.persisted_until = 0;
+                    transcript_md.lock().unwrap().set_text("");
+                    let reload_notes = replace_extensions(
+                        runtime,
+                        settings,
+                        thinking_level,
+                        "new",
+                        Some(&previous_session_file),
+                        Some(&target_session_file),
+                    );
+                    Ok(format!(
+                        "extension started new session {}{}",
+                        runtime.session_id.get(..8).unwrap_or(&runtime.session_id),
+                        if reload_notes.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" (extensions: {})", reload_notes.join("; "))
+                        }
+                    ))
+                })
+                .await
+            }
+            "fork" => {
+                (async {
+                    let Some(entry_id) = action.get("entryId").and_then(Value::as_str) else {
+                        return Err("extension fork missing entryId".to_string());
+                    };
+                    let position = match options.get("position").and_then(Value::as_str) {
+                        Some("before") => ForkPosition::Before,
+                        _ => ForkPosition::At,
+                    };
+                    let fork = execute_interactive_fork(
+                        runtime,
+                        "extension fork",
+                        entry_id.to_string(),
+                        position,
+                        InteractiveForkContext {
+                            settings,
+                            thinking_level,
+                            transcript_md,
+                            hide_thinking,
+                        },
+                        Some((runtime.extensions.host.clone(), request.clone())),
+                    )
+                    .await;
+                    completion_sent = fork.status.starts_with("extension fork session ");
+                    Ok(fork.status)
+                })
+                .await
+            }
+            "navigate_tree" => {
+                (async {
+                    let Some(target_id) = action.get("targetId").and_then(Value::as_str) else {
+                        return Err("extension navigateTree missing targetId".to_string());
+                    };
+                    if !session_switch_allowed(runtime, "navigate", None) {
+                        return Err("session navigation cancelled by extension".to_string());
+                    }
+                    runtime
+                        .session
+                        .move_lane("main", Some(target_id))
+                        .await
+                        .map_err(|error| format!("navigateTree failed: {error}"))?;
+                    let (messages, cache_entries) =
+                        rehydrate_transcript(runtime, transcript_md, hide_thinking).await;
+                    runtime.messages = messages;
+                    runtime.cache_entries = cache_entries;
+                    runtime.persisted_until = runtime.messages.len();
+                    let _ = runtime.extensions.host.complete_lifecycle_action(
+                        request.clone(),
+                        json!({
+                            "cancelled": false,
+                            "result": "tree-navigated",
+                            "targetId": target_id,
+                            "snapshot": runtime.extensions.host.snapshot(),
+                        }),
+                    );
+                    completion_sent = true;
+                    Ok(format!("extension navigated session tree to {target_id}"))
+                })
+                .await
+            }
+            "switch_session" => {
+                (async {
+                    let Some(selector) = action.get("sessionPath").and_then(Value::as_str) else {
+                        return Err("extension switchSession missing sessionPath".to_string());
+                    };
+                    let metadata = crate::run::resolve_session_metadata(&runtime.repo, selector)
+                        .await
+                        .map_err(|error| format!("switchSession failed: {error}"))?;
+                    if !session_switch_allowed(runtime, "switch", Some(&metadata.path)) {
+                        return Err("session switch cancelled by extension".to_string());
+                    }
+                    let previous_session_file = runtime.session.get_metadata().await.path;
+                    let session = runtime
+                        .repo
+                        .open(&metadata)
+                        .await
+                        .map_err(|error| format!("switchSession failed: {error}"))?;
+                    let target_session_file = session.get_metadata().await.path;
+                    let target_session_name = session.get_name().await;
+                    let request_host = runtime.extensions.host.clone();
+                    let _ = request_host.dispatch(
+                        crate::core::extensions::ExtensionHostAction::SetSessionName,
+                        &json!({"name": target_session_name}),
+                    );
+                    let _ = request_host.complete_lifecycle_action(
+                        request.clone(),
+                        json!({
+                            "cancelled": false,
+                            "result": "session-switched",
+                            "sessionFile": target_session_file.clone(),
+                            "sessionId": metadata.id.clone(),
+                            "context": {"sessionFile": target_session_file.clone(), "sessionId": metadata.id.clone()},
+                            "snapshot": request_host.snapshot(),
+                        }),
+                    );
+                    completion_sent = true;
+                    shutdown_extensions_before_session_replace(
+                        runtime,
+                        "switch",
+                        Some(&target_session_file),
+                    );
+                    runtime.session = session;
+                    runtime.session_id = metadata.id.clone();
+                    runtime.session_name = runtime.session.get_name().await;
+                    let (messages, cache_entries) =
+                        rehydrate_transcript(runtime, transcript_md, hide_thinking).await;
+                    runtime.messages = messages;
+                    runtime.cache_entries = cache_entries;
+                    runtime.persisted_until = runtime.messages.len();
+                    let reload_notes = replace_extensions(
+                        runtime,
+                        settings,
+                        thinking_level,
+                        "switch",
+                        Some(&previous_session_file),
+                        Some(&target_session_file),
+                    );
+                    Ok(format!(
+                        "extension switched to session {}{}",
+                        runtime.session_id.get(..8).unwrap_or(&runtime.session_id),
+                        if reload_notes.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" (extensions: {})", reload_notes.join("; "))
+                        }
+                    ))
+                })
+                .await
+            }
+            "reload" => {
+                (async {
+                    settings.reload().await;
+                    let mut reload_notes = settings
+                        .drain_errors()
+                        .into_iter()
+                        .map(|error| format!("settings: {}", error.error))
+                        .collect::<Vec<_>>();
+                    let _ = request_host.complete_lifecycle_action(
+                        request.clone(),
+                        json!({
+                            "cancelled": false,
+                            "result": "reload-started",
+                            "context": {"reason": "reload"},
+                            "snapshot": request_host.snapshot(),
+                        }),
+                    );
+                    completion_sent = true;
+                    reload_notes.extend(reload_extensions(runtime, settings, thinking_level));
+                    register_interactive_themes(
+                        &runtime.extension_args,
+                        settings,
+                        &runtime.extension_resources,
+                        &runtime.cwd,
+                    );
+                    if let Some(theme_name) = settings.get_theme_setting() {
+                        load_interactive_theme(theme_name);
+                    }
+                    Ok(if reload_notes.is_empty() {
+                        "extension reloaded settings and runtime".to_string()
+                    } else {
+                        format!("extension reload: {}", reload_notes.join("; "))
+                    })
+                })
+                .await
+            }
+            _ => Err(format!(
+                "unsupported extension lifecycle action: {action_type}"
+            )),
+        };
+        if !completion_sent {
+            let completion = match &result {
+                Ok(message) => json!({
+                    "cancelled": message.contains("cancelled"),
+                    "result": message,
+                    "snapshot": request_host.snapshot(),
+                }),
+                Err(error) => json!({
+                    "cancelled": error.contains("cancelled"),
+                    "error": error,
+                    "snapshot": request_host.snapshot(),
+                }),
+            };
+            if let Err(error) = request_host.complete_lifecycle_action(request, completion) {
+                tracing::warn!(%error, "failed to complete interactive extension lifecycle action");
+            }
+        }
+        match result {
+            Ok(note) => notes.push(note),
+            Err(error) => notes.push(error),
+        }
+    }
+    notes
+}
+
+/// Apply host mutations queued by an extension callback at the boundary before
+/// constructing the next real interactive turn. Requests are drained
+/// atomically so a model and tool policy from the same callback are applied to
+/// the same turn.
+fn apply_extension_turn_changes(runtime: &mut InteractiveRuntime) {
+    let changes = runtime.extensions.host.drain_requested_changes();
+    if let Some(model_value) = changes.model {
+        let provider = model_value.get("provider").and_then(Value::as_str);
+        let model_id = model_value.get("id").and_then(Value::as_str);
+        if let (Some(provider), Some(model_id)) = (provider, model_id) {
+            if let Some(model) = runtime.models.get_model(provider, model_id) {
+                runtime.provider = provider.to_string();
+                runtime.model = model.clone();
+                runtime.extensions.host.set_model(Some(model_value));
+            } else {
+                tracing::warn!(%provider, %model_id, "extension requested an unavailable interactive model");
+            }
+        }
+    }
+    if let Some(active_tools) = changes.active_tools {
+        runtime.active_tool_names = Some(active_tools);
+    }
+}
+
+struct InteractiveIdleGuard {
+    host: Arc<ExtensionHostState>,
+}
+
+impl InteractiveIdleGuard {
+    fn new(host: Arc<ExtensionHostState>) -> Self {
+        host.set_idle(false);
+        Self { host }
+    }
+}
+
+impl Drop for InteractiveIdleGuard {
+    fn drop(&mut self) {
+        self.host.set_idle(true);
+    }
+}
+
 /// Stream a prompt through the agent loop, observing raw events.
-async fn stream_turn(
+struct InteractiveTurnWorker {
+    agent: Arc<pi_agent::rich_agent::Agent>,
+    task: tokio::task::JoinHandle<Result<Vec<pi_agent::types::AgentMessage>, String>>,
+    _idle_guard: InteractiveIdleGuard,
+}
+
+async fn start_interactive_turn(
     runtime: &mut InteractiveRuntime,
     message: String,
     on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync>,
-) -> Result<Vec<pi_agent::types::AgentMessage>, String> {
+    steering_mode: Option<pi_agent::harness::agent_harness::QueueMode>,
+    follow_up_mode: Option<pi_agent::harness::agent_harness::QueueMode>,
+) -> Result<InteractiveTurnWorker, String> {
+    apply_extension_turn_changes(runtime);
+    let idle_guard = InteractiveIdleGuard::new(runtime.extensions.host.clone());
     let prompt = pi_agent::agent::user_text_prompt(message.clone(), pi_ai::types::now_ms());
-    runtime.messages.push(prompt.clone());
     let tools = interactive_turn_tools(runtime);
     let models = runtime.models.clone();
     let api_key = std::env::var(config::ENV_KEY).ok();
@@ -335,52 +1025,255 @@ async fn stream_turn(
     options.system_prompt = runtime.system_prompt.clone();
     options.block_images = runtime.block_images;
     options.tools = Some(tools.iter().map(HarnessTool::from_agent_tool).collect());
-    let (mut harness, _suspended) = AgentHarness::create(options)
+    options.steering_mode = steering_mode;
+    options.follow_up_mode = follow_up_mode;
+    let (harness, _suspended) = AgentHarness::create(options)
         .await
         .map_err(|error| error.to_string())?;
     if harness
-        .set_agent_messages(runtime.messages[..runtime.messages.len() - 1].to_vec())
+        .set_agent_messages(runtime.messages.clone())
         .await
         .is_err()
     {
         return Err("failed to seed interactive harness transcript".to_string());
     }
-    let (mut new_messages, rich_events) = harness
-        .run_prompt_with_events(vec![prompt])
-        .await
-        .map_err(|error| error.to_string())?;
-    for event in rich_events {
-        if let pi_agent::rich_agent::RichAgentEvent::MessageUpdate {
-            mut assistant_message_event,
-            ..
-        } = event
-        {
-            if let AssistantMessageEvent::Error { error_message, .. } = &mut assistant_message_event
+    let harness = Arc::new(harness);
+    let agent = harness
+        .agent_handle()
+        .ok_or_else(|| "interactive harness has no agent".to_string())?;
+    let task_harness = Arc::clone(&harness);
+    let task = tokio::spawn(async move {
+        let (mut new_messages, rich_events) = task_harness
+            .run_prompt_with_events(vec![prompt])
+            .await
+            .map_err(|error| error.to_string())?;
+        for event in rich_events {
+            if let pi_agent::rich_agent::RichAgentEvent::MessageUpdate {
+                mut assistant_message_event,
+                ..
+            } = event
             {
+                if let AssistantMessageEvent::Error { error_message, .. } =
+                    &mut assistant_message_event
+                {
+                    crate::core::auth_guidance::rewrite_assistant_error(
+                        error_message,
+                        &provider,
+                        provider_uses_oauth,
+                    );
+                }
+                on_event(&assistant_message_event);
+            }
+        }
+        for message in &mut new_messages {
+            if let pi_agent::types::AgentMessage::Core(Message::Assistant(assistant)) = message {
                 crate::core::auth_guidance::rewrite_assistant_error(
-                    error_message,
+                    assistant,
                     &provider,
                     provider_uses_oauth,
                 );
             }
-            on_event(&assistant_message_event);
         }
-    }
-    for message in &mut new_messages {
-        if let pi_agent::types::AgentMessage::Core(Message::Assistant(assistant)) = message {
-            crate::core::auth_guidance::rewrite_assistant_error(
-                assistant,
-                &provider,
-                provider_uses_oauth,
-            );
-        }
-    }
+        Ok(new_messages)
+    });
+    Ok(InteractiveTurnWorker {
+        agent,
+        task,
+        _idle_guard: idle_guard,
+    })
+}
+
+async fn finish_interactive_turn(
+    runtime: &mut InteractiveRuntime,
+    new_messages: Vec<pi_agent::types::AgentMessage>,
+) -> Result<Vec<pi_agent::types::AgentMessage>, String> {
     persist_messages_checked(&mut runtime.session, &new_messages).await?;
-    for m in new_messages.iter().skip(1) {
-        runtime.messages.push(m.clone());
-    }
+    runtime.messages.extend(new_messages.iter().cloned());
     runtime.persisted_until = runtime.messages.len();
     Ok(new_messages)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+async fn stream_turn(
+    runtime: &mut InteractiveRuntime,
+    message: String,
+    on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync>,
+) -> Result<Vec<pi_agent::types::AgentMessage>, String> {
+    let worker = start_interactive_turn(runtime, message, on_event, None, None).await?;
+    let new_messages = worker.task.await.map_err(|error| error.to_string())??;
+    finish_interactive_turn(runtime, new_messages).await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InteractiveQueueKind {
+    Steering,
+    FollowUp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InteractivePendingMessage {
+    text: String,
+    kind: InteractiveQueueKind,
+}
+
+struct InteractiveStreamingUi<'a> {
+    tree: &'a mut Tree,
+    editor: &'a Arc<Mutex<Editor>>,
+    transcript_md: &'a Arc<Mutex<Markdown>>,
+    footer_text: &'a Arc<Mutex<Text>>,
+    stream_buffer: &'a Arc<Mutex<String>>,
+    pending_text: &'a mut String,
+    hide_thinking: bool,
+}
+
+impl InteractiveStreamingUi<'_> {
+    fn render(&mut self, snapshot_messages: &[pi_agent::types::AgentMessage]) {
+        let stream = self.stream_buffer.lock().unwrap().clone();
+        let text = it::compose_transcript_with_cache_notices(
+            snapshot_messages,
+            self.hide_thinking,
+            &stream,
+            &[],
+        );
+        self.transcript_md.lock().unwrap().set_text(text);
+        let scene = it::build_scene(
+            self.transcript_md,
+            self.editor,
+            self.footer_text,
+            None,
+            self.pending_text,
+        );
+        self.tree.render(Some(&scene));
+    }
+}
+
+/// Run an interactive turn while continuing to consume terminal input.
+///
+/// The old interactive loop awaited `stream_turn` before reading another key,
+/// which made upstream steering/follow-up behavior impossible. This helper
+/// keeps the terminal event poll live, queues submitted text by behavior, and
+/// returns the queue to the caller for delivery at the next turn boundary.
+async fn stream_turn_with_input(
+    runtime: &mut InteractiveRuntime,
+    prompt: String,
+    on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync>,
+    ui: &mut InteractiveStreamingUi<'_>,
+    steering_mode: &str,
+    follow_up_mode: &str,
+) -> (
+    Result<Vec<pi_agent::types::AgentMessage>, String>,
+    Vec<InteractivePendingMessage>,
+) {
+    let snapshot_messages = runtime.messages.clone();
+    let worker = match start_interactive_turn(
+        runtime,
+        prompt,
+        on_event,
+        Some(if steering_mode == "all" {
+            pi_agent::harness::agent_harness::QueueMode::All
+        } else {
+            pi_agent::harness::agent_harness::QueueMode::OneAtATime
+        }),
+        Some(if follow_up_mode == "all" {
+            pi_agent::harness::agent_harness::QueueMode::All
+        } else {
+            pi_agent::harness::agent_harness::QueueMode::OneAtATime
+        }),
+    )
+    .await
+    {
+        Ok(worker) => worker,
+        Err(error) => return (Err(error), Vec::new()),
+    };
+    let InteractiveTurnWorker {
+        agent,
+        task,
+        _idle_guard,
+    } = worker;
+    let mut turn = Box::pin(task);
+    let terminal = ui.tree.terminal_handle();
+    let mut queued = Vec::new();
+
+    loop {
+        let event_terminal = terminal.clone();
+        let event_read = tokio::task::spawn_blocking(move || {
+            event_terminal
+                .lock()
+                .map_err(|_| "terminal lock poisoned".to_string())
+                .and_then(|mut terminal| terminal.next_event().map_err(|error| error.to_string()))
+        });
+        tokio::select! {
+            result = &mut turn => {
+                let result = match result {
+                    Ok(Ok(messages)) => finish_interactive_turn(runtime, messages).await,
+                    Ok(Err(error)) => Err(error),
+                    Err(error) => Err(error.to_string()),
+                };
+                return (result, Vec::new());
+            }
+            event = event_read => {
+                let event = match event {
+                    Ok(Ok(event)) => event,
+                    Ok(Err(error)) => return (Err(error), queued),
+                    Err(_) => return (Err("terminal input task failed".to_string()), queued),
+                };
+                match event {
+                    pi_tui::terminal::TerminalEvent::Resize(_, height) => {
+                        ui.tree.invalidate();
+                        ui.editor
+                            .lock()
+                            .unwrap()
+                            .set_terminal_rows(height as usize);
+                    }
+                    pi_tui::terminal::TerminalEvent::Key(key_str) => {
+                        if key_str.is_empty() {
+                            ui.render(&snapshot_messages);
+                            continue;
+                        }
+                        if ui.tree.consume_cell_size_response(&key_str) {
+                            continue;
+                        }
+                        let key = parse_key(&key_str);
+                        if key.ctrl && key.base == "c" {
+                            agent.abort();
+                            drop(turn);
+                            return (Err("interrupted".to_string()), Vec::new());
+                        }
+
+                        let queued_text = if key.base == "enter" && key.alt && !key.ctrl {
+                            let text = ui.editor.lock().unwrap().get_text();
+                            ui.editor.lock().unwrap().set_text("");
+                            Some((text, InteractiveQueueKind::FollowUp))
+                        } else if key.base == "enter" && !key.alt && !key.ctrl {
+                            let mut guard = ui.editor.lock().unwrap();
+                            guard.handle_input(&key_str);
+                            guard
+                                .drain_submitted()
+                                .map(|text| (text, InteractiveQueueKind::Steering))
+                        } else {
+                            ui.editor.lock().unwrap().handle_input(&key_str);
+                            None
+                        };
+
+                        if let Some((text, kind)) = queued_text {
+                            if !text.trim().is_empty() {
+                                ui.editor.lock().unwrap().add_to_history(&text);
+                                let queued_message =
+                                    pi_agent::agent::user_text_prompt(&text, pi_ai::types::now_ms());
+                                match kind {
+                                    InteractiveQueueKind::Steering => agent.steer(queued_message),
+                                    InteractiveQueueKind::FollowUp => agent.follow_up(queued_message),
+                                }
+                                queued.push(InteractivePendingMessage { text, kind });
+                                *ui.pending_text = format!(" … {} queued", queued.len());
+                            }
+                        }
+                        ui.render(&snapshot_messages);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Run the shared interactive compaction path. Automatic compaction observes
@@ -1024,7 +1917,7 @@ async fn run_oauth_login(
 /// Wrap a modal in a renderable SharedComponent for the frame.
 fn modal_shared(modal: &mut Modal) -> SharedComponent {
     match modal {
-        Modal::Model(sel) | Modal::Thinking(sel) | Modal::Theme(sel) => {
+        Modal::Model(sel) | Modal::Thinking(sel) | Modal::Theme(sel) | Modal::Fork(sel) => {
             sel.clone() as SharedComponent
         }
         Modal::Settings(panel) => panel.clone() as SharedComponent,
@@ -1206,8 +2099,15 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     };
 
     let extension_resources = extensions.resources.clone();
+    register_interactive_themes(args, &settings, &extension_resources, &cwd);
     let system_prompt =
         interactive_system_prompt(args, &cwd, &agent_dir, &settings, &extension_resources);
+    let prompt_templates = crate::run::load_prompt_templates_for_run(
+        args,
+        &cwd,
+        std::path::Path::new(&agent_dir),
+        &extension_resources,
+    );
     let mut runtime = InteractiveRuntime {
         cwd: cwd.clone(),
         models,
@@ -1226,11 +2126,13 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         native_provider_ids: loaded_native_provider_ids(&extensions),
         extensions,
         extension_resources,
+        prompt_templates,
         extension_args: args.clone(),
         extension_agent_dir: agent_dir.clone(),
         auto_resize_images: settings.get_image_auto_resize(),
         block_images: settings.get_block_images(),
         persisted_until: 0,
+        active_tool_names: None,
         cache_entries: Vec::new(),
     };
 
@@ -1276,7 +2178,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         terminal: terminal.clone(),
     };
 
-    it::tui_theme::load_theme(
+    load_interactive_theme(
         settings
             .get_theme_setting()
             .unwrap_or(crate::theme::DEFAULT_THEME),
@@ -1311,6 +2213,16 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
 
     let mut tree = Tree::new(terminal);
 
+    // Theme selectors and the file watcher update the process-global theme
+    // from outside this loop. Bridge that callback into the render loop so a
+    // live theme replacement refreshes markdown styling and invalidates the
+    // differential frame without waiting for a mode restart.
+    let theme_changed = Arc::new(AtomicBool::new(false));
+    let theme_changed_callback = Arc::clone(&theme_changed);
+    it::tui_theme::on_theme_change(Arc::new(move || {
+        theme_changed_callback.store(true, Ordering::Release);
+    }));
+
     let footer_text: Arc<Mutex<Text>> = Arc::new(Mutex::new(Text::new(String::new(), 0, 0, None)));
 
     let mut modal: Option<Modal> = None;
@@ -1324,6 +2236,13 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
 
     let result = tokio::time::timeout(std::time::Duration::from_secs(24 * 60 * 60), async {
         loop {
+            if theme_changed.swap(false, Ordering::Acquire) {
+                transcript_md
+                    .lock()
+                    .unwrap()
+                    .set_theme(it::tui_theme::markdown_theme());
+                tree.invalidate();
+            }
             if version_check.as_ref().is_some_and(|task| task.is_finished()) {
                 if let Some(task) = version_check.take() {
                     if let Ok(Some(release)) = task.await {
@@ -1463,8 +2382,14 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         match guard.handle(&key) {
                             it::selectors::SelectorAction::Select(Some(idx)) if idx < guard.count() => {
                                 if let Some(item) = guard.selected_item() {
-                                    it::tui_theme::load_theme(&item.value);
-                                    status_banner = format!("Theme: {}", item.value);
+                                    match load_interactive_theme_checked(&item.value) {
+                                        Ok(()) => {
+                                            status_banner = format!("Theme: {}", item.value)
+                                        }
+                                        Err(error) => {
+                                            status_banner = format!("Theme failed: {error}")
+                                        }
+                                    }
                                 }
                                 close_modal = true;
                             }
@@ -1472,6 +2397,39 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 close_modal = true;
                             }
                             _ => {}
+                        }
+                    }
+                    Modal::Fork(sel) => {
+                        let selected_entry_id = {
+                            let mut guard = sel.lock().unwrap();
+                            match guard.handle(&key) {
+                                it::selectors::SelectorAction::Select(Some(idx))
+                                    if idx < guard.count() => guard.selected_item().map(|item| item.value),
+                                it::selectors::SelectorAction::Cancel
+                                | it::selectors::SelectorAction::Select(_) => None,
+                                _ => None,
+                            }
+                        };
+                        close_modal = true;
+                        if let Some(entry_id) = selected_entry_id {
+                            let result = execute_interactive_fork(
+                                &mut runtime,
+                                "fork",
+                                entry_id,
+                                ForkPosition::Before,
+                                InteractiveForkContext {
+                                    settings: &settings,
+                                    thinking_level: &thinking_level,
+                                    transcript_md: &transcript_md,
+                                    hide_thinking,
+                                },
+                                None,
+                            )
+                            .await;
+                            if let Some(text) = result.editor_text {
+                                editor.lock().unwrap().set_text(&text);
+                            }
+                            status_banner = result.status;
                         }
                     }
                     Modal::Resume(sel, sessions) => {
@@ -1514,6 +2472,11 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                             let previous_session_file =
                                                 runtime.session.get_metadata().await.path;
                                             let target_session_file = session.get_metadata().await.path;
+                                            shutdown_extensions_before_session_replace(
+                                                &runtime,
+                                                "resume",
+                                                Some(&target_session_file),
+                                            );
                                             runtime.session = session;
                                             runtime.session_id = meta.id.clone();
                                             runtime.session_name = None;
@@ -1562,10 +2525,13 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         }
                         let changes = { panel.lock().unwrap().drain_changes() };
                         for (id, value) in changes {
+                            let mut theme_error = None;
                             match id.as_str() {
                                 "theme" => {
                                     settings.set_theme(value.clone());
-                                    it::tui_theme::load_theme(&value);
+                                    if let Err(error) = load_interactive_theme_checked(&value) {
+                                        theme_error = Some(error);
+                                    }
                                 }
                                 "thinking" => {
                                     settings.set_default_thinking_level(&value);
@@ -1582,7 +2548,9 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 }
                                 _ => {}
                             }
-                            status_banner = format!("/settings {id} → {value}");
+                            status_banner = theme_error
+                                .map(|error| format!("Theme failed: {error}"))
+                                .unwrap_or_else(|| format!("/settings {id} → {value}"));
                         }
                         if key.base == "esc" || key.base == "escape" {
                             close_modal = true;
@@ -1611,37 +2579,99 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 if submitted.trim().is_empty() || streaming {
                     continue;
                 }
+                if let Some(command_result) =
+                    execute_interactive_extension_command(&runtime, &submitted)
+                {
+                    status_banner = command_result;
+                    let lifecycle_notes = apply_pending_extension_lifecycle_actions(
+                        &mut runtime,
+                        &mut settings,
+                        &thinking_level,
+                        &transcript_md,
+                        hide_thinking,
+                    )
+                    .await;
+                    if !lifecycle_notes.is_empty() {
+                        status_banner.push_str("; ");
+                        status_banner.push_str(&lifecycle_notes.join("; "));
+                    }
+                    continue;
+                }
                 let action = it::parse_submit(&submitted);
                 match action {
                     SubmitAction::Prompt(prompt) => {
-                        editor.lock().unwrap().add_to_history(&prompt);
-                        let message_start = runtime.messages.len();
-                        streaming = true;
-                        pending_text = " …".to_string();
-                        *stream_buffer.lock().unwrap() = String::new();
-                        let on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync> = {
-                            let stream_buffer = stream_buffer.clone();
-                            Arc::new(move |event: &AssistantMessageEvent| {
-                                if let AssistantMessageEvent::TextDelta { delta, .. } = event {
-                                    stream_buffer.lock().unwrap().push_str(delta);
-                                }
-                            })
-                        };
-                        let turn_result = stream_turn(&mut runtime, prompt, on_event).await;
-                        if let Err(error) = turn_result {
-                            status_banner = error;
-                        }
-                        let new_messages = runtime.messages[message_start..].to_vec();
-                        append_cache_entries_from_messages(&mut runtime.cache_entries, &new_messages);
-                        streaming = false;
-                        pending_text = String::new();
-                        *stream_buffer.lock().unwrap() = String::new();
-                        // Auto-compaction: summarize history when the context
-                        // approaches the model window (upstream compaction loop).
-                        match maybe_auto_compact(&mut runtime).await {
-                            Ok(true) => status_banner = "context compacted (auto)".to_string(),
-                            Ok(false) => {}
-                            Err(e) => status_banner = e,
+                        let mut pending_turns = VecDeque::from([InteractivePendingMessage {
+                            text: crate::core::prompt_templates::expand_prompt_template(
+                                &prompt,
+                                &runtime.prompt_templates,
+                            ),
+                            kind: InteractiveQueueKind::Steering,
+                        }]);
+                        while let Some(next_turn) = pending_turns.pop_front() {
+                            editor.lock().unwrap().add_to_history(&next_turn.text);
+                            let message_start = runtime.messages.len();
+                            streaming = true;
+                            pending_text = if next_turn.kind == InteractiveQueueKind::FollowUp {
+                                " … follow-up".to_string()
+                            } else {
+                                " …".to_string()
+                            };
+                            *stream_buffer.lock().unwrap() = String::new();
+                            let on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync> = {
+                                let stream_buffer = stream_buffer.clone();
+                                Arc::new(move |event: &AssistantMessageEvent| {
+                                    if let AssistantMessageEvent::TextDelta { delta, .. } = event {
+                                        stream_buffer.lock().unwrap().push_str(delta);
+                                    }
+                                })
+                            };
+                            let (turn_result, newly_queued) = {
+                                let mut ui = InteractiveStreamingUi {
+                                    tree: &mut tree,
+                                    editor: &editor,
+                                    transcript_md: &transcript_md,
+                                    footer_text: &footer_text,
+                                    stream_buffer: &stream_buffer,
+                                    pending_text: &mut pending_text,
+                                    hide_thinking,
+                                };
+                                stream_turn_with_input(
+                                    &mut runtime,
+                                    next_turn.text,
+                                    on_event,
+                                    &mut ui,
+                                    settings.get_steering_mode(),
+                                    settings.get_follow_up_mode(),
+                                )
+                                .await
+                            };
+                            if let Err(error) = turn_result {
+                                status_banner = error;
+                            }
+                            let new_messages = runtime.messages[message_start..].to_vec();
+                            append_cache_entries_from_messages(&mut runtime.cache_entries, &new_messages);
+                            streaming = false;
+                            pending_text = String::new();
+                            *stream_buffer.lock().unwrap() = String::new();
+                            pending_turns.extend(newly_queued);
+                            let lifecycle_notes = apply_pending_extension_lifecycle_actions(
+                                &mut runtime,
+                                &mut settings,
+                                &thinking_level,
+                                &transcript_md,
+                                hide_thinking,
+                            )
+                            .await;
+                            if !lifecycle_notes.is_empty() {
+                                status_banner = lifecycle_notes.join("; ");
+                            }
+                            // Auto-compaction: summarize history when the context
+                            // approaches the model window (upstream compaction loop).
+                            match maybe_auto_compact(&mut runtime).await {
+                                Ok(true) => status_banner = "context compacted (auto)".to_string(),
+                                Ok(false) => {}
+                                Err(e) => status_banner = e,
+                            }
                         }
                     }
                     SubmitAction::Command(command, arg) => {
@@ -1733,6 +2763,11 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         Ok(new_session) => {
                                             let target_session_file =
                                                 new_session.get_metadata().await.path;
+                                            shutdown_extensions_before_session_replace(
+                                                &runtime,
+                                                "new",
+                                                Some(&target_session_file),
+                                            );
                                             runtime.session = new_session;
                                             runtime.session_id = new_id;
                                             runtime.messages.clear();
@@ -1899,6 +2934,11 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                                 let previous_session_file =
                                                                     runtime.session.get_metadata().await.path;
                                                                 let target_session_file = session.get_metadata().await.path;
+                                                                shutdown_extensions_before_session_replace(
+                                                                    &runtime,
+                                                                    "resume",
+                                                                    Some(&target_session_file),
+                                                                );
                                                                 runtime.session = session;
                                                                 runtime.session_id =
                                                                     runtime.session.get_metadata().await.id;
@@ -1957,11 +2997,6 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         let where_ = se.path.clone().unwrap_or_else(|| format!("{:?}", se.scope));
                                         notes.push(format!("{where_}: {}", se.error));
                                     }
-                                    it::tui_theme::load_theme(
-                                        settings
-                                            .get_theme_setting()
-                                            .unwrap_or(crate::theme::DEFAULT_THEME),
-                                    );
                                     let theme_after = settings
                                         .get_theme_setting()
                                         .unwrap_or(crate::theme::DEFAULT_THEME)
@@ -1974,94 +3009,58 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         &settings,
                                         &thinking_level,
                                     ));
+                                    register_interactive_themes(
+                                        &runtime.extension_args,
+                                        &settings,
+                                        &runtime.extension_resources,
+                                        &runtime.cwd,
+                                    );
+                                    load_interactive_theme(
+                                        settings
+                                            .get_theme_setting()
+                                            .unwrap_or(crate::theme::DEFAULT_THEME),
+                                    );
                                     if notes.is_empty() {
                                         status_banner = "reloaded settings and extensions".to_string();
                                     } else {
                                         status_banner = format!("reloaded settings ({})", notes.join("; "));
                                     }
                                 }
-                                "fork" | "clone" => {
-                                    // Persist the current in-memory transcript first so the
-                                    // fork/clone carries it (the interactive loop only persists
-                                    // on exit; we switch sessions before that happens).
-                                    if !runtime.messages.is_empty() {
-                                        let to_append: Vec<pi_agent::types::AgentMessage> = runtime.messages.to_vec();
-                                        persist_messages(&mut runtime.session, &to_append).await;
-                                    }
-                                    let meta = runtime.session.get_metadata().await;
-                                    let new_id = pi_agent::session::new_id();
-                                    let cwd = runtime.cwd.clone();
-                                    let result = if command.name == "fork" {
-                                        runtime
-                                            .repo
-                                            .fork(
-                                                &meta,
-                                                CreateOptions {
-                                                    id: Some(new_id.clone()),
-                                                    cwd,
-                                                    parent_session_id: None,
-                                                    metadata: None,
-                                                    fork_options: ForkOptions::Tree,
-                                                },
-                                            )
-                                            .await
+                                "fork" => {
+                                    let items = fork_selector_items(&runtime.session).await;
+                                    if items.is_empty() {
+                                        status_banner = "No messages to fork from".to_string();
                                     } else {
-                                        let mut fresh = runtime
-                                            .repo
-                                            .create(CreateOptions {
-                                                id: Some(new_id.clone()),
-                                                cwd,
-                                                parent_session_id: None,
-                                                metadata: None,
-                                                fork_options: ForkOptions::Tree,
-                                            })
-                                            .await
-                                            .map_err(|e| format!("clone create failed: {e}"))?;
-                                        let to_append: Vec<pi_agent::types::AgentMessage> = runtime.messages.to_vec();
-                                        persist_messages(&mut fresh, &to_append).await;
-                                        Ok(fresh)
-                                    };
-                                    match result {
-                                        Ok(session) => {
-                                            let target_session_file = session.get_metadata().await.path;
-                                            runtime.session = session;
-                                            runtime.session_id = new_id;
-                                            runtime.session_name = None;
-                                            // Messages are persisted in the target already; keep the
-                                            // in-memory transcript for display and only persist
-                                            // messages added after the switch.
-                                            runtime.persisted_until = runtime.messages.len();
-                                            transcript_md
-                                                .lock()
-                                                .unwrap()
-                                                .set_text(it::compose_transcript(
-                                                    &runtime.messages,
-                                                    hide_thinking,
-                                                    "",
-                                                ));
-                                            let notes = replace_extensions(
+                                        let last = items.len().saturating_sub(1);
+                                        let mut selector = ListSelector::new_slash_layout(items, 10);
+                                        selector.set_selected_index(last);
+                                        modal = Some(Modal::Fork(Arc::new(Mutex::new(selector))));
+                                    }
+                                }
+                                "clone" => {
+                                    match runtime.session.get_leaf_id().await.ok().flatten() {
+                                        Some(entry_id) => {
+                                            let result = execute_interactive_fork(
                                                 &mut runtime,
-                                                &settings,
-                                                &thinking_level,
-                                                "fork",
-                                                Some(&meta.path),
-                                                Some(&target_session_file),
-                                            );
-                                            status_banner = format!(
-                                                "{} session {} ({} prior messages)",
-                                                command.name,
-                                                runtime.session_id.get(..8).unwrap_or(&runtime.session_id),
-                                                runtime.messages.len()
-                                            );
-                                            if !notes.is_empty() {
-                                                status_banner.push_str(&format!(
-                                                    " (extensions: {})",
-                                                    notes.join("; ")
-                                                ));
+                                                "clone",
+                                                entry_id,
+                                                ForkPosition::At,
+                                                InteractiveForkContext {
+                                                    settings: &settings,
+                                                    thinking_level: &thinking_level,
+                                                    transcript_md: &transcript_md,
+                                                    hide_thinking,
+                                                },
+                                                None,
+                                            )
+                                            .await;
+                                            if let Some(text) = result.editor_text {
+                                                editor.lock().unwrap().set_text(&text);
                                             }
+                                            status_banner = result.status;
                                         }
-                                        Err(e) => {
-                                            status_banner = format!("{} failed: {e}", command.name);
+                                        None => {
+                                            status_banner = "Nothing to clone yet".to_string();
                                         }
                                     }
                                 }
@@ -2269,7 +3268,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::extensions::ExtensionHostActions;
+    use crate::core::extensions::{ExtensionHostAction, ExtensionHostActions};
     use pi_agent::fs::StdFileSystem;
     use pi_agent::session::jsonl::repo::CreateOptions;
     use pi_agent::session::state::ForkOptions;
@@ -2291,6 +3290,475 @@ mod tests {
         let runtime = test_runtime(&root).await;
         let sessions = runtime.repo.list(Some(&runtime.cwd)).await.unwrap();
         assert!(resumable_sessions(sessions, &runtime.session_id).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn interactive_fork_hook_returns_cancellation_without_mutating_session() {
+        let root =
+            std::env::temp_dir().join(format!("pi-interactive-fork-hook-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        let original_session_id = runtime.session_id.clone();
+        let events = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let events_for_handler = Arc::clone(&events);
+        let handler = Arc::new(
+            move |_: &crate::core::extensions::ExtensionContext, event: &Value| {
+                events_for_handler.lock().unwrap().push(event.clone());
+                Ok(Some(json!({"cancel": true})))
+            },
+        ) as crate::core::extensions::HandlerFn;
+        let mut extension = crate::core::extensions::Extension {
+            path: "interactive-fork-hook.js".to_string(),
+            ..Default::default()
+        };
+        extension
+            .handlers
+            .insert("session_before_fork".to_string(), vec![handler]);
+        let extension_runtime = Arc::new(Mutex::new(
+            crate::core::extensions::types::ExtensionRuntime::new(),
+        ));
+        runtime.extensions = LoadedExtensions {
+            runner: Arc::new(crate::core::extensions::ExtensionRunner::new(
+                vec![extension],
+                Arc::clone(&extension_runtime),
+                runtime.cwd.clone(),
+            )),
+            host: Arc::new(crate::core::extensions::ExtensionHostState::new(
+                None, "off",
+            )),
+            runtime: extension_runtime,
+            errors: Vec::new(),
+            resources: ResourceDiscovery::default(),
+        };
+        assert!(!session_fork_allowed(&runtime, "leaf-entry", "at"));
+        assert_eq!(runtime.session_id, original_session_id);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![json!({
+                "type": "session_before_fork",
+                "entryId": "leaf-entry",
+                "position": "at"
+            })]
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn interactive_extension_commands_run_before_unknown_slash_falls_back_to_prompt() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-interactive-extension-command-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        let seen_args = Arc::new(Mutex::new(String::new()));
+        let seen_args_for_handler = Arc::clone(&seen_args);
+        let handler = Arc::new(
+            move |_: &crate::core::extensions::ExtensionContext, event: &Value| {
+                *seen_args_for_handler.lock().unwrap() =
+                    event["args"].as_str().unwrap_or_default().to_string();
+                Ok(Some(json!({"ok": true})))
+            },
+        ) as crate::core::extensions::HandlerFn;
+        let mut extension = crate::core::extensions::Extension {
+            path: "interactive-command.js".to_string(),
+            ..Default::default()
+        };
+        extension.commands.insert(
+            "hello".to_string(),
+            crate::core::extensions::types::RegisteredCommand {
+                name: "hello".to_string(),
+                source_info: Default::default(),
+                description: Some("test command".to_string()),
+                handler,
+            },
+        );
+        let extension_runtime = Arc::new(Mutex::new(
+            crate::core::extensions::types::ExtensionRuntime::new(),
+        ));
+        runtime.extensions = LoadedExtensions {
+            runner: Arc::new(crate::core::extensions::ExtensionRunner::new(
+                vec![extension],
+                Arc::clone(&extension_runtime),
+                runtime.cwd.clone(),
+            )),
+            host: Arc::new(crate::core::extensions::ExtensionHostState::new(
+                None, "off",
+            )),
+            runtime: extension_runtime,
+            errors: Vec::new(),
+            resources: ResourceDiscovery::default(),
+        };
+
+        assert_eq!(
+            execute_interactive_extension_command(&runtime, "/hello first second"),
+            Some("/hello: {\"ok\":true}".to_string())
+        );
+        assert_eq!(*seen_args.lock().unwrap(), "first second");
+        assert!(execute_interactive_extension_command(&runtime, "/model faux/faux-1").is_none());
+
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn interactive_lifecycle_action_creates_a_real_session() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-interactive-extension-new-session-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        let previous_id = runtime.session_id.clone();
+        let lifecycle_events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let before_events = Arc::clone(&lifecycle_events);
+        let shutdown_events = Arc::clone(&lifecycle_events);
+        let mut extension = crate::core::extensions::Extension {
+            path: "interactive-session-lifecycle.js".to_string(),
+            ..Default::default()
+        };
+        let before_handler: crate::core::extensions::HandlerFn = Arc::new(
+            move |_: &crate::core::extensions::ExtensionContext, _: &Value| {
+                before_events
+                    .lock()
+                    .unwrap()
+                    .push("before_switch".to_string());
+                Ok(None)
+            },
+        );
+        extension
+            .handlers
+            .insert("session_before_switch".to_string(), vec![before_handler]);
+        let shutdown_handler: crate::core::extensions::HandlerFn = Arc::new(
+            move |_: &crate::core::extensions::ExtensionContext, _: &Value| {
+                shutdown_events.lock().unwrap().push("shutdown".to_string());
+                Ok(None)
+            },
+        );
+        extension
+            .handlers
+            .insert("session_shutdown".to_string(), vec![shutdown_handler]);
+        let extension_runtime = Arc::new(Mutex::new(
+            crate::core::extensions::types::ExtensionRuntime::new(),
+        ));
+        runtime.extensions = LoadedExtensions {
+            runner: Arc::new(crate::core::extensions::ExtensionRunner::new(
+                vec![extension],
+                Arc::clone(&extension_runtime),
+                runtime.cwd.clone(),
+            )),
+            host: Arc::new(crate::core::extensions::ExtensionHostState::new(
+                None, "off",
+            )),
+            runtime: extension_runtime,
+            errors: Vec::new(),
+            resources: ResourceDiscovery::default(),
+        };
+        runtime
+            .extensions
+            .host
+            .dispatch_with_outcome(ExtensionHostAction::NewSession, &json!({"options": {}}))
+            .unwrap();
+        let transcript_md = Arc::new(Mutex::new(Markdown::new(
+            String::new(),
+            1,
+            0,
+            it::tui_theme::markdown_theme(),
+            None,
+            None,
+        )));
+        let mut settings = SettingsManager::in_memory(crate::core::settings::SettingsMap::new());
+        let notes = apply_pending_extension_lifecycle_actions(
+            &mut runtime,
+            &mut settings,
+            "off",
+            &transcript_md,
+            false,
+        )
+        .await;
+
+        assert_ne!(runtime.session_id, previous_id);
+        assert_eq!(runtime.messages, Vec::new());
+        assert!(notes
+            .iter()
+            .any(|note| note.contains("started new session")));
+        assert_eq!(
+            *lifecycle_events.lock().unwrap(),
+            vec!["before_switch", "shutdown"]
+        );
+        let session_path = runtime.session.get_metadata().await.path;
+        assert!(std::path::Path::new(&session_path).is_file());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn interactive_replacements_teardown_before_session_assignment() {
+        let source = include_str!("interactive.rs");
+        let mut last_shutdown = 0usize;
+        let mut assignments = 0usize;
+        for (line_number, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("shutdown_extensions_before_session_replace(") {
+                last_shutdown = line_number;
+            }
+            if trimmed.starts_with("runtime.session =") {
+                assignments += 1;
+                assert!(
+                    line_number.saturating_sub(last_shutdown) <= 40,
+                    "session assignment at line {} must follow old-runner teardown",
+                    line_number + 1
+                );
+            }
+        }
+        assert_eq!(
+            assignments, 6,
+            "all interactive replacement paths are covered"
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_turn_changes_apply_to_tools_and_idle_state() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-interactive-extension-turn-changes-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        let requested_model = serde_json::to_value(&runtime.model).unwrap();
+        runtime
+            .extensions
+            .host
+            .dispatch(
+                ExtensionHostAction::SetModel,
+                &json!({"model": requested_model}),
+            )
+            .unwrap();
+        runtime
+            .extensions
+            .host
+            .dispatch(
+                ExtensionHostAction::SetActiveTools,
+                &json!({"toolNames": ["read"]}),
+            )
+            .unwrap();
+
+        apply_extension_turn_changes(&mut runtime);
+        let tools = interactive_turn_tools(&runtime);
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["read"]
+        );
+        assert!(runtime.extensions.host.requested_model().is_none());
+        assert!(runtime.extensions.host.requested_active_tools().is_none());
+
+        let idle_guard = InteractiveIdleGuard::new(runtime.extensions.host.clone());
+        assert!(runtime
+            .extensions
+            .host
+            .wait_for_idle_timeout(std::time::Duration::from_millis(1))
+            .is_err());
+        drop(idle_guard);
+        assert!(runtime
+            .extensions
+            .host
+            .wait_for_idle_timeout(std::time::Duration::from_millis(1))
+            .is_ok());
+
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn interactive_extension_themes_retain_source_info() {
+        let _lock = crate::theme::test_theme_registry_lock().lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "pi-interactive-theme-source-info-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("extension-theme.json");
+        let name = format!("interactive-extension-theme-{}", uuid::Uuid::new_v4());
+        let mut theme: Value = serde_json::from_str(include_str!("../../data/themes/dark.json"))
+            .expect("builtin fixture parses");
+        theme["name"] = Value::String(name.clone());
+        std::fs::write(&path, serde_json::to_vec(&theme).unwrap()).unwrap();
+
+        let source_info = crate::core::extensions::SourceInfo {
+            path: root.join("extension.ts").to_string_lossy().into_owned(),
+            source: "extension:theme-fixture".to_string(),
+            scope: "temporary".to_string(),
+            origin: "top-level".to_string(),
+            base_dir: Some(root.to_string_lossy().into_owned()),
+        };
+        let resources = ResourceDiscovery {
+            theme_resources: vec![crate::core::extensions::DiscoveredResource {
+                path: path.to_string_lossy().into_owned(),
+                extension_path: source_info.path.clone(),
+                source_info: source_info.clone(),
+            }],
+            ..Default::default()
+        };
+        let settings = SettingsManager::in_memory(crate::core::settings::SettingsMap::new());
+        register_interactive_themes(
+            &Args::default(),
+            &settings,
+            &resources,
+            &root.to_string_lossy(),
+        );
+
+        let info = crate::theme::available_themes_with_paths()
+            .into_iter()
+            .find(|info| info.name == name)
+            .expect("extension theme is selectable");
+        assert_eq!(info.source_info, Some(source_info));
+        assert_eq!(
+            info.source_path,
+            Some(std::fs::canonicalize(&path).unwrap())
+        );
+
+        crate::theme::register_theme_paths(&[], std::path::Path::new("."));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn fork_selector_lists_durable_user_messages_only() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-interactive-fork-selector-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        runtime
+            .session
+            .append_entry(
+                EntryNoStats::Message {
+                    id: "user-entry".to_string(),
+                    message: pi_agent::agent::user_text_prompt(
+                        "hello from the fork selector",
+                        pi_ai::types::now_ms(),
+                    ),
+                    terminate: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        runtime
+            .session
+            .append_entry(
+                EntryNoStats::Custom {
+                    id: "custom-entry".to_string(),
+                    custom_type: "note".to_string(),
+                    data: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+
+        let items = fork_selector_items(&runtime.session).await;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].value, "user-entry");
+        assert_eq!(items[0].label, "hello from the fork selector");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn interactive_fork_persists_pending_messages_and_returns_selected_text() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-interactive-fork-execute-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        let original_session_id = runtime.session_id.clone();
+        runtime
+            .session
+            .append_entry(
+                EntryNoStats::Message {
+                    id: "fork-target".to_string(),
+                    message: pi_agent::agent::user_text_prompt(
+                        "selected fork prompt",
+                        pi_ai::types::now_ms(),
+                    ),
+                    terminate: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        runtime.messages.push(pi_agent::agent::user_text_prompt(
+            "pending before fork",
+            pi_ai::types::now_ms(),
+        ));
+        let transcript = Arc::new(Mutex::new(Markdown::new(
+            String::new(),
+            1,
+            0,
+            it::tui_theme::markdown_theme(),
+            None,
+            None,
+        )));
+        let settings = SettingsManager::in_memory(crate::core::settings::SettingsMap::new());
+        let result = execute_interactive_fork(
+            &mut runtime,
+            "fork",
+            "fork-target".to_string(),
+            ForkPosition::Before,
+            InteractiveForkContext {
+                settings: &settings,
+                thinking_level: "off",
+                transcript_md: &transcript,
+                hide_thinking: true,
+            },
+            None,
+        )
+        .await;
+
+        assert!(
+            result.status.starts_with("fork session "),
+            "{}",
+            result.status
+        );
+        assert_eq!(result.editor_text.as_deref(), Some("selected fork prompt"));
+        assert_eq!(runtime.persisted_until, runtime.messages.len());
+        let source_metadata = runtime
+            .repo
+            .list(Some(&runtime.cwd))
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|metadata| metadata.id == original_session_id)
+            .expect("source session metadata should remain after fork");
+        let source_session = runtime.repo.open(&source_metadata).await.unwrap();
+        assert_eq!(
+            source_session
+                .find_entries(&pi_agent::session::state::EntryQuery {
+                    order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(runtime
+            .session
+            .find_entries(&pi_agent::session::state::EntryQuery {
+                order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+        drop(runtime);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2406,6 +3874,7 @@ mod tests {
             native_provider_ids: Vec::new(),
             extensions,
             extension_resources,
+            prompt_templates: Vec::new(),
             extension_args: Args {
                 no_extensions: true,
                 ..Default::default()
@@ -2414,6 +3883,7 @@ mod tests {
             auto_resize_images: true,
             block_images: false,
             persisted_until: 0,
+            active_tool_names: None,
             cache_entries: Vec::new(),
         }
     }
@@ -2466,35 +3936,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interactive_turn_tools_respect_builtin_and_all_tool_flags() {
-        if std::process::Command::new("node")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            return;
-        }
+    async fn interactive_turn_tools_reject_filesystem_extensions_in_zero_js_build() {
         let root = std::env::temp_dir().join(format!(
-            "pi-interactive-extension-tools-{}",
+            "pi-interactive-extension-policy-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let extension = root.join("index.js");
-        std::fs::write(
-            &extension,
-            r#"export default function (pi) {
-  pi.registerTool({
-    name: "interactive-tool",
-    description: "interactive policy fixture",
-    parameters: { type: "object", properties: {} },
-    execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
-  });
-}"#,
-        )
-        .unwrap();
-
         let args = Args {
-            extensions: vec![extension.to_string_lossy().into_owned()],
+            extensions: vec![root
+                .join("filesystem-extension")
+                .to_string_lossy()
+                .into_owned()],
             no_extensions: true,
             ..Default::default()
         };
@@ -2508,25 +3960,13 @@ mod tests {
             None,
             "off",
         );
-        assert!(loaded.errors.is_empty(), "load errors: {:?}", loaded.errors);
+        assert!(loaded.runner.extensions().is_empty());
+        assert_eq!(loaded.errors.len(), 1);
+        assert!(loaded.errors[0].error.contains("Rust-native-only"));
 
         let mut runtime = test_runtime(&root).await;
         runtime.extensions = loaded;
         runtime.builtin_tools_enabled = false;
-        let tools = interactive_turn_tools(&runtime);
-        assert_eq!(
-            tools
-                .iter()
-                .map(|tool| tool.tool.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["interactive-tool"]
-        );
-        assert_eq!(
-            runtime.extensions.host.snapshot()["activeTools"],
-            json!(["interactive-tool"])
-        );
-
-        runtime.tools_enabled = false;
         assert!(interactive_turn_tools(&runtime).is_empty());
         assert_eq!(runtime.extensions.host.snapshot()["activeTools"], json!([]));
 
@@ -2535,38 +3975,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interactive_reload_re_evaluates_extension_and_refreshes_tools() {
-        if std::process::Command::new("node")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            return;
-        }
+    async fn interactive_reload_keeps_automatic_filesystem_discovery_empty() {
         let root = std::env::temp_dir().join(format!(
-            "pi-interactive-extension-reload-{}",
+            "pi-interactive-extension-reload-policy-{}",
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(&root).unwrap();
-        let extension = root.join("index.js");
-        let source = |tool_name: &str| {
-            format!(
-                r#"export default function (pi) {{
-  pi.registerFlag("reload-flag", {{ type: "string", default: "default" }});
-  pi.registerTool({{
-    name: "{tool_name}",
-    description: "reload fixture",
-    parameters: {{ type: "object", properties: {{}} }},
-    execute: async () => ({{ content: [{{ type: "text", text: "ok" }}] }}),
-  }});
-}}"#
-            )
-        };
-        std::fs::write(&extension, source("reload-v1")).unwrap();
-
+        std::fs::create_dir_all(root.join(".pi/extensions")).unwrap();
         let args = Args {
-            extensions: vec![extension.to_string_lossy().into_owned()],
-            no_extensions: true,
+            no_extensions: false,
             ..Default::default()
         };
         let settings = SettingsManager::in_memory(crate::core::settings::SettingsMap::new());
@@ -2584,31 +4000,14 @@ mod tests {
             "off",
         );
         assert!(runtime.extensions.errors.is_empty());
-        runtime
-            .extensions
-            .runner
-            .set_flag_value("reload-flag", json!("preserved"));
-        let first_tools = interactive_turn_tools(&runtime);
-        assert!(first_tools.iter().any(|tool| tool.tool.name == "reload-v1"));
+        runtime.builtin_tools_enabled = false;
+        assert!(interactive_turn_tools(&runtime).is_empty());
 
-        std::fs::write(&extension, source("reload-v2")).unwrap();
         let notes = reload_extensions(&mut runtime, &settings, "off");
         assert!(notes.is_empty(), "reload notes: {notes:?}");
-        let second_tools = interactive_turn_tools(&runtime);
-        assert!(second_tools
-            .iter()
-            .any(|tool| tool.tool.name == "reload-v2"));
-        assert!(!second_tools
-            .iter()
-            .any(|tool| tool.tool.name == "reload-v1"));
-        assert_eq!(
-            runtime
-                .extensions
-                .runner
-                .get_flag_values()
-                .get("reload-flag"),
-            Some(&json!("preserved"))
-        );
+        assert!(runtime.extensions.errors.is_empty());
+        assert!(interactive_turn_tools(&runtime).is_empty());
+        assert!(runtime.extensions.runner.get_extension_paths().is_empty());
 
         drop(runtime);
         let _ = std::fs::remove_dir_all(&root);

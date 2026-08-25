@@ -1,7 +1,7 @@
 //! Package manager — port of
 //! `packages/coding-agent/src/core/package-manager.ts` (the CLI-observable
 //! surface: source parsing, install/remove/update/list, settings
-//! persistence, on-disk npm/git install layout).
+//! persistence, and on-disk git package layout).
 //!
 //! Also ports the full `resolve()` resource-resolution layer: on-disk
 //! collection of extensions/skills/prompts/themes (recursive ignore-aware
@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::config::CONFIG_DIR_NAME;
 use crate::core::model_resolver::glob_match;
@@ -70,6 +70,12 @@ pub enum ParsedSource {
 }
 
 pub type SourceScope = &'static str;
+
+const RUST_NATIVE_ONLY_PACKAGE_ERROR: &str = "Rust-native-only package policy: JavaScript/TypeScript package execution is disabled; npm, npx, and bun are not invoked. Register compiled Rust extensions or use local/git skills, prompts, and themes.";
+
+fn rust_native_only_package_error(source: &str) -> String {
+    format!("{RUST_NATIVE_ONLY_PACKAGE_ERROR} Unsupported source: {source}")
+}
 
 // ---------------------------------------------------------------------------
 // Ports of utils/git.ts (parseGitUrl) + package-manager.ts parse helpers
@@ -442,6 +448,10 @@ impl ResourceType {
     }
 }
 
+fn resource_type_is_executable(resource_type: ResourceType) -> bool {
+    matches!(resource_type, ResourceType::Extensions)
+}
+
 const RESOURCE_TYPES: [ResourceType; 4] = [
     ResourceType::Extensions,
     ResourceType::Skills,
@@ -480,8 +490,12 @@ impl PackageFilter {
     }
 }
 
+// The zero-JS build does not discover executable extension files. The current
+// loader accepts only in-process Rust factories, so advertising `.so`, `.dll`,
+// `.dylib`, `.js`, or `.ts` paths here would claim a runtime boundary that does
+// not exist. Skills, prompts, and themes remain filesystem-discoverable below.
 const FILE_PATTERNS: [(ResourceType, &str); 4] = [
-    (ResourceType::Extensions, r"\.(ts|js)$"),
+    (ResourceType::Extensions, r"(?!)"),
     (ResourceType::Skills, r"\.md$"),
     (ResourceType::Prompts, r"\.md$"),
     (ResourceType::Themes, r"\.json$"),
@@ -725,80 +739,12 @@ fn collect_skill_entries_inner(
     entries
 }
 
-/// Port of upstream `resolveExtensionEntries`: an extension package's explicit
-/// entry points — `pi.extensions` manifest entries or `index.ts`/`index.js`.
-fn resolve_extension_entries(dir: &Path) -> Option<Vec<String>> {
-    let package_json = dir.join("package.json");
-    if package_json.exists() {
-        if let Some(manifest) = read_pi_manifest(&package_json) {
-            if !manifest.extensions.is_empty() {
-                let mut entries = Vec::new();
-                for ext in &manifest.extensions {
-                    let resolved = dir.join(ext);
-                    if resolved.exists() {
-                        entries.push(path_to_string(&resolved));
-                    }
-                }
-                if !entries.is_empty() {
-                    return Some(entries);
-                }
-            }
-        }
-    }
-    let index_ts = dir.join("index.ts");
-    let index_js = dir.join("index.js");
-    if index_ts.exists() {
-        return Some(vec![path_to_string(&index_ts)]);
-    }
-    if index_js.exists() {
-        return Some(vec![path_to_string(&index_js)]);
-    }
-    None
-}
-
-/// Port of upstream `collectAutoExtensionEntries`: discover extension entry
-/// points from a dir — explicit package.json/index entries take precedence;
-/// otherwise recurse into subdirectories.
-fn collect_auto_extension_entries(dir: &Path, root_dir: &Path) -> Vec<String> {
-    let mut entries = Vec::new();
-    if !dir.is_dir() {
-        return entries;
-    }
-    if let Some(root_entries) = resolve_extension_entries(dir) {
-        return root_entries;
-    }
-    let mut ig = pi_agent::harness::skills::IgnoreMatcher::default();
-    add_ignore_rules(&mut ig, dir, root_dir);
-
-    let dir_entries = match fs::read_dir(dir) {
-        Ok(it) => it.flatten().collect::<Vec<_>>(),
-        Err(_) => return entries,
-    };
-    for entry in &dir_entries {
-        let name_str = entry.file_name().to_string_lossy().into_owned();
-        if name_str.starts_with('.') || name_str == "node_modules" {
-            continue;
-        }
-        let full_path = entry.path();
-        let (is_dir, is_file) = entry_is_dir_or_file(entry);
-        let rel_path = os_rel_posix(root_dir, &full_path);
-        let ignore_path = if is_dir {
-            format!("{rel_path}/")
-        } else {
-            rel_path
-        };
-        if ig.ignores(&ignore_path) {
-            continue;
-        }
-        if is_file && (name_str.ends_with(".ts") || name_str.ends_with(".js")) {
-            entries.push(path_to_string(&full_path));
-        } else if is_dir {
-            if let Some(resolved) = resolve_extension_entries(&full_path) {
-                entries.extend(resolved);
-            }
-        }
-    }
-    entries
+/// No executable extensions are auto-discovered until the Rust loader exposes
+/// a verified artifact ABI. Rust extensions must currently be registered with
+/// `load_extension_from_factory`; this function intentionally returns no
+/// filesystem paths and never considers JavaScript/TypeScript files.
+fn collect_auto_extension_entries(_dir: &Path, _root_dir: &Path) -> Vec<String> {
+    Vec::new()
 }
 
 /// Port of upstream `collectAutoPromptEntries`: flat `.md` files in a dir.
@@ -1402,16 +1348,6 @@ impl PackageManager {
     // Install roots
     // ------------------------------------------------------------------
 
-    pub fn get_npm_install_root(&self, scope: SourceScope, temporary: bool) -> PathBuf {
-        if temporary {
-            return self.temporary_dir("npm");
-        }
-        if scope == "project" {
-            return Path::new(&self.cwd).join(CONFIG_DIR_NAME).join("npm");
-        }
-        Path::new(&self.agent_dir).join("npm")
-    }
-
     pub fn get_git_install_root(&self, scope: SourceScope) -> Option<PathBuf> {
         if scope == "temporary" {
             return None;
@@ -1420,18 +1356,6 @@ impl PackageManager {
             return Some(Path::new(&self.cwd).join(CONFIG_DIR_NAME).join("git"));
         }
         Some(Path::new(&self.agent_dir).join("git"))
-    }
-
-    pub fn get_managed_npm_install_path(&self, source: &NpmSource, scope: SourceScope) -> PathBuf {
-        if scope == "temporary" {
-            return self
-                .temporary_dir("npm")
-                .join("node_modules")
-                .join(&source.name);
-        }
-        self.get_npm_install_root(scope, false)
-            .join("node_modules")
-            .join(&source.name)
     }
 
     pub fn get_git_install_path(&self, source: &GitSource, scope: SourceScope) -> PathBuf {
@@ -1496,14 +1420,7 @@ impl PackageManager {
 
     pub fn get_installed_path(&self, source: &str, scope: &'static str) -> Option<String> {
         match ParsedSource::parse(source) {
-            ParsedSource::Npm(npm) => {
-                let path = self.get_managed_npm_install_path(&npm, scope);
-                if path.exists() {
-                    Some(path.display().to_string())
-                } else {
-                    None
-                }
-            }
+            ParsedSource::Npm(_) => None,
             ParsedSource::Git(git) => {
                 let path = self.get_git_install_path(&git, scope);
                 if path.exists() {
@@ -1522,39 +1439,6 @@ impl PackageManager {
                 }
             }
         }
-    }
-
-    // ------------------------------------------------------------------
-    // npm command helpers
-    // ------------------------------------------------------------------
-
-    /// Resolve the npm command live from settings (upstream reads
-    /// `settingsManager.getNpmCommand()` on every call).
-    pub fn get_npm_command(&self) -> (String, Vec<String>) {
-        match self.settings_manager.get_npm_command() {
-            Some(cmd) if !cmd.is_empty() => {
-                let mut iter = cmd.iter();
-                let command = iter.next().cloned().unwrap_or_else(|| "npm".to_string());
-                let args: Vec<String> = iter.cloned().collect();
-                (command, args)
-            }
-            _ => ("npm".to_string(), Vec::new()),
-        }
-    }
-
-    pub fn get_package_manager_name(&self) -> String {
-        let (command, args) = self.get_npm_command();
-        let mut parts = vec![command];
-        parts.extend(args);
-        let separator = parts.iter().rposition(|p| p == "--");
-        let package_manager_command = match separator {
-            Some(index) => parts.get(index + 1).cloned().unwrap_or(parts[0].clone()),
-            None => parts[0].clone(),
-        };
-        Path::new(&package_manager_command)
-            .file_name()
-            .map(|f| f.to_string_lossy().replace(".cmd", "").replace(".exe", ""))
-            .unwrap_or_else(|| package_manager_command)
     }
 
     fn run_command(
@@ -1609,63 +1493,6 @@ impl PackageManager {
         }
     }
 
-    fn run_npm_command(&self, args: &[String], cwd: Option<&Path>) -> Result<(), String> {
-        let (command, command_args) = self.get_npm_command();
-        let mut all_args = command_args.clone();
-        all_args.extend(args.iter().cloned());
-        self.run_command(&command, &all_args, cwd)
-    }
-
-    fn get_npm_install_args(&self, specs: &[String], install_root: &Path) -> Vec<String> {
-        let package_manager_name = self.get_package_manager_name();
-        let mut args = vec!["install".to_string()];
-        args.extend(specs.iter().cloned());
-        if package_manager_name == "bun" {
-            args.push("--cwd".to_string());
-            args.push(install_root.display().to_string());
-            args.push("--omit=peer".to_string());
-        } else if package_manager_name == "pnpm" {
-            args.push("--prefix".to_string());
-            args.push(install_root.display().to_string());
-            args.push("--config.auto-install-peers=false".to_string());
-            args.push("--config.strict-peer-dependencies=false".to_string());
-            args.push("--config.strict-dep-builds=false".to_string());
-        } else {
-            args.push("--prefix".to_string());
-            args.push(install_root.display().to_string());
-            args.push("--legacy-peer-deps".to_string());
-        }
-        args
-    }
-
-    fn get_git_dependency_install_args(&self) -> Vec<String> {
-        if self
-            .settings_manager
-            .get_npm_command()
-            .as_ref()
-            .map(|c| !c.is_empty())
-            .unwrap_or(false)
-        {
-            vec!["install".to_string()]
-        } else {
-            vec!["install".to_string(), "--omit=dev".to_string()]
-        }
-    }
-
-    fn ensure_npm_project(&self, install_root: &Path) {
-        std::fs::create_dir_all(install_root).ok();
-        // gitignore dir for package installs (upstream ensureGitIgnore).
-        let _ = self.ensure_git_ignore(install_root);
-        let package_json = install_root.join("package.json");
-        if !package_json.exists() {
-            let pkg_json = json!({ "name": "pi-extensions", "private": true });
-            let _ = std::fs::write(
-                package_json,
-                serde_json::to_string_pretty(&pkg_json).unwrap(),
-            );
-        }
-    }
-
     fn ensure_git_ignore(&self, dir: &Path) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("create dir: {e}"))?;
         let ignore_path = dir.join(".gitignore");
@@ -1710,13 +1537,12 @@ impl PackageManager {
     pub fn install(&mut self, source: &str, local: bool) -> Result<(), String> {
         let scope: SourceScope = if local { "project" } else { "user" };
         let parsed = ParsedSource::parse(source);
-        let source_owned = source.to_string();
         self.with_progress(
             "install",
             source,
             &format!("Installing {source}..."),
             || match &parsed {
-                ParsedSource::Npm(npm) => self.install_npm(npm, scope, false),
+                ParsedSource::Npm(_) => Err(rust_native_only_package_error(source)),
                 ParsedSource::Git(git) => self.install_git(git, scope),
                 ParsedSource::Local(local) => {
                     let resolved = self.resolve_path(&local.path);
@@ -1726,9 +1552,7 @@ impl PackageManager {
                     Ok(())
                 }
             },
-        )?;
-        let _ = source_owned;
-        Ok(())
+        )
     }
 
     pub fn install_and_persist(&mut self, source: &str, local: bool) -> Result<(), String> {
@@ -1740,19 +1564,16 @@ impl PackageManager {
     pub fn remove(&mut self, source: &str, local: bool) -> Result<(), String> {
         let scope: SourceScope = if local { "project" } else { "user" };
         let parsed = ParsedSource::parse(source);
-        let source_owned = source.to_string();
         self.with_progress(
             "remove",
             source,
             &format!("Removing {source}..."),
             || match &parsed {
-                ParsedSource::Npm(npm) => self.uninstall_npm(npm, scope),
+                ParsedSource::Npm(_) => Err(rust_native_only_package_error(source)),
                 ParsedSource::Git(git) => self.remove_git(git, scope),
                 ParsedSource::Local(_) => Ok(()),
             },
-        )?;
-        let _ = source_owned;
-        Ok(())
+        )
     }
 
     pub fn remove_and_persist(&mut self, source: &str, local: bool) -> Result<bool, String> {
@@ -1761,6 +1582,22 @@ impl PackageManager {
     }
 
     pub fn update(&mut self, source: Option<&str>) -> Result<bool, String> {
+        if let Some(source) = source {
+            if matches!(ParsedSource::parse(source), ParsedSource::Npm(_)) {
+                return Err(rust_native_only_package_error(source));
+            }
+        } else {
+            for package in self
+                .get_scope_packages("user")
+                .into_iter()
+                .chain(self.get_scope_packages("project"))
+            {
+                let (package_source, _) = package_source_parts(&package);
+                if matches!(ParsedSource::parse(&package_source), ParsedSource::Npm(_)) {
+                    return Err(rust_native_only_package_error(&package_source));
+                }
+            }
+        }
         if self.is_offline() {
             return Ok(false);
         }
@@ -1797,13 +1634,7 @@ impl PackageManager {
         for (source_str, scope) in update_sources {
             let parsed = ParsedSource::parse(&source_str);
             let updated = match &parsed {
-                ParsedSource::Npm(npm) => {
-                    if !npm.pinned {
-                        self.update_npm_package(npm, scope)?
-                    } else {
-                        false
-                    }
-                }
+                ParsedSource::Npm(_) => return Err(rust_native_only_package_error(&source_str)),
                 ParsedSource::Git(git) => self.update_git(git, scope)?,
                 ParsedSource::Local(_) => false,
             };
@@ -1827,112 +1658,6 @@ impl PackageManager {
                 None => format!("local:{}", self.resolve_path(&local.path).display()),
             },
         }
-    }
-
-    // ------------------------------------------------------------------
-    // npm install internals
-    // ------------------------------------------------------------------
-
-    fn install_npm(
-        &self,
-        source: &NpmSource,
-        scope: SourceScope,
-        temporary: bool,
-    ) -> Result<(), String> {
-        let install_root = self.get_npm_install_root(scope, temporary);
-        self.ensure_npm_project(&install_root);
-        let args = self.get_npm_install_args(std::slice::from_ref(&source.spec), &install_root);
-        self.run_npm_command(&args, None)
-    }
-
-    fn uninstall_npm(&self, source: &NpmSource, scope: SourceScope) -> Result<(), String> {
-        let install_root = self.get_npm_install_root(scope, false);
-        if !install_root.exists() {
-            return Ok(());
-        }
-        let package_manager_name = self.get_package_manager_name();
-        if package_manager_name == "bun" {
-            let args = vec![
-                "uninstall".to_string(),
-                source.name.clone(),
-                "--cwd".to_string(),
-                install_root.display().to_string(),
-            ];
-            return self.run_npm_command(&args, None);
-        }
-        let mut args = vec![
-            "uninstall".to_string(),
-            source.name.clone(),
-            "--prefix".to_string(),
-            install_root.display().to_string(),
-        ];
-        if package_manager_name != "pnpm" {
-            args.push("--legacy-peer-deps".to_string());
-        }
-        self.run_npm_command(&args, None)
-    }
-
-    fn update_npm_package(&self, source: &NpmSource, scope: SourceScope) -> Result<bool, String> {
-        let installed_path = self.get_managed_npm_install_path(source, scope);
-        let installed_version = if installed_path.exists() {
-            installed_npm_version(&installed_path)
-        } else {
-            None
-        };
-        let should_update: bool = match installed_version {
-            Some(installed) => {
-                let latest = self.get_latest_npm_version(source)?;
-                semver_gt(&latest, &installed)
-            }
-            None => true,
-        };
-        if !should_update {
-            return Ok(false);
-        }
-        self.install_npm(source, scope, false)?;
-        Ok(true)
-    }
-
-    fn get_latest_npm_version(&self, source: &NpmSource) -> Result<String, String> {
-        let spec = if source.version.is_some() {
-            source.spec.clone()
-        } else {
-            source.name.clone()
-        };
-        let (command, command_args) = self.get_npm_command();
-        let mut args = command_args.clone();
-        args.push("view".to_string());
-        args.push(spec);
-        args.push("version".to_string());
-        args.push("--json".to_string());
-        let stdout = self.run_command_capture(&command, &args, None)?;
-        let raw = stdout.trim();
-        if raw.is_empty() {
-            return Err("Empty response from npm view".to_string());
-        }
-        let parsed: Value = serde_json::from_str(raw)
-            .map_err(|_| "Unexpected response from npm view".to_string())?;
-        if let Ok(s) = serde_json::from_value::<String>(parsed.clone()) {
-            return Ok(s);
-        }
-        if let Value::Array(list) = parsed {
-            let versions: Vec<String> = list
-                .iter()
-                .filter_map(|v| v.as_str().filter(|s| !s.is_empty()).map(|s| s.to_string()))
-                .collect();
-            if !versions.is_empty() {
-                if let Some(range) = &source.range {
-                    if let Some(latest) =
-                        versions.iter().filter(|v| semver_satisfies(v, range)).max()
-                    {
-                        return Ok(latest.clone());
-                    }
-                } else if let Some(latest) = versions.iter().max() {
-                    return Ok(latest.clone());
-                }
-            }
-        }
-        Err("Unexpected response from npm view".to_string())
     }
 
     // ------------------------------------------------------------------
@@ -1985,11 +1710,9 @@ impl PackageManager {
                     Some(&target_dir),
                 )?;
             }
-            let package_json = target_dir.join("package.json");
-            if package_json.exists() {
-                let args = self.get_git_dependency_install_args();
-                self.run_npm_command(&args, Some(&target_dir))?;
-            }
+            // Git packages are usable as resource bundles without installing
+            // JavaScript dependencies. Dependency execution is intentionally
+            // outside the Rust-native package-manager boundary.
             Ok(())
         })();
         if result.is_err() {
@@ -2126,7 +1849,7 @@ impl PackageManager {
             ],
             Some(target_dir),
         )?;
-        // Clean + reinstall deps.
+        // Clean the checkout without reinstalling JavaScript dependencies.
         let clean_result = self.run_command(
             "git",
             &["clean".to_string(), "-fdx".to_string()],
@@ -2134,11 +1857,6 @@ impl PackageManager {
         );
         let _ = std::fs::remove_file(&marker_path);
         clean_result?;
-        let package_json = target_dir.join("package.json");
-        if package_json.exists() {
-            let args = self.get_git_dependency_install_args();
-            self.run_npm_command(&args, Some(target_dir))?;
-        }
         Ok(())
     }
 
@@ -2182,9 +1900,9 @@ impl PackageManager {
 
     /// Port of `DefaultPackageManager.resolve`. Collects all configured and
     /// auto-discovered extensions/skills/prompts/themes into a `ResolvedPaths`.
-    /// Synchronous: a configured-but-missing npm/git package is installed on
-    /// the spot (subject to the offline flag), or an `on_missing` callback may
-    /// take over the decision (upstream `MissingSourceAction`).
+    /// Synchronous: a configured-but-missing git package is cloned on the spot
+    /// (subject to the offline flag), or an `on_missing` callback may take over
+    /// the decision. npm sources are rejected by the Rust-native-only policy.
     pub fn resolve(
         &self,
         on_missing: Option<&dyn Fn(&str) -> MissingSourceAction>,
@@ -2348,30 +2066,8 @@ impl PackageManager {
             };
 
             match &parsed {
-                ParsedSource::Npm(npm) => {
-                    let mut installed_path = self.get_managed_npm_install_path(npm, resolved_scope);
-                    let installed_version = installed_npm_version(&installed_path);
-                    let needs_install = !installed_path.exists()
-                        || installed_version
-                            .as_ref()
-                            .zip(npm.range.as_deref())
-                            .map(|(v, range)| !semver_satisfies(v, range))
-                            .unwrap_or(false);
-                    if needs_install {
-                        let installed = is_missing_handled(resolved_source)?;
-                        if !installed {
-                            continue;
-                        }
-                        installed_path = self.get_managed_npm_install_path(npm, resolved_scope);
-                    }
-                    let mut metadata = metadata;
-                    metadata.base_dir = Some(path_to_string(&installed_path));
-                    self.collect_package_resources(
-                        &installed_path,
-                        accumulator,
-                        filter.as_ref(),
-                        &metadata,
-                    );
+                ParsedSource::Npm(_) => {
+                    return Err(rust_native_only_package_error(resolved_source));
                 }
                 ParsedSource::Git(git) => {
                     let installed_path = self.get_git_install_path(git, resolved_scope);
@@ -2404,7 +2100,7 @@ impl PackageManager {
         scope: &'static str,
     ) -> Result<(), String> {
         match parsed {
-            ParsedSource::Npm(npm) => self.install_npm(npm, scope, scope == "temporary"),
+            ParsedSource::Npm(_) => Err(rust_native_only_package_error("npm source")),
             ParsedSource::Git(git) => self.install_git(git, scope),
             ParsedSource::Local(_) => Ok(()),
         }
@@ -2451,39 +2147,17 @@ impl PackageManager {
         base_dir: &Path,
     ) {
         let resolved = self.resolve_path_from_base(&source.path, base_dir);
-        if !resolved.exists() {
+        if !resolved.is_dir() {
+            // Filesystem extension paths are not executable in the current
+            // Rust-native loader. Compiled extensions must be registered
+            // through a Rust factory.
             return;
         }
-        match fs::metadata(&resolved) {
-            Ok(m) if m.is_file() => {
-                let dirname = resolved
-                    .parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| resolved.clone());
-                let mut m2 = metadata.clone();
-                m2.base_dir = Some(path_to_string(&dirname));
-                self.add_resource(
-                    &mut accumulator.extensions,
-                    &path_to_string(&resolved),
-                    &m2,
-                    true,
-                );
-            }
-            Ok(m) if m.is_dir() => {
-                let mut m2 = metadata.clone();
-                m2.base_dir = Some(path_to_string(&resolved));
-                let resources = self.collect_package_resources(&resolved, accumulator, filter, &m2);
-                if !resources {
-                    self.add_resource(
-                        &mut accumulator.extensions,
-                        &path_to_string(&resolved),
-                        &m2,
-                        true,
-                    );
-                }
-            }
-            _ => {}
-        }
+        let mut package_metadata = metadata.clone();
+        package_metadata.base_dir = Some(path_to_string(&resolved));
+        // This still collects skills, prompts, and themes from a local bundle;
+        // executable extension entries are filtered by collect_package_resources.
+        let _ = self.collect_package_resources(&resolved, accumulator, filter, &package_metadata);
     }
 
     /// Port of upstream `dedupePackages`: project scope wins over global for
@@ -2622,6 +2296,9 @@ impl PackageManager {
         target: &mut std::collections::HashMap<String, (PathMetadata, bool)>,
         metadata: &PathMetadata,
     ) {
+        if resource_type_is_executable(resource_type) {
+            return;
+        }
         if let Some(manifest) = read_pi_manifest(&package_root.join("package.json")) {
             let entries = match resource_type {
                 ResourceType::Extensions => manifest.extensions.clone(),
@@ -2649,6 +2326,9 @@ impl PackageManager {
         target: &mut std::collections::HashMap<String, (PathMetadata, bool)>,
         metadata: &PathMetadata,
     ) {
+        if resource_type_is_executable(resource_type) {
+            return;
+        }
         let all_files = self.collect_manifest_files(package_root, resource_type);
         if user_patterns.is_empty() {
             // Empty array explicitly disables all resources of this type.
@@ -2673,6 +2353,9 @@ impl PackageManager {
         target: &mut std::collections::HashMap<String, (PathMetadata, bool)>,
         metadata: &PathMetadata,
     ) {
+        if resource_type_is_executable(resource_type) {
+            return;
+        }
         let user_patterns = match user_patterns {
             Some(p) if !p.is_empty() => p,
             _ => return,
@@ -2695,6 +2378,9 @@ impl PackageManager {
         package_root: &Path,
         resource_type: ResourceType,
     ) -> Vec<String> {
+        if resource_type_is_executable(resource_type) {
+            return Vec::new();
+        }
         let manifest = read_pi_manifest(&package_root.join("package.json"));
         let entries = manifest.as_ref().map(|m| match resource_type {
             ResourceType::Extensions => m.extensions.clone(),
@@ -2738,6 +2424,9 @@ impl PackageManager {
         target: &mut std::collections::HashMap<String, (PathMetadata, bool)>,
         metadata: &PathMetadata,
     ) {
+        if resource_type_is_executable(resource_type) {
+            return;
+        }
         if entries.is_empty() {
             return;
         }
@@ -3207,54 +2896,6 @@ fn package_source_parts(pkg: &PackageSource) -> (String, bool) {
     }
 }
 
-fn installed_npm_version(installed_path: &Path) -> Option<String> {
-    let package_json = installed_path.join("package.json");
-    let content = std::fs::read_to_string(package_json).ok()?;
-    let pkg: Value = serde_json::from_str(&content).ok()?;
-    pkg.get("version")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-/// Very small semver comparison: numeric dots first, then prerelease-aware.
-fn semver_gt(a: &str, b: &str) -> bool {
-    parse_semver_parts(a)
-        .zip(parse_semver_parts(b))
-        .map(|(pa, pb)| pa > pb)
-        .unwrap_or(a > b)
-}
-
-fn parse_semver_parts(version: &str) -> Option<(Vec<u64>, Option<String>)> {
-    let core = version.split(['-', '+']).next().unwrap_or(version);
-    let prerelease = version
-        .split('-')
-        .nth(1)
-        .map(|s| s.split('+').next().unwrap_or(s).to_string());
-    let parts: Vec<u64> = core.split('.').filter_map(|p| p.parse().ok()).collect();
-    if parts.is_empty() {
-        return None;
-    }
-    Some((parts, prerelease))
-}
-
-fn semver_satisfies(version: &str, range: &str) -> bool {
-    let range = range.trim_start_matches(['^', '~', '=']);
-    if parse_semver_parts(version).is_some() {
-        if range.is_empty() || range == "*" {
-            return true;
-        }
-        if let Some((range_parts, _)) = parse_semver_parts(range) {
-            if let Some((version_parts, _)) = parse_semver_parts(version) {
-                if range_parts.len() != version_parts.len() {
-                    return false;
-                }
-                return range_parts <= version_parts;
-            }
-        }
-    }
-    false
-}
-
 fn short_hash(input: &str) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     use std::hash::{Hash, Hasher};
@@ -3454,17 +3095,6 @@ mod tests {
         let cwd = Path::new("/tmp/cwd");
         let agent = Path::new("/tmp/agent");
         let pm = manager(cwd, agent);
-        // npm user root.
-        assert_eq!(
-            pm.get_npm_install_root("user", false),
-            Path::new("/tmp/agent/npm")
-        );
-        // npm project root.
-        assert_eq!(
-            pm.get_npm_install_root("project", false),
-            Path::new("/tmp/cwd/.pi/npm")
-        );
-        // git user root.
         assert_eq!(
             pm.get_git_install_root("user").unwrap(),
             Path::new("/tmp/agent/git")
@@ -3472,26 +3102,6 @@ mod tests {
         assert_eq!(
             pm.get_git_install_root("project").unwrap(),
             Path::new("/tmp/cwd/.pi/git")
-        );
-    }
-
-    #[test]
-    fn managed_npm_install_path() {
-        let pm = manager_in_memory(Default::default());
-        let source = NpmSource {
-            spec: "npm:left-pad".into(),
-            name: "left-pad".into(),
-            version: None,
-            range: None,
-            pinned: false,
-        };
-        assert_eq!(
-            pm.get_managed_npm_install_path(&source, "user"),
-            Path::new("/tmp/pi-pm-agent/npm/node_modules/left-pad")
-        );
-        assert_eq!(
-            pm.get_managed_npm_install_path(&source, "project"),
-            Path::new("/tmp/pi-pm-cwd/.pi/npm/node_modules/left-pad")
         );
     }
 
@@ -3540,7 +3150,7 @@ mod tests {
             .set_packages(vec![PackageSource::Obj(PackageSourceObj {
                 source: "git:github.com/user/repo@v1".into(),
                 autoload: None,
-                extensions: Some(vec!["extensions/main.ts".into()]),
+                extensions: Some(vec!["extensions/main.so".into()]),
                 skills: Some(vec![]),
                 prompts: Some(vec!["prompts/review.md".into()]),
                 themes: Some(vec!["themes/dark.json".into()]),
@@ -3552,7 +3162,7 @@ mod tests {
                 assert_eq!(o.source, "git:github.com/user/repo@v2");
                 assert_eq!(
                     o.extensions.as_ref().unwrap(),
-                    &vec!["extensions/main.ts".to_string()]
+                    &vec!["extensions/main.so".to_string()]
                 );
                 assert_eq!(
                     o.prompts.as_ref().unwrap(),
@@ -3589,53 +3199,21 @@ mod tests {
     }
 
     #[test]
-    fn ensure_npm_project_creates_package_json() {
-        let cwd = std::env::temp_dir().join(format!("pi-pm-npmproj-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&cwd).unwrap();
-        let agent = cwd.join("agent");
-        let pm = manager(&cwd, &agent);
-        let root = cwd.join("npm");
-        pm.ensure_npm_project(&root);
-        let content = std::fs::read_to_string(root.join("package.json")).unwrap();
-        let parsed: Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(parsed["name"], "pi-extensions");
-        assert_eq!(parsed["private"], true);
-        // .gitignore content for managed installs.
-        assert_eq!(
-            std::fs::read_to_string(root.join(".gitignore")).unwrap(),
-            "*\n!.gitignore\n"
-        );
-        let _ = std::fs::remove_dir_all(&cwd);
-    }
-
-    #[test]
-    fn package_manager_name_and_npm_command() {
+    fn npm_package_operations_fail_with_rust_native_guidance() {
         let mut pm = manager_in_memory(Default::default());
-        pm.settings_manager
-            .set_npm_command(Some(vec!["/usr/bin/npm".into()]));
-        assert_eq!(pm.get_npm_command(), ("/usr/bin/npm".to_string(), vec![]));
-        assert_eq!(pm.get_package_manager_name(), "npm");
-        pm.settings_manager.set_npm_command(Some(vec![
-            "npx".into(),
-            "yarn".into(),
-            "--".into(),
-            "bun".into(),
-        ]));
-        assert_eq!(pm.get_package_manager_name(), "bun");
-    }
-
-    #[test]
-    fn npm_install_args_per_pm() {
-        let mut pm = manager_in_memory(Default::default());
-        pm.settings_manager
-            .set_npm_command(Some(vec!["npm".into()]));
-        let args = pm.get_npm_install_args(&["left-pad".into()], Path::new("/root"));
-        assert!(args.contains(&"--legacy-peer-deps".to_string()), "{args:?}");
-        pm.settings_manager
-            .set_npm_command(Some(vec!["bun".into()]));
-        let args = pm.get_npm_install_args(&["left-pad".into()], Path::new("/root"));
-        assert!(args.contains(&"--omit=peer".to_string()), "{args:?}");
-        assert!(args.contains(&"/root".to_string()), "{args:?}");
+        for operation in ["install", "remove"] {
+            let result = if operation == "install" {
+                pm.install("npm:left-pad", false)
+            } else {
+                pm.remove("npm:left-pad", false)
+            };
+            let error = result.expect_err(operation);
+            assert!(error.contains("Rust-native-only"), "{error}");
+            assert!(error.contains("npm, npx, and bun"), "{error}");
+        }
+        let error = pm.update(Some("npm:left-pad")).expect_err("update");
+        assert!(error.contains("Rust-native-only"), "{error}");
+        assert!(error.contains("npm:left-pad"), "{error}");
     }
 
     #[test]
@@ -3643,10 +3221,6 @@ mod tests {
         assert!(parse_semver_valid("1.2.3"));
         assert!(!parse_semver_valid("^1.2.3"));
         assert!(parse_semver_valid_range("^1.2.3"));
-        assert!(semver_gt("2.0.0", "1.9.9"));
-        assert!(!semver_gt("1.0.0", "1.0.0"));
-        assert!(semver_gt("1.0.1", "1.0.0"));
-        assert!(semver_satisfies("1.5.0", "^1.2.0"));
     }
 }
 
@@ -3685,6 +3259,11 @@ mod resolve_tests {
             &agent.join("skills").join("alpha").join("SKILL.md"),
             "---\nname: alpha\n---\nA\n",
         );
+        write(
+            &agent.join("extensions").join("hook.so"),
+            "rust-extension\n",
+        );
+        write(&agent.join("extensions").join("hook.js"), "export {}\n");
         write(&agent.join("extensions").join("hook.ts"), "export {}\n");
         write(&agent.join("prompts").join("tip.md"), "# tip\n");
         write(&agent.join("themes").join("dark.json"), "{}");
@@ -3701,10 +3280,7 @@ mod resolve_tests {
         assert_eq!(skill.metadata.scope, ResolvedScope::User);
         assert_eq!(skill.metadata.origin, ResourceOrigin::TopLevel);
 
-        assert!(resolved
-            .extensions
-            .iter()
-            .any(|r| r.path.ends_with("hook.ts")));
+        assert!(resolved.extensions.is_empty());
         assert!(resolved.prompts.iter().any(|r| r.path.ends_with("tip.md")));
         assert!(resolved
             .themes
@@ -3753,11 +3329,14 @@ mod resolve_tests {
     fn settings_local_entries_become_user_local_resources() {
         let cwd = fixture("local-cwd");
         let agent = fixture("local-agent");
-        write(&agent.join("extensions").join("mine.ts"), "export {}\n");
+        write(
+            &agent.join("extensions").join("mine.so"),
+            "rust-extension\n",
+        );
         let mut map = crate::core::settings::SettingsMap::new();
         map.insert(
             "extensions".to_string(),
-            Value::Array(vec![Value::String("extensions/mine.ts".into())]),
+            Value::Array(vec![Value::String("extensions/mine.so".into())]),
         );
         let pm = PackageManager::new(PackageManagerOptions {
             cwd: cwd.display().to_string(),
@@ -3769,7 +3348,7 @@ mod resolve_tests {
         let ext = resolved
             .extensions
             .iter()
-            .find(|r| r.path.ends_with("mine.ts"))
+            .find(|r| r.path.ends_with("mine.so"))
             .expect("configured extension");
         assert!(ext.enabled);
         assert_eq!(ext.metadata.source, "local");
@@ -3780,7 +3359,7 @@ mod resolve_tests {
     }
 
     #[test]
-    fn package_filter_enables_and_disables() {
+    fn package_filter_ignores_executable_extensions_and_keeps_resources() {
         let cwd = fixture("filter-cwd");
         let agent = fixture("filter-agent");
         // Configured local package at agent_dir/pkgs/ext with an extensions dir.
@@ -3789,7 +3368,7 @@ mod resolve_tests {
                 .join("pkgs")
                 .join("ext")
                 .join("extensions")
-                .join("a.ts"),
+                .join("a.so"),
             "export {}\n",
         );
         write(
@@ -3797,35 +3376,50 @@ mod resolve_tests {
                 .join("pkgs")
                 .join("ext")
                 .join("extensions")
-                .join("b.ts"),
+                .join("b.so"),
             "export {}\n",
+        );
+        write(
+            &agent
+                .join("pkgs")
+                .join("ext")
+                .join("skills")
+                .join("one")
+                .join("SKILL.md"),
+            "---\nname: one\n---\nskill\n",
+        );
+        write(
+            &agent
+                .join("pkgs")
+                .join("ext")
+                .join("prompts")
+                .join("one.md"),
+            "prompt\n",
+        );
+        write(
+            &agent
+                .join("pkgs")
+                .join("ext")
+                .join("themes")
+                .join("one.json"),
+            "{}",
         );
         let mut pm = resolve_manager(&cwd, &agent);
         pm.settings_manager
             .set_packages(vec![PackageSource::Obj(PackageSourceObj {
                 source: "./pkgs/ext".into(),
                 autoload: None,
-                extensions: Some(vec!["extensions/a.ts".into(), "!extensions/b.ts".into()]),
-                skills: None,
-                prompts: None,
-                themes: None,
+                extensions: Some(vec!["extensions/a.so".into(), "!extensions/b.so".into()]),
+                skills: Some(vec!["skills/one/SKILL.md".into()]),
+                prompts: Some(vec!["prompts/one.md".into()]),
+                themes: Some(vec!["themes/one.json".into()]),
             })]);
         let resolved = pm.resolve(None).unwrap();
 
-        let a = resolved
-            .extensions
-            .iter()
-            .find(|r| r.path.ends_with("a.ts"))
-            .expect("a");
-        assert!(a.enabled);
-        assert_eq!(a.metadata.origin, ResourceOrigin::Package);
-        // b is present but disabled by the `!` exclude pattern.
-        let b = resolved
-            .extensions
-            .iter()
-            .find(|r| r.path.ends_with("b.ts"))
-            .expect("b");
-        assert!(!b.enabled);
+        assert!(resolved.extensions.is_empty());
+        assert!(resolved.skills.iter().any(|r| r.path.ends_with("SKILL.md")));
+        assert!(resolved.prompts.iter().any(|r| r.path.ends_with("one.md")));
+        assert!(resolved.themes.iter().any(|r| r.path.ends_with("one.json")));
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(&agent);
     }
@@ -3853,17 +3447,16 @@ mod resolve_tests {
     }
 
     #[test]
-    fn npm_package_missing_skipped_on_missing() {
+    fn npm_package_resolution_is_rejected_without_install() {
         let cwd = fixture("skip-cwd");
         let agent = fixture("skip-agent");
         let mut pm = resolve_manager(&cwd, &agent);
         pm.settings_manager
             .set_packages(vec![PackageSource::Str("npm:left-pad".into())]);
-        // Missing, not offline, but the on_missing seam says skip => skipped.
-        let resolved = pm
+        let error = pm
             .resolve(Some(&|_source| MissingSourceAction::Skip))
-            .unwrap();
-        assert!(resolved.extensions.is_empty());
+            .unwrap_err();
+        assert!(error.contains("Rust-native-only"), "{error}");
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(&agent);
     }
@@ -3878,7 +3471,7 @@ mod resolve_tests {
         let err = pm
             .resolve(Some(&|_source| MissingSourceAction::Error))
             .unwrap_err();
-        assert!(err.contains("Missing source"), "{err}");
+        assert!(err.contains("Rust-native-only"), "{err}");
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(&agent);
     }
@@ -3891,7 +3484,10 @@ mod resolve_tests {
             &agent.join("skills").join("delta").join("SKILL.md"),
             "---\nname: delta\n---\nD\n",
         );
-        write(&agent.join("extensions").join("plain.ts"), "export {}\n");
+        write(
+            &agent.join("extensions").join("plain.so"),
+            "rust-extension\n",
+        );
         let pm = resolve_manager(&cwd, &agent);
         let resolved = pm.resolve(None).unwrap();
 
@@ -3918,8 +3514,8 @@ mod resolve_tests {
             .iter()
             .map(|s| s.resource_type.as_str())
             .collect();
-        // extensions (0) then skills (1) — prompts/themes absent.
-        assert!(kinds.contains(&"extensions"));
+        // Executable extensions are intentionally absent; skills remain.
+        assert!(!kinds.contains(&"extensions"));
         assert!(kinds.contains(&"skills"));
         assert!(!kinds.contains(&"prompts"));
         let _ = std::fs::remove_dir_all(&cwd);

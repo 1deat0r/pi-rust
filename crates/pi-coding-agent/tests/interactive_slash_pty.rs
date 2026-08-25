@@ -260,15 +260,34 @@ mod unix {
             if row.is_empty() || row.starts_with('#') {
                 continue;
             }
-            let (command, expected) = row
-                .split_once('|')
+            let mut fields = row.split('|');
+            let command = fields
+                .next()
                 .unwrap_or_else(|| panic!("fixture row must be command|expected: {row}"));
+            let expected = fields
+                .next()
+                .unwrap_or_else(|| panic!("fixture row must be command|expected: {row}"));
+            let follow_up = fields.next();
+            assert!(
+                fields.next().is_none(),
+                "fixture row supports at most command|expected|follow-up: {row}"
+            );
             let command = command
                 .replace("$HTML", &sandbox.html.display().to_string())
                 .replace("$MISSING", &sandbox.missing.display().to_string())
                 .replace("$SEED", &sandbox.seed_session_path().display().to_string());
             let capture_before = session.capture();
             session.send_line(&command);
+            match follow_up {
+                Some("enter") => session.send_key("Enter"),
+                Some("enter-clear") => {
+                    session.send_key("Enter");
+                    session.send_key("C-u");
+                }
+                Some("clear") => session.send_key("C-u"),
+                Some(other) => panic!("unsupported fixture follow-up {other:?}: {row}"),
+                None => {}
+            }
             let capture =
                 session.wait_for(|capture| capture.contains(expected) && capture != capture_before);
 

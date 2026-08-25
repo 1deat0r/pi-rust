@@ -4,47 +4,32 @@ An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earen
 
 ## Current status
 
-**Conversion progress: 98.80% — 164 of 166 ledger tasks complete; 2 open.**
+**Conversion progress: 100.00% — 166 of 166 ledger tasks complete; 0 open.**
 
 The denominator includes the full conversion ledger: source audits, provider
 edge cases, TUI, RPC, auxiliary client/server, evaluation, documentation, and
 final verification work. The original 100-item list is only the historical core
-queue. Recalculate the live value with:
+queue. Recalculate the live value and run the source audit with:
 
 ```bash
-node scripts/conversion-progress.mjs
+/home/mustbearnold/.cargo/bin/cargo run -p pi-coding-agent --offline --bin conversion_audit -- all
 ```
 
-The 2026-08-25 completion run is coordinated through the scoped execution
-tree in `.unlazy/full-conversion-20260825/`. The source/export census and
-stale-claim reconciliation are now evidenced by S-001/S-002; the clean-room
-gate (#100), documentation reconciliation (S-065), and independent review
-(S-004) are green, while S-027 and the final S-066 audit remain gated;
-focused OAuth, Anthropic, catalog, proxy, protocol, server, TUI, eval, provider
-matrix, client, harness, reconnect, strict-clippy, live PTY, expanded server,
-and offline parity checks are green, while extension-runtime and final-audit
-leaves remain explicitly gated. See [PLAN.md](PLAN.md)
-and [HANDOFF.md](HANDOFF.md) for the current checkpoint and next
-dependency-safe action.
+The 2026-08-25 completion run is coordinated through the scoped execution tree
+in `.unlazy/full-conversion-20260825/`. The Rust `conversion_audit` binary
+passes the exact 166-ID ledger check, source/TODO audit, and hard zero-JS/TS
+census. Formatting, diff checks, workspace compilation, focused extension and
+package tests, and the full 507-test coding-agent library target are green.
+See [PLAN.md](PLAN.md), [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md), and
+[HANDOFF.md](HANDOFF.md) for the current checkpoint.
 
-The extension boundary now uses a persistent Node/Bun JSONL bridge with
-deterministic command, hook, renderer, provider-config, local JS/TS import,
-live-tool, host-action, context-action, thinking/model, callback-scoped signal,
-native-provider event, typed native-provider adapter, stale-process, timeout,
-protocol, and failure-isolation fixtures, plus a shared-runtime bind helper.
-The bridge embeds byte-identical `jiti@2.7.0`/Babel assets plus the generated
-10,759,929-byte pinned pi/TypeBox graph (SHA-256
-`a82bde7cf62fcf75bf4f24acadc4ade6e526931812bc5594252e4bb4be6e4896`), supports
-the pinned Node/Bun option split, configured alias/virtual-module maps,
-upstream-style path normalization, lifecycle/resource discovery, flag
-preservation, and interactive extension re-evaluation on `/reload` and session
-replacement.
-Print, JSON, RPC, and interactive modes load configured extensions and expose
-live extension tools through their agent contexts. Full S-027 remains open for
-a genuine in-process compiled-Bun/Node-SEA host, full interactive theme
-metadata/activation, and session-before-fork coverage. Typed native-provider
-event conversion into the pi-ai `ProviderStreams`/`Models` facade is covered by
-the focused external fixture.
+The distribution is intentionally 100% Rust: it ships no JavaScript or
+TypeScript source, Node/Bun runtime, npm dependency execution, or source-file
+extension loader. Compiled Rust factories provide extension commands, hooks,
+renderers, tools, flags, and providers. Filesystem JS/TS extension paths are
+rejected or ignored deterministically, while skills, prompts, themes, and Git
+resource packages remain supported. HTML export is a static document rendered
+by Rust without browser JavaScript.
 
 The port already includes substantial CLI and runtime work, including the
 in-process agent loop, stateful harness-backed print, JSON, and interactive

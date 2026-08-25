@@ -4,12 +4,12 @@
 
 The existing conversion goal is resumed under the scoped unlazy contract
 `.unlazy/full-conversion-20260825/`. The current authoritative checker output
-is **Conversion progress: 98.80% (164/166; 2 open)**. S-001 and S-002 are now
-closed with the current source/export census and claim-reconciliation
-artifacts; the current wave has unit, mock,
-and live evidence across providers, client/server, harness, and reconnects.
-The final clean-room gate (#100), documentation reconciliation (S-065), and
-independent review (S-004) are now green; S-027 and S-066 remain open.
+is **Conversion progress: 100.00% (166/166; 0 open)**. S-001 through S-066
+and the original 1–100 queue are checked with the current source/export
+census, claim reconciliation, implementation, and release evidence. The
+Rust-only completion gate is enforced by the Cargo-native `conversion_audit`
+binary; it validates the ledger universe, source audit, and zero JS/TS source
+census.
 
 The first implementation wave completed the audited implementation leaves
 (`leaf-A1`), Copilot OAuth
@@ -20,58 +20,38 @@ cleanup, TUI static/test cleanup (`leaf-E1`), TUI behavior (`leaf-E3`), eval
 metrics (`leaf-F1`), provider matrix (`leaf-B4`), auxiliary client (`leaf-D2`),
 harness/mode (`leaf-C1`), reconnect E2E (`leaf-D3`), live PTY rerun
 (`leaf-E2b`), and measured strict clippy cleanup (`leaf-R3`). The active wave
-is the production extension runtime closure (`leaf-C2d`) and the final
-audit/reconciliation leaves. Print, JSON, RPC, and interactive mode now load
-and bind configured extensions, publish host catalogs, and expose live
-extension tools. The parity/release fixture leaf (`leaf-F2`) is now green for
-all 37 declared offline branches; its single credentialed live branch remains
-explicitly not-run. The driver owns the conversion ledger and synchronized
-documentation.
+is the final Rust-only audit/reconciliation wave. Print, JSON, RPC, and
+interactive mode bind Rust-native extension factories, publish host catalogs,
+and expose live extension tools. The parity/release fixture leaf (`leaf-F2`)
+is green for all declared offline branches; its credentialed live branch
+remains explicitly not-run. The driver owns the conversion ledger and
+synchronized documentation.
 
-The current extension bridge (`leaf-C2d`) is a persistent Node/Bun JSONL
-boundary with deterministic async command/hook/renderer/provider fixtures,
-local JS/TS imports, live external-tool callbacks, a production-shaped shared
-runtime bind, synchronous getter snapshots, callback-scoped context signal and
-control actions, ordered tool updates, a bridge-native-provider event protocol,
-typed native-provider conversion into pi-ai `ProviderStreams`/`Models`,
-stale-process invalidation, and timeout/protocol cleanup. The active
-implementation checkpoint now embeds the generated 10,759,929-byte pi/TypeBox
-module graph (Bun 1.4.0; SHA-256
-`a82bde7cf62fcf75bf4f24acadc4ade6e526931812bc5594252e4bb4be6e4896`), keeps
-the pinned Node/Bun alias-versus-virtual-module split, normalizes extension
-paths, preserves shared mirror identities, and re-evaluates the interactive
-extension set on `/reload`. Startup, shutdown, reload flag preservation,
-cancellable session switching, session replacement, and print/interactive
-resource discovery are covered by focused fixtures. Print, JSON, RPC, and
-interactive startup register queued native providers into the live Models
-facade before provider/model lookup. S-027 remains open only for a genuine
-in-process compiled-Bun/Node-SEA host, full interactive theme
-metadata/activation, and session-before-fork coverage.
+The final extension boundary is Rust-native only. No Node/Bun JSONL bridge,
+JavaScript/TypeScript source, npm execution, or source-language extension
+loading is shipped. Rust factories cover commands, hooks, renderers, tools,
+flags, and provider registration; filesystem JS/TS paths are deterministically
+rejected or ignored. Static HTML export is rendered in Rust without browser
+JavaScript.
 
 ## Checkpoint 2026-08-25 — progress gate and release verification
 
-S-001, S-002, S-003, and #99 are closed with their recorded inventory,
-documentation, checker, and real-binary evidence. The unit/mock checker suite
-(`node --test
-scripts/conversion-progress.test.mjs`, 7 passed), and the authoritative
-checker is **Conversion progress: 98.80% (164/166; 2 open)**. The extension
-loader now embeds pinned `jiti@2.7.0`/Babel assets, transforms TS/TSX through
-`jiti/static`, covers configured alias/virtual-module loading, and emits
-deterministic known-module diagnostics; the live mode adapter maps extension
-tool results, host actions, and synchronous context snapshots and is covered
-by 19 loader tests plus 4 integration tests. Bun 1.4.0 runs the same loader
-fixture set. Interactive reload re-evaluates changed extension source and
-refreshes the tool catalog. #97 is closed with
+S-001 through S-066 and #97–100 are closed with their recorded inventory,
+documentation, checker, and real-binary evidence. The Cargo-native
+`conversion_audit -- all` command reports **100.00% (166/166; 0 open)**,
+zero source-audit blockers, and zero JS/TS source files. The Rust extension
+loader covers native factory registration, commands, hooks, renderers, tools,
+flags, and provider registration; unsupported filesystem source paths and npm
+package execution fail deterministically. #97 is closed with
 `cargo build --workspace --release --offline` and the full release suite using
 `cargo test --workspace --release --offline --quiet -- --test-threads=2`.
 The bounded test concurrency is required to keep the live tmux/PTY fixtures
 from being starved by the host's default test fan-out. The independent
 clean-room gate (#100) is green in
-`.unlazy/full-conversion-20260825/gates/clean-room-current.md`; the next gates
-are the S-027 residual review and the final S-066 source/TODO denominator
-freeze after S-027 is resolved.
+`.unlazy/full-conversion-20260825/gates/clean-room-current.md`; the final
+Rust-only denominator freeze is recorded by S-066.
 
-## Session 13 reviewer preparation — 2026-08-25 (§0.3)
+## Historical Session 13 reviewer preparation — superseded 2026-08-25 (§0.3)
 
 The final convergence review is anchored to upstream commit
 `5cd93f688aaab89dbb6dfa4aca535f21796ae185` and the live checker output

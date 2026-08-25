@@ -12,8 +12,8 @@
 /new|started new session
 /resume|seed-
 /tree|session tree:
-/fork|fork session
 /clone|clone session
 /export $HTML|exported session to
 /import $SEED|imported
 /import $MISSING|file not found
+/fork|fork session|enter-clear

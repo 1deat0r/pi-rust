@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 
 /// Source metadata for an extension/command (port of `core/source-info.ts`).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SourceInfo {
     pub path: String,
     pub source: String,
@@ -89,6 +89,12 @@ pub struct RegistrationRecord {
 /// ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtensionHostAction {
+    WaitForIdle,
+    NewSession,
+    Fork,
+    NavigateTree,
+    SwitchSession,
+    Reload,
     SendMessage,
     SendUserMessage,
     AppendEntry,
@@ -120,6 +126,12 @@ pub enum ExtensionHostAction {
 impl ExtensionHostAction {
     pub fn from_protocol_name(name: &str) -> Option<Self> {
         Some(match name {
+            "waitForIdle" => Self::WaitForIdle,
+            "newSession" => Self::NewSession,
+            "fork" => Self::Fork,
+            "navigateTree" => Self::NavigateTree,
+            "switchSession" => Self::SwitchSession,
+            "reload" => Self::Reload,
             "sendMessage" => Self::SendMessage,
             "sendUserMessage" => Self::SendUserMessage,
             "appendEntry" => Self::AppendEntry,
@@ -149,6 +161,128 @@ impl ExtensionHostAction {
             _ => return None,
         })
     }
+
+    /// Return the external bridge spelling for this host action.
+    pub const fn protocol_name(self) -> &'static str {
+        match self {
+            Self::WaitForIdle => "waitForIdle",
+            Self::NewSession => "newSession",
+            Self::Fork => "fork",
+            Self::NavigateTree => "navigateTree",
+            Self::SwitchSession => "switchSession",
+            Self::Reload => "reload",
+            Self::SendMessage => "sendMessage",
+            Self::SendUserMessage => "sendUserMessage",
+            Self::AppendEntry => "appendEntry",
+            Self::SetSessionName => "setSessionName",
+            Self::GetSessionName => "getSessionName",
+            Self::SetLabel => "setLabel",
+            Self::GetActiveTools => "getActiveTools",
+            Self::GetAllTools => "getAllTools",
+            Self::SetActiveTools => "setActiveTools",
+            Self::GetCommands => "getCommands",
+            Self::SetModel => "setModel",
+            Self::GetThinkingLevel => "getThinkingLevel",
+            Self::SetThinkingLevel => "setThinkingLevel",
+            Self::GetModel => "getModel",
+            Self::GetScopedModels => "getScopedModels",
+            Self::IsIdle => "isIdle",
+            Self::IsProjectTrusted => "isProjectTrusted",
+            Self::GetSignal => "getSignal",
+            Self::Abort => "abort",
+            Self::HasPendingMessages => "hasPendingMessages",
+            Self::Shutdown => "shutdown",
+            Self::GetContextUsage => "getContextUsage",
+            Self::Compact => "compact",
+            Self::GetSystemPrompt => "getSystemPrompt",
+            Self::GetSystemPromptOptions => "getSystemPromptOptions",
+            Self::ToolUpdate => "toolUpdate",
+        }
+    }
+
+    pub const fn is_lifecycle(self) -> bool {
+        matches!(
+            self,
+            Self::NewSession | Self::Fork | Self::NavigateTree | Self::SwitchSession | Self::Reload
+        )
+    }
+}
+
+/// A host request that has been accepted but still needs mode/loader work.
+///
+/// `args` retains the original bridge arguments, while `payload` is the
+/// normalized mode-facing action already used by the legacy drain API. Keeping
+/// both preserves the typed operation and the original request data for the
+/// loader completion response; this type deliberately does not claim that the
+/// operation has completed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingHostAction {
+    pub action: ExtensionHostAction,
+    pub args: Value,
+    pub payload: Value,
+    /// Optional bridge-owned continuation data copied from the reserved
+    /// `args.options.__bridgeContinuation` field. The host never interprets
+    /// it, and the original marker remains in `args` and `payload`.
+    pub continuation: Option<Value>,
+}
+
+impl PendingHostAction {
+    pub fn new(action: ExtensionHostAction, args: Value, payload: Value) -> Self {
+        Self::with_continuation(action, args, payload, None)
+    }
+
+    pub fn with_continuation(
+        action: ExtensionHostAction,
+        args: Value,
+        payload: Value,
+        continuation: Option<Value>,
+    ) -> Self {
+        let continuation = continuation.or_else(|| {
+            args.get("options")
+                .and_then(|options| options.get("__bridgeContinuation"))
+                .cloned()
+                .or_else(|| args.get("__bridgeContinuation").cloned())
+        });
+        Self {
+            action,
+            args,
+            payload,
+            continuation,
+        }
+    }
+
+    pub fn is_lifecycle(&self) -> bool {
+        self.action.is_lifecycle()
+    }
+
+    pub fn continuation_metadata(&self) -> Option<&Value> {
+        self.continuation.as_ref()
+    }
+}
+
+/// Optional sink used by a loader to emit the completion for a lifecycle
+/// request after the mode has actually applied it.
+pub type LifecycleCompletionSink =
+    Arc<dyn Fn(PendingHostAction, Value) -> Result<(), String> + Send + Sync + 'static>;
+
+/// Host changes requested by an extension and waiting for mode application.
+/// Each field is optional because a drain consumes only the latest request of
+/// that kind; no option means that no request is pending.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RequestedHostChanges {
+    pub model: Option<Value>,
+    pub model_request: Option<PendingHostAction>,
+    pub active_tools: Option<Vec<String>>,
+}
+
+/// Result of the explicit host-state dispatch API. The external bridge's
+/// current synchronous dispatch method can only return `Completed`; the
+/// loader/mode integration can retain `Pending` and complete it after the mode
+/// has applied the request.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExtensionHostActionOutcome {
+    Completed(Value),
+    Pending(PendingHostAction),
 }
 
 /// Rust integration point for actions that are owned by the coding-agent
@@ -156,6 +290,23 @@ impl ExtensionHostAction {
 /// not re-enter the same extension callback while dispatching an action.
 pub trait ExtensionHostActions: Send + Sync {
     fn dispatch(&self, action: ExtensionHostAction, args: &Value) -> Result<Value, String>;
+
+    /// Dispatch while preserving whether the host merely queued the request.
+    /// Existing implementations remain compatible through the default, while
+    /// the loader integration can retain `Pending` instead of fabricating
+    /// completion.
+    fn dispatch_with_outcome(
+        &self,
+        action: ExtensionHostAction,
+        args: &Value,
+    ) -> Result<ExtensionHostActionOutcome, String> {
+        self.dispatch(action, args)
+            .map(ExtensionHostActionOutcome::Completed)
+    }
+
+    /// Install the optional lifecycle completion sink. Hosts that do not
+    /// support completion yet may keep the default no-op implementation.
+    fn set_lifecycle_completion_sink(&self, _sink: LifecycleCompletionSink) {}
 
     /// Return the synchronous host state visible to an extension callback.
     ///
@@ -728,6 +879,12 @@ mod tests {
     #[test]
     fn context_host_action_names_are_typed() {
         for (name, expected) in [
+            ("waitForIdle", ExtensionHostAction::WaitForIdle),
+            ("newSession", ExtensionHostAction::NewSession),
+            ("fork", ExtensionHostAction::Fork),
+            ("navigateTree", ExtensionHostAction::NavigateTree),
+            ("switchSession", ExtensionHostAction::SwitchSession),
+            ("reload", ExtensionHostAction::Reload),
             ("getModel", ExtensionHostAction::GetModel),
             ("getScopedModels", ExtensionHostAction::GetScopedModels),
             ("isIdle", ExtensionHostAction::IsIdle),
@@ -754,5 +911,38 @@ mod tests {
             );
         }
         assert_eq!(ExtensionHostAction::from_protocol_name("unknown"), None);
+    }
+
+    #[test]
+    fn pending_host_action_preserves_bridge_continuation_metadata() {
+        let request = PendingHostAction::new(
+            ExtensionHostAction::SwitchSession,
+            serde_json::json!({
+                "sessionPath": "/tmp/session.jsonl",
+                "options": {
+                    "__bridgeContinuation": {"id": "switch-1"},
+                },
+            }),
+            serde_json::json!({
+                "type": "switch_session",
+                "options": {
+                    "__bridgeContinuation": {"id": "switch-1"},
+                },
+            }),
+        );
+        assert_eq!(request.action.protocol_name(), "switchSession");
+        assert!(request.is_lifecycle());
+        assert_eq!(
+            request.continuation_metadata(),
+            Some(&serde_json::json!({"id": "switch-1"}))
+        );
+        assert_eq!(
+            request.args["options"]["__bridgeContinuation"],
+            serde_json::json!({"id": "switch-1"})
+        );
+        assert_eq!(
+            request.payload["options"]["__bridgeContinuation"],
+            serde_json::json!({"id": "switch-1"})
+        );
     }
 }

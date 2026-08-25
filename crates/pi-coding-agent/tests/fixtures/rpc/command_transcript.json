@@ -1,1 +1,946 @@
-[{"case":"state.initial","command":"get_state","records":[{"id":"state-0","type":"response","command":"get_state","success":true,"data":{"model":{"provider":"faux","id":"faux-1"},"thinkingLevel":"off","isStreaming":false,"isCompacting":false,"steeringMode":"one-at-a-time","followUpMode":"one-at-a-time","sessionFile":"<session-file>","sessionId":"<session-id>","sessionName":null,"autoCompactionEnabled":true,"messageCount":0,"pendingMessageCount":0}}]},{"case":"prompt.success","command":"prompt","records":[{"id":"prompt-1","type":"response","command":"prompt","success":true},{"type":"agent_start"},{"type":"turn_start"},{"type":"message_start","role":"user","stopReason":null},{"type":"message_end","role":"user","stopReason":null},{"type":"message_start","role":"assistant","stopReason":"pending"},{"type":"message_update","assistantEvent":{"type":"text_start","contentIndex":0}},{"type":"message_update","assistantEvent":{"type":"text_delta","contentIndex":0,"delta":"faux respons"}},{"type":"message_update","assistantEvent":{"type":"text_delta","contentIndex":0,"delta":"e to: golden (co"}},{"type":"message_update","assistantEvent":{"type":"text_delta","contentIndex":0,"delta":"ntext messages: 1)"}},{"type":"message_update","assistantEvent":{"type":"text_end","contentIndex":0,"content":"faux response to: golden (context messages: 1)"}},{"type":"message_end","role":"assistant","stopReason":"stop"},{"type":"turn_end","role":"assistant","toolResultCount":0},{"type":"agent_end","messageCount":2,"willRetry":false},{"type":"agent_settled"}]},{"case":"steer.success","command":"steer","records":[{"type":"queue_update","steering":["interrupt"],"followUp":[]},{"id":"steer-1","type":"response","command":"steer","success":true}]},{"case":"follow_up.success","command":"follow_up","records":[{"type":"queue_update","steering":["interrupt"],"followUp":["continue"]},{"id":"follow-1","type":"response","command":"follow_up","success":true}]},{"case":"set_steering_mode.success","command":"set_steering_mode","records":[{"id":"steering-mode","type":"response","command":"set_steering_mode","success":true}]},{"case":"set_follow_up_mode.success","command":"set_follow_up_mode","records":[{"id":"follow-mode","type":"response","command":"set_follow_up_mode","success":true}]},{"case":"state.queued","command":"get_state","records":[{"id":"state-1","type":"response","command":"get_state","success":true,"data":{"model":{"provider":"faux","id":"faux-1"},"thinkingLevel":"off","isStreaming":false,"isCompacting":false,"steeringMode":"one-at-a-time","followUpMode":"one-at-a-time","sessionFile":"<session-file>","sessionId":"<session-id>","sessionName":null,"autoCompactionEnabled":true,"messageCount":2,"pendingMessageCount":2}}]},{"case":"abort.success","command":"abort","records":[{"id":"abort-1","type":"response","command":"abort","success":true}]},{"case":"compact.success","command":"compact","records":[{"type":"compaction_start","reason":"manual"},{"type":"compaction_end","reason":"manual","result":{"summary":"Compaction summary: history retained","firstKeptEntryId":"<entry-id>","tokensBefore":18,"estimatedTokensAfter":18,"usage":{"input":309,"output":9,"cacheRead":0,"cacheWrite":0,"totalTokens":318,"cost":{"input":0.0,"output":0.0,"cache_read":0.0,"cache_write":0.0,"total":0.0}},"details":{"readFiles":[],"modifiedFiles":[]}},"aborted":false,"willRetry":false},{"id":"compact-1","type":"response","command":"compact","success":true,"data":{"summary":"Compaction summary: history retained","firstKeptEntryId":"<entry-id>","tokensBefore":18,"estimatedTokensAfter":18,"usage":{"input":309,"output":9,"cacheRead":0,"cacheWrite":0,"totalTokens":318,"cost":{"input":0.0,"output":0.0,"cache_read":0.0,"cache_write":0.0,"total":0.0}},"details":{"readFiles":[],"modifiedFiles":[]}}}]},{"case":"set_auto_compaction.success","command":"set_auto_compaction","records":[{"id":"auto-compact","type":"response","command":"set_auto_compaction","success":true}]},{"case":"set_auto_retry.success","command":"set_auto_retry","records":[{"id":"auto-retry","type":"response","command":"set_auto_retry","success":true}]},{"case":"abort_retry.success","command":"abort_retry","records":[{"id":"abort-retry","type":"response","command":"abort_retry","success":true}]},{"case":"bash.success","command":"bash","records":[{"id":"bash-1","type":"response","command":"bash","success":true,"data":{"output":"golden","exitCode":0,"cancelled":false,"truncated":false}}]},{"case":"abort_bash.success","command":"abort_bash","records":[{"id":"abort-bash","type":"response","command":"abort_bash","success":true}]},{"case":"get_available_models.success","command":"get_available_models","records":[{"id":"models","type":"response","command":"get_available_models","success":true,"data":{"modelCount":1268,"firstModel":{"provider":"amazon-bedrock","id":"amazon.nova-2-lite-v1:0"},"lastModel":{"provider":"zai-coding-cn","id":"glm-5.3"}}}]},{"case":"set_model.success","command":"set_model","records":[{"id":"set-model","type":"response","command":"set_model","success":true,"data":{"provider":"google","id":"gemini-2.5-flash"}}]},{"case":"set_model.unknown","command":"set_model","records":[{"id":"set-model-bad","type":"response","command":"set_model","success":false,"error":"Model not found: nope/missing"}]},{"case":"cycle_model.success","command":"cycle_model","records":[{"id":"cycle-model","type":"response","command":"cycle_model","success":true,"data":{"model":{"provider":"google","id":"gemini-2.5-flash-lite"},"thinkingLevel":"off","isScoped":false}}]},{"case":"set_thinking_level.success","command":"set_thinking_level","records":[{"type":"thinking_level_changed","level":"high"},{"id":"thinking","type":"response","command":"set_thinking_level","success":true}]},{"case":"cycle_thinking_level.success","command":"cycle_thinking_level","records":[{"type":"thinking_level_changed","level":"off"},{"id":"cycle-thinking","type":"response","command":"cycle_thinking_level","success":true,"data":{"level":"off"}}]},{"case":"get_available_thinking_levels.success","command":"get_available_thinking_levels","records":[{"id":"thinking-levels","type":"response","command":"get_available_thinking_levels","success":true,"data":{"levels":["off","minimal","low","medium","high"]}}]},{"case":"get_session_stats.success","command":"get_session_stats","records":[{"id":"stats","type":"response","command":"get_session_stats","success":true,"data":{"sessionFile":"<session-file>","sessionId":"<session-id>","userMessages":1,"assistantMessages":1,"toolCalls":0,"toolResults":0,"totalMessages":2,"tokens":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0},"cost":0}}]},{"case":"export_html.success","command":"export_html","records":[{"id":"export","type":"response","command":"export_html","success":true,"data":{"path":"<html-path>"}}]},{"case":"get_fork_messages.success","command":"get_fork_messages","records":[{"id":"fork-messages","type":"response","command":"get_fork_messages","success":true,"data":{"messages":[{"entryId":"<entry-id>","text":"golden"}]}}]},{"case":"get_entries.success","command":"get_entries","records":[{"id":"entries","type":"response","command":"get_entries","success":true,"data":{"entryTypes":["message","message","compaction","message"],"entryCount":4,"leafId":"<entry-id>"}}]},{"case":"get_tree.success","command":"get_tree","records":[{"id":"tree","type":"response","command":"get_tree","success":true,"data":{"rootCount":1,"rootChildCounts":[1],"leafId":"<entry-id>"}}]},{"case":"get_last_assistant_text.success","command":"get_last_assistant_text","records":[{"id":"last","type":"response","command":"get_last_assistant_text","success":true,"data":{"text":"faux response to: golden (context messages: 1)"}}]},{"case":"get_messages.success","command":"get_messages","records":[{"id":"messages","type":"response","command":"get_messages","success":true,"data":{"roles":["user","user","assistant","bashExecution"],"messageCount":4}}]},{"case":"set_session_name.success","command":"set_session_name","records":[{"type":"session_info_changed","name":"golden session"},{"id":"name","type":"response","command":"set_session_name","success":true}]},{"case":"get_commands.success","command":"get_commands","records":[{"id":"commands","type":"response","command":"get_commands","success":true,"data":{"commands":[]}}]},{"case":"fork.success","command":"fork","records":[{"id":"fork","type":"response","command":"fork","success":true,"data":{"text":"golden","cancelled":false}}]},{"case":"switch_session.success","command":"switch_session","records":[{"id":"switch","type":"response","command":"switch_session","success":true,"data":{"cancelled":false}}]},{"case":"clone.success","command":"clone","records":[{"id":"clone","type":"response","command":"clone","success":true,"data":{"cancelled":false}}]},{"case":"new_session.success","command":"new_session","records":[{"id":"new","type":"response","command":"new_session","success":true,"data":{"cancelled":false}}]},{"case":"prompt.missing_message","command":"prompt","records":[{"id":"e1","type":"response","command":"prompt","success":false,"error":"missing message"}]},{"case":"steer.missing_message","command":"steer","records":[{"id":"e2","type":"response","command":"steer","success":false,"error":"missing message"}]},{"case":"follow_up.missing_message","command":"follow_up","records":[{"id":"e3","type":"response","command":"follow_up","success":false,"error":"missing message"}]},{"case":"set_model.missing_provider","command":"set_model","records":[{"id":"e4","type":"response","command":"set_model","success":false,"error":"missing provider"}]},{"case":"set_model.missing_model","command":"set_model","records":[{"id":"e5","type":"response","command":"set_model","success":false,"error":"missing modelId"}]},{"case":"bash.missing_command","command":"bash","records":[{"id":"e6","type":"response","command":"bash","success":false,"error":"missing command"}]},{"case":"switch_session.missing_path","command":"switch_session","records":[{"id":"e7","type":"response","command":"switch_session","success":false,"error":"missing sessionPath"}]},{"case":"fork.missing_entry","command":"fork","records":[{"id":"e8","type":"response","command":"fork","success":false,"error":"missing entryId"}]},{"case":"set_session_name.empty","command":"set_session_name","records":[{"id":"e9","type":"response","command":"set_session_name","success":false,"error":"Session name cannot be empty"}]},{"case":"set_steering_mode.invalid","command":"set_steering_mode","records":[{"id":"e10","type":"response","command":"set_steering_mode","success":false,"error":"Invalid steering mode: invalid"}]},{"case":"set_follow_up_mode.invalid","command":"set_follow_up_mode","records":[{"id":"e11","type":"response","command":"set_follow_up_mode","success":false,"error":"Invalid follow-up mode: invalid"}]},{"case":"set_model.unknown_error","command":"set_model","records":[{"id":"e12","type":"response","command":"set_model","success":false,"error":"Model not found: nope/missing"}]},{"case":"get_entries.unknown_since","command":"get_entries","records":[{"id":"e13","type":"response","command":"get_entries","success":false,"error":"Entry not found: missing-entry"}]},{"case":"switch_session.invalid_path","command":"switch_session","records":[{"id":"e14","type":"response","command":"switch_session","success":false,"error":"failed to open session \"/missing/session.jsonl\": filesystem error: Failed to read session /missing/session.jsonl"}]},{"case":"unknown.command","command":"not_a_command","records":[{"id":"e15","type":"response","command":"not_a_command","success":false,"error":"Unknown command: not_a_command"}]},{"case":"export_html.in_memory","command":"export_html","records":[{"id":"e16","type":"response","command":"export_html","success":false,"error":"Cannot export in-memory session to HTML"}]},{"case":"clone.empty","command":"clone","records":[{"id":"e17","type":"response","command":"clone","success":false,"error":"Cannot clone session: no current entry selected"}]}]
+[
+  {
+    "case": "state.initial",
+    "command": "get_state",
+    "records": [
+      {
+        "id": "state-0",
+        "type": "response",
+        "command": "get_state",
+        "success": true,
+        "data": {
+          "model": {
+            "provider": "faux",
+            "id": "faux-1"
+          },
+          "thinkingLevel": "off",
+          "isStreaming": false,
+          "isCompacting": false,
+          "steeringMode": "one-at-a-time",
+          "followUpMode": "one-at-a-time",
+          "sessionFile": "<session-file>",
+          "sessionId": "<session-id>",
+          "sessionName": null,
+          "autoCompactionEnabled": true,
+          "messageCount": 0,
+          "pendingMessageCount": 0
+        }
+      }
+    ]
+  },
+  {
+    "case": "prompt.success",
+    "command": "prompt",
+    "records": [
+      {
+        "id": "prompt-1",
+        "type": "response",
+        "command": "prompt",
+        "success": true
+      },
+      {
+        "type": "agent_start"
+      },
+      {
+        "type": "turn_start"
+      },
+      {
+        "type": "message_start",
+        "role": "user",
+        "stopReason": null
+      },
+      {
+        "type": "message_end",
+        "role": "user",
+        "stopReason": null
+      },
+      {
+        "type": "message_start",
+        "role": "assistant",
+        "stopReason": "pending"
+      },
+      {
+        "type": "message_update",
+        "assistantEvent": {
+          "type": "text_start",
+          "contentIndex": 0
+        }
+      },
+      {
+        "type": "message_update",
+        "assistantEvent": {
+          "type": "text_delta",
+          "contentIndex": 0,
+          "delta": "faux respons"
+        }
+      },
+      {
+        "type": "message_update",
+        "assistantEvent": {
+          "type": "text_delta",
+          "contentIndex": 0,
+          "delta": "e to: golden (co"
+        }
+      },
+      {
+        "type": "message_update",
+        "assistantEvent": {
+          "type": "text_delta",
+          "contentIndex": 0,
+          "delta": "ntext messages: 1)"
+        }
+      },
+      {
+        "type": "message_update",
+        "assistantEvent": {
+          "type": "text_end",
+          "contentIndex": 0,
+          "content": "faux response to: golden (context messages: 1)"
+        }
+      },
+      {
+        "type": "message_end",
+        "role": "assistant",
+        "stopReason": "stop"
+      },
+      {
+        "type": "turn_end",
+        "role": "assistant",
+        "toolResultCount": 0
+      },
+      {
+        "type": "agent_end",
+        "messageCount": 2,
+        "willRetry": false
+      },
+      {
+        "type": "agent_settled"
+      }
+    ]
+  },
+  {
+    "case": "steer.success",
+    "command": "steer",
+    "records": [
+      {
+        "type": "queue_update",
+        "steering": [
+          "interrupt"
+        ],
+        "followUp": []
+      },
+      {
+        "id": "steer-1",
+        "type": "response",
+        "command": "steer",
+        "success": true
+      }
+    ]
+  },
+  {
+    "case": "follow_up.success",
+    "command": "follow_up",
+    "records": [
+      {
+        "type": "queue_update",
+        "steering": [
+          "interrupt"
+        ],
+        "followUp": [
+          "continue"
+        ]
+      },
+      {
+        "id": "follow-1",
+        "type": "response",
+        "command": "follow_up",
+        "success": true
+      }
+    ]
+  },
+  {
+    "case": "set_steering_mode.success",
+    "command": "set_steering_mode",
+    "records": [
+      {
+        "id": "steering-mode",
+        "type": "response",
+        "command": "set_steering_mode",
+        "success": true
+      }
+    ]
+  },
+  {
+    "case": "set_follow_up_mode.success",
+    "command": "set_follow_up_mode",
+    "records": [
+      {
+        "id": "follow-mode",
+        "type": "response",
+        "command": "set_follow_up_mode",
+        "success": true
+      }
+    ]
+  },
+  {
+    "case": "state.queued",
+    "command": "get_state",
+    "records": [
+      {
+        "id": "state-1",
+        "type": "response",
+        "command": "get_state",
+        "success": true,
+        "data": {
+          "model": {
+            "provider": "faux",
+            "id": "faux-1"
+          },
+          "thinkingLevel": "off",
+          "isStreaming": false,
+          "isCompacting": false,
+          "steeringMode": "one-at-a-time",
+          "followUpMode": "one-at-a-time",
+          "sessionFile": "<session-file>",
+          "sessionId": "<session-id>",
+          "sessionName": null,
+          "autoCompactionEnabled": true,
+          "messageCount": 2,
+          "pendingMessageCount": 2
+        }
+      }
+    ]
+  },
+  {
+    "case": "abort.success",
+    "command": "abort",
+    "records": [
+      {
+        "id": "abort-1",
+        "type": "response",
+        "command": "abort",
+        "success": true
+      }
+    ]
+  },
+  {
+    "case": "compact.success",
+    "command": "compact",
+    "records": [
+      {
+        "type": "compaction_start",
+        "reason": "manual"
+      },
+      {
+        "type": "compaction_end",
+        "reason": "manual",
+        "result": {
+          "summary": "Compaction summary: history retained",
+          "firstKeptEntryId": "<entry-id>",
+          "tokensBefore": 18,
+          "estimatedTokensAfter": 18,
+          "usage": {
+            "input": 309,
+            "output": 9,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 318,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cache_read": 0,
+              "cache_write": 0,
+              "total": 0
+            }
+          },
+          "details": {
+            "readFiles": [],
+            "modifiedFiles": []
+          }
+        },
+        "aborted": false,
+        "willRetry": false
+      },
+      {
+        "id": "compact-1",
+        "type": "response",
+        "command": "compact",
+        "success": true,
+        "data": {
+          "summary": "Compaction summary: history retained",
+          "firstKeptEntryId": "<entry-id>",
+          "tokensBefore": 18,
+          "estimatedTokensAfter": 18,
+          "usage": {
+            "input": 309,
+            "output": 9,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 318,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cache_read": 0,
+              "cache_write": 0,
+              "total": 0
+            }
+          },
+          "details": {
+            "readFiles": [],
+            "modifiedFiles": []
+          }
+        }
+      }
+    ]
+  },
+  {
+    "case": "set_auto_compaction.success",
+    "command": "set_auto_compaction",
+    "records": [
+      {
+        "id": "auto-compact",
+        "type": "response",
+        "command": "set_auto_compaction",
+        "success": true
+      }
+    ]
+  },
+  {
+    "case": "set_auto_retry.success",
+    "command": "set_auto_retry",
+    "records": [
+      {
+        "id": "auto-retry",
+        "type": "response",
+        "command": "set_auto_retry",
+        "success": true
+      }
+    ]
+  },
+  {
+    "case": "abort_retry.success",
+    "command": "abort_retry",
+    "records": [
+      {
+        "id": "abort-retry",
+        "type": "response",
+        "command": "abort_retry",
+        "success": true
+      }
+    ]
+  },
+  {
+    "case": "bash.success",
+    "command": "bash",
+    "records": [
+      {
+        "id": "bash-1",
+        "type": "response",
+        "command": "bash",
+        "success": true,
+        "data": {
+          "output": "golden",
+          "exitCode": 0,
+          "cancelled": false,
+          "truncated": false
+        }
+      }
+    ]
+  },
+  {
+    "case": "abort_bash.success",
+    "command": "abort_bash",
+    "records": [
+      {
+        "id": "abort-bash",
+        "type": "response",
+        "command": "abort_bash",
+        "success": true
+      }
+    ]
+  },
+  {
+    "case": "get_available_models.success",
+    "command": "get_available_models",
+    "records": [
+      {
+        "id": "models",
+        "type": "response",
+        "command": "get_available_models",
+        "success": true,
+        "data": {
+          "modelCount": 1268,
+          "firstModel": {
+            "provider": "amazon-bedrock",
+            "id": "amazon.nova-2-lite-v1:0"
+          },
+          "lastModel": {
+            "provider": "zai-coding-cn",
+            "id": "glm-5.3"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "case": "set_model.success",
+    "command": "set_model",
+    "records": [
+      {
+        "id": "set-model",
+        "type": "response",
+        "command": "set_model",
+        "success": true,
+        "data": {
+          "provider": "google",
+          "id": "gemini-2.5-flash"
+        }
+      }
+    ]
+  },
+  {
+    "case": "set_model.unknown",
+    "command": "set_model",
+    "records": [
+      {
+        "id": "set-model-bad",
+        "type": "response",
+        "command": "set_model",
+        "success": false,
+        "error": "Model not found: nope/missing"
+      }
+    ]
+  },
+  {
+    "case": "cycle_model.success",
+    "command": "cycle_model",
+    "records": [
+      {
+        "id": "cycle-model",
+        "type": "response",
+        "command": "cycle_model",
+        "success": true,
+        "data": {
+          "model": {
+            "provider": "google",
+            "id": "gemini-2.5-flash-lite"
+          },
+          "thinkingLevel": "off",
+          "isScoped": false
+        }
+      }
+    ]
+  },
+  {
+    "case": "set_thinking_level.success",
+    "command": "set_thinking_level",
+    "records": [
+      {
+        "type": "thinking_level_changed",
+        "level": "high"
+      },
+      {
+        "id": "thinking",
+        "type": "response",
+        "command": "set_thinking_level",
+        "success": true
+      }
+    ]
+  },
+  {
+    "case": "cycle_thinking_level.success",
+    "command": "cycle_thinking_level",
+    "records": [
+      {
+        "type": "thinking_level_changed",
+        "level": "off"
+      },
+      {
+        "id": "cycle-thinking",
+        "type": "response",
+        "command": "cycle_thinking_level",
+        "success": true,
+        "data": {
+          "level": "off"
+        }
+      }
+    ]
+  },
+  {
+    "case": "get_available_thinking_levels.success",
+    "command": "get_available_thinking_levels",
+    "records": [
+      {
+        "id": "thinking-levels",
+        "type": "response",
+        "command": "get_available_thinking_levels",
+        "success": true,
+        "data": {
+          "levels": [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "case": "get_session_stats.success",
+    "command": "get_session_stats",
+    "records": [
+      {
+        "id": "stats",
+        "type": "response",
+        "command": "get_session_stats",
+        "success": true,
+        "data": {
+          "sessionFile": "<session-file>",
+          "sessionId": "<session-id>",
+          "userMessages": 1,
+          "assistantMessages": 1,
+          "toolCalls": 0,
+          "toolResults": 0,
+          "totalMessages": 2,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          },
+          "cost": 0
+        }
+      }
+    ]
+  },
+  {
+    "case": "export_html.success",
+    "command": "export_html",
+    "records": [
+      {
+        "id": "export",
+        "type": "response",
+        "command": "export_html",
+        "success": true,
+        "data": {
+          "path": "<html-path>"
+        }
+      }
+    ]
+  },
+  {
+    "case": "get_fork_messages.success",
+    "command": "get_fork_messages",
+    "records": [
+      {
+        "id": "fork-messages",
+        "type": "response",
+        "command": "get_fork_messages",
+        "success": true,
+        "data": {
+          "messages": [
+            {
+              "entryId": "<entry-id>",
+              "text": "golden"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "case": "get_entries.success",
+    "command": "get_entries",
+    "records": [
+      {
+        "id": "entries",
+        "type": "response",
+        "command": "get_entries",
+        "success": true,
+        "data": {
+          "entryTypes": [
+            "message",
+            "message",
+            "compaction",
+            "message",
+            "model_change",
+            "model_change",
+            "thinking_level_change",
+            "thinking_level_change"
+          ],
+          "entryCount": 8,
+          "leafId": "<entry-id>"
+        }
+      }
+    ]
+  },
+  {
+    "case": "get_tree.success",
+    "command": "get_tree",
+    "records": [
+      {
+        "id": "tree",
+        "type": "response",
+        "command": "get_tree",
+        "success": true,
+        "data": {
+          "rootCount": 1,
+          "rootChildCounts": [
+            1
+          ],
+          "leafId": "<entry-id>"
+        }
+      }
+    ]
+  },
+  {
+    "case": "get_last_assistant_text.success",
+    "command": "get_last_assistant_text",
+    "records": [
+      {
+        "id": "last",
+        "type": "response",
+        "command": "get_last_assistant_text",
+        "success": true,
+        "data": {
+          "text": "faux response to: golden (context messages: 1)"
+        }
+      }
+    ]
+  },
+  {
+    "case": "get_messages.success",
+    "command": "get_messages",
+    "records": [
+      {
+        "id": "messages",
+        "type": "response",
+        "command": "get_messages",
+        "success": true,
+        "data": {
+          "roles": [
+            "user",
+            "user",
+            "assistant",
+            "bashExecution"
+          ],
+          "messageCount": 4
+        }
+      }
+    ]
+  },
+  {
+    "case": "set_session_name.success",
+    "command": "set_session_name",
+    "records": [
+      {
+        "type": "session_info_changed",
+        "name": "golden session"
+      },
+      {
+        "id": "name",
+        "type": "response",
+        "command": "set_session_name",
+        "success": true
+      }
+    ]
+  },
+  {
+    "case": "get_commands.success",
+    "command": "get_commands",
+    "records": [
+      {
+        "id": "commands",
+        "type": "response",
+        "command": "get_commands",
+        "success": true,
+        "data": {
+          "commands": []
+        }
+      }
+    ]
+  },
+  {
+    "case": "fork.success",
+    "command": "fork",
+    "records": [
+      {
+        "id": "fork",
+        "type": "response",
+        "command": "fork",
+        "success": true,
+        "data": {
+          "text": "golden",
+          "cancelled": false
+        }
+      }
+    ]
+  },
+  {
+    "case": "switch_session.success",
+    "command": "switch_session",
+    "records": [
+      {
+        "id": "switch",
+        "type": "response",
+        "command": "switch_session",
+        "success": true,
+        "data": {
+          "cancelled": false
+        }
+      }
+    ]
+  },
+  {
+          "case": "clone.failure",
+    "command": "clone",
+    "records": [
+      {
+        "id": "clone",
+        "type": "response",
+        "command": "clone",
+            "success": false,
+            "error": "fork failed: session error InvalidForkTarget: Fork target is not a message entry: <entry-id>"
+      }
+    ]
+  },
+  {
+    "case": "new_session.success",
+    "command": "new_session",
+    "records": [
+      {
+        "id": "new",
+        "type": "response",
+        "command": "new_session",
+        "success": true,
+        "data": {
+          "cancelled": false
+        }
+      }
+    ]
+  },
+  {
+    "case": "prompt.missing_message",
+    "command": "prompt",
+    "records": [
+      {
+        "id": "e1",
+        "type": "response",
+        "command": "prompt",
+        "success": false,
+        "error": "missing message"
+      }
+    ]
+  },
+  {
+    "case": "steer.missing_message",
+    "command": "steer",
+    "records": [
+      {
+        "id": "e2",
+        "type": "response",
+        "command": "steer",
+        "success": false,
+        "error": "missing message"
+      }
+    ]
+  },
+  {
+    "case": "follow_up.missing_message",
+    "command": "follow_up",
+    "records": [
+      {
+        "id": "e3",
+        "type": "response",
+        "command": "follow_up",
+        "success": false,
+        "error": "missing message"
+      }
+    ]
+  },
+  {
+    "case": "set_model.missing_provider",
+    "command": "set_model",
+    "records": [
+      {
+        "id": "e4",
+        "type": "response",
+        "command": "set_model",
+        "success": false,
+        "error": "missing provider"
+      }
+    ]
+  },
+  {
+    "case": "set_model.missing_model",
+    "command": "set_model",
+    "records": [
+      {
+        "id": "e5",
+        "type": "response",
+        "command": "set_model",
+        "success": false,
+        "error": "missing modelId"
+      }
+    ]
+  },
+  {
+    "case": "bash.missing_command",
+    "command": "bash",
+    "records": [
+      {
+        "id": "e6",
+        "type": "response",
+        "command": "bash",
+        "success": false,
+        "error": "missing command"
+      }
+    ]
+  },
+  {
+    "case": "switch_session.missing_path",
+    "command": "switch_session",
+    "records": [
+      {
+        "id": "e7",
+        "type": "response",
+        "command": "switch_session",
+        "success": false,
+        "error": "missing sessionPath"
+      }
+    ]
+  },
+  {
+    "case": "fork.missing_entry",
+    "command": "fork",
+    "records": [
+      {
+        "id": "e8",
+        "type": "response",
+        "command": "fork",
+        "success": false,
+        "error": "missing entryId"
+      }
+    ]
+  },
+  {
+    "case": "set_session_name.empty",
+    "command": "set_session_name",
+    "records": [
+      {
+        "id": "e9",
+        "type": "response",
+        "command": "set_session_name",
+        "success": false,
+        "error": "Session name cannot be empty"
+      }
+    ]
+  },
+  {
+    "case": "set_steering_mode.invalid",
+    "command": "set_steering_mode",
+    "records": [
+      {
+        "id": "e10",
+        "type": "response",
+        "command": "set_steering_mode",
+        "success": false,
+        "error": "Invalid steering mode: invalid"
+      }
+    ]
+  },
+  {
+    "case": "set_follow_up_mode.invalid",
+    "command": "set_follow_up_mode",
+    "records": [
+      {
+        "id": "e11",
+        "type": "response",
+        "command": "set_follow_up_mode",
+        "success": false,
+        "error": "Invalid follow-up mode: invalid"
+      }
+    ]
+  },
+  {
+    "case": "set_model.unknown_error",
+    "command": "set_model",
+    "records": [
+      {
+        "id": "e12",
+        "type": "response",
+        "command": "set_model",
+        "success": false,
+        "error": "Model not found: nope/missing"
+      }
+    ]
+  },
+  {
+    "case": "get_entries.unknown_since",
+    "command": "get_entries",
+    "records": [
+      {
+        "id": "e13",
+        "type": "response",
+        "command": "get_entries",
+        "success": false,
+        "error": "Entry not found: missing-entry"
+      }
+    ]
+  },
+  {
+    "case": "switch_session.invalid_path",
+    "command": "switch_session",
+    "records": [
+      {
+        "id": "e14",
+        "type": "response",
+        "command": "switch_session",
+        "success": false,
+        "error": "failed to open session \"/missing/session.jsonl\": filesystem error: Failed to read session /missing/session.jsonl"
+      }
+    ]
+  },
+  {
+    "case": "unknown.command",
+    "command": "not_a_command",
+    "records": [
+      {
+        "id": "e15",
+        "type": "response",
+        "command": "not_a_command",
+        "success": false,
+        "error": "Unknown command: not_a_command"
+      }
+    ]
+  },
+  {
+    "case": "export_html.in_memory",
+    "command": "export_html",
+    "records": [
+      {
+        "id": "e16",
+        "type": "response",
+        "command": "export_html",
+        "success": false,
+        "error": "Cannot export in-memory session to HTML"
+      }
+    ]
+  },
+  {
+    "case": "clone.empty",
+    "command": "clone",
+    "records": [
+      {
+        "id": "e17",
+        "type": "response",
+        "command": "clone",
+        "success": false,
+        "error": "Cannot clone session: no current entry selected"
+      }
+    ]
+  }
+]

@@ -32,7 +32,7 @@
       "run_by_default": false,
       "description": "Credentialed provider endpoints are intentionally outside the offline release gate; no live pass is claimed.",
       "status_without_live_flag": "not-run",
-      "activation": "node scripts/parity-suite.mjs --live"
+      "activation": "credentialed provider-specific live runner (outside the offline Cargo gate)"
     }
   ]
 }

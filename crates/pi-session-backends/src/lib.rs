@@ -19,7 +19,10 @@ pub mod storage;
 pub mod types;
 
 pub use repo::SqliteSessionRepository;
-pub use search::create_sqlite_session_search;
+pub use search::{
+    create_sqlite_session_search, SearchOptions, SqliteSessionSearch, SqliteSessionSearchHit,
+    SqliteSessionSearchOptions,
+};
 pub use session::SqliteSession;
 pub use types::{
     SqliteSessionCreateOptions, SqliteSessionListOptions, SqliteSessionMetadata,

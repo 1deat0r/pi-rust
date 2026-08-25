@@ -1,19 +1,18 @@
 //! Session → HTML export — port of
 //! `packages/coding-agent/src/core/export-html/index.ts`.
 //!
-//! Renders a session JSONL file into the standalone self-contained HTML
-//! viewer (marked.js + highlight.js vendored) with theme-colored CSS.
+//! Renders a session JSONL file into a self-contained, zero-JavaScript HTML
+//! document with theme-colored CSS.
 //!
-//! Documented divergence: custom tool pre-rendering (extension-owned
-//! `renderCall`/`renderResult` TUI components → ANSI → HTML) is not wired
-//! because the extension system is not yet ported; the template-generated
-//! tools (bash/read/write/edit/ls) render exactly like upstream from the
-//! session entries. Template assets are embedded at compile time (upstream
-//! reads them from disk beside the package).
+//! The export is intentionally static: Rust renders the session tree, header,
+//! Markdown subset, messages, and tool calls/results before writing the file.
+//! It does not depend on a browser runtime, `marked`, or `highlight.js`.
 
+use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::path::Path;
 
-use base64::Engine;
+use pi_tui::components::markdown::{Block, Inline, ListBlock, TableBlock};
 use serde_json::{Map, Value};
 
 use crate::config::APP_NAME;
@@ -21,9 +20,6 @@ use crate::theme;
 
 const TEMPLATE_HTML: &str = include_str!("../../data/export-html/template.html");
 const TEMPLATE_CSS: &str = include_str!("../../data/export-html/template.css");
-const TEMPLATE_JS: &str = include_str!("../../data/export-html/template.js");
-const VENDOR_MARKED_JS: &str = include_str!("../../data/export-html/vendor/marked.min.js");
-const VENDOR_HIGHLIGHT_JS: &str = include_str!("../../data/export-html/vendor/highlight.min.js");
 
 /// Tools rendered directly by the HTML template (not pre-rendered via
 /// TUI→ANSI→HTML pipeline); mirrors upstream `TEMPLATE_RENDERED_TOOLS`.
@@ -170,31 +166,6 @@ pub struct SessionData {
     pub rendered_tools: Option<Map<String, Value>>,
 }
 
-fn session_data_to_base64(data: &SessionData) -> Result<String, ExportError> {
-    let mut map = Map::new();
-    map.insert("header".to_string(), data.header.clone());
-    map.insert("entries".to_string(), Value::Array(data.entries.clone()));
-    map.insert(
-        "leafId".to_string(),
-        match &data.leaf_id {
-            Some(id) => Value::String(id.clone()),
-            None => Value::Null,
-        },
-    );
-    if let Some(sp) = &data.system_prompt {
-        map.insert("systemPrompt".to_string(), Value::String(sp.clone()));
-    }
-    if let Some(tools) = &data.tools {
-        map.insert("tools".to_string(), Value::Array(tools.clone()));
-    }
-    if let Some(rt) = &data.rendered_tools {
-        map.insert("renderedTools".to_string(), Value::Object(rt.clone()));
-    }
-    let json = serde_json::to_string(&Value::Object(map))
-        .map_err(|e| ExportError::msg(format!("serialize session data: {e}")))?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(json.as_bytes()))
-}
-
 /// JS `String.prototype.replace(searchString, replacement)` semantics with no
 /// capture groups (ES GetSubstitution): `$$` -> `$`, `$&` -> the matched
 /// string, ``$` `` -> text before the match, `$'` -> text after the match,
@@ -254,7 +225,1339 @@ pub fn js_replace(haystack: &str, search: &str, replacement: &str) -> String {
     out
 }
 
-/// Core HTML generation (upstream `generateHtml`).
+// ---------------------------------------------------------------------------
+// Static Rust renderer
+// ---------------------------------------------------------------------------
+
+/// Escape a value for use in HTML text or a quoted HTML attribute.
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+/// Keep the URL schemes accepted by the upstream exporter, while rejecting
+/// executable schemes before a URL reaches an HTML attribute.
+fn sanitize_url(value: &str) -> Option<String> {
+    let url: String = value
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control() && *character != '\u{7f}')
+        .collect();
+    if url.is_empty() {
+        return None;
+    }
+
+    let Some(colon) = url.find(':') else {
+        return Some(url);
+    };
+    let scheme = &url[..colon];
+    if scheme.is_empty()
+        || !scheme.chars().enumerate().all(|(index, character)| {
+            if index == 0 {
+                character.is_ascii_alphabetic()
+            } else {
+                character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+            }
+        })
+    {
+        return Some(url);
+    }
+
+    if ["http", "https", "mailto", "tel", "ftp"]
+        .iter()
+        .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
+    {
+        Some(url)
+    } else {
+        None
+    }
+}
+
+fn render_inline(inlines: &[Inline], output: &mut String) {
+    for inline in inlines {
+        match inline {
+            Inline::Text(text) | Inline::Escape(text) => output.push_str(&escape_html(text)),
+            Inline::Strong(inner) => {
+                output.push_str("<strong>");
+                render_inline(inner, output);
+                output.push_str("</strong>");
+            }
+            Inline::Em(inner) => {
+                output.push_str("<em>");
+                render_inline(inner, output);
+                output.push_str("</em>");
+            }
+            Inline::Codespan(text) => {
+                output.push_str("<code>");
+                output.push_str(&escape_html(text));
+                output.push_str("</code>");
+            }
+            Inline::Link { text, href, .. } => {
+                if let Some(url) = sanitize_url(href) {
+                    let _ = write!(output, "<a href=\"{}\">", escape_html(&url));
+                    render_inline(text, output);
+                    output.push_str("</a>");
+                } else {
+                    render_inline(text, output);
+                }
+            }
+            Inline::Br => output.push_str("<br>"),
+            Inline::Del(inner) => {
+                output.push_str("<del>");
+                render_inline(inner, output);
+                output.push_str("</del>");
+            }
+            // Raw HTML from a transcript is data, not markup. Escaping it is
+            // important because messages can contain arbitrary user text.
+            Inline::Html(raw) => output.push_str(&escape_html(raw)),
+            Inline::Latex { text, .. } => {
+                output.push_str("<span class=\"math\">");
+                output.push_str(&escape_html(text));
+                output.push_str("</span>");
+            }
+        }
+    }
+}
+
+fn render_blocks(blocks: &[Block], output: &mut String) {
+    for block in blocks {
+        match block {
+            Block::Heading { level, tokens } => {
+                let level = (*level).clamp(1, 6);
+                let _ = write!(output, "<h{level}>");
+                render_inline(tokens, output);
+                let _ = writeln!(output, "</h{level}>");
+            }
+            Block::Paragraph(tokens) | Block::Text(tokens) => {
+                output.push_str("<p>");
+                render_inline(tokens, output);
+                output.push_str("</p>\n");
+            }
+            Block::LatexBlock { text, .. } => {
+                output.push_str("<div class=\"math-block\"><code>");
+                output.push_str(&escape_html(text));
+                output.push_str("</code></div>\n");
+            }
+            Block::Code { lang, text, .. } => {
+                if lang.is_empty() {
+                    output.push_str("<pre><code>");
+                } else {
+                    let _ = write!(
+                        output,
+                        "<pre><code class=\"language-{}\">",
+                        escape_html(lang)
+                    );
+                }
+                output.push_str(&escape_html(text));
+                output.push_str("</code></pre>\n");
+            }
+            Block::List(list) => render_list(list, output),
+            Block::Table(table) => render_table(table, output),
+            Block::Blockquote(inner) => {
+                output.push_str("<blockquote>\n");
+                render_blocks(inner, output);
+                output.push_str("</blockquote>\n");
+            }
+            Block::Hr => output.push_str("<hr>\n"),
+            // The parser deliberately exposes raw HTML tokens. Keep them
+            // visible as text instead of allowing transcript HTML to execute.
+            Block::Html(raw) => {
+                output.push_str("<pre class=\"markdown-raw\">");
+                output.push_str(&escape_html(raw));
+                output.push_str("</pre>\n");
+            }
+            Block::Space => output.push('\n'),
+        }
+    }
+}
+
+fn render_list(list: &ListBlock, output: &mut String) {
+    if list.ordered {
+        let _ = writeln!(output, "<ol start=\"{}\">", list.start);
+    } else {
+        output.push_str("<ul>\n");
+    }
+    for item in &list.items {
+        output.push_str("<li>");
+        if item.task {
+            let marker = if item.checked { "[x] " } else { "[ ] " };
+            let _ = write!(output, "<span class=\"task-marker\">{marker}</span>");
+        }
+        render_blocks(&item.tokens, output);
+        output.push_str("</li>\n");
+    }
+    if list.ordered {
+        output.push_str("</ol>\n");
+    } else {
+        output.push_str("</ul>\n");
+    }
+}
+
+fn render_table(table: &TableBlock, output: &mut String) {
+    output.push_str("<table><thead><tr>");
+    for cell in &table.header {
+        output.push_str("<th>");
+        render_inline(cell, output);
+        output.push_str("</th>");
+    }
+    output.push_str("</tr></thead><tbody>\n");
+    for row in &table.rows {
+        output.push_str("<tr>");
+        for cell in row {
+            output.push_str("<td>");
+            render_inline(cell, output);
+            output.push_str("</td>");
+        }
+        output.push_str("</tr>\n");
+    }
+    output.push_str("</tbody></table>\n");
+}
+
+fn render_markdown(source: &str) -> String {
+    let blocks = pi_tui::components::markdown::parse_markdown(source);
+    let mut output = String::new();
+    render_blocks(&blocks, &mut output);
+    output
+}
+
+fn value_string(value: Option<&Value>) -> Option<&str> {
+    value.and_then(Value::as_str)
+}
+
+fn message_content(message: &Value) -> Option<&Value> {
+    message.get("content")
+}
+
+fn content_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn content_images(content: Option<&Value>) -> Vec<&Value> {
+    content
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn is_base64(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+}
+
+fn render_image(image: &Value, class_name: &str) -> String {
+    let mime = image
+        .get("mimeType")
+        .or_else(|| image.get("mime_type"))
+        .and_then(Value::as_str)
+        .unwrap_or("image/png");
+    let data = image
+        .get("data")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let safe_mime = mime.starts_with("image/")
+        && mime[6..].chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+        });
+    if !safe_mime || !is_base64(data) {
+        return "<span class=\"tool-error\">[invalid image data]</span>".to_string();
+    }
+    format!(
+        "<img class=\"{}\" src=\"data:{};base64,{}\" alt=\"embedded session image\">",
+        escape_html(class_name),
+        escape_html(mime),
+        escape_html(data)
+    )
+}
+
+fn replace_tabs(value: &str) -> String {
+    value.replace('\t', "   ")
+}
+
+fn shorten_path(path: &str) -> String {
+    for prefix in ["/Users/", "/home/"] {
+        if let Some(rest) = path.strip_prefix(prefix) {
+            if let Some((user, remainder)) = rest.split_once('/') {
+                return format!("~/{user}{remainder}");
+            }
+        }
+    }
+    path.to_string()
+}
+
+fn truncate_chars(value: &str, max_len: usize) -> String {
+    let mut chars = value.chars();
+    let prefix: String = chars.by_ref().take(max_len).collect();
+    if chars.next().is_some() {
+        format!("{prefix}...")
+    } else {
+        prefix
+    }
+}
+
+fn normalize_tree_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn json_string(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+}
+
+fn json_pretty(value: &Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| json_string(value))
+}
+
+fn object_value<'a>(args: Option<&'a Value>, key: &str) -> Option<&'a Value> {
+    args.and_then(Value::as_object)
+        .and_then(|object| object.get(key))
+}
+
+fn first_object_value<'a>(args: Option<&'a Value>, keys: &[&str]) -> Option<&'a Value> {
+    keys.iter().find_map(|key| object_value(args, key))
+}
+
+fn string_argument<'a>(args: Option<&'a Value>, keys: &[&str]) -> Result<Option<&'a str>, ()> {
+    match first_object_value(args, keys) {
+        None => Ok(None),
+        Some(value) => value.as_str().map(Some).ok_or(()),
+    }
+}
+
+fn display_argument(args: Option<&Value>, keys: &[&str], fallback: &str) -> String {
+    match string_argument(args, keys) {
+        Ok(Some(value)) => escape_html(&shorten_path(value)),
+        Ok(None) => escape_html(fallback),
+        Err(()) => "<span class=\"tool-error\">[invalid arg]</span>".to_string(),
+    }
+}
+
+fn number_argument(args: Option<&Value>, key: &str) -> Option<String> {
+    object_value(args, key).and_then(|value| {
+        value
+            .as_i64()
+            .map(|number| number.to_string())
+            .or_else(|| value.as_u64().map(|number| number.to_string()))
+            .or_else(|| value.as_f64().map(|number| number.to_string()))
+    })
+}
+
+fn format_tool_call_summary(call: &Value) -> String {
+    let name = call.get("name").and_then(Value::as_str).unwrap_or("tool");
+    let args = call.get("arguments");
+    match name {
+        "read" => {
+            let path = string_argument(args, &["path", "file_path"])
+                .ok()
+                .flatten()
+                .map(shorten_path)
+                .unwrap_or_default();
+            let offset = number_argument(args, "offset");
+            let limit = number_argument(args, "limit");
+            let line_range = match (offset, limit) {
+                (Some(start), Some(limit)) => format!(
+                    ":{}-{}",
+                    start,
+                    start.parse::<i64>().unwrap_or(1) + limit.parse::<i64>().unwrap_or(1) - 1
+                ),
+                (Some(start), None) => format!(":{start}"),
+                (None, Some(limit)) => format!(":1-{limit}"),
+                (None, None) => String::new(),
+            };
+            format!("[read: {path}{line_range}]")
+        }
+        "write" => format!(
+            "[write: {}]",
+            string_argument(args, &["path", "file_path"])
+                .ok()
+                .flatten()
+                .map(shorten_path)
+                .unwrap_or_default()
+        ),
+        "edit" => format!(
+            "[edit: {}]",
+            string_argument(args, &["path", "file_path"])
+                .ok()
+                .flatten()
+                .map(shorten_path)
+                .unwrap_or_default()
+        ),
+        "bash" => {
+            let command = string_argument(args, &["command"])
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let command = normalize_tree_text(command);
+            let suffix = if command.chars().count() > 50 {
+                "..."
+            } else {
+                ""
+            };
+            format!("[bash: {}{suffix}]", truncate_chars(&command, 50))
+        }
+        "grep" => format!(
+            "[grep: /{}/ in {}]",
+            string_argument(args, &["pattern"])
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+            string_argument(args, &["path"])
+                .ok()
+                .flatten()
+                .map(shorten_path)
+                .unwrap_or_else(|| ".".to_string())
+        ),
+        "find" => format!(
+            "[find: {} in {}]",
+            string_argument(args, &["pattern"])
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+            string_argument(args, &["path"])
+                .ok()
+                .flatten()
+                .map(shorten_path)
+                .unwrap_or_else(|| ".".to_string())
+        ),
+        "ls" => format!(
+            "[ls: {}]",
+            string_argument(args, &["path"])
+                .ok()
+                .flatten()
+                .map(shorten_path)
+                .unwrap_or_else(|| ".".to_string())
+        ),
+        _ => {
+            let args_json = args.map(json_string).unwrap_or_else(|| "{}".to_string());
+            let suffix = if args_json.chars().count() > 40 {
+                "..."
+            } else {
+                ""
+            };
+            format!("[{name}: {}{suffix}]", truncate_chars(&args_json, 40))
+        }
+    }
+}
+
+fn entry_id(entry: &Value, fallback: usize) -> String {
+    entry
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("entry-{fallback}"))
+}
+
+fn timestamp_html(entry: &Value) -> String {
+    entry
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .map(|timestamp| {
+            format!(
+                "<div class=\"message-timestamp\">{}</div>",
+                escape_html(timestamp)
+            )
+        })
+        .unwrap_or_default()
+}
+
+fn message_role(entry: &Value) -> Option<&str> {
+    entry
+        .get("message")
+        .and_then(|message| message.get("role"))
+        .and_then(Value::as_str)
+}
+
+fn find_tool_result<'a>(entries: &'a [Value], tool_call_id: &str) -> Option<&'a Value> {
+    entries.iter().find(|entry| {
+        message_role(entry) == Some("toolResult")
+            && entry
+                .get("message")
+                .and_then(|message| message.get("toolCallId"))
+                .and_then(Value::as_str)
+                == Some(tool_call_id)
+    })
+}
+
+fn find_tool_call<'a>(entries: &'a [Value], tool_call_id: &str) -> Option<&'a Value> {
+    entries.iter().find_map(|entry| {
+        if message_role(entry) != Some("assistant") {
+            return None;
+        }
+        entry
+            .get("message")
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_array)
+            .and_then(|blocks| {
+                blocks.iter().find(|block| {
+                    block.get("type").and_then(Value::as_str) == Some("toolCall")
+                        && block.get("id").and_then(Value::as_str) == Some(tool_call_id)
+                })
+            })
+    })
+}
+
+fn result_text(entry: &Value) -> String {
+    entry
+        .get("message")
+        .map(|message| content_text(message_content(message)))
+        .unwrap_or_default()
+}
+
+fn result_images(entry: &Value) -> Vec<&Value> {
+    entry
+        .get("message")
+        .and_then(message_content)
+        .map(|content| content_images(Some(content)))
+        .unwrap_or_default()
+}
+
+fn render_output(output: &str, language: Option<&str>) -> String {
+    let mut html = String::from("<div class=\"tool-output\"><pre><code");
+    if let Some(language) = language.filter(|language| !language.is_empty()) {
+        let _ = write!(html, " class=\"language-{}\"", escape_html(language));
+    }
+    html.push('>');
+    html.push_str(&escape_html(&replace_tabs(output)));
+    html.push_str("</code></pre></div>");
+    html
+}
+
+fn language_from_path(path: Option<&str>) -> Option<&'static str> {
+    let extension = path?.rsplit('.').next()?.to_ascii_lowercase();
+    Some(match extension.as_str() {
+        "ts" | "tsx" => "typescript",
+        "js" | "jsx" => "javascript",
+        "py" => "python",
+        "rs" => "rust",
+        "go" => "go",
+        "java" => "java",
+        "c" => "c",
+        "cpp" | "hpp" => "cpp",
+        "cs" => "csharp",
+        "php" => "php",
+        "sh" | "bash" | "zsh" => "bash",
+        "sql" => "sql",
+        "html" => "html",
+        "css" | "scss" => "css",
+        "json" => "json",
+        "yaml" | "yml" => "yaml",
+        "xml" => "xml",
+        "md" => "markdown",
+        _ => return None,
+    })
+}
+
+fn render_tool_call(
+    call: &Value,
+    entries: &[Value],
+    rendered_tools: Option<&Map<String, Value>>,
+) -> String {
+    let call_id = call
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("tool-call");
+    let name = call.get("name").and_then(Value::as_str).unwrap_or("tool");
+    let args = call.get("arguments");
+    let result = find_tool_result(entries, call_id);
+    let is_error = result
+        .and_then(|entry| entry.get("message"))
+        .and_then(|message| message.get("isError"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let status = if result.is_none() {
+        "pending"
+    } else if is_error {
+        "error"
+    } else {
+        "success"
+    };
+
+    let mut html = format!(
+        "<div class=\"tool-execution {status}\" data-tool-call-id=\"{}\">",
+        escape_html(call_id)
+    );
+    match name {
+        "bash" => {
+            let command = match string_argument(args, &["command"]) {
+                Ok(Some(command)) => escape_html(command),
+                Ok(None) => "...".to_string(),
+                Err(()) => "<span class=\"tool-error\">[invalid arg]</span>".to_string(),
+            };
+            let _ = write!(html, "<div class=\"tool-command\">$ {command}</div>");
+            if let Some(result) = result {
+                let output = result_text(result);
+                if !output.is_empty() {
+                    html.push_str(&render_output(&output, None));
+                }
+            }
+        }
+        "read" => {
+            let path = display_argument(args, &["file_path", "path"], "");
+            html.push_str("<div class=\"tool-header\"><span class=\"tool-name\">read</span> ");
+            html.push_str("<span class=\"tool-path\">");
+            html.push_str(&path);
+            if let Some(offset) = number_argument(args, "offset") {
+                let _ = write!(html, "<span class=\"line-numbers\">:{offset}");
+                if let Some(limit) = number_argument(args, "limit") {
+                    let end =
+                        offset.parse::<i64>().unwrap_or(1) + limit.parse::<i64>().unwrap_or(1) - 1;
+                    let _ = write!(html, "-{end}");
+                }
+                html.push_str("</span>");
+            }
+            html.push_str("</span></div>");
+            if let Some(result) = result {
+                for image in result_images(result) {
+                    html.push_str(&render_image(image, "tool-image"));
+                }
+                let output = result_text(result);
+                if !output.is_empty() {
+                    html.push_str(&render_output(
+                        &output,
+                        language_from_path(
+                            string_argument(args, &["file_path", "path"]).ok().flatten(),
+                        ),
+                    ));
+                }
+            }
+        }
+        "write" => {
+            let path = display_argument(args, &["file_path", "path"], "");
+            let _ = write!(
+                html,
+                "<div class=\"tool-header\"><span class=\"tool-name\">write</span> <span class=\"tool-path\">{path}</span></div>"
+            );
+            match string_argument(args, &["content"]) {
+                Ok(Some(content)) if !content.is_empty() => html.push_str(&render_output(
+                    content,
+                    language_from_path(
+                        string_argument(args, &["file_path", "path"]).ok().flatten(),
+                    ),
+                )),
+                Ok(None) => {}
+                Err(()) => html.push_str(
+                    "<div class=\"tool-error\">[invalid content arg - expected string]</div>",
+                ),
+                _ => {}
+            }
+            if let Some(result) = result {
+                let output = result_text(result);
+                if !output.trim().is_empty() {
+                    html.push_str(&render_output(&output, None));
+                }
+            }
+        }
+        "edit" => {
+            let path = display_argument(args, &["file_path", "path"], "");
+            let _ = write!(
+                html,
+                "<div class=\"tool-header\"><span class=\"tool-name\">edit</span> <span class=\"tool-path\">{path}</span></div>"
+            );
+            if let Some(result) = result {
+                if let Some(diff) = result
+                    .get("message")
+                    .and_then(|message| message.get("details"))
+                    .and_then(|details| details.get("diff"))
+                    .and_then(Value::as_str)
+                {
+                    html.push_str("<div class=\"tool-diff\">");
+                    for line in diff.lines() {
+                        let class_name = if line.starts_with('+') {
+                            "diff-added"
+                        } else if line.starts_with('-') {
+                            "diff-removed"
+                        } else {
+                            "diff-context"
+                        };
+                        let _ = write!(
+                            html,
+                            "<div class=\"{class_name}\">{}</div>",
+                            escape_html(&replace_tabs(line))
+                        );
+                    }
+                    html.push_str("</div>");
+                } else {
+                    let output = result_text(result);
+                    if !output.trim().is_empty() {
+                        html.push_str(&render_output(&output, None));
+                    }
+                }
+            }
+        }
+        "ls" => {
+            let path = display_argument(args, &["path"], ".");
+            let _ = write!(
+                html,
+                "<div class=\"tool-header\"><span class=\"tool-name\">ls</span> <span class=\"tool-path\">{path}</span>"
+            );
+            if let Some(limit) = number_argument(args, "limit") {
+                let _ = write!(
+                    html,
+                    " <span class=\"line-count\">(limit {})</span>",
+                    escape_html(&limit)
+                );
+            }
+            html.push_str("</div>");
+            if let Some(result) = result {
+                let output = result_text(result);
+                if !output.is_empty() {
+                    html.push_str(&render_output(&output, None));
+                }
+            }
+        }
+        _ => {
+            let _ = write!(
+                html,
+                "<div class=\"tool-header\"><span class=\"tool-name\">{}</span></div>",
+                escape_html(name)
+            );
+            if let Some(rendered) = rendered_tools
+                .and_then(|tools| tools.get(call_id))
+                .and_then(Value::as_object)
+            {
+                for key in ["callHtml", "resultHtmlCollapsed", "resultHtmlExpanded"] {
+                    if let Some(value) = rendered.get(key).and_then(Value::as_str) {
+                        html.push_str(&render_output(value, None));
+                    }
+                }
+            } else {
+                html.push_str(&render_output(
+                    &json_pretty(args.unwrap_or(&Value::Null)),
+                    None,
+                ));
+            }
+            if let Some(result) = result {
+                let output = result_text(result);
+                if !output.is_empty() {
+                    html.push_str(&render_output(&output, None));
+                }
+            }
+        }
+    }
+    html.push_str("</div>");
+    html
+}
+
+fn render_tool_result_entry(entry: &Value, entries: &[Value]) -> String {
+    let message = entry.get("message").unwrap_or(&Value::Null);
+    let call_id = message
+        .get("toolCallId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !call_id.is_empty() && find_tool_call(entries, call_id).is_some() {
+        return format!(
+            "<div class=\"tool-result-reference\" data-entry-id=\"{}\">Tool result rendered with tool call <code>{}</code>.</div>",
+            escape_html(&entry_id(entry, 0)),
+            escape_html(call_id)
+        );
+    }
+    let status = if message
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "error"
+    } else {
+        "success"
+    };
+    let mut html = format!(
+        "<div class=\"tool-execution {status}\" data-entry-id=\"{}\"><div class=\"tool-header\">Tool result</div>",
+        escape_html(&entry_id(entry, 0))
+    );
+    for image in result_images(entry) {
+        html.push_str(&render_image(image, "tool-image"));
+    }
+    let output = result_text(entry);
+    if !output.is_empty() {
+        html.push_str(&render_output(&output, None));
+    }
+    html.push_str("</div>");
+    html
+}
+
+fn render_message_entry(
+    entry: &Value,
+    entries: &[Value],
+    rendered_tools: Option<&Map<String, Value>>,
+    index: usize,
+) -> String {
+    let message = entry.get("message").unwrap_or(&Value::Null);
+    let role = message
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("message");
+    let id = entry_id(entry, index);
+    let id_attr = escape_html(&id);
+    let timestamp = timestamp_html(entry);
+    let content = message_content(message);
+    let mut html = String::new();
+
+    match role {
+        "user" => {
+            let _ = write!(
+                html,
+                "<article class=\"user-message\" id=\"entry-{id_attr}\">"
+            );
+            html.push_str(&timestamp);
+            for image in content_images(content) {
+                html.push_str(&render_image(image, "message-image"));
+            }
+            let text = content_text(content);
+            if !text.trim().is_empty() {
+                let _ = write!(
+                    html,
+                    "<div class=\"markdown-content\">{}</div>",
+                    render_markdown(&text)
+                );
+            }
+            html.push_str("</article>");
+        }
+        "assistant" => {
+            let _ = write!(
+                html,
+                "<article class=\"assistant-message\" id=\"entry-{id_attr}\">"
+            );
+            html.push_str(&timestamp);
+            if let Some(blocks) = content.and_then(Value::as_array) {
+                for block in blocks {
+                    match block.get("type").and_then(Value::as_str) {
+                        Some("text") => {
+                            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                                if !text.trim().is_empty() {
+                                    let _ = write!(
+                                        html,
+                                        "<div class=\"assistant-text markdown-content\">{}</div>",
+                                        render_markdown(text)
+                                    );
+                                }
+                            }
+                        }
+                        Some("thinking") => {
+                            if let Some(thinking) = block.get("thinking").and_then(Value::as_str) {
+                                if !thinking.trim().is_empty() {
+                                    let _ = write!(
+                                        html,
+                                        "<div class=\"thinking-block\"><div class=\"thinking-text\">{}</div></div>",
+                                        escape_html(thinking)
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                for block in blocks {
+                    if block.get("type").and_then(Value::as_str) == Some("toolCall") {
+                        html.push_str(&render_tool_call(block, entries, rendered_tools));
+                    }
+                }
+            } else {
+                let text = content_text(content);
+                if !text.trim().is_empty() {
+                    let _ = write!(
+                        html,
+                        "<div class=\"assistant-text markdown-content\">{}</div>",
+                        render_markdown(&text)
+                    );
+                }
+            }
+            match message.get("stopReason").and_then(Value::as_str) {
+                Some("aborted") => html.push_str("<div class=\"error-text\">Aborted</div>"),
+                Some("error") => {
+                    let error = message
+                        .get("errorMessage")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Unknown error");
+                    let _ = write!(
+                        html,
+                        "<div class=\"error-text\">Error: {}</div>",
+                        escape_html(error)
+                    );
+                }
+                _ => {}
+            }
+            html.push_str("</article>");
+        }
+        "bashExecution" => {
+            let command = value_string(message.get("command")).unwrap_or_default();
+            let is_error = message
+                .get("cancelled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || message
+                    .get("exitCode")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|exit_code| exit_code != 0);
+            let status = if is_error { "error" } else { "success" };
+            let _ = write!(
+                html,
+                "<article class=\"tool-execution {status}\" id=\"entry-{id_attr}\">"
+            );
+            html.push_str(&timestamp);
+            let _ = write!(
+                html,
+                "<div class=\"tool-command\">$ {}</div>",
+                escape_html(command)
+            );
+            if let Some(output) = value_string(message.get("output")) {
+                html.push_str(&render_output(output, None));
+            }
+            if message
+                .get("cancelled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                html.push_str("<div class=\"error-text\">(cancelled)</div>");
+            } else if let Some(exit_code) = message.get("exitCode").and_then(Value::as_i64) {
+                if exit_code != 0 {
+                    let _ = write!(html, "<div class=\"error-text\">(exit {exit_code})</div>");
+                }
+            }
+            html.push_str("</article>");
+        }
+        "toolResult" => html.push_str(&render_tool_result_entry(entry, entries)),
+        _ => {
+            let _ = write!(
+                html,
+                "<article class=\"hook-message\" id=\"entry-{id_attr}\">{timestamp}<div class=\"hook-type\">[{}]</div><pre>{}</pre></article>",
+                escape_html(role),
+                escape_html(&json_pretty(message))
+            );
+        }
+    }
+    html
+}
+
+fn render_entry(
+    entry: &Value,
+    entries: &[Value],
+    rendered_tools: Option<&Map<String, Value>>,
+    index: usize,
+) -> String {
+    let id = entry_id(entry, index);
+    let id_attr = escape_html(&id);
+    match entry.get("type").and_then(Value::as_str) {
+        Some("message") => render_message_entry(entry, entries, rendered_tools, index),
+        Some("model_change") => format!(
+            "<article class=\"model-change\" id=\"entry-{id_attr}\">{}Switched to model: <span class=\"model-name\">{}/{}</span></article>",
+            timestamp_html(entry),
+            escape_html(entry.get("provider").and_then(Value::as_str).unwrap_or("unknown")),
+            escape_html(entry.get("modelId").and_then(Value::as_str).unwrap_or("unknown"))
+        ),
+        Some("thinking_level_change") => format!(
+            "<article class=\"model-change\" id=\"entry-{id_attr}\">{}Thinking level: <span class=\"model-name\">{}</span></article>",
+            timestamp_html(entry),
+            escape_html(entry.get("thinkingLevel").and_then(Value::as_str).unwrap_or("unknown"))
+        ),
+        Some("compaction") => format!(
+            "<article class=\"compaction\" id=\"entry-{id_attr}\">{}<div class=\"compaction-label\">[compaction]</div><div class=\"compaction-content-static\"><strong>Compacted from {} tokens</strong><br><br>{}</div></article>",
+            timestamp_html(entry),
+            entry.get("tokensBefore").and_then(Value::as_u64).unwrap_or(0),
+            escape_html(entry.get("summary").and_then(Value::as_str).unwrap_or_default())
+        ),
+        Some("branch_summary") => format!(
+            "<article class=\"branch-summary\" id=\"entry-{id_attr}\">{}<div class=\"branch-summary-header\">Branch Summary</div><div class=\"markdown-content\">{}</div></article>",
+            timestamp_html(entry),
+            render_markdown(entry.get("summary").and_then(Value::as_str).unwrap_or_default())
+        ),
+        Some("custom_message") => {
+            let content = entry
+                .get("content")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| json_string(entry.get("content").unwrap_or(&Value::Null)));
+            format!(
+                "<article class=\"hook-message\" id=\"entry-{id_attr}\">{}<div class=\"hook-type\">[{}]</div><div class=\"markdown-content\">{}</div></article>",
+                timestamp_html(entry),
+                escape_html(entry.get("customType").and_then(Value::as_str).unwrap_or("custom")),
+                render_markdown(&content)
+            )
+        }
+        _ => format!(
+            "<details class=\"raw-entry\" id=\"entry-{id_attr}\" open><summary>{}</summary><pre>{}</pre></details>",
+            escape_html(entry.get("type").and_then(Value::as_str).unwrap_or("entry")),
+            escape_html(&json_pretty(entry))
+        ),
+    }
+}
+
+#[derive(Default)]
+struct ExportStats {
+    user_messages: usize,
+    assistant_messages: usize,
+    tool_results: usize,
+    tool_calls: usize,
+    custom_messages: usize,
+    compactions: usize,
+    branch_summaries: usize,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+    models: Vec<String>,
+}
+
+fn u64_field(value: Option<&Value>) -> u64 {
+    value
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            value
+                .and_then(Value::as_i64)
+                .and_then(|number| number.try_into().ok())
+        })
+        .unwrap_or(0)
+}
+
+fn compute_stats(entries: &[Value]) -> ExportStats {
+    let mut stats = ExportStats::default();
+    for entry in entries {
+        match entry.get("type").and_then(Value::as_str) {
+            Some("message") => match message_role(entry) {
+                Some("user") => stats.user_messages += 1,
+                Some("toolResult") => stats.tool_results += 1,
+                Some("assistant") => {
+                    stats.assistant_messages += 1;
+                    if let Some(message) = entry.get("message") {
+                        if let Some(blocks) = message.get("content").and_then(Value::as_array) {
+                            stats.tool_calls += blocks
+                                .iter()
+                                .filter(|block| {
+                                    block.get("type").and_then(Value::as_str) == Some("toolCall")
+                                })
+                                .count();
+                        }
+                        let model = message
+                            .get("model")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned);
+                        let provider = message.get("provider").and_then(Value::as_str);
+                        if let Some(model) = model {
+                            let model = provider
+                                .map(|provider| format!("{provider}/{model}"))
+                                .unwrap_or(model);
+                            if !stats.models.contains(&model) {
+                                stats.models.push(model);
+                            }
+                        }
+                        if let Some(usage) = message.get("usage") {
+                            stats.input_tokens += u64_field(usage.get("input"));
+                            stats.output_tokens += u64_field(usage.get("output"));
+                            stats.cache_read_tokens += u64_field(usage.get("cacheRead"));
+                            stats.cache_write_tokens += u64_field(usage.get("cacheWrite"));
+                        }
+                    }
+                }
+                _ => {}
+            },
+            Some("custom_message") => stats.custom_messages += 1,
+            Some("compaction") => stats.compactions += 1,
+            Some("branch_summary") => stats.branch_summaries += 1,
+            _ => {}
+        }
+    }
+    stats
+}
+
+fn format_tokens(tokens: u64) -> String {
+    match tokens {
+        0..=999 => tokens.to_string(),
+        1_000..=9_999 => format!("{:.1}k", tokens as f64 / 1_000.0),
+        10_000..=999_999 => format!("{}k", tokens / 1_000),
+        _ => format!("{:.1}M", tokens as f64 / 1_000_000.0),
+    }
+}
+
+fn render_header(data: &SessionData) -> String {
+    let header = &data.header;
+    let stats = compute_stats(&data.entries);
+    let session_id = header
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let timestamp = header
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let cwd = header
+        .get("cwd")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let models = if stats.models.is_empty() {
+        "unknown".to_string()
+    } else {
+        stats.models.join(", ")
+    };
+
+    let mut html = String::from("<section class=\"header session-header\">");
+    let _ = write!(html, "<h1>Session: {}</h1>", escape_html(session_id));
+    html.push_str("<div class=\"header-info\">");
+    let _ = write!(
+        html,
+        "<div class=\"info-item\"><span class=\"info-label\">Date:</span><span class=\"info-value\">{}</span></div>",
+        escape_html(timestamp)
+    );
+    let _ = write!(
+        html,
+        "<div class=\"info-item\"><span class=\"info-label\">Working directory:</span><span class=\"info-value\">{}</span></div>",
+        escape_html(cwd)
+    );
+    let _ = write!(
+        html,
+        "<div class=\"info-item\"><span class=\"info-label\">Models:</span><span class=\"info-value\">{}</span></div>",
+        escape_html(&models)
+    );
+    let _ = write!(
+        html,
+        "<div class=\"info-item\"><span class=\"info-label\">Messages:</span><span class=\"info-value\">{} user, {} assistant, {} tool results</span></div>",
+        stats.user_messages, stats.assistant_messages, stats.tool_results
+    );
+    let _ = write!(
+        html,
+        "<div class=\"info-item\"><span class=\"info-label\">Tools:</span><span class=\"info-value\">{} calls</span></div>",
+        stats.tool_calls
+    );
+    let _ = write!(
+        html,
+        "<div class=\"info-item\"><span class=\"info-label\">Tokens:</span><span class=\"info-value\">in {}, out {}, cache read {}, cache write {}</span></div>",
+        format_tokens(stats.input_tokens),
+        format_tokens(stats.output_tokens),
+        format_tokens(stats.cache_read_tokens),
+        format_tokens(stats.cache_write_tokens)
+    );
+    html.push_str("</div>");
+
+    if let Some(system_prompt) = &data.system_prompt {
+        html.push_str("<details class=\"system-prompt\" open><summary class=\"system-prompt-header\">System Prompt</summary><pre class=\"system-prompt-full-static\">");
+        html.push_str(&escape_html(system_prompt));
+        html.push_str("</pre></details>");
+    }
+    if let Some(tools) = &data.tools {
+        html.push_str(
+            "<section class=\"tools-list\"><div class=\"tools-header\">Available Tools</div>",
+        );
+        for tool in tools {
+            let name = tool.get("name").and_then(Value::as_str).unwrap_or("tool");
+            let description = tool
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let _ = write!(
+                html,
+                "<div class=\"tool-item\"><span class=\"tool-item-name\">{}</span> - <span class=\"tool-item-desc\">{}</span>",
+                escape_html(name),
+                escape_html(description)
+            );
+            if let Some(parameters) = tool.get("parameters").or_else(|| tool.get("inputSchema")) {
+                let _ = write!(
+                    html,
+                    "<pre class=\"tool-parameters\">{}</pre>",
+                    escape_html(&json_pretty(parameters))
+                );
+            }
+            html.push_str("</div>");
+        }
+        html.push_str("</section>");
+    }
+    let _ = write!(
+        html,
+        "<details class=\"session-header-raw\" open><summary>Raw session header</summary><pre>{}</pre></details>",
+        escape_html(&json_pretty(header))
+    );
+    html.push_str("</section>");
+    html
+}
+
+fn parent_id(entry: &Value) -> Option<&str> {
+    entry.get("parentId").and_then(Value::as_str)
+}
+
+fn entry_depth(entry: &Value, entries: &[Value]) -> usize {
+    let mut depth = 0;
+    let mut current = parent_id(entry);
+    let mut seen = HashSet::new();
+    while let Some(parent) = current {
+        if !seen.insert(parent) {
+            break;
+        }
+        depth += 1;
+        current = entries
+            .iter()
+            .find(|candidate| entry_id(candidate, 0) == parent)
+            .and_then(parent_id);
+        if depth >= entries.len() {
+            break;
+        }
+    }
+    depth.min(12)
+}
+
+fn active_path_ids(entries: &[Value], leaf_id: Option<&str>) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    let mut current = leaf_id.map(ToOwned::to_owned);
+    while let Some(id) = current {
+        if !ids.insert(id.clone()) {
+            break;
+        }
+        current = entries
+            .iter()
+            .find(|entry| entry_id(entry, 0) == id)
+            .and_then(parent_id)
+            .map(ToOwned::to_owned);
+    }
+    ids
+}
+
+fn label_for_entry<'a>(entries: &'a [Value], id: &str) -> Option<&'a str> {
+    entries.iter().find_map(|entry| {
+        (entry.get("type").and_then(Value::as_str) == Some("label")
+            && entry.get("targetId").and_then(Value::as_str) == Some(id))
+        .then(|| entry.get("label").and_then(Value::as_str))
+        .flatten()
+    })
+}
+
+fn tree_text(entry: &Value, entries: &[Value]) -> String {
+    let label = label_for_entry(entries, &entry_id(entry, 0))
+        .map(|label| format!("[{label}] "))
+        .unwrap_or_default();
+    let text = match entry.get("type").and_then(Value::as_str) {
+        Some("message") => match message_role(entry) {
+            Some("user") => format!(
+                "user: {}",
+                truncate_chars(
+                    &normalize_tree_text(&content_text(
+                        entry.get("message").and_then(message_content)
+                    )),
+                    100
+                )
+            ),
+            Some("assistant") => {
+                let content = content_text(entry.get("message").and_then(message_content));
+                if content.trim().is_empty() {
+                    "assistant: (no text)".to_string()
+                } else {
+                    format!(
+                        "assistant: {}",
+                        truncate_chars(&normalize_tree_text(&content), 100)
+                    )
+                }
+            }
+            Some("toolResult") => {
+                let call_id = entry
+                    .get("message")
+                    .and_then(|message| message.get("toolCallId"))
+                    .and_then(Value::as_str);
+                find_tool_call(entries, call_id.unwrap_or(""))
+                    .map(format_tool_call_summary)
+                    .unwrap_or_else(|| "[tool result]".to_string())
+            }
+            Some("bashExecution") => format!(
+                "[bash]: {}",
+                truncate_chars(
+                    &normalize_tree_text(
+                        entry
+                            .get("message")
+                            .and_then(|message| value_string(message.get("command")))
+                            .unwrap_or_default()
+                    ),
+                    100
+                )
+            ),
+            Some(role) => format!("[{role}]"),
+            None => "[message]".to_string(),
+        },
+        Some("compaction") => format!(
+            "[compaction: {}k tokens]",
+            u64_field(entry.get("tokensBefore")) / 1_000
+        ),
+        Some("branch_summary") => format!(
+            "[branch summary]: {}",
+            truncate_chars(
+                &normalize_tree_text(
+                    entry
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                ),
+                100
+            )
+        ),
+        Some("custom_message") => format!(
+            "[{}]: {}",
+            entry
+                .get("customType")
+                .and_then(Value::as_str)
+                .unwrap_or("custom"),
+            truncate_chars(
+                &normalize_tree_text(&json_string(entry.get("content").unwrap_or(&Value::Null))),
+                100
+            )
+        ),
+        Some("model_change") => format!(
+            "[model: {}]",
+            entry
+                .get("modelId")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ),
+        Some("thinking_level_change") => format!(
+            "[thinking: {}]",
+            entry
+                .get("thinkingLevel")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ),
+        Some(other) => format!("[{other}]"),
+        None => "[entry]".to_string(),
+    };
+    format!("{label}{text}")
+}
+
+fn render_tree(data: &SessionData) -> String {
+    let active_ids = active_path_ids(&data.entries, data.leaf_id.as_deref());
+    let mut html = String::new();
+    for (index, entry) in data.entries.iter().enumerate() {
+        let id = entry_id(entry, index);
+        let depth = entry_depth(entry, &data.entries);
+        let active = active_ids.contains(&id);
+        let _ = write!(
+            html,
+            "<div class=\"tree-node{}\" data-entry-id=\"{}\"><span class=\"tree-prefix\">{}{}</span><span class=\"tree-marker\">{}</span><span class=\"tree-content\">{}</span></div>",
+            if active { " in-path active" } else { "" },
+            escape_html(&id),
+            "  ".repeat(depth),
+            if depth == 0 { "" } else { "└─ " },
+            if active { "•" } else { " " },
+            escape_html(&tree_text(entry, &data.entries))
+        );
+    }
+    html
+}
+
+/// Generate the self-contained zero-JavaScript HTML export.
 pub fn generate_html(data: &SessionData, theme_name: Option<&str>) -> Result<String, ExportError> {
     let theme_vars = generate_theme_vars(theme_name)?;
     let colors = theme::get_resolved_theme_colors(theme_name)
@@ -279,27 +1582,41 @@ pub fn generate_html(data: &SessionData, theme_name: Option<&str>) -> Result<Str
         .clone()
         .unwrap_or_else(|| derived.2.clone());
 
-    let session_data_b64 = session_data_to_base64(data)?;
-
-    let css = js_replace(
-        &js_replace(
-            &js_replace(
-                &js_replace(TEMPLATE_CSS, "{{THEME_VARS}}", &theme_vars),
-                "{{BODY_BG}}",
-                &body_bg,
-            ),
-            "{{CONTAINER_BG}}",
-            &container_bg,
-        ),
-        "{{INFO_BG}}",
-        &info_bg,
+    let css = TEMPLATE_CSS
+        .replace("{{THEME_VARS}}", &theme_vars)
+        .replace("{{BODY_BG}}", &body_bg)
+        .replace("{{CONTAINER_BG}}", &container_bg)
+        .replace("{{INFO_BG}}", &info_bg);
+    let tree = render_tree(data);
+    let entries = data
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            render_entry(entry, &data.entries, data.rendered_tools.as_ref(), index)
+        })
+        .collect::<String>();
+    let title = format!(
+        "{} session export",
+        data.header
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
     );
-
-    let html = js_replace(TEMPLATE_HTML, "{{CSS}}", &css);
-    let html = js_replace(&html, "{{JS}}", TEMPLATE_JS);
-    let html = js_replace(&html, "{{SESSION_DATA}}", &session_data_b64);
-    let html = js_replace(&html, "{{MARKED_JS}}", VENDOR_MARKED_JS);
-    let html = js_replace(&html, "{{HIGHLIGHT_JS}}", VENDOR_HIGHLIGHT_JS);
+    let mut html = TEMPLATE_HTML
+        .replace("{{TITLE}}", &escape_html(&title))
+        .replace("{{CSS}}", &css)
+        .replace("{{HEADER}}", &render_header(data))
+        .replace("{{TREE}}", &tree)
+        .replace(
+            "{{TREE_STATUS}}",
+            &format!("{} entries", data.entries.len()),
+        )
+        .replace("{{ENTRIES}}", &entries);
+    html = html.replace(
+        "{{FOOTER}}",
+        "Generated by pi-rust · static zero-JavaScript export",
+    );
     Ok(html)
 }
 
@@ -579,18 +1896,10 @@ mod tests {
         )
         .unwrap();
         let html = std::fs::read_to_string(&out_str).unwrap();
-        assert!(html.contains("Session Export"));
-        // The timestamp travels in the base64 session payload (the viewer
-        // renders it client-side with toLocaleString).
-        let marker = r#"<script id="session-data" type="application/json">"#;
-        let start = html.find(marker).unwrap() + marker.len();
-        let end = html[start..].find("</script>").unwrap();
-        let b64 = &html[start..start + end];
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .unwrap();
-        let data: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(data["header"]["timestamp"], "2026-08-22T05:11:40.419Z");
+        assert!(html.contains("Session: sess_001"));
+        assert!(html.contains("2026-08-22T05:11:40.419Z"));
+        assert!(html.contains("hi"));
+        assert!(!html.contains("<script"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -605,30 +1914,87 @@ mod tests {
         let out_str =
             export_session_file(&path_str, Some(out.to_str().unwrap()), Some("dark")).unwrap();
         let html = std::fs::read_to_string(&out_str).unwrap();
-        // Template markers substituted (the {{HIGHLIGHT_JS}} occurrence
-        // inside the vendored highlight.min.js is reproduced verbatim, like
-        // upstream's JS replace chain — see the oracle parity test).
-        for marker in ["{{CSS}}", "{{JS}}", "{{SESSION_DATA}}", "{{MARKED_JS}}"] {
+        for marker in [
+            "{{CSS}}",
+            "{{TITLE}}",
+            "{{HEADER}}",
+            "{{TREE}}",
+            "{{TREE_STATUS}}",
+            "{{ENTRIES}}",
+            "{{FOOTER}}",
+        ] {
             assert!(!html.contains(marker), "unsubstituted marker {marker}");
         }
-        // Theme vars injected
         assert!(html.contains("--accent: #8abeb7;"));
         assert!(html.contains("--exportPageBg: #18181e;"));
-        // Vendored JS present
-        assert!(html.contains("marked") || html.contains("hljs"));
-        // Session data is base64 and round-trips
-        let marker = r#"<script id="session-data" type="application/json">"#;
-        let start = html.find(marker).unwrap() + marker.len();
-        let end = html[start..].find("</script>").unwrap();
-        let b64 = &html[start..start + end];
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .unwrap();
-        let data: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(data["header"]["id"], "sess_001");
-        assert_eq!(data["entries"].as_array().unwrap().len(), 2);
-        assert_eq!(data["leafId"], "msg_2");
+        assert!(html.contains("class=\"user-message\""));
+        assert!(html.contains("class=\"assistant-message\""));
+        assert!(html.contains("hello"));
+        assert!(html.contains("hi there"));
+        assert!(html.contains("Static zero-JavaScript export"));
+        assert!(!html.contains("<script"));
+        assert!(!html.contains("marked.min.js"));
+        assert!(!html.contains("highlight.min.js"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn static_export_renders_tools_and_escapes_transcript_markup() {
+        let data = SessionData {
+            header: serde_json::json!({
+                "type": "session",
+                "id": "safe-session",
+                "timestamp": "2026-08-22T00:00:00.000Z",
+                "cwd": "/tmp"
+            }),
+            entries: vec![
+                serde_json::json!({
+                    "type": "message",
+                    "id": "user-1",
+                    "parentId": null,
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "<script>alert('x')</script> [unsafe](javascript:alert(1))"}]
+                    }
+                }),
+                serde_json::json!({
+                    "type": "message",
+                    "id": "assistant-1",
+                    "parentId": "user-1",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{
+                            "type": "toolCall",
+                            "id": "call-1",
+                            "name": "bash",
+                            "arguments": {"command": "printf '<owned>'"}
+                        }]
+                    }
+                }),
+                serde_json::json!({
+                    "type": "message",
+                    "id": "result-1",
+                    "parentId": "assistant-1",
+                    "message": {
+                        "role": "toolResult",
+                        "toolCallId": "call-1",
+                        "content": [{"type": "text", "text": "<owned>"}],
+                        "isError": false
+                    }
+                }),
+            ],
+            leaf_id: Some("result-1".to_string()),
+            system_prompt: None,
+            tools: None,
+            rendered_tools: None,
+        };
+        let html = generate_html(&data, Some("dark")).unwrap();
+        assert!(html.contains("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"));
+        assert!(html.contains("printf &#39;&lt;owned&gt;&#39;"));
+        assert!(html.contains("&lt;owned&gt;"));
+        assert!(html.contains("tool-result-reference"));
+        assert!(!html.contains("href=\"javascript:"));
+        assert!(!html.contains("<script"));
     }
 
     #[test]

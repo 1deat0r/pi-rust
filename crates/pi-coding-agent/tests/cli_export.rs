@@ -6,23 +6,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The session payload is embedded as a base64 JSON blob in the
-/// `<script id="session-data" type="application/json">` tag (upstream
-/// `sessionDataToBase64` feed into the viewer).
-fn decode_embedded_payload(html: &str) -> String {
-    let marker = r#"<script id="session-data" type="application/json">"#;
-    let b64 = html
-        .split(marker)
-        .nth(1)
-        .and_then(|s| s.split("</script>").next())
-        .expect("session-data script tag");
-    use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(b64.trim())
-        .expect("base64 payload");
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
 struct Sandbox {
     root: PathBuf,
     home: PathBuf,
@@ -90,11 +73,17 @@ fn export_with_explicit_output() {
     );
     let html = fs::read_to_string(&out_path).unwrap();
     assert!(html.contains("<html"), "expected html document in output");
-    let payload = decode_embedded_payload(&html);
-    assert!(payload.contains("hello"), "expected user text in payload");
     assert!(
-        payload.contains("hi there"),
-        "expected assistant text in payload"
+        html.contains("hello"),
+        "expected user text in rendered HTML"
+    );
+    assert!(
+        html.contains("hi there"),
+        "expected assistant text in rendered HTML"
+    );
+    assert!(
+        !html.contains("<script"),
+        "expected static HTML without scripts"
     );
 }
 

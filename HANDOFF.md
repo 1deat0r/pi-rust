@@ -8,52 +8,76 @@ The current requested progress percentage is based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-98.80% = 164 completed / 166 total tasks
-2 tasks remain open
+100.00% = 166 completed / 166 total tasks
+0 tasks remain open
 
 ```
 
 The authoritative ledger is [CONVERSION-LEDGER.md](CONVERSION-LEDGER.md).
-[PLAN.md](PLAN.md) displays the same value. Recalculate it after every ledger
-edit with:
+[PLAN.md](PLAN.md) displays the same value. Recalculate it and run the final
+source audit after every ledger edit with:
 
 ```bash
-node scripts/conversion-progress.mjs
+/home/mustbearnold/.cargo/bin/cargo run -p pi-coding-agent --offline --bin conversion_audit -- all
 ```
 
-The denominator is intentionally provisional until S-066 finishes the final
-ledger freeze. Do not claim 100% before the final source/TODO audit.
+S-066 is now frozen: the checker validates the 166-ID universe, zero
+source-audit blockers, and zero JS/TS source files.
 
 ## Important working-tree state
 
-The latest pushed checkpoint is
-`61719f8ef1596b90f6898ef019885211555cbd4e`, containing the S-027 graph and
-lifecycle increment plus synchronized documentation. Local `HEAD` and
-`origin/main` match this hash. The current worktree has no tracked changes;
-the
-pre-existing untracked `AGENTS.md` remains untouched and must be preserved.
+The latest pushed checkpoint before this Rust-only wave is
+`977378e5e139c1cf5576ffd1c53bb7e6c8cd71cd`. The current worktree contains the
+Rust-only implementation and documentation changes that are pending the final
+commit/push. The pre-existing untracked `AGENTS.md` remains untouched and must
+be preserved.
 Do not use `git reset --hard`,
 `git checkout --`, broad revert commands, or `git clean`.
 
 Current status: branch `main`, progress checker reports
-`98.80% (164/166; 2 open)`. Ledger rows #100, S-004, and S-065 are now checked with the
-independent clean-room evidence below. The
-embedded `jiti@2.7.0`/Babel runtime, generated pi/TypeBox module graph,
-Node/Bun option branching, configured alias/virtual-module fixtures,
-upstream-style path normalization, lifecycle/resource discovery, flag
-preservation, session replacement, and interactive reload re-evaluation are
-implemented and locally validated. The remaining S-027 residuals are a
-genuine in-process compiled-Bun/Node-SEA host, full interactive theme
-metadata/activation, and session-before-fork coverage. The clean-room gate is
-green; the next gate is the S-027 residual review followed by the final S-066
-audit after S-027 is resolved. The pre-existing untracked `AGENTS.md` remains
+`100.00% (166/166; 0 open)`. The distribution is 100% Rust: no JavaScript or
+TypeScript source, Node/Bun runtime, npm execution, or source-language
+extension loading remains. Rust-native factories, static Rust HTML export,
+the package-manager rejection boundary, and the source audit are implemented
+and locally validated. The pre-existing untracked `AGENTS.md` remains
 preserved and unstaged.
 
 All sections below whose headings say “Current checkpoint” and which contain
 older percentages or commits are historical snapshots from earlier turns.
 The latest active sections near the end of this file supersede them.
 
-## Current implementation checkpoint — 2026-08-25 — S-027 graph and lifecycle increment
+## Current Rust-only completion checkpoint — 2026-08-25
+
+The explicit acceptance change to 100% Rust closes S-027 as a Rust-native
+distribution boundary. The old Node/Bun bridge, embedded JavaScript runtime
+assets, JS/TS tooling, and source-language fixtures are removed. Rust factory
+extensions remain supported; filesystem JS/TS paths and npm/Bun package
+execution return deterministic Rust-native guidance. HTML export is static
+Rust-rendered output.
+
+Final local evidence:
+
+```text
+/home/mustbearnold/.cargo/bin/cargo run -p pi-coding-agent --offline --bin conversion_audit -- all
+  Conversion progress: 100.00% (166/166; 0 open)
+  audit blockers: 0
+  workspace JS/TS source files: 0
+/home/mustbearnold/.cargo/bin/cargo check --workspace --offline --all-targets
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib -- --test-threads=2
+  507 passed
+/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check
+/home/mustbearnold/.cargo/bin/cargo clippy --workspace --offline --all-targets -- -D warnings
+/home/mustbearnold/.cargo/bin/cargo build --workspace --release --offline
+/home/mustbearnold/.cargo/bin/cargo test --workspace --offline --quiet -- --test-threads=2
+/home/mustbearnold/.cargo/bin/cargo test --workspace --release --offline --quiet -- --test-threads=2
+git diff --check
+```
+
+All local validation gates pass. The remaining handoff action is the
+completion commit/push and local/remote hash verification; `AGENTS.md` remains
+pre-existing, untracked, and preserved.
+
+## Historical implementation checkpoint — 2026-08-25 — S-027 graph and lifecycle increment
 
 The bridge now embeds the byte-identical jiti@2.7.0 jiti.cjs and babel.cjs
 artifacts plus a jiti-static.mjs wrapper and the generated 10,759,929-byte

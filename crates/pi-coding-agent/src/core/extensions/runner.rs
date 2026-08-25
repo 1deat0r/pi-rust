@@ -76,11 +76,69 @@ impl KeybindingsConfig {
     }
 }
 
+/// One resource path returned by an extension's `resources_discover` hook.
+///
+/// Upstream retains the owning extension path so the resource loader can
+/// attach source metadata and resolve relative paths from the extension
+/// directory. The legacy string vectors below remain for compatibility with
+/// existing mode callers, while these entries carry the parity information.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiscoveredResource {
+    pub path: String,
+    pub extension_path: String,
+    pub source_info: SourceInfo,
+}
+
+impl DiscoveredResource {
+    pub fn resolved_path(&self, cwd: &str) -> String {
+        // `resources_discover` uses resolvePath(..., { trim: true }) in the
+        // upstream loader. Reuse the extension path resolver so resource
+        // paths have the same tilde, file-URL, Unicode-space, and lexical
+        // normalization behavior as extension entries, even when the target
+        // has not been created yet.
+        let base = self.source_info.base_dir.as_deref().unwrap_or(cwd);
+        crate::core::extensions::loader::resolve_relative_path(self.path.trim(), base)
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ResourceDiscovery {
     pub skill_paths: Vec<String>,
     pub prompt_paths: Vec<String>,
     pub theme_paths: Vec<String>,
+    pub skill_resources: Vec<DiscoveredResource>,
+    pub prompt_resources: Vec<DiscoveredResource>,
+    pub theme_resources: Vec<DiscoveredResource>,
+}
+
+impl ResourceDiscovery {
+    fn resolved_paths(
+        paths: &[String],
+        resources: &[DiscoveredResource],
+        cwd: &str,
+    ) -> Vec<String> {
+        if resources.is_empty() {
+            return paths.to_vec();
+        }
+        resources
+            .iter()
+            .map(|resource| resource.resolved_path(cwd))
+            .collect()
+    }
+
+    pub fn resolved_skill_paths(&self, cwd: &str) -> Vec<String> {
+        Self::resolved_paths(&self.skill_paths, &self.skill_resources, cwd)
+    }
+
+    pub fn resolved_prompt_paths(&self, cwd: &str) -> Vec<String> {
+        Self::resolved_paths(&self.prompt_paths, &self.prompt_resources, cwd)
+    }
+
+    pub fn resolved_theme_paths(&self, cwd: &str) -> Vec<String> {
+        Self::resolved_paths(&self.theme_paths, &self.theme_resources, cwd)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -359,6 +417,24 @@ impl ExtensionRunner {
             payload["targetSessionFile"] = Value::String(target_session_file.to_string());
         }
         self.emit("session_before_switch", &payload)
+            .map(|result| result.is_some_and(|value| value["cancel"] == Value::Bool(true)))
+    }
+
+    /// Emit the upstream cancellable fork hook before the target entry is
+    /// validated or the outgoing session is persisted.  The generic emitter
+    /// stops at the first `{cancel:true}` result for all session-before
+    /// events, preserving extension registration order.
+    pub fn emit_session_before_fork(
+        &self,
+        entry_id: &str,
+        position: &str,
+    ) -> Result<bool, Vec<ExtensionError>> {
+        let payload = json!({
+            "type": "session_before_fork",
+            "entryId": entry_id,
+            "position": position,
+        });
+        self.emit("session_before_fork", &payload)
             .map(|result| result.is_some_and(|value| value["cancel"] == Value::Bool(true)))
     }
 
@@ -1004,6 +1080,21 @@ impl ExtensionRunner {
                         append_paths(&mut resources.skill_paths, value.get("skillPaths"));
                         append_paths(&mut resources.prompt_paths, value.get("promptPaths"));
                         append_paths(&mut resources.theme_paths, value.get("themePaths"));
+                        append_discovered_resources(
+                            &mut resources.skill_resources,
+                            value.get("skillPaths"),
+                            extension,
+                        );
+                        append_discovered_resources(
+                            &mut resources.prompt_resources,
+                            value.get("promptPaths"),
+                            extension,
+                        );
+                        append_discovered_resources(
+                            &mut resources.theme_resources,
+                            value.get("themePaths"),
+                            extension,
+                        );
                     }
                     Ok(None) => {}
                     Err(error) => {
@@ -1113,6 +1204,46 @@ fn append_paths(target: &mut Vec<String>, values: Option<&Value>) {
         for value in values {
             if let Some(path) = value.as_str() {
                 target.push(path.to_string());
+            }
+        }
+    }
+}
+
+fn append_discovered_resources(
+    target: &mut Vec<DiscoveredResource>,
+    values: Option<&Value>,
+    extension: &Extension,
+) {
+    let mut source_info = extension.source_info.clone();
+    // Resource entries use the extension label as their source rather than
+    // the extension's own `local`/`user` loader source. This mirrors
+    // `buildExtensionResourcePaths` and lets downstream loaders attribute a
+    // discovered file to its owning extension while retaining its extension
+    // directory as the relative-resolution base.
+    source_info.source = if extension.path.starts_with('<') {
+        format!("extension:{}", extension.path.trim_matches(['<', '>']))
+    } else {
+        let resolved_path = if extension.resolved_path.is_empty() {
+            &extension.path
+        } else {
+            &extension.resolved_path
+        };
+        let name = std::path::Path::new(resolved_path)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("extension");
+        format!("extension:{name}")
+    };
+    source_info.scope = "temporary".to_string();
+    source_info.origin = "top-level".to_string();
+    if let Some(values) = values.and_then(Value::as_array) {
+        for value in values {
+            if let Some(path) = value.as_str() {
+                target.push(DiscoveredResource {
+                    path: path.to_string(),
+                    extension_path: extension.path.clone(),
+                    source_info: source_info.clone(),
+                });
             }
         }
     }
@@ -1305,6 +1436,11 @@ mod tests {
         }) as HandlerFn;
         let mut extension = Extension {
             path: "/tmp/project/.pi/extensions/example.js".into(),
+            source_info: SourceInfo::synthetic(
+                "/tmp/project/.pi/extensions/example.js",
+                "local",
+                Some("/tmp/project/.pi/extensions".into()),
+            ),
             ..Default::default()
         };
         extension
@@ -1333,10 +1469,92 @@ mod tests {
         assert_eq!(resources.skill_paths, vec!["skills"]);
         assert_eq!(resources.prompt_paths, vec!["prompts/default.md"]);
         assert_eq!(resources.theme_paths, vec!["themes/dark.json"]);
+        assert_eq!(
+            resources.skill_resources[0].extension_path,
+            "/tmp/project/.pi/extensions/example.js"
+        );
+        assert_eq!(
+            resources.skill_resources[0].resolved_path("/tmp/project"),
+            "/tmp/project/.pi/extensions/skills"
+        );
+        assert_eq!(
+            resources.skill_resources[0].source_info.source,
+            "extension:example"
+        );
+        assert_eq!(
+            resources.skill_resources[0].source_info.base_dir.as_deref(),
+            Some("/tmp/project/.pi/extensions")
+        );
         let events = events.lock().unwrap();
         assert_eq!(events[0]["type"], "session_start");
         assert_eq!(events[0]["reason"], "startup");
         assert_eq!(events[1]["type"], "session_shutdown");
         assert_eq!(events[1]["reason"], "quit");
+    }
+
+    #[test]
+    fn discovered_resources_use_trimmed_file_url_tilde_and_lexical_resolution() {
+        let source = SourceInfo::synthetic(
+            "/tmp/project/.pi/extensions/example.js",
+            "local",
+            Some("/tmp/project/.pi/extensions".into()),
+        );
+        let resource = |path: &str| DiscoveredResource {
+            path: path.to_string(),
+            extension_path: source.path.clone(),
+            source_info: source.clone(),
+        };
+        assert_eq!(
+            resource("  ./skills/../prompts  ").resolved_path("/tmp/project"),
+            "/tmp/project/.pi/extensions/prompts"
+        );
+        assert_eq!(
+            resource("file:///tmp/project/.pi/extensions/../themes/dark.json")
+                .resolved_path("/tmp/project"),
+            "/tmp/project/.pi/themes/dark.json"
+        );
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(
+                resource("~/pi-resource").resolved_path("/tmp/project"),
+                home.join("pi-resource").to_string_lossy()
+            );
+        }
+    }
+
+    #[test]
+    fn session_before_fork_has_upstream_shape_and_stops_on_cancellation() {
+        let events = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let first = {
+            let events = Arc::clone(&events);
+            Arc::new(move |_: &ExtensionContext, event: &Value| {
+                events.lock().unwrap().push(event.clone());
+                Ok(Some(json!({"cancel": true})))
+            }) as HandlerFn
+        };
+        let second = {
+            let events = Arc::clone(&events);
+            Arc::new(move |_: &ExtensionContext, event: &Value| {
+                events.lock().unwrap().push(event.clone());
+                Ok(None)
+            }) as HandlerFn
+        };
+        let mut extension = Extension {
+            path: "fork-hook.js".into(),
+            ..Default::default()
+        };
+        extension
+            .handlers
+            .insert("session_before_fork".into(), vec![first, second]);
+
+        let runner = runner_with(vec![extension]);
+        assert!(runner.emit_session_before_fork("entry-1", "at").unwrap());
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![json!({
+                "type": "session_before_fork",
+                "entryId": "entry-1",
+                "position": "at",
+            })]
+        );
     }
 }

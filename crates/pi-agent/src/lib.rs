@@ -20,4 +20,12 @@ pub mod tools;
 pub mod types;
 
 pub use agent::{run_agent_loop, user_text_prompt, AgentContext, AgentEvent, AgentLoopConfig};
+pub use search::{
+    create_scanning_session_search, create_scanning_session_search_with_options,
+    create_typed_scanning_session_search, scanning_entries, LazyScanningSessionSearch,
+    ScanningReadable, ScanningReadableOptions, ScanningSearchHitCreator, ScanningSearchMatcher,
+    ScanningSearchOptions, ScanningSearchTextProjector, ScanningSessionSearch,
+    ScanningSourceOptionsFactory, SessionSearchCandidate, SessionSearchHit, SessionSearchOptions,
+    TypedScanningSearchOptions, TypedScanningSourceOptionsFactory,
+};
 pub use types::AgentMessage;

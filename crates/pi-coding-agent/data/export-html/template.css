@@ -980,6 +980,81 @@
       font-size: 10px;
     }
 
+    /* Zero-JavaScript export additions. These keep every rendered value
+       visible in a plain file without click handlers or browser code. */
+    .static-export-badge,
+    .static-export-note {
+      color: var(--muted);
+      font-size: 10px;
+      font-style: italic;
+    }
+
+    .static-export-note {
+      width: 100%;
+      max-width: 800px;
+      margin-bottom: var(--line-height);
+      padding: 6px 8px;
+      border-left: 2px solid var(--accent);
+      background: var(--info-bg);
+    }
+
+    .session-header-raw,
+    .raw-entry {
+      margin-top: var(--line-height);
+      color: var(--customMessageText);
+    }
+
+    .session-header-raw summary,
+    .raw-entry summary {
+      color: var(--customMessageLabel);
+      cursor: default;
+      font-weight: bold;
+    }
+
+    .session-header-raw pre,
+    .raw-entry pre,
+    .tool-parameters,
+    .system-prompt-full-static {
+      margin: 8px 0 0;
+      padding: 8px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: var(--body-bg);
+      color: var(--text);
+      font: inherit;
+    }
+
+    .system-prompt-full-static {
+      display: block;
+    }
+
+    .compaction-content-static {
+      color: var(--customMessageText);
+      white-space: pre-wrap;
+      margin-top: var(--line-height);
+    }
+
+    .tool-result-reference {
+      padding: 4px var(--line-height);
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .tool-result-reference code {
+      color: var(--accent);
+    }
+
+    .math,
+    .math-block {
+      color: var(--mdCode);
+    }
+
+    .math-block {
+      margin: var(--line-height) 0;
+      white-space: pre-wrap;
+    }
+
     /* Mobile */
     #hamburger {
       display: none;
