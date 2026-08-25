@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **97.59% (162/166; 4 open)**. Run
+- The exhaustive checker reports **98.80% (164/166; 2 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - The current S-027 implementation checkpoint vendors byte-identical
@@ -716,8 +716,22 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       reports `Conversion progress: 95.18% (158/166; 8 open)` on the real
       ledger. The checker now validates every checklist-looking line instead
       of silently ignoring malformed task rows.
-- [ ] S-004 Run the independent-reviewer gate against this exhaustive ledger,
+- [x] S-004 Run the independent-reviewer gate against this exhaustive ledger,
       including a review of every deferred divergence and evidence tier.
+      Evidence (mock): the independent report
+      `.unlazy/full-conversion-20260825/gates/leaf-S4-current.md` records an
+      APPROVE-WITH-CONDITIONS verdict against the pinned
+      `earendil-works/pi` oracle at
+      `5cd93f688aaab89dbb6dfa4aca535f21796ae185`. It verifies the exact
+      current open-row set, `node scripts/conversion-progress.mjs`
+      (`Conversion progress: 97.59% (162/166; 4 open)` at review time),
+      `node --test scripts/conversion-progress.test.mjs` (7 passed),
+      `git diff --check`, matching local/remote HEAD
+      `d16642dc043d95616bca024fb32724500e5e2fe5`, and the
+      `conversion-97.59-clean-room` tag. The follow-up resolution records
+      the S-065 condition as satisfied; the remaining conditions explicitly
+      keep S-027 open and defer S-066 until no behavioral or unclassified
+      task remains. No final 100% claim is made here.
 
 ### S1-B — pi-ai residual provider and transport parity
 
@@ -1305,8 +1319,20 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 - [x] S-064 Port telemetry schema conformance tests and include them in the
       release gate. Evidence: unit/mock — telemetry schema plus 2 focused
       tests pass, including 1 AI span, 11 harness spans, and 4 mutations.
-- [ ] S-065 Synchronize README, per-crate TODOs, session reports, and PLAN with
-      the final ledger state and remove stale historical claims.
+- [x] S-065 Synchronize README, per-crate TODOs, session reports, and PLAN with
+      the final ledger state and remove stale historical claims. Evidence
+      (mock): `README.md`, `PLAN.md`, `HANDOFF.md`, all crate `TODO.md` files,
+      and the dated session/reviewer reports now distinguish current claims
+      from historical snapshots; the synchronization check recorded
+      `Conversion progress: 97.59% (162/166; 4 open)` before this row was
+      counted, and the current result after it is
+      `Conversion progress: 98.19% (163/166; 3 open)`. The stale-claim audit
+      command
+      `rg -n -i 'not yet (port|wired|implemented)|no dedicated checklist ID|ledger hole|source inventory is complete' README.md PLAN.md HANDOFF.md docs/session-10-report.md docs/session-11-report.md docs/reviewer-session-1.md docs/reviewer-session-2.md crates/*/TODO.md`
+      returns only explicitly negated/superseded wording; the historical
+      HANDOFF checkpoint sections are explicitly labeled `Historical
+      checkpoint`. Verified with `node scripts/conversion-progress.mjs`
+      (97.59% at the pre-row check) and `git diff --check`.
 - [ ] S-066 Freeze the final denominator after S-001, run the full source/TODO
       audit, and record the final 100.00% evidence only when no open or
       unclassified task remains.

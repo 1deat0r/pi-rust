@@ -8,8 +8,8 @@ The current requested progress percentage is based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-97.59% = 162 completed / 166 total tasks
-4 tasks remain open
+98.80% = 164 completed / 166 total tasks
+2 tasks remain open
 
 ```
 
@@ -34,7 +34,7 @@ Do not use `git reset --hard`,
 `git checkout --`, broad revert commands, or `git clean`.
 
 Current status: branch `main`, progress checker reports
-`97.59% (162/166; 4 open)`. Ledger row #100 is now checked with the
+`98.80% (164/166; 2 open)`. Ledger rows #100, S-004, and S-065 are now checked with the
 independent clean-room evidence below. The
 embedded `jiti@2.7.0`/Babel runtime, Node/Bun option branching, configured
 alias/virtual-module fixtures, upstream-style path normalization, and
@@ -42,7 +42,7 @@ interactive reload re-evaluation are implemented and locally validated.
 The remaining S-027 residuals are the built-in pi/TypeBox JS module graph,
 compiled-Bun/Node-SEA virtual-module branches, and full reload
 lifecycle/resource/flag evidence. The clean-room gate is green; the next
-gates are the independent S-004 review and final S-065/S-066 audit. The
+gate is the final S-066 audit after S-027 is resolved. The
 current pushed checkpoint is `e9d63b0ac6ce8fc8da854b8ba8fbd5adaf80fbeb`;
 the synchronized ledger/docs update is pending its focused commit. The
 pre-existing untracked `AGENTS.md` remains preserved and unstaged.
@@ -83,15 +83,15 @@ cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings
 cargo fmt --all -- --check
 git diff --check
 node scripts/conversion-progress.mjs
-  Conversion progress: 97.59% (162/166; 4 open)
+  Conversion progress: 98.80% (164/166; 2 open)
 ```
 
 The ignored S-027 audit remains APPROVE-WITH-CONDITIONS and correctly keeps
 S-027 open. The clean-room gate passed in a fresh clone with the pinned
 oracle; its exact evidence is recorded in
 `.unlazy/full-conversion-20260825/gates/clean-room-current.md`. The next
-dependency-safe action is the independent S-004 review and final S-065/S-066
-source/TODO denominator audit. Do not claim 100% until the ledger, plan,
+dependency-safe action is to resolve the S-027 residual and perform the final
+S-066 source/TODO denominator audit. Do not claim 100% until the ledger, plan,
 handoff, final audit, and remote hash gates agree.
 
 ## Current strict-verification cleanup
@@ -1101,7 +1101,7 @@ Next dependency-safe action: finish C1/D2/E2, dispatch provider-matrix
 fixtures, then run the full workspace tests/clippy, parity suite, release
 matrix, and independent final-audit review. Full conversion remains open.
 
-## Active checkpoint — 2026-08-25 — provider/client/harness/reconnect wave
+## Historical checkpoint — 2026-08-25 — provider/client/harness/reconnect wave
 
 The last synchronized pushed baseline before this worktree wave is
 `486a5bb50ce1444d3ab3086f6753e0a549ba8864` on `main`; local/remote hashes
@@ -1189,7 +1189,7 @@ credentialed live provider smoke is explicitly not-run and is not claimed as
 pass evidence. Full conversion remains open pending S-027, S-001/S-004,
 S-065/S-066, and #97–100.
 
-## Active checkpoint — 2026-08-25 — parity matrix and CLI/auth blockers closed
+## Historical checkpoint — 2026-08-25 — parity matrix and CLI/auth blockers closed
 
 The last synchronized pushed baseline before this checkpoint is
 `8a3c1dc84c59d1125b3b4ed12eefb7c32a2b1c40` on `main`; local and remote hashes
@@ -1220,7 +1220,7 @@ Extension bridge edits remain separate and unstaged; they provide partial
 S-027 evidence but do not yet reproduce jiti virtualization, host actions,
 native provider callbacks, or live tool execution.
 
-## Active checkpoint — 2026-08-25 — extension bridge boundary recorded
+## Historical checkpoint — 2026-08-25 — extension bridge boundary recorded
 
 The extension leaf `C2b` completed its owned gates. The persistent Node/Bun
 JSONL bridge keeps the JavaScript factory alive and routes async command, hook,
@@ -1236,7 +1236,7 @@ callbacks, or live tool execution. The next dependency-safe action is a fresh
 broader runtime-closure review/implementation pass, followed by the final
 source/TODO reconciliation and release gates.
 
-## Active checkpoint — 2026-08-25 — extension bridge C2c
+## Historical checkpoint — 2026-08-25 — extension bridge C2c
 
 The C2c implementation pass extended the persistent Node/Bun bridge with live
 external-tool execution, typed host-action dispatch, local `.js`/`.ts` imports,
@@ -1263,7 +1263,7 @@ tool integration. The next dependency-safe action is an independent release,
 clean-room, and source/TODO audit, with a further S-027 implementation leaf if
 the reviewer identifies an actionable parity gap.
 
-## Active checkpoint — 2026-08-25 — extension bridge hardening after review
+## Historical checkpoint — 2026-08-25 — extension bridge hardening after review
 
 The independent review identified and the follow-up patch addressed four
 runtime-boundary defects: production-shaped loading now binds the same shared
@@ -1298,7 +1298,7 @@ integration. The next dependency-safe action is a dedicated production
 extension integration leaf, followed by independent release and clean-room
 audit gates.
 
-## Active checkpoint — 2026-08-25 — production extension mode integration
+## Historical checkpoint — 2026-08-25 — production extension mode integration
 
 The production extension leaf is now implemented across the one-shot print,
 JSON-event, RPC, and interactive mode paths. A shared
@@ -1342,7 +1342,7 @@ close those residual extension semantics or record a deliberate proven
 replacement, then execute the release, clean-room, source/TODO, denominator,
 and independent-reviewer gates (#97–100, S-001–S-004, S-065–S-066).
 
-## Active checkpoint — 2026-08-25 — progress gate, extension boundaries, and release verification
+## Historical checkpoint — 2026-08-25 — progress gate, extension boundaries, and release verification
 
 The current worktree extends the pushed production extension integration
 checkpoint `41d3107c2e33ef9eeb5ec7fb65581fe5ac3c8346`. The pre-existing
@@ -1397,7 +1397,7 @@ Remaining open rows are S-001, S-002, S-004, S-027, S-065, S-066, and
 reviewer gate, followed by the full real-binary environment/on-disk/RPC audit
 and clean-room run. The progress checker must be rerun after each ledger edit.
 
-## Active checkpoint — 2026-08-25 — Session-13 reviewer preparation
+## Historical checkpoint — 2026-08-25 — Session-13 reviewer preparation
 
 The Session-13 preparation item (#98) is now complete in `PLAN.md`. It adds
 the pinned upstream revision, current checker value, evidence-tier matrix,
@@ -1414,7 +1414,7 @@ remaining rows are S-001, S-002, S-004, S-027, S-065, S-066, #99, and #100.
 The next action is to consume the fresh source/TODO/full-surface audit reports
 and obtain an independent reviewer verdict before closing S-004.
 
-## Active checkpoint — 2026-08-25 — extension context-action parity
+## Historical checkpoint — 2026-08-25 — extension context-action parity
 
 The S-027 implementation pass added the safe external-tool context slice:
 Node/Bun extension tool callbacks now receive synchronous host snapshots and
@@ -1446,7 +1446,7 @@ remains `Conversion progress: 95.18% (158/166; 8 open)`. The next action is to
 review and integrate the independent S-001, S-002, and #99 reports before the
 fresh S-004 reviewer gate.
 
-## Active checkpoint — 2026-08-25 — inventory closure and callback-context parity
+## Historical checkpoint — 2026-08-25 — inventory closure and callback-context parity
 
 S-001, S-002, and #99 are now checked in the ledger with the current source/
 export census, documentation reconciliation, and isolated real-binary audit
@@ -1471,7 +1471,7 @@ extension tests, inspect the native-provider leaf, then commit and push with
 local/remote hash verification. The pre-existing untracked `AGENTS.md` stays
 unstaged.
 
-## Active checkpoint — 2026-08-25 — native-provider bridge protocol
+## Historical checkpoint — 2026-08-25 — native-provider bridge protocol
 
 The extension bridge now accepts native provider objects, retains callback
 metadata, invokes async/iterable `stream`/`streamSimple` callbacks with
@@ -1493,7 +1493,7 @@ This bridge-only increment is ready for its own focused commit after
 `git diff --check`; do not mark S-027 complete until the typed provider and
 runtime-boundary gates are independently evidenced.
 
-## Active checkpoint — 2026-08-25 — typed native-provider adapter
+## Historical checkpoint — 2026-08-25 — typed native-provider adapter
 
 The native-provider boundary now retains non-callback provider definitions and
 adapts them into typed pi-ai `ProviderStreams`/`Models`. The adapter maps the
@@ -1523,7 +1523,7 @@ interactive/RPC/print/JSON model setup, then obtain an independent S-004 review
 before the clean-room and final denominator gates. The pre-existing untracked
 `AGENTS.md` remains untouched and unstaged.
 
-## Active checkpoint — 2026-08-25 — native-provider production mode wiring
+## Historical checkpoint — 2026-08-25 — native-provider production mode wiring
 
 Queued native providers are now registered into the live `pi_ai::Models`
 facade before provider/model resolution in print, JSON, RPC, and interactive
@@ -1575,10 +1575,10 @@ is tagged `conversion-97.59-clean-room`.
 The authoritative checker after the ledger update is:
 
 ```text
-Conversion progress: 97.59% (162/166; 4 open)
+Conversion progress: 98.80% (164/166; 2 open)
 ```
 
-The remaining rows are S-004, S-027, S-065, and S-066. Two bounded S-027
+The remaining rows are S-027 and S-066. Two bounded S-027
 reviews confirmed that the built-in pi/TypeBox JavaScript graph and genuine
 compiled-Bun/Node-SEA identities are not present in the current distribution,
 and that the Rust interactive host has no session-bound resource loader for
