@@ -242,6 +242,70 @@ fn install_local_missing_path_errors() {
 }
 
 #[test]
+fn install_local_package_persists_project_settings_with_approve() {
+    let sandbox = Sandbox::new("install-local-project");
+    sandbox.write_global_settings(json!({}));
+    let cwd = project(&sandbox, "work");
+    fs::create_dir_all(cwd.join("pkg").join("skills")).unwrap();
+
+    let out = sandbox.pi(&cwd, &["install", "--local", "--approve", "./pkg"]);
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    assert!(sandbox.stdout(&out).contains("Installed ./pkg"));
+
+    let project_settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(cwd.join(".pi").join("settings.json")).unwrap())
+            .unwrap();
+    let packages = project_settings["packages"]
+        .as_array()
+        .expect("project packages array");
+    assert_eq!(packages.len(), 1);
+    let source = packages[0].as_str().expect("project package source");
+    assert!(
+        source.starts_with(".."),
+        "source should be project-relative: {source}"
+    );
+    assert!(
+        source.ends_with("pkg"),
+        "source should name the package: {source}"
+    );
+    assert_eq!(sandbox.read_global_settings(), json!({}));
+
+    let removed = sandbox.pi(&cwd, &["remove", "--local", "--approve", "./pkg"]);
+    assert!(
+        removed.status.success(),
+        "stderr: {}",
+        sandbox.stderr(&removed)
+    );
+    assert!(sandbox.stdout(&removed).contains("Removed ./pkg"));
+    let project_settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(cwd.join(".pi").join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(project_settings["packages"], json!([]));
+}
+
+#[test]
+fn local_package_commands_require_trust_and_preserve_project_settings() {
+    let sandbox = Sandbox::new("install-local-trust");
+    sandbox.write_global_settings(json!({}));
+    let cwd = project(&sandbox, "work");
+    fs::create_dir_all(cwd.join("pkg")).unwrap();
+    fs::create_dir_all(cwd.join(".pi")).unwrap();
+    let original = json!({ "packages": ["./existing"] });
+    fs::write(cwd.join(".pi").join("settings.json"), original.to_string()).unwrap();
+
+    let out = sandbox.pi(&cwd, &["install", "--local", "./pkg"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        sandbox.stderr(&out),
+        "Project is not trusted. Use --approve to modify local package config.\n"
+    );
+    let persisted: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(cwd.join(".pi").join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(persisted, original);
+}
+
+#[test]
 fn install_npm_with_fake_npm() {
     let sandbox = Sandbox::new("install-npm");
     let fake = sandbox.write_fake_npm();
@@ -498,6 +562,69 @@ fn config_local_requires_trust() {
 }
 
 #[test]
+fn config_local_approved_summary_discovers_resources_and_ignores_source_extensions() {
+    let sandbox = Sandbox::new("config-local-summary");
+    sandbox.write_global_settings(json!({}));
+    let cwd = project(&sandbox, "work");
+    fs::create_dir_all(cwd.join(".pi").join("skills").join("review")).unwrap();
+    fs::create_dir_all(cwd.join(".pi").join("prompts")).unwrap();
+    fs::create_dir_all(cwd.join(".pi").join("themes")).unwrap();
+    fs::create_dir_all(cwd.join(".pi").join("extensions")).unwrap();
+    fs::write(
+        cwd.join(".pi")
+            .join("skills")
+            .join("review")
+            .join("SKILL.md"),
+        "---\nname: review\ndescription: Review files\n---\nbody",
+    )
+    .unwrap();
+    fs::write(
+        cwd.join(".pi").join("prompts").join("brief.md"),
+        "---\ndescription: Brief\n---\nBrief $@",
+    )
+    .unwrap();
+    fs::write(cwd.join(".pi").join("themes").join("night.json"), "{}").unwrap();
+    fs::write(
+        cwd.join(".pi").join("extensions").join("unsupported.ts"),
+        "export default {}",
+    )
+    .unwrap();
+
+    let out = sandbox.pi(&cwd, &["config", "--local", "--approve"]);
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    let stdout = sandbox.stdout(&out);
+    assert!(
+        stdout.contains("pi config (write scope: project)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Project resources:"), "{stdout}");
+    assert!(stdout.contains("review"), "{stdout}");
+    assert!(stdout.contains("brief"), "{stdout}");
+    assert!(stdout.contains("night"), "{stdout}");
+    assert!(
+        !stdout.contains("unsupported.ts"),
+        "source-language extension must not be discoverable: {stdout}"
+    );
+}
+
+#[test]
+fn config_settings_directory_is_a_user_visible_startup_failure() {
+    let sandbox = Sandbox::new("config-settings-directory");
+    let cwd = project(&sandbox, "work");
+    fs::create_dir_all(sandbox.agent_dir.join("settings.json")).unwrap();
+
+    let out = sandbox.pi(&cwd, &["config"]);
+    assert_eq!(out.status.code(), Some(101));
+    let stderr = sandbox.stderr(&out);
+    assert!(stderr.contains("Failed to read settings file"), "{stderr}");
+    assert!(
+        stderr.contains("Is a directory") || stderr.contains("is a directory"),
+        "{stderr}"
+    );
+    assert!(sandbox.stdout(&out).is_empty());
+}
+
+#[test]
 fn config_unknown_option_errors() {
     let sandbox = Sandbox::new("config-opt");
     let cwd = project(&sandbox, "work");
@@ -531,6 +658,35 @@ fn unknown_flag_matches_upstream_diagnostic() {
         sandbox.stderr(&out),
         "Unknown flag: --definitely-not-a-real-flag\n"
     );
+}
+
+#[test]
+fn invalid_tui_mode_is_reported_before_startup() {
+    let sandbox = Sandbox::new("invalid-tui-mode");
+    let cwd = project(&sandbox, "work");
+    let out = sandbox.pi_offline(&cwd, &["--tui-mode", "sideways"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(sandbox.stdout(&out).is_empty());
+    assert_eq!(
+        sandbox.stderr(&out),
+        "Error: Invalid TUI mode \"sideways\". Valid values: regular, fullscreen\n"
+    );
+}
+
+#[test]
+fn update_conflicting_targets_report_a_deterministic_error() {
+    let sandbox = Sandbox::new("update-conflict");
+    let cwd = project(&sandbox, "work");
+    let out = sandbox.pi_offline(&cwd, &["update", "--all", "--self"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = sandbox.stderr(&out);
+    assert!(
+        stderr.contains(
+            "--all cannot be combined with --self, --extensions, --models, or --extension"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains("pi update"), "{stderr}");
 }
 
 // ---------------------------------------------------------------------------
@@ -608,6 +764,64 @@ fn auth_check_json_ready() {
     assert_eq!(parsed["status"], "ready");
     assert_eq!(parsed["provider"], "google");
     assert_eq!(parsed["authType"], "api_key");
+}
+
+#[test]
+fn auth_check_json_unknown_provider_reports_reason() {
+    let sandbox = Sandbox::new("auth-check-json-unknown");
+    sandbox.write_global_settings(json!({}));
+    let cwd = project(&sandbox, "work");
+    let out = sandbox.pi_offline(
+        &cwd,
+        &["auth", "check", "--provider", "not-a-provider", "--json"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(sandbox.stderr(&out).is_empty());
+    let parsed: serde_json::Value =
+        serde_json::from_str(sandbox.stdout(&out).trim()).expect("json");
+    assert_eq!(parsed["status"], "not_ready");
+    assert_eq!(parsed["provider"], "not-a-provider");
+    assert_eq!(parsed["reason"], "provider_not_found");
+}
+
+#[test]
+fn auth_check_json_malformed_credentials_reports_not_ready() {
+    let sandbox = Sandbox::new("auth-check-malformed");
+    sandbox.write_global_settings(json!({}));
+    fs::write(sandbox.agent_dir.join("auth.json"), "{not-json").unwrap();
+    let cwd = project(&sandbox, "work");
+    let out = sandbox.pi_offline(
+        &cwd,
+        &[
+            "auth",
+            "check",
+            "--provider",
+            "google",
+            "--no-refresh",
+            "--json",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(sandbox.stderr(&out).is_empty());
+    let parsed: serde_json::Value =
+        serde_json::from_str(sandbox.stdout(&out).trim()).expect("json");
+    assert_eq!(parsed["status"], "not_ready");
+    assert_eq!(parsed["provider"], "google");
+    assert_eq!(parsed["reason"], "credentials_not_configured");
+}
+
+#[test]
+fn auth_check_rejects_unknown_options_before_loading_credentials() {
+    let sandbox = Sandbox::new("auth-check-option");
+    let cwd = project(&sandbox, "work");
+    let out = sandbox.pi_offline(&cwd, &["auth", "check", "--provider", "google", "--bogus"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = sandbox.stderr(&out);
+    assert!(
+        stderr.contains("Unknown option --bogus for \"auth check\"."),
+        "{stderr}"
+    );
+    assert!(stderr.contains("pi auth check"), "{stderr}");
 }
 
 #[test]

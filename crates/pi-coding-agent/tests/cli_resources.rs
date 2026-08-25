@@ -117,6 +117,46 @@ fn prompt_template_is_expanded_in_run_path() {
 }
 
 #[test]
+fn global_prompt_template_is_discovered_in_run_path() {
+    let sandbox = Sandbox::new("global-prompt-template");
+    let cwd = sandbox.root.join("proj");
+    fs::create_dir_all(&cwd).unwrap();
+    fs::create_dir_all(sandbox.home.join(".pi").join("agent").join("prompts")).unwrap();
+    fs::write(
+        sandbox
+            .home
+            .join(".pi")
+            .join("agent")
+            .join("prompts")
+            .join("global.md"),
+        "---\ndescription: Global template\n---\nGlobal template: $@",
+    )
+    .unwrap();
+
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "/global the docs",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    let session = sandbox.session_content();
+    assert!(
+        session.contains("Global template: the docs"),
+        "expected global template expansion in session, got:\n{session}"
+    );
+    assert!(
+        !session.contains("\"/global the docs\""),
+        "literal global template invocation should not be persisted:\n{session}"
+    );
+}
+
+#[test]
 fn no_prompt_templates_skips_expansion() {
     let sandbox = Sandbox::new("no-prompt");
     let cwd = sandbox.root.join("proj");
@@ -146,6 +186,157 @@ fn no_prompt_templates_skips_expansion() {
         session.contains("/summarize the docs"),
         "expected literal prompt when -np, got:\n{session}"
     );
+}
+
+#[test]
+fn no_approve_does_not_block_project_prompt_expansion_in_print_path() {
+    let sandbox = Sandbox::new("untrusted-project-prompt");
+    let cwd = sandbox.root.join("proj");
+    fs::create_dir_all(cwd.join(".pi").join("prompts")).unwrap();
+    fs::write(
+        cwd.join(".pi").join("prompts").join("summarize.md"),
+        "---\ndescription: Summarize\n---\nSummarize the following: $@",
+    )
+    .unwrap();
+
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--no-approve",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "/summarize the docs",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    let session = sandbox.session_content();
+    assert!(
+        session.contains("Summarize the following: the docs"),
+        "current print path still expands project templates under --no-approve:\n{session}"
+    );
+}
+
+#[test]
+fn no_prompt_templates_overrides_an_explicit_template_path() {
+    let sandbox = Sandbox::new("no-prompt-explicit");
+    let cwd = sandbox.root.join("proj");
+    fs::create_dir_all(&cwd).unwrap();
+    let template = sandbox.root.join("explicit.md");
+    fs::write(
+        &template,
+        "---\ndescription: Explicit template\n---\nExplicit template: $@",
+    )
+    .unwrap();
+
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--no-prompt-templates",
+            "--prompt-template",
+            &template.to_string_lossy(),
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "/explicit the docs",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    let session = sandbox.session_content();
+    assert!(
+        session.contains("/explicit the docs"),
+        "expected literal prompt when -np suppresses explicit templates, got:\n{session}"
+    );
+    assert!(
+        !session.contains("Explicit template: the docs"),
+        "explicit template should not expand under -np:\n{session}"
+    );
+}
+
+#[test]
+fn missing_prompt_template_path_is_nonfatal_and_keeps_literal_prompt() {
+    let sandbox = Sandbox::new("missing-prompt-template");
+    let cwd = sandbox.root.join("proj");
+    fs::create_dir_all(&cwd).unwrap();
+    let missing = sandbox.root.join("missing.md");
+
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--prompt-template",
+            &missing.to_string_lossy(),
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "/missing the docs",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    let session = sandbox.session_content();
+    assert!(
+        session.contains("/missing the docs"),
+        "missing template must leave the literal prompt unchanged:\n{session}"
+    );
+}
+
+#[test]
+fn no_session_keeps_a_successful_run_ephemeral() {
+    let sandbox = Sandbox::new("no-session");
+    let cwd = sandbox.root.join("proj");
+    fs::create_dir_all(&cwd).unwrap();
+
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--no-session",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "hello",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    assert!(sandbox.stdout(&out).contains("faux response"));
+    assert!(
+        walk_jsonl(&sandbox.sessions).is_empty(),
+        "--no-session must not persist JSONL sessions"
+    );
+}
+
+#[test]
+fn missing_session_path_reports_a_deterministic_error() {
+    let sandbox = Sandbox::new("missing-session");
+    let cwd = sandbox.root.join("proj");
+    fs::create_dir_all(&cwd).unwrap();
+    let missing = sandbox.root.join("missing-session.jsonl");
+
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--session",
+            &missing.to_string_lossy(),
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "hello",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        sandbox.stderr(&out),
+        format!("session not found: {}\n", missing.display())
+    );
+    assert!(sandbox.stdout(&out).is_empty());
 }
 
 #[test]

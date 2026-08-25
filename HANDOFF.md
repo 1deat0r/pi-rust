@@ -1,6 +1,6 @@
 # Pi → pi-rust conversion handoff
 
-Date: 2026-08-25 (Pacific/Auckland)
+Date: 2026-08-26 (Pacific/Auckland)
 
 ## Where the work stopped
 
@@ -26,8 +26,8 @@ source-audit blockers, and zero JS/TS source files.
 
 ## Important working-tree state
 
-The latest pushed checkpoint before this Rust-only wave is
-`977378e5e139c1cf5576ffd1c53bb7e6c8cd71cd`. The current worktree contains the
+The latest pushed checkpoint before this exhaustive usability-test wave is
+`700e1025fc4b7fe0c44d1f03d56c97b578ffae26`. The current worktree contains the
 Rust-only implementation and documentation changes that are pending the final
 commit/push. The pre-existing untracked `AGENTS.md` remains untouched and must
 be preserved.
@@ -45,6 +45,61 @@ preserved and unstaged.
 All sections below whose headings say “Current checkpoint” and which contain
 older percentages or commits are historical snapshots from earlier turns.
 The latest active sections near the end of this file supersede them.
+
+## Current exhaustive usability-test checkpoint — 2026-08-26
+
+The Rust product binary has been tested across deterministic offline/faux
+interactive, print, JSON, and RPC paths. The campaign added permanent
+multi-turn PTY and binary-RPC tests, plus CLI command/resource/trust/flag
+matrices. It also found and fixed three user-visible defects: JSON argv
+prompts were incorrectly batched, piped stdin was omitted from the initial
+prompt, and bracketed paste markers were stripped before editor dispatch.
+
+Focused evidence is green: 39 command, 6 flag, 7 JSON, 10 print, 9 resource,
+8 trust, 4 full interactive, ConfigSelector PTY, slash-command PTY,
+release-binary TUI, binary-RPC, and 20 stdin-buffer tests. The complete debug
+and release workspace suites pass with `--test-threads=2`; the direct release
+binary smoke prints `pi 0.84.2` and accepts `--help`; release overrides for
+both the PTY and RPC child-process tests pass.
+
+Exact validation run in this checkpoint:
+
+```text
+/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check
+git diff --check
+/home/mustbearnold/.cargo/bin/cargo clippy --workspace --offline --all-targets -- -D warnings
+/home/mustbearnold/.cargo/bin/cargo test --workspace --offline --quiet -- --test-threads=2
+/home/mustbearnold/.cargo/bin/cargo build --workspace --release --offline
+/home/mustbearnold/.cargo/bin/cargo test --workspace --release --offline --quiet -- --test-threads=2
+test "$(target/release/pi --version)" = "pi 0.84.2" && target/release/pi --help >/dev/null
+PI_RUST_TEST_BINARY="$PWD/target/release/pi" /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test interactive_release_multiturn -- --test-threads=1
+PI_RUST_TEST_BINARY="$PWD/target/release/pi" /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test rpc_binary_multiturn -- --test-threads=1
+/home/mustbearnold/.cargo/bin/cargo run -p pi-coding-agent --offline --bin conversion_audit -- all
+  Conversion progress: 100.00% (166/166; 0 open)
+  audit blockers: 0
+  workspace JS/TS source files: 0
+```
+
+`node scripts/conversion-progress.mjs` was also checked as required by the
+local operating protocol, but that legacy script is absent from this
+Rust-only checkout (`MODULE_NOT_FOUND`). No conversion ledger checkbox changed
+during this usability-test campaign; the new behavioral evidence is recorded
+in `CONVERSION-LEDGER.md`, this handoff, and the ignored unlazy gate reports.
+Credentialed live-provider inference, alternate terminal emulators, and the
+installed PATH `pi` command are not claimed as tested. PATH still resolves to
+the JavaScript/mise `pi 0.84.3`; use `target/release/pi` for the Rust product.
+
+Resume checkpoint complete: the root G2 combined print/JSON/harness/RPC
+oracle passed, and the final unlazy status is **19/19 gates met**. The first
+all-gates reverify briefly reported G4 exit 101 while PTY/release gates were
+being orchestrated together; rerunning the exact G4 command alone passed
+clippy, release build, and every release test target with exit 0. This was not
+reproducible as an isolated product failure. No commit or push has yet been
+performed after `700e1025fc4b7fe0c44d1f03d56c97b578ffae26`. Next: run the final
+documentation/diff check, commit only the focused test/documentation change,
+push `main`, and verify `git rev-parse HEAD` equals
+`git ls-remote origin refs/heads/main`. Do not stage the pre-existing
+untracked `AGENTS.md`.
 
 ## Current Rust-only completion checkpoint — 2026-08-25
 

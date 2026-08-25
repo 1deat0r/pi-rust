@@ -33,6 +33,8 @@ impl Sandbox {
             .current_dir(cwd)
             .env("HOME", &self.home)
             .env("PI_CODING_AGENT_DIR", &self.agent_dir)
+            .env("PI_OFFLINE", "1")
+            .env("PI_SKIP_VERSION_CHECK", "1")
             .env_remove("PI_PROVIDER")
             .env_remove("PI_MODEL")
             .env_remove("PI_KEY")
@@ -266,5 +268,20 @@ fn thinking_warning_does_not_exit_nonzero() {
     assert!(
         sandbox.stdout(&out).contains("faux response to: hi"),
         "no faux reply"
+    );
+}
+
+#[test]
+fn rpc_rejects_file_arguments_before_starting_the_protocol() {
+    let sandbox = Sandbox::new("rpc-file-boundary");
+    let out = sandbox.pi(&sandbox.root, &["--mode", "rpc", "@prompt.txt"]);
+    assert!(!out.status.success(), "RPC @file input must be rejected");
+    assert_eq!(
+        sandbox.stderr(&out),
+        "Error: @file arguments are not supported in RPC mode\n"
+    );
+    assert!(
+        sandbox.stdout(&out).is_empty(),
+        "protocol output must not start after a CLI boundary error"
     );
 }

@@ -4,7 +4,7 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
-## Current status (last updated 2026-08-25)
+## Current status (last updated 2026-08-26)
 
 - The Rust-native checker reports **100.00% (166/166; 0 open)**. Run
   `/home/mustbearnold/.cargo/bin/cargo run -p pi-coding-agent --offline --bin
@@ -44,6 +44,29 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 - The original 100 entries remain the historical work queue. The supplemental
   S1 section is authoritative for residual provider, harness, runtime, TUI,
   RPC, auxiliary client/server, evaluation, and final-audit work.
+
+## Exhaustive usability-test checkpoint — 2026-08-26
+
+No conversion checklist row changed during this checkpoint. The status remains
+**100.00% (166/166; 0 open)**, and the authoritative Cargo-native audit was
+rerun after the documentation review:
+`cargo run -p pi-coding-agent --offline --bin conversion_audit -- all`
+reported `audit blockers: 0` and `workspace JS/TS source files: 0`.
+
+The Rust binary's deterministic user-facing behavior is now covered by the
+new CLI/mode/resource/trust matrices and permanent optimized-binary TUI/RPC
+multi-turn tests recorded in `PLAN.md` and `HANDOFF.md`. The evidence tiers
+remain explicit: offline faux/provider-error and isolated PTY tests are
+unit/mock/live-local evidence; credentialed live-provider inference and the
+installed PATH command are not claimed. The legacy Node progress script is
+absent from this Rust-only checkout, so the Cargo-native audit is the current
+progress authority.
+
+The operator's pause was cleared on resume. The combined mode oracle passed,
+the isolated release reverify passed after one concurrent-orchestration
+demotion, and all 19 unlazy gates are met. The working-tree test and
+documentation changes remain pending the focused commit/push gate; the
+pre-existing untracked `AGENTS.md` remains untouched.
 
 ## Historical state snapshot (verified 2026-08-24; superseded by the active
 2026-08-25 checkpoint below)

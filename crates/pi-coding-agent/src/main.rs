@@ -1,6 +1,8 @@
 //! `pi` binary entry point — port of `packages/coding-agent/src/main.ts`
 //! (CLI dispatch; interactive/RPC modes arrive with pi-tui).
 
+use std::io::Read;
+
 use pi_coding_agent::args::{parse_args, print_help, print_version, ParseOutcome};
 
 #[tokio::main]
@@ -49,7 +51,7 @@ async fn main() {
         ParseOutcome::Version => {
             print_version();
         }
-        ParseOutcome::Run(args) => {
+        ParseOutcome::Run(mut args) => {
             // Surface parse diagnostics (upstream main.ts): errors print
             // "Error:" and warnings "Warning:" to stderr — ALL are printed
             // first, then we exit 1 if any was an error (upstream prints the
@@ -74,6 +76,23 @@ async fn main() {
                 println!();
                 eprintln!("Unknown flag: {}", args.unknown_flags.join(", "));
                 std::process::exit(1);
+            }
+            // Match the upstream non-interactive entry path: ordinary and
+            // JSON modes consume piped stdin as part of the initial prompt;
+            // RPC reserves stdin for its JSONL command protocol.
+            if args.mode.as_deref() != Some("rpc")
+                && !std::io::IsTerminal::is_terminal(&std::io::stdin())
+            {
+                let mut stdin = std::io::stdin();
+                let mut content = String::new();
+                if let Err(error) = stdin.read_to_string(&mut content) {
+                    eprintln!("Error: failed to read piped stdin: {error}");
+                    std::process::exit(1);
+                }
+                let content = content.trim();
+                if !content.is_empty() {
+                    args.stdin_content = Some(content.to_string());
+                }
             }
             if args.mode.as_deref() == Some("rpc") && !args.file_args.is_empty() {
                 eprintln!("Error: @file arguments are not supported in RPC mode");

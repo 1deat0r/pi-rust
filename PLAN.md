@@ -27,6 +27,40 @@ is green for all declared offline branches; its credentialed live branch
 remains explicitly not-run. The driver owns the conversion ledger and
 synchronized documentation.
 
+## Checkpoint 2026-08-26 — exhaustive user-facing usability tests
+
+The user-facing Rust binary now has a dedicated deterministic usability-test
+campaign under `.unlazy/ui-exhaustive-20260825/`. The campaign covers the
+interactive TUI through tmux PTYs, slash commands, editor controls, history,
+multiline input, bracketed paste, terminal restoration, print mode, JSON event
+mode, RPC mode, sequential prompts supplied by argv and stdin, session JSONL
+persistence, resource/trust/command/error paths, and the optimized release
+binary. The new binary-level PTY and RPC tests select `target/release/pi` via
+an explicit override, so they exercise the shipped optimized executable rather
+than only a library harness.
+
+This campaign found and fixed three observable parity defects: JSON mode was
+batching argv prompts into one model turn instead of sequential turns, piped
+stdin was not being carried into the initial prompt, and bracketed paste lost
+its paste boundary before reaching the editor. The focused suites now pass:
+39 command, 6 flag, 7 JSON, 10 print, 9 resource, 8 trust, 4 full interactive,
+1 ConfigSelector PTY, 1 slash-command PTY, 1 release-binary TUI, 1 binary RPC,
+and 20 stdin-buffer tests. The complete debug and release workspace suites
+also pass with bounded `--test-threads=2` concurrency.
+
+Authoritative audit output for this checkpoint is:
+`Conversion progress: 100.00% (166/166; 0 open)`, `audit blockers: 0`, and
+`workspace JS/TS source files: 0`, from
+`cargo run -p pi-coding-agent --offline --bin conversion_audit -- all`.
+The legacy `node scripts/conversion-progress.mjs` path is absent from this
+Rust-only checkout and is recorded as unavailable; it is not substituted with
+an invented result. Credentialed live-provider inference and the installed
+PATH `pi` command remain explicitly unverified: PATH currently resolves to the
+JavaScript/mise command, while the Rust product is `target/release/pi`.
+The combined mode gate and final isolated release reverify are now complete;
+all 19 unlazy gates are met. The next dependency-safe action is the focused
+commit/push and local/remote hash verification for this test campaign.
+
 The final extension boundary is Rust-native only. No Node/Bun JSONL bridge,
 JavaScript/TypeScript source, npm execution, or source-language extension
 loading is shipped. Rust factories cover commands, hooks, renderers, tools,

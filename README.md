@@ -273,6 +273,36 @@ cargo test --workspace --offline
 git diff --check
 ```
 
+### Exhaustive local user-flow verification
+
+The Rust CLI has deterministic coverage for interactive TUI editing and
+slash-command PTYs, sequential argv and piped-stdin prompts, print, JSON, and
+RPC modes, session JSONL persistence, commands, resources, trust, error paths,
+bracketed paste, terminal restoration, and the optimized release binary. Run
+the focused user-flow matrix with:
+
+```bash
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline \
+  --test interactive_full_matrix --test interactive_slash_pty \
+  --test config_selector_pty --test cli_print_parity --test cli_json_mode \
+  --test cli_commands --test cli_resources --test cli_trust \
+  --test cli_flag_matrix --test interactive_release_multiturn \
+  --test rpc_binary_multiturn -- --test-threads=1
+```
+
+The full debug and release workspace suites use bounded concurrency:
+
+```bash
+/home/mustbearnold/.cargo/bin/cargo test --workspace --offline --quiet -- --test-threads=2
+/home/mustbearnold/.cargo/bin/cargo build --workspace --release --offline
+/home/mustbearnold/.cargo/bin/cargo test --workspace --release --offline --quiet -- --test-threads=2
+```
+
+These are offline/faux-provider and local PTY/RPC tests. Credentialed live
+provider inference, third-party extension behavior, alternate terminal
+emulators, and the separate JavaScript/mise `pi` found on PATH are not implied
+by this deterministic verification.
+
 For a release build:
 
 ```bash

@@ -97,19 +97,40 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
                 .cloned()
                 .ok_or_else(|| "no faux model".to_string())?,
         };
-        let reply = args
-            .messages
-            .last()
-            .cloned()
-            .unwrap_or_else(|| "Hello from pi-rust".to_string());
-        core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
-            pi_ai::providers::faux_assistant_message(
-                vec![pi_ai::types::ContentBlock::text(format!(
-                    "faux response to: {reply}"
-                ))],
-                pi_ai::providers::FauxAssistantOptions::default(),
-            ),
-        )]);
+        // `runPrintMode` sends the initial prompt and every additional
+        // positional message as separate sequential turns. Keep the faux
+        // provider queue aligned with that contract so deterministic tests
+        // exercise the same turn boundaries as real providers.
+        let mut replies = Vec::new();
+        let stdin_content = args.stdin_content.as_deref().unwrap_or_default();
+        let first_message = args.messages.first().cloned().unwrap_or_default();
+        let initial_reply = format!("{stdin_content}{first_message}");
+        if !initial_reply.is_empty() {
+            replies.push(initial_reply);
+        } else if args.messages.is_empty() {
+            replies.push("Hello from pi-rust".to_string());
+        }
+        replies.extend(
+            args.messages
+                .iter()
+                .skip(usize::from(!args.messages.is_empty()))
+                .cloned(),
+        );
+        core.set_responses(
+            replies
+                .into_iter()
+                .map(|reply| {
+                    pi_ai::providers::FauxResponseStep::Message(
+                        pi_ai::providers::faux_assistant_message(
+                            vec![pi_ai::types::ContentBlock::text(format!(
+                                "faux response to: {reply}"
+                            ))],
+                            pi_ai::providers::FauxAssistantOptions::default(),
+                        ),
+                    )
+                })
+                .collect(),
+        );
         let stream_models = models.clone();
         let stream_fn: crate::run::StreamFn = Arc::new(move |model, ctx| {
             stream_models.stream(model, ctx, Some(&pi_ai::types::StreamOptions::default()))
@@ -162,9 +183,10 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         settings.get_image_auto_resize(),
     )?;
     let mut prompt_inputs: Vec<(String, Vec<ContentBlock>)> = Vec::new();
+    let stdin_content = args.stdin_content.as_deref().unwrap_or_default();
     if let Some((file_text, images)) = prepared_files {
         let first_message = args.messages.first().cloned().unwrap_or_default();
-        let initial_text = format!("{file_text}{first_message}");
+        let initial_text = format!("{stdin_content}{file_text}{first_message}");
         if !initial_text.is_empty() || !images.is_empty() {
             prompt_inputs.push((initial_text, images));
         }
@@ -175,7 +197,17 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
                 .map(|text| (text.clone(), Vec::new())),
         );
     } else {
-        prompt_inputs.extend(args.messages.iter().map(|text| (text.clone(), Vec::new())));
+        let first_message = args.messages.first().cloned().unwrap_or_default();
+        let initial_text = format!("{stdin_content}{first_message}");
+        if !initial_text.is_empty() {
+            prompt_inputs.push((initial_text, Vec::new()));
+        }
+        prompt_inputs.extend(
+            args.messages
+                .iter()
+                .skip(usize::from(!args.messages.is_empty()))
+                .map(|text| (text.clone(), Vec::new())),
+        );
     }
     let prompts: Vec<pi_agent::types::AgentMessage> = prompt_inputs
         .into_iter()
@@ -230,10 +262,18 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
             .map_err(|error| error.to_string())?;
     }
     let _idle_guard = JsonIdleGuard::new(loaded_extensions.host.clone());
-    let (_, rich_events) = harness
-        .run_prompt_with_events(prompts)
-        .await
-        .map_err(|error| error.to_string())?;
+    // Match the upstream print-mode loop: each positional message is its own
+    // prompt, agent turn, and persisted assistant response. Passing the whole
+    // vector to one harness call would batch the user messages into a single
+    // turn and would be observably different in JSON mode.
+    let mut rich_events = Vec::new();
+    for prompt in prompts {
+        let (_, events) = harness
+            .run_prompt_with_events(vec![prompt])
+            .await
+            .map_err(|error| error.to_string())?;
+        rich_events.extend(events);
+    }
 
     // Emit the captured events in wire order. A streamed terminal model error
     // is delivered as a JSON event line and the process exits 0 — upstream

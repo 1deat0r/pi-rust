@@ -253,11 +253,21 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             // Queue one scripted faux response per prompt so sequential
             // print-mode turns (one assistant turn per positional message,
             // upstream `runPrintMode`) each pop a reply.
-            let prompts: Vec<String> = if args.messages.is_empty() {
-                vec!["Hello from pi-rust".to_string()]
-            } else {
-                args.messages.clone()
-            };
+            let mut prompts = Vec::new();
+            let stdin_content = args.stdin_content.as_deref().unwrap_or_default();
+            let first_message = args.messages.first().cloned().unwrap_or_default();
+            let initial_prompt = format!("{stdin_content}{first_message}");
+            if !initial_prompt.is_empty() {
+                prompts.push(initial_prompt);
+            } else if args.messages.is_empty() {
+                prompts.push("Hello from pi-rust".to_string());
+            }
+            prompts.extend(
+                args.messages
+                    .iter()
+                    .skip(usize::from(!args.messages.is_empty()))
+                    .cloned(),
+            );
             let responses: Vec<pi_ai::providers::FauxResponseStep> = prompts
                 .into_iter()
                 .map(|text| {
@@ -497,9 +507,10 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     let prepared_files =
         prepare_file_arguments(&args.file_args, &cwd, settings.get_image_auto_resize())?;
     let mut prompts: Vec<(String, Vec<ContentBlock>)> = Vec::new();
+    let stdin_content = args.stdin_content.as_deref().unwrap_or_default();
     if let Some((file_text, images)) = prepared_files {
         let first_message = args.messages.first().cloned().unwrap_or_default();
-        let initial_text = format!("{file_text}{first_message}");
+        let initial_text = format!("{stdin_content}{file_text}{first_message}");
         if !initial_text.is_empty() || !images.is_empty() {
             prompts.push((initial_text, images));
         }
@@ -510,7 +521,17 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
                 .map(|text| (text.clone(), Vec::new())),
         );
     } else {
-        prompts.extend(args.messages.iter().map(|text| (text.clone(), Vec::new())));
+        let first_message = args.messages.first().cloned().unwrap_or_default();
+        let initial_text = format!("{stdin_content}{first_message}");
+        if !initial_text.is_empty() {
+            prompts.push((initial_text, Vec::new()));
+        }
+        prompts.extend(
+            args.messages
+                .iter()
+                .skip(usize::from(!args.messages.is_empty()))
+                .map(|text| (text.clone(), Vec::new())),
+        );
     }
     for (text, images) in prompts {
         let expanded =

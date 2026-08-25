@@ -3,8 +3,9 @@
 //! print-mode implementation.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 struct Sandbox {
     root: PathBuf,
@@ -32,6 +33,8 @@ impl Sandbox {
             .current_dir(cwd)
             .env("HOME", &self.home)
             .env("PI_CODING_AGENT_SESSION_DIR", &self.sessions)
+            .env("PI_OFFLINE", "1")
+            .env("PI_SKIP_VERSION_CHECK", "1")
             .env_remove("PI_PROVIDER")
             .env_remove("PI_MODEL")
             .env_remove("PI_KEY")
@@ -41,6 +44,32 @@ impl Sandbox {
             .expect("spawn pi")
     }
 
+    fn pi_with_stdin(&self, cwd: &Path, args: &[&str], input: &str) -> std::process::Output {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_pi"))
+            .current_dir(cwd)
+            .env("HOME", &self.home)
+            .env("PI_CODING_AGENT_SESSION_DIR", &self.sessions)
+            .env("PI_OFFLINE", "1")
+            .env("PI_SKIP_VERSION_CHECK", "1")
+            .env_remove("PI_PROVIDER")
+            .env_remove("PI_MODEL")
+            .env_remove("PI_KEY")
+            .env_remove("PI_SESSION_ID")
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn pi with stdin");
+        child
+            .stdin
+            .take()
+            .expect("pi stdin")
+            .write_all(input.as_bytes())
+            .expect("write pi stdin");
+        child.wait_with_output().expect("wait for pi with stdin")
+    }
+
     fn stdout(&self, output: &std::process::Output) -> String {
         String::from_utf8_lossy(&output.stdout).to_string()
     }
@@ -48,13 +77,10 @@ impl Sandbox {
         String::from_utf8_lossy(&output.stderr).to_string()
     }
 
-    /// Walk `sessions` recursively and count assistant-role message entries in
-    /// the session JSONL files that the run just wrote.
-    fn count_assistant_entries(&self) -> usize {
-        walk_jsonl(&self.sessions)
-            .into_iter()
-            .map(|path| count_assistants(&path))
-            .sum()
+    fn session(&self) -> PathBuf {
+        let files = walk_jsonl(&self.sessions);
+        assert_eq!(files.len(), 1, "expected one session, found {files:?}");
+        files.into_iter().next().unwrap()
     }
 }
 
@@ -92,6 +118,22 @@ fn read_header(path: &Path) -> serde_json::Value {
     serde_json::from_str(content.lines().next().expect("session header")).expect("valid header")
 }
 
+fn message_entries(path: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(path)
+        .expect("session JSONL")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|entry| entry["kind"] == "entry" && entry["type"] == "message")
+        .collect()
+}
+
+fn message_text(entry: &serde_json::Value) -> Option<String> {
+    entry["message"]["content"]
+        .as_array()?
+        .iter()
+        .find_map(|block| block["text"].as_str().map(str::to_owned))
+}
+
 #[test]
 fn multiple_messages_are_prompted_as_sequential_turns() {
     let sandbox = Sandbox::new("multi-turn");
@@ -115,12 +157,65 @@ fn multiple_messages_are_prompted_as_sequential_turns() {
         "no final reply"
     );
 
-    let assistant_entries = sandbox.count_assistant_entries();
+    let session = sandbox.session();
+    let entries = message_entries(&session);
+    let user_texts: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry["message"]["role"] == "user")
+        .filter_map(message_text)
+        .collect();
+    assert_eq!(user_texts, ["first", "second"]);
+
+    let assistants: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry["message"]["role"] == "assistant")
+        .collect();
+    let assistant_entries = assistants.len();
     // Sequential turns ⇒ two assistant entries persisted (a batched run would
     // persist a single assistant turn).
     assert_eq!(
         assistant_entries, 2,
         "expected two assistant turns, got {assistant_entries}"
+    );
+    assert_eq!(
+        assistants
+            .iter()
+            .filter_map(|entry| message_text(entry))
+            .collect::<Vec<_>>(),
+        ["faux response to: first", "faux response to: second"]
+    );
+    for assistant in assistants {
+        assert_eq!(assistant["message"]["provider"], "faux");
+        assert_eq!(assistant["message"]["model"], "faux-1");
+    }
+}
+
+#[test]
+fn piped_stdin_is_the_initial_text_print_prompt() {
+    let sandbox = Sandbox::new("stdin");
+    let out = sandbox.pi_with_stdin(
+        &sandbox.root,
+        &["-p", "--provider", "faux", "--model", "faux-1"],
+        "stdin prompt\n",
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    assert_eq!(sandbox.stdout(&out), "faux response to: stdin prompt\n");
+
+    let entries = message_entries(&sandbox.session());
+    assert_eq!(entries.len(), 2, "expected one durable user/assistant turn");
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry["message"]["role"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["user", "assistant"]
+    );
+    assert_eq!(
+        entries.iter().filter_map(message_text).collect::<Vec<_>>(),
+        [
+            "stdin prompt".to_string(),
+            "faux response to: stdin prompt".to_string()
+        ]
     );
 }
 
@@ -146,6 +241,62 @@ fn terminal_provider_error_exits_nonzero_with_raw_message() {
         !sandbox.stdout(&out).contains("faux"),
         "no reply expected on stdout"
     );
+}
+
+#[test]
+fn unknown_faux_model_fails_before_a_turn_is_persisted() {
+    let sandbox = Sandbox::new("unknown-model");
+    let out = sandbox.pi(
+        &sandbox.root,
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "missing-model",
+            "hello",
+        ],
+    );
+    assert!(!out.status.success(), "expected model-resolution failure");
+    let stderr = sandbox.stderr(&out);
+    assert!(
+        stderr.contains("unknown faux model")
+            || stderr.contains("Unknown faux model")
+            || stderr.contains("missing-model"),
+        "expected deterministic faux model diagnostic, got: {stderr}"
+    );
+    assert!(
+        walk_jsonl(&sandbox.sessions).is_empty(),
+        "model resolution must fail before creating a durable turn"
+    );
+}
+
+#[test]
+fn text_file_argument_is_merged_into_the_first_prompt() {
+    let sandbox = Sandbox::new("text-file");
+    fs::write(sandbox.root.join("context.txt"), "file context").unwrap();
+
+    let out = sandbox.pi(
+        &sandbox.root,
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "@context.txt",
+            "answer the question",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+
+    let content = fs::read_to_string(sandbox.session()).unwrap();
+    assert!(content.contains("file context"), "file contents were lost");
+    assert!(
+        content.contains("answer the question"),
+        "the positional prompt was lost"
+    );
+    assert_eq!(count_assistants(&sandbox.session()), 1);
 }
 
 #[test]
@@ -303,6 +454,9 @@ fn resume_reopens_the_only_session_without_rewriting_it() {
     let files = walk_jsonl(&sandbox.sessions);
     assert_eq!(files.len(), 1);
     assert_eq!(count_assistants(&files[0]), 2);
+    let content = fs::read_to_string(&files[0]).unwrap();
+    assert!(content.contains("faux response to: first"));
+    assert!(content.contains("faux response to: second"));
 }
 
 #[test]

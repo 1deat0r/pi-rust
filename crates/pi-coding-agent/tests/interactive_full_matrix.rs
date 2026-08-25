@@ -9,8 +9,9 @@
 #[cfg(unix)]
 mod unix {
     use std::fs;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Output};
+    use std::process::{Command, Output, Stdio};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -174,12 +175,43 @@ mod unix {
             );
         }
 
+        fn send_text(&self, text: &str) {
+            let output = tmux(&["send-keys", "-t", &self.name, "-l", "--", text]);
+            assert!(
+                output.status.success(),
+                "tmux literal input {text:?} failed: {}",
+                stderr(&output)
+            );
+        }
+
         fn send_key(&self, key: &str) {
             let output = tmux(&["send-keys", "-t", &self.name, key]);
             assert!(
                 output.status.success(),
                 "tmux send-keys {key:?} failed: {}",
                 stderr(&output)
+            );
+        }
+
+        fn send_bracketed_paste(&self, text: &str) {
+            let mut loader = Command::new("tmux")
+                .args(["load-buffer", "-"])
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("tmux load-buffer must start");
+            loader
+                .stdin
+                .take()
+                .expect("tmux load-buffer stdin")
+                .write_all(text.as_bytes())
+                .expect("write tmux paste buffer");
+            let loaded = loader.wait().expect("wait for tmux load-buffer");
+            assert!(loaded.success(), "tmux load-buffer failed");
+            let pasted = tmux(&["paste-buffer", "-p", "-d", "-t", &self.name]);
+            assert!(
+                pasted.status.success(),
+                "tmux bracketed paste failed: {}",
+                stderr(&pasted)
             );
         }
 
@@ -512,7 +544,11 @@ mod unix {
 
             if row.get(2).is_some_and(|follow_up| follow_up == "escape") {
                 session.send_key("Escape");
-                thread::sleep(Duration::from_millis(100));
+                // Selector dismissal can be delayed while the preceding
+                // faux turn and redraw settle, especially when the complete
+                // workspace suite is running other PTYs. Leave the modal
+                // closed before submitting the next fixture command.
+                thread::sleep(Duration::from_millis(400));
             }
         }
 
@@ -523,6 +559,90 @@ mod unix {
         );
         let html = fs::read_to_string(&sandbox.html).unwrap();
         assert!(html.contains("<html"), "exported artifact is not HTML");
+
+        session.send_line("/quit");
+        assert_terminal_restored(&session, &sandbox);
+    }
+
+    #[test]
+    fn editor_key_matrix_supports_multiturn_prompt_entry_and_restores_terminal() {
+        let sandbox = Sandbox::new();
+        let session = TmuxSession::start(&sandbox, "faux-1");
+        session.wait_for_capture(|capture| capture.contains("(faux/Faux Model)"));
+        session.assert_raw_mode();
+
+        // Cursor movement, backspace, delete, home, and end should compose a
+        // submitted prompt through the real terminal byte parser.
+        session.send_text("abcd");
+        session.wait_for_capture(|capture| capture.contains("abcd"));
+        session.send_text("\x1b[D"); // left
+        session.send_text("\x7f"); // backspace: abcd -> abd
+        session.send_key("C-d"); // forward delete: abd -> ab
+        session.send_text("\x1b[H"); // home
+        session.send_text("H"); // Hab
+        session.send_text("\x1b[F"); // end
+        session.send_text("E"); // HabE
+        session.send_key("Enter");
+        session.wait_for_capture(|capture| capture.contains("faux response to: HabE"));
+
+        // Ctrl-W and Ctrl-U must change the submitted value, not merely
+        // redraw the editor.
+        session.send_text("hello cruel world");
+        session.send_key("C-w");
+        session.send_text("marker");
+        session.send_key("Enter");
+        session
+            .wait_for_capture(|capture| capture.contains("faux response to: hello cruel marker"));
+
+        session.send_text("prefix-ctrl-u");
+        session.send_key("C-u");
+        session.send_text("after-ctrl-u");
+        session.send_key("Enter");
+        session.wait_for_capture(|capture| capture.contains("faux response to: after-ctrl-u"));
+
+        // Up recalls the latest submitted prompt, while Down returns from a
+        // history visit to the draft captured before the visit.
+        session.send_text("history-source");
+        session.send_key("Enter");
+        session.wait_for_capture(|capture| capture.contains("faux response to: history-source"));
+        session.send_text("draft");
+        session.send_key("Home");
+        session.send_text("\x1b[A"); // up: recall history-source
+        session.send_text("\x1b[B"); // down: restore draft
+        session.send_key("End");
+        session.send_text("-restored");
+        session.send_key("Enter");
+        session.wait_for_capture(|capture| capture.contains("faux response to: draft-restored"));
+
+        // Start the multiline/paste checks from a clean editor instance so
+        // history browsing cannot leave an implementation-specific draft
+        // state in the way of the next independent input contract.
+        session.send_line("/quit");
+        assert_terminal_restored(&session, &sandbox);
+        drop(session);
+        let session = TmuxSession::start(&sandbox, "faux-1");
+        session.wait_for_capture(|capture| capture.contains("(faux/Faux Model)"));
+        session.assert_raw_mode();
+
+        // A trailing backslash plus Enter is the portable continuation-newline
+        // path. It must create a multiline prompt without starting the turn
+        // until the subsequent ordinary Enter.
+        session.send_text("multi-one\\");
+        session.send_key("Enter");
+        session.send_text("multi-two");
+        session.wait_for_capture(|capture| capture.contains("multi-two"));
+        session.send_key("Enter");
+        session.wait_for_capture(|capture| {
+            capture.contains("faux response to: multi-one") && capture.contains("multi-two")
+        });
+
+        // Bracketed paste must preserve its embedded newline as prompt text.
+        session.send_bracketed_paste("paste-one\npaste-two");
+        session.wait_for_capture(|capture| capture.contains("paste-two"));
+        session.send_key("Enter");
+        session.wait_for_capture(|capture| {
+            capture.contains("faux response to: paste-one") && capture.contains("paste-two")
+        });
 
         session.send_line("/quit");
         assert_terminal_restored(&session, &sandbox);

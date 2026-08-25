@@ -300,7 +300,14 @@ impl StdinBuffer {
                 self.paste_mode = false;
                 self.paste_buffer.clear();
                 self.pending_kitty_printable_codepoint = None;
-                emitted.push(content);
+                // Keep the event shape expected by Editor. The upstream
+                // terminal layer emits a dedicated paste event and then
+                // re-wraps its content with bracketed-paste markers before
+                // forwarding it to components; this buffer has one string
+                // event channel, so preserve that same boundary here.
+                emitted.push(format!(
+                    "{BRACKETED_PASTE_START}{content}{BRACKETED_PASTE_END}"
+                ));
                 if !remaining.is_empty() {
                     emitted.extend(self.process(&remaining));
                 }
@@ -327,7 +334,9 @@ impl StdinBuffer {
                 self.paste_mode = false;
                 self.paste_buffer.clear();
                 self.pending_kitty_printable_codepoint = None;
-                emitted.push(content);
+                emitted.push(format!(
+                    "{BRACKETED_PASTE_START}{content}{BRACKETED_PASTE_END}"
+                ));
                 if !remaining.is_empty() {
                     emitted.extend(self.process(&remaining));
                 }
@@ -582,13 +591,13 @@ mod tests {
         let mut buffer = StdinBuffer::new();
         assert_eq!(
             buffer.process("\x1b[200~hello world\x1b[201~"),
-            vec!["hello world"]
+            vec!["\x1b[200~hello world\x1b[201~"]
         );
         // Paste with surrounding input.
         let mut buffer = StdinBuffer::new();
         assert_eq!(
             buffer.process("ab\x1b[200~pasted\x1b[201~cd"),
-            vec!["a", "b", "pasted", "c", "d"]
+            vec!["a", "b", "\x1b[200~pasted\x1b[201~", "c", "d"]
         );
     }
 }

@@ -185,6 +185,46 @@ fn saved_trust_is_applied_to_json_mode_startup() {
     );
 }
 
+#[test]
+fn explicit_trust_flags_override_saved_decisions() {
+    let approved_override = Sandbox::new("override-approve");
+    let approved_cwd = trust_requiring_project(&approved_override);
+    let approved_store = ProjectTrustStore::new(approved_override.agent_dir.to_str().unwrap());
+    approved_store.set(approved_cwd.to_str().unwrap(), Some(false));
+
+    let approved = approved_override.pi(&approved_cwd, &["--approve", "--print", "hello"]);
+    assert!(
+        approved.status.success(),
+        "--approve must override saved denial: {}",
+        approved_override.stderr(&approved)
+    );
+    assert!(approved_override
+        .stdout(&approved)
+        .contains("faux response"));
+    assert_eq!(
+        approved_store.get(approved_cwd.to_str().unwrap()),
+        Some(false)
+    );
+
+    let denied_override = Sandbox::new("override-deny");
+    let denied_cwd = trust_requiring_project(&denied_override);
+    let denied_store = ProjectTrustStore::new(denied_override.agent_dir.to_str().unwrap());
+    denied_store.set(denied_cwd.to_str().unwrap(), Some(true));
+
+    let denied = denied_override.pi(&denied_cwd, &["--no-approve", "--print", "hello"]);
+    assert!(!denied.status.success());
+    let combined = format!(
+        "{}\n{}",
+        denied_override.stdout(&denied),
+        denied_override.stderr(&denied)
+    );
+    assert!(
+        !combined.contains("faux response"),
+        "--no-approve must override saved approval: {combined}"
+    );
+    assert_eq!(denied_store.get(denied_cwd.to_str().unwrap()), Some(true));
+}
+
 #[cfg(unix)]
 mod interactive_prompt {
     use super::*;

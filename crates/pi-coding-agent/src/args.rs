@@ -10,6 +10,8 @@ const VALID_THINKING_LEVELS: [&str; 7] =
 #[derive(Debug, Clone, Default)]
 pub struct Args {
     pub messages: Vec<String>,
+    /// Content read from non-RPC piped stdin, prepended to the initial prompt.
+    pub stdin_content: Option<String>,
     pub file_args: Vec<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
