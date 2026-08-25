@@ -29,11 +29,11 @@ dependency-safe action.
 The extension boundary now uses a persistent Node/Bun JSONL bridge with
 deterministic command, hook, renderer, provider-config, local JS/TS import,
 live-tool, host-action, context-action, thinking/model, callback-scoped signal,
-stale-process, timeout,
+native-provider event, stale-process, timeout,
 protocol, and failure-isolation fixtures, plus a shared-runtime bind helper. Print,
 JSON, RPC, and interactive modes load configured extensions and expose live
 extension tools through their agent contexts. Full S-027 remains open for
-pinned jiti/module virtualization, native provider callback execution/model-
+pinned jiti/module virtualization, typed native-provider event conversion/model-
 registry wiring, Bun-specific runtime verification, and the remaining full
 agent-loop provider/tool semantics.
 

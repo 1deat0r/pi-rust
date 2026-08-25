@@ -192,6 +192,14 @@ pub struct ToolExecutionRequest {
 pub type ToolExecuteFn =
     Arc<dyn Fn(ToolExecutionRequest) -> Result<Value, String> + Send + Sync + 'static>;
 
+/// JSON-only bridge callback for a native provider stream function.
+///
+/// The model, context, and options remain opaque at this layer so the
+/// bridge can carry the upstream provider event protocol without coupling
+/// extension loading to `pi-ai` types.
+pub type NativeProviderCallbackFn =
+    Arc<dyn Fn(Value, Value, Value) -> Result<Vec<Value>, String> + Send + Sync + 'static>;
+
 /// A registered extension tool (upstream `RegisteredTool`).
 #[derive(Clone)]
 pub struct RegisteredTool {
@@ -490,10 +498,21 @@ pub struct PendingProviderRegistration {
     pub extension_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub struct PendingNativeProviderRegistration {
     pub provider: String,
+    pub callbacks: BTreeMap<String, NativeProviderCallbackFn>,
     pub extension_path: String,
+}
+
+impl std::fmt::Debug for PendingNativeProviderRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingNativeProviderRegistration")
+            .field("provider", &self.provider)
+            .field("callbacks", &self.callbacks.keys().collect::<Vec<_>>())
+            .field("extension_path", &self.extension_path)
+            .finish()
+    }
 }
 
 impl ExtensionRuntime {

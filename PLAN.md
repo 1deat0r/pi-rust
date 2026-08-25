@@ -30,11 +30,11 @@ The current extension bridge (`leaf-C2d`) is a persistent Node/Bun JSONL
 boundary with deterministic async command/hook/renderer/provider fixtures,
 local JS/TS imports, live external-tool callbacks, a production-shaped shared
 runtime bind, synchronous getter snapshots, callback-scoped context signal and
-control actions, ordered tool updates, stale-process invalidation, and
-timeout/protocol cleanup. S-027 remains open for pinned jiti/module
-virtualization, native provider callback execution, Bun-specific runtime
-verification, and wiring registered providers into the live pi-ai model
-registry.
+control actions, ordered tool updates, a bridge-native-provider event
+protocol, stale-process invalidation, and timeout/protocol cleanup. S-027
+remains open for pinned jiti/module virtualization, typed conversion of native
+provider events into pi-ai `ProviderStreams`/`Models`, Bun-specific runtime
+verification, and live mode/model-registry wiring.
 
 ## Checkpoint 2026-08-25 — progress gate and release verification
 

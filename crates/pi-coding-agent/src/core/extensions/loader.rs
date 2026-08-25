@@ -6,9 +6,9 @@
 //! and uses a persistent Node/Bun JSON-lines bridge for the supported external
 //! runtime boundary. The bridge awaits the factory, returns registration
 //! metadata, and keeps the JavaScript callbacks alive for command, hook, and
-//! renderer/tool calls and bidirectional host-action frames. It deliberately
-//! does not claim to embed jiti, virtual modules, or native pi-ai provider
-//! callback objects; those remain explicit runtime-boundary limitations.
+//! renderer/tool calls, native provider callbacks, and bidirectional
+//! host-action frames. It deliberately does not claim to embed jiti or
+//! virtual modules; those remain explicit runtime-boundary limitations.
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -24,9 +24,9 @@ use crate::config::CONFIG_DIR_NAME;
 use crate::core::extensions::types::{
     EntryRenderer, Extension, ExtensionFlag, ExtensionHostAction, ExtensionLoadError,
     ExtensionRuntime, ExtensionShortcut, FlagType, HandlerFn, LoadExtensionsResult,
-    MarkdownTransformer, MessageRenderer, PendingNativeProviderRegistration,
-    PendingProviderRegistration, RegisteredCommand, RegisteredTool, RegistrationKind, SourceInfo,
-    ToolExecuteFn, ToolExecutionRequest,
+    MarkdownTransformer, MessageRenderer, NativeProviderCallbackFn,
+    PendingNativeProviderRegistration, PendingProviderRegistration, RegisteredCommand,
+    RegisteredTool, RegistrationKind, SourceInfo, ToolExecuteFn, ToolExecutionRequest,
 };
 use crate::core::pi_manifest::read_pi_manifest;
 
@@ -255,9 +255,8 @@ impl<'a> ExtensionApi<'a> {
     }
 
     /// Queue a deterministic native-provider identifier for Rust-native
-    /// factories. JavaScript native provider callbacks are not serializable
-    /// and are rejected by the external bridge rather than silently
-    /// downgraded.
+    /// factories. External bridge callbacks are attached when the bridge
+    /// metadata is materialized.
     pub fn register_native_provider(&mut self, provider: &str) -> Result<(), String> {
         self.assert_active()?;
         let mut runtime = self
@@ -268,6 +267,7 @@ impl<'a> ExtensionApi<'a> {
             .pending_native_provider_registrations
             .push(PendingNativeProviderRegistration {
                 provider: provider.to_string(),
+                callbacks: std::collections::BTreeMap::new(),
                 extension_path: self.extension_path.clone(),
             });
         Ok(())
@@ -577,18 +577,33 @@ const api = {
   },
   registerProvider(nameOrProvider, config) {
     assertActive();
-    if (typeof nameOrProvider !== "string") {
-      throw new Error("External extension bridge does not support native provider callbacks");
+    if (typeof nameOrProvider === "string") {
+      if (config === undefined) throw new Error("Provider config is required when registering by name");
+      if (hasFunction(config)) {
+        throw new Error("External extension bridge only supports JSON provider configs");
+      }
+      state.providers.push({ name: nameOrProvider, config });
+      return;
     }
-    if (config === undefined) throw new Error("Provider config is required when registering by name");
-    if (hasFunction(config)) {
-      throw new Error("External extension bridge only supports JSON provider configs");
+    if (!nameOrProvider || typeof nameOrProvider !== "object") {
+      throw new Error("Native provider registration requires a provider object");
     }
-    state.providers.push({ name: nameOrProvider, config });
+    if (typeof nameOrProvider.id !== "string" || nameOrProvider.id.length === 0) {
+      throw new Error("Native provider registration requires a provider id");
+    }
+    const callbacks = new Map();
+    for (const [name, callback] of Object.entries(nameOrProvider)) {
+      if (name !== "id" && typeof callback === "function") callbacks.set(name, callback);
+    }
+    if (callbacks.size === 0) {
+      throw new Error(`Native provider ${nameOrProvider.id} must define at least one callback`);
+    }
+    state.nativeProviders.push({ name: nameOrProvider.id, callbacks });
   },
   unregisterProvider(name) {
     assertActive();
     state.providers = state.providers.filter((registration) => registration.name !== name);
+    state.nativeProviders = state.nativeProviders.filter((registration) => registration.name !== name);
   },
   sendMessage(message, options) {
     fireHostAction("sendMessage", { message, options: options ?? null });
@@ -653,7 +668,10 @@ function metadata() {
     entryRenderers: [...state.entryRenderers.keys()],
     markdownTransformer: state.markdownTransformer !== undefined,
     providers: state.providers,
-    nativeProviders: state.nativeProviders,
+    nativeProviders: state.nativeProviders.map(({ name, callbacks }) => ({
+      name,
+      callbacks: [...callbacks.keys()],
+    })),
     registrations: state.registrations,
   };
 }
@@ -773,6 +791,18 @@ function contextFor(request) {
   return context;
 }
 
+async function collectNativeProviderEvents(result) {
+  const stream = await result;
+  if (Array.isArray(stream)) return stream;
+  if (stream && typeof stream[Symbol.asyncIterator] === "function") {
+    const events = [];
+    for await (const event of stream) events.push(event);
+    return events;
+  }
+  if (stream && typeof stream[Symbol.iterator] === "function") return [...stream];
+  throw new Error("Native provider callback must return an async iterable, iterable, or array");
+}
+
 async function invoke(request) {
   assertActive();
   const context = contextFor(request);
@@ -827,6 +857,17 @@ async function invoke(request) {
   if (request.kind === "markdown_transformer") {
     if (!state.markdownTransformer) throw new Error("Extension markdown transformer not found");
     return await state.markdownTransformer(request.markdown, request.context ?? {});
+  }
+  if (request.kind === "native_provider") {
+    const provider = state.nativeProviders.find((registration) => registration.name === request.name);
+    if (!provider) throw new Error(`Native provider not found: ${request.name}`);
+    const callback = provider.callbacks.get(request.callback);
+    if (!callback) {
+      throw new Error(`Native provider callback not found: ${request.name}.${request.callback}`);
+    }
+    return await collectNativeProviderEvents(
+      callback(request.model ?? null, request.context ?? null, request.options ?? null),
+    );
   }
   throw new Error(`Unknown extension bridge call: ${request.kind}`);
 }
@@ -1181,6 +1222,30 @@ impl ExternalExtensionProcess {
         }
     }
 
+    fn request_native_provider_events(
+        &self,
+        provider: &str,
+        callback: &str,
+        model: serde_json::Value,
+        context: serde_json::Value,
+        options: serde_json::Value,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let result = self
+            .request(serde_json::json!({
+                "type": "call",
+                "kind": "native_provider",
+                "name": provider,
+                "callback": callback,
+                "model": model,
+                "context": context,
+                "options": options,
+            }))?
+            .ok_or_else(|| "Native provider callback returned no event sequence".to_string())?;
+        result.as_array().cloned().ok_or_else(|| {
+            "Native provider callback returned a non-array event sequence".to_string()
+        })
+    }
+
     fn close_now(&self) {
         if let Ok(mut state) = self.state.lock() {
             let _ = state.stdin.write_all(b"{\"type\":\"close\"}\n");
@@ -1426,6 +1491,16 @@ fn external_markdown_transformer(process: Arc<ExternalExtensionProcess>) -> Mark
         Ok(result
             .and_then(|value| value.as_str().map(str::to_string))
             .unwrap_or_else(|| markdown.to_string()))
+    })
+}
+
+fn external_native_provider_callback(
+    process: Arc<ExternalExtensionProcess>,
+    provider: String,
+    callback: String,
+) -> NativeProviderCallbackFn {
+    Arc::new(move |model, context, options| {
+        process.request_native_provider_events(&provider, &callback, model, context, options)
     })
 }
 
@@ -1874,14 +1949,39 @@ fn external_extension_from_metadata(
             );
         }
     }
-    if metadata
+    if let Some(providers) = metadata
         .get("nativeProviders")
         .and_then(serde_json::Value::as_array)
-        .is_some_and(|providers| !providers.is_empty())
     {
-        return Err(
-            "External extension bridge does not support native provider callbacks".to_string(),
-        );
+        for provider in providers {
+            let name = required_string(provider, "name")?;
+            let callback_names = provider
+                .get("callbacks")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| format!("Native provider {name:?} is missing callback metadata"))?;
+            let mut callbacks = std::collections::BTreeMap::new();
+            for callback in callback_names {
+                let callback_name = callback.as_str().ok_or_else(|| {
+                    format!("Native provider {name:?} has a non-string callback name")
+                })?;
+                callbacks.insert(
+                    callback_name.to_string(),
+                    external_native_provider_callback(
+                        Arc::clone(&process),
+                        name.clone(),
+                        callback_name.to_string(),
+                    ),
+                );
+            }
+            queue_native_provider_registration(
+                runtime,
+                PendingNativeProviderRegistration {
+                    provider: name,
+                    callbacks,
+                    extension_path: extension_path.to_string(),
+                },
+            );
+        }
     }
 
     Ok(extension)

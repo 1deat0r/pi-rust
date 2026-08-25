@@ -770,6 +770,95 @@ export default async function (pi) {
 }
 
 #[test]
+fn node_bridge_native_provider_round_trips_callback_inputs_and_events() {
+    let root = std::env::temp_dir().join(format!(
+        "pi-extension-bridge-native-provider-{}",
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir_all(&root).expect("native provider fixture dir");
+    fs::write(root.join("package.json"), r#"{"type":"module"}"#)
+        .expect("native provider module package");
+    let entry = root.join("native-provider.ts");
+    fs::write(
+        &entry,
+        r#"
+export default function (pi) {
+  pi.registerProvider({
+    id: "demo",
+    streamSimple: async function* (model, context, options) {
+      yield { type: "start", partial: { role: "assistant", content: [], stopReason: "pending" } };
+      yield {
+        type: "text_delta",
+        contentIndex: 0,
+        delta: `${model.id}/${context.mode}/${options.temperature}`,
+      };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
+      };
+    },
+  });
+}
+"#,
+    )
+    .expect("native provider fixture");
+
+    let result = load_extensions(
+        &[entry.to_string_lossy().to_string()],
+        &root.to_string_lossy(),
+        None,
+        Some("node"),
+    );
+    assert!(
+        result.errors.is_empty(),
+        "native provider load errors: {:?}",
+        result.errors
+    );
+    assert_eq!(result.extensions.len(), 1);
+
+    let native_providers = result
+        .runtime
+        .lock()
+        .expect("native provider runtime lock")
+        .pending_native_provider_registrations
+        .clone();
+    assert_eq!(native_providers.len(), 1);
+    assert_eq!(native_providers[0].provider, "demo");
+    assert_eq!(
+        native_providers[0]
+            .callbacks
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec!["streamSimple"]
+    );
+    let stream_simple = native_providers[0]
+        .callbacks
+        .get("streamSimple")
+        .cloned()
+        .expect("native streamSimple callback");
+
+    let events = stream_simple(
+        json!({"id": "demo-model"}),
+        json!({"mode": "fixture", "messages": [{"role": "user", "content": "hello"}]}),
+        json!({"temperature": 0.25}),
+    )
+    .expect("native provider events");
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event["type"].as_str().expect("event type"))
+            .collect::<Vec<_>>(),
+        vec!["start", "text_delta", "done"]
+    );
+    assert_eq!(events[1]["delta"], "demo-model/fixture/0.25");
+    assert_eq!(events[2]["reason"], "stop");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn node_bridge_handler_context_exposes_safe_snapshot_and_control_actions() {
     if std::process::Command::new("node")
         .arg("--version")
@@ -1040,7 +1129,7 @@ export default async function (pi) {
 }
 
 #[test]
-fn node_bridge_reports_invalid_exports_factory_failures_and_native_provider_boundary() {
+fn node_bridge_reports_invalid_exports_factory_failures_and_accepts_native_provider_metadata() {
     let root = std::env::temp_dir().join(format!(
         "pi-extension-bridge-errors-{}",
         uuid::Uuid::new_v4()
@@ -1057,7 +1146,7 @@ fn node_bridge_reports_invalid_exports_factory_failures_and_native_provider_boun
     .expect("throw fixture");
     fs::write(
         &native_provider,
-        "export default function (pi) { pi.registerProvider({ id: 'native', stream: () => {} }); }\n",
+        "export default function (pi) { pi.registerProvider({ id: 'native', stream: () => [] }); }\n",
     )
     .expect("native provider fixture");
 
@@ -1067,8 +1156,8 @@ fn node_bridge_reports_invalid_exports_factory_failures_and_native_provider_boun
         native_provider.to_string_lossy().to_string(),
     ];
     let result = load_extensions(&paths, &root.to_string_lossy(), None, Some("node"));
-    assert!(result.extensions.is_empty());
-    assert_eq!(result.errors.len(), 3);
+    assert_eq!(result.extensions.len(), 1);
+    assert_eq!(result.errors.len(), 2);
     assert!(result.errors.iter().any(|error| {
         error.path.ends_with("no-default.ts")
             && error
@@ -1079,11 +1168,18 @@ fn node_bridge_reports_invalid_exports_factory_failures_and_native_provider_boun
         .errors
         .iter()
         .any(|error| { error.path.ends_with("throws.ts") && error.error.contains("init boom") }));
-    assert!(result.errors.iter().any(|error| {
-        error.path.ends_with("native-provider.ts")
-            && error
-                .error
-                .contains("does not support native provider callbacks")
-    }));
+    assert!(!result
+        .errors
+        .iter()
+        .any(|error| error.path.ends_with("native-provider.ts")));
+    let native_providers = result
+        .runtime
+        .lock()
+        .expect("native provider runtime lock")
+        .pending_native_provider_registrations
+        .clone();
+    assert_eq!(native_providers.len(), 1);
+    assert_eq!(native_providers[0].provider, "native");
+    assert!(native_providers[0].callbacks.contains_key("stream"));
     let _ = fs::remove_dir_all(root);
 }

@@ -955,13 +955,17 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       context/action fixture also covers model/scoped-model snapshots,
       idle/trust state, context usage/system prompt access, callback-scoped
       signal/abort, compact and shutdown queues, and ordered mid-execution
-      tool updates. The task remains open because pinned upstream
-      jiti/module virtualization, native provider callback execution,
-      Bun-specific verification, and wiring registered providers into the live
-      pi-ai model registry remain outside the proven bridge surface.
+      tool updates. A bridge-only native-provider protocol now accepts provider
+      objects, retains callback metadata, invokes async/iterable callbacks, and
+      returns deterministic raw event sequences; the external parity fixture
+      proves `streamSimple` input and start/text/done events. The task remains
+      open because pinned upstream jiti/module virtualization, typed conversion
+      of those events into pi-ai `ProviderStreams`/`Models`, Bun-specific
+      verification, and live mode/model-registry wiring remain outside the
+      proven bridge surface.
       No completion checkbox is claimed. Evidence:
       `cargo test -p pi-coding-agent --offline --test extensions_parity --quiet`
-      (14 passed), `cargo test -p pi-coding-agent --offline --lib
+      (15 passed), `cargo test -p pi-coding-agent --offline --lib
       core::extensions::loader::tests --quiet` (15 passed), `cargo test -p
       pi-coding-agent --offline --lib core::extensions::integration::tests
       --quiet` (4 passed), and `cargo test -p pi-coding-agent --offline --lib

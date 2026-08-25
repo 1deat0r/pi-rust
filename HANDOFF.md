@@ -1421,3 +1421,25 @@ reviewed extension-context code; the next checkpoint must run the full narrow
 extension tests, inspect the native-provider leaf, then commit and push with
 local/remote hash verification. The pre-existing untracked `AGENTS.md` stays
 unstaged.
+
+## Active checkpoint — 2026-08-25 — native-provider bridge protocol
+
+The extension bridge now accepts native provider objects, retains callback
+metadata, invokes async/iterable `stream`/`streamSimple` callbacks with
+JSON-safe model/context/options values, and returns deterministic raw event
+sequences. The new fixture proves `streamSimple` callback input and
+start/text/done events; the external parity suite is now 15/15 and loader
+tests remain 15/15. This is a partial S-027 increment: typed conversion into
+`pi-ai::ProviderStreams`, live `Models` registration/mode wiring, jiti/module
+virtualization, and Bun verification remain open.
+
+The authoritative checker remains:
+
+```text
+Conversion progress: 96.99% (161/166; 5 open)
+```
+
+This bridge-only increment is ready for its own focused commit after
+`cargo fmt --all -- --check`, strict coding-agent clippy, extension tests, and
+`git diff --check`; do not mark S-027 complete until the typed provider and
+runtime-boundary gates are independently evidenced.

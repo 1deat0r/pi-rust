@@ -15,9 +15,11 @@ CONVERSION-LEDGER.md and the exact evidence recorded there.
 
 ## Explicit residual
 
-S-027 remains open for jiti-compatible module virtualization, native provider
-callback execution/model-registry wiring, and Bun verification. The current
-context/action object and ordered mid-execution signal/update path are covered
-by the focused integration and external-bridge fixtures; the remaining
+S-027 now has a raw native-provider bridge protocol and fixture for
+`streamSimple` callback input plus start/text/done events. It remains open for
+jiti-compatible module virtualization, typed conversion of those events into
+pi-ai provider streams/model-registry wiring, and Bun verification. The
+current context/action object and ordered mid-execution signal/update path are
+covered by the focused integration and external-bridge fixtures; the remaining
 provider/runtime leaves are intentionally not repeated as done claims here.
 The final process gates are S-004, S-065, S-066, and #100.
