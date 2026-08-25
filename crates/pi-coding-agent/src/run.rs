@@ -196,6 +196,24 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         );
     }
 
+    let loaded_extensions = crate::core::extensions::load_for_mode(
+        args,
+        &settings,
+        &cwd,
+        &agent_dir.to_string_lossy(),
+        "print",
+        false,
+        args.name.clone(),
+        settings
+            .get_default_thinking_level()
+            .unwrap_or("medium")
+            .to_string(),
+    );
+    for error in &loaded_extensions.errors {
+        tracing::warn!(path = %error.path, error = %error.error, "failed to load extension");
+    }
+    let _extension_guard = RunExtensionGuard(loaded_extensions.runner.clone());
+
     let provider = resolve_run_provider(args.provider.as_deref(), &settings);
     let model_hint = resolve_run_model(
         args.model.as_deref(),
@@ -216,6 +234,8 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
                 &models,
                 &pi_ai::providers::RegisterFauxProviderOptions::default(),
             );
+            crate::core::extensions::register_loaded_native_providers(&models, &loaded_extensions)
+                .map_err(|error| format!("register extension providers: {error}"))?;
             let model = match model_hint.as_deref() {
                 Some(hint) => {
                     let id = hint.rsplit('/').next().unwrap_or(hint);
@@ -288,6 +308,8 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
                 let registry = crate::core::model_registry::ModelRegistry::new(models, config);
                 registry.into_models()
             };
+            crate::core::extensions::register_loaded_native_providers(&models, &loaded_extensions)
+                .map_err(|error| format!("register extension providers: {error}"))?;
             if models.get_provider(&provider).is_none() {
                 return Err(format!(
                     "provider {provider:?} is not registered in the model registry"
@@ -322,24 +344,6 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         };
 
     let mut system_prompt = assemble_run_system_prompt(args, &cwd, &agent_dir, &settings);
-
-    let loaded_extensions = crate::core::extensions::load_for_mode(
-        args,
-        &settings,
-        &cwd,
-        &agent_dir.to_string_lossy(),
-        "print",
-        false,
-        args.name.clone(),
-        settings
-            .get_default_thinking_level()
-            .unwrap_or("medium")
-            .to_string(),
-    );
-    for error in &loaded_extensions.errors {
-        tracing::warn!(path = %error.path, error = %error.error, "failed to load extension");
-    }
-    let _extension_guard = RunExtensionGuard(loaded_extensions.runner.clone());
 
     // Register built-in tools (bash/read/write/edit + ls/find/grep) unless
     // --no-tools or --no-builtin-tools.

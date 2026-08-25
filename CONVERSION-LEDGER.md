@@ -962,19 +962,24 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       now maps native context/options, model definitions, and
       start/text/thinking/tool/done/error events into typed pi-ai
       `ProviderStreams` and `Models`; the typed `Models::stream_simple` path is
-      exercised by the same external fixture. The task remains open because
-      pinned upstream jiti/module virtualization, Bun-specific verification,
-      and production mode/model-registry wiring remain outside the proven bridge
-      surface. No completion checkbox is claimed. Evidence:
+      exercised by the same external fixture. Print, JSON, RPC, and interactive
+      startup now register queued native providers into the live Models facade
+      before provider/model lookup; the binary print fixture proves a custom
+      extension provider can be selected and streamed. The task remains open
+      because pinned upstream jiti/module virtualization and Bun-specific
+      verification remain outside the proven bridge surface. No completion
+      checkbox is claimed. Evidence:
       `cargo test -p pi-coding-agent --offline --test extensions_parity --quiet`
       (15 passed), `cargo test -p pi-coding-agent --offline --lib
       core::extensions::loader::tests --quiet` (15 passed), `cargo test -p
       pi-coding-agent --offline --lib core::extensions::integration::tests
       --quiet` (4 passed), `cargo test -p pi-coding-agent --offline --lib
-      core::extensions --quiet` (34 passed), and `cargo test -p pi-coding-agent
-      --offline --lib --quiet -- --test-threads=2` (478 passed). Strict
-      coding-agent clippy, package formatting, and `git diff --check` also
-      pass.
+      core::extensions --quiet` (34 passed), `cargo test -p pi-coding-agent
+      --offline --test cli_print_parity
+      native_extension_provider_is_available_before_print_model_resolution
+      --quiet` (1 passed), and `cargo test -p pi-coding-agent --offline --lib
+      --quiet -- --test-threads=2` (478 passed). Strict coding-agent clippy,
+      package formatting, and `git diff --check` also pass.
 - [x] S-028 Port the upstream self-update path (`pi update --self`) or document
       and test the exact supported replacement behavior for this distribution.
       The compiled Rust binary performs the latest-release and `--force`

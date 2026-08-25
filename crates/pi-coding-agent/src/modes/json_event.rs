@@ -29,6 +29,25 @@ impl Drop for JsonExtensionGuard {
 pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(), String> {
     let cwd = config::cwd();
     let agent_dir = config::get_agent_dir();
+    let (session, _) = crate::run::prepare_run_session(args, &cwd).await?;
+    let loaded_extensions = crate::core::extensions::load_for_mode(
+        args,
+        &settings,
+        &cwd,
+        &agent_dir.to_string_lossy(),
+        "json",
+        false,
+        session.get_name().await,
+        args.thinking
+            .clone()
+            .or_else(|| settings.get_default_thinking_level().map(str::to_owned))
+            .unwrap_or_else(|| "medium".to_string()),
+    );
+    let _extension_guard = JsonExtensionGuard(loaded_extensions.runner.clone());
+    for error in &loaded_extensions.errors {
+        tracing::warn!(path = %error.path, error = %error.error, "failed to load extension");
+    }
+
     let provider = crate::run::resolve_run_provider(args.provider.as_deref(), &settings);
     let model_hint = crate::run::resolve_run_model(
         args.model.as_deref(),
@@ -43,6 +62,8 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
             &models,
             &pi_ai::providers::RegisterFauxProviderOptions::default(),
         );
+        crate::core::extensions::register_loaded_native_providers(&models, &loaded_extensions)
+            .map_err(|error| format!("register extension providers: {error}"))?;
         let model = match model_hint.as_deref() {
             Some(hint) => {
                 let id = hint.rsplit('/').next().unwrap_or(hint);
@@ -83,6 +104,8 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
             let registry = crate::core::model_registry::ModelRegistry::new(models, config);
             registry.into_models()
         };
+        crate::core::extensions::register_loaded_native_providers(&models, &loaded_extensions)
+            .map_err(|error| format!("register extension providers: {error}"))?;
         if models.get_provider(&provider).is_none() {
             return Err(format!(
                 "provider {provider:?} is not registered in the model registry"
@@ -145,25 +168,6 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
             )))
         })
         .collect();
-
-    let (session, _) = crate::run::prepare_run_session(args, &cwd).await?;
-    let loaded_extensions = crate::core::extensions::load_for_mode(
-        args,
-        &settings,
-        &cwd,
-        &agent_dir.to_string_lossy(),
-        "json",
-        false,
-        session.get_name().await,
-        args.thinking
-            .clone()
-            .or_else(|| settings.get_default_thinking_level().map(str::to_owned))
-            .unwrap_or_else(|| "medium".to_string()),
-    );
-    let _extension_guard = JsonExtensionGuard(loaded_extensions.runner.clone());
-    for error in &loaded_extensions.errors {
-        tracing::warn!(path = %error.path, error = %error.error, "failed to load extension");
-    }
 
     let mut tools: Vec<pi_agent::tools::AgentTool> = Vec::new();
     if !args.no_tools && !args.no_builtin_tools {

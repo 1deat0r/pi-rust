@@ -125,6 +125,58 @@ fn multiple_messages_are_prompted_as_sequential_turns() {
 }
 
 #[test]
+fn native_extension_provider_is_available_before_print_model_resolution() {
+    let sandbox = Sandbox::new("native-provider");
+    let cwd = sandbox.root.clone();
+    let extension = cwd.join("native-provider.mjs");
+    fs::write(
+        &extension,
+        r#"export default function (pi) {
+  pi.registerProvider({
+    id: "demo",
+    name: "Demo Provider",
+    api: "openai-completions",
+    models: [{
+      id: "demo-model",
+      name: "Demo Model",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    }],
+    streamSimple: async function* () {
+      yield { type: "start", partial: { role: "assistant", content: [], stopReason: "pending" } };
+      yield { type: "text_delta", contentIndex: 0, delta: "native-print" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "native-print" }], stopReason: "stop" },
+      };
+    },
+  });
+}"#,
+    )
+    .unwrap();
+
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--provider",
+            "demo",
+            "--model",
+            "demo-model",
+            "--extension",
+            extension.to_str().unwrap(),
+            "hello",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    assert!(sandbox.stdout(&out).contains("native-print"));
+}
+
+#[test]
 fn terminal_provider_error_exits_nonzero_with_raw_message() {
     let sandbox = Sandbox::new("provider-error");
     let cwd = sandbox.root.clone();

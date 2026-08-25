@@ -45,10 +45,18 @@ fn native_stream_options_value(options: Option<&StreamOptions>) -> Value {
         return Value::Null;
     };
     json!({
+        "apiKey": options.base.api_key,
+        "headers": options.base.headers,
+        "timeoutMs": options.base.timeout_ms,
+        "maxRetries": options.base.max_retries,
+        "maxRetryDelayMs": options.base.max_retry_delay_ms,
         "temperature": options.temperature,
         "samplingParams": options.sampling_params,
         "maxTokens": options.max_tokens,
+        "transport": options.transport,
+        "cacheRetention": options.cache_retention,
         "sessionId": options.session_id,
+        "websocketConnectTimeoutMs": options.websocket_connect_timeout_ms,
         "metadata": options.metadata,
     })
 }
@@ -70,6 +78,25 @@ fn native_simple_options_value(options: Option<&SimpleStreamOptions>) -> Value {
             "thinkingBudgets".to_string(),
             serde_json::to_value(&options.thinking_budgets).unwrap_or(Value::Null),
         );
+        object.insert(
+            "toolChoice".to_string(),
+            serde_json::to_value(options.tool_choice).unwrap_or(Value::Null),
+        );
+        object.insert(
+            "deferred".to_string(),
+            match options.deferred {
+                None => Value::Null,
+                Some(pi_ai::types::DeferredOption::Bool(value)) => Value::Bool(value),
+                Some(pi_ai::types::DeferredOption::Window(window)) => Value::String(
+                    match window {
+                        pi_ai::types::DeferredWindow::M15 => "15m",
+                        pi_ai::types::DeferredWindow::H1 => "1h",
+                        pi_ai::types::DeferredWindow::H24 => "24h",
+                    }
+                    .to_string(),
+                ),
+            },
+        );
     }
     value
 }
@@ -81,15 +108,27 @@ fn default_native_message(model: &Model) -> AssistantMessage {
 }
 
 fn parse_stop_reason(value: Option<&Value>) -> Option<StopReason> {
-    value
-        .and_then(Value::as_str)
-        .and_then(|value| serde_json::from_value(Value::String(value.to_string())).ok())
+    match value.and_then(Value::as_str) {
+        Some("pending") => Some(StopReason::Pending),
+        Some("stop") => Some(StopReason::Stop),
+        Some("length") => Some(StopReason::Length),
+        Some("tool_use" | "toolUse") => Some(StopReason::ToolUse),
+        Some("error") => Some(StopReason::Error),
+        Some("aborted") => Some(StopReason::Aborted),
+        Some("deferred") => Some(StopReason::Deferred),
+        _ => None,
+    }
 }
 
 fn parse_assistant_message(value: Option<&Value>, model: &Model) -> AssistantMessage {
     let Some(value) = value else {
         return default_native_message(model);
     };
+    if let Some(error) = value.as_str() {
+        let mut message = default_native_message(model);
+        message.set_error_message(error);
+        return message;
+    }
     if let Ok(message) = serde_json::from_value::<AssistantMessage>(value.clone()) {
         return message;
     }
@@ -194,11 +233,11 @@ fn parse_native_event(value: &Value, model: &Model) -> Result<AssistantMessageEv
                 .to_string(),
             partial: partial(),
         }),
-        "tool_call_start" => Ok(AssistantMessageEvent::ToolCallStart {
+        "toolcall_start" | "tool_call_start" => Ok(AssistantMessageEvent::ToolCallStart {
             content_index: index(),
             partial: partial(),
         }),
-        "tool_call_delta" => Ok(AssistantMessageEvent::ToolCallDelta {
+        "toolcall_delta" | "tool_call_delta" => Ok(AssistantMessageEvent::ToolCallDelta {
             content_index: index(),
             delta: value
                 .get("delta")
@@ -207,7 +246,7 @@ fn parse_native_event(value: &Value, model: &Model) -> Result<AssistantMessageEv
                 .to_string(),
             partial: partial(),
         }),
-        "tool_call_end" => {
+        "toolcall_end" | "tool_call_end" => {
             let tool_call = value
                 .get("toolCall")
                 .or_else(|| value.get("tool_call"))
@@ -228,7 +267,10 @@ fn parse_native_event(value: &Value, model: &Model) -> Result<AssistantMessageEv
         "error" => Ok(AssistantMessageEvent::Error {
             reason: parse_error_reason(value.get("reason")),
             error_message: parse_assistant_message(
-                value.get("errorMessage").or_else(|| value.get("message")),
+                value
+                    .get("errorMessage")
+                    .or_else(|| value.get("error"))
+                    .or_else(|| value.get("message")),
                 model,
             ),
         }),
@@ -566,6 +608,12 @@ impl ExtensionHostState {
     pub fn set_model(&self, model: Option<Value>) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.model = model;
+        }
+    }
+
+    pub fn set_thinking_level(&self, thinking_level: impl Into<String>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.thinking_level = thinking_level.into();
         }
     }
 

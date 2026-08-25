@@ -1473,3 +1473,40 @@ The next dependency-safe action is to wire the adapter into the production
 interactive/RPC/print/JSON model setup, then obtain an independent S-004 review
 before the clean-room and final denominator gates. The pre-existing untracked
 `AGENTS.md` remains untouched and unstaged.
+
+## Active checkpoint — 2026-08-25 — native-provider production mode wiring
+
+Queued native providers are now registered into the live `pi_ai::Models`
+facade before provider/model resolution in print, JSON, RPC, and interactive
+startup. The existing faux paths, API-key stream closures, summary streams,
+extension tool catalogs, and RPC thinking-level behavior remain intact. A
+binary print fixture proves that a custom extension provider can be selected by
+provider/model and stream a response through the production agent loop.
+
+The adapter also now forwards the broader stream option surface and accepts the
+upstream `toolcall_*` event spellings and error payload shape. S-027 remains
+open only for pinned jiti/module virtualization and Bun-specific verification
+within the current residual scope.
+
+Exact validation passed in this checkpoint; the command list and checker result
+are recorded below. The next dependency-safe action is an independent S-004
+residual review, followed by the clean-room and final source/TODO denominator
+gates. The pre-existing untracked `AGENTS.md` remains untouched and unstaged.
+
+```text
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib modes::rpc::tests --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib interactive::tests --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib run::tests --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib modes::json_event::tests --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test extensions_parity --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test cli_print_parity native_extension_provider_is_available_before_print_model_resolution --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::extensions --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib --quiet -- --test-threads=2
+/home/mustbearnold/.cargo/bin/cargo test --workspace --offline --quiet -- --test-threads=2
+/home/mustbearnold/.cargo/bin/cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings
+/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check
+git diff --check
+node scripts/parity-suite.mjs
+node scripts/conversion-progress.mjs
+Conversion progress: 96.99% (161/166; 5 open)
+```

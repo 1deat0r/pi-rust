@@ -33,9 +33,9 @@ native-provider event, typed native-provider adapter, stale-process, timeout,
 protocol, and failure-isolation fixtures, plus a shared-runtime bind helper. Print,
 JSON, RPC, and interactive modes load configured extensions and expose live
 extension tools through their agent contexts. Full S-027 remains open for
-pinned jiti/module virtualization, Bun-specific runtime verification, live
-mode/model-registry wiring, and the remaining full agent-loop provider/tool
-semantics. Typed native-provider event conversion into the pi-ai
+pinned jiti/module virtualization, Bun-specific runtime verification, and the
+remaining full agent-loop provider/tool semantics. Typed native-provider event
+conversion into the pi-ai
 `ProviderStreams`/`Models` facade is now covered by the focused external
 fixture.
 

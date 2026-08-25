@@ -19,7 +19,9 @@ use serde_json::{json, Value};
 
 use crate::args::Args;
 use crate::config;
-use crate::core::extensions::{install_tools, load_for_mode, LoadedExtensions};
+use crate::core::extensions::{
+    install_tools, load_for_mode, register_loaded_native_providers, LoadedExtensions,
+};
 use crate::core::settings::SettingsManager;
 use crate::interactive as it;
 use crate::interactive::footer::{self, FooterData};
@@ -893,34 +895,6 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         &settings,
         !crate::run::has_explicit_provider(args.provider.as_deref()),
     );
-    let faux_core = if provider == "faux" {
-        Some(crate::core::model_runtime::register_faux_provider(
-            &models,
-            &pi_ai::providers::RegisterFauxProviderOptions::default(),
-        ))
-    } else {
-        None
-    };
-    let model = if provider == "faux" {
-        let core = faux_core.as_ref().expect("faux core registered");
-        match model_hint.as_deref() {
-            Some(hint) => core
-                .get_model(Some(hint.rsplit('/').next().unwrap_or(hint)))
-                .cloned()
-                .ok_or_else(|| format!("unknown faux model {hint:?}"))?,
-            None => core
-                .models
-                .first()
-                .cloned()
-                .ok_or_else(|| "no faux model".to_string())?,
-        }
-    } else {
-        crate::core::model_runtime::resolve_run_model_for_provider(
-            &models,
-            &provider,
-            model_hint.as_deref(),
-        )?
-    };
 
     // Session repo + initial session.
     let session_root = args
@@ -1050,6 +1024,38 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     for error in &extensions.errors {
         tracing::warn!(path = %error.path, error = %error.error, "failed to load extension");
     }
+
+    register_loaded_native_providers(&models, &extensions)
+        .map_err(|error| format!("failed to register interactive native providers: {error}"))?;
+
+    let faux_core = if provider == "faux" {
+        Some(crate::core::model_runtime::register_faux_provider(
+            &models,
+            &pi_ai::providers::RegisterFauxProviderOptions::default(),
+        ))
+    } else {
+        None
+    };
+    let model = if provider == "faux" {
+        let core = faux_core.as_ref().expect("faux core registered");
+        match model_hint.as_deref() {
+            Some(hint) => core
+                .get_model(Some(hint.rsplit('/').next().unwrap_or(hint)))
+                .cloned()
+                .ok_or_else(|| format!("unknown faux model {hint:?}"))?,
+            None => core
+                .models
+                .first()
+                .cloned()
+                .ok_or_else(|| "no faux model".to_string())?,
+        }
+    } else {
+        crate::core::model_runtime::resolve_run_model_for_provider(
+            &models,
+            &provider,
+            model_hint.as_deref(),
+        )?
+    };
 
     let mut runtime = InteractiveRuntime {
         cwd: cwd.clone(),

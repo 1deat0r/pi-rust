@@ -35,7 +35,9 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::args::Args;
 use crate::config;
-use crate::core::extensions::{install_tools, load_for_mode, LoadedExtensions};
+use crate::core::extensions::{
+    install_tools, load_for_mode, register_loaded_native_providers, LoadedExtensions,
+};
 use crate::core::settings::SettingsManager;
 
 use super::jsonl::{serialize_json_line, JsonlLineReader};
@@ -563,70 +565,6 @@ impl RpcRuntime {
             &settings,
             !crate::run::has_explicit_provider(args.provider.as_deref()),
         );
-        let faux_core = if provider == "faux" {
-            // faux is intentionally not in the builtin registry; register a
-            // scripted provider so facade-backed paths (RPC compact summary
-            // generation) resolve it like any real provider.
-            use pi_ai::providers::{
-                faux_assistant_message, FauxAssistantOptions, FauxResponseStep,
-                RegisterFauxProviderOptions,
-            };
-            let core = crate::core::model_runtime::register_faux_provider(
-                &models,
-                &RegisterFauxProviderOptions::default(),
-            );
-            core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
-                vec![pi_ai::types::ContentBlock::text(
-                    "Compaction summary: history retained",
-                )],
-                FauxAssistantOptions::default(),
-            ))]);
-            Some(core)
-        } else {
-            None
-        };
-        let faux_summary_core = if faux_core.is_some() {
-            let core = pi_ai::providers::FauxProviderCore::new(
-                &pi_ai::providers::RegisterFauxProviderOptions::default(),
-            );
-            core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
-                pi_ai::providers::faux_assistant_message(
-                    vec![pi_ai::types::ContentBlock::text(
-                        "Compaction summary: history retained",
-                    )],
-                    pi_ai::providers::FauxAssistantOptions::default(),
-                ),
-            )]);
-            Some(core)
-        } else {
-            None
-        };
-        if models.get_provider(&provider).is_none() {
-            return Err(format!(
-                "provider {provider:?} is not registered in the model registry"
-            ));
-        }
-        let model = if provider == "faux" {
-            let core = faux_core.as_ref().expect("faux core registered");
-            match model_hint.as_deref() {
-                Some(hint) => core
-                    .get_model(Some(hint.rsplit('/').next().unwrap_or(hint)))
-                    .cloned()
-                    .ok_or_else(|| format!("unknown faux model {hint:?}"))?,
-                None => core
-                    .models
-                    .first()
-                    .cloned()
-                    .ok_or_else(|| "no faux model".to_string())?,
-            }
-        } else {
-            crate::core::model_runtime::resolve_run_model_for_provider(
-                &models,
-                &provider,
-                model_hint.as_deref(),
-            )?
-        };
-        let thinking_level = configured_thinking_level(&settings, &model);
 
         // Session repo + initial session.
         let session_root = args
@@ -711,6 +649,10 @@ impl RpcRuntime {
         let session_path = Some(meta.path.clone());
         let session_id = meta.id.clone();
         let session_name = session.get_name().await;
+        let initial_thinking_level = settings
+            .get_default_thinking_level()
+            .unwrap_or("off")
+            .to_string();
 
         let loaded_extensions = load_for_mode(
             args,
@@ -720,11 +662,82 @@ impl RpcRuntime {
             "rpc",
             false,
             session_name.clone(),
-            thinking_level.as_str().to_string(),
+            initial_thinking_level,
         );
         for error in &loaded_extensions.errors {
             tracing::warn!(path = %error.path, error = %error.error, "failed to load RPC extension");
         }
+
+        register_loaded_native_providers(&models, &loaded_extensions)
+            .map_err(|error| format!("failed to register RPC native providers: {error}"))?;
+
+        let faux_core = if provider == "faux" {
+            // faux is intentionally not in the builtin registry; register a
+            // scripted provider so facade-backed paths (RPC compact summary
+            // generation) resolve it like any real provider.
+            use pi_ai::providers::{
+                faux_assistant_message, FauxAssistantOptions, FauxResponseStep,
+                RegisterFauxProviderOptions,
+            };
+            let core = crate::core::model_runtime::register_faux_provider(
+                &models,
+                &RegisterFauxProviderOptions::default(),
+            );
+            core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
+                vec![pi_ai::types::ContentBlock::text(
+                    "Compaction summary: history retained",
+                )],
+                FauxAssistantOptions::default(),
+            ))]);
+            Some(core)
+        } else {
+            None
+        };
+        let faux_summary_core = if faux_core.is_some() {
+            let core = pi_ai::providers::FauxProviderCore::new(
+                &pi_ai::providers::RegisterFauxProviderOptions::default(),
+            );
+            core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
+                pi_ai::providers::faux_assistant_message(
+                    vec![pi_ai::types::ContentBlock::text(
+                        "Compaction summary: history retained",
+                    )],
+                    pi_ai::providers::FauxAssistantOptions::default(),
+                ),
+            )]);
+            Some(core)
+        } else {
+            None
+        };
+        if models.get_provider(&provider).is_none() {
+            return Err(format!(
+                "provider {provider:?} is not registered in the model registry"
+            ));
+        }
+        let model = if provider == "faux" {
+            let core = faux_core.as_ref().expect("faux core registered");
+            match model_hint.as_deref() {
+                Some(hint) => core
+                    .get_model(Some(hint.rsplit('/').next().unwrap_or(hint)))
+                    .cloned()
+                    .ok_or_else(|| format!("unknown faux model {hint:?}"))?,
+                None => core
+                    .models
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| "no faux model".to_string())?,
+            }
+        } else {
+            crate::core::model_runtime::resolve_run_model_for_provider(
+                &models,
+                &provider,
+                model_hint.as_deref(),
+            )?
+        };
+        let thinking_level = configured_thinking_level(&settings, &model);
+        loaded_extensions
+            .host
+            .set_thinking_level(thinking_level.as_str());
 
         let system_prompt = args.system_prompt.clone();
         let mut runtime = Self {
