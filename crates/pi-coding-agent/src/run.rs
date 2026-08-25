@@ -49,6 +49,7 @@ struct RunExtensionGuard(Arc<crate::core::extensions::ExtensionRunner>);
 
 impl Drop for RunExtensionGuard {
     fn drop(&mut self) {
+        let _ = self.0.emit_session_shutdown("quit");
         self.0.invalidate(Some("print mode shutdown"));
     }
 }
@@ -343,7 +344,13 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             (model, stream_fn, summary_stream_fn)
         };
 
-    let mut system_prompt = assemble_run_system_prompt(args, &cwd, &agent_dir, &settings);
+    let mut system_prompt = assemble_run_system_prompt(
+        args,
+        &cwd,
+        &agent_dir,
+        &settings,
+        &loaded_extensions.resources,
+    );
 
     // Register built-in tools (bash/read/write/edit + ls/find/grep) unless
     // --no-tools or --no-builtin-tools.
@@ -418,7 +425,8 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
 
     // Expand `/template` prompt-template invocations in positional messages
     // (upstream `expandPromptTemplate`).
-    let prompt_templates = load_prompt_templates_for_run(args, &cwd, &agent_dir);
+    let prompt_templates =
+        load_prompt_templates_for_run(args, &cwd, &agent_dir, &loaded_extensions.resources);
     // Print mode prompts each positional message as its own sequential turn
     // (upstream `runPrintMode`: `for (const message of messages) { await
     // session.prompt(message); }`). Each turn's messages fold into the agent
@@ -926,9 +934,10 @@ fn assemble_run_system_prompt(
     cwd: &str,
     agent_dir: &std::path::Path,
     settings: &SettingsManager,
+    extension_resources: &crate::core::extensions::ResourceDiscovery,
 ) -> String {
     let base = args.system_prompt.clone().unwrap_or_default();
-    let skills_block = build_skills_block(args, cwd, agent_dir, settings);
+    let skills_block = build_skills_block(args, cwd, agent_dir, settings, extension_resources);
     let mut prompt = format!("{base}\n{skills_block}");
     let trimmed = prompt.trim().to_string();
     prompt = trimmed;
@@ -969,11 +978,12 @@ fn resolve_prompt_input(input: &str, description: &str) -> String {
 /// Load skills (user + project + `--skill`) and render the `<available_skills>`
 /// system-prompt block, marking `-ns` disabled. Surfaces load diagnostics as
 /// warnings.
-fn build_skills_block(
+pub(crate) fn build_skills_block(
     args: &Args,
     cwd: &str,
     agent_dir: &std::path::Path,
     settings: &SettingsManager,
+    extension_resources: &crate::core::extensions::ResourceDiscovery,
 ) -> String {
     if args.no_skills {
         return String::new();
@@ -982,6 +992,7 @@ fn build_skills_block(
     // `settings.skills` → skill paths).
     let mut skill_paths: Vec<String> = settings.get_skill_paths();
     skill_paths.extend(args.skills.iter().cloned());
+    skill_paths.extend(extension_resources.skill_paths.iter().cloned());
     let result = crate::core::skills::load_skills(crate::core::skills::LoadSkillsOptions {
         cwd: cwd.to_string(),
         agent_dir: agent_dir.display().to_string(),
@@ -1003,14 +1014,17 @@ fn load_prompt_templates_for_run(
     args: &Args,
     cwd: &str,
     agent_dir: &std::path::Path,
+    extension_resources: &crate::core::extensions::ResourceDiscovery,
 ) -> Vec<crate::core::prompt_templates::PromptTemplate> {
     if args.no_prompt_templates {
         return Vec::new();
     }
+    let mut prompt_paths = args.prompt_templates.clone();
+    prompt_paths.extend(extension_resources.prompt_paths.iter().cloned());
     let (templates, diagnostics) = crate::core::prompt_templates::load_prompt_templates(
         cwd,
         &agent_dir.display().to_string(),
-        &args.prompt_templates,
+        &prompt_paths,
         true,
         args.no_prompt_templates,
     );
@@ -1121,7 +1135,13 @@ mod tests {
         let cwd = root.to_string_lossy().into_owned();
         let settings = SettingsManager::in_memory(SettingsMap::new());
         let args = Args::default();
-        let block = build_skills_block(&args, &cwd, &agent, &settings);
+        let block = build_skills_block(
+            &args,
+            &cwd,
+            &agent,
+            &settings,
+            &crate::core::extensions::ResourceDiscovery::default(),
+        );
         assert!(block.contains("<available_skills>"));
         assert!(block.contains("<name>my-skill</name>"));
         assert!(!block.contains("disabled"), "no disabled skill");
@@ -1138,7 +1158,13 @@ mod tests {
             no_skills: true,
             ..Default::default()
         };
-        let block = build_skills_block(&args, &root.to_string_lossy(), &root, &settings);
+        let block = build_skills_block(
+            &args,
+            &root.to_string_lossy(),
+            &root,
+            &settings,
+            &crate::core::extensions::ResourceDiscovery::default(),
+        );
         assert_eq!(block, "");
         std::fs::remove_dir_all(&root).ok();
     }
@@ -1175,7 +1201,13 @@ mod tests {
             append_system_prompt: vec!["tail".to_string()],
             ..Default::default()
         };
-        let prompt = assemble_run_system_prompt(&args, &cwd.to_string_lossy(), &agent, &settings);
+        let prompt = assemble_run_system_prompt(
+            &args,
+            &cwd.to_string_lossy(),
+            &agent,
+            &settings,
+            &crate::core::extensions::ResourceDiscovery::default(),
+        );
         assert!(prompt.contains("<project_instructions"));
         assert!(prompt.contains("project ctx line"));
         assert!(prompt.ends_with("tail"), "append prompt is last");
@@ -1184,8 +1216,13 @@ mod tests {
             no_context_files: true,
             ..Default::default()
         };
-        let prompt_nc =
-            assemble_run_system_prompt(&args_nc, &cwd.to_string_lossy(), &agent, &settings);
+        let prompt_nc = assemble_run_system_prompt(
+            &args_nc,
+            &cwd.to_string_lossy(),
+            &agent,
+            &settings,
+            &crate::core::extensions::ResourceDiscovery::default(),
+        );
         assert!(
             !prompt_nc.contains("<project_instructions"),
             "-nc must skip context files"

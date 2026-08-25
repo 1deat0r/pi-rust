@@ -26,9 +26,10 @@ ledger freeze. Do not claim 100% before the final source/TODO audit.
 
 ## Important working-tree state
 
-The latest pushed checkpoint is
-`07e0623cde0ba5caf18275c773df31e56ee37ad1`, containing the S-027
-extension-runtime implementation and synchronized documentation. The
+The latest pushed checkpoint before the current implementation slice is
+`b41bc6f6df52e4cd97f5cae345b28af73e07fe6e`. The current worktree contains an
+uncommitted S-027 extension-runtime increment and synchronized documentation.
+The
 pre-existing untracked `AGENTS.md` remains untouched and must be preserved.
 Do not use `git reset --hard`,
 `git checkout --`, broad revert commands, or `git clean`.
@@ -36,31 +37,37 @@ Do not use `git reset --hard`,
 Current status: branch `main`, progress checker reports
 `98.80% (164/166; 2 open)`. Ledger rows #100, S-004, and S-065 are now checked with the
 independent clean-room evidence below. The
-embedded `jiti@2.7.0`/Babel runtime, Node/Bun option branching, configured
-alias/virtual-module fixtures, upstream-style path normalization, and
-interactive reload re-evaluation are implemented and locally validated.
-The remaining S-027 residuals are the built-in pi/TypeBox JS module graph,
-compiled-Bun/Node-SEA virtual-module branches, and full reload
-lifecycle/resource/flag evidence. The clean-room gate is green; the next
-gate is the final S-066 audit after S-027 is resolved. The
-current pushed checkpoint is `e9d63b0ac6ce8fc8da854b8ba8fbd5adaf80fbeb`;
-the synchronized ledger/docs update is pending its focused commit. The
-pre-existing untracked `AGENTS.md` remains preserved and unstaged.
+embedded `jiti@2.7.0`/Babel runtime, generated pi/TypeBox module graph,
+Node/Bun option branching, configured alias/virtual-module fixtures,
+upstream-style path normalization, lifecycle/resource discovery, flag
+preservation, session replacement, and interactive reload re-evaluation are
+implemented and locally validated. The remaining S-027 residuals are a
+genuine in-process compiled-Bun/Node-SEA host, full interactive theme
+metadata/activation, and session-before-fork coverage. The clean-room gate is
+green; the next gate is the S-027 residual review followed by the final S-066
+audit after S-027 is resolved. A focused commit and push for this increment
+are pending. The pre-existing untracked `AGENTS.md` remains preserved and
+unstaged.
 
 All sections below whose headings say “Current checkpoint” and which contain
 older percentages or commits are historical snapshots from earlier turns.
 The latest active sections near the end of this file supersede them.
 
-## Current implementation checkpoint — 2026-08-25 — S-027 runtime partial
+## Current implementation checkpoint — 2026-08-25 — S-027 graph and lifecycle increment
 
 The bridge now embeds the byte-identical jiti@2.7.0 jiti.cjs and babel.cjs
-artifacts plus a jiti-static.mjs wrapper, selects the pinned Node alias versus
-Bun virtualModules/tryNative: false option branch, supports explicit
-alias/virtual-module maps with shared exported-object fixtures, and normalizes
-tilde/file-URL/Unicode-space/lexical extension paths. /reload now re-evaluates
-the configured extension set, invalidates the old runner, removes and
-re-registers native providers, and refreshes the host catalog. The runtime
-keeps the mode-scoped ExtensionRuntime alive without reintroducing an
+artifacts plus a jiti-static.mjs wrapper and the generated 10,759,929-byte
+pi/TypeBox module graph (SHA-256
+`a82bde7cf62fcf75bf4f24acadc4ade6e526931812bc5594252e4bb4be6e4896`). It
+selects the pinned Node alias versus Bun virtualModules/tryNative: false
+option branch, supports explicit alias/virtual-module maps with shared
+exported-object fixtures, and normalizes tilde/file-URL/Unicode-space/lexical
+extension paths. `/reload` now re-evaluates the configured extension set,
+invalidates the old runner, removes and re-registers native providers, and
+refreshes the host catalog while preserving extension flags. Startup,
+shutdown, cancellable session switches, session replacement, and
+print/interactive resource discovery are covered by focused fixtures. The
+runtime keeps the mode-scoped ExtensionRuntime alive without reintroducing an
 ownership cycle, and materialized assets are cleaned up on bridge shutdown.
 
 Validation completed in this checkpoint:
@@ -68,17 +75,17 @@ Validation completed in this checkpoint:
 ```text
 cargo fmt -p pi-coding-agent
 cargo test -p pi-coding-agent --offline --lib core::extensions::loader::tests --quiet
-  19 passed
+  21 passed
 PI_RUST_BUN=/tmp/pi-bun-runtime.JisAfQ/bun-linux-x64/bun cargo test -p pi-coding-agent --offline --lib core::extensions::loader::tests --quiet
-  19 passed; Bun 1.4.0
+  21 passed; Bun 1.4.0
 cargo test -p pi-coding-agent --offline --lib modes::interactive::tests::interactive_reload_re_evaluates_extension_and_refreshes_tools --quiet
   1 passed
 cargo test -p pi-coding-agent --offline --lib core::extensions --quiet
-  38 passed
+  42 passed
 cargo test -p pi-coding-agent --offline --test extensions_parity --quiet -- --test-threads=1
   15 passed
 cargo test -p pi-coding-agent --offline --lib --quiet -- --test-threads=2
-  483 passed
+  487 passed
 cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings
 cargo fmt --all -- --check
 git diff --check
@@ -86,13 +93,16 @@ node scripts/conversion-progress.mjs
   Conversion progress: 98.80% (164/166; 2 open)
 ```
 
-The ignored S-027 audit remains APPROVE-WITH-CONDITIONS and correctly keeps
-S-027 open. The clean-room gate passed in a fresh clone with the pinned
-oracle; its exact evidence is recorded in
+The current implementation intentionally keeps S-027 open. The remaining
+conditions are a genuine in-process compiled-Bun/Node-SEA host, full
+interactive theme metadata/activation, and session-before-fork coverage. The
+clean-room gate passed in the prior fresh clone with the pinned oracle; its
+exact evidence is recorded in
 `.unlazy/full-conversion-20260825/gates/clean-room-current.md`. The next
-dependency-safe action is to resolve the S-027 residual and perform the final
-S-066 source/TODO denominator audit. Do not claim 100% until the ledger, plan,
-handoff, final audit, and remote hash gates agree.
+dependency-safe actions are an independent review of this increment, a fresh
+clean-room run at its pushed commit, and then the final S-066 source/TODO
+denominator audit. Do not claim 100% until the ledger, plan, handoff, final
+audit, and remote hash gates agree.
 
 ## Current strict-verification cleanup
 

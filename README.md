@@ -32,15 +32,19 @@ deterministic command, hook, renderer, provider-config, local JS/TS import,
 live-tool, host-action, context-action, thinking/model, callback-scoped signal,
 native-provider event, typed native-provider adapter, stale-process, timeout,
 protocol, and failure-isolation fixtures, plus a shared-runtime bind helper.
-The bridge embeds byte-identical `jiti@2.7.0`/Babel assets, supports the pinned
-Node/Bun option split, configured alias/virtual-module maps, upstream-style
-path normalization, and interactive extension re-evaluation on `/reload`.
+The bridge embeds byte-identical `jiti@2.7.0`/Babel assets plus the generated
+10,759,929-byte pinned pi/TypeBox graph (SHA-256
+`a82bde7cf62fcf75bf4f24acadc4ade6e526931812bc5594252e4bb4be6e4896`), supports
+the pinned Node/Bun option split, configured alias/virtual-module maps,
+upstream-style path normalization, lifecycle/resource discovery, flag
+preservation, and interactive extension re-evaluation on `/reload` and session
+replacement.
 Print, JSON, RPC, and interactive modes load configured extensions and expose
 live extension tools through their agent contexts. Full S-027 remains open for
-the built-in pi/TypeBox JS module graph, compiled-Bun/Node-SEA virtual-module
-branches, and the full upstream reload lifecycle. Typed native-provider event
-conversion into the pi-ai `ProviderStreams`/`Models` facade is covered by the
-focused external fixture.
+a genuine in-process compiled-Bun/Node-SEA host, full interactive theme
+metadata/activation, and session-before-fork coverage. Typed native-provider
+event conversion into the pi-ai `ProviderStreams`/`Models` facade is covered by
+the focused external fixture.
 
 The port already includes substantial CLI and runtime work, including the
 in-process agent loop, stateful harness-backed print, JSON, and interactive

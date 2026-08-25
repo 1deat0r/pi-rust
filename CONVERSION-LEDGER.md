@@ -10,13 +10,17 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - The current S-027 implementation checkpoint vendors byte-identical
-  `jiti@2.7.0`/Babel assets, loads extensions through `jiti/static`, matches
-  the pinned Node/Bun option split for the supported external runners, adds
-  explicit alias/virtual-module injection with shared exported-object
-  fixtures, normalizes extension paths like upstream, and re-evaluates the
-  interactive extension set on `/reload`. It remains partial until the
-  built-in pi/TypeBox module graph, compiled-Bun/SEA branch, and full reload
-  lifecycle have executable evidence.
+  `jiti@2.7.0`/Babel assets and a pinned 10,759,929-byte pi/TypeBox module
+  graph, loads extensions through `jiti/static`, matches the pinned
+  Node/Bun option split for the supported external runners, adds explicit
+  alias/virtual-module injection with shared exported-object fixtures,
+  normalizes extension paths like upstream, and re-evaluates the interactive
+  extension set on `/reload`. Lifecycle startup/shutdown, flag preservation,
+  session replacement events, and print/interactive resource discovery are
+  now covered by focused fixtures. It remains partial because the bridge does
+  not provide a genuine in-process compiled-Bun/Node-SEA host, and the
+  interactive resource loader still lacks full upstream theme metadata and
+  session-before-fork coverage.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
   complete with unit/mock evidence in the pi-ai adaptor suite. The focused
   pi-ai tests, strict clippy, workspace check, formatting, and diff gates pass;
@@ -1001,32 +1005,35 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       startup now register queued native providers into the live Models facade
       before provider/model lookup; the binary print fixture proves a custom
       extension provider can be selected and streamed. The current partial
-      implementation now materializes the exact `jiti@2.7.0`/Babel assets,
+      implementation now materializes the exact `jiti@2.7.0`/Babel assets plus
+      the pinned pi/TypeBox graph generated with Bun 1.4.0
+      (`pi-runtime-graph.mjs`, SHA-256
+      `a82bde7cf62fcf75bf4f24acadc4ade6e526931812bc5594252e4bb4be6e4896`),
       uses the supported Node alias versus Bun `virtualModules`/`tryNative:
       false` split, preserves shared exported-object values across configured
       alias/virtual mirror keys, normalizes extension paths like upstream, and
-      re-evaluates the interactive extension set on `/reload`. S-027 remains
-      open for the actual built-in pi/TypeBox JS module graph, compiled-Bun and
-      Node-SEA virtual-module branches, and full upstream reload
-      lifecycle/resource/flag evidence. No completion checkbox is claimed.
+      re-evaluates the interactive extension set on `/reload`. Lifecycle
+      startup/shutdown, preserved flags before reload handlers, cancellable
+      session switches, session replacement start/shutdown reasons, and
+      print/interactive skill/prompt resource paths are now covered. S-027
+      remains open for a genuine in-process compiled-Bun/Node-SEA host, full
+      interactive theme metadata/activation, and session-before-fork coverage;
+      no completion checkbox is claimed.
       Evidence:
-      `cargo test -p pi-coding-agent --offline --test extensions_parity --quiet`
-      (15 passed), `cargo test -p pi-coding-agent --offline --lib
-      core::extensions::loader::tests --quiet` (19 passed), `PI_RUST_BUN=/tmp/pi-bun-runtime.JisAfQ/bun-linux-x64/bun cargo test -p
-      pi-coding-agent --offline --lib core::extensions::loader::tests --quiet`
-      (19 passed; Bun 1.4.0), `cargo test -p pi-coding-agent --offline --lib
-      modes::interactive::tests::interactive_reload_re_evaluates_extension_and_refreshes_tools
-      --quiet` (1 passed), `cargo test -p
-      pi-coding-agent --offline --lib core::extensions::integration::tests
-      --quiet` (4 passed), `cargo test -p pi-coding-agent --offline --lib
-      core::extensions --quiet` (38 passed), `cargo test -p pi-coding-agent
-      --offline --test cli_print_parity
-      native_extension_provider_is_available_before_print_model_resolution
-      --quiet` (1 passed), and `cargo test -p pi-coding-agent --offline --lib
-      --quiet -- --test-threads=2` (483 passed), `cargo test -p
-      pi-coding-agent --offline --test extensions_parity --quiet --
-      --test-threads=1` (15 passed). Strict coding-agent clippy,
-      package formatting, and `git diff --check` also pass.
+      `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+      --test extensions_parity --quiet -- --test-threads=1` (15 passed),
+      `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+      --lib core::extensions::loader::tests --quiet -- --test-threads=1` (21
+      passed), `PI_RUST_BUN=/tmp/pi-bun-runtime.JisAfQ/bun-linux-x64/bun
+      /home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline
+      --lib core::extensions::loader::tests --quiet -- --test-threads=1` (21
+      passed; Bun 1.4.0), `/home/mustbearnold/.cargo/bin/cargo test -p
+      pi-coding-agent --offline --lib core::extensions --quiet --
+      --test-threads=1` (42 passed), the interactive reload fixture (1
+      passed), and `/home/mustbearnold/.cargo/bin/cargo test -p
+      pi-coding-agent --offline --lib --quiet -- --test-threads=2` (487
+      passed). Strict coding-agent clippy, workspace formatting, and
+      `git diff --check` also pass.
 - [x] S-028 Port the upstream self-update path (`pi update --self`) or document
       and test the exact supported replacement behavior for this distribution.
       The compiled Rust binary performs the latest-release and `--force`

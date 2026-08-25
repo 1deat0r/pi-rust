@@ -35,15 +35,18 @@ runtime bind, synchronous getter snapshots, callback-scoped context signal and
 control actions, ordered tool updates, a bridge-native-provider event protocol,
 typed native-provider conversion into pi-ai `ProviderStreams`/`Models`,
 stale-process invalidation, and timeout/protocol cleanup. The active
-`leaf-C2d` implementation checkpoint now embeds byte-identical `jiti@2.7.0`
-and Babel assets, selects aliases versus virtual modules using the pinned
-Node/Bun option split, normalizes extension paths like upstream, preserves
-shared exported-object values across configured mirror keys, and re-evaluates
-the interactive extension set on `/reload`. Print, JSON, RPC, and interactive
-startup register queued native providers into the live Models facade before
-provider/model lookup. S-027 remains open only for the built-in pi/TypeBox JS
-module graph, compiled-Bun/Node-SEA branches, and full reload
-lifecycle/resource/flag evidence.
+implementation checkpoint now embeds the generated 10,759,929-byte pi/TypeBox
+module graph (Bun 1.4.0; SHA-256
+`a82bde7cf62fcf75bf4f24acadc4ade6e526931812bc5594252e4bb4be6e4896`), keeps
+the pinned Node/Bun alias-versus-virtual-module split, normalizes extension
+paths, preserves shared mirror identities, and re-evaluates the interactive
+extension set on `/reload`. Startup, shutdown, reload flag preservation,
+cancellable session switching, session replacement, and print/interactive
+resource discovery are covered by focused fixtures. Print, JSON, RPC, and
+interactive startup register queued native providers into the live Models
+facade before provider/model lookup. S-027 remains open only for a genuine
+in-process compiled-Bun/Node-SEA host, full interactive theme
+metadata/activation, and session-before-fork coverage.
 
 ## Checkpoint 2026-08-25 — progress gate and release verification
 
@@ -65,7 +68,8 @@ The bounded test concurrency is required to keep the live tmux/PTY fixtures
 from being starved by the host's default test fan-out. The independent
 clean-room gate (#100) is green in
 `.unlazy/full-conversion-20260825/gates/clean-room-current.md`; the next gates
-is the final S-066 source/TODO-denominator freeze after S-027 is resolved.
+are the S-027 residual review and the final S-066 source/TODO denominator
+freeze after S-027 is resolved.
 
 ## Session 13 reviewer preparation — 2026-08-25 (§0.3)
 
@@ -83,7 +87,7 @@ Current review matrix:
 | Providers, catalog, auth, proxy | unit/mock/live rows S-005–S-020 and S-063 | confirm intentional live/network exclusions are labeled |
 | Agent, harness, modes, RPC, server/client | unit/mock/live rows S-021–S-049 | compare lifecycle, persistence, and wire envelopes to pinned upstream |
 | TUI and terminal | unit/mock/live rows S-050–S-057 | rerun the bounded PTY/release command and inspect the default-parallel timeout note |
-| Extensions | 15 parity tests, 15 loader tests, 4 integration tests, 34 extension-slice tests, typed native-provider adapter, production print/JSON/RPC/interactive binding | inspect S-027's jiti, Bun, context, signal/update, and active-tool residuals |
+| Extensions | 15 parity tests, 21 Node loader tests, 21 Bun loader tests, 4 integration tests, 42 extension-slice tests, typed native-provider adapter, production print/JSON/RPC/interactive binding | inspect S-027's compiled-host, theme-metadata, and session-before-fork residuals |
 | Evals and release | parity rows S-058–S-064 and #97 live release suite | verify the command is reproducible from the current checkout |
 | Inventory and documentation | S-066 remains open | perform the final denominator freeze after the S-027 residual is resolved |
 

@@ -24,11 +24,16 @@ assets, covers TS/TSX, configured aliases and virtual modules under Node and
 Bun 1.4.0, normalizes extension paths like upstream, and re-evaluates the
 interactive extension set on `/reload`. Print, JSON, RPC, and interactive
 startup register these providers before model lookup; the binary print fixture
-covers the production selection path. It remains open for the actual built-in
-pi/TypeBox JS module graph, compiled-Bun/Node-SEA virtual-module branches, and
-full reload lifecycle/resource/flag evidence. The current context/action
+covers the production selection path. The generated pi/TypeBox JS module graph
+is now bundled and the supported Node/Bun virtual-module paths are covered;
+startup/shutdown, reload lifecycle and flag preservation, session replacement,
+and print/interactive resource discovery are also covered. It remains open
+for a genuine in-process compiled-Bun/Node-SEA host, full interactive theme
+metadata/activation, and session-before-fork coverage. The current context/action
 object and ordered mid-execution signal/update path are covered by the focused
 integration and external-bridge fixtures; the remaining provider/runtime
 leaves are intentionally not repeated as done claims here.
 The final clean-room gate #100 is recorded as passed in the ledger. The
-remaining process gate is S-066.
+remaining process gate is S-066, which stays deferred until the S-027
+compiled-host/theme/fork boundary is either proven or explicitly accepted as
+an intentional distribution divergence.

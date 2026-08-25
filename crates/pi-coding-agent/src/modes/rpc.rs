@@ -205,6 +205,7 @@ impl Drop for RpcRuntime {
         // Detached prompt workers can outlive the input loop on EOF. Mark the
         // shared runtime stale before the owned field is dropped so late
         // callbacks fail safely while their process is being torn down.
+        let _ = self.loaded_extensions.runner.emit_session_shutdown("quit");
         self.loaded_extensions
             .runner
             .invalidate(Some("rpc mode shutdown"));

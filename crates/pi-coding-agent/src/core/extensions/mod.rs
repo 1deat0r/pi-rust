@@ -8,8 +8,9 @@ pub mod types;
 pub mod wrapper;
 
 pub use integration::{
-    install_tools, load_for_mode, register_loaded_native_providers, register_native_provider,
-    ExtensionHostState, LoadedExtensions,
+    install_tools, load_for_mode, load_for_mode_with_reason, load_for_mode_with_reason_and_flags,
+    load_for_mode_with_reason_and_flags_and_previous, register_loaded_native_providers,
+    register_native_provider, ExtensionHostState, LoadedExtensions,
 };
 pub use loader::{
     create_extension_runtime, discover_and_load_extensions, discover_extensions_in_dir,

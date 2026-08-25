@@ -372,6 +372,7 @@ pub fn discover_extensions_in_dir(dir: &Path) -> Vec<PathBuf> {
 const EXTERNAL_EXTENSION_BRIDGE: &str = r###"
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import { readFileSync } from "node:fs";
 import * as readline from "node:readline";
 
 const entryPath = process.argv.at(-1);
@@ -813,6 +814,17 @@ async function loadJitiFactory() {
   }
 }
 
+async function loadEmbeddedVirtualModules() {
+  const configured = process.env.PI_RUST_EXTENSION_BUNDLED_MODULES;
+  if (!configured) return {};
+  const module = await import(pathToFileURL(configured).href);
+  const virtualModules = module.modules ?? module.default;
+  if (!virtualModules || typeof virtualModules !== "object" || Array.isArray(virtualModules)) {
+    throw new Error("PI_RUST_EXTENSION_BUNDLED_MODULES must export a module map");
+  }
+  return virtualModules;
+}
+
 const UPSTREAM_RUNTIME_SPECIFIERS = [
   "@earendil-works/pi-coding-agent",
   "@earendil-works/pi-agent-core",
@@ -869,8 +881,9 @@ async function discoverRuntimeVirtualModules() {
   return virtualModules;
 }
 
-async function loadConfiguredVirtualModules(includeDiscovered) {
+async function loadConfiguredVirtualModules(includeDiscovered, includeEmbedded = true) {
   const virtualModules = includeDiscovered ? await discoverRuntimeVirtualModules() : {};
+  if (includeEmbedded) Object.assign(virtualModules, await loadEmbeddedVirtualModules());
   const configured = process.env.PI_RUST_EXTENSION_VIRTUAL_MODULES;
   if (!configured) return virtualModules;
   let entries;
@@ -912,20 +925,53 @@ async function loadExtensionFactory() {
   if (typeof createJiti !== "function") {
     return (await import(pathToFileURL(entryPath).href)).default;
   }
+  // Keep the same host detection predicates as the upstream loader.  The
+  // external bridge normally runs as a source script, but these predicates
+  // also make the virtual-module/tryNative split correct when the selected
+  // Node or Bun executable is a compiled host.
+  const isBunBinary = String(import.meta.url).includes("$bunfs")
+    || String(import.meta.url).includes("~BUN")
+    || String(import.meta.url).includes("%7EBUN");
+  const isNodeSea = Boolean(process.features?.sea)
+    || Boolean(process.getBuiltinModule?.("node:sea")?.isSea?.());
   const isBunRuntime = Boolean(process.versions?.bun);
   const configuredVirtualModules = Boolean(process.env.PI_RUST_EXTENSION_VIRTUAL_MODULES);
-  const virtualModules = await loadConfiguredVirtualModules(isBunRuntime);
+  const configuredAliases = Boolean(process.env.PI_RUST_EXTENSION_ALIASES);
+  const embeddedVirtualModules = Boolean(process.env.PI_RUST_EXTENSION_BUNDLED_MODULES);
+  const source = embeddedVirtualModules && !configuredAliases && !configuredVirtualModules
+    ? readFileSync(entryPath, "utf8")
+    : "";
+  const sourceUsesEmbeddedGraph =
+    embeddedVirtualModules && UPSTREAM_RUNTIME_SPECIFIERS.some((specifier) => source.includes(specifier));
   const jitiOptions = { moduleCache: false };
-  if (isBunRuntime || configuredVirtualModules) {
-    jitiOptions.virtualModules = virtualModules;
-    if (isBunRuntime) jitiOptions.tryNative = false;
-  } else {
+  if (isBunBinary || isNodeSea || isBunRuntime || configuredVirtualModules || sourceUsesEmbeddedGraph) {
+    jitiOptions.virtualModules = await loadConfiguredVirtualModules(
+      isBunRuntime && !embeddedVirtualModules,
+      sourceUsesEmbeddedGraph,
+    );
+    if (isBunBinary || isNodeSea || isBunRuntime) jitiOptions.tryNative = false;
+  } else if (configuredAliases) {
     jitiOptions.alias = loadConfiguredAliases();
   }
   if (process.env.PI_RUST_EXTENSION_JSX === "1") jitiOptions.jsx = true;
-  const jiti = createJiti(pathToFileURL(entryPath).href, jitiOptions);
-  const module = await jiti.import(entryPath, { default: true });
-  return module?.default ?? module;
+  const importWithJiti = async (options) => {
+    const jiti = createJiti(pathToFileURL(entryPath).href, options);
+    const module = await jiti.import(entryPath, { default: true });
+    return module?.default ?? module;
+  };
+  try {
+    return await importWithJiti(jitiOptions);
+  } catch (error) {
+    const message = errorMessage(error);
+    const needsEmbeddedGraph =
+      embeddedVirtualModules && UPSTREAM_RUNTIME_SPECIFIERS.some((specifier) => message.includes(specifier));
+    if (!needsEmbeddedGraph) throw error;
+    return importWithJiti({
+      ...jitiOptions,
+      virtualModules: await loadConfiguredVirtualModules(false, true),
+      tryNative: false,
+    });
+  }
 }
 
 async function collectNativeProviderEvents(result) {
@@ -1098,6 +1144,10 @@ const EMBEDDED_JITI_SOURCE: &str = include_str!("../../../data/extension-runtime
 const EMBEDDED_BABEL_SOURCE: &str = include_str!("../../../data/extension-runtime/babel.cjs");
 const EMBEDDED_JITI_STATIC_SOURCE: &str =
     include_str!("../../../data/extension-runtime/jiti-static.mjs");
+const EMBEDDED_PI_RUNTIME_GRAPH_SOURCE: &str =
+    include_str!("../../../data/extension-runtime/pi-runtime-graph.mjs");
+const EMBEDDED_PI_RUNTIME_MODULES_SOURCE: &str =
+    include_str!("../../../data/extension-runtime/pi-runtime-modules.mjs");
 
 static NEXT_EMBEDDED_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -1122,7 +1172,15 @@ impl EmbeddedExtensionRuntime {
         let write_result = (|| {
             fs::write(root.join("jiti.cjs"), EMBEDDED_JITI_SOURCE)?;
             fs::write(root.join("babel.cjs"), EMBEDDED_BABEL_SOURCE)?;
-            fs::write(root.join("jiti-static.mjs"), EMBEDDED_JITI_STATIC_SOURCE)
+            fs::write(root.join("jiti-static.mjs"), EMBEDDED_JITI_STATIC_SOURCE)?;
+            fs::write(
+                root.join("pi-runtime-graph.mjs"),
+                EMBEDDED_PI_RUNTIME_GRAPH_SOURCE,
+            )?;
+            fs::write(
+                root.join("pi-runtime-modules.mjs"),
+                EMBEDDED_PI_RUNTIME_MODULES_SOURCE,
+            )
         })();
         if let Err(error) = write_result {
             let _ = fs::remove_dir_all(&root);
@@ -1136,6 +1194,10 @@ impl EmbeddedExtensionRuntime {
 
     fn jiti_path(&self) -> PathBuf {
         self.root.join("jiti-static.mjs")
+    }
+
+    fn bundled_modules_path(&self) -> PathBuf {
+        self.root.join("pi-runtime-modules.mjs")
     }
 
     fn cleanup(&self) {
@@ -1659,6 +1721,10 @@ fn spawn_external_bridge(
         command.arg("--input-type=module");
     }
     command.env("PI_RUST_JITI_PATH", embedded_runtime.jiti_path());
+    command.env(
+        "PI_RUST_EXTENSION_BUNDLED_MODULES",
+        embedded_runtime.bundled_modules_path(),
+    );
     if let Some(environment) = environment {
         for (key, value) in environment {
             command.env(key, value);
@@ -3121,6 +3187,99 @@ export default (pi) => pi.registerFlag("alias-fixture", { type: "string", defaul
                 .get("alias-fixture")
                 .and_then(|flag| flag.default.as_ref()),
             Some(&serde_json::json!("alias-fixture:shared"))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn node_bridge_loads_embedded_upstream_module_graph() {
+        if !command_on_path("node") {
+            return;
+        }
+        let dir = sandbox("embedded-pi-graph");
+        let entry = dir.join("index.mjs");
+        fs::write(
+            &entry,
+            r#"
+import * as codingA from "@earendil-works/pi-coding-agent";
+import * as codingB from "@mariozechner/pi-coding-agent";
+import * as agentA from "@earendil-works/pi-agent-core";
+import * as agentB from "@mariozechner/pi-agent-core";
+import * as tuiA from "@earendil-works/pi-tui";
+import * as tuiB from "@mariozechner/pi-tui";
+import * as aiA from "@earendil-works/pi-ai";
+import * as aiCompat from "@earendil-works/pi-ai/compat";
+import * as aiMario from "@mariozechner/pi-ai";
+import * as typeboxA from "typebox";
+import * as typeboxSinclair from "@sinclair/typebox";
+import * as compileA from "typebox/compile";
+import * as compileSinclair from "@sinclair/typebox/compile";
+import * as valueA from "typebox/value";
+import * as valueSinclair from "@sinclair/typebox/value";
+
+const identity = (left, right) => left[Symbol.for("pi-rust:bundled-module-identity")] === right[Symbol.for("pi-rust:bundled-module-identity")];
+const shared = [
+  identity(codingA, codingB),
+  identity(agentA, agentB),
+  identity(tuiA, tuiB),
+  identity(aiA, aiCompat) && identity(aiA, aiMario),
+  identity(typeboxA, typeboxSinclair),
+  identity(compileA, compileSinclair),
+  identity(valueA, valueSinclair),
+];
+const exportCounts = [codingA, agentA, tuiA, aiCompat, typeboxA, compileA, valueA].map((module) => Object.keys(module).length);
+export default (pi) => pi.registerFlag("embedded-pi-graph", { type: "string", default: `${shared.every(Boolean) ? "shared" : "different"}:${exportCounts.every((count) => count > 0) ? "exports" : "empty"}` });
+"#,
+        )
+        .unwrap();
+
+        let extension = run_external_extension("index.mjs", &entry, Some("node"), None)
+            .expect("Node should load the embedded pinned pi module graph");
+        assert_eq!(
+            extension
+                .flags
+                .get("embedded-pi-graph")
+                .and_then(|flag| flag.default.as_ref()),
+            Some(&serde_json::json!("shared:exports"))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bun_bridge_loads_embedded_upstream_module_graph() {
+        let Ok(runner) = std::env::var("PI_RUST_BUN") else {
+            return;
+        };
+        if !Path::new(&runner).is_file() {
+            return;
+        }
+        let dir = sandbox("bun-embedded-pi-graph");
+        let entry = dir.join("index.mjs");
+        fs::write(
+            &entry,
+            r#"
+import * as tuiA from "@earendil-works/pi-tui";
+import * as tuiB from "@mariozechner/pi-tui";
+import * as aiA from "@earendil-works/pi-ai";
+import * as aiCompat from "@earendil-works/pi-ai/compat";
+import * as typeboxA from "typebox";
+import * as typeboxSinclair from "@sinclair/typebox";
+const identity = (left, right) => left[Symbol.for("pi-rust:bundled-module-identity")] === right[Symbol.for("pi-rust:bundled-module-identity")];
+const shared = identity(tuiA, tuiB) && identity(aiA, aiCompat) && identity(typeboxA, typeboxSinclair);
+const exportsPresent = [tuiA, aiCompat, typeboxA].every((module) => Object.keys(module).length > 0);
+export default (pi) => pi.registerFlag("bun-embedded-pi-graph", { type: "string", default: `${shared ? "shared" : "different"}:${exportsPresent ? "exports" : "empty"}` });
+"#,
+        )
+        .unwrap();
+
+        let extension = run_external_extension("index.mjs", &entry, Some(&runner), None)
+            .expect("Bun should load the embedded pinned pi module graph");
+        assert_eq!(
+            extension
+                .flags
+                .get("bun-embedded-pi-graph")
+                .and_then(|flag| flag.default.as_ref()),
+            Some(&serde_json::json!("shared:exports"))
         );
         let _ = fs::remove_dir_all(&dir);
     }

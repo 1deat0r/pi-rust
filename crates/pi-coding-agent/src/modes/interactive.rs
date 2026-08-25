@@ -20,7 +20,8 @@ use serde_json::{json, Value};
 use crate::args::Args;
 use crate::config;
 use crate::core::extensions::{
-    install_tools, load_for_mode, register_loaded_native_providers, LoadedExtensions,
+    install_tools, load_for_mode, load_for_mode_with_reason_and_flags_and_previous,
+    register_loaded_native_providers, LoadedExtensions, ResourceDiscovery,
 };
 use crate::core::settings::SettingsManager;
 use crate::interactive as it;
@@ -56,6 +57,7 @@ struct InteractiveRuntime {
     tools_enabled: bool,
     builtin_tools_enabled: bool,
     extensions: LoadedExtensions,
+    extension_resources: ResourceDiscovery,
     native_provider_ids: Vec<String>,
     extension_args: Args,
     extension_agent_dir: String,
@@ -72,6 +74,7 @@ struct InteractiveRuntime {
 
 impl Drop for InteractiveRuntime {
     fn drop(&mut self) {
+        let _ = self.extensions.runner.emit_session_shutdown("quit");
         self.extensions
             .runner
             .invalidate(Some("interactive mode shutdown"));
@@ -136,6 +139,35 @@ fn interactive_turn_tools(runtime: &InteractiveRuntime) -> Vec<pi_agent::tools::
     tools
 }
 
+/// Build the interactive system prompt from the same skill/resource surface
+/// as print mode. Extension-provided skills are temporary and are therefore
+/// supplied directly rather than persisted into settings.
+fn interactive_system_prompt(
+    args: &Args,
+    cwd: &str,
+    agent_dir: &str,
+    settings: &SettingsManager,
+    resources: &ResourceDiscovery,
+) -> Option<String> {
+    let mut sections = Vec::new();
+    if let Some(prompt) = args.system_prompt.as_deref() {
+        if !prompt.trim().is_empty() {
+            sections.push(prompt.trim().to_string());
+        }
+    }
+    let skills = crate::run::build_skills_block(
+        args,
+        cwd,
+        std::path::Path::new(agent_dir),
+        settings,
+        resources,
+    );
+    if !skills.is_empty() {
+        sections.push(skills);
+    }
+    (!sections.is_empty()).then(|| sections.join("\n"))
+}
+
 fn loaded_native_provider_ids(loaded: &LoadedExtensions) -> Vec<String> {
     loaded
         .runtime
@@ -159,7 +191,30 @@ fn reload_extensions(
     settings: &SettingsManager,
     thinking_level: &str,
 ) -> Vec<String> {
-    let reloaded_extensions = load_for_mode(
+    replace_extensions(runtime, settings, thinking_level, "reload", None, None)
+}
+
+/// Replace the mode-scoped extension runtime for `/reload` and session
+/// replacement.  This mirrors the upstream teardown order and ensures the
+/// new runtime sees preserved flags before its start/resource events.
+fn replace_extensions(
+    runtime: &mut InteractiveRuntime,
+    settings: &SettingsManager,
+    thinking_level: &str,
+    reason: &str,
+    previous_session_file: Option<&str>,
+    target_session_file: Option<&str>,
+) -> Vec<String> {
+    let previous_flag_values = runtime.extensions.runner.get_flag_values();
+    let _ = runtime
+        .extensions
+        .runner
+        .emit_session_shutdown_with_target(reason, target_session_file);
+    runtime
+        .extensions
+        .runner
+        .invalidate(Some("interactive extension replacement"));
+    let reloaded_extensions = load_for_mode_with_reason_and_flags_and_previous(
         &runtime.extension_args,
         settings,
         &runtime.cwd,
@@ -168,6 +223,9 @@ fn reload_extensions(
         true,
         runtime.session_name.clone(),
         thinking_level.to_string(),
+        reason,
+        Some(previous_flag_values),
+        previous_session_file,
     );
     let mut notes = reloaded_extensions
         .errors
@@ -177,10 +235,16 @@ fn reload_extensions(
     for provider_id in runtime.native_provider_ids.drain(..) {
         runtime.models.delete_provider(&provider_id);
     }
-    let old_extensions = std::mem::replace(&mut runtime.extensions, reloaded_extensions);
-    old_extensions
-        .runner
-        .invalidate(Some("interactive extension reload"));
+    let reloaded_extensions = reloaded_extensions;
+    runtime.extension_resources = reloaded_extensions.resources.clone();
+    let _old_extensions = std::mem::replace(&mut runtime.extensions, reloaded_extensions);
+    runtime.system_prompt = interactive_system_prompt(
+        &runtime.extension_args,
+        &runtime.cwd,
+        &runtime.extension_agent_dir,
+        settings,
+        &runtime.extension_resources,
+    );
     runtime.native_provider_ids = loaded_native_provider_ids(&runtime.extensions);
     match register_loaded_native_providers(&runtime.models, &runtime.extensions) {
         Ok(count) if count > 0 => notes.push(format!("reloaded {count} native provider(s)")),
@@ -189,6 +253,32 @@ fn reload_extensions(
     }
     let _ = interactive_turn_tools(runtime);
     notes
+}
+
+fn session_switch_allowed(
+    runtime: &InteractiveRuntime,
+    reason: &str,
+    target_session_file: Option<&str>,
+) -> bool {
+    match runtime
+        .extensions
+        .runner
+        .emit_session_before_switch(reason, target_session_file)
+    {
+        Ok(true) => false,
+        Ok(false) => true,
+        Err(errors) => {
+            for error in errors {
+                tracing::warn!(
+                    extension = %error.extension_path,
+                    event = %error.event,
+                    error = %error.error,
+                    "extension session-switch handler failed"
+                );
+            }
+            true
+        }
+    }
 }
 
 /// Stream a prompt through the agent loop, observing raw events.
@@ -1115,6 +1205,9 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         )?
     };
 
+    let extension_resources = extensions.resources.clone();
+    let system_prompt =
+        interactive_system_prompt(args, &cwd, &agent_dir, &settings, &extension_resources);
     let mut runtime = InteractiveRuntime {
         cwd: cwd.clone(),
         models,
@@ -1127,11 +1220,12 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         session_root: session_root.clone(),
         session_id: session_id.clone(),
         session_name,
-        system_prompt: args.system_prompt.clone(),
+        system_prompt,
         tools_enabled: !args.no_tools,
         builtin_tools_enabled: !args.no_tools && !args.no_builtin_tools,
         native_provider_ids: loaded_native_provider_ids(&extensions),
         extensions,
+        extension_resources,
         extension_args: args.clone(),
         extension_agent_dir: agent_dir.clone(),
         auto_resize_images: settings.get_image_auto_resize(),
@@ -1408,9 +1502,18 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 );
                                 if let Some(issue) = issue {
                                     status_banner = crate::core::session_cwd::format_missing_session_cwd_error(&issue);
+                                } else if !session_switch_allowed(
+                                    &runtime,
+                                    "resume",
+                                    Some(&meta.metadata.path),
+                                ) {
+                                    status_banner = "resume cancelled by extension".to_string();
                                 } else {
                                     match runtime.repo.open(&meta.metadata).await {
                                         Ok(session) => {
+                                            let previous_session_file =
+                                                runtime.session.get_metadata().await.path;
+                                            let target_session_file = session.get_metadata().await.path;
                                             runtime.session = session;
                                             runtime.session_id = meta.id.clone();
                                             runtime.session_name = None;
@@ -1419,11 +1522,25 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                             runtime.messages = messages;
                                             runtime.cache_entries = cache_entries;
                                             runtime.persisted_until = runtime.messages.len();
+                                            let notes = replace_extensions(
+                                                &mut runtime,
+                                                &settings,
+                                                &thinking_level,
+                                                "resume",
+                                                Some(&previous_session_file),
+                                                Some(&target_session_file),
+                                            );
                                             status_banner = format!(
                                                 "resumed session {} ({} prior messages)",
                                                 meta.id.get(..8).unwrap_or(&meta.id),
                                                 runtime.messages.len()
                                             );
+                                            if !notes.is_empty() {
+                                                status_banner.push_str(&format!(
+                                                    " (extensions: {})",
+                                                    notes.join("; ")
+                                                ));
+                                            }
                                         }
                                         Err(e) => {
                                             status_banner = format!("resume failed: {e}");
@@ -1596,33 +1713,55 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     }
                                 }
                                 "new" => {
-                                    let new_id = pi_agent::session::new_id();
-                                    match runtime
-                                        .repo
-                                        .create(CreateOptions {
-                                            id: Some(new_id.clone()),
-                                            cwd: runtime.cwd.clone(),
-                                            parent_session_id: None,
-                                            metadata: None,
-                                            fork_options: ForkOptions::Tree,
-                                        })
-                                        .await
-                                    {
+                                    if !session_switch_allowed(&runtime, "new", None) {
+                                        status_banner = "new session cancelled by extension".to_string();
+                                    } else {
+                                        let previous_session_file =
+                                            runtime.session.get_metadata().await.path;
+                                        let new_id = pi_agent::session::new_id();
+                                        match runtime
+                                            .repo
+                                            .create(CreateOptions {
+                                                id: Some(new_id.clone()),
+                                                cwd: runtime.cwd.clone(),
+                                                parent_session_id: None,
+                                                metadata: None,
+                                                fork_options: ForkOptions::Tree,
+                                            })
+                                            .await
+                                        {
                                         Ok(new_session) => {
+                                            let target_session_file =
+                                                new_session.get_metadata().await.path;
                                             runtime.session = new_session;
                                             runtime.session_id = new_id;
                                             runtime.messages.clear();
                                             runtime.cache_entries.clear();
                                             runtime.persisted_until = 0;
                                             transcript_md.lock().unwrap().set_text("");
+                                            let notes = replace_extensions(
+                                                &mut runtime,
+                                                &settings,
+                                                &thinking_level,
+                                                "new",
+                                                Some(&previous_session_file),
+                                                Some(&target_session_file),
+                                            );
                                             status_banner = format!(
                                                 "started new session {} in {}",
                                                 runtime.session_id.get(..8).unwrap_or(&runtime.session_id),
                                                 meta_short_cwd(&runtime.cwd)
                                             );
+                                            if !notes.is_empty() {
+                                                status_banner.push_str(&format!(
+                                                    " (extensions: {})",
+                                                    notes.join("; ")
+                                                ));
+                                            }
                                         }
-                                        Err(e) => {
-                                            status_banner = format!("new session failed: {e}");
+                                            Err(e) => {
+                                                status_banner = format!("new session failed: {e}");
+                                            }
                                         }
                                     }
                                 }
@@ -1748,8 +1887,18 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                                 return Ok(());
                                                             }
                                                         };
+                                                        if !session_switch_allowed(
+                                                            &runtime,
+                                                            "resume",
+                                                            Some(&metadata.path),
+                                                        ) {
+                                                            status_banner = "import cancelled by extension".to_string();
+                                                        } else {
                                                         match runtime.repo.open(&metadata).await {
                                                             Ok(session) => {
+                                                                let previous_session_file =
+                                                                    runtime.session.get_metadata().await.path;
+                                                                let target_session_file = session.get_metadata().await.path;
                                                                 runtime.session = session;
                                                                 runtime.session_id =
                                                                     runtime.session.get_metadata().await.id;
@@ -1763,15 +1912,30 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                                 runtime.messages = messages;
                                                                 runtime.cache_entries = cache_entries;
                                                                 runtime.persisted_until = runtime.messages.len();
+                                                                let notes = replace_extensions(
+                                                                    &mut runtime,
+                                                                    &settings,
+                                                                    &thinking_level,
+                                                                    "resume",
+                                                                    Some(&previous_session_file),
+                                                                    Some(&target_session_file),
+                                                                );
                                                                 status_banner = format!(
                                                                     "imported {} ({} prior messages)",
                                                                     path,
                                                                     runtime.messages.len()
                                                                 );
+                                                                if !notes.is_empty() {
+                                                                    status_banner.push_str(&format!(
+                                                                        " (extensions: {})",
+                                                                        notes.join("; ")
+                                                                    ));
+                                                                }
                                                             }
                                                             Err(e) => {
                                                                 status_banner = format!("import failed: {e}");
                                                             }
+                                                        }
                                                         }
                                                     }
                                                 }
@@ -1859,6 +2023,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     };
                                     match result {
                                         Ok(session) => {
+                                            let target_session_file = session.get_metadata().await.path;
                                             runtime.session = session;
                                             runtime.session_id = new_id;
                                             runtime.session_name = None;
@@ -1874,12 +2039,26 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                     hide_thinking,
                                                     "",
                                                 ));
+                                            let notes = replace_extensions(
+                                                &mut runtime,
+                                                &settings,
+                                                &thinking_level,
+                                                "fork",
+                                                Some(&meta.path),
+                                                Some(&target_session_file),
+                                            );
                                             status_banner = format!(
                                                 "{} session {} ({} prior messages)",
                                                 command.name,
                                                 runtime.session_id.get(..8).unwrap_or(&runtime.session_id),
                                                 runtime.messages.len()
                                             );
+                                            if !notes.is_empty() {
+                                                status_banner.push_str(&format!(
+                                                    " (extensions: {})",
+                                                    notes.join("; ")
+                                                ));
+                                            }
                                         }
                                         Err(e) => {
                                             status_banner = format!("{} failed: {e}", command.name);
@@ -2208,6 +2387,7 @@ mod tests {
             None,
             "off",
         );
+        let extension_resources = extensions.resources.clone();
         InteractiveRuntime {
             cwd: cwd.clone(),
             models,
@@ -2225,6 +2405,7 @@ mod tests {
             builtin_tools_enabled: true,
             native_provider_ids: Vec::new(),
             extensions,
+            extension_resources,
             extension_args: Args {
                 no_extensions: true,
                 ..Default::default()
@@ -2371,6 +2552,7 @@ mod tests {
         let source = |tool_name: &str| {
             format!(
                 r#"export default function (pi) {{
+  pi.registerFlag("reload-flag", {{ type: "string", default: "default" }});
   pi.registerTool({{
     name: "{tool_name}",
     description: "reload fixture",
@@ -2402,6 +2584,10 @@ mod tests {
             "off",
         );
         assert!(runtime.extensions.errors.is_empty());
+        runtime
+            .extensions
+            .runner
+            .set_flag_value("reload-flag", json!("preserved"));
         let first_tools = interactive_turn_tools(&runtime);
         assert!(first_tools.iter().any(|tool| tool.tool.name == "reload-v1"));
 
@@ -2415,6 +2601,14 @@ mod tests {
         assert!(!second_tools
             .iter()
             .any(|tool| tool.tool.name == "reload-v1"));
+        assert_eq!(
+            runtime
+                .extensions
+                .runner
+                .get_flag_values()
+                .get("reload-flag"),
+            Some(&json!("preserved"))
+        );
 
         drop(runtime);
         let _ = std::fs::remove_dir_all(&root);

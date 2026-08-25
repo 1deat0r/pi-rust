@@ -26,7 +26,7 @@ use crate::args::Args;
 use crate::core::settings::SettingsManager;
 
 use super::loader::{discover_and_load_extensions, load_extensions_with_host_actions};
-use super::runner::ExtensionRunner;
+use super::runner::{ExtensionRunner, ResourceDiscovery};
 use super::types::{
     ExtensionHostAction, ExtensionHostActions, ExtensionLoadError,
     PendingNativeProviderRegistration, RegisteredTool,
@@ -956,6 +956,10 @@ pub struct LoadedExtensions {
     pub host: Arc<ExtensionHostState>,
     pub runtime: Arc<Mutex<super::types::ExtensionRuntime>>,
     pub errors: Vec<ExtensionLoadError>,
+    /// Temporary resource paths returned by the startup/reload
+    /// `resources_discover` event.  The mode owns how these paths are folded
+    /// into its prompt/theme loader.
+    pub resources: ResourceDiscovery,
 }
 
 /// Load extensions using the same project/global/explicit path policy as the
@@ -972,6 +976,95 @@ pub fn load_for_mode(
     session_name: Option<String>,
     thinking_level: impl Into<String>,
 ) -> LoadedExtensions {
+    load_for_mode_with_reason(
+        args,
+        settings,
+        cwd,
+        agent_dir,
+        mode,
+        has_ui,
+        session_name,
+        thinking_level,
+        "startup",
+    )
+}
+
+/// Load a mode-scoped extension runtime and emit its session lifecycle
+/// startup event.  Reload callers use `reason = "reload"` so extensions can
+/// distinguish a fresh process from a resource refresh.
+#[allow(clippy::too_many_arguments)]
+pub fn load_for_mode_with_reason(
+    args: &Args,
+    settings: &SettingsManager,
+    cwd: &str,
+    agent_dir: &str,
+    mode: &str,
+    has_ui: bool,
+    session_name: Option<String>,
+    thinking_level: impl Into<String>,
+    reason: &str,
+) -> LoadedExtensions {
+    load_for_mode_with_reason_and_flags(
+        args,
+        settings,
+        cwd,
+        agent_dir,
+        mode,
+        has_ui,
+        session_name,
+        thinking_level,
+        reason,
+        None,
+    )
+}
+
+/// Variant used by reload/session replacement paths to seed the newly loaded
+/// runtime before any lifecycle or resource-discovery handler runs.
+#[allow(clippy::too_many_arguments)]
+pub fn load_for_mode_with_reason_and_flags(
+    args: &Args,
+    settings: &SettingsManager,
+    cwd: &str,
+    agent_dir: &str,
+    mode: &str,
+    has_ui: bool,
+    session_name: Option<String>,
+    thinking_level: impl Into<String>,
+    reason: &str,
+    flag_values: Option<BTreeMap<String, Value>>,
+) -> LoadedExtensions {
+    load_for_mode_with_reason_and_flags_and_previous(
+        args,
+        settings,
+        cwd,
+        agent_dir,
+        mode,
+        has_ui,
+        session_name,
+        thinking_level,
+        reason,
+        flag_values,
+        None,
+    )
+}
+
+/// Full lifecycle variant for session replacement.  The previous session
+/// file is included in `session_start` while preserved flags are seeded before
+/// either lifecycle or resource handlers execute.
+#[allow(clippy::too_many_arguments)]
+pub fn load_for_mode_with_reason_and_flags_and_previous(
+    args: &Args,
+    settings: &SettingsManager,
+    cwd: &str,
+    agent_dir: &str,
+    mode: &str,
+    has_ui: bool,
+    session_name: Option<String>,
+    thinking_level: impl Into<String>,
+    reason: &str,
+    flag_values: Option<BTreeMap<String, Value>>,
+    previous_session_file: Option<&str>,
+) -> LoadedExtensions {
     let host = Arc::new(ExtensionHostState::new(session_name, thinking_level));
     host.set_system_prompt_options(json!({"cwd": cwd}));
     let mut configured_paths = args.extensions.clone();
@@ -987,14 +1080,35 @@ pub fn load_for_mode(
         result
     };
     let runtime = result.runtime.clone();
+    if let Some(flag_values) = flag_values {
+        if let Ok(mut runtime) = runtime.lock() {
+            runtime.flag_values.extend(flag_values);
+        }
+    }
     let mut runner = ExtensionRunner::new(result.extensions, result.runtime, cwd.to_string());
     runner.set_ui_context(mode, has_ui);
     let runner = Arc::new(runner);
+    if let Err(errors) = runner.emit_session_start_with_previous(reason, previous_session_file) {
+        for error in errors {
+            tracing::warn!(
+                extension = %error.extension_path,
+                event = %error.event,
+                error = %error.error,
+                "extension lifecycle handler failed"
+            );
+        }
+    }
+    let resources = runner.emit_resources_discover(&json!({
+        "type": "resources_discover",
+        "cwd": cwd,
+        "reason": if reason == "reload" { "reload" } else { "startup" },
+    }));
     LoadedExtensions {
         runner,
         host,
         runtime,
         errors: result.errors,
+        resources,
     }
 }
 
@@ -1370,6 +1484,69 @@ mod tests {
             })]
         );
 
+        loaded.runner.invalidate(Some("test complete"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn mode_loader_emits_lifecycle_before_discovering_extension_resources() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let root = fixture_root("resources");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("fixture directory");
+        let extension = root.join("index.js");
+        std::fs::write(
+            &extension,
+            r#"let started = false;
+export default function (pi) {
+  pi.on("session_start", (event) => {
+    if (event.reason !== "startup") throw new Error("unexpected startup reason");
+    started = true;
+  });
+  pi.on("resources_discover", (event) => {
+    if (!started || event.reason !== "startup") throw new Error("lifecycle order mismatch");
+    return {
+      skillPaths: ["skills"],
+      promptPaths: ["prompts/default.md"],
+      themePaths: ["themes/dark.json"],
+    };
+  });
+  pi.on("session_shutdown", (event) => {
+    if (event.reason !== "test") throw new Error("unexpected shutdown reason");
+  });
+}"#,
+        )
+        .expect("write resource fixture");
+
+        let args = Args {
+            extensions: vec![extension.to_string_lossy().into_owned()],
+            no_extensions: true,
+            ..Default::default()
+        };
+        let loaded = load_for_mode(
+            &args,
+            &SettingsManager::in_memory(SettingsMap::new()),
+            &root.to_string_lossy(),
+            &root.join("agent").to_string_lossy(),
+            "print",
+            false,
+            None,
+            "medium",
+        );
+        assert!(loaded.errors.is_empty(), "load errors: {:?}", loaded.errors);
+        assert_eq!(loaded.resources.skill_paths, vec!["skills"]);
+        assert_eq!(loaded.resources.prompt_paths, vec!["prompts/default.md"]);
+        assert_eq!(loaded.resources.theme_paths, vec!["themes/dark.json"]);
+        loaded
+            .runner
+            .emit_session_shutdown("test")
+            .expect("shutdown handler");
         loaded.runner.invalidate(Some("test complete"));
         let _ = std::fs::remove_dir_all(root);
     }

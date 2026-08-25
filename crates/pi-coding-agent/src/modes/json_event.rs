@@ -21,6 +21,7 @@ struct JsonExtensionGuard(Arc<crate::core::extensions::ExtensionRunner>);
 
 impl Drop for JsonExtensionGuard {
     fn drop(&mut self) {
+        let _ = self.0.emit_session_shutdown("quit");
         self.0.invalidate(Some("json mode shutdown"));
     }
 }

@@ -309,6 +309,59 @@ impl ExtensionRunner {
         })
     }
 
+    /// Emit the upstream session-start lifecycle event.  The extension
+    /// loader calls this after constructing a mode-scoped runner so startup
+    /// and reload handlers see the same event shape as the JS runtime.
+    pub fn emit_session_start(&self, reason: &str) -> Result<(), Vec<ExtensionError>> {
+        self.emit_session_start_with_previous(reason, None)
+    }
+
+    pub fn emit_session_start_with_previous(
+        &self,
+        reason: &str,
+        previous_session_file: Option<&str>,
+    ) -> Result<(), Vec<ExtensionError>> {
+        let mut payload = json!({"type": "session_start", "reason": reason});
+        if let Some(previous_session_file) = previous_session_file {
+            payload["previousSessionFile"] = Value::String(previous_session_file.to_string());
+        }
+        self.emit("session_start", &payload).map(|_| ())
+    }
+
+    /// Emit the upstream session-shutdown lifecycle event before invalidating
+    /// the runtime.  Handlers must run while their captured context is still
+    /// active so cleanup callbacks can release external resources cleanly.
+    pub fn emit_session_shutdown(&self, reason: &str) -> Result<(), Vec<ExtensionError>> {
+        self.emit_session_shutdown_with_target(reason, None)
+    }
+
+    pub fn emit_session_shutdown_with_target(
+        &self,
+        reason: &str,
+        target_session_file: Option<&str>,
+    ) -> Result<(), Vec<ExtensionError>> {
+        let mut payload = json!({"type": "session_shutdown", "reason": reason});
+        if let Some(target_session_file) = target_session_file {
+            payload["targetSessionFile"] = Value::String(target_session_file.to_string());
+        }
+        self.emit("session_shutdown", &payload).map(|_| ())
+    }
+
+    /// Emit a cancellable session switch event. A `{ cancel: true }` result
+    /// vetoes the replacement while undecided handlers fall through.
+    pub fn emit_session_before_switch(
+        &self,
+        reason: &str,
+        target_session_file: Option<&str>,
+    ) -> Result<bool, Vec<ExtensionError>> {
+        let mut payload = json!({"type": "session_before_switch", "reason": reason});
+        if let Some(target_session_file) = target_session_file {
+            payload["targetSessionFile"] = Value::String(target_session_file.to_string());
+        }
+        self.emit("session_before_switch", &payload)
+            .map(|result| result.is_some_and(|value| value["cancel"] == Value::Bool(true)))
+    }
+
     fn resolved_commands(&self) -> Vec<ResolvedCommand> {
         let mut commands = Vec::new();
         for extension in &self.extensions {
@@ -1228,5 +1281,62 @@ mod tests {
         });
         assert!(shortcuts.is_empty());
         assert_eq!(runner.get_shortcut_diagnostics().len(), 1);
+    }
+
+    #[test]
+    fn lifecycle_events_and_extension_relative_resources_match_upstream_shape() {
+        let events = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let event_handler = {
+            let events = Arc::clone(&events);
+            Arc::new(move |_: &ExtensionContext, event: &Value| {
+                events.lock().unwrap().push(event.clone());
+                Ok(None)
+            }) as HandlerFn
+        };
+        let resources_handler = Arc::new(|_: &ExtensionContext, event: &Value| {
+            assert_eq!(event["type"], "resources_discover");
+            assert_eq!(event["cwd"], "/tmp/project");
+            assert_eq!(event["reason"], "startup");
+            Ok(Some(json!({
+                "skillPaths": ["skills"],
+                "promptPaths": ["prompts/default.md"],
+                "themePaths": ["themes/dark.json"],
+            })))
+        }) as HandlerFn;
+        let mut extension = Extension {
+            path: "/tmp/project/.pi/extensions/example.js".into(),
+            ..Default::default()
+        };
+        extension
+            .handlers
+            .insert("session_start".into(), vec![event_handler.clone()]);
+        extension
+            .handlers
+            .insert("session_shutdown".into(), vec![event_handler]);
+        extension
+            .handlers
+            .insert("resources_discover".into(), vec![resources_handler]);
+
+        let runner = ExtensionRunner::new(
+            vec![extension],
+            Arc::new(Mutex::new(ExtensionRuntime::new())),
+            "/tmp/project".into(),
+        );
+        runner.emit_session_start("startup").unwrap();
+        let resources = runner.emit_resources_discover(&json!({
+            "type": "resources_discover",
+            "cwd": "/tmp/project",
+            "reason": "startup",
+        }));
+        runner.emit_session_shutdown("quit").unwrap();
+
+        assert_eq!(resources.skill_paths, vec!["skills"]);
+        assert_eq!(resources.prompt_paths, vec!["prompts/default.md"]);
+        assert_eq!(resources.theme_paths, vec!["themes/dark.json"]);
+        let events = events.lock().unwrap();
+        assert_eq!(events[0]["type"], "session_start");
+        assert_eq!(events[0]["reason"], "startup");
+        assert_eq!(events[1]["type"], "session_shutdown");
+        assert_eq!(events[1]["reason"], "quit");
     }
 }
