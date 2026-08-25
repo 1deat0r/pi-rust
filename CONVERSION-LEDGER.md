@@ -65,8 +65,9 @@ progress authority.
 The operator's pause was cleared on resume. The combined mode oracle passed,
 the isolated release reverify passed after one concurrent-orchestration
 demotion, and all 19 unlazy gates are met. The working-tree test and
-documentation changes remain pending the focused commit/push gate; the
-pre-existing untracked `AGENTS.md` remains untouched.
+documentation changes are committed and pushed as
+`2a9284b76957d2b4bb3a259511fe8817e864fe13`, with local and remote hashes
+matching. The pre-existing untracked `AGENTS.md` remains untouched.
 
 ## Historical state snapshot (verified 2026-08-24; superseded by the active
 2026-08-25 checkpoint below)

@@ -94,12 +94,11 @@ oracle passed, and the final unlazy status is **19/19 gates met**. The first
 all-gates reverify briefly reported G4 exit 101 while PTY/release gates were
 being orchestrated together; rerunning the exact G4 command alone passed
 clippy, release build, and every release test target with exit 0. This was not
-reproducible as an isolated product failure. No commit or push has yet been
-performed after `700e1025fc4b7fe0c44d1f03d56c97b578ffae26`. Next: run the final
-documentation/diff check, commit only the focused test/documentation change,
-push `main`, and verify `git rev-parse HEAD` equals
-`git ls-remote origin refs/heads/main`. Do not stage the pre-existing
-untracked `AGENTS.md`.
+reproducible as an isolated product failure. The focused checkpoint is now
+committed and pushed as
+`2a9284b76957d2b4bb3a259511fe8817e864fe13`; `git rev-parse HEAD` and
+`git ls-remote origin refs/heads/main` match. The only remaining worktree item
+is the pre-existing untracked `AGENTS.md`, which remains unstaged.
 
 ## Current Rust-only completion checkpoint — 2026-08-25
 

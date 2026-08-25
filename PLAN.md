@@ -58,8 +58,9 @@ an invented result. Credentialed live-provider inference and the installed
 PATH `pi` command remain explicitly unverified: PATH currently resolves to the
 JavaScript/mise command, while the Rust product is `target/release/pi`.
 The combined mode gate and final isolated release reverify are now complete;
-all 19 unlazy gates are met. The next dependency-safe action is the focused
-commit/push and local/remote hash verification for this test campaign.
+all 19 unlazy gates are met. This test campaign is committed and pushed as
+`2a9284b76957d2b4bb3a259511fe8817e864fe13`, with local and remote hashes
+matching.
 
 The final extension boundary is Rust-native only. No Node/Bun JSONL bridge,
 JavaScript/TypeScript source, npm execution, or source-language extension
