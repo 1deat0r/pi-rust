@@ -69,6 +69,31 @@ flags, and provider registration; filesystem JS/TS paths are deterministically
 rejected or ignored. Static HTML export is rendered in Rust without browser
 JavaScript.
 
+## Checkpoint 2026-08-26 — bounded pi-agent lifecycle parity
+
+This bounded slice refines the existing S-018/S-019/S-038 evidence without
+changing a numbered ledger row. The upstream oracle was inspected at
+`../pi-rust-s1-audit.KMw0N2/upstream_pi/packages/agent/src/agent.ts` and its
+`packages/agent/test/` lifecycle cases. `rich_agent.rs` now has an active run
+lease with panic-safe cleanup, an atomic abort signal, race-safe idle waiting,
+concurrent prompt/continue rejection, live shared steering/follow-up queues,
+and transcript updates at message settlement. Delayed deterministic push
+transports exercise abort, `is_streaming`, listener settlement, continuation
+validation, assistant-tail queue drains, and both queue modes.
+
+Evidence is green: the focused `rich_agent::tests` suite passed 21/21, the
+complete `pi-agent` library passed 195/195, and `cargo test -p pi-agent
+--offline --tests --quiet -- --test-threads=1` passed 294 tests across all
+package targets. Direct-stable all-target `cargo check` and strict clippy also
+pass. The required Node progress path is absent from this Rust-only checkout,
+so `node scripts/conversion-progress.mjs` returns `MODULE_NOT_FOUND`; the
+documented Cargo-native status remains **100.00% (166/166; 0 open)**.
+
+Remaining limitation for a later parity slice: subscriber callbacks are
+awaited before idle but are still delivered from the post-loop event replay,
+not live at each emitted event. No `pi-ai`, `pi-tui`, or `pi-coding-agent`
+source was changed here.
+
 ## Checkpoint 2026-08-25 — progress gate and release verification
 
 S-001 through S-066 and #97–100 are closed with their recorded inventory,

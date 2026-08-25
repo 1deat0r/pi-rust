@@ -227,6 +227,21 @@ pub type ShouldStopAfterTurnHook = Arc<
         + Sync,
 >;
 
+/// Errors raised when a stateful agent operation cannot start.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AgentRunError {
+    #[error(
+        "Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion."
+    )]
+    AlreadyProcessingPrompt,
+    #[error("Agent is already processing. Wait for completion before continuing.")]
+    AlreadyProcessingContinuation,
+    #[error("No messages to continue from")]
+    NoMessagesToContinue,
+    #[error("Cannot continue from message role: assistant")]
+    CannotContinueFromAssistant,
+}
+
 fn none_hook<Out: Default>() -> AsyncHook<(), Out> {
     Arc::new(|()| async { Out::default() }.boxed())
 }
@@ -436,6 +451,19 @@ async fn drain_steering(config: &RichAgentLoopConfig) -> Vec<AgentMessage> {
 
 async fn drain_follow_up(config: &RichAgentLoopConfig) -> Vec<AgentMessage> {
     (config.get_follow_up_messages)(()).await
+}
+
+async fn wait_for_abort(signal: Arc<AtomicBool>) {
+    while !signal.load(Ordering::SeqCst) {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+}
+
+fn aborted_assistant_message(model: &pi_ai::model::Model) -> AssistantMessage {
+    let mut message = AssistantMessage::new();
+    message.set_api_provider_model(&model.api, &model.provider, &model.id);
+    message.set_stop_reason(StopReason::Aborted);
+    message
 }
 
 /// Fail all tool calls from an assistant message truncated by the output
@@ -1241,48 +1269,62 @@ where
     let stream = (config.stream_fn)(&config.model, &llm_context);
 
     let emit_ref: &mut (dyn FnMut(RichAgentEvent) + Send) = emit;
-    let mut final_message = stream
-        .for_each(|event| match &event {
-            AssistantMessageEvent::Start { partial } => {
-                emit_ref(RichAgentEvent::MessageStart {
-                    message: AgentMessage::Core(Message::Assistant(partial.clone())),
-                });
-            }
-            AssistantMessageEvent::TextStart { .. }
-            | AssistantMessageEvent::TextDelta { .. }
-            | AssistantMessageEvent::TextEnd { .. }
-            | AssistantMessageEvent::ThinkingStart { .. }
-            | AssistantMessageEvent::ThinkingDelta { .. }
-            | AssistantMessageEvent::ThinkingEnd { .. }
-            | AssistantMessageEvent::ToolCallStart { .. }
-            | AssistantMessageEvent::ToolCallDelta { .. }
-            | AssistantMessageEvent::ToolCallEnd { .. } => {
-                if let Some(partial) = event.partial() {
-                    emit_ref(RichAgentEvent::MessageUpdate {
-                        message: AgentMessage::Core(Message::Assistant(partial.clone())),
-                        assistant_message_event: event.clone(),
-                    });
-                }
-            }
-            AssistantMessageEvent::Done { .. } => {}
-            AssistantMessageEvent::Error {
-                error_message: message,
-                ..
-            } => {
-                // Raw stream observers see terminal events too. Preserve
-                // them in the rich stream so JSON/RPC callers do not lose a
-                // provider error when they run through this loop.
+    let mut stream_future = Box::pin(stream.for_each(|event| match &event {
+        AssistantMessageEvent::Start { partial } => {
+            emit_ref(RichAgentEvent::MessageStart {
+                message: AgentMessage::Core(Message::Assistant(partial.clone())),
+            });
+        }
+        AssistantMessageEvent::TextStart { .. }
+        | AssistantMessageEvent::TextDelta { .. }
+        | AssistantMessageEvent::TextEnd { .. }
+        | AssistantMessageEvent::ThinkingStart { .. }
+        | AssistantMessageEvent::ThinkingDelta { .. }
+        | AssistantMessageEvent::ThinkingEnd { .. }
+        | AssistantMessageEvent::ToolCallStart { .. }
+        | AssistantMessageEvent::ToolCallDelta { .. }
+        | AssistantMessageEvent::ToolCallEnd { .. } => {
+            if let Some(partial) = event.partial() {
                 emit_ref(RichAgentEvent::MessageUpdate {
-                    message: AgentMessage::Core(Message::Assistant(message.clone())),
+                    message: AgentMessage::Core(Message::Assistant(partial.clone())),
                     assistant_message_event: event.clone(),
                 });
             }
-        })
-        .await;
-    if is_aborted(config.signal.as_ref()) {
+        }
+        AssistantMessageEvent::Done { .. } => {}
+        AssistantMessageEvent::Error {
+            error_message: message,
+            ..
+        } => {
+            // Raw stream observers see terminal events too. Preserve
+            // them in the rich stream so JSON/RPC callers do not lose a
+            // provider error when they run through this loop.
+            emit_ref(RichAgentEvent::MessageUpdate {
+                message: AgentMessage::Core(Message::Assistant(message.clone())),
+                assistant_message_event: event.clone(),
+            });
+        }
+    }));
+    let (mut final_message, aborted) = if let Some(signal) = config.signal.clone() {
+        tokio::select! {
+            message = &mut stream_future => (message, false),
+            _ = wait_for_abort(signal) => {
+                (aborted_assistant_message(&config.model), true)
+            }
+        }
+    } else {
+        ((&mut stream_future).await, false)
+    };
+    drop(stream_future);
+    if aborted || is_aborted(config.signal.as_ref()) {
         final_message.set_stop_reason(StopReason::Aborted);
     }
 
+    if aborted {
+        emit(RichAgentEvent::MessageStart {
+            message: AgentMessage::Core(Message::Assistant(final_message.clone())),
+        });
+    }
     emit(RichAgentEvent::MessageEnd {
         message: AgentMessage::Core(Message::Assistant(final_message.clone())),
     });
@@ -1426,9 +1468,9 @@ fn default_model() -> pi_ai::model::Model {
 pub struct Agent {
     state: Mutex<AgentState>,
     listeners: Mutex<Vec<AgentListener>>,
-    steering_queue: Mutex<PendingMessageQueue>,
-    follow_up_queue: Mutex<PendingMessageQueue>,
-    active_run: Mutex<Option<ActiveRun>>,
+    steering_queue: Arc<Mutex<PendingMessageQueue>>,
+    follow_up_queue: Arc<Mutex<PendingMessageQueue>>,
+    active_run: Arc<Mutex<Option<ActiveRun>>>,
     convert_to_llm: Option<ConvertToLlmFn>,
     stream_fn: StreamFn,
     before_tool_call: Option<BeforeToolCallHook>,
@@ -1442,6 +1484,32 @@ pub struct Agent {
 
 struct ActiveRun {
     abort: Arc<AtomicBool>,
+    done: Arc<tokio::sync::Notify>,
+}
+
+struct RunLease {
+    active_run: Arc<Mutex<Option<ActiveRun>>>,
+    done: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for RunLease {
+    fn drop(&mut self) {
+        let finished = {
+            let mut active = self.active_run.lock().unwrap();
+            if active
+                .as_ref()
+                .is_some_and(|run| Arc::ptr_eq(&run.done, &self.done))
+            {
+                active.take();
+                true
+            } else {
+                false
+            }
+        };
+        if finished {
+            self.done.notify_waiters();
+        }
+    }
 }
 
 impl Agent {
@@ -1449,9 +1517,9 @@ impl Agent {
         Self {
             state: Mutex::new(AgentState::default()),
             listeners: Mutex::new(Vec::new()),
-            steering_queue: Mutex::new(PendingMessageQueue::new(QueueMode::OneAtATime)),
-            follow_up_queue: Mutex::new(PendingMessageQueue::new(QueueMode::OneAtATime)),
-            active_run: Mutex::new(None),
+            steering_queue: Arc::new(Mutex::new(PendingMessageQueue::new(QueueMode::OneAtATime))),
+            follow_up_queue: Arc::new(Mutex::new(PendingMessageQueue::new(QueueMode::OneAtATime))),
+            active_run: Arc::new(Mutex::new(None)),
             convert_to_llm: None,
             stream_fn,
             before_tool_call: None,
@@ -1551,21 +1619,51 @@ impl Agent {
         }
     }
 
+    /// Return the cancellation flag for the active run, if one exists.
+    pub fn signal(&self) -> Option<Arc<AtomicBool>> {
+        self.active_run
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|run| run.abort.clone())
+    }
+
     pub fn is_streaming(&self) -> bool {
         self.active_run.lock().unwrap().is_some()
     }
 
+    /// Wait until the current run and all of its awaited listeners settle.
+    pub async fn wait_for_idle(&self) {
+        loop {
+            let notified = self
+                .active_run
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|run| run.done.clone().notified_owned());
+            let Some(notified) = notified else {
+                return;
+            };
+            notified.await;
+        }
+    }
+
     /// Start a prompt run (upstream `Agent.prompt`). Returns after settlement
     /// of the run and its awaited listeners.
-    pub async fn prompt(&self, message: AgentMessage) {
-        let _ = self.run_prompt_messages(vec![message], false).await;
+    pub async fn prompt(&self, message: AgentMessage) -> Result<(), AgentRunError> {
+        self.run_prompt_messages(vec![message], false)
+            .await
+            .map(|_| ())
     }
 
     /// Run one or more prompts and return the messages appended to the
     /// stateful transcript by this invocation. This is the harness-facing
     /// equivalent of upstream `Agent.prompt` when callers need to persist the
     /// resulting lane entries themselves.
-    pub async fn prompt_messages(&self, messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
+    pub async fn prompt_messages(
+        &self,
+        messages: Vec<AgentMessage>,
+    ) -> Result<Vec<AgentMessage>, AgentRunError> {
         self.run_prompt_messages(messages, false).await
     }
 
@@ -1574,50 +1672,71 @@ impl Agent {
     pub async fn prompt_messages_with_events(
         &self,
         messages: Vec<AgentMessage>,
-    ) -> (Vec<AgentMessage>, Vec<RichAgentEvent>) {
+    ) -> Result<(Vec<AgentMessage>, Vec<RichAgentEvent>), AgentRunError> {
         self.run_prompt_messages_with_events(messages, false).await
     }
 
     /// Continue from the current transcript (upstream `Agent.continue`).
-    pub async fn continue_(&self) {
+    pub async fn continue_(&self) -> Result<(), AgentRunError> {
+        if self.is_streaming() {
+            return Err(AgentRunError::AlreadyProcessingContinuation);
+        }
         let last = {
             let state = self.state.lock().unwrap();
             state.messages.last().cloned()
         };
         let Some(last) = last else {
-            panic!("No messages to continue from");
+            return Err(AgentRunError::NoMessagesToContinue);
         };
         if last.role() == "assistant" {
             let queued_steering = self.steering_queue.lock().unwrap().drain();
             if !queued_steering.is_empty() {
-                let _ = self.run_prompt_messages(queued_steering, true).await;
-                return;
+                self.run_prompt_messages(queued_steering, true)
+                    .await
+                    .map(|_| ())?;
+                return Ok(());
             }
             let queued_follow_ups = self.follow_up_queue.lock().unwrap().drain();
             if !queued_follow_ups.is_empty() {
-                let _ = self.run_prompt_messages(queued_follow_ups, false).await;
-                return;
+                self.run_prompt_messages(queued_follow_ups, false)
+                    .await
+                    .map(|_| ())?;
+                return Ok(());
             }
-            panic!("Cannot continue from message role: assistant");
+            return Err(AgentRunError::CannotContinueFromAssistant);
         }
-        self.run_continuation().await;
+        self.run_continuation().await
     }
 
     async fn run_prompt_messages(
         &self,
         messages: Vec<AgentMessage>,
         skip_initial_steering: bool,
-    ) -> Vec<AgentMessage> {
+    ) -> Result<Vec<AgentMessage>, AgentRunError> {
         let (messages, _) = self
             .run_prompt_messages_with_events(messages, skip_initial_steering)
-            .await;
-        messages
+            .await?;
+        Ok(messages)
     }
 
     async fn run_prompt_messages_with_events(
         &self,
         messages: Vec<AgentMessage>,
         skip_initial_steering: bool,
+    ) -> Result<(Vec<AgentMessage>, Vec<RichAgentEvent>), AgentRunError> {
+        let (signal, lease) = self.begin_run(AgentRunError::AlreadyProcessingPrompt)?;
+        let result = self
+            .run_prompt_messages_with_events_inner(messages, skip_initial_steering, signal)
+            .await;
+        drop(lease);
+        Ok(result)
+    }
+
+    async fn run_prompt_messages_with_events_inner(
+        &self,
+        messages: Vec<AgentMessage>,
+        skip_initial_steering: bool,
+        signal: Arc<AtomicBool>,
     ) -> (Vec<AgentMessage>, Vec<RichAgentEvent>) {
         let mut skip = skip_initial_steering;
         let (model, system_prompt, tools) = {
@@ -1634,9 +1753,10 @@ impl Agent {
             state.messages.clone()
         };
         context.messages = prior_messages.clone();
-        let config = self.build_config(model, &mut skip);
+        let config = self.build_config(model, &mut skip, signal);
         let mut events: Vec<RichAgentEvent> = Vec::new();
         let new_messages = run_rich_agent_loop(messages, &mut context, &config, &mut |e| {
+            self.apply_event(&e);
             events.push(e.clone())
         })
         .await;
@@ -1655,7 +1775,14 @@ impl Agent {
         (new_messages, events)
     }
 
-    async fn run_continuation(&self) {
+    async fn run_continuation(&self) -> Result<(), AgentRunError> {
+        let (signal, lease) = self.begin_run(AgentRunError::AlreadyProcessingContinuation)?;
+        let result = self.run_continuation_inner(signal).await;
+        drop(lease);
+        Ok(result)
+    }
+
+    async fn run_continuation_inner(&self, signal: Arc<AtomicBool>) {
         let (model, system_prompt, tools) = {
             let state = self.state.lock().unwrap();
             (
@@ -1669,9 +1796,10 @@ impl Agent {
             let state = self.state.lock().unwrap();
             context.messages = state.messages.clone();
         }
-        let config = self.build_config(model, &mut false);
+        let config = self.build_config(model, &mut false, signal);
         let mut events: Vec<RichAgentEvent> = Vec::new();
         let _new_messages = run_rich_agent_loop(Vec::new(), &mut context, &config, &mut |e| {
+            self.apply_event(&e);
             events.push(e.clone())
         })
         .await;
@@ -1686,8 +1814,10 @@ impl Agent {
         &self,
         model: pi_ai::model::Model,
         skip_initial_steering: &mut bool,
+        signal: Arc<AtomicBool>,
     ) -> RichAgentLoopConfig {
-        let mut config = RichAgentLoopConfig::new(model, self.stream_fn.clone(), None);
+        let mut config =
+            RichAgentLoopConfig::new(model, self.stream_fn.clone(), Some(signal.clone()));
         config.convert_to_llm = self.convert_to_llm.clone();
         config.block_images = self.block_images;
         config.before_tool_call = self.before_tool_call.clone();
@@ -1696,11 +1826,11 @@ impl Agent {
         config.tool_execution = self.tool_execution;
         config.session_id = self.session_id.clone();
         config.reasoning = self.reasoning;
-        let steer = self.steering_queue.lock().unwrap().clone();
+        let steer = Arc::clone(&self.steering_queue);
         let initial_skip = *skip_initial_steering;
         let poll_count = Arc::new(AtomicUsize::new(0));
         let steering_hook: AsyncHook<(), Vec<AgentMessage>> = Arc::new(move |()| {
-            let mut steer = steer.clone();
+            let steer = Arc::clone(&steer);
             let poll_count = poll_count.clone();
             async move {
                 // Upstream skips only the initial steering poll in
@@ -1708,18 +1838,48 @@ impl Agent {
                 if initial_skip && poll_count.fetch_add(1, Ordering::SeqCst) == 0 {
                     return Vec::new();
                 }
-                steer.drain()
+                steer.lock().unwrap().drain()
             }
             .boxed()
         });
-        let follow = self.follow_up_queue.lock().unwrap().clone();
+        let follow = Arc::clone(&self.follow_up_queue);
         let follow_up_hook: AsyncHook<(), Vec<AgentMessage>> = Arc::new(move |()| {
-            let mut follow = follow.clone();
-            async move { follow.drain() }.boxed()
+            let follow = Arc::clone(&follow);
+            async move { follow.lock().unwrap().drain() }.boxed()
         });
         config.get_steering_messages = steering_hook;
         config.get_follow_up_messages = follow_up_hook;
+        config.retry_signal = Some(signal);
         config
+    }
+
+    fn apply_event(&self, event: &RichAgentEvent) {
+        if let RichAgentEvent::MessageEnd { message } = event {
+            self.state.lock().unwrap().messages.push(message.clone());
+        }
+    }
+
+    fn begin_run(
+        &self,
+        already_running: AgentRunError,
+    ) -> Result<(Arc<AtomicBool>, RunLease), AgentRunError> {
+        let mut active = self.active_run.lock().unwrap();
+        if active.is_some() {
+            return Err(already_running);
+        }
+        let abort = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(tokio::sync::Notify::new());
+        *active = Some(ActiveRun {
+            abort: abort.clone(),
+            done: done.clone(),
+        });
+        Ok((
+            abort,
+            RunLease {
+                active_run: self.active_run.clone(),
+                done,
+            },
+        ))
     }
 
     async fn record_events(&self, events: &[RichAgentEvent]) {
@@ -2529,7 +2689,7 @@ mod tests {
                 let mut state = agent.state();
                 state.model = model;
             }
-            agent.prompt(steer_msg("hello")).await;
+            agent.prompt(steer_msg("hello")).await.unwrap();
             let msgs = {
                 let s = agent.state();
                 s.messages().to_vec()
@@ -2537,6 +2697,370 @@ mod tests {
             assert!(msgs.iter().any(
                 |m| matches!(m, AgentMessage::Core(Message::Assistant(a)) if !a.content().is_empty())
             ));
+        });
+    }
+
+    fn delayed_lifecycle_transport(
+        responses: Vec<&str>,
+        delay: std::time::Duration,
+    ) -> (StreamFn, Arc<tokio::sync::Notify>, Arc<AtomicUsize>) {
+        let responses = Arc::new(Mutex::new(
+            responses
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<std::collections::VecDeque<_>>(),
+        ));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let transport = {
+            let responses = responses.clone();
+            let started = started.clone();
+            let calls = calls.clone();
+            Arc::new(move |model: &pi_ai::model::Model, _context: &Context| {
+                let response = responses
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or_else(|| "unexpected extra request".to_string());
+                calls.fetch_add(1, Ordering::SeqCst);
+                let stream = pi_ai::AssistantMessageEventStream::new();
+                let sender = stream.sender().expect("delayed stream sender");
+                let started = started.clone();
+                let model = model.clone();
+                tokio::spawn(async move {
+                    started.notify_waiters();
+                    tokio::time::sleep(delay).await;
+                    let mut message = AssistantMessage::new();
+                    message.set_api_provider_model(&model.api, &model.provider, &model.id);
+                    message.set_content(vec![ContentBlock::text(response)]);
+                    message.set_stop_reason(StopReason::Stop);
+                    let _ = sender.send(AssistantMessageEvent::Start {
+                        partial: message.clone(),
+                    });
+                    let _ = sender.send(AssistantMessageEvent::Done {
+                        reason: pi_ai::types::DoneReason::Stop,
+                        message,
+                    });
+                });
+                stream
+            }) as StreamFn
+        };
+        (transport, started, calls)
+    }
+
+    fn lifecycle_agent(transport: StreamFn) -> Arc<Agent> {
+        let agent = Arc::new(Agent::new(transport));
+        agent.state().model = pi_ai::model::Model::new("delayed-1", "Delayed", "delayed", "test");
+        agent
+    }
+
+    fn user_text(message: &AgentMessage) -> Option<&str> {
+        let AgentMessage::Core(Message::User(user)) = message else {
+            return None;
+        };
+        match user.content() {
+            pi_ai::types::UserContentBody::String(text) => Some(text.as_str()),
+            pi_ai::types::UserContentBody::Blocks(blocks) => {
+                blocks.iter().find_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+            }
+        }
+    }
+
+    #[test]
+    fn active_run_abort_cancels_delayed_transport_and_clears_streaming_state() {
+        let rt = rt();
+        rt.block_on(async {
+            let (transport, started, calls) = delayed_lifecycle_transport(
+                vec!["never delivered"],
+                std::time::Duration::from_secs(5),
+            );
+            let agent = lifecycle_agent(transport);
+            let started_wait = started.notified();
+            let running = agent.clone();
+            let prompt = tokio::spawn(async move { running.prompt(steer_msg("abort me")).await });
+            tokio::time::timeout(std::time::Duration::from_secs(1), started_wait)
+                .await
+                .expect("delayed transport should start");
+            assert!(agent.is_streaming());
+            let signal = agent.signal().expect("active run signal");
+            assert!(!signal.load(Ordering::SeqCst));
+
+            agent.abort();
+            assert!(signal.load(Ordering::SeqCst));
+            assert!(
+                agent.is_streaming(),
+                "abort must not clear state before settlement"
+            );
+
+            tokio::time::timeout(std::time::Duration::from_secs(1), prompt)
+                .await
+                .expect("abort should not wait for the delayed response")
+                .expect("prompt task should not panic")
+                .expect("aborted prompt should settle successfully");
+            assert!(!agent.is_streaming());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let state = agent.state();
+            let assistant = state
+                .messages()
+                .iter()
+                .rev()
+                .find_map(|message| match message {
+                    AgentMessage::Core(Message::Assistant(message)) => Some(message),
+                    _ => None,
+                })
+                .expect("aborted run should record an assistant terminal message");
+            assert_eq!(assistant.stop_reason(), Some(StopReason::Aborted));
+        });
+    }
+
+    #[test]
+    fn run_lease_clears_active_state_when_transport_panics() {
+        let rt = rt();
+        rt.block_on(async {
+            let transport: StreamFn = Arc::new(|_, _| panic!("deterministic transport panic"));
+            let agent = Arc::new(Agent::new(transport));
+            let running = agent.clone();
+            let task = tokio::spawn(async move { running.prompt(steer_msg("panic")).await });
+            assert!(task.await.is_err(), "the test transport should panic");
+            assert!(
+                !agent.is_streaming(),
+                "RAII cleanup must clear a panicked run"
+            );
+            agent.wait_for_idle().await;
+        });
+    }
+
+    #[test]
+    fn concurrent_prompt_rejects_and_wait_for_idle_includes_async_listeners() {
+        let rt = rt();
+        rt.block_on(async {
+            let (transport, started, _calls) = delayed_lifecycle_transport(
+                vec!["done"],
+                std::time::Duration::from_millis(30),
+            );
+            let agent = lifecycle_agent(transport);
+            let listener_started = Arc::new(tokio::sync::Notify::new());
+            let listener_release = Arc::new(tokio::sync::Notify::new());
+            let listener_wait = listener_started.notified();
+            let listener_started_for_agent = listener_started.clone();
+            let listener_release_for_agent = listener_release.clone();
+            agent.subscribe(move |event, _signal| {
+                let listener_started = listener_started_for_agent.clone();
+                let listener_release = listener_release_for_agent.clone();
+                Box::pin(async move {
+                    if matches!(event, RichAgentEvent::AgentEnd { .. }) {
+                        listener_started.notify_waiters();
+                        listener_release.notified().await;
+                    }
+                })
+            });
+
+            let started_wait = started.notified();
+            let running = agent.clone();
+            let first_prompt =
+                tokio::spawn(async move { running.prompt(steer_msg("first")).await });
+            tokio::time::timeout(std::time::Duration::from_secs(1), started_wait)
+                .await
+                .expect("first transport should start");
+
+            let second = agent.prompt(steer_msg("second")).await;
+            assert_eq!(second, Err(AgentRunError::AlreadyProcessingPrompt));
+            assert!(agent.is_streaming());
+            tokio::time::timeout(std::time::Duration::from_secs(1), listener_wait)
+                .await
+                .expect("agent_end listener should be entered");
+
+            let idle = agent.wait_for_idle();
+            tokio::pin!(idle);
+            tokio::select! {
+                _ = &mut idle => panic!("wait_for_idle must remain pending while a listener is blocked"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+            }
+            assert!(agent.is_streaming(), "listener settlement is part of the run");
+            listener_release.notify_one();
+            first_prompt
+                .await
+                .expect("first prompt task should not panic")
+                .expect("first prompt should complete");
+            tokio::time::timeout(std::time::Duration::from_secs(1), &mut idle)
+                .await
+                .expect("wait_for_idle should resolve after the listener");
+            assert!(!agent.is_streaming());
+        });
+    }
+
+    #[test]
+    fn continue_rejects_while_active_and_abort_clears_signal() {
+        let rt = rt();
+        rt.block_on(async {
+            let (transport, started, _calls) = delayed_lifecycle_transport(
+                vec!["never delivered"],
+                std::time::Duration::from_secs(5),
+            );
+            let agent = lifecycle_agent(transport);
+            agent
+                .state()
+                .messages
+                .push(steer_msg("continue from this user message"));
+
+            let started_wait = started.notified();
+            let running = agent.clone();
+            let continuation = tokio::spawn(async move { running.continue_().await });
+            tokio::time::timeout(std::time::Duration::from_secs(1), started_wait)
+                .await
+                .expect("continuation transport should start");
+            assert!(agent.is_streaming());
+            assert_eq!(
+                agent.continue_().await,
+                Err(AgentRunError::AlreadyProcessingContinuation)
+            );
+
+            let signal = agent.signal().expect("active continuation signal");
+            agent.abort();
+            assert!(signal.load(Ordering::SeqCst));
+            continuation
+                .await
+                .expect("continuation task should not panic")
+                .expect("aborted continuation should settle successfully");
+            assert!(!agent.is_streaming());
+            assert!(agent.signal().is_none());
+        });
+    }
+
+    #[test]
+    fn continue_reports_empty_and_assistant_tail_validation_errors() {
+        let rt = rt();
+        rt.block_on(async {
+            let (transport, _started, _calls) =
+                delayed_lifecycle_transport(Vec::new(), std::time::Duration::from_millis(1));
+            let agent = lifecycle_agent(transport);
+            assert_eq!(
+                agent.continue_().await,
+                Err(AgentRunError::NoMessagesToContinue)
+            );
+
+            let model = agent.state().model.clone();
+            agent
+                .state()
+                .messages
+                .push(AgentMessage::Core(Message::Assistant(
+                    aborted_assistant_message(&model),
+                )));
+            assert_eq!(
+                agent.continue_().await,
+                Err(AgentRunError::CannotContinueFromAssistant)
+            );
+        });
+    }
+
+    #[test]
+    fn continue_from_assistant_tail_drains_steering_then_follow_up_queues() {
+        let rt = rt();
+        rt.block_on(async {
+            let (transport, started, calls) = delayed_lifecycle_transport(
+                vec!["steering result", "follow-up result"],
+                std::time::Duration::from_millis(20),
+            );
+            let agent = lifecycle_agent(transport);
+            let model = agent.state().model.clone();
+            agent
+                .state()
+                .messages
+                .push(AgentMessage::Core(Message::Assistant(
+                    aborted_assistant_message(&model),
+                )));
+            agent.steer(steer_msg("queued steering"));
+            agent.follow_up(steer_msg("queued follow-up"));
+
+            let started_wait = started.notified();
+            let running = agent.clone();
+            let continuation = tokio::spawn(async move { running.continue_().await });
+            tokio::time::timeout(std::time::Duration::from_secs(1), started_wait)
+                .await
+                .expect("queued steering should start a transport turn");
+            continuation
+                .await
+                .expect("continuation task should not panic")
+                .expect("queued continuation should complete");
+
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            assert!(!agent.has_queued_messages());
+            let state = agent.state();
+            let user_texts: Vec<&str> = state.messages().iter().filter_map(user_text).collect();
+            assert_eq!(user_texts, vec!["queued steering", "queued follow-up"]);
+            assert!(!agent.is_streaming());
+        });
+    }
+
+    #[test]
+    fn steering_and_follow_up_queued_during_streaming_reach_distinct_turns() {
+        let rt = rt();
+        rt.block_on(async {
+            let (transport, started, calls) = delayed_lifecycle_transport(
+                vec!["first", "second", "third"],
+                std::time::Duration::from_millis(20),
+            );
+            let agent = lifecycle_agent(transport);
+            let started_wait = started.notified();
+            let running = agent.clone();
+            let prompt =
+                tokio::spawn(
+                    async move { running.prompt_messages(vec![steer_msg("initial")]).await },
+                );
+            tokio::time::timeout(std::time::Duration::from_secs(1), started_wait)
+                .await
+                .expect("first transport should start");
+            agent.steer(steer_msg("steer while streaming"));
+            agent.follow_up(steer_msg("follow after stop"));
+
+            let messages = prompt
+                .await
+                .expect("prompt task should not panic")
+                .expect("prompt should complete");
+            assert_eq!(calls.load(Ordering::SeqCst), 3);
+            let user_texts: Vec<&str> = messages.iter().filter_map(user_text).collect();
+            assert_eq!(
+                user_texts,
+                vec!["initial", "steer while streaming", "follow after stop"]
+            );
+            assert!(!agent.has_queued_messages());
+            assert!(!agent.is_streaming());
+        });
+    }
+
+    #[test]
+    fn all_queue_mode_drains_all_live_steering_messages_at_one_boundary() {
+        let rt = rt();
+        rt.block_on(async {
+            let (transport, started, calls) = delayed_lifecycle_transport(
+                vec!["first", "second"],
+                std::time::Duration::from_millis(20),
+            );
+            let agent = lifecycle_agent(transport);
+            agent.set_steering_mode(QueueMode::All);
+            let started_wait = started.notified();
+            let running = agent.clone();
+            let prompt =
+                tokio::spawn(
+                    async move { running.prompt_messages(vec![steer_msg("initial")]).await },
+                );
+            tokio::time::timeout(std::time::Duration::from_secs(1), started_wait)
+                .await
+                .expect("first transport should start");
+            agent.steer(steer_msg("steer one"));
+            agent.steer(steer_msg("steer two"));
+
+            let messages = prompt
+                .await
+                .expect("prompt task should not panic")
+                .expect("prompt should complete");
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            let user_texts: Vec<&str> = messages.iter().filter_map(user_text).collect();
+            assert_eq!(user_texts, vec!["initial", "steer one", "steer two"]);
+            assert!(!agent.has_queued_messages());
         });
     }
 }

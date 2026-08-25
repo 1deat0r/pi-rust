@@ -38,6 +38,18 @@ compaction, RPC controls, TUI components, and client/server support. Remaining
 work is tracked explicitly rather than treated as complete just because a
 similarly named module exists.
 
+### Agent lifecycle parity
+
+The bounded `pi-agent` lifecycle slice now tracks active runs with a
+panic-safe lease and abort signal, rejects concurrent prompt/continue calls,
+waits for async listener settlement before becoming idle, and drains live
+steering/follow-up queues at the upstream turn boundaries. Delayed
+deterministic push-stream tests cover abort, continuation validation,
+assistant-tail queueing, and both queue modes; the focused lifecycle suite is
+21/21 green and the complete `pi-agent` package suite is 294/294 green. The
+remaining parity limitation is that subscriber callbacks are replayed after
+the low-level loop rather than dispatched live at each event.
+
 The current implementation slice completes constrained JSON-schema and
 OpenAI grammar custom-tool parity across the advertised pi-ai adaptors. Strict
 schemas are cloned and rewritten without mutating caller input; unsupported

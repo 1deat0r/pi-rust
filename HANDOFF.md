@@ -100,6 +100,43 @@ committed and pushed as
 `git ls-remote origin refs/heads/main` match. The only remaining worktree item
 is the pre-existing untracked `AGENTS.md`, which remains unstaged.
 
+## Current bounded pi-agent lifecycle checkpoint — 2026-08-26
+
+The bounded implementation is complete in
+`crates/pi-agent/src/rich_agent.rs`; the public Result adaptation required by
+that lifecycle contract is in `crates/pi-agent/src/harness/agent_harness.rs`.
+No numbered ledger row changed: this is a refinement and live deterministic
+verification of S-018/S-019/S-038. The upstream oracle inspected was
+`../pi-rust-s1-audit.KMw0N2/upstream_pi/packages/agent/src/agent.ts` plus its
+agent tests.
+
+Exact validation completed with the direct stable toolchain:
+
+```text
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-agent --offline --lib rich_agent::tests -- --test-threads=1
+  21 passed; 0 failed
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-agent --offline --lib --quiet -- --test-threads=1
+  195 passed; 0 failed
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-agent --offline --tests --quiet -- --test-threads=1
+  294 passed; 0 failed
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo check -p pi-agent --offline --all-targets
+  Finished successfully
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo clippy -p pi-agent --offline --all-targets -- -D warnings
+  Finished successfully
+rustfmt --edition 2021 --check crates/pi-agent/src/rich_agent.rs crates/pi-agent/src/harness/agent_harness.rs
+git diff --check
+```
+
+The required `node scripts/conversion-progress.mjs` command still fails with
+`MODULE_NOT_FOUND` because the script is absent. The existing Cargo-native
+ledger value remains **100.00% (166/166; 0 open)**. No `pi-ai`, `pi-tui`, or
+`pi-coding-agent` source was changed; unrelated dirty work remains preserved.
+
+Remaining limitation: subscriber callbacks are still delivered by a post-loop
+replay and awaited before the run lease clears, rather than being dispatched
+live at each low-level event. The next safe action is a separate subscriber
+delivery parity slice; do not mix it into this bounded lifecycle checkpoint.
+
 ## Current Rust-only completion checkpoint — 2026-08-25
 
 The explicit acceptance change to 100% Rust closes S-027 as a Rust-native

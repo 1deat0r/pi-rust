@@ -69,6 +69,49 @@ documentation changes are committed and pushed as
 `2a9284b76957d2b4bb3a259511fe8817e864fe13`, with local and remote hashes
 matching. The pre-existing untracked `AGENTS.md` remains untouched.
 
+## Bounded pi-agent lifecycle parity checkpoint — 2026-08-26
+
+No numbered conversion-ledger row changed in this bounded slice. It refines
+and re-verifies the existing S-018/S-019/S-038 lifecycle and queue contracts
+against the upstream oracle at
+`../pi-rust-s1-audit.KMw0N2/upstream_pi/packages/agent/src/agent.ts`, with
+the corresponding tests under `packages/agent/test/`.
+
+`crates/pi-agent/src/rich_agent.rs` now owns an active run lease and shared
+abort signal, rejects concurrent prompt/continue operations with upstream
+errors, exposes `signal()` and race-safe `wait_for_idle()`, keeps streaming
+state active through awaited listener settlement, and uses shared live queue
+closures so steering/follow-up messages enqueued during a run reach the
+correct turn boundary. Real delayed push-stream transports cover abort before
+a five-second response, panic-safe lease cleanup, async-listener idle
+settlement, active `continue()` rejection and validation, assistant-tail queue
+draining, one-at-a-time steering/follow-up turns, and `QueueMode::All`.
+
+Exact unit/package evidence for this checkpoint:
+
+```text
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-agent --offline --lib rich_agent::tests -- --test-threads=1
+  21 passed; 0 failed
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-agent --offline --lib --quiet -- --test-threads=1
+  195 passed; 0 failed
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-agent --offline --tests --quiet -- --test-threads=1
+  294 passed; 0 failed across the library and seven integration targets
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo check -p pi-agent --offline --all-targets
+  Finished successfully
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo clippy -p pi-agent --offline --all-targets -- -D warnings
+  Finished successfully
+rustfmt --edition 2021 --check crates/pi-agent/src/rich_agent.rs crates/pi-agent/src/harness/agent_harness.rs
+git diff --check
+```
+
+The required `node scripts/conversion-progress.mjs` check remains unavailable
+because that legacy script is absent (`MODULE_NOT_FOUND`); the existing
+Cargo-native ledger status remains **100.00% (166/166; 0 open)**. No
+`pi-ai`, `pi-tui`, or `pi-coding-agent` source was changed for this slice.
+Remaining limitation: `Agent::subscribe` callbacks are still replayed after
+the low-level loop rather than delivered to subscribers at each event while
+the stream is running; they are awaited before `is_streaming()` clears.
+
 ## Historical state snapshot (verified 2026-08-24; superseded by the active
 2026-08-25 checkpoint below)
 

@@ -1384,7 +1384,10 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
                 },
                 move |span| async move {
                     span.add_event("run_start", None);
-                    let (messages, events) = agent.prompt_messages_with_events(prompts).await;
+                    let (messages, events) = agent
+                        .prompt_messages_with_events(prompts)
+                        .await
+                        .map_err(|error| HarnessError::fault(error.to_string()))?;
                     let mut session = session.lock().await;
                     for message in &messages {
                         if let Err(error) = session
