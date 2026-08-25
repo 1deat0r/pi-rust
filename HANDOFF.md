@@ -27,7 +27,7 @@ ledger freeze. Do not claim 100% before the final clean-room audit.
 ## Important working-tree state
 
 The latest pushed checkpoint is
-`b425babdc64f3fb52f2547e95e7d269d1c3407b8`, containing the S-027
+`07e0623cde0ba5caf18275c773df31e56ee37ad1`, containing the S-027
 extension-runtime implementation and synchronized documentation. The
 pre-existing untracked `AGENTS.md` remains untouched and must be preserved.
 Do not use `git reset --hard`,
@@ -40,12 +40,12 @@ alias/virtual-module fixtures, upstream-style path normalization, and
 interactive reload re-evaluation are implemented and locally validated.
 The remaining S-027 residuals are the built-in pi/TypeBox JS module graph,
 compiled-Bun/Node-SEA virtual-module branches, and full reload
-lifecycle/resource/flag evidence. After documentation synchronization, make
-one focused commit, push it immediately, verify local/remote hashes, then run
-the fresh clean-room and final S-004/S-065/S-066/#100 gates. At this
-checkpoint `git rev-parse HEAD` and `git ls-remote origin refs/heads/main`
-both equal `b425babdc64f3fb52f2547e95e7d269d1c3407b8`; the worktree is clean
-except for the preserved `AGENTS.md`.
+lifecycle/resource/flag evidence. The documentation synchronization is
+already pushed; the next gates are the fresh clean-room and final
+S-004/S-065/S-066/#100 audit. At this checkpoint `git rev-parse HEAD` and
+`git ls-remote origin refs/heads/main` both equal
+`07e0623cde0ba5caf18275c773df31e56ee37ad1`; the worktree is clean except
+for the preserved `AGENTS.md`.
 
 All sections below whose headings say “Current checkpoint” and which contain
 older percentages or commits are historical snapshots from earlier turns.
