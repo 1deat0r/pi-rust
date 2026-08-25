@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **93.37% (155/166; 11 open)**. Run
+- The exhaustive checker reports **94.58% (157/166; 9 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -624,8 +624,15 @@ Recut of the remaining work by user impact + risk:
 - [x] 96. Parity suite: settings/auth/models.json on-disk round-trip goldens.
       Evidence: unit/mock — storage/settings/auth/models/resource fixtures and
       9 focused round-trip checks pass with unknown-key preservation.
-- [ ] 97. Release-build verification: `cargo build --release` + full binary
-      suite in release. (live)
+- [x] 97. Release-build verification: `cargo build --release` + full binary
+      suite in release. (live) Evidence: `/home/mustbearnold/.cargo/bin/cargo
+      build --workspace --release --offline` completed successfully, followed
+      by `/home/mustbearnold/.cargo/bin/cargo test --workspace --release
+      --offline --quiet -- --test-threads=2`, with every release target green
+      (including the 476-test pi-coding-agent library target and the 203-test
+      pi-tui target). The bounded test concurrency is required for the live
+      tmux/PTY fixtures; the unbounded default parallel run can starve that
+      terminal fixture and is not used as acceptance evidence.
 - [ ] 98. PLAN.md session-13 ledger update + reviewer-gate prep (§0.3).
 
 ## T9 — Final 100% verification pass
@@ -655,9 +662,15 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 - [ ] S-002 Reconcile stale `TODO.md`, session reports, README, and PLAN claims
       against the current source and replace every “done” claim lacking an
       exact test or live command with an open task.
-- [ ] S-003 Add a reproducible ledger-progress checker that counts only
+- [x] S-003 Add a reproducible ledger-progress checker that counts only
       checked/unchecked tasks in this file and fails on malformed checklist
-      lines or duplicate task IDs.
+      lines or duplicate task IDs. Evidence (unit/mock):
+      `node --test scripts/conversion-progress.test.mjs` (7 passed) covers
+      stable positive output, malformed status/IDs, duplicate numeric and
+      supplemental IDs, and an empty task set; `node scripts/conversion-progress.mjs`
+      reports `Conversion progress: 94.58% (157/166; 9 open)` on the real
+      ledger. The checker now validates every checklist-looking line instead
+      of silently ignoring malformed task rows.
 - [ ] S-004 Run the independent-reviewer gate against this exhaustive ledger,
       including a review of every deferred divergence and evidence tier.
 
@@ -920,9 +933,13 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       update/active-tool integration are not yet reproduced 1:1; no completion
       checkbox is claimed. Evidence:
       `cargo test -p pi-coding-agent --offline --test extensions_parity --quiet`
-      (13 passed), `cargo test -p pi-coding-agent --offline --lib --quiet`
-      (471 passed), `cargo test -p pi-coding-agent --offline --quiet`, strict
-      coding-agent clippy, package formatting, and `git diff --check`.
+      (13 passed), `cargo test -p pi-coding-agent --offline --lib
+      core::extensions::loader::tests --quiet` (15 passed), `cargo test -p
+      pi-coding-agent --offline --lib core::extensions::integration::tests
+      --quiet` (3 passed), and `cargo test -p pi-coding-agent --offline --lib
+      --quiet` (476 passed). The package-wide target `cargo test -p
+      pi-coding-agent --offline --quiet`, strict coding-agent clippy, package
+      formatting, and `git diff --check` also pass.
 - [x] S-028 Port the upstream self-update path (`pi update --self`) or document
       and test the exact supported replacement behavior for this distribution.
       The compiled Rust binary performs the latest-release and `--force`

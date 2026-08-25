@@ -4,7 +4,7 @@
 
 The existing conversion goal is resumed under the scoped unlazy contract
 `.unlazy/full-conversion-20260825/`. The current authoritative checker output
-is **Conversion progress: 93.37% (155/166; 11 open)**. The source inventory
+is **Conversion progress: 94.58% (157/166; 9 open)**. The source inventory
 and claim-reconciliation audit is complete; the current wave has unit, mock,
 and live evidence across providers, client/server, harness, and reconnects.
 
@@ -31,6 +31,21 @@ runtime bind, synchronous getter snapshots, stale-process invalidation, and
 timeout/protocol cleanup. S-027 remains open for pinned jiti/module
 virtualization, native provider callbacks, Bun-specific runtime verification,
 and full AgentToolResult/signal/update/active-tool semantics.
+
+## Checkpoint 2026-08-25 — progress gate and release verification
+
+S-003 is closed with the unit/mock checker suite (`node --test
+scripts/conversion-progress.test.mjs`, 7 passed), and the authoritative
+checker is **Conversion progress: 94.58% (157/166; 9 open)**. The extension
+loader now has native Node TypeScript stripping and deterministic TSX/virtual-
+module boundary diagnostics; the live mode adapter maps extension tool results
+and is covered by 15 loader tests plus 3 integration tests. #97 is closed with
+`cargo build --workspace --release --offline` and the full release suite using
+`cargo test --workspace --release --offline --quiet -- --test-threads=2`.
+The bounded test concurrency is required to keep the live tmux/PTY fixtures
+from being starved by the host's default test fan-out. The next gates are the
+independent source/TODO reviewer, full real-binary audit, clean-room run, and
+final denominator/documentation freeze.
 
 ## Checkpoint 2026-08-25 — first implementation wave
 

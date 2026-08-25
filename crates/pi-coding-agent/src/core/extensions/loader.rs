@@ -746,7 +746,35 @@ async function main() {
 }
 
 main().catch((error) => {
-  send({ type: "load_error", error: errorMessage(error) });
+  const message = errorMessage(error);
+  const virtualSpecifier = [
+    "typebox",
+    "typebox/compile",
+    "typebox/value",
+    "@sinclair/typebox",
+    "@sinclair/typebox/compile",
+    "@sinclair/typebox/value",
+    "@earendil-works/pi-agent-core",
+    "@earendil-works/pi-tui",
+    "@earendil-works/pi-ai",
+    "@earendil-works/pi-ai/compat",
+    "@earendil-works/pi-ai/oauth",
+    "@earendil-works/pi-ai/providers/all",
+    "@earendil-works/pi-coding-agent",
+    "@mariozechner/pi-agent-core",
+    "@mariozechner/pi-tui",
+    "@mariozechner/pi-ai",
+    "@mariozechner/pi-ai/compat",
+    "@mariozechner/pi-ai/oauth",
+    "@mariozechner/pi-ai/providers/all",
+    "@mariozechner/pi-coding-agent",
+  ].find((specifier) => message.includes(`'${specifier}'`) || message.includes(`\"${specifier}\"`));
+  const diagnostic = virtualSpecifier
+    ? `Virtual module \"${virtualSpecifier}\" is not resolvable by the pi-rust extension bridge. Install a runtime package that provides it or use a bundled runtime; pi-rust does not embed jiti virtual modules.`
+    : typeof entryPath === "string" && entryPath.endsWith(".tsx")
+      ? `TSX extension \"${entryPath}\" requires Bun or an explicit TypeScript/JSX transpiler; the Node bridge supports native TypeScript type stripping but does not embed jiti.`
+      : message;
+  send({ type: "load_error", error: diagnostic });
   process.exitCode = 1;
 });
 "###;
@@ -1082,6 +1110,76 @@ fn is_javascript_runtime(runner: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn is_node_runtime(runner: &str) -> bool {
+    Path::new(runner)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            let name = name.to_ascii_lowercase();
+            name == "node" || name == "node.exe"
+        })
+        .unwrap_or(false)
+}
+
+fn is_typescript_path(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("ts" | "mts" | "cts")
+    )
+}
+
+fn is_tsx_path(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("tsx")
+    )
+}
+
+fn node_supports_type_stripping(runner: &str) -> bool {
+    Command::new(runner)
+        .arg("--help")
+        .output()
+        .map(|output| {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            stdout.contains("--experimental-strip-types")
+                || stderr.contains("--experimental-strip-types")
+        })
+        .unwrap_or(false)
+}
+
+fn node_reports_runtime(runner: &str) -> bool {
+    Command::new(runner)
+        .arg("--version")
+        .output()
+        .map(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout)
+                    .trim_start()
+                    .starts_with('v')
+        })
+        .unwrap_or(false)
+}
+
+fn node_module_loading_diagnostic(runner: &str, resolved_path: &Path) -> Option<String> {
+    if !is_node_runtime(runner) || !node_reports_runtime(runner) {
+        return None;
+    }
+    if is_tsx_path(resolved_path) {
+        return Some(format!(
+            "Failed to load extension: TSX extension {:?} requires Bun or an explicit TypeScript/JSX transpiler; the Node bridge supports native TypeScript type stripping but does not embed jiti",
+            resolved_path
+        ));
+    }
+    if is_typescript_path(resolved_path) && !node_supports_type_stripping(runner) {
+        return Some(format!(
+            "Failed to load extension: Node runtime {:?} does not advertise --experimental-strip-types; use Bun or a TypeScript-capable runner for {:?}",
+            runner, resolved_path
+        ));
+    }
+    None
+}
+
 fn bridge_context(context: &crate::core::extensions::types::ExtensionContext) -> serde_json::Value {
     serde_json::json!({
         "mode": context.mode,
@@ -1204,6 +1302,12 @@ fn spawn_external_bridge(
 ) -> Result<(Arc<ExternalExtensionProcess>, serde_json::Value), String> {
     let cwd = resolved_path.parent().unwrap_or_else(|| Path::new("."));
     let mut command = Command::new(runner);
+    if is_node_runtime(runner) && node_supports_type_stripping(runner) {
+        // Node's native type stripping is the smallest safe equivalent of
+        // jiti for ordinary .ts/.mts/.cts imports. It intentionally does not
+        // claim to transform JSX or TypeScript syntax requiring emit.
+        command.arg("--experimental-strip-types");
+    }
     if Path::new(runner)
         .file_name()
         .and_then(|name| name.to_str())
@@ -1666,6 +1770,9 @@ fn run_external_extension_with_runtime(
     };
     if !is_javascript_runtime(&runner) {
         return run_external_extension_legacy(extension_path, resolved_path, &runner, timeout_ms);
+    }
+    if let Some(diagnostic) = node_module_loading_diagnostic(&runner, resolved_path) {
+        return Err(diagnostic);
     }
     let (process, ready) =
         spawn_external_bridge(extension_path, resolved_path, &runner, timeout_ms, runtime)?;
@@ -2260,6 +2367,83 @@ mod tests {
         assert!(err.contains("boom: bad extension"), "{err}");
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&bin);
+    }
+
+    #[test]
+    fn node_bridge_loads_typescript_with_relative_typescript_import() {
+        if !command_on_path("node") || !node_supports_type_stripping("node") {
+            return;
+        }
+        let dir = sandbox("typescript");
+        let helper = dir.join("helper.ts");
+        let entry = dir.join("index.ts");
+        fs::write(
+            &helper,
+            r#"export const defaultFlag: string = "loaded-from-ts";"#,
+        )
+        .unwrap();
+        fs::write(
+            &entry,
+            r#"
+import { defaultFlag } from "./helper.ts";
+
+export default (pi: any): void => {
+  pi.registerFlag("typescript-fixture", { type: "string", default: defaultFlag });
+};
+"#,
+        )
+        .unwrap();
+
+        let extension = run_external_extension("index.ts", &entry, Some("node"), None)
+            .expect("Node type stripping should load a .ts extension");
+        let flag = extension
+            .flags
+            .get("typescript-fixture")
+            .expect("TypeScript factory should register its flag");
+        assert_eq!(flag.default, Some(serde_json::json!("loaded-from-ts")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn node_bridge_reports_tsx_boundary_deterministically() {
+        if !command_on_path("node") {
+            return;
+        }
+        let dir = sandbox("tsx");
+        let entry = dir.join("index.tsx");
+        fs::write(&entry, "export default (pi: any) => pi;").unwrap();
+
+        let error = run_external_extension("index.tsx", &entry, Some("node"), None)
+            .expect_err("Node must reject TSX without an explicit transpiler");
+        assert!(error.contains("TSX extension"), "{error}");
+        assert!(error.contains("does not embed jiti"), "{error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn node_bridge_reports_unavailable_upstream_virtual_module() {
+        if !command_on_path("node") {
+            return;
+        }
+        let dir = sandbox("virtual-module");
+        let entry = dir.join("index.js");
+        fs::write(
+            &entry,
+            r#"
+import * as tui from "@earendil-works/pi-tui";
+export default () => tui;
+"#,
+        )
+        .unwrap();
+
+        let error = run_external_extension("index.js", &entry, Some("node"), None)
+            .expect_err("the fixture intentionally has no virtual package installation");
+        assert!(
+            error.contains("Virtual module \"@earendil-works/pi-tui\" is not resolvable"),
+            "{error}"
+        );
+        assert!(error.contains("does not embed jiti"), "{error}");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

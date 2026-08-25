@@ -4,12 +4,12 @@ Date: 2026-08-24 (Pacific/Auckland)
 
 ## Where the work stopped
 
-The requested progress percentage is now based on the exhaustive conversion
+The requested progress percentage is based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-65.66% = 109 completed / 166 total tasks
-57 tasks remain open
+94.58% = 157 completed / 166 total tasks
+9 tasks remain open
 
 ```
 
@@ -33,12 +33,11 @@ binding and provider-precedence parity slice. The pre-existing untracked
 `git reset --hard`, `git checkout --`, broad revert commands, or `git clean`.
 
 Current status: branch `main`, progress checker reports
-`65.66% (109/166; 57 open)`. S-012 source and synchronized documentation
-are committed in `617e39ce030bfb26598f4305a60d0e7de1e29bcc` and pushed to
-`origin/main`; `git rev-parse HEAD` and `git ls-remote origin
-refs/heads/main` both report that hash. The working tree retains only the
-pre-existing untracked `AGENTS.md`. The S-011 pushed source checkpoint remains
-`b18af9a895f9cb287ab47f0816d67dc20b256fe3`.
+`94.58% (157/166; 9 open)`. The latest pushed checkpoint is
+`41d3107c2e33ef9eeb5ec7fb65581fe5ac3c8346`; the pre-existing untracked
+`AGENTS.md` remains untouched and must stay unstaged. The current worktree
+contains the next extension-loader/tool-result hardening and progress-checker
+test changes; push parity must be re-established after this checkpoint.
 
 ## Current strict-verification cleanup
 
@@ -1287,3 +1286,58 @@ active-tool semantics are not yet 1:1. The next dependency-safe action is to
 close those residual extension semantics or record a deliberate proven
 replacement, then execute the release, clean-room, source/TODO, denominator,
 and independent-reviewer gates (#97–100, S-001–S-004, S-065–S-066).
+
+## Active checkpoint — 2026-08-25 — progress gate, extension boundaries, and release verification
+
+The current worktree extends the pushed production extension integration
+checkpoint `41d3107c2e33ef9eeb5ec7fb65581fe5ac3c8346`. The pre-existing
+untracked `AGENTS.md` remains untouched and unstaged.
+
+The authoritative checker now reports:
+
+```text
+Conversion progress: 94.58% (157/166; 9 open)
+```
+
+Completed evidence in this checkpoint:
+
+- S-003 is closed. `node --test scripts/conversion-progress.test.mjs` passes
+  7 tests covering positive output, malformed status/IDs, duplicate IDs, and
+  an empty ledger; the checker now rejects malformed checklist-looking rows
+  instead of silently ignoring them.
+- The extension bridge now uses Node native type stripping for ordinary
+  `.ts`/`.mts`/`.cts` imports when advertised, rejects TSX without an explicit
+  transpiler, and emits deterministic diagnostics for known upstream virtual
+  modules. Loader tests pass 15 cases. The live AgentTool adapter now maps
+  nested/flat result fields, text content, error boundaries, and deduplicated
+  added-tool names; integration tests pass 3 cases.
+- #97 is closed with live release evidence. `/home/mustbearnold/.cargo/bin/cargo
+  build --workspace --release --offline` completed successfully. The full
+  release target suite passes with `/home/mustbearnold/.cargo/bin/cargo test
+  --workspace --release --offline --quiet -- --test-threads=2`; the 476-test
+  coding-agent library target, 203-test pi-tui target, and all other targets
+  are green. The bounded test concurrency is intentional because the real
+  tmux/PTY fixtures can be starved by the host's unbounded default parallel
+  test fan-out; the default run was not accepted as evidence after its
+  reproducible `/thinking` timeout.
+
+Exact focused validation:
+
+```text
+node --test scripts/conversion-progress.test.mjs
+node scripts/conversion-progress.mjs
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::extensions::loader::tests --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::extensions::integration::tests --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --quiet
+/home/mustbearnold/.cargo/bin/cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings
+/home/mustbearnold/.cargo/bin/cargo fmt -p pi-coding-agent -- --check
+git diff --check
+/home/mustbearnold/.cargo/bin/cargo build --workspace --release --offline
+/home/mustbearnold/.cargo/bin/cargo test --workspace --release --offline --quiet -- --test-threads=2
+```
+
+Remaining open rows are S-001, S-002, S-004, S-027, S-065, S-066, and
+#98–100. The next dependency-safe action is the independent source/TODO
+reviewer gate, followed by the full real-binary environment/on-disk/RPC audit
+and clean-room run. The progress checker must be rerun after each ledger edit.

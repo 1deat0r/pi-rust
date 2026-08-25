@@ -329,21 +329,27 @@ fn extension_agent_tool(
                     return Err("Operation aborted".to_string());
                 }
                 let before = host.active_tools();
-                let mut result = tokio::task::spawn_blocking(move || {
+                let value = tokio::task::spawn_blocking(move || {
                     runner.execute_tool(&tool_name, &tool_call_id, params)
                 })
                 .await
-                .map_err(|error| format!("extension tool task failed: {error}"))?
-                .map(extension_tool_result)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| format!("extension tool task failed: {error}"))??;
+                let mut result = extension_tool_result(value)?;
                 let after = host.active_tools();
-                let before_set = before.iter().collect::<BTreeSet<_>>();
+                let before_set = before.iter().map(String::as_str).collect::<BTreeSet<_>>();
                 if before
                     .iter()
                     .all(|name| after.iter().any(|value| value == name))
                 {
-                    for name in after.iter().filter(|name| !before_set.contains(name)) {
-                        if !result.added_tool_names.contains(name) {
+                    let mut seen = BTreeSet::new();
+                    result
+                        .added_tool_names
+                        .retain(|name| seen.insert(name.clone()));
+                    for name in after
+                        .iter()
+                        .filter(|name| !before_set.contains(name.as_str()))
+                    {
+                        if seen.insert(name.clone()) {
                             result.added_tool_names.push(name.clone());
                         }
                     }
@@ -365,16 +371,18 @@ fn extension_agent_tool(
     )
 }
 
-fn extension_tool_result(value: Value) -> AgentToolResult {
-    let value = value
-        .get("result")
-        .filter(|_| value.get("content").is_none())
-        .cloned()
-        .unwrap_or(value);
-    let content = value
-        .get("content")
-        .and_then(|content| serde_json::from_value::<Vec<ContentBlock>>(content.clone()).ok())
-        .unwrap_or_else(|| vec![ContentBlock::text(compact_json(&value))]);
+fn extension_tool_result(value: Value) -> Result<AgentToolResult, String> {
+    let value = normalize_tool_result(value);
+    let content = match value.get("content") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(content) => match serde_json::from_value::<Vec<ContentBlock>>(content.clone()) {
+            Ok(content) => content,
+            Err(_) => content
+                .as_str()
+                .map(|text| vec![ContentBlock::text(text)])
+                .unwrap_or_else(|| vec![ContentBlock::text(compact_json(&value))]),
+        },
+    };
     let details = value.get("details").cloned();
     let usage = value
         .get("usage")
@@ -393,12 +401,55 @@ fn extension_tool_result(value: Value) -> AgentToolResult {
         .get("terminate")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    AgentToolResult {
+    let result = AgentToolResult {
         content,
         details,
         usage,
         added_tool_names,
         terminate,
+    };
+    if value
+        .get("isError")
+        .or_else(|| value.get("is_error"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(extension_tool_error(&value, &result));
+    }
+    Ok(result)
+}
+
+fn normalize_tool_result(value: Value) -> Value {
+    let Value::Object(mut outer) = value else {
+        return value;
+    };
+    let Some(inner) = outer.remove("result") else {
+        return Value::Object(outer);
+    };
+    let Value::Object(mut inner) = inner else {
+        outer.insert("result".to_string(), inner);
+        return Value::Object(outer);
+    };
+    for (key, value) in outer {
+        inner.entry(key).or_insert(value);
+    }
+    Value::Object(inner)
+}
+
+fn extension_tool_error(value: &Value, result: &AgentToolResult) -> String {
+    let text = result
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.is_empty() {
+        compact_json(value)
+    } else {
+        text
     }
 }
 
@@ -484,5 +535,38 @@ mod tests {
 
         loaded.runner.invalidate(Some("test complete"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extension_tool_result_maps_upstream_fields_and_nested_bridge_result() {
+        let result = extension_tool_result(json!({
+            "result": {
+                "content": [{"type": "text", "text": "ok"}],
+                "details": {"source": "fixture"},
+                "addedToolNames": ["one", "two"],
+                "terminate": true,
+            },
+            "details": {"outer": true},
+        }))
+        .expect("valid extension result");
+
+        assert_eq!(result.content, vec![ContentBlock::text("ok")]);
+        assert_eq!(result.details, Some(json!({"source": "fixture"})));
+        assert_eq!(result.added_tool_names, vec!["one", "two"]);
+        assert!(result.terminate);
+    }
+
+    #[test]
+    fn extension_tool_result_accepts_text_content_and_reports_error_results() {
+        let result = extension_tool_result(json!({"content": "plain text"}))
+            .expect("string content should be adapted to a text block");
+        assert_eq!(result.content, vec![ContentBlock::text("plain text")]);
+
+        let error = extension_tool_result(json!({
+            "content": [{"type": "text", "text": "tool failed"}],
+            "isError": true,
+        }))
+        .expect_err("explicit bridge error results must fail the Rust tool call");
+        assert_eq!(error, "tool failed");
     }
 }
