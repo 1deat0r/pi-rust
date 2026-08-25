@@ -1,11 +1,13 @@
 //! Extension system for lifecycle events and custom tools — port of
 //! `packages/coding-agent/src/core/extensions/index.ts`.
 
+pub mod integration;
 pub mod loader;
 pub mod runner;
 pub mod types;
 pub mod wrapper;
 
+pub use integration::{install_tools, load_for_mode, ExtensionHostState, LoadedExtensions};
 pub use loader::{
     create_extension_runtime, discover_and_load_extensions, discover_extensions_in_dir,
     load_bundled_extension, load_extension, load_extension_from_factory, load_extensions,

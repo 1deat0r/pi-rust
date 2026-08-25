@@ -15,9 +15,20 @@ use crate::args::Args;
 use crate::config;
 use crate::core::settings::SettingsManager;
 
+/// Ensure a JSON-mode extension runtime is invalidated on every exit after it
+/// has been loaded, including harness setup and prompt errors.
+struct JsonExtensionGuard(Arc<crate::core::extensions::ExtensionRunner>);
+
+impl Drop for JsonExtensionGuard {
+    fn drop(&mut self) {
+        self.0.invalidate(Some("json mode shutdown"));
+    }
+}
+
 /// Run `--mode json`: stream the prompt and emit JSON event lines.
 pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(), String> {
     let cwd = config::cwd();
+    let agent_dir = config::get_agent_dir();
     let provider = crate::run::resolve_run_provider(args.provider.as_deref(), &settings);
     let model_hint = crate::run::resolve_run_model(
         args.model.as_deref(),
@@ -102,26 +113,6 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         (model, stream_fn)
     };
 
-    let tools: Vec<pi_agent::tools::AgentTool> = if !args.no_tools {
-        vec![
-            pi_agent::tools::bash_tool(cwd.clone()),
-            pi_agent::tools::read_tool_with_options(
-                cwd.clone(),
-                pi_agent::tools::image::ProcessImageOptions {
-                    auto_resize_images: settings.get_image_auto_resize(),
-                    ..Default::default()
-                },
-            ),
-            pi_agent::tools::write_tool(cwd.clone()),
-            pi_agent::tools::edit_tool(cwd.clone()),
-            crate::core::tools::ls_tool(cwd.clone()),
-            crate::core::tools::find_tool(cwd.clone()),
-            crate::core::tools::grep_tool(cwd.clone()),
-        ]
-    } else {
-        Vec::new()
-    };
-
     let prepared_files = crate::run::prepare_file_arguments(
         &args.file_args,
         &cwd,
@@ -156,6 +147,44 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         .collect();
 
     let (session, _) = crate::run::prepare_run_session(args, &cwd).await?;
+    let loaded_extensions = crate::core::extensions::load_for_mode(
+        args,
+        &settings,
+        &cwd,
+        &agent_dir.to_string_lossy(),
+        "json",
+        false,
+        session.get_name().await,
+        args.thinking
+            .clone()
+            .or_else(|| settings.get_default_thinking_level().map(str::to_owned))
+            .unwrap_or_else(|| "medium".to_string()),
+    );
+    let _extension_guard = JsonExtensionGuard(loaded_extensions.runner.clone());
+    for error in &loaded_extensions.errors {
+        tracing::warn!(path = %error.path, error = %error.error, "failed to load extension");
+    }
+
+    let mut tools: Vec<pi_agent::tools::AgentTool> = Vec::new();
+    if !args.no_tools && !args.no_builtin_tools {
+        tools.extend([
+            pi_agent::tools::bash_tool(cwd.clone()),
+            pi_agent::tools::read_tool_with_options(
+                cwd.clone(),
+                pi_agent::tools::image::ProcessImageOptions {
+                    auto_resize_images: settings.get_image_auto_resize(),
+                    ..Default::default()
+                },
+            ),
+            pi_agent::tools::write_tool(cwd.clone()),
+            pi_agent::tools::edit_tool(cwd.clone()),
+            crate::core::tools::ls_tool(cwd.clone()),
+            crate::core::tools::find_tool(cwd.clone()),
+            crate::core::tools::grep_tool(cwd.clone()),
+        ]);
+    }
+    crate::core::extensions::install_tools(&loaded_extensions, &mut tools, !args.no_tools);
+
     let mut options = AgentHarnessOptions::new(session, model);
     options.stream_fn = Some(stream_fn);
     options.system_prompt = args.system_prompt.clone();

@@ -905,17 +905,24 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       equivalent embedded runtime; cover extension commands, hooks, renderers,
       and failure isolation. Updated partial evidence (unit/mock): the
       persistent Node/Bun JSONL bridge passes 13 extension parity tests, 26
-      extension-library tests, and the full 469-test coding-agent package
-      target. The fixture now covers async factories, commands, hooks,
-      renderers, JSON provider registration, live tool callbacks, a shared
-      runtime bind helper, synchronous getter snapshots, stale-process
-      invalidation, host panic isolation, stdout/frame protocol hardening,
-      loader errors, timeout teardown, and failure isolation. The task remains
-      open because the Rust CLI/modes do not yet load and bind extension
-      runners in the production agent-session path, and pinned upstream
-      jiti/module virtualization, native provider callbacks, Bun-specific
-      verification, and full AgentToolResult/signal/update integration are
-      not yet reproduced 1:1; no completion checkbox is claimed.
+      extension-library tests, and the full 471-test coding-agent library
+      target plus all package integration targets. The fixture now covers
+      async factories, commands, hooks, renderers, JSON provider registration,
+      live tool callbacks, a shared runtime bind helper, synchronous getter
+      snapshots, stale-process invalidation, host panic isolation,
+      stdout/frame protocol hardening, loader errors, timeout teardown, and
+      failure isolation. The production print, JSON, RPC, and interactive
+      mode paths now load configured extensions, bind the host-action state,
+      publish tool/command catalogs, expose live extension tools to their
+      agent contexts, and invalidate runtimes on shutdown. The task remains
+      open because pinned upstream jiti/module virtualization, native provider
+      callbacks, Bun-specific verification, and full AgentToolResult/signal/
+      update/active-tool integration are not yet reproduced 1:1; no completion
+      checkbox is claimed. Evidence:
+      `cargo test -p pi-coding-agent --offline --test extensions_parity --quiet`
+      (13 passed), `cargo test -p pi-coding-agent --offline --lib --quiet`
+      (471 passed), `cargo test -p pi-coding-agent --offline --quiet`, strict
+      coding-agent clippy, package formatting, and `git diff --check`.
 - [x] S-028 Port the upstream self-update path (`pi update --self`) or document
       and test the exact supported replacement behavior for this distribution.
       The compiled Rust binary performs the latest-release and `--force`

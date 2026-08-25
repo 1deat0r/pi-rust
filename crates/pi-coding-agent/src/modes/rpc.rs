@@ -35,6 +35,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::args::Args;
 use crate::config;
+use crate::core::extensions::{install_tools, load_for_mode, LoadedExtensions};
 use crate::core::settings::SettingsManager;
 
 use super::jsonl::{serialize_json_line, JsonlLineReader};
@@ -191,6 +192,21 @@ pub struct RpcRuntime {
     pub follow_up_queue: Arc<Mutex<PendingMessageQueue>>,
     pub system_prompt: Option<String>,
     pub tools_enabled: bool,
+    pub builtin_tools_enabled: bool,
+    /// One extension runtime is shared by all prompt contexts for this RPC
+    /// session. Prompt tool closures retain the runner while detached.
+    pub loaded_extensions: LoadedExtensions,
+}
+
+impl Drop for RpcRuntime {
+    fn drop(&mut self) {
+        // Detached prompt workers can outlive the input loop on EOF. Mark the
+        // shared runtime stale before the owned field is dropped so late
+        // callbacks fail safely while their process is being torn down.
+        self.loaded_extensions
+            .runner
+            .invalidate(Some("rpc mode shutdown"));
+    }
 }
 
 /// Everything a prompt worker needs after it has been detached from the
@@ -696,6 +712,20 @@ impl RpcRuntime {
         let session_id = meta.id.clone();
         let session_name = session.get_name().await;
 
+        let loaded_extensions = load_for_mode(
+            args,
+            &settings,
+            &cwd,
+            &agent_dir,
+            "rpc",
+            false,
+            session_name.clone(),
+            thinking_level.as_str().to_string(),
+        );
+        for error in &loaded_extensions.errors {
+            tracing::warn!(path = %error.path, error = %error.error, "failed to load RPC extension");
+        }
+
         let system_prompt = args.system_prompt.clone();
         let mut runtime = Self {
             cwd,
@@ -736,9 +766,39 @@ impl RpcRuntime {
             )))),
             system_prompt,
             tools_enabled: !args.no_tools,
+            builtin_tools_enabled: !args.no_builtin_tools,
+            loaded_extensions,
         };
+        runtime.refresh_extension_catalog();
         runtime.messages = runtime.load_context_messages().await?;
         Ok(runtime)
+    }
+
+    fn base_tools(&self) -> Vec<pi_agent::tools::AgentTool> {
+        let mut tools = Vec::new();
+        if self.tools_enabled && self.builtin_tools_enabled {
+            tools.push(pi_agent::tools::bash_tool(self.cwd.clone()));
+            tools.push(pi_agent::tools::read_tool_with_options(
+                self.cwd.clone(),
+                pi_agent::tools::image::ProcessImageOptions {
+                    auto_resize_images: self.settings.get_image_auto_resize(),
+                    ..Default::default()
+                },
+            ));
+            tools.push(pi_agent::tools::write_tool(self.cwd.clone()));
+            tools.push(pi_agent::tools::edit_tool(self.cwd.clone()));
+            tools.push(crate::core::tools::ls_tool(self.cwd.clone()));
+            tools.push(crate::core::tools::find_tool(self.cwd.clone()));
+            tools.push(crate::core::tools::grep_tool(self.cwd.clone()));
+        }
+        tools
+    }
+
+    /// Publish the exact tool policy before the first prompt as well as when
+    /// each prompt context is built.
+    fn refresh_extension_catalog(&self) {
+        let mut tools = self.base_tools();
+        install_tools(&self.loaded_extensions, &mut tools, self.tools_enabled);
     }
 
     /// Available models snapshot (all catalog models across providers).
@@ -1043,35 +1103,13 @@ impl RpcRuntime {
 
         // Seed the model context with prior history. The current prompt is
         // passed separately in `prompts`, matching the synchronous RPC path.
-        let mut context = AgentContext::new(self.system_prompt.clone(), Vec::new());
+        let mut context = AgentContext::new(self.system_prompt.clone(), self.base_tools());
         context.messages = self.messages.clone();
-        if self.tools_enabled {
-            context
-                .tools
-                .push(pi_agent::tools::bash_tool(self.cwd.clone()));
-            context.tools.push(pi_agent::tools::read_tool_with_options(
-                self.cwd.clone(),
-                pi_agent::tools::image::ProcessImageOptions {
-                    auto_resize_images: self.settings.get_image_auto_resize(),
-                    ..Default::default()
-                },
-            ));
-            context
-                .tools
-                .push(pi_agent::tools::write_tool(self.cwd.clone()));
-            context
-                .tools
-                .push(pi_agent::tools::edit_tool(self.cwd.clone()));
-            context
-                .tools
-                .push(crate::core::tools::ls_tool(self.cwd.clone()));
-            context
-                .tools
-                .push(crate::core::tools::find_tool(self.cwd.clone()));
-            context
-                .tools
-                .push(crate::core::tools::grep_tool(self.cwd.clone()));
-        }
+        install_tools(
+            &self.loaded_extensions,
+            &mut context.tools,
+            self.tools_enabled,
+        );
 
         // The rich loop owns the queue drain points. Control commands can
         // therefore enqueue messages while this run is detached from the

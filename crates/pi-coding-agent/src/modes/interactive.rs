@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 
 use crate::args::Args;
 use crate::config;
+use crate::core::extensions::{install_tools, load_for_mode, LoadedExtensions};
 use crate::core::settings::SettingsManager;
 use crate::interactive as it;
 use crate::interactive::footer::{self, FooterData};
@@ -51,6 +52,8 @@ struct InteractiveRuntime {
     session_name: Option<String>,
     system_prompt: Option<String>,
     tools_enabled: bool,
+    builtin_tools_enabled: bool,
+    extensions: LoadedExtensions,
     auto_resize_images: bool,
     block_images: bool,
     /// Number of in-memory messages already persisted into the current
@@ -60,6 +63,14 @@ struct InteractiveRuntime {
     /// Serialized session entries used to derive cache notices and cumulative
     /// footer/session usage before the deferred exit persist runs.
     cache_entries: Vec<Value>,
+}
+
+impl Drop for InteractiveRuntime {
+    fn drop(&mut self) {
+        self.extensions
+            .runner
+            .invalidate(Some("interactive mode shutdown"));
+    }
 }
 
 /// Own raw/alternate-screen cleanup for every exit after the TUI activates.
@@ -94,15 +105,10 @@ fn resumable_sessions(
         .collect()
 }
 
-/// Stream a prompt through the agent loop, observing raw events.
-async fn stream_turn(
-    runtime: &mut InteractiveRuntime,
-    message: String,
-    on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync>,
-) -> Result<Vec<pi_agent::types::AgentMessage>, String> {
-    let prompt = pi_agent::agent::user_text_prompt(message.clone(), pi_ai::types::now_ms());
-    runtime.messages.push(prompt.clone());
-    let tools: Vec<pi_agent::tools::AgentTool> = if runtime.tools_enabled {
+/// Build the tools for one interactive turn and refresh the extension host
+/// catalog from the exact set that is available to that turn.
+fn interactive_turn_tools(runtime: &InteractiveRuntime) -> Vec<pi_agent::tools::AgentTool> {
+    let mut tools = if runtime.tools_enabled && runtime.builtin_tools_enabled {
         vec![
             pi_agent::tools::bash_tool(runtime.cwd.clone()),
             pi_agent::tools::read_tool_with_options(
@@ -121,6 +127,19 @@ async fn stream_turn(
     } else {
         Vec::new()
     };
+    install_tools(&runtime.extensions, &mut tools, runtime.tools_enabled);
+    tools
+}
+
+/// Stream a prompt through the agent loop, observing raw events.
+async fn stream_turn(
+    runtime: &mut InteractiveRuntime,
+    message: String,
+    on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync>,
+) -> Result<Vec<pi_agent::types::AgentMessage>, String> {
+    let prompt = pi_agent::agent::user_text_prompt(message.clone(), pi_ai::types::now_ms());
+    runtime.messages.push(prompt.clone());
+    let tools = interactive_turn_tools(runtime);
     let models = runtime.models.clone();
     let api_key = std::env::var(config::ENV_KEY).ok();
     let stream_options = pi_ai::types::StreamOptions {
@@ -1013,6 +1032,24 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     }
     let session_id = session.get_metadata().await.id;
     let session_name = session.get_name().await;
+    let initial_thinking_level = settings
+        .get_default_thinking_level()
+        .map(str::to_string)
+        .unwrap_or_else(|| "off".to_string());
+    let agent_dir = config::get_agent_dir().to_string_lossy().into_owned();
+    let extensions = load_for_mode(
+        args,
+        &settings,
+        &cwd,
+        &agent_dir,
+        "interactive",
+        true,
+        session_name.clone(),
+        initial_thinking_level.clone(),
+    );
+    for error in &extensions.errors {
+        tracing::warn!(path = %error.path, error = %error.error, "failed to load extension");
+    }
 
     let mut runtime = InteractiveRuntime {
         cwd: cwd.clone(),
@@ -1028,6 +1065,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         session_name,
         system_prompt: args.system_prompt.clone(),
         tools_enabled: !args.no_tools,
+        builtin_tools_enabled: !args.no_tools && !args.no_builtin_tools,
+        extensions,
         auto_resize_images: settings.get_image_auto_resize(),
         block_images: settings.get_block_images(),
         persisted_until: 0,
@@ -1082,10 +1121,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             .unwrap_or(crate::theme::DEFAULT_THEME),
     );
     let mut hide_thinking = settings.get_hide_thinking_block();
-    let mut thinking_level: String = settings
-        .get_default_thinking_level()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "off".to_string());
+    let mut thinking_level = initial_thinking_level;
 
     let mut editor = it::create_editor(cwd.clone());
     editor.set_terminal_rows(terminal.lock().unwrap().height());
@@ -1982,6 +2018,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::extensions::ExtensionHostActions;
     use pi_agent::fs::StdFileSystem;
     use pi_agent::session::jsonl::repo::CreateOptions;
     use pi_agent::session::state::ForkOptions;
@@ -2086,6 +2123,19 @@ mod tests {
             .as_ref()
             .and_then(|core| core.models.first().cloned())
             .expect("faux model");
+        let extensions = load_for_mode(
+            &Args {
+                no_extensions: true,
+                ..Default::default()
+            },
+            &SettingsManager::in_memory(crate::core::settings::SettingsMap::new()),
+            &cwd,
+            &cwd,
+            "interactive",
+            true,
+            None,
+            "off",
+        );
         InteractiveRuntime {
             cwd,
             models,
@@ -2100,6 +2150,8 @@ mod tests {
             session_name: None,
             system_prompt: None,
             tools_enabled: true,
+            builtin_tools_enabled: true,
+            extensions,
             auto_resize_images: true,
             block_images: false,
             persisted_until: 0,
@@ -2151,6 +2203,75 @@ mod tests {
             .unwrap();
         assert_eq!(entries.len(), 2, "a completed turn is durable immediately");
         assert_eq!(runtime.persisted_until, runtime.messages.len());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn interactive_turn_tools_respect_builtin_and_all_tool_flags() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "pi-interactive-extension-tools-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let extension = root.join("index.js");
+        std::fs::write(
+            &extension,
+            r#"export default function (pi) {
+  pi.registerTool({
+    name: "interactive-tool",
+    description: "interactive policy fixture",
+    parameters: { type: "object", properties: {} },
+    execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+  });
+}"#,
+        )
+        .unwrap();
+
+        let args = Args {
+            extensions: vec![extension.to_string_lossy().into_owned()],
+            no_extensions: true,
+            ..Default::default()
+        };
+        let loaded = load_for_mode(
+            &args,
+            &SettingsManager::in_memory(crate::core::settings::SettingsMap::new()),
+            &root.to_string_lossy(),
+            &root.to_string_lossy(),
+            "interactive",
+            true,
+            None,
+            "off",
+        );
+        assert!(loaded.errors.is_empty(), "load errors: {:?}", loaded.errors);
+
+        let mut runtime = test_runtime(&root).await;
+        runtime.extensions = loaded;
+        runtime.builtin_tools_enabled = false;
+        let tools = interactive_turn_tools(&runtime);
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["interactive-tool"]
+        );
+        assert_eq!(
+            runtime.extensions.host.snapshot()["activeTools"],
+            json!(["interactive-tool"])
+        );
+
+        runtime.tools_enabled = false;
+        assert!(interactive_turn_tools(&runtime).is_empty());
+        assert_eq!(runtime.extensions.host.snapshot()["activeTools"], json!([]));
+
+        drop(runtime);
         let _ = std::fs::remove_dir_all(&root);
     }
 

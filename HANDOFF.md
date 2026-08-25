@@ -1243,3 +1243,47 @@ callback ABI, Bun-specific verification, and full AgentToolResult/signal/update
 integration. The next dependency-safe action is a dedicated production
 extension integration leaf, followed by independent release and clean-room
 audit gates.
+
+## Active checkpoint — 2026-08-25 — production extension mode integration
+
+The production extension leaf is now implemented across the one-shot print,
+JSON-event, RPC, and interactive mode paths. A shared
+`core/extensions/integration.rs` adapter owns the mode-scoped loader policy,
+host-action snapshot/state, live `AgentTool` conversion, tool-result mapping,
+and runtime invalidation boundary. Each mode now honors `--no-tools`,
+`--no-builtin-tools`, and `--no-extensions`/explicit `-e` paths, publishes its
+tool/command catalog to extension getters, and invalidates external bridge
+processes on shutdown. The print path also runs the `before_agent_start`
+system-prompt hook before harness creation.
+
+Exact validation for this checkpoint:
+
+```text
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::extensions::integration::tests --quiet
+1 passed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib modes::json_event --quiet
+1 passed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib modes::interactive --quiet
+16 passed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib modes::rpc::tests --quiet
+41 passed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test extensions_parity --quiet
+13 passed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib --quiet
+471 passed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --quiet
+all package targets passed
+/home/mustbearnold/.cargo/bin/cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings
+/home/mustbearnold/.cargo/bin/cargo fmt -p pi-coding-agent -- --check
+git diff --check
+node scripts/conversion-progress.mjs
+Conversion progress: 93.37% (155/166; 11 open)
+```
+
+S-027 remains intentionally open: the production mode/tool boundary is now
+evidenced, but pinned jiti/module virtualization, native provider callbacks,
+Bun-specific verification, and complete AgentToolResult/signal/update/
+active-tool semantics are not yet 1:1. The next dependency-safe action is to
+close those residual extension semantics or record a deliberate proven
+replacement, then execute the release, clean-room, source/TODO, denominator,
+and independent-reviewer gates (#97–100, S-001–S-004, S-065–S-066).

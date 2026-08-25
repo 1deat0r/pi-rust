@@ -16,19 +16,21 @@ cleanup, TUI static/test cleanup (`leaf-E1`), TUI behavior (`leaf-E3`), eval
 metrics (`leaf-F1`), provider matrix (`leaf-B4`), auxiliary client (`leaf-D2`),
 harness/mode (`leaf-C1`), reconnect E2E (`leaf-D3`), live PTY rerun
 (`leaf-E2b`), and measured strict clippy cleanup (`leaf-R3`). The active wave
-is the extension runtime closure (`leaf-C2c`) and the final
-audit/reconciliation leaves. The parity/release fixture leaf (`leaf-F2`) is now
-green for all 37 declared offline branches; its single credentialed live branch
-remains explicitly not-run. The driver owns the conversion ledger and
-synchronized documentation.
+is the production extension runtime closure (`leaf-C2d`) and the final
+audit/reconciliation leaves. Print, JSON, RPC, and interactive mode now load
+and bind configured extensions, publish host catalogs, and expose live
+extension tools. The parity/release fixture leaf (`leaf-F2`) is now green for
+all 37 declared offline branches; its single credentialed live branch remains
+explicitly not-run. The driver owns the conversion ledger and synchronized
+documentation.
 
-The current extension bridge (`leaf-C2c`) is a persistent Node/Bun JSONL
+The current extension bridge (`leaf-C2d`) is a persistent Node/Bun JSONL
 boundary with deterministic async command/hook/renderer/provider fixtures,
 local JS/TS imports, live external-tool callbacks, a production-shaped shared
 runtime bind, synchronous getter snapshots, stale-process invalidation, and
-timeout/protocol cleanup. S-027 remains open pending actual CLI/mode loading
-and host wiring, pinned jiti/module virtualization, native provider callbacks,
-Bun-specific runtime verification, and full agent-loop tool/result semantics.
+timeout/protocol cleanup. S-027 remains open for pinned jiti/module
+virtualization, native provider callbacks, Bun-specific runtime verification,
+and full AgentToolResult/signal/update/active-tool semantics.
 
 ## Checkpoint 2026-08-25 — first implementation wave
 

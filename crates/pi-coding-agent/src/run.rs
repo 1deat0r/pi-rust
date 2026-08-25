@@ -43,6 +43,16 @@ pub struct RunOutcome {
     pub session_path: Option<String>,
 }
 
+/// Invalidate external extension processes whenever the one-shot mode exits,
+/// including early errors after extension loading.
+struct RunExtensionGuard(Arc<crate::core::extensions::ExtensionRunner>);
+
+impl Drop for RunExtensionGuard {
+    fn drop(&mut self) {
+        self.0.invalidate(Some("print mode shutdown"));
+    }
+}
+
 /// Provider resolution for the run path: CLI → env → settings → `google`.
 pub fn resolve_run_provider(cli_provider: Option<&str>, settings: &SettingsManager) -> String {
     cli_provider
@@ -311,12 +321,30 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             (model, stream_fn, summary_stream_fn)
         };
 
-    let system_prompt = assemble_run_system_prompt(args, &cwd, &agent_dir, &settings);
+    let mut system_prompt = assemble_run_system_prompt(args, &cwd, &agent_dir, &settings);
+
+    let loaded_extensions = crate::core::extensions::load_for_mode(
+        args,
+        &settings,
+        &cwd,
+        &agent_dir.to_string_lossy(),
+        "print",
+        false,
+        args.name.clone(),
+        settings
+            .get_default_thinking_level()
+            .unwrap_or("medium")
+            .to_string(),
+    );
+    for error in &loaded_extensions.errors {
+        tracing::warn!(path = %error.path, error = %error.error, "failed to load extension");
+    }
+    let _extension_guard = RunExtensionGuard(loaded_extensions.runner.clone());
 
     // Register built-in tools (bash/read/write/edit + ls/find/grep) unless
-    // --no-tools.
+    // --no-tools or --no-builtin-tools.
     let mut tools: Vec<pi_agent::tools::AgentTool> = Vec::new();
-    if !args.no_tools {
+    if !args.no_tools && !args.no_builtin_tools {
         tools.push(pi_agent::tools::bash_tool(cwd.clone()));
         tools.push(pi_agent::tools::read_tool_with_options(
             cwd.clone(),
@@ -330,6 +358,23 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         tools.push(crate::core::tools::ls_tool(cwd.clone()));
         tools.push(crate::core::tools::find_tool(cwd.clone()));
         tools.push(crate::core::tools::grep_tool(cwd.clone()));
+    }
+    crate::core::extensions::install_tools(&loaded_extensions, &mut tools, !args.no_tools);
+    if let Some(patch) = loaded_extensions.runner.emit_before_agent_start(
+        args.messages
+            .first()
+            .map(String::as_str)
+            .unwrap_or_default(),
+        None,
+        &system_prompt,
+        &serde_json::json!({}),
+    ) {
+        if let Some(updated) = patch
+            .get("systemPrompt")
+            .and_then(serde_json::Value::as_str)
+        {
+            system_prompt = updated.to_string();
+        }
     }
     // Resolve the durable session before creating the harness. This is the
     // point where the CLI session selectors become observable: continue and
