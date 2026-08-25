@@ -7,10 +7,11 @@
 //! Implemented over the port's current layers: the pi-ai Models facade
 //! (provider registry / catalog / auth + stream dispatch), the pi-agent agent
 //! loop (with stream-event observation), and the session facade (JSONL v4
-//! repo-backed). Commands whose upstream dependency is not yet ported (HTML
-//! export, extension commands) respond with the upstream error surface.
+//! repo-backed). HTML export remains outside this RPC command slice; loaded
+//! extension commands are discovered and dispatched through the Rust host.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -29,7 +30,7 @@ use pi_agent::session::types::EntryNoStats;
 use pi_agent::session::JsonlSessionRepo;
 use pi_ai::model::Model;
 use pi_ai::models::Models;
-use pi_ai::types::{AssistantMessageEvent, Message};
+use pi_ai::types::{AssistantMessageEvent, ContentBlock, Message, UserContent};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -60,6 +61,168 @@ type FauxResponseFactory = Box<
         + Send
         + Sync,
 >;
+
+fn rpc_user_message(text: &str, images: &[ContentBlock]) -> pi_agent::types::AgentMessage {
+    let mut blocks = vec![ContentBlock::text(text)];
+    blocks.extend(images.iter().cloned());
+    pi_agent::types::AgentMessage::Core(Message::User(UserContent::blocks(
+        blocks,
+        pi_ai::types::now_ms(),
+    )))
+}
+
+/// Decode the wire-level `ImageContent[]` shape used by prompt, steer, and
+/// follow_up. Keep the validation at the RPC boundary so malformed commands
+/// receive a normal failure response instead of being silently dropped from
+/// the model context.
+fn rpc_images(command: &RpcCommand) -> Result<Vec<ContentBlock>, String> {
+    let Some(value) = command.value.get("images") else {
+        return Ok(Vec::new());
+    };
+    let Some(images) = value.as_array() else {
+        return Err("images must be an array".to_string());
+    };
+    images
+        .iter()
+        .enumerate()
+        .map(|(index, image)| {
+            let data = image
+                .get("data")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("images[{index}] is missing data"))?;
+            let mime_type = image
+                .get("mimeType")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("images[{index}] is missing mimeType"))?;
+            Ok(ContentBlock::image(data, mime_type))
+        })
+        .collect()
+}
+
+fn resource_contains_path(
+    resource: &crate::core::extensions::DiscoveredResource,
+    loaded_path: &str,
+    cwd: &str,
+) -> bool {
+    let resource_path = PathBuf::from(resource.resolved_path(cwd));
+    let loaded_path = crate::core::extensions::loader::resolve_relative_path(loaded_path, cwd);
+    loaded_path == resource_path || loaded_path.starts_with(&resource_path)
+}
+
+fn apply_extension_skill_source_info(
+    skills: &mut [crate::core::skills::Skill],
+    resources: &[crate::core::extensions::DiscoveredResource],
+    cwd: &str,
+) {
+    for skill in skills {
+        if let Some(resource) = resources
+            .iter()
+            .find(|resource| resource_contains_path(resource, &skill.file_path, cwd))
+        {
+            let mut source_info = resource.source_info.clone();
+            source_info.path = skill.file_path.clone();
+            skill.source_info = source_info;
+        }
+    }
+}
+
+fn load_rpc_skills(
+    args: &Args,
+    cwd: &str,
+    agent_dir: &str,
+    settings: &SettingsManager,
+    resources: &crate::core::extensions::ResourceDiscovery,
+) -> Vec<crate::core::skills::Skill> {
+    if args.no_skills {
+        return Vec::new();
+    }
+    let mut skill_paths = settings.get_skill_paths();
+    skill_paths.extend(args.skills.iter().cloned());
+    skill_paths.extend(resources.resolved_skill_paths(cwd));
+    let (mut skills, diagnostics) =
+        crate::core::skills::load_skills(crate::core::skills::LoadSkillsOptions {
+            cwd: cwd.to_string(),
+            agent_dir: agent_dir.to_string(),
+            skill_paths,
+        });
+    apply_extension_skill_source_info(&mut skills, &resources.skill_resources, cwd);
+    for diagnostic in diagnostics {
+        tracing::warn!(
+            path = ?diagnostic.path,
+            message = %diagnostic.message,
+            "skill load diagnostic"
+        );
+    }
+    skills
+}
+
+fn load_rpc_prompt_templates(
+    args: &Args,
+    cwd: &str,
+    agent_dir: &str,
+    settings: &SettingsManager,
+    resources: &crate::core::extensions::ResourceDiscovery,
+) -> Vec<crate::core::prompt_templates::PromptTemplate> {
+    if args.no_prompt_templates {
+        return Vec::new();
+    }
+    let mut rpc_args = args.clone();
+    let mut prompt_paths = settings.get_prompt_template_paths();
+    prompt_paths.extend(args.prompt_templates.iter().cloned());
+    rpc_args.prompt_templates = prompt_paths;
+    crate::run::load_prompt_templates_for_run(&rpc_args, cwd, Path::new(agent_dir), resources)
+}
+
+fn source_info_json(source_info: &crate::core::extensions::SourceInfo) -> serde_json::Value {
+    let mut object = serde_json::Map::from_iter([
+        (
+            "path".to_string(),
+            serde_json::Value::String(source_info.path.clone()),
+        ),
+        (
+            "source".to_string(),
+            serde_json::Value::String(source_info.source.clone()),
+        ),
+        (
+            "scope".to_string(),
+            serde_json::Value::String(source_info.scope.clone()),
+        ),
+        (
+            "origin".to_string(),
+            serde_json::Value::String(source_info.origin.clone()),
+        ),
+    ]);
+    if let Some(base_dir) = &source_info.base_dir {
+        object.insert(
+            "baseDir".to_string(),
+            serde_json::Value::String(base_dir.clone()),
+        );
+    }
+    serde_json::Value::Object(object)
+}
+
+fn rpc_slash_command_json(
+    name: impl Into<String>,
+    description: Option<String>,
+    source: &str,
+    source_info: &crate::core::extensions::SourceInfo,
+) -> serde_json::Value {
+    let mut object = serde_json::Map::from_iter([
+        ("name".to_string(), serde_json::Value::String(name.into())),
+        (
+            "source".to_string(),
+            serde_json::Value::String(source.to_string()),
+        ),
+        ("sourceInfo".to_string(), source_info_json(source_info)),
+    ]);
+    if let Some(description) = description {
+        object.insert(
+            "description".to_string(),
+            serde_json::Value::String(description),
+        );
+    }
+    serde_json::Value::Object(object)
+}
 
 fn queue_mode(value: &str) -> QueueMode {
     if value == "all" {
@@ -202,6 +365,10 @@ pub struct RpcRuntime {
     pub system_prompt: Option<String>,
     pub tools_enabled: bool,
     pub builtin_tools_enabled: bool,
+    /// Prompt and skill resources are retained because RPC `get_commands`
+    /// exposes the same resource-backed slash command catalog as upstream.
+    pub prompt_templates: Vec<crate::core::prompt_templates::PromptTemplate>,
+    pub skills: Vec<crate::core::skills::Skill>,
     /// The live tool set used to construct the next prompt context. `None`
     /// means the full mode-allowed registry is active; an extension
     /// `setActiveTools` request changes this to the validated requested set.
@@ -753,6 +920,20 @@ impl RpcRuntime {
             )?
         };
         let thinking_level = configured_thinking_level(&settings, &model);
+        let prompt_templates = load_rpc_prompt_templates(
+            args,
+            &cwd,
+            &agent_dir,
+            &settings,
+            &loaded_extensions.resources,
+        );
+        let skills = load_rpc_skills(
+            args,
+            &cwd,
+            &agent_dir,
+            &settings,
+            &loaded_extensions.resources,
+        );
         loaded_extensions
             .host
             .set_thinking_level(thinking_level.as_str());
@@ -799,6 +980,8 @@ impl RpcRuntime {
             system_prompt,
             tools_enabled: !args.no_tools,
             builtin_tools_enabled: !args.no_builtin_tools,
+            prompt_templates,
+            skills,
             active_tool_names: None,
             loaded_extensions,
         };
@@ -892,6 +1075,104 @@ impl RpcRuntime {
         self.loaded_extensions
             .host
             .set_catalog(active_names, all_tool_values, commands);
+    }
+
+    fn rpc_commands(&mut self) -> Vec<serde_json::Value> {
+        let mut commands = Vec::new();
+        let mut runner = self.loaded_extensions.runner.as_ref().clone();
+        for command in runner.get_registered_commands() {
+            commands.push(rpc_slash_command_json(
+                command.invocation_name,
+                command.description,
+                "extension",
+                &command.source_info,
+            ));
+        }
+        for template in &self.prompt_templates {
+            commands.push(rpc_slash_command_json(
+                template.name.clone(),
+                Some(template.description.clone()),
+                "prompt",
+                &template.source_info,
+            ));
+        }
+        for skill in &self.skills {
+            commands.push(rpc_slash_command_json(
+                format!("skill:{}", skill.name),
+                Some(skill.description.clone()),
+                "skill",
+                &skill.source_info,
+            ));
+        }
+        commands
+    }
+
+    fn extension_command_parts(message: &str) -> Option<(&str, &str)> {
+        let text = message.strip_prefix('/')?;
+        let (name, args) = text.find(char::is_whitespace).map_or((text, ""), |index| {
+            (&text[..index], text[index..].trim_start())
+        });
+        (!name.is_empty()).then_some((name, args))
+    }
+
+    fn is_extension_command(&self, message: &str) -> bool {
+        let Some((name, _)) = Self::extension_command_parts(message) else {
+            return false;
+        };
+        let mut runner = self.loaded_extensions.runner.as_ref().clone();
+        runner.get_command(name).is_some()
+    }
+
+    fn execute_extension_command(&self, message: &str) -> Option<Result<(), String>> {
+        let (name, args) = Self::extension_command_parts(message)?;
+        if !self.is_extension_command(message) {
+            return None;
+        }
+        Some(
+            self.loaded_extensions
+                .runner
+                .execute_command(name, args)
+                .map(|_| ()),
+        )
+    }
+
+    fn expand_rpc_prompt(&self, message: &str) -> String {
+        let mut expanded = message.to_string();
+        if let Some(stripped) = expanded.strip_prefix("/skill:") {
+            let (name, args) = stripped
+                .find(char::is_whitespace)
+                .map_or((stripped, ""), |index| {
+                    (&stripped[..index], stripped[index..].trim())
+                });
+            if let Some(skill) = self.skills.iter().find(|skill| skill.name == name) {
+                if let Ok(raw) = std::fs::read_to_string(&skill.file_path) {
+                    let body = pi_agent::harness::frontmatter::parse_frontmatter(&raw)
+                        .map(|(_, body)| body)
+                        .unwrap_or(raw)
+                        .trim()
+                        .to_string();
+                    let block = format!(
+                        "<skill name=\"{}\" location=\"{}\">\nReferences are relative to {}.\n\n{}\n</skill>",
+                        skill.name, skill.file_path, skill.base_dir, body
+                    );
+                    expanded = if args.is_empty() {
+                        block
+                    } else {
+                        format!("{block}\n\n{args}")
+                    };
+                }
+            }
+        }
+        crate::core::prompt_templates::expand_prompt_template(&expanded, &self.prompt_templates)
+    }
+
+    fn enqueue_rpc_message(&self, lane: &str, message: &str, images: &[ContentBlock]) {
+        let queued = rpc_user_message(&self.expand_rpc_prompt(message), images);
+        match lane {
+            "steer" => self.steering_queue.lock().unwrap().enqueue(queued),
+            "follow_up" => self.follow_up_queue.lock().unwrap().enqueue(queued),
+            _ => unreachable!("invalid RPC queue lane: {lane}"),
+        }
     }
 
     async fn apply_model_state(&mut self, model: Model, persist: bool) -> Result<(), String> {
@@ -1313,8 +1594,8 @@ impl RpcRuntime {
         Arc::new(move |model, ctx| models.stream_simple(model, ctx, Some(&stream_options)))
     }
 
-    fn prepare_prompt_run(&self, message: &str) -> RpcPromptRun {
-        let prompt = pi_agent::agent::user_text_prompt(message, pi_ai::types::now_ms());
+    fn prepare_prompt_run(&self, message: &str, images: &[ContentBlock]) -> RpcPromptRun {
+        let prompt = rpc_user_message(&self.expand_rpc_prompt(message), images);
         let prompts = vec![prompt];
 
         // Seed the model context with prior history. The current prompt is
@@ -1397,6 +1678,20 @@ impl RpcRuntime {
             fail(store, &id, &cmd, "missing message".to_string());
             return None;
         };
+        let images = match rpc_images(&command) {
+            Ok(images) => images,
+            Err(error) => {
+                fail(store, &id, &cmd, error);
+                return None;
+            }
+        };
+        if let Some(result) = self.execute_extension_command(&message) {
+            match result {
+                Ok(()) => respond(store, success(id.as_deref(), &cmd, None)),
+                Err(error) => fail(store, &id, &cmd, error),
+            }
+            return None;
+        }
         {
             let mut lock = self.run_lock.lock().unwrap();
             if *lock {
@@ -1416,7 +1711,7 @@ impl RpcRuntime {
         respond(store, success(id.as_deref(), &cmd, None));
 
         let (events, receiver) = mpsc::unbounded_channel();
-        let run = self.prepare_prompt_run(&message);
+        let run = self.prepare_prompt_run(&message, &images);
         tokio::spawn(run_rpc_prompt(run, events));
         Some(receiver)
     }
@@ -1871,6 +2166,20 @@ impl RpcRuntime {
             .set_thinking_level(self.thinking_level.as_str());
         register_loaded_native_providers(&self.models, &self.loaded_extensions)
             .map_err(|error| format!("failed to register RPC native providers: {error}"))?;
+        self.prompt_templates = load_rpc_prompt_templates(
+            &self.extension_args,
+            &self.cwd,
+            &self.agent_dir,
+            &self.settings,
+            &self.loaded_extensions.resources,
+        );
+        self.skills = load_rpc_skills(
+            &self.extension_args,
+            &self.cwd,
+            &self.agent_dir,
+            &self.settings,
+            &self.loaded_extensions.resources,
+        );
         self.refresh_extension_catalog();
         Ok(())
     }
@@ -2212,15 +2521,47 @@ impl RpcRuntime {
                     fail(store, &id, &cmd, "missing message".to_string());
                     return Ok(());
                 };
+                let images = match rpc_images(&command) {
+                    Ok(images) => images,
+                    Err(error) => {
+                        fail(store, &id, &cmd, error);
+                        return Ok(());
+                    }
+                };
+                if let Some(result) = self.execute_extension_command(&message) {
+                    match result {
+                        Ok(()) => respond(store, success(id.as_deref(), &cmd, None)),
+                        Err(error) => fail(store, &id, &cmd, error),
+                    }
+                    return Ok(());
+                }
                 {
                     let mut lock = self.run_lock.lock().unwrap();
                     if *lock {
-                        fail(
-                            store,
-                            &id,
-                            &cmd,
-                            "Agent is already streaming; send abort first".to_string(),
-                        );
+                        match command.str_field("streamingBehavior").as_deref() {
+                            Some("steer") => {
+                                self.enqueue_rpc_message("steer", &message, &images);
+                                self.push_queue_update(store);
+                                respond(store, success(id.as_deref(), &cmd, None));
+                            }
+                            Some("followUp") => {
+                                self.enqueue_rpc_message("follow_up", &message, &images);
+                                self.push_queue_update(store);
+                                respond(store, success(id.as_deref(), &cmd, None));
+                            }
+                            Some(value) => fail(
+                                store,
+                                &id,
+                                &cmd,
+                                format!("Invalid streaming behavior: {value}"),
+                            ),
+                            None => fail(
+                                store,
+                                &id,
+                                &cmd,
+                                "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.".to_string(),
+                            ),
+                        }
                         return Ok(());
                     }
                     *lock = true;
@@ -2237,7 +2578,7 @@ impl RpcRuntime {
                     mut context,
                     config,
                     provider_uses_oauth,
-                } = self.prepare_prompt_run(&message);
+                } = self.prepare_prompt_run(&message, &images);
                 let provider = config.model.provider.clone();
                 let persisted_messages = Arc::new(Mutex::new(Vec::new()));
                 let persisted_for_loop = persisted_messages.clone();
@@ -2296,12 +2637,23 @@ impl RpcRuntime {
                     fail(store, &id, &cmd, "missing message".to_string());
                     return Ok(());
                 };
-                let queued = pi_agent::agent::user_text_prompt(message, pi_ai::types::now_ms());
-                if command.type_ == "steer" {
-                    self.steering_queue.lock().unwrap().enqueue(queued);
-                } else {
-                    self.follow_up_queue.lock().unwrap().enqueue(queued);
+                if self.is_extension_command(&message) {
+                    fail(
+                        store,
+                        &id,
+                        &cmd,
+                        format!("Cannot queue extension command: {message}"),
+                    );
+                    return Ok(());
                 }
+                let images = match rpc_images(&command) {
+                    Ok(images) => images,
+                    Err(error) => {
+                        fail(store, &id, &cmd, error);
+                        return Ok(());
+                    }
+                };
+                self.enqueue_rpc_message(&command.type_, &message, &images);
                 self.push_queue_update(store);
                 respond(store, success(id.as_deref(), &cmd, None));
                 Ok(())
@@ -3091,7 +3443,9 @@ impl RpcRuntime {
                     success(
                         id.as_deref(),
                         &cmd,
-                        Some(serde_json::json!({ "commands": [] })),
+                        Some(serde_json::json!({
+                            "commands": self.rpc_commands(),
+                        })),
                     ),
                 );
                 Ok(())
@@ -3540,10 +3894,8 @@ fn event_json(
     }
 }
 
-fn parse_rpc_input(line: &str) -> Result<RpcCommand, String> {
-    let parsed: serde_json::Value =
-        serde_json::from_str(line).map_err(|e| format!("Failed to parse command: {e}"))?;
-    RpcCommand::parse(parsed)
+fn parse_rpc_value(line: &str) -> Result<serde_json::Value, String> {
+    serde_json::from_str(line).map_err(|e| format!("Failed to parse command: {e}"))
 }
 
 fn can_handle_during_prompt(command: &RpcCommand) -> bool {
@@ -3751,7 +4103,18 @@ async fn dispatch_rpc_line<W: AsyncWrite + Unpin>(
     if line.trim().is_empty() {
         return Ok(());
     }
-    let command = match parse_rpc_input(&line) {
+    let parsed = match parse_rpc_value(&line) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let response = failure(None, "parse", error);
+            return write_rpc_lines(state.out, std::iter::once(serialize_json_line(&response)))
+                .await;
+        }
+    };
+    if parsed.get("type").and_then(serde_json::Value::as_str) == Some("extension_ui_response") {
+        return Ok(());
+    }
+    let command = match RpcCommand::parse(parsed) {
         Ok(command) => command,
         Err(error) => {
             let response = failure(None, "parse", error);
@@ -4066,6 +4429,8 @@ mod tests {
             "--session-dir".to_string(),
             root.join("sessions").to_string_lossy().into_owned(),
             "--no-tools".to_string(),
+            "--no-skills".to_string(),
+            "--no-prompt-templates".to_string(),
         ])
         .expect_run();
         RpcRuntime::new(&args, settings).await.unwrap()
@@ -4321,6 +4686,196 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_commands_discovers_extension_prompt_and_skill_sources() {
+        let mut runtime = runtime_for_test().await;
+        let extension_source = crate::core::extensions::SourceInfo {
+            path: "/tmp/rpc-extension.rs".to_string(),
+            source: "extension:rpc-extension".to_string(),
+            scope: "temporary".to_string(),
+            origin: "top-level".to_string(),
+            base_dir: Some("/tmp".to_string()),
+        };
+        let seen_args = Arc::new(Mutex::new(Vec::new()));
+        let seen_args_for_handler = Arc::clone(&seen_args);
+        let handler = Arc::new(
+            move |_: &crate::core::extensions::ExtensionContext, event: &serde_json::Value| {
+                seen_args_for_handler
+                    .lock()
+                    .unwrap()
+                    .push(event["args"].as_str().unwrap_or_default().to_string());
+                Ok(None)
+            },
+        ) as crate::core::extensions::HandlerFn;
+        let mut extension = crate::core::extensions::Extension {
+            path: extension_source.path.clone(),
+            source_info: extension_source.clone(),
+            ..Default::default()
+        };
+        extension.commands.insert(
+            "hello".to_string(),
+            crate::core::extensions::RegisteredCommand {
+                name: "hello".to_string(),
+                source_info: extension_source.clone(),
+                description: Some("Say hello".to_string()),
+                handler,
+            },
+        );
+        let extension_runtime = Arc::new(Mutex::new(
+            crate::core::extensions::types::ExtensionRuntime::new(),
+        ));
+        runtime.loaded_extensions = LoadedExtensions {
+            runner: Arc::new(crate::core::extensions::ExtensionRunner::new(
+                vec![extension],
+                Arc::clone(&extension_runtime),
+                runtime.cwd.clone(),
+            )),
+            host: Arc::new(crate::core::extensions::ExtensionHostState::new(
+                None, "off",
+            )),
+            runtime: extension_runtime,
+            errors: Vec::new(),
+            resources: crate::core::extensions::ResourceDiscovery::default(),
+        };
+        runtime.prompt_templates = vec![crate::core::prompt_templates::PromptTemplate {
+            name: "review".to_string(),
+            description: "Review the change".to_string(),
+            argument_hint: None,
+            content: "Review $@".to_string(),
+            source_info: crate::core::extensions::SourceInfo::synthetic(
+                "/tmp/review.md",
+                "local",
+                Some("/tmp".to_string()),
+            ),
+            file_path: "/tmp/review.md".to_string(),
+        }];
+        runtime.skills = vec![crate::core::skills::Skill {
+            name: "lint".to_string(),
+            description: "Run lint checks".to_string(),
+            file_path: "/tmp/skills/lint/SKILL.md".to_string(),
+            base_dir: "/tmp/skills/lint".to_string(),
+            source_info: crate::core::extensions::SourceInfo::synthetic(
+                "/tmp/skills/lint/SKILL.md",
+                "local",
+                Some("/tmp/skills/lint".to_string()),
+            ),
+            disable_model_invocation: false,
+        }];
+
+        let mut store = Vec::new();
+        runtime
+            .handle_command(
+                RpcCommand::parse(serde_json::json!({
+                    "id": "commands",
+                    "type": "get_commands"
+                }))
+                .unwrap(),
+                &mut store,
+            )
+            .await
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(store[0].trim()).unwrap();
+        let commands = response["data"]["commands"].as_array().unwrap();
+        assert_eq!(commands.len(), 3);
+        assert_eq!(commands[0]["name"], "hello");
+        assert_eq!(commands[0]["source"], "extension");
+        assert_eq!(commands[0]["sourceInfo"]["baseDir"], "/tmp");
+        assert_eq!(commands[1]["name"], "review");
+        assert_eq!(commands[1]["source"], "prompt");
+        assert_eq!(commands[2]["name"], "skill:lint");
+        assert_eq!(commands[2]["source"], "skill");
+
+        let mut dispatch_store = Vec::new();
+        runtime
+            .handle_command(
+                RpcCommand::parse(serde_json::json!({
+                    "id": "invoke",
+                    "type": "prompt",
+                    "message": "/hello first second"
+                }))
+                .unwrap(),
+                &mut dispatch_store,
+            )
+            .await
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(dispatch_store[0].trim()).unwrap();
+        assert_eq!(response["command"], "prompt");
+        assert_eq!(response["success"], true);
+        assert_eq!(*seen_args.lock().unwrap(), vec!["first second"]);
+        assert!(runtime.messages.is_empty());
+    }
+
+    #[test]
+    fn rpc_prompt_catalog_includes_settings_prompt_paths() {
+        let root =
+            std::env::temp_dir().join(format!("pi-rpc-settings-prompts-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let prompt_path = root.join("settings-review.md");
+        std::fs::write(
+            &prompt_path,
+            "---\ndescription: Review from settings\n---\nReview $@\n",
+        )
+        .unwrap();
+        let mut settings = SettingsManager::in_memory(Default::default());
+        settings.set_prompt_template_paths(vec![prompt_path.to_string_lossy().into_owned()]);
+        let args = Args::default();
+        let resources = crate::core::extensions::ResourceDiscovery::default();
+        let templates = load_rpc_prompt_templates(
+            &args,
+            &root.to_string_lossy(),
+            &root.join("agent").to_string_lossy(),
+            &settings,
+            &resources,
+        );
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].name, "settings-review");
+        assert_eq!(templates[0].description, "Review from settings");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn prompt_streaming_behavior_queues_images_and_preserves_template_expansion() {
+        let mut runtime = runtime_for_test().await;
+        runtime.prompt_templates = vec![crate::core::prompt_templates::PromptTemplate {
+            name: "summarize".to_string(),
+            description: "Summarize input".to_string(),
+            argument_hint: None,
+            content: "Please summarize: $@".to_string(),
+            source_info: Default::default(),
+            file_path: "/tmp/summarize.md".to_string(),
+        }];
+        runtime.is_streaming = true;
+        *runtime.run_lock.lock().unwrap() = true;
+        let mut store = Vec::new();
+        runtime
+            .handle_command(
+                RpcCommand::parse(serde_json::json!({
+                    "id": "queued",
+                    "type": "prompt",
+                    "message": "/summarize the diff",
+                    "streamingBehavior": "followUp",
+                    "images": [{"data": "ZmFrZQ==", "mimeType": "image/png"}]
+                }))
+                .unwrap(),
+                &mut store,
+            )
+            .await
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(store[1].trim()).unwrap();
+        assert_eq!(response["command"], "prompt");
+        assert_eq!(response["success"], true);
+        let queued = runtime.follow_up_queue.lock().unwrap().snapshot();
+        assert_eq!(queued.len(), 1);
+        let pi_agent::types::AgentMessage::Core(Message::User(user)) = &queued[0] else {
+            panic!("queued prompt was not a user message");
+        };
+        let pi_ai::types::UserContentBody::Blocks(blocks) = user.content() else {
+            panic!("queued prompt did not preserve image blocks");
+        };
+        assert_eq!(blocks[0], ContentBlock::text("Please summarize: the diff"));
+        assert_eq!(blocks[1], ContentBlock::image("ZmFrZQ==", "image/png"));
+    }
+
+    #[tokio::test]
     async fn queue_commands_update_pending_state_and_modes() {
         let mut runtime = runtime_for_test().await;
         let mut store = Vec::new();
@@ -4460,7 +5015,7 @@ mod tests {
             .requested_active_tools()
             .is_none());
 
-        let prompt = runtime.prepare_prompt_run("next turn");
+        let prompt = runtime.prepare_prompt_run("next turn", &[]);
         assert_eq!(prompt.config.model.provider, "google");
         assert_eq!(prompt.config.model.id, "gemini-2.5-flash");
         assert_eq!(
@@ -5321,7 +5876,11 @@ mod tests {
         let mut pending_commands = VecDeque::new();
         let mut pending_abort_responses = VecDeque::new();
 
-        for line in ["{not-json", r#"{"id":"missing-type"}"#] {
+        for line in [
+            "{not-json",
+            r#"{"id":"missing-type"}"#,
+            r#"{"id":"ui","type":"extension_ui_response","result":{"confirmed":true}}"#,
+        ] {
             let mut state = RpcDispatchState {
                 out: &mut writer,
                 task_events: &task_events,

@@ -110,6 +110,34 @@ mod tests {
         assert_eq!(lines, vec!["{\"a\":1}", "{\"b\":2"]);
     }
 
+    #[test]
+    fn preserves_unicode_separators_inside_json_strings() {
+        let value = serde_json::json!({"text": "a\u{2028}b\u{2029}c"});
+        let line = serialize_json_line(&value);
+        assert!(line.contains("a\u{2028}b\u{2029}c"));
+
+        let mut lines = Vec::new();
+        split_jsonl_lines(&line, &mut |line| lines.push(line.to_string()));
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&lines[0]).unwrap(),
+            value
+        );
+    }
+
+    #[test]
+    fn only_lf_is_a_record_delimiter() {
+        let mut lines = Vec::new();
+        split_jsonl_lines(
+            "{\"text\":\"a\u{2028}b\u{2029}c\"}\n{\"next\":true}",
+            &mut |line| lines.push(line.to_string()),
+        );
+        assert_eq!(
+            lines,
+            vec!["{\"text\":\"a\u{2028}b\u{2029}c\"}", "{\"next\":true}"]
+        );
+    }
+
     #[tokio::test]
     async fn line_reader_framing() {
         let input: &[u8] = b"{\"a\":1}\n{\"b\":2}\r\n{\"c\":3}";

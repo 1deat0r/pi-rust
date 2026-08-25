@@ -59,6 +59,17 @@ S-008 implementation commit `7a72f2fe104cf660f946f29a822c88da556a37d1`
 is pushed to `origin/main` and hash-verified; the image retry/cancellation and
 telemetry checkpoints below remain part of the pushed baseline.
 
+### RPC/protocol command parity
+
+The RPC runtime exposes extension, prompt-template, and skill discovery through
+`get_commands`, dispatches extension prompts, expands skills and templates,
+preserves image attachments, honors queued `streamingBehavior`, and follows
+the upstream JSONL framing and inbound `extension_ui_response` semantics.
+Direct stable offline tests cover the RPC runtime, JSONL, JSON-event and RPC
+types, a real binary multi-turn session, and the adjacent CBOR protocol. The
+Rust extension host still cannot originate or resolve extension UI requests;
+credentialed live-provider inference is not implied by these offline checks.
+
 The S-011 Google Vertex checkpoint now covers file-based Application Default
 Credentials for service-account JWT and authorized-user refresh flows,
 configured token URIs and scopes, explicit credential-path precedence, and

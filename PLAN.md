@@ -69,6 +69,39 @@ flags, and provider registration; filesystem JS/TS paths are deterministically
 rejected or ignored. Static HTML export is rendered in Rust without browser
 JavaScript.
 
+## Checkpoint 2026-08-26 — bounded RPC/protocol command parity
+
+This slice is limited to `modes/rpc.rs`, JSONL/protocol-adjacent regression
+coverage, and the RPC parity fixture; `interactive.rs` and `pi-tui` were not
+touched. The pinned upstream oracle was inspected in
+`../pi-rust-s1-audit.KMw0N2/upstream_pi/packages/coding-agent/src/modes/rpc/`
+and its RPC prompt/JSONL regression tests.
+
+The RPC runtime now publishes extension, prompt-template, and skill commands
+from `get_commands`, including settings-configured prompt paths and exact
+source metadata; executes extension commands from prompt input; expands skills
+and templates for prompt/steer/follow-up messages; carries image blocks into
+initial and queued turns; implements upstream `streamingBehavior` queue/error
+semantics; rejects queued extension commands; and consumes inbound
+`extension_ui_response` envelopes without emitting a response. JSONL coverage
+now asserts LF-only framing and preservation of U+2028/U+2029 in JSON strings.
+The binary RPC test exercises real project resource discovery and a two-turn
+session.
+
+Validation passed with direct stable `rustc`/`rustdoc`/`cargo` and `--offline`:
+RPC 48/48, JSONL 7/7, JSON event 1/1, RPC types 4/4, binary RPC 2/2, and
+pi-protocol 46 executable tests plus zero doctests. The Cargo-native audit
+reports **100.00% (166/166; 0 open)**, `audit blockers: 0`, and
+`workspace JS/TS source files: 0`; formatting and `git diff --check` pass.
+The legacy Node progress script is absent and returns `MODULE_NOT_FOUND`.
+
+The only test-environment caveat is the unrelated pre-existing untracked
+`crates/pi-ai/src/providers/radius.rs` borrow-check error: focused coding-agent
+builds used a temporary reversible one-line repair and restored the file before
+finishing, so it is not part of this change. Remaining protocol limitation:
+the Rust extension host has no pending extension-UI request channel, so it can
+consume a response envelope but cannot originate/resolve UI requests yet.
+
 ## Checkpoint 2026-08-26 — bounded pi-agent lifecycle parity
 
 This bounded slice refines the existing S-018/S-019/S-038 evidence without

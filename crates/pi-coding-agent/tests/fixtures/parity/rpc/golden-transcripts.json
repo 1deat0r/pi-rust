@@ -48,7 +48,7 @@
         "mode": "jsonl-sequence",
         "sequence": [
           {"fields": {"id": "p1", "type": "response", "command": "prompt", "success": true}},
-          {"fields": {"id": "p2", "type": "response", "command": "prompt", "success": false, "error": "Agent is already streaming; send abort first"}},
+          {"fields": {"id": "p2", "type": "response", "command": "prompt", "success": true}},
           {"fields": {"type": "agent_start"}},
           {"fields": {"type": "turn_start"}},
           {"fields": {"type": "message_start", "message.role": "user"}},

@@ -378,3 +378,53 @@ fn rpc_binary_streams_sequential_multiturn_prompts_and_persists_session() {
         ],
     );
 }
+
+#[test]
+fn rpc_binary_get_commands_discovers_project_prompt_and_skill() {
+    let sandbox = Sandbox::new();
+    let prompt_dir = sandbox.cwd.join(".pi").join("prompts");
+    let skill_dir = sandbox.cwd.join(".pi").join("skills").join("lint");
+    fs::create_dir_all(&prompt_dir).unwrap();
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        prompt_dir.join("review.md"),
+        "---\ndescription: Review the current change\n---\nReview $@\n",
+    )
+    .unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: lint\ndescription: Run lint checks\n---\nRun the linter.\n",
+    )
+    .unwrap();
+
+    let mut rpc = sandbox.spawn_rpc();
+    rpc.send(serde_json::json!({
+        "id": "ui-response",
+        "type": "extension_ui_response",
+        "result": {"confirmed": true}
+    }));
+    rpc.send(serde_json::json!({
+        "id": "commands",
+        "type": "get_commands"
+    }));
+    let response = rpc.read_record_until(Instant::now() + READ_TIMEOUT);
+    assert_eq!(response["success"], true);
+    let commands = response["data"]["commands"]
+        .as_array()
+        .expect("commands array");
+    assert_eq!(commands.len(), 2);
+    assert_eq!(commands[0]["name"], "review");
+    assert_eq!(commands[0]["source"], "prompt");
+    assert_eq!(commands[0]["sourceInfo"]["scope"], "project");
+    assert_eq!(
+        commands[0]["sourceInfo"]["path"].as_str(),
+        Some(prompt_dir.join("review.md").to_string_lossy().as_ref())
+    );
+    assert_eq!(commands[1]["name"], "skill:lint");
+    assert_eq!(commands[1]["source"], "skill");
+    assert_eq!(commands[1]["sourceInfo"]["scope"], "project");
+    assert_eq!(
+        commands[1]["sourceInfo"]["path"].as_str(),
+        Some(skill_dir.join("SKILL.md").to_string_lossy().as_ref())
+    );
+}

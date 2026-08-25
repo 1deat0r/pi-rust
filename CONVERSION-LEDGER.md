@@ -69,6 +69,63 @@ documentation changes are committed and pushed as
 `2a9284b76957d2b4bb3a259511fe8817e864fe13`, with local and remote hashes
 matching. The pre-existing untracked `AGENTS.md` remains untouched.
 
+## Bounded RPC/protocol command parity checkpoint — 2026-08-26
+
+No numbered conversion-ledger checkbox changed in this bounded slice; the
+status remains **100.00% (166/166; 0 open)**. This checkpoint closes an
+implementation gap under the existing RPC evidence rows by comparing the Rust
+dispatcher and resource catalog with the pinned upstream RPC mode, RPC types,
+JSONL, prompt-semantics, and unknown-command regression fixtures.
+
+`crates/pi-coding-agent/src/modes/rpc.rs` now discovers extension commands,
+prompt templates (including settings-configured paths), and skills with
+upstream-compatible `sourceInfo`; dispatches extension prompts immediately;
+expands skill/template prompts; preserves image blocks; queues prompt turns
+according to `streamingBehavior`; rejects queued extension commands; and
+consumes `extension_ui_response` envelopes without producing a spurious
+unknown-command response. `modes/jsonl.rs` now has explicit U+2028/U+2029 and
+LF-only framing regressions. The binary RPC fixture covers project prompt/skill
+discovery, a real multi-turn session, and the UI-response envelope. The parity
+fixture's follow-up expectation now matches upstream success semantics.
+
+Exact focused evidence, all run offline with the direct stable toolchain:
+
+```text
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTDOC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-coding-agent --offline --lib modes::rpc::tests -- --test-threads=1
+  48 passed; 0 failed
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTDOC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-coding-agent --offline --lib modes::jsonl::tests -- --test-threads=1
+  7 passed; 0 failed
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTDOC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-coding-agent --offline --lib modes::json_event::tests -- --test-threads=1
+  1 passed; 0 failed
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTDOC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-coding-agent --offline --lib modes::rpc_types::tests -- --test-threads=1
+  4 passed; 0 failed
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTDOC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-coding-agent --offline --test rpc_binary_multiturn -- --test-threads=1
+  2 passed; 0 failed
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTDOC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-protocol --offline -- --test-threads=1
+  46 executable tests passed; doctests: 0 passed
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTDOC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo run -p pi-coding-agent --offline --bin conversion_audit -- all
+  Conversion progress: 100.00% (166/166; 0 open)
+  audit blockers: 0
+  workspace JS/TS source files: 0
+RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTDOC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo fmt --all -- --check
+git diff --check
+```
+
+The required legacy `node scripts/conversion-progress.mjs` command was also
+run and exits 1 with `MODULE_NOT_FOUND` because that script is absent from the
+Rust-only checkout; the Cargo-native audit above is the authoritative result.
+Focused coding-agent builds required a temporary, one-line reversible repair
+to the unrelated pre-existing untracked `crates/pi-ai/src/providers/radius.rs`
+borrow error; it was restored exactly and was not staged. With that unrelated
+file restored, a normal coding-agent rebuild remains blocked by its existing
+`E0515` error. No `interactive.rs` or `pi-tui` file was changed in this slice.
+
+Remaining RPC limitations are unchanged and explicit: Rust does not yet emit
+or resolve extension UI requests because the current Rust extension host has
+no pending UI-request channel; an inbound `extension_ui_response` is safely
+ignored as upstream does when no request is pending. Credentialed live-provider
+inference was not used for this protocol-only checkpoint.
+
 ## Bounded pi-agent lifecycle parity checkpoint — 2026-08-26
 
 No numbered conversion-ledger row changed in this bounded slice. It refines
