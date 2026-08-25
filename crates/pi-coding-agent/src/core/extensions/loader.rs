@@ -636,6 +636,57 @@ function metadata() {
 function contextFor(request) {
   syncHostSnapshot(request.hostState, request.hostBound);
   const context = { ...(request.context ?? {}) };
+  // Extension tool callbacks receive the same host-bound action surface as
+  // the extension API. Keep void actions fire-and-forget, while getters read
+  // the per-request snapshot synchronously and setModel remains awaitable.
+  context.sendMessage = (message, options) => fireHostAction("sendMessage", { message, options: options ?? null });
+  context.sendUserMessage = (content, options) => fireHostAction("sendUserMessage", { content, options: options ?? null });
+  context.appendEntry = (customType, data) => fireHostAction("appendEntry", { customType, data: data ?? null });
+  context.setLabel = (entryId, label) => fireHostAction("setLabel", { entryId, label: label ?? null });
+  context.setSessionName = (name) => {
+    assertSyncHostReady();
+    state.syncHost.sessionName = name;
+    fireHostAction("setSessionName", { name });
+  };
+  context.getSessionName = () => {
+    assertSyncHostReady();
+    return state.syncHost.sessionName ?? undefined;
+  };
+  context.getActiveTools = () => {
+    assertSyncHostReady();
+    return [...state.syncHost.activeTools];
+  };
+  context.getAllTools = () => {
+    assertSyncHostReady();
+    return state.syncHost.allTools;
+  };
+  context.setActiveTools = (toolNames) => {
+    assertSyncHostReady();
+    state.syncHost.activeTools = Array.isArray(toolNames) ? [...toolNames] : [];
+    fireHostAction("setActiveTools", { toolNames });
+  };
+  context.getCommands = () => {
+    assertSyncHostReady();
+    return state.syncHost.commands;
+  };
+  context.setModel = (model) => hostAction("setModel", { model });
+  context.getThinkingLevel = () => {
+    assertSyncHostReady();
+    return state.syncHost.thinkingLevel;
+  };
+  context.setThinkingLevel = (level) => {
+    assertSyncHostReady();
+    state.syncHost.thinkingLevel = level;
+    fireHostAction("setThinkingLevel", { level });
+  };
+  Object.defineProperty(context, "thinkingLevel", {
+    configurable: true,
+    enumerable: true,
+    get: () => {
+      assertSyncHostReady();
+      return state.syncHost.thinkingLevel;
+    },
+  });
   if (request.kind === "handler" && request.name === "before_agent_start") {
     context.getSystemPrompt = () => request.event?.systemPrompt ?? "";
   }

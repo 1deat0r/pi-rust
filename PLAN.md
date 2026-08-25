@@ -30,7 +30,8 @@ local JS/TS imports, live external-tool callbacks, a production-shaped shared
 runtime bind, synchronous getter snapshots, stale-process invalidation, and
 timeout/protocol cleanup. S-027 remains open for pinned jiti/module
 virtualization, native provider callbacks, Bun-specific runtime verification,
-and full AgentToolResult/signal/update/active-tool semantics.
+full context-object parity (`model`, session manager, UI, compaction, and
+signal), and mid-execution signal/update forwarding.
 
 ## Checkpoint 2026-08-25 — progress gate and release verification
 
@@ -38,8 +39,9 @@ S-003 is closed with the unit/mock checker suite (`node --test
 scripts/conversion-progress.test.mjs`, 7 passed), and the authoritative
 checker is **Conversion progress: 95.18% (158/166; 8 open)**. The extension
 loader now has native Node TypeScript stripping and deterministic TSX/virtual-
-module boundary diagnostics; the live mode adapter maps extension tool results
-and is covered by 15 loader tests plus 3 integration tests. #97 is closed with
+module boundary diagnostics; the live mode adapter maps extension tool results,
+host actions, and synchronous context snapshots and is covered by 15 loader
+tests plus 3 integration tests. #97 is closed with
 `cargo build --workspace --release --offline` and the full release suite using
 `cargo test --workspace --release --offline --quiet -- --test-threads=2`.
 The bounded test concurrency is required to keep the live tmux/PTY fixtures

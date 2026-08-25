@@ -1358,3 +1358,35 @@ Conversion progress: 95.18% (158/166; 8 open)
 remaining rows are S-001, S-002, S-004, S-027, S-065, S-066, #99, and #100.
 The next action is to consume the fresh source/TODO/full-surface audit reports
 and obtain an independent reviewer verdict before closing S-004.
+
+## Active checkpoint — 2026-08-25 — extension context-action parity
+
+The S-027 implementation pass added the safe external-tool context slice:
+Node/Bun extension tool callbacks now receive synchronous host snapshots and
+host actions for session name, active/all tools, commands, thinking level,
+messages, entries, labels, and awaitable model selection. The live fixture
+also proves host-action queues and `addedToolNames` propagation. S-027 remains
+open for jiti/module virtualization, native providers, Bun-specific coverage,
+the broader model/session/UI/compaction/signal context, and mid-execution
+signal/update forwarding.
+
+Exact evidence:
+
+```text
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::extensions::loader::tests --quiet
+15 passed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::extensions::integration::tests --quiet
+3 passed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test extensions_parity --quiet
+13 passed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::extensions --quiet
+32 passed
+/home/mustbearnold/.cargo/bin/cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings
+/home/mustbearnold/.cargo/bin/cargo fmt -p pi-coding-agent -- --check
+git diff --check
+```
+
+No ledger checkbox changed in this code-only S-027 increment; the checker
+remains `Conversion progress: 95.18% (158/166; 8 open)`. The next action is to
+review and integrate the independent S-001, S-002, and #99 reports before the
+fresh S-004 reviewer gate.

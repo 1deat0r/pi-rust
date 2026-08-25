@@ -921,8 +921,8 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 - [ ] S-027 Port TypeScript extension execution semantics or provide a proven
       equivalent embedded runtime; cover extension commands, hooks, renderers,
       and failure isolation. Updated partial evidence (unit/mock): the
-      persistent Node/Bun JSONL bridge passes 13 extension parity tests, 26
-      extension-library tests, and the full 471-test coding-agent library
+      persistent Node/Bun JSONL bridge passes 13 extension parity tests, 32
+      extension-library tests, and the full 476-test coding-agent library
       target plus all package integration targets. The fixture now covers
       async factories, commands, hooks, renderers, JSON provider registration,
       live tool callbacks, a shared runtime bind helper, synchronous getter
@@ -933,17 +933,19 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       publish tool/command catalogs, expose live extension tools to their
       agent contexts, and invalidate runtimes on shutdown. The task remains
       open because pinned upstream jiti/module virtualization, native provider
-      callbacks, Bun-specific verification, and full AgentToolResult/signal/
-      update/active-tool integration are not yet reproduced 1:1; no completion
-      checkbox is claimed. Evidence:
+      callbacks, Bun-specific verification, and the full context object
+      (`model`, session manager, UI, compaction, and signal) remain outside
+      the bridge; mid-execution signal/update forwarding also remains open.
+      No completion checkbox is claimed. Evidence:
       `cargo test -p pi-coding-agent --offline --test extensions_parity --quiet`
       (13 passed), `cargo test -p pi-coding-agent --offline --lib
       core::extensions::loader::tests --quiet` (15 passed), `cargo test -p
       pi-coding-agent --offline --lib core::extensions::integration::tests
       --quiet` (3 passed), and `cargo test -p pi-coding-agent --offline --lib
       --quiet` (476 passed). The package-wide target `cargo test -p
-      pi-coding-agent --offline --quiet`, strict coding-agent clippy, package
-      formatting, and `git diff --check` also pass.
+      pi-coding-agent --offline --quiet`, the live context fixture, strict
+      coding-agent clippy, package formatting, and `git diff --check` also
+      pass.
 - [x] S-028 Port the upstream self-update path (`pi update --self`) or document
       and test the exact supported replacement behavior for this distribution.
       The compiled Rust binary performs the latest-release and `--force`

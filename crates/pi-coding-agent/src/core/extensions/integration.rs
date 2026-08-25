@@ -491,10 +491,37 @@ mod tests {
     name: "mode-tool",
     description: "mode integration fixture",
     parameters: { type: "object", properties: {} },
-    execute: async (toolCallId, params) => ({
-      content: [{ type: "text", text: `${toolCallId}:${params.value}` }],
-      details: { source: "fixture" },
-    }),
+    execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+      const before = {
+        session: ctx.getSessionName() ?? null,
+        active: ctx.getActiveTools(),
+        all: ctx.getAllTools().map((tool) => tool.name),
+        commands: ctx.getCommands().map((command) => command.name),
+        thinking: ctx.getThinkingLevel(),
+        propertyThinking: ctx.thinkingLevel,
+      };
+      ctx.sendMessage({ customType: "tool-message", content: "from-tool" });
+      ctx.sendUserMessage("from-tool-user");
+      ctx.appendEntry("tool-entry", { source: "fixture" });
+      ctx.setSessionName("from-context");
+      ctx.setActiveTools(["mode-tool", "context-added"]);
+      ctx.setThinkingLevel("high");
+      const modelSet = await ctx.setModel({ id: "fixture-model" });
+      return {
+        content: [{ type: "text", text: `${toolCallId}:${params.value}` }],
+        details: {
+          source: "fixture",
+          before,
+          after: {
+            session: ctx.getSessionName(),
+            active: ctx.getActiveTools(),
+            thinking: ctx.getThinkingLevel(),
+            propertyThinking: ctx.thinkingLevel,
+            modelSet,
+          },
+        },
+      };
+    },
   });
   pi.registerCommand("mode-command", { description: "command", handler: async () => ({ ok: true }) });
 }"#,
@@ -531,7 +558,52 @@ mod tests {
             .await
             .expect("extension tool execution");
         assert_eq!(result.content, vec![ContentBlock::text("call-1:7")]);
-        assert_eq!(result.details, Some(json!({"source": "fixture"})));
+        assert_eq!(
+            result.details,
+            Some(json!({
+                "source": "fixture",
+                "before": {
+                    "session": null,
+                    "active": ["mode-tool"],
+                    "all": ["mode-tool"],
+                    "commands": ["mode-command"],
+                    "thinking": "medium",
+                    "propertyThinking": "medium",
+                },
+                "after": {
+                    "session": "from-context",
+                    "active": ["mode-tool", "context-added"],
+                    "thinking": "high",
+                    "propertyThinking": "high",
+                    "modelSet": true,
+                },
+            }))
+        );
+        assert_eq!(result.added_tool_names, vec!["context-added"]);
+        assert_eq!(loaded.host.snapshot()["sessionName"], "from-context");
+        assert_eq!(loaded.host.snapshot()["thinkingLevel"], "high");
+        assert_eq!(
+            loaded.host.drain_pending_messages(),
+            vec![
+                json!({
+                    "type": "send_message",
+                    "message": {"customType": "tool-message", "content": "from-tool"},
+                    "options": null,
+                }),
+                json!({
+                    "type": "send_user_message",
+                    "content": "from-tool-user",
+                    "options": null,
+                }),
+            ]
+        );
+        assert_eq!(
+            loaded.host.drain_pending_entries(),
+            vec![json!({
+                "customType": "tool-entry",
+                "data": {"source": "fixture"},
+            })]
+        );
 
         loaded.runner.invalidate(Some("test complete"));
         let _ = std::fs::remove_dir_all(root);
