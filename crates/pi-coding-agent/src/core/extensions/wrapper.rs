@@ -135,6 +135,7 @@ mod tests {
             description: format!("{name} tool"),
             parameters: serde_json::Value::Object(Default::default()),
             source_info: SourceInfo::synthetic("ext", "local", None),
+            execute: None,
         }
     }
 

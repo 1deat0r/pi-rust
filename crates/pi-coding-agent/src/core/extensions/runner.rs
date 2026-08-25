@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Map, Value};
 
 use crate::core::extensions::types::{
-    EntryRenderer, Extension, ExtensionContext, ExtensionError, ExtensionFlag, ExtensionRuntime,
-    ExtensionShortcut, HandlerFn, MarkdownTransformContext, MarkdownTransformer, MessageRenderer,
-    RegisteredTool, ResolvedCommand, SourceInfo,
+    EntryRenderer, Extension, ExtensionContext, ExtensionError, ExtensionFlag,
+    ExtensionHostActions, ExtensionRuntime, ExtensionShortcut, HandlerFn, MarkdownTransformContext,
+    MarkdownTransformer, MessageRenderer, RegisteredTool, ResolvedCommand, SourceInfo,
+    ToolExecutionRequest,
 };
 
 pub use crate::core::extensions::types::InputEventResult;
@@ -233,6 +234,43 @@ impl ExtensionRunner {
         self.get_all_registered_tools()
             .into_iter()
             .find(|tool| tool.name == tool_name)
+    }
+
+    /// Execute a live extension tool callback through the extension runtime.
+    /// This is the narrow integration point used by the bridge; the broader
+    /// agent-loop registration remains outside this leaf.
+    pub fn execute_tool(
+        &self,
+        tool_name: &str,
+        tool_call_id: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        let tool = self
+            .get_tool_definition(tool_name)
+            .ok_or_else(|| format!("Extension tool not found: {tool_name}"))?;
+        let execute = tool
+            .execute
+            .ok_or_else(|| format!("Extension tool has no execute callback: {tool_name}"))?;
+        let request = ToolExecutionRequest {
+            tool_call_id: tool_call_id.to_string(),
+            params,
+            context: self.create_context(),
+        };
+        match catch_unwind(AssertUnwindSafe(|| execute(request))) {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(error)) => {
+                let error = self.handler_error(&tool.source_info.path, "tool_execution", error);
+                Err(error.error)
+            }
+            Err(payload) => {
+                let error = self.handler_error(
+                    &tool.source_info.path,
+                    "tool_execution",
+                    format!("extension tool panicked: {}", panic_message(payload)),
+                );
+                Err(error.error)
+            }
+        }
     }
 
     /// All extension flags. The first registration by name wins.
@@ -936,6 +974,13 @@ impl ExtensionRunner {
         }
     }
 
+    /// Bind host-owned action callbacks for the persistent external bridge.
+    pub fn bind_core_with_actions(&self, actions: Arc<dyn ExtensionHostActions>) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.bind_core_with_actions(actions);
+        }
+    }
+
     pub fn extensions(&self) -> &[Extension] {
         &self.extensions
     }
@@ -1046,6 +1091,7 @@ mod tests {
             description: format!("{name} tool"),
             parameters: Value::Object(Default::default()),
             source_info: SourceInfo::synthetic("ext", "local", None),
+            execute: None,
         }
     }
 

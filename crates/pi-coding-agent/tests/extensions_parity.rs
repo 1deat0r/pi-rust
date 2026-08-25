@@ -4,14 +4,14 @@ use std::sync::{Arc, Mutex};
 
 use pi_coding_agent::core::extensions::loader::{
     create_extension_runtime, discover_extensions_in_dir, load_extension_from_factory,
-    load_extensions, run_external_extension,
+    load_extensions, load_extensions_with_host_actions, run_external_extension,
 };
 use pi_coding_agent::core::extensions::runner::{
     ExtensionRunner, InputEventResult, KeybindingsConfig,
 };
 use pi_coding_agent::core::extensions::types::{
-    Extension, ExtensionContext, ExtensionRuntime, HandlerFn, InputAction, SourceInfo,
-    STALE_MESSAGE,
+    Extension, ExtensionContext, ExtensionHostAction, ExtensionHostActions, ExtensionRuntime,
+    HandlerFn, InputAction, SourceInfo, STALE_MESSAGE,
 };
 use pi_coding_agent::core::extensions::wrapper::{
     wrap_registered_tool, WrappedToolCall, WrappedToolResult,
@@ -39,6 +39,102 @@ fn runner_with(extensions: Vec<Extension>) -> ExtensionRunner {
         create_extension_runtime(),
         "/fixture/project".to_string(),
     )
+}
+
+#[derive(Default)]
+struct RecordingHost {
+    calls: Mutex<Vec<(ExtensionHostAction, Value)>>,
+    active_tools: Mutex<Vec<String>>,
+    session_name: Mutex<Option<String>>,
+    thinking_level: Mutex<String>,
+}
+
+impl ExtensionHostActions for RecordingHost {
+    fn dispatch(&self, action: ExtensionHostAction, args: &Value) -> Result<Value, String> {
+        self.calls
+            .lock()
+            .expect("host calls lock")
+            .push((action, args.clone()));
+        match action {
+            ExtensionHostAction::SendMessage | ExtensionHostAction::SendUserMessage => {
+                Ok(Value::Null)
+            }
+            ExtensionHostAction::AppendEntry
+            | ExtensionHostAction::SetLabel
+            | ExtensionHostAction::SetSessionName
+            | ExtensionHostAction::SetActiveTools
+            | ExtensionHostAction::SetThinkingLevel => {
+                if action == ExtensionHostAction::SetSessionName {
+                    let name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing session name".to_string())?;
+                    *self.session_name.lock().expect("session name lock") = Some(name.into());
+                }
+                if action == ExtensionHostAction::SetActiveTools {
+                    let tools = args
+                        .get("toolNames")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| "missing active tools".to_string())?
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect();
+                    *self.active_tools.lock().expect("active tools lock") = tools;
+                }
+                if action == ExtensionHostAction::SetThinkingLevel {
+                    let level = args
+                        .get("level")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "missing thinking level".to_string())?;
+                    *self.thinking_level.lock().expect("thinking level lock") = level.into();
+                }
+                Ok(Value::Null)
+            }
+            ExtensionHostAction::GetSessionName => Ok(json!(self
+                .session_name
+                .lock()
+                .expect("session name lock")
+                .clone())),
+            ExtensionHostAction::GetActiveTools => Ok(json!(self
+                .active_tools
+                .lock()
+                .expect("active tools lock")
+                .clone())),
+            ExtensionHostAction::GetAllTools => Ok(json!([{
+                "name": "bridge-tool",
+                "description": "bridge tool",
+                "parameters": {},
+            }])),
+            ExtensionHostAction::GetCommands => Ok(json!([{
+                "name": "bridge",
+                "description": "Bridge command",
+            }])),
+            ExtensionHostAction::SetModel => Ok(Value::Bool(true)),
+            ExtensionHostAction::GetThinkingLevel => Ok(json!(self
+                .thinking_level
+                .lock()
+                .expect("thinking level lock")
+                .clone())),
+        }
+    }
+
+    fn snapshot(&self) -> Value {
+        json!({
+            "sessionName": self.session_name.lock().expect("session name lock").clone(),
+            "activeTools": self.active_tools.lock().expect("active tools lock").clone(),
+            "allTools": [{
+                "name": "bridge-tool",
+                "description": "bridge tool",
+                "parameters": {},
+            }],
+            "commands": [{
+                "name": "bridge",
+                "description": "Bridge command",
+            }],
+            "thinkingLevel": self.thinking_level.lock().expect("thinking lock").clone(),
+        })
+    }
 }
 
 #[test]
@@ -361,6 +457,7 @@ fn wrapper_matches_upstream_active_tool_invariant_and_deduplication() {
         description: "fixture".to_string(),
         parameters: json!({}),
         source_info: SourceInfo::synthetic("fixture", "fixture", None),
+        execute: None,
     };
     let wrapped = wrap_registered_tool(
         tool,
@@ -416,10 +513,16 @@ fn reserved_shortcut_resolution_remains_deterministic() {
 fn node_bridge_executes_async_factory_commands_hooks_renderers_and_provider_config() {
     let root = std::env::temp_dir().join(format!("pi-extension-bridge-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).expect("bridge fixture dir");
+    fs::write(root.join("package.json"), r#"{"type":"module"}"#).expect("module package");
+    fs::write(root.join("helper.js"), "export const jsSuffix = '[js]';\n").expect("js helper");
+    fs::write(root.join("helper.ts"), "export const tsSuffix = '[ts]';\n").expect("ts helper");
     let entry = root.join("bridge.ts");
     fs::write(
         &entry,
         r#"
+import { jsSuffix } from "./helper.js";
+import { tsSuffix } from "./helper.ts";
+
 export default async function (pi) {
   await new Promise((resolve) => setTimeout(resolve, 2));
   pi.registerCommand("bridge", {
@@ -446,6 +549,37 @@ export default async function (pi) {
     `${markdown}:${context.messageType}:${context.availableWidth}`
   );
   pi.registerFlag("bridge-flag", { type: "boolean", default: true });
+  pi.registerTool({
+    name: "bridge-tool",
+    description: "Bridge tool",
+    parameters: { type: "object", properties: { value: { type: "number" } } },
+    execute: async (toolCallId, params) => {
+      const activeBefore = pi.getActiveTools();
+      const allTools = pi.getAllTools();
+      const commands = pi.getCommands();
+      const sessionBefore = pi.getSessionName();
+      pi.setActiveTools([...activeBefore, "bridge-added"]);
+      pi.setSessionName("bridge session");
+      pi.setLabel("entry-1", "bridge label");
+      pi.appendEntry("bridge-entry", { value: params.value });
+      pi.sendMessage({ customType: "bridge", content: { value: params.value } });
+      pi.sendUserMessage("bridge user message");
+      const modelSet = await pi.setModel({ id: "bridge-model" });
+      const thinkingBefore = pi.getThinkingLevel();
+      pi.setThinkingLevel("high");
+      return {
+        toolCallId,
+        params,
+        activeBefore,
+        allTools,
+        commands,
+        sessionBefore,
+        modelSet,
+        thinkingBefore,
+        imported: `${jsSuffix}${tsSuffix}`,
+      };
+    },
+  });
   pi.registerProvider("bridge-provider", {
     name: "Bridge Provider",
     baseUrl: "https://bridge.invalid/v1",
@@ -466,7 +600,16 @@ export default async function (pi) {
     .expect("bridge fixture");
 
     let paths = vec![entry.to_string_lossy().to_string()];
-    let result = load_extensions(&paths, &root.to_string_lossy(), None, Some("node"));
+    let host = Arc::new(RecordingHost::default());
+    *host.active_tools.lock().expect("initial active tools lock") = vec!["bash".into()];
+    *host.thinking_level.lock().expect("initial thinking lock") = "medium".into();
+    let result = load_extensions_with_host_actions(
+        &paths,
+        &root.to_string_lossy(),
+        None,
+        Some("node"),
+        host.clone(),
+    );
     assert!(
         result.errors.is_empty(),
         "bridge load errors: {:?}",
@@ -539,6 +682,70 @@ export default async function (pi) {
     assert_eq!(
         runner.get_flag_values().get("bridge-flag"),
         Some(&json!(true))
+    );
+    let tool_result = runner
+        .execute_tool("bridge-tool", "call-bridge", json!({"value": 7}))
+        .expect("bridge tool execute");
+    assert_eq!(tool_result["toolCallId"], "call-bridge");
+    assert_eq!(tool_result["params"], json!({"value": 7}));
+    assert_eq!(tool_result["activeBefore"], json!(["bash"]));
+    assert_eq!(
+        tool_result["allTools"],
+        json!([{
+            "name": "bridge-tool",
+            "description": "bridge tool",
+            "parameters": {},
+        }])
+    );
+    assert_eq!(
+        tool_result["commands"],
+        json!([{
+            "name": "bridge",
+            "description": "Bridge command",
+        }])
+    );
+    assert_eq!(tool_result["imported"], "[js][ts]");
+    assert_eq!(tool_result["sessionBefore"], Value::Null);
+    assert_eq!(tool_result["modelSet"], true);
+    assert_eq!(tool_result["thinkingBefore"], "medium");
+    assert_eq!(
+        *host.active_tools.lock().expect("final active tools lock"),
+        vec!["bash", "bridge-added"]
+    );
+    assert_eq!(
+        *host.session_name.lock().expect("final session name lock"),
+        Some("bridge session".to_string())
+    );
+    assert_eq!(
+        *host.thinking_level.lock().expect("final thinking lock"),
+        "high"
+    );
+    let actions = host
+        .calls
+        .lock()
+        .expect("host calls lock")
+        .iter()
+        .map(|(action, _)| *action)
+        .collect::<Vec<_>>();
+    for action in [
+        ExtensionHostAction::SetActiveTools,
+        ExtensionHostAction::SetSessionName,
+        ExtensionHostAction::SetLabel,
+        ExtensionHostAction::AppendEntry,
+        ExtensionHostAction::SendMessage,
+        ExtensionHostAction::SendUserMessage,
+        ExtensionHostAction::SetModel,
+        ExtensionHostAction::SetThinkingLevel,
+    ] {
+        assert!(actions.contains(&action), "missing host action {action:?}");
+    }
+    runner.invalidate(None);
+    let stale_error = runner
+        .execute_command("bridge", "after-invalidation")
+        .expect_err("stale external callbacks must be rejected");
+    assert!(
+        stale_error.contains("stale") || stale_error.contains("invalidated"),
+        "stale error: {stale_error}"
     );
     let loaded_extension = runner
         .extensions()
@@ -617,6 +824,81 @@ export default function (pi) {
     assert!(errors
         .iter()
         .any(|error| error.contains("command:bridge command boom")));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn node_bridge_timeout_terminates_persistent_child() {
+    let root = std::env::temp_dir().join(format!(
+        "pi-extension-bridge-timeout-{}",
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir_all(&root).expect("bridge timeout dir");
+    let entry = root.join("timeout.ts");
+    fs::write(
+        &entry,
+        r#"
+export default function (pi) {
+  pi.registerCommand("slow", {
+    handler: async () => new Promise((resolve) => setTimeout(() => resolve({ ok: true }), 600)),
+  });
+}
+"#,
+    )
+    .expect("bridge timeout fixture");
+
+    let extension = run_external_extension(
+        entry.to_string_lossy().as_ref(),
+        &entry,
+        Some("node"),
+        Some(250),
+    )
+    .expect("timeout fixture should load");
+    let runner = runner_with(vec![extension]);
+    let error = runner
+        .execute_command("slow", "args")
+        .expect_err("slow callback must time out");
+    assert!(error.contains("Extension bridge request timed out after 250ms"));
+    let second_error = runner
+        .execute_command("slow", "args")
+        .expect_err("timed-out bridge must stay closed");
+    assert!(second_error.contains("Extension bridge exited"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn node_bridge_keeps_host_actions_unbound_during_factory_load() {
+    let root = std::env::temp_dir().join(format!(
+        "pi-extension-bridge-prebind-{}",
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir_all(&root).expect("prebind fixture dir");
+    let entry = root.join("prebind.ts");
+    fs::write(
+        &entry,
+        r#"
+export default async function (pi) {
+  await pi.getSessionName();
+}
+"#,
+    )
+    .expect("prebind fixture");
+
+    let result = load_extensions(
+        &[entry.to_string_lossy().to_string()],
+        &root.to_string_lossy(),
+        None,
+        Some("node"),
+    );
+    assert!(result.extensions.is_empty());
+    assert_eq!(result.errors.len(), 1);
+    assert!(
+        result.errors[0]
+            .error
+            .contains("Extension runtime not initialized"),
+        "pre-bind error: {:?}",
+        result.errors
+    );
     let _ = fs::remove_dir_all(root);
 }
 

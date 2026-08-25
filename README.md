@@ -25,9 +25,12 @@ and [HANDOFF.md](HANDOFF.md) for the current checkpoint and next
 dependency-safe action.
 
 The extension boundary now uses a persistent Node/Bun JSONL bridge with
-deterministic command, hook, renderer, provider-config, and failure-isolation
-fixtures. Full S-027 remains open until jiti/module virtualization, host
-actions, native provider callbacks, and live tool execution are reproduced.
+deterministic command, hook, renderer, provider-config, local JS/TS import,
+live-tool, host-action, synchronous-getter, stale-process, timeout, protocol,
+and failure-isolation fixtures, plus a shared-runtime bind helper. Full S-027
+remains open until CLI/mode host wiring, pinned jiti/module virtualization,
+native provider callbacks, Bun-specific runtime verification, and full
+agent-loop tool/result semantics are reproduced.
 
 The port already includes substantial CLI and runtime work, including the
 in-process agent loop, stateful harness-backed print, JSON, and interactive

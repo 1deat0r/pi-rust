@@ -81,14 +81,106 @@ pub struct RegistrationRecord {
     pub name: Option<String>,
 }
 
-/// A registered extension tool (upstream `RegisteredTool`).
+/// A host action that can be dispatched from a running extension callback.
+///
+/// The external Node/Bun bridge carries the arguments as JSON because the
+/// callbacks live in a different process. Keeping the action names typed on
+/// the Rust side prevents an unknown protocol method from being silently
+/// ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionHostAction {
+    SendMessage,
+    SendUserMessage,
+    AppendEntry,
+    SetSessionName,
+    GetSessionName,
+    SetLabel,
+    GetActiveTools,
+    GetAllTools,
+    SetActiveTools,
+    GetCommands,
+    SetModel,
+    GetThinkingLevel,
+    SetThinkingLevel,
+}
+
+impl ExtensionHostAction {
+    pub fn from_protocol_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "sendMessage" => Self::SendMessage,
+            "sendUserMessage" => Self::SendUserMessage,
+            "appendEntry" => Self::AppendEntry,
+            "setSessionName" => Self::SetSessionName,
+            "getSessionName" => Self::GetSessionName,
+            "setLabel" => Self::SetLabel,
+            "getActiveTools" => Self::GetActiveTools,
+            "getAllTools" => Self::GetAllTools,
+            "setActiveTools" => Self::SetActiveTools,
+            "getCommands" => Self::GetCommands,
+            "setModel" => Self::SetModel,
+            "getThinkingLevel" => Self::GetThinkingLevel,
+            "setThinkingLevel" => Self::SetThinkingLevel,
+            _ => return None,
+        })
+    }
+}
+
+/// Rust integration point for actions that are owned by the coding-agent
+/// host rather than by the extension runtime itself. Implementations should
+/// not re-enter the same extension callback while dispatching an action.
+pub trait ExtensionHostActions: Send + Sync {
+    fn dispatch(&self, action: ExtensionHostAction, args: &Value) -> Result<Value, String>;
+
+    /// Return the synchronous host state visible to an extension callback.
+    ///
+    /// The upstream API exposes several synchronous getters. An external
+    /// Node/Bun bridge cannot synchronously wait on stdin without blocking its
+    /// event loop, so the bridge receives a point-in-time snapshot with each
+    /// callback request. Implementations may return an empty object when a
+    /// value is not available; the bridge then uses the upstream-shaped empty
+    /// defaults.
+    fn snapshot(&self) -> Value {
+        Value::Object(Default::default())
+    }
+}
+
+/// JSON request passed to a registered tool execute closure.
 #[derive(Debug, Clone)]
+pub struct ToolExecutionRequest {
+    pub tool_call_id: String,
+    pub params: Value,
+    pub context: ExtensionContext,
+}
+
+/// A live tool callback. The JSON result is intentionally open-shaped to
+/// preserve the upstream AgentToolResult boundary without coupling this
+/// extension crate to one renderer or agent-loop representation.
+pub type ToolExecuteFn =
+    Arc<dyn Fn(ToolExecutionRequest) -> Result<Value, String> + Send + Sync + 'static>;
+
+/// A registered extension tool (upstream `RegisteredTool`).
+#[derive(Clone)]
 pub struct RegisteredTool {
     pub name: String,
     pub description: String,
     /// Parameter schema (JSON Schema-ish value; upstream uses TypeBox).
     pub parameters: Value,
     pub source_info: SourceInfo,
+    /// Live execute closure when the extension runtime can provide one.
+    /// Metadata-only registrations leave this as `None`.
+    pub execute: Option<ToolExecuteFn>,
+}
+
+impl std::fmt::Debug for RegisteredTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisteredTool")
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .field("parameters", &self.parameters)
+            .field("source_info", &self.source_info)
+            .field("has_execute", &self.execute.is_some())
+            .finish()
+    }
 }
 
 /// A registered CLI flag (upstream `ExtensionFlag`).
@@ -333,6 +425,7 @@ pub struct ExtensionRuntime {
     pub pending_provider_registrations: Vec<PendingProviderRegistration>,
     pub pending_native_provider_registrations: Vec<PendingNativeProviderRegistration>,
     initialized: bool,
+    host_actions: Option<Arc<dyn ExtensionHostActions>>,
     stale_message: Option<String>,
     subscriptions: Arc<Mutex<Vec<Subscription>>>,
 }
@@ -350,6 +443,7 @@ impl std::fmt::Debug for ExtensionRuntime {
                 &self.pending_native_provider_registrations,
             )
             .field("initialized", &self.initialized)
+            .field("has_host_actions", &self.host_actions.is_some())
             .field("stale_message", &self.stale_message)
             .finish()
     }
@@ -456,9 +550,52 @@ impl ExtensionRuntime {
         self.initialized = true;
     }
 
+    /// Bind the host-owned action callbacks used by live external extension
+    /// callbacks. This is separate from `bind_core()` so existing Rust-native
+    /// callers can still mark the runtime initialized without inventing host
+    /// behavior.
+    pub fn bind_core_with_actions(&mut self, actions: Arc<dyn ExtensionHostActions>) {
+        self.host_actions = Some(actions);
+        self.initialized = true;
+    }
+
+    /// Clone the bound host callback while the caller still owns the runtime
+    /// guard, so it can be invoked after that guard is released.
+    pub fn host_action_handler(&self) -> Result<Arc<dyn ExtensionHostActions>, String> {
+        self.assert_active()?;
+        self.host_actions
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| NOT_INITIALIZED_MESSAGE.to_string())
+    }
+
+    /// Snapshot host-owned synchronous getter state for an external callback.
+    pub fn host_action_snapshot(&self) -> Result<Value, String> {
+        self.assert_active()?;
+        Ok(self
+            .host_actions
+            .as_ref()
+            .map(|actions| actions.snapshot())
+            .unwrap_or_else(|| Value::Object(Default::default())))
+    }
+
+    pub fn has_host_actions(&self) -> bool {
+        self.host_actions.is_some()
+    }
+
     /// Set a CLI flag value (upstream `setFlagValue`).
     pub fn set_flag_value(&mut self, name: &str, value: Value) {
         self.flag_values.insert(name.to_string(), value);
+    }
+}
+
+impl LoadExtensionsResult {
+    /// Bind host actions after loading the extension factories, preserving the
+    /// shared runtime captured by every persistent external bridge.
+    pub fn bind_core_with_actions(&self, actions: Arc<dyn ExtensionHostActions>) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.bind_core_with_actions(actions);
+        }
     }
 }
 

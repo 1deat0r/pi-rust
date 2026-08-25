@@ -6,25 +6,27 @@
 //! and uses a persistent Node/Bun JSON-lines bridge for the supported external
 //! runtime boundary. The bridge awaits the factory, returns registration
 //! metadata, and keeps the JavaScript callbacks alive for command, hook, and
-//! renderer calls. It deliberately does not claim to embed jiti, virtual
-//! modules, or native pi-ai provider/action objects; those remain explicit
-//! runtime-boundary limitations.
+//! renderer/tool calls and bidirectional host-action frames. It deliberately
+//! does not claim to embed jiti, virtual modules, or native pi-ai provider
+//! callback objects; those remain explicit runtime-boundary limitations.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::CONFIG_DIR_NAME;
 use crate::core::extensions::types::{
-    EntryRenderer, Extension, ExtensionFlag, ExtensionLoadError, ExtensionRuntime,
-    ExtensionShortcut, FlagType, HandlerFn, LoadExtensionsResult, MarkdownTransformer,
-    MessageRenderer, PendingNativeProviderRegistration, PendingProviderRegistration,
-    RegisteredCommand, RegisteredTool, RegistrationKind, SourceInfo,
+    EntryRenderer, Extension, ExtensionFlag, ExtensionHostAction, ExtensionLoadError,
+    ExtensionRuntime, ExtensionShortcut, FlagType, HandlerFn, LoadExtensionsResult,
+    MarkdownTransformer, MessageRenderer, PendingNativeProviderRegistration,
+    PendingProviderRegistration, RegisteredCommand, RegisteredTool, RegistrationKind, SourceInfo,
+    ToolExecuteFn, ToolExecutionRequest,
 };
 use crate::core::pi_manifest::read_pi_manifest;
 
@@ -361,17 +363,23 @@ pub fn discover_extensions_in_dir(dir: &Path) -> Vec<PathBuf> {
     discovered
 }
 
-/// Bootstrap executed by a real Node/Bun runner. It is intentionally kept as
-/// a data-only protocol: stdout carries JSON responses, while extension logs
-/// are redirected to stderr so they cannot corrupt the protocol stream.
+/// Bootstrap executed by a real Node/Bun runner. Stdout carries JSONL request,
+/// response, and host-action frames, while extension logs are redirected to
+/// stderr so they cannot corrupt the protocol stream.
 const EXTERNAL_EXTENSION_BRIDGE: &str = r###"
 import { pathToFileURL } from "node:url";
 import * as readline from "node:readline";
 
 const entryPath = process.argv.at(-1);
 const NOT_INITIALIZED = "Extension runtime not initialized. Action methods cannot be called during extension loading.";
+const protocolStdoutWrite = process.stdout.write.bind(process.stdout);
+// Extension code is allowed to log, but stdout belongs exclusively to the
+// JSONL protocol. Keep the original writer for send() and divert all direct
+// extension writes to stderr as well.
+process.stdout.write = (chunk, encoding, callback) => process.stderr.write(chunk, encoding, callback);
 const state = {
   active: true,
+  loading: true,
   staleMessage: undefined,
   handlers: new Map(),
   commands: new Map(),
@@ -384,6 +392,16 @@ const state = {
   providers: [],
   nativeProviders: [],
   registrations: [],
+  nextHostActionId: 1,
+  pendingHostActions: new Map(),
+  syncHost: {
+    bound: false,
+    sessionName: null,
+    activeTools: [],
+    allTools: [],
+    commands: [],
+    thinkingLevel: "medium",
+  },
 };
 
 // A logging extension must not be able to write an invalid protocol frame.
@@ -422,8 +440,51 @@ function addHandler(event, handler) {
   record("handler", event);
 }
 
-function notInitialized() {
-  throw new Error(NOT_INITIALIZED);
+function hostAction(action, args = {}) {
+  assertActive();
+  if (state.loading) throw new Error(NOT_INITIALIZED);
+  const id = `host-${state.nextHostActionId++}`;
+  const promise = new Promise((resolve, reject) => {
+    state.pendingHostActions.set(id, { resolve, reject });
+  });
+  // Preserve the upstream fire-and-forget shape for callers that do not await
+  // a void action, without turning a rejected host callback into an
+  // unhandled-rejection process failure.
+  promise.catch(() => {});
+  send({ type: "host_action", id, action, args });
+  return promise;
+}
+
+function fireHostAction(action, args = {}) {
+  void hostAction(action, args);
+}
+
+function assertSyncHostReady() {
+  assertActive();
+  if (state.loading || !state.syncHost.bound) throw new Error(NOT_INITIALIZED);
+}
+
+function syncHostSnapshot(snapshot, bound) {
+  const value = snapshot && typeof snapshot === "object" ? snapshot : {};
+  state.syncHost = {
+    bound: Boolean(bound),
+    sessionName: value.sessionName ?? null,
+    activeTools: Array.isArray(value.activeTools) ? value.activeTools : [],
+    allTools: Array.isArray(value.allTools) ? value.allTools : [],
+    commands: Array.isArray(value.commands) ? value.commands : [],
+    thinkingLevel: typeof value.thinkingLevel === "string" ? value.thinkingLevel : "medium",
+  };
+}
+
+function resolveHostAction(message) {
+  const pending = state.pendingHostActions.get(String(message.id));
+  if (!pending) return;
+  state.pendingHostActions.delete(String(message.id));
+  if (message.ok === false) {
+    pending.reject(new Error(message.error ?? "Extension host action failed"));
+  } else {
+    pending.resolve(message.result ?? null);
+  }
 }
 
 const api = {
@@ -439,6 +500,7 @@ const api = {
       name: tool.name,
       description: tool.description ?? "",
       parameters: tool.parameters ?? {},
+      execute: tool.execute,
     });
     record("tool", tool.name);
   },
@@ -503,19 +565,56 @@ const api = {
     assertActive();
     state.providers = state.providers.filter((registration) => registration.name !== name);
   },
-  sendMessage: notInitialized,
-  sendUserMessage: notInitialized,
-  appendEntry: notInitialized,
-  setSessionName: notInitialized,
-  getSessionName: notInitialized,
-  setLabel: notInitialized,
-  getActiveTools: notInitialized,
-  getAllTools: notInitialized,
-  setActiveTools: notInitialized,
-  getCommands: notInitialized,
-  setModel: notInitialized,
-  getThinkingLevel: notInitialized,
-  setThinkingLevel: notInitialized,
+  sendMessage(message, options) {
+    fireHostAction("sendMessage", { message, options: options ?? null });
+  },
+  sendUserMessage(content, options) {
+    fireHostAction("sendUserMessage", { content, options: options ?? null });
+  },
+  appendEntry(customType, data) {
+    fireHostAction("appendEntry", { customType, data: data ?? null });
+  },
+  setSessionName(name) {
+    assertSyncHostReady();
+    state.syncHost.sessionName = name;
+    fireHostAction("setSessionName", { name });
+  },
+  getSessionName() {
+    assertSyncHostReady();
+    return state.syncHost.sessionName ?? undefined;
+  },
+  setLabel(entryId, label) {
+    fireHostAction("setLabel", { entryId, label: label ?? null });
+  },
+  getActiveTools() {
+    assertSyncHostReady();
+    return [...state.syncHost.activeTools];
+  },
+  getAllTools() {
+    assertSyncHostReady();
+    return state.syncHost.allTools;
+  },
+  setActiveTools(toolNames) {
+    assertSyncHostReady();
+    state.syncHost.activeTools = Array.isArray(toolNames) ? [...toolNames] : [];
+    fireHostAction("setActiveTools", { toolNames });
+  },
+  getCommands() {
+    assertSyncHostReady();
+    return state.syncHost.commands;
+  },
+  setModel(model) {
+    return hostAction("setModel", { model });
+  },
+  getThinkingLevel() {
+    assertSyncHostReady();
+    return state.syncHost.thinkingLevel;
+  },
+  setThinkingLevel(level) {
+    assertSyncHostReady();
+    state.syncHost.thinkingLevel = level;
+    fireHostAction("setThinkingLevel", { level });
+  },
 };
 
 function metadata() {
@@ -535,6 +634,7 @@ function metadata() {
 }
 
 function contextFor(request) {
+  syncHostSnapshot(request.hostState, request.hostBound);
   const context = { ...(request.context ?? {}) };
   if (request.kind === "handler" && request.name === "before_agent_start") {
     context.getSystemPrompt = () => request.event?.systemPrompt ?? "";
@@ -560,6 +660,17 @@ async function invoke(request) {
     if (!command) throw new Error(`Extension command not found: ${request.name}`);
     return await command.handler(request.args ?? "", context);
   }
+  if (request.kind === "tool") {
+    const tool = state.tools.get(request.name);
+    if (!tool) throw new Error(`Extension tool not found: ${request.name}`);
+    return await tool.execute(
+      request.toolCallId ?? "",
+      request.params ?? {},
+      undefined,
+      undefined,
+      context,
+    );
+  }
   if (request.kind === "shortcut") {
     const shortcut = state.shortcuts.get(request.name);
     if (!shortcut) throw new Error(`Extension shortcut not found: ${request.name}`);
@@ -583,7 +694,7 @@ async function invoke(request) {
 }
 
 function send(message) {
-  process.stdout.write(`${JSON.stringify(message)}\n`);
+  protocolStdoutWrite(`${JSON.stringify(message)}\n`);
 }
 
 async function main() {
@@ -596,16 +707,38 @@ async function main() {
     return;
   }
   await factory(api);
+  state.loading = false;
   send({ type: "ready", ...metadata() });
 
   const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  async function handleRequest(request) {
+    try {
+      const result = await invoke(request);
+      send({ id: request.id, ok: true, result: result === undefined ? null : result });
+    } catch (error) {
+      send({ id: request?.id ?? null, ok: false, error: errorMessage(error) });
+    }
+  }
+  // Host responses must be consumed while a callback is awaiting a Rust
+  // action. Dispatching calls without awaiting here keeps the stdin reader
+  // live; Rust serializes outbound requests, so callback order is preserved.
   for await (const line of input) {
     if (!line.trim()) continue;
     let request;
     try {
       request = JSON.parse(line);
-      const result = await invoke(request);
-      send({ id: request.id, ok: true, result: result === undefined ? null : result });
+      if (request.type === "host_response") {
+        resolveHostAction(request);
+      } else if (request.type === "close") {
+        state.active = false;
+        for (const pending of state.pendingHostActions.values()) {
+          pending.reject(new Error("Extension bridge closed"));
+        }
+        state.pendingHostActions.clear();
+        break;
+      } else {
+        void handleRequest(request);
+      }
     } catch (error) {
       send({ id: request?.id ?? null, ok: false, error: errorMessage(error) });
     }
@@ -618,25 +751,181 @@ main().catch((error) => {
 });
 "###;
 
+enum BridgeFrame {
+    Line(String),
+    Eof,
+    Error(String),
+}
+
+const MAX_BRIDGE_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
 struct ExternalProcessState {
     child: std::process::Child,
     stdin: BufWriter<std::process::ChildStdin>,
-    stdout: BufReader<std::process::ChildStdout>,
+    frames: mpsc::Receiver<BridgeFrame>,
     stderr: Arc<Mutex<String>>,
+    stderr_done: mpsc::Receiver<()>,
+    request_timeout: Duration,
+}
+
+thread_local! {
+    static ACTIVE_BRIDGE_REQUESTS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+struct BridgeRequestGuard {
+    process_id: u64,
+}
+
+impl BridgeRequestGuard {
+    fn enter(process_id: u64) -> Result<Self, String> {
+        let reentrant = ACTIVE_BRIDGE_REQUESTS.with(|active| {
+            let mut active = active.borrow_mut();
+            if active.contains(&process_id) {
+                true
+            } else {
+                active.push(process_id);
+                false
+            }
+        });
+        if reentrant {
+            Err("Extension bridge callback re-entry rejected to avoid deadlock".to_string())
+        } else {
+            Ok(Self { process_id })
+        }
+    }
+}
+
+impl Drop for BridgeRequestGuard {
+    fn drop(&mut self) {
+        ACTIVE_BRIDGE_REQUESTS.with(|active| {
+            let mut active = active.borrow_mut();
+            if let Some(position) = active.iter().rposition(|id| *id == self.process_id) {
+                active.remove(position);
+            }
+        });
+    }
 }
 
 struct ExternalExtensionProcess {
     state: Mutex<ExternalProcessState>,
+    request_lock: Mutex<()>,
     next_request_id: AtomicU64,
+    process_id: u64,
+    closed: AtomicBool,
+    runtime: Arc<Mutex<ExtensionRuntime>>,
+}
+
+static NEXT_EXTERNAL_PROCESS_ID: AtomicU64 = AtomicU64::new(1);
+
+fn write_bridge_frame(
+    stdin: &mut BufWriter<std::process::ChildStdin>,
+    frame: &serde_json::Value,
+) -> Result<(), String> {
+    serde_json::to_writer(&mut *stdin, frame)
+        .map_err(|error| format!("Extension bridge write failed: {error}"))?;
+    stdin
+        .write_all(b"\n")
+        .map_err(|error| format!("Extension bridge write failed: {error}"))?;
+    stdin
+        .flush()
+        .map_err(|error| format!("Extension bridge flush failed: {error}"))
+}
+
+fn dispatch_bridge_host_action(
+    runtime: &Arc<Mutex<ExtensionRuntime>>,
+    frame: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let action_name = frame
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Extension bridge host action is missing action name".to_string())?;
+    let action = ExtensionHostAction::from_protocol_name(action_name)
+        .ok_or_else(|| format!("Unknown extension host action: {action_name}"))?;
+    let args = frame
+        .get("args")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let actions = {
+        let runtime = runtime
+            .lock()
+            .map_err(|_| "Extension runtime lock poisoned".to_string())?;
+        runtime.host_action_handler()?
+    };
+    match catch_unwind(AssertUnwindSafe(|| actions.dispatch(action, &args))) {
+        Ok(result) => result,
+        Err(payload) => Err(format!(
+            "Extension host action panicked: {}",
+            panic_message(payload)
+        )),
+    }
+}
+
+fn bridge_host_action_response(
+    runtime: &Arc<Mutex<ExtensionRuntime>>,
+    frame: &serde_json::Value,
+) -> serde_json::Value {
+    let id = frame.get("id").cloned().unwrap_or(serde_json::Value::Null);
+    match dispatch_bridge_host_action(runtime, frame) {
+        Ok(result) => serde_json::json!({
+            "type": "host_response",
+            "id": id,
+            "ok": true,
+            "result": result,
+        }),
+        Err(error) => serde_json::json!({
+            "type": "host_response",
+            "id": id,
+            "ok": false,
+            "error": error,
+        }),
+    }
+}
+
+fn respond_to_bridge_host_action(
+    runtime: &Arc<Mutex<ExtensionRuntime>>,
+    stdin: &mut BufWriter<std::process::ChildStdin>,
+    frame: &serde_json::Value,
+) -> Result<(), String> {
+    if frame.get("id").is_none() {
+        return Err("Extension bridge host action is missing request id".to_string());
+    }
+    write_bridge_frame(stdin, &bridge_host_action_response(runtime, frame))
 }
 
 impl ExternalExtensionProcess {
     fn request(&self, mut request: serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err("Extension bridge is stale after runtime invalidation".to_string());
+        }
+        {
+            let runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| "Extension runtime lock poisoned".to_string())?;
+            runtime.assert_active()?;
+        }
+        let _request_guard = BridgeRequestGuard::enter(self.process_id)?;
+        let _request_lock = self
+            .request_lock
+            .lock()
+            .map_err(|_| "Extension bridge request lock poisoned".to_string())?;
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         request
             .as_object_mut()
             .ok_or_else(|| "Extension bridge request must be an object".to_string())?
             .insert("id".to_string(), serde_json::Value::from(id));
+        let (host_state, host_bound) = {
+            let runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| "Extension runtime lock poisoned".to_string())?;
+            (runtime.host_action_snapshot()?, runtime.has_host_actions())
+        };
+        let request_object = request
+            .as_object_mut()
+            .expect("request object checked above");
+        request_object.insert("hostState".to_string(), host_state);
+        request_object.insert("hostBound".to_string(), serde_json::Value::Bool(host_bound));
         let mut state = self
             .state
             .lock()
@@ -646,59 +935,116 @@ impl ExternalExtensionProcess {
             .try_wait()
             .map_err(|error| format!("Extension bridge status failed: {error}"))?
         {
-            return Err(format_child_exit(status, &state.stderr));
+            return Err(format_child_exit(status, &state.stderr, &state.stderr_done));
         }
-        serde_json::to_writer(&mut state.stdin, &request)
-            .map_err(|error| format!("Extension bridge write failed: {error}"))?;
-        state
-            .stdin
-            .write_all(b"\n")
-            .map_err(|error| format!("Extension bridge write failed: {error}"))?;
-        state
-            .stdin
-            .flush()
-            .map_err(|error| format!("Extension bridge flush failed: {error}"))?;
+        write_bridge_frame(&mut state.stdin, &request)?;
 
-        let mut line = String::new();
-        let read = state
-            .stdout
-            .read_line(&mut line)
-            .map_err(|error| format!("Extension bridge read failed: {error}"))?;
-        if read == 0 {
-            return Err(format_child_exit_after_eof(&mut state));
+        let deadline = Instant::now() + state.request_timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let wait_for = remaining.min(Duration::from_millis(50));
+            let frame = match state.frames.recv_timeout(wait_for) {
+                Ok(frame) => frame,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if self.closed.load(Ordering::Acquire) {
+                        terminate_child(&mut state.child);
+                        return Err(
+                            "Extension bridge is stale after runtime invalidation".to_string()
+                        );
+                    }
+                    if Instant::now() < deadline {
+                        continue;
+                    }
+                    terminate_child(&mut state.child);
+                    return Err(format!(
+                        "Extension bridge request timed out after {}ms",
+                        state.request_timeout.as_millis()
+                    ));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(format_child_exit_after_eof(&mut state));
+                }
+            };
+            let BridgeFrame::Line(line) = frame else {
+                return match frame {
+                    BridgeFrame::Eof => Err(format_child_exit_after_eof(&mut state)),
+                    BridgeFrame::Error(error) => {
+                        Err(format!("Extension bridge read failed: {error}"))
+                    }
+                    BridgeFrame::Line(_) => unreachable!(),
+                };
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            let response: serde_json::Value = serde_json::from_str(line.trim())
+                .map_err(|error| format!("Extension bridge returned invalid JSON: {error}"))?;
+            if response.get("type") == Some(&serde_json::Value::String("host_action".into())) {
+                // The request lock serializes protocol calls, but the process
+                // state mutex is not held while arbitrary host code runs.
+                drop(state);
+                let host_response = bridge_host_action_response(&self.runtime, &response);
+                state = self
+                    .state
+                    .lock()
+                    .map_err(|_| "Extension bridge lock poisoned".to_string())?;
+                write_bridge_frame(&mut state.stdin, &host_response)?;
+                continue;
+            }
+            if response.get("id") != Some(&serde_json::Value::from(id)) {
+                return Err("Extension bridge returned an unexpected response id".to_string());
+            }
+            if response.get("ok") == Some(&serde_json::Value::Bool(false)) {
+                return Err(response
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Extension callback failed")
+                    .to_string());
+            }
+            let result = response
+                .get("result")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            if self.closed.load(Ordering::Acquire) {
+                return Err("Extension bridge is stale after runtime invalidation".to_string());
+            }
+            return Ok((!result.is_null()).then_some(result));
         }
-        let response: serde_json::Value = serde_json::from_str(line.trim())
-            .map_err(|error| format!("Extension bridge returned invalid JSON: {error}"))?;
-        if response.get("id") != Some(&serde_json::Value::from(id)) {
-            return Err("Extension bridge returned an unexpected response id".to_string());
+    }
+
+    fn close_now(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            let _ = state.stdin.write_all(b"{\"type\":\"close\"}\n");
+            let _ = state.stdin.flush();
+            terminate_child(&mut state.child);
         }
-        if response.get("ok") == Some(&serde_json::Value::Bool(false)) {
-            return Err(response
-                .get("error")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("Extension callback failed")
-                .to_string());
+    }
+
+    fn close_async(self: &Arc<Self>) {
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            let process = Arc::clone(self);
+            std::thread::spawn(move || process.close_now());
         }
-        let result = response
-            .get("result")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        Ok((!result.is_null()).then_some(result))
     }
 }
 
 impl Drop for ExternalExtensionProcess {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.state.lock() {
-            let _ = state.stdin.write_all(b"{\"type\":\"close\"}\n");
-            let _ = state.stdin.flush();
-            let _ = state.child.kill();
-            let _ = state.child.wait();
-        }
+        self.closed.store(true, Ordering::Release);
+        self.close_now();
     }
 }
 
-fn format_child_exit(status: std::process::ExitStatus, stderr: &Arc<Mutex<String>>) -> String {
+fn wait_for_stderr_capture(stderr_done: &mpsc::Receiver<()>) {
+    let _ = stderr_done.recv_timeout(Duration::from_millis(100));
+}
+
+fn format_child_exit(
+    status: std::process::ExitStatus,
+    stderr: &Arc<Mutex<String>>,
+    stderr_done: &mpsc::Receiver<()>,
+) -> String {
+    wait_for_stderr_capture(stderr_done);
     let detail = stderr
         .lock()
         .ok()
@@ -717,9 +1063,10 @@ fn format_child_exit(status: std::process::ExitStatus, stderr: &Arc<Mutex<String
 }
 
 fn format_child_exit_after_eof(state: &mut ExternalProcessState) -> String {
+    wait_for_stderr_capture(&state.stderr_done);
     let status = state.child.try_wait().ok().flatten();
     match status {
-        Some(status) => format_child_exit(status, &state.stderr),
+        Some(status) => format_child_exit(status, &state.stderr, &state.stderr_done),
         None => "Extension bridge closed stdout unexpectedly".to_string(),
     }
 }
@@ -757,6 +1104,21 @@ fn external_handler(
             "event": payload,
             "context": bridge_context(context),
         }))
+    })
+}
+
+fn external_tool_execute(process: Arc<ExternalExtensionProcess>, name: String) -> ToolExecuteFn {
+    Arc::new(move |request: ToolExecutionRequest| {
+        process
+            .request(serde_json::json!({
+                "type": "call",
+                "kind": "tool",
+                "name": name,
+                "toolCallId": request.tool_call_id,
+                "params": request.params,
+                "context": bridge_context(&request.context),
+            }))?
+            .ok_or_else(|| "Extension tool returned no JSON result".to_string())
     })
 }
 
@@ -838,6 +1200,7 @@ fn spawn_external_bridge(
     resolved_path: &Path,
     runner: &str,
     timeout_ms: Option<u64>,
+    runtime: &Arc<Mutex<ExtensionRuntime>>,
 ) -> Result<(Arc<ExternalExtensionProcess>, serde_json::Value), String> {
     let cwd = resolved_path.parent().unwrap_or_else(|| Path::new("."));
     let mut command = Command::new(runner);
@@ -875,6 +1238,7 @@ fn spawn_external_bridge(
         .ok_or_else(|| "Failed to load extension: bridge stderr was not created".to_string())?;
     let stderr_capture = Arc::new(Mutex::new(String::new()));
     let stderr_for_thread = Arc::clone(&stderr_capture);
+    let (stderr_done_sender, stderr_done_receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stderr);
         let mut output = String::new();
@@ -886,46 +1250,86 @@ fn spawn_external_bridge(
         if let Ok(mut captured) = stderr_for_thread.lock() {
             *captured = output;
         }
+        let _ = stderr_done_sender.send(());
     });
 
-    let (sender, receiver) = mpsc::sync_channel(1);
+    let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
-        let mut line = String::new();
-        let result = reader
-            .read_line(&mut line)
-            .map(|read| (read, line, reader))
-            .map_err(|error| error.to_string());
-        let _ = sender.send(result);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => {
+                    let _ = sender.send(BridgeFrame::Eof);
+                    break;
+                }
+                Ok(_) => {
+                    if line.len() > MAX_BRIDGE_FRAME_BYTES {
+                        let _ = sender.send(BridgeFrame::Error(format!(
+                            "Extension bridge frame exceeds {} bytes",
+                            MAX_BRIDGE_FRAME_BYTES
+                        )));
+                        break;
+                    }
+                    if sender.send(BridgeFrame::Line(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(BridgeFrame::Error(error.to_string()));
+                    break;
+                }
+            }
+        }
     });
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(10_000));
-    let (read, line, stdout) = match receiver.recv_timeout(timeout) {
-        Ok(Ok((read, line, stdout))) => (read, line, stdout),
-        Ok(Err(error)) => {
+    let mut stdin = BufWriter::new(stdin);
+    let handshake_deadline = Instant::now() + timeout;
+    let ready = loop {
+        let remaining = handshake_deadline.saturating_duration_since(Instant::now());
+        let frame = match receiver.recv_timeout(remaining) {
+            Ok(frame) => frame,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                terminate_child(&mut child);
+                return Err(format!(
+                    "Failed to load extension: extension factory timed out for {extension_path}"
+                ));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                terminate_child(&mut child);
+                return Err("Failed to load extension: bridge handshake disconnected".to_string());
+            }
+        };
+        let line = match frame {
+            BridgeFrame::Line(line) => line,
+            BridgeFrame::Eof => {
+                let error = format_child_exit_after_parts(
+                    &mut child,
+                    &stderr_capture,
+                    &stderr_done_receiver,
+                );
+                return Err(format!("Failed to load extension: {error}"));
+            }
+            BridgeFrame::Error(error) => {
+                terminate_child(&mut child);
+                return Err(format!(
+                    "Failed to load extension: bridge read failed: {error}"
+                ));
+            }
+        };
+        let frame: serde_json::Value = serde_json::from_str(line.trim()).map_err(|error| {
             terminate_child(&mut child);
-            return Err(format!(
-                "Failed to load extension: bridge read failed: {error}"
-            ));
+            format!("Failed to load extension: bridge returned invalid JSON: {error}")
+        })?;
+        if frame.get("type") == Some(&serde_json::Value::String("host_action".into())) {
+            if let Err(error) = respond_to_bridge_host_action(runtime, &mut stdin, &frame) {
+                terminate_child(&mut child);
+                return Err(format!("Failed to load extension: {error}"));
+            }
+            continue;
         }
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            terminate_child(&mut child);
-            return Err(format!(
-                "Failed to load extension: extension factory timed out for {extension_path}"
-            ));
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            terminate_child(&mut child);
-            return Err("Failed to load extension: bridge handshake disconnected".to_string());
-        }
+        break frame;
     };
-    if read == 0 {
-        let error = format_child_exit_after_parts(&mut child, &stderr_capture);
-        return Err(format!("Failed to load extension: {error}"));
-    }
-    let ready: serde_json::Value = serde_json::from_str(line.trim()).map_err(|error| {
-        terminate_child(&mut child);
-        format!("Failed to load extension: bridge returned invalid JSON: {error}")
-    })?;
     if ready.get("type") == Some(&serde_json::Value::String("load_error".to_string())) {
         let error = ready
             .get("error")
@@ -941,22 +1345,38 @@ fn spawn_external_bridge(
     let process = Arc::new(ExternalExtensionProcess {
         state: Mutex::new(ExternalProcessState {
             child,
-            stdin: BufWriter::new(stdin),
-            stdout,
+            stdin,
+            frames: receiver,
             stderr: stderr_capture,
+            stderr_done: stderr_done_receiver,
+            request_timeout: timeout,
         }),
+        request_lock: Mutex::new(()),
         next_request_id: AtomicU64::new(1),
+        process_id: NEXT_EXTERNAL_PROCESS_ID.fetch_add(1, Ordering::Relaxed),
+        closed: AtomicBool::new(false),
+        runtime: Arc::clone(runtime),
     });
+    let process_for_invalidation = Arc::downgrade(&process);
+    if let Ok(runtime_guard) = runtime.lock() {
+        let _ = runtime_guard.track_event_bus_subscription(Arc::new(move || {
+            if let Some(process) = process_for_invalidation.upgrade() {
+                process.close_async();
+            }
+        }));
+    }
     Ok((process, ready))
 }
 
 fn format_child_exit_after_parts(
     child: &mut std::process::Child,
     stderr: &Arc<Mutex<String>>,
+    stderr_done: &mpsc::Receiver<()>,
 ) -> String {
+    wait_for_stderr_capture(stderr_done);
     let status = child.try_wait().ok().flatten();
     match status {
-        Some(status) => format_child_exit(status, stderr),
+        Some(status) => format_child_exit(status, stderr, stderr_done),
         None => "Extension bridge closed stdout unexpectedly".to_string(),
     }
 }
@@ -1060,7 +1480,7 @@ fn external_extension_from_metadata(
             extension.tools.insert(
                 name.clone(),
                 RegisteredTool {
-                    name,
+                    name: name.clone(),
                     description: tool
                         .get("description")
                         .and_then(serde_json::Value::as_str)
@@ -1071,6 +1491,7 @@ fn external_extension_from_metadata(
                         .cloned()
                         .unwrap_or_else(|| serde_json::json!({})),
                     source_info: extension.source_info.clone(),
+                    execute: Some(external_tool_execute(Arc::clone(&process), name)),
                 },
             );
         }
@@ -1247,7 +1668,7 @@ fn run_external_extension_with_runtime(
         return run_external_extension_legacy(extension_path, resolved_path, &runner, timeout_ms);
     }
     let (process, ready) =
-        spawn_external_bridge(extension_path, resolved_path, &runner, timeout_ms)?;
+        spawn_external_bridge(extension_path, resolved_path, &runner, timeout_ms, runtime)?;
     external_extension_from_metadata(extension_path, resolved_path, &ready, process, runtime)
 }
 
@@ -1269,11 +1690,9 @@ fn resolve_external_runner(runner: Option<&str>) -> Result<String, String> {
     }
 }
 
-/// Spawn an external extension runner for a resolved entry.
-///
-/// Argument protocol: `node <entry>` (bun when node is absent). The entry is
-/// spawned with the containing directory as cwd. Returns the extension record
-/// on exit 0 (hidden=false) or a deterministic error on nonzero exit.
+/// Spawn an external extension runner for a resolved entry. JavaScript
+/// runtimes use the persistent bridge; other runners retain the legacy
+/// one-shot compatibility path used by diagnostics and tests.
 pub fn run_external_extension(
     extension_path: &str,
     resolved_path: &Path,
@@ -1281,7 +1700,14 @@ pub fn run_external_extension(
     timeout_ms: Option<u64>,
 ) -> Result<Extension, String> {
     let runner = resolve_external_runner(runner)?;
-    run_external_extension_legacy(extension_path, resolved_path, &runner, timeout_ms)
+    let runtime = create_extension_runtime();
+    run_external_extension_with_runtime(
+        extension_path,
+        resolved_path,
+        Some(&runner),
+        timeout_ms,
+        &runtime,
+    )
 }
 
 fn run_external_extension_legacy(
@@ -1506,6 +1932,22 @@ pub fn load_extensions(
         errors,
         runtime,
     }
+}
+
+/// Load extensions and immediately perform the production-shaped bindCore
+/// step against the returned shared runtime. Factories still observe the
+/// upstream pre-bind not-initialized behavior; callbacks become live only
+/// after the result is assembled.
+pub fn load_extensions_with_host_actions(
+    paths: &[String],
+    cwd: &str,
+    runtime: Option<Arc<Mutex<ExtensionRuntime>>>,
+    runner: Option<&str>,
+    actions: Arc<dyn crate::core::extensions::types::ExtensionHostActions>,
+) -> LoadExtensionsResult {
+    let result = load_extensions(paths, cwd, runtime, runner);
+    result.bind_core_with_actions(actions);
+    result
 }
 
 /// Discover and load extensions from standard locations (upstream
@@ -1764,12 +2206,12 @@ mod tests {
 
     #[test]
     fn execute_extension_with_fake_node() {
-        // Fake `node`: a script that records its argv and exits 0.
+        // Fake non-JavaScript runner: a script that records its argv and exits 0.
         let dir = sandbox("fake");
         let entry = dir.join("index.ts");
         fs::write(&entry, "export default () => {}").unwrap();
         let bin = sandbox("bin");
-        let node_path = bin.join("node");
+        let node_path = bin.join("runner");
         let log_path = bin.join("log");
         let script = format!(
             "#!/bin/sh\nprintf '%s' \"$1\" > \"{}\"\n",

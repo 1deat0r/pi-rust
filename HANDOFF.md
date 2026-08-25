@@ -1181,3 +1181,65 @@ and does not yet reproduce module virtualization, host actions, native provider
 callbacks, or live tool execution. The next dependency-safe action is a fresh
 broader runtime-closure review/implementation pass, followed by the final
 source/TODO reconciliation and release gates.
+
+## Active checkpoint — 2026-08-25 — extension bridge C2c
+
+The C2c implementation pass extended the persistent Node/Bun bridge with live
+external-tool execution, typed host-action dispatch, local `.js`/`.ts` imports,
+request timeouts that terminate the child, and explicit pre-bind initialization
+errors. The focused fixture now covers all modeled host-action methods,
+including session/tool/model/thinking-level state transitions. C2c evidence:
+
+```text
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test extensions_parity --quiet
+13 passed; 0 failed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::extensions --quiet
+26 passed; 0 failed; 443 filtered out
+/home/mustbearnold/.cargo/bin/cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings
+/home/mustbearnold/.cargo/bin/cargo fmt -p pi-coding-agent -- --check
+git diff --check
+node scripts/conversion-progress.mjs
+Conversion progress: 93.37% (155/166; 11 open)
+```
+
+No ledger item changed in this checkpoint: S-027 remains intentionally open
+because the bridge still does not reproduce pinned jiti/module virtualization,
+native provider callback ABI, Bun-specific runtime behavior, or full agent-loop
+tool integration. The next dependency-safe action is an independent release,
+clean-room, and source/TODO audit, with a further S-027 implementation leaf if
+the reviewer identifies an actionable parity gap.
+
+## Active checkpoint — 2026-08-25 — extension bridge hardening after review
+
+The independent review identified and the follow-up patch addressed four
+runtime-boundary defects: production-shaped loading now binds the same shared
+runtime captured by the bridge; upstream synchronous getters use per-callback
+host snapshots while `setModel` remains asynchronous; runtime invalidation
+rejects and closes stale bridge callbacks; and host dispatch is panic-safe,
+stdout-protected, frame-bounded, and re-entry guarded. The parity fixture uses
+`load_extensions_with_host_actions` and exercises the synchronous API without
+`await`.
+
+Exact validation for this checkpoint:
+
+```text
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test extensions_parity --quiet
+13 passed; 0 failed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::extensions --quiet
+26 passed; 0 failed; 443 filtered out
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --quiet
+469 library tests passed; all package integration targets passed
+/home/mustbearnold/.cargo/bin/cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings
+/home/mustbearnold/.cargo/bin/cargo fmt -p pi-coding-agent -- --check
+git diff --check
+node scripts/conversion-progress.mjs
+Conversion progress: 93.37% (155/166; 11 open)
+```
+
+No ledger item changed: S-027 remains open because the Rust CLI/modes do not
+yet load and bind extension runners in the production agent-session path, and
+the bridge still lacks pinned jiti/module virtualization, native provider
+callback ABI, Bun-specific verification, and full AgentToolResult/signal/update
+integration. The next dependency-safe action is a dedicated production
+extension integration leaf, followed by independent release and clean-room
+audit gates.

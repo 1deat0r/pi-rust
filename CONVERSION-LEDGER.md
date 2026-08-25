@@ -903,13 +903,19 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       `git diff --check`, and `node scripts/conversion-progress.mjs`.
 - [ ] S-027 Port TypeScript extension execution semantics or provide a proven
       equivalent embedded runtime; cover extension commands, hooks, renderers,
-      and failure isolation. Partial evidence (unit/mock): the persistent
-      Node/Bun JSONL bridge passes 11 extension parity tests and 26 library
-      tests, covering async factories, commands, hooks, renderers, JSON
-      provider registration, loader errors, and failure isolation. The task
-      remains open because pinned upstream jiti/module virtualization, host
-      actions, native provider callbacks, and live tool execution are not yet
-      reproduced 1:1; no completion checkbox is claimed.
+      and failure isolation. Updated partial evidence (unit/mock): the
+      persistent Node/Bun JSONL bridge passes 13 extension parity tests, 26
+      extension-library tests, and the full 469-test coding-agent package
+      target. The fixture now covers async factories, commands, hooks,
+      renderers, JSON provider registration, live tool callbacks, a shared
+      runtime bind helper, synchronous getter snapshots, stale-process
+      invalidation, host panic isolation, stdout/frame protocol hardening,
+      loader errors, timeout teardown, and failure isolation. The task remains
+      open because the Rust CLI/modes do not yet load and bind extension
+      runners in the production agent-session path, and pinned upstream
+      jiti/module virtualization, native provider callbacks, Bun-specific
+      verification, and full AgentToolResult/signal/update integration are
+      not yet reproduced 1:1; no completion checkbox is claimed.
 - [x] S-028 Port the upstream self-update path (`pi update --self`) or document
       and test the exact supported replacement behavior for this distribution.
       The compiled Rust binary performs the latest-release and `--force`
