@@ -3,21 +3,23 @@
 //!
 //! Rust cannot execute TypeScript extension modules in-process (the upstream
 //! uses jiti imports). The port keeps the exact discovery/resolution surface
-//! and uses a persistent Node/Bun JSON-lines bridge for the supported external
-//! runtime boundary. The bridge awaits the factory, returns registration
-//! metadata, and keeps the JavaScript callbacks alive for command, hook, and
-//! renderer/tool calls, native provider callbacks, and bidirectional
-//! host-action frames. It deliberately does not claim to embed jiti or
-//! virtual modules; those remain explicit runtime-boundary limitations.
+//! and uses a persistent Node/Bun JSON-lines bridge for the external runtime
+//! boundary. The bridge awaits the factory, returns registration metadata, and
+//! keeps the JavaScript callbacks alive for command, hook, and renderer/tool
+//! calls, native provider callbacks, and bidirectional host-action frames. The
+//! bridge prefers the pinned jiti/static loader, with explicit virtual-module
+//! and alias injection, and retains native import as a compatibility fallback
+//! when no JavaScript runtime asset is available.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use crate::config::CONFIG_DIR_NAME;
@@ -368,6 +370,7 @@ pub fn discover_extensions_in_dir(dir: &Path) -> Vec<PathBuf> {
 /// response, and host-action frames, while extension logs are redirected to
 /// stderr so they cannot corrupt the protocol stream.
 const EXTERNAL_EXTENSION_BRIDGE: &str = r###"
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import * as readline from "node:readline";
 
@@ -796,6 +799,135 @@ function contextFor(request) {
   return context;
 }
 
+async function loadJitiFactory() {
+  const configured = process.env.PI_RUST_JITI_PATH;
+  if (configured) {
+    const module = await import(pathToFileURL(configured).href);
+    return module.createJiti ?? module.default;
+  }
+  try {
+    const module = await import("jiti/static");
+    return module.createJiti ?? module.default;
+  } catch {
+    return undefined;
+  }
+}
+
+const UPSTREAM_RUNTIME_SPECIFIERS = [
+  "@earendil-works/pi-coding-agent",
+  "@earendil-works/pi-agent-core",
+  "@earendil-works/pi-tui",
+  "@earendil-works/pi-ai/providers/all",
+  "@earendil-works/pi-ai/compat",
+  "@earendil-works/pi-ai/oauth",
+  "@earendil-works/pi-ai",
+  "@mariozechner/pi-coding-agent",
+  "@mariozechner/pi-agent-core",
+  "@mariozechner/pi-tui",
+  "@mariozechner/pi-ai/providers/all",
+  "@mariozechner/pi-ai/compat",
+  "@mariozechner/pi-ai/oauth",
+  "@mariozechner/pi-ai",
+  "typebox",
+  "typebox/compile",
+  "typebox/value",
+  "@sinclair/typebox",
+  "@sinclair/typebox/compile",
+  "@sinclair/typebox/value",
+];
+
+function extensionRequire() {
+  return createRequire(pathToFileURL(entryPath).href);
+}
+
+function discoverRuntimeAliases() {
+  const require = extensionRequire();
+  const aliases = {};
+  for (const specifier of UPSTREAM_RUNTIME_SPECIFIERS) {
+    try {
+      aliases[specifier] = require.resolve(specifier);
+    } catch {
+      // The Rust distribution does not assume that optional JS package
+      // dependencies are installed beside an extension. Missing entries are
+      // left to normal jiti resolution or an explicit host configuration.
+    }
+  }
+  return aliases;
+}
+
+async function discoverRuntimeVirtualModules() {
+  const virtualModules = {};
+  for (const specifier of UPSTREAM_RUNTIME_SPECIFIERS) {
+    try {
+      virtualModules[specifier] = await import(specifier);
+    } catch {
+      // Compiled/Bun parity only virtualizes modules that are available in the
+      // host runtime. The explicit environment map below covers Rust-hosted
+      // or test-provided module objects.
+    }
+  }
+  return virtualModules;
+}
+
+async function loadConfiguredVirtualModules(includeDiscovered) {
+  const virtualModules = includeDiscovered ? await discoverRuntimeVirtualModules() : {};
+  const configured = process.env.PI_RUST_EXTENSION_VIRTUAL_MODULES;
+  if (!configured) return virtualModules;
+  let entries;
+  try {
+    entries = JSON.parse(configured);
+  } catch (error) {
+    throw new Error(`PI_RUST_EXTENSION_VIRTUAL_MODULES is not valid JSON: ${errorMessage(error)}`);
+  }
+  if (!entries || typeof entries !== "object" || Array.isArray(entries)) {
+    throw new Error("PI_RUST_EXTENSION_VIRTUAL_MODULES must be a JSON object");
+  }
+  for (const [specifier, modulePath] of Object.entries(entries)) {
+    if (typeof modulePath !== "string" || modulePath.length === 0) {
+      throw new Error(`Virtual module ${specifier} must map to a non-empty module path`);
+    }
+    virtualModules[specifier] = await import(pathToFileURL(modulePath).href);
+  }
+  return virtualModules;
+}
+
+function loadConfiguredAliases() {
+  const baseAliases = discoverRuntimeAliases();
+  const configured = process.env.PI_RUST_EXTENSION_ALIASES;
+  if (!configured) return Object.keys(baseAliases).length > 0 ? baseAliases : undefined;
+  let aliases;
+  try {
+    aliases = JSON.parse(configured);
+  } catch (error) {
+    throw new Error(`PI_RUST_EXTENSION_ALIASES is not valid JSON: ${errorMessage(error)}`);
+  }
+  if (!aliases || typeof aliases !== "object" || Array.isArray(aliases)) {
+    throw new Error("PI_RUST_EXTENSION_ALIASES must be a JSON object");
+  }
+  return { ...baseAliases, ...aliases };
+}
+
+async function loadExtensionFactory() {
+  const createJiti = await loadJitiFactory();
+  if (typeof createJiti !== "function") {
+    return (await import(pathToFileURL(entryPath).href)).default;
+  }
+  const isBunRuntime = Boolean(process.versions?.bun);
+  const configuredVirtualModules = Boolean(process.env.PI_RUST_EXTENSION_VIRTUAL_MODULES);
+  const virtualModules = await loadConfiguredVirtualModules(isBunRuntime);
+  const jitiOptions = { moduleCache: false };
+  if (isBunRuntime || configuredVirtualModules) {
+    jitiOptions.virtualModules = virtualModules;
+    if (isBunRuntime) jitiOptions.tryNative = false;
+  } else {
+    jitiOptions.alias = loadConfiguredAliases();
+  }
+  if (process.env.PI_RUST_EXTENSION_JSX === "1") jitiOptions.jsx = true;
+  const jiti = createJiti(pathToFileURL(entryPath).href, jitiOptions);
+  const module = await jiti.import(entryPath, { default: true });
+  return module?.default ?? module;
+}
+
 async function collectNativeProviderEvents(result) {
   const stream = await result;
   if (Array.isArray(stream)) return stream;
@@ -883,8 +1015,7 @@ function send(message) {
 
 async function main() {
   if (!entryPath) throw new Error("Extension bridge did not receive an entry path");
-  const module = await import(pathToFileURL(entryPath).href);
-  const factory = module.default;
+  const factory = await loadExtensionFactory();
   if (typeof factory !== "function") {
     send({ type: "load_error", error: `Extension does not export a valid factory function: ${entryPath}` });
     process.exitCode = 1;
@@ -954,14 +1085,69 @@ main().catch((error) => {
     "@mariozechner/pi-coding-agent",
   ].find((specifier) => message.includes(`'${specifier}'`) || message.includes(`\"${specifier}\"`));
   const diagnostic = virtualSpecifier
-    ? `Virtual module \"${virtualSpecifier}\" is not resolvable by the pi-rust extension bridge. Install a runtime package that provides it or use a bundled runtime; pi-rust does not embed jiti virtual modules.`
+    ? `Virtual module \"${virtualSpecifier}\" is not resolvable by the embedded jiti bridge. Provide it through PI_RUST_EXTENSION_VIRTUAL_MODULES or install the corresponding runtime package.`
     : typeof entryPath === "string" && entryPath.endsWith(".tsx")
-      ? `TSX extension \"${entryPath}\" requires Bun or an explicit TypeScript/JSX transpiler; the Node bridge supports native TypeScript type stripping but does not embed jiti.`
+      ? `TSX extension \"${entryPath}\" could not be transformed by the embedded jiti runtime: ${message}`
       : message;
   send({ type: "load_error", error: diagnostic });
   process.exitCode = 1;
 });
 "###;
+
+const EMBEDDED_JITI_SOURCE: &str = include_str!("../../../data/extension-runtime/jiti.cjs");
+const EMBEDDED_BABEL_SOURCE: &str = include_str!("../../../data/extension-runtime/babel.cjs");
+const EMBEDDED_JITI_STATIC_SOURCE: &str =
+    include_str!("../../../data/extension-runtime/jiti-static.mjs");
+
+static NEXT_EMBEDDED_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
+
+struct EmbeddedExtensionRuntime {
+    root: PathBuf,
+}
+
+impl EmbeddedExtensionRuntime {
+    fn materialize() -> Result<Self, String> {
+        let root = std::env::temp_dir().join(format!(
+            "pi-rust-extension-runtime-{}-{}",
+            std::process::id(),
+            NEXT_EMBEDDED_RUNTIME_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).map_err(|error| {
+            format!(
+                "Failed to prepare embedded extension runtime at {}: {error}",
+                root.display()
+            )
+        })?;
+
+        let write_result = (|| {
+            fs::write(root.join("jiti.cjs"), EMBEDDED_JITI_SOURCE)?;
+            fs::write(root.join("babel.cjs"), EMBEDDED_BABEL_SOURCE)?;
+            fs::write(root.join("jiti-static.mjs"), EMBEDDED_JITI_STATIC_SOURCE)
+        })();
+        if let Err(error) = write_result {
+            let _ = fs::remove_dir_all(&root);
+            return Err(format!(
+                "Failed to materialize embedded extension runtime at {}: {error}",
+                root.display()
+            ));
+        }
+        Ok(Self { root })
+    }
+
+    fn jiti_path(&self) -> PathBuf {
+        self.root.join("jiti-static.mjs")
+    }
+
+    fn cleanup(&self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+impl Drop for EmbeddedExtensionRuntime {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
 
 enum BridgeFrame {
     Line(String),
@@ -1024,7 +1210,8 @@ struct ExternalExtensionProcess {
     next_request_id: AtomicU64,
     process_id: u64,
     closed: AtomicBool,
-    runtime: Arc<Mutex<ExtensionRuntime>>,
+    runtime: Weak<Mutex<ExtensionRuntime>>,
+    _embedded_runtime: Option<EmbeddedExtensionRuntime>,
 }
 
 static NEXT_EXTERNAL_PROCESS_ID: AtomicU64 = AtomicU64::new(1);
@@ -1105,13 +1292,19 @@ fn respond_to_bridge_host_action(
 }
 
 impl ExternalExtensionProcess {
+    fn runtime(&self) -> Result<Arc<Mutex<ExtensionRuntime>>, String> {
+        self.runtime
+            .upgrade()
+            .ok_or_else(|| "Extension runtime is no longer available".to_string())
+    }
+
     fn request(&self, mut request: serde_json::Value) -> Result<Option<serde_json::Value>, String> {
         if self.closed.load(Ordering::Acquire) {
             return Err("Extension bridge is stale after runtime invalidation".to_string());
         }
+        let runtime = self.runtime()?;
         {
-            let runtime = self
-                .runtime
+            let runtime = runtime
                 .lock()
                 .map_err(|_| "Extension runtime lock poisoned".to_string())?;
             runtime.assert_active()?;
@@ -1127,8 +1320,7 @@ impl ExternalExtensionProcess {
             .ok_or_else(|| "Extension bridge request must be an object".to_string())?
             .insert("id".to_string(), serde_json::Value::from(id));
         let (host_state, host_bound) = {
-            let runtime = self
-                .runtime
+            let runtime = runtime
                 .lock()
                 .map_err(|_| "Extension runtime lock poisoned".to_string())?;
             (
@@ -1198,7 +1390,7 @@ impl ExternalExtensionProcess {
                 // The request lock serializes protocol calls, but the process
                 // state mutex is not held while arbitrary host code runs.
                 drop(state);
-                let host_response = bridge_host_action_response(&self.runtime, &response);
+                let host_response = bridge_host_action_response(&runtime, &response);
                 state = self
                     .state
                     .lock()
@@ -1256,6 +1448,9 @@ impl ExternalExtensionProcess {
             let _ = state.stdin.write_all(b"{\"type\":\"close\"}\n");
             let _ = state.stdin.flush();
             terminate_child(&mut state.child);
+        }
+        if let Some(runtime) = self._embedded_runtime.as_ref() {
+            runtime.cleanup();
         }
     }
 
@@ -1319,76 +1514,6 @@ fn is_javascript_runtime(runner: &str) -> bool {
             name == "node" || name == "node.exe" || name == "bun" || name == "bun.exe"
         })
         .unwrap_or(false)
-}
-
-fn is_node_runtime(runner: &str) -> bool {
-    Path::new(runner)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| {
-            let name = name.to_ascii_lowercase();
-            name == "node" || name == "node.exe"
-        })
-        .unwrap_or(false)
-}
-
-fn is_typescript_path(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|extension| extension.to_str()),
-        Some("ts" | "mts" | "cts")
-    )
-}
-
-fn is_tsx_path(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|extension| extension.to_str()),
-        Some("tsx")
-    )
-}
-
-fn node_supports_type_stripping(runner: &str) -> bool {
-    Command::new(runner)
-        .arg("--help")
-        .output()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            stdout.contains("--experimental-strip-types")
-                || stderr.contains("--experimental-strip-types")
-        })
-        .unwrap_or(false)
-}
-
-fn node_reports_runtime(runner: &str) -> bool {
-    Command::new(runner)
-        .arg("--version")
-        .output()
-        .map(|output| {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout)
-                    .trim_start()
-                    .starts_with('v')
-        })
-        .unwrap_or(false)
-}
-
-fn node_module_loading_diagnostic(runner: &str, resolved_path: &Path) -> Option<String> {
-    if !is_node_runtime(runner) || !node_reports_runtime(runner) {
-        return None;
-    }
-    if is_tsx_path(resolved_path) {
-        return Some(format!(
-            "Failed to load extension: TSX extension {:?} requires Bun or an explicit TypeScript/JSX transpiler; the Node bridge supports native TypeScript type stripping but does not embed jiti",
-            resolved_path
-        ));
-    }
-    if is_typescript_path(resolved_path) && !node_supports_type_stripping(runner) {
-        return Some(format!(
-            "Failed to load extension: Node runtime {:?} does not advertise --experimental-strip-types; use Bun or a TypeScript-capable runner for {:?}",
-            runner, resolved_path
-        ));
-    }
-    None
 }
 
 fn bridge_context(context: &crate::core::extensions::types::ExtensionContext) -> serde_json::Value {
@@ -1520,15 +1645,11 @@ fn spawn_external_bridge(
     runner: &str,
     timeout_ms: Option<u64>,
     runtime: &Arc<Mutex<ExtensionRuntime>>,
+    environment: Option<&BTreeMap<String, String>>,
 ) -> Result<(Arc<ExternalExtensionProcess>, serde_json::Value), String> {
     let cwd = resolved_path.parent().unwrap_or_else(|| Path::new("."));
+    let embedded_runtime = EmbeddedExtensionRuntime::materialize()?;
     let mut command = Command::new(runner);
-    if is_node_runtime(runner) && node_supports_type_stripping(runner) {
-        // Node's native type stripping is the smallest safe equivalent of
-        // jiti for ordinary .ts/.mts/.cts imports. It intentionally does not
-        // claim to transform JSX or TypeScript syntax requiring emit.
-        command.arg("--experimental-strip-types");
-    }
     if Path::new(runner)
         .file_name()
         .and_then(|name| name.to_str())
@@ -1536,6 +1657,12 @@ fn spawn_external_bridge(
         .unwrap_or(false)
     {
         command.arg("--input-type=module");
+    }
+    command.env("PI_RUST_JITI_PATH", embedded_runtime.jiti_path());
+    if let Some(environment) = environment {
+        for (key, value) in environment {
+            command.env(key, value);
+        }
     }
     command
         .arg("--eval")
@@ -1680,7 +1807,8 @@ fn spawn_external_bridge(
         next_request_id: AtomicU64::new(1),
         process_id: NEXT_EXTERNAL_PROCESS_ID.fetch_add(1, Ordering::Relaxed),
         closed: AtomicBool::new(false),
-        runtime: Arc::clone(runtime),
+        runtime: Arc::downgrade(runtime),
+        _embedded_runtime: Some(embedded_runtime),
     });
     let process_for_invalidation = Arc::downgrade(&process);
     if let Ok(runtime_guard) = runtime.lock() {
@@ -1699,7 +1827,10 @@ fn format_child_exit_after_parts(
     stderr_done: &mpsc::Receiver<()>,
 ) -> String {
     wait_for_stderr_capture(stderr_done);
-    let status = child.try_wait().ok().flatten();
+    let status = match child.try_wait().ok().flatten() {
+        Some(status) => Some(status),
+        None => child.wait().ok(),
+    };
     match status {
         Some(status) => format_child_exit(status, stderr, stderr_done),
         None => "Extension bridge closed stdout unexpectedly".to_string(),
@@ -1736,6 +1867,7 @@ fn external_extension_from_metadata(
     runtime: &Arc<Mutex<ExtensionRuntime>>,
 ) -> Result<Extension, String> {
     let mut extension = make_extension(extension_path, resolved_path);
+    extension.runtime = Some(Arc::clone(runtime));
 
     if let Some(registrations) = metadata
         .get("registrations")
@@ -2003,6 +2135,24 @@ fn run_external_extension_with_runtime(
     timeout_ms: Option<u64>,
     runtime: &Arc<Mutex<ExtensionRuntime>>,
 ) -> Result<Extension, String> {
+    run_external_extension_with_runtime_env(
+        extension_path,
+        resolved_path,
+        runner,
+        timeout_ms,
+        runtime,
+        None,
+    )
+}
+
+fn run_external_extension_with_runtime_env(
+    extension_path: &str,
+    resolved_path: &Path,
+    runner: Option<&str>,
+    timeout_ms: Option<u64>,
+    runtime: &Arc<Mutex<ExtensionRuntime>>,
+    environment: Option<&BTreeMap<String, String>>,
+) -> Result<Extension, String> {
     let runner = match runner {
         Some(runner) => runner.to_string(),
         None => {
@@ -2021,11 +2171,14 @@ fn run_external_extension_with_runtime(
     if !is_javascript_runtime(&runner) {
         return run_external_extension_legacy(extension_path, resolved_path, &runner, timeout_ms);
     }
-    if let Some(diagnostic) = node_module_loading_diagnostic(&runner, resolved_path) {
-        return Err(diagnostic);
-    }
-    let (process, ready) =
-        spawn_external_bridge(extension_path, resolved_path, &runner, timeout_ms, runtime)?;
+    let (process, ready) = spawn_external_bridge(
+        extension_path,
+        resolved_path,
+        &runner,
+        timeout_ms,
+        runtime,
+        environment,
+    )?;
     external_extension_from_metadata(extension_path, resolved_path, &ready, process, runtime)
 }
 
@@ -2251,15 +2404,71 @@ fn load_extension_with_runtime(
     }
 }
 
-/// Resolve a path against a base directory without canonicalization
-/// (a conservative stand-in for the upstream `resolvePath`).
+fn normalize_extension_path(input: &str, normalize_unicode_spaces: bool) -> PathBuf {
+    let mut normalized = input.to_string();
+    if normalize_unicode_spaces {
+        normalized = normalized
+            .chars()
+            .map(|character| match character {
+                '\u{00a0}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' => ' ',
+                character => character,
+            })
+            .collect();
+    }
+    if normalized == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    } else if let Some(suffix) = normalized.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(suffix);
+        }
+    }
+    if normalized.starts_with("file://") {
+        if let Ok(url) = url::Url::parse(&normalized) {
+            if let Ok(path) = url.to_file_path() {
+                return path;
+            }
+        }
+    }
+    PathBuf::from(normalized)
+}
+
+fn lexical_absolute_path(path: PathBuf) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let _ = normalized.pop();
+            }
+            std::path::Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
+}
+
+/// Resolve a path with the same tilde, file-URL, Unicode-space, and lexical
+/// normalization behavior as the upstream `resolvePath` call used by the
+/// extension loader.
 pub fn resolve_relative_path(path: &str, base: &str) -> PathBuf {
-    let path_buf = PathBuf::from(path);
-    if path_buf.is_absolute() {
+    let path_buf = normalize_extension_path(path, true);
+    let base_buf = normalize_extension_path(base, false);
+    let candidate = if path_buf.is_absolute() {
         path_buf
     } else {
-        Path::new(base).join(path_buf)
-    }
+        base_buf.join(path_buf)
+    };
+    lexical_absolute_path(candidate)
 }
 
 /// Create the shared extension runtime (upstream `createExtensionRuntime`).
@@ -2491,6 +2700,33 @@ mod tests {
     }
 
     #[test]
+    fn resolve_relative_path_matches_upstream_normalization() {
+        let dir = sandbox("path-resolution");
+        let base = dir.join("project");
+        let nested = resolve_relative_path("./nested/../index.ts", &base.to_string_lossy());
+        assert_eq!(nested, base.join("index.ts"));
+
+        let unicode_space = resolve_relative_path("module\u{00a0}name.ts", &base.to_string_lossy());
+        assert_eq!(unicode_space, base.join("module name.ts"));
+
+        let file_url = url::Url::from_file_path(base.join("file.ts"))
+            .expect("sandbox path should convert to a file URL")
+            .to_string();
+        assert_eq!(
+            resolve_relative_path(&file_url, &base.to_string_lossy()),
+            base.join("file.ts")
+        );
+
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(
+                resolve_relative_path("~/pi-extension.ts", "."),
+                home.join("pi-extension.ts")
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn resolve_entries_none_when_no_entry() {
         let dir = sandbox("none");
         assert!(resolve_extension_entries(&dir).is_none());
@@ -2621,7 +2857,7 @@ mod tests {
 
     #[test]
     fn node_bridge_loads_typescript_with_relative_typescript_import() {
-        if !command_on_path("node") || !node_supports_type_stripping("node") {
+        if !command_on_path("node") {
             return;
         }
         let dir = sandbox("typescript");
@@ -2655,44 +2891,237 @@ export default (pi: any): void => {
     }
 
     #[test]
-    fn node_bridge_reports_tsx_boundary_deterministically() {
+    fn node_bridge_loads_tsx_with_embedded_jiti() {
         if !command_on_path("node") {
             return;
         }
         let dir = sandbox("tsx");
         let entry = dir.join("index.tsx");
-        fs::write(&entry, "export default (pi: any) => pi;").unwrap();
-
-        let error = run_external_extension("index.tsx", &entry, Some("node"), None)
-            .expect_err("Node must reject TSX without an explicit transpiler");
-        assert!(error.contains("TSX extension"), "{error}");
-        assert!(error.contains("does not embed jiti"), "{error}");
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn node_bridge_reports_unavailable_upstream_virtual_module() {
-        if !command_on_path("node") {
-            return;
-        }
-        let dir = sandbox("virtual-module");
-        let entry = dir.join("index.js");
         fs::write(
             &entry,
             r#"
-import * as tui from "@earendil-works/pi-tui";
-export default () => tui;
+const React = { createElement: (...args: any[]) => args };
+enum FixtureKind { Ready = "embedded-jiti-tsx" }
+export default (pi: any): void => {
+  const element: any = <div data-fixture="tsx" />;
+  const marker: string = `${FixtureKind.Ready}:${element[0]}`;
+  pi.registerFlag("tsx-fixture", { type: "string", default: marker });
+};
 "#,
         )
         .unwrap();
 
-        let error = run_external_extension("index.js", &entry, Some("node"), None)
-            .expect_err("the fixture intentionally has no virtual package installation");
-        assert!(
-            error.contains("Virtual module \"@earendil-works/pi-tui\" is not resolvable"),
-            "{error}"
+        let mut environment = BTreeMap::new();
+        environment.insert("PI_RUST_EXTENSION_JSX".to_string(), "1".to_string());
+        let runtime = create_extension_runtime();
+        let extension = run_external_extension_with_runtime_env(
+            "index.tsx",
+            &entry,
+            Some("node"),
+            None,
+            &runtime,
+            Some(&environment),
+        )
+        .expect("embedded jiti should transform a TSX extension");
+        assert_eq!(
+            extension
+                .flags
+                .get("tsx-fixture")
+                .and_then(|flag| flag.default.as_ref()),
+            Some(&serde_json::json!("embedded-jiti-tsx:div"))
         );
-        assert!(error.contains("does not embed jiti"), "{error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bun_bridge_loads_typescript_with_embedded_jiti() {
+        let Ok(runner) = std::env::var("PI_RUST_BUN") else {
+            return;
+        };
+        if !Path::new(&runner).is_file() {
+            return;
+        }
+        let dir = sandbox("bun-typescript");
+        let entry = dir.join("index.ts");
+        fs::write(
+            &entry,
+            r#"
+export default (pi: any): void => {
+  const marker: string = "embedded-jiti-bun";
+  pi.registerFlag("bun-fixture", { type: "string", default: marker });
+};
+"#,
+        )
+        .unwrap();
+
+        let extension = run_external_extension("index.ts", &entry, Some(&runner), None)
+            .expect("Bun should load a TypeScript extension through the embedded jiti runtime");
+        assert_eq!(
+            extension
+                .flags
+                .get("bun-fixture")
+                .and_then(|flag| flag.default.as_ref()),
+            Some(&serde_json::json!("embedded-jiti-bun"))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bun_bridge_injects_configured_virtual_module() {
+        let Ok(runner) = std::env::var("PI_RUST_BUN") else {
+            return;
+        };
+        if !Path::new(&runner).is_file() {
+            return;
+        }
+        let dir = sandbox("bun-virtual-module");
+        let module = dir.join("tui.js");
+        let entry = dir.join("index.js");
+        fs::write(
+            &module,
+            "const identity = globalThis.__piRustVirtualIdentity ??= {}; export { identity }; export const marker = 'bun-virtual-fixture';\n",
+        )
+        .unwrap();
+        fs::write(
+            &entry,
+            r#"
+import * as tui from "@earendil-works/pi-tui";
+import * as marioTui from "@mariozechner/pi-tui";
+export default (pi) => pi.registerFlag("bun-virtual-fixture", { type: "string", default: `${tui.marker}:${tui.identity === marioTui.identity ? "shared" : "different"}` });
+"#,
+        )
+        .unwrap();
+
+        let mut environment = BTreeMap::new();
+        environment.insert(
+            "PI_RUST_EXTENSION_VIRTUAL_MODULES".to_string(),
+            serde_json::json!({
+                "@earendil-works/pi-tui": module.to_string_lossy(),
+                "@mariozechner/pi-tui": module.to_string_lossy(),
+            })
+            .to_string(),
+        );
+        let runtime = create_extension_runtime();
+        let extension = run_external_extension_with_runtime_env(
+            "index.js",
+            &entry,
+            Some(&runner),
+            None,
+            &runtime,
+            Some(&environment),
+        )
+        .expect("Bun should resolve configured virtual modules through jiti");
+        assert_eq!(
+            extension
+                .flags
+                .get("bun-virtual-fixture")
+                .and_then(|flag| flag.default.as_ref()),
+            Some(&serde_json::json!("bun-virtual-fixture:shared"))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn node_bridge_injects_configured_virtual_module() {
+        if !command_on_path("node") {
+            return;
+        }
+        let dir = sandbox("virtual-module");
+        let module = dir.join("tui.js");
+        let entry = dir.join("index.js");
+        fs::write(
+            &module,
+            "const identity = globalThis.__piRustVirtualIdentity ??= {}; export { identity }; export const marker = 'virtual-fixture';\n",
+        )
+        .unwrap();
+        fs::write(
+            &entry,
+            r#"
+import * as tui from "@earendil-works/pi-tui";
+import * as marioTui from "@mariozechner/pi-tui";
+export default (pi) => pi.registerFlag("virtual-fixture", { type: "string", default: `${tui.marker}:${tui.identity === marioTui.identity ? "shared" : "different"}` });
+"#,
+        )
+        .unwrap();
+
+        let mut environment = BTreeMap::new();
+        environment.insert(
+            "PI_RUST_EXTENSION_VIRTUAL_MODULES".to_string(),
+            serde_json::json!({
+                "@earendil-works/pi-tui": module.to_string_lossy(),
+                "@mariozechner/pi-tui": module.to_string_lossy(),
+            })
+            .to_string(),
+        );
+        let runtime = create_extension_runtime();
+        let result = run_external_extension_with_runtime_env(
+            "index.js",
+            &entry,
+            Some("node"),
+            None,
+            &runtime,
+            Some(&environment),
+        );
+        let extension = result.expect("configured virtual module should resolve through jiti");
+        assert_eq!(
+            extension
+                .flags
+                .get("virtual-fixture")
+                .and_then(|flag| flag.default.as_ref()),
+            Some(&serde_json::json!("virtual-fixture:shared"))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn node_bridge_resolves_configured_alias() {
+        if !command_on_path("node") {
+            return;
+        }
+        let dir = sandbox("alias-module");
+        let module = dir.join("pi-tui.js");
+        let entry = dir.join("index.js");
+        fs::write(
+            &module,
+            "const identity = globalThis.__piRustAliasIdentity ??= {}; export { identity }; export const marker = 'alias-fixture';\n",
+        )
+        .unwrap();
+        fs::write(
+            &entry,
+            r#"
+import * as tui from "@earendil-works/pi-tui";
+import * as marioTui from "@mariozechner/pi-tui";
+export default (pi) => pi.registerFlag("alias-fixture", { type: "string", default: `${tui.marker}:${tui.identity === marioTui.identity ? "shared" : "different"}` });
+"#,
+        )
+        .unwrap();
+
+        let mut environment = BTreeMap::new();
+        environment.insert(
+            "PI_RUST_EXTENSION_ALIASES".to_string(),
+            serde_json::json!({
+                "@earendil-works/pi-tui": module.to_string_lossy(),
+                "@mariozechner/pi-tui": module.to_string_lossy(),
+            })
+            .to_string(),
+        );
+        let runtime = create_extension_runtime();
+        let extension = run_external_extension_with_runtime_env(
+            "index.js",
+            &entry,
+            Some("node"),
+            None,
+            &runtime,
+            Some(&environment),
+        )
+        .expect("configured alias should resolve through jiti");
+        assert_eq!(
+            extension
+                .flags
+                .get("alias-fixture")
+                .and_then(|flag| flag.default.as_ref()),
+            Some(&serde_json::json!("alias-fixture:shared"))
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

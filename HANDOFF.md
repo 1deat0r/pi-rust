@@ -26,23 +26,70 @@ ledger freeze. Do not claim 100% before the final clean-room audit.
 
 ## Important working-tree state
 
-The current logical checkpoint is the pushed all-mode native-provider wiring
-at `34a944165fa1b8700b3b78c40715b9071bf9b446`, with S-001, S-002, and #99
-evidenced and S-027 still open for its jiti/Bun residuals. The
-pre-existing untracked `AGENTS.md` remains untouched and must be preserved. Do not use
-`git reset --hard`, `git checkout --`, broad revert commands, or `git clean`.
+The latest pushed checkpoint before the current implementation slice is
+`2fd84716f542e9ea83c94e7aff315299eb43d843`. The current worktree contains
+uncommitted S-027 extension-runtime work in `loader.rs`, `types.rs`,
+`interactive.rs`, `extensions_parity.rs`, `Cargo.toml`/`Cargo.lock`, and the
+new `data/extension-runtime/` assets. The pre-existing untracked `AGENTS.md`
+remains untouched and must be preserved. Do not use `git reset --hard`,
+`git checkout --`, broad revert commands, or `git clean`.
 
 Current status: branch `main`, progress checker reports
-`96.99% (161/166; 5 open)`. The latest pushed checkpoint is
-`34a944165fa1b8700b3b78c40715b9071bf9b446`; local `HEAD` and
-`git ls-remote origin refs/heads/main` match. The current worktree is clean
-except for the pre-existing untracked `AGENTS.md`, which remains untouched and
-unstaged. The next logical checkpoint is an independent S-004 residual review,
-followed by the clean-room and final source/TODO denominator gates.
+`96.99% (161/166; 5 open)`. No ledger checkbox changed in this slice. The
+embedded `jiti@2.7.0`/Babel runtime, Node/Bun option branching, configured
+alias/virtual-module fixtures, upstream-style path normalization, and
+interactive reload re-evaluation are implemented and locally validated.
+The remaining S-027 residuals are the built-in pi/TypeBox JS module graph,
+compiled-Bun/Node-SEA virtual-module branches, and full reload
+lifecycle/resource/flag evidence. After documentation synchronization, make
+one focused commit, push it immediately, verify local/remote hashes, then run
+the fresh clean-room and final S-004/S-065/S-066/#100 gates.
 
 All sections below whose headings say “Current checkpoint” and which contain
 older percentages or commits are historical snapshots from earlier turns.
 The latest active sections near the end of this file supersede them.
+
+## Current implementation checkpoint — 2026-08-25 — S-027 runtime partial
+
+The bridge now embeds the byte-identical jiti@2.7.0 jiti.cjs and babel.cjs
+artifacts plus a jiti-static.mjs wrapper, selects the pinned Node alias versus
+Bun virtualModules/tryNative: false option branch, supports explicit
+alias/virtual-module maps with shared exported-object fixtures, and normalizes
+tilde/file-URL/Unicode-space/lexical extension paths. /reload now re-evaluates
+the configured extension set, invalidates the old runner, removes and
+re-registers native providers, and refreshes the host catalog. The runtime
+keeps the mode-scoped ExtensionRuntime alive without reintroducing an
+ownership cycle, and materialized assets are cleaned up on bridge shutdown.
+
+Validation completed in this checkpoint:
+
+```text
+cargo fmt -p pi-coding-agent
+cargo test -p pi-coding-agent --offline --lib core::extensions::loader::tests --quiet
+  19 passed
+PI_RUST_BUN=/tmp/pi-bun-runtime.JisAfQ/bun-linux-x64/bun cargo test -p pi-coding-agent --offline --lib core::extensions::loader::tests --quiet
+  19 passed; Bun 1.4.0
+cargo test -p pi-coding-agent --offline --lib modes::interactive::tests::interactive_reload_re_evaluates_extension_and_refreshes_tools --quiet
+  1 passed
+cargo test -p pi-coding-agent --offline --lib core::extensions --quiet
+  38 passed
+cargo test -p pi-coding-agent --offline --test extensions_parity --quiet -- --test-threads=1
+  15 passed
+cargo test -p pi-coding-agent --offline --lib --quiet -- --test-threads=2
+  483 passed
+cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings
+cargo fmt --all -- --check
+git diff --check
+node scripts/conversion-progress.mjs
+  Conversion progress: 96.99% (161/166; 5 open)
+```
+
+The ignored S-027 audit remains APPROVE-WITH-CONDITIONS and correctly keeps
+S-027 open. The next dependency-safe action is to decide whether to supply a
+supported JS module graph/adapter for the 20 built-in upstream aliases and
+compiled-Bun/SEA branches; if not, record that intentional boundary and run
+the final independent S-004/S-065/S-066/#100 audit. Do not claim 100% until
+the ledger, plan, handoff, clean-room, and remote hash gates agree.
 
 ## Current strict-verification cleanup
 

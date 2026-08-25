@@ -56,6 +56,9 @@ struct InteractiveRuntime {
     tools_enabled: bool,
     builtin_tools_enabled: bool,
     extensions: LoadedExtensions,
+    native_provider_ids: Vec<String>,
+    extension_args: Args,
+    extension_agent_dir: String,
     auto_resize_images: bool,
     block_images: bool,
     /// Number of in-memory messages already persisted into the current
@@ -131,6 +134,61 @@ fn interactive_turn_tools(runtime: &InteractiveRuntime) -> Vec<pi_agent::tools::
     };
     install_tools(&runtime.extensions, &mut tools, runtime.tools_enabled);
     tools
+}
+
+fn loaded_native_provider_ids(loaded: &LoadedExtensions) -> Vec<String> {
+    loaded
+        .runtime
+        .lock()
+        .map(|runtime| {
+            runtime
+                .pending_native_provider_registrations
+                .iter()
+                .map(|registration| registration.provider.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Rebuild the mode-scoped extension runtime after `/reload`. The upstream
+/// resource loader re-evaluates every extension with a fresh module cache;
+/// replacing the runner here also tears down the persistent bridge process and
+/// refreshes native providers and the synchronous host tool catalog.
+fn reload_extensions(
+    runtime: &mut InteractiveRuntime,
+    settings: &SettingsManager,
+    thinking_level: &str,
+) -> Vec<String> {
+    let reloaded_extensions = load_for_mode(
+        &runtime.extension_args,
+        settings,
+        &runtime.cwd,
+        &runtime.extension_agent_dir,
+        "interactive",
+        true,
+        runtime.session_name.clone(),
+        thinking_level.to_string(),
+    );
+    let mut notes = reloaded_extensions
+        .errors
+        .iter()
+        .map(|error| format!("{}: {}", error.path, error.error))
+        .collect::<Vec<_>>();
+    for provider_id in runtime.native_provider_ids.drain(..) {
+        runtime.models.delete_provider(&provider_id);
+    }
+    let old_extensions = std::mem::replace(&mut runtime.extensions, reloaded_extensions);
+    old_extensions
+        .runner
+        .invalidate(Some("interactive extension reload"));
+    runtime.native_provider_ids = loaded_native_provider_ids(&runtime.extensions);
+    match register_loaded_native_providers(&runtime.models, &runtime.extensions) {
+        Ok(count) if count > 0 => notes.push(format!("reloaded {count} native provider(s)")),
+        Ok(_) => {}
+        Err(error) => notes.push(format!("native provider reload failed: {error}")),
+    }
+    let _ = interactive_turn_tools(runtime);
+    notes
 }
 
 /// Stream a prompt through the agent loop, observing raw events.
@@ -1072,7 +1130,10 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         system_prompt: args.system_prompt.clone(),
         tools_enabled: !args.no_tools,
         builtin_tools_enabled: !args.no_tools && !args.no_builtin_tools,
+        native_provider_ids: loaded_native_provider_ids(&extensions),
         extensions,
+        extension_args: args.clone(),
+        extension_agent_dir: agent_dir.clone(),
         auto_resize_images: settings.get_image_auto_resize(),
         block_images: settings.get_block_images(),
         persisted_until: 0,
@@ -1744,8 +1805,13 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     if theme_after != theme_before {
                                         notes.push(format!("theme changed to {theme_after}"));
                                     }
+                                    notes.extend(reload_extensions(
+                                        &mut runtime,
+                                        &settings,
+                                        &thinking_level,
+                                    ));
                                     if notes.is_empty() {
-                                        status_banner = "reloaded settings".to_string();
+                                        status_banner = "reloaded settings and extensions".to_string();
                                     } else {
                                         status_banner = format!("reloaded settings ({})", notes.join("; "));
                                     }
@@ -2143,7 +2209,7 @@ mod tests {
             "off",
         );
         InteractiveRuntime {
-            cwd,
+            cwd: cwd.clone(),
             models,
             faux_core,
             provider: "faux".to_string(),
@@ -2157,7 +2223,13 @@ mod tests {
             system_prompt: None,
             tools_enabled: true,
             builtin_tools_enabled: true,
+            native_provider_ids: Vec::new(),
             extensions,
+            extension_args: Args {
+                no_extensions: true,
+                ..Default::default()
+            },
+            extension_agent_dir: cwd.clone(),
             auto_resize_images: true,
             block_images: false,
             persisted_until: 0,
@@ -2276,6 +2348,73 @@ mod tests {
         runtime.tools_enabled = false;
         assert!(interactive_turn_tools(&runtime).is_empty());
         assert_eq!(runtime.extensions.host.snapshot()["activeTools"], json!([]));
+
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn interactive_reload_re_evaluates_extension_and_refreshes_tools() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "pi-interactive-extension-reload-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let extension = root.join("index.js");
+        let source = |tool_name: &str| {
+            format!(
+                r#"export default function (pi) {{
+  pi.registerTool({{
+    name: "{tool_name}",
+    description: "reload fixture",
+    parameters: {{ type: "object", properties: {{}} }},
+    execute: async () => ({{ content: [{{ type: "text", text: "ok" }}] }}),
+  }});
+}}"#
+            )
+        };
+        std::fs::write(&extension, source("reload-v1")).unwrap();
+
+        let args = Args {
+            extensions: vec![extension.to_string_lossy().into_owned()],
+            no_extensions: true,
+            ..Default::default()
+        };
+        let settings = SettingsManager::in_memory(crate::core::settings::SettingsMap::new());
+        let mut runtime = test_runtime(&root).await;
+        runtime.extension_args = args.clone();
+        runtime.extension_agent_dir = root.to_string_lossy().into_owned();
+        runtime.extensions = load_for_mode(
+            &args,
+            &settings,
+            &runtime.cwd,
+            &runtime.extension_agent_dir,
+            "interactive",
+            true,
+            runtime.session_name.clone(),
+            "off",
+        );
+        assert!(runtime.extensions.errors.is_empty());
+        let first_tools = interactive_turn_tools(&runtime);
+        assert!(first_tools.iter().any(|tool| tool.tool.name == "reload-v1"));
+
+        std::fs::write(&extension, source("reload-v2")).unwrap();
+        let notes = reload_extensions(&mut runtime, &settings, "off");
+        assert!(notes.is_empty(), "reload notes: {notes:?}");
+        let second_tools = interactive_turn_tools(&runtime);
+        assert!(second_tools
+            .iter()
+            .any(|tool| tool.tool.name == "reload-v2"));
+        assert!(!second_tools
+            .iter()
+            .any(|tool| tool.tool.name == "reload-v1"));
 
         drop(runtime);
         let _ = std::fs::remove_dir_all(&root);

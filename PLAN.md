@@ -32,10 +32,16 @@ local JS/TS imports, live external-tool callbacks, a production-shaped shared
 runtime bind, synchronous getter snapshots, callback-scoped context signal and
 control actions, ordered tool updates, a bridge-native-provider event protocol,
 typed native-provider conversion into pi-ai `ProviderStreams`/`Models`,
-stale-process invalidation, and timeout/protocol cleanup. Print, JSON, RPC, and
-interactive startup now register queued native providers into the live Models
-facade before provider/model lookup. S-027 remains open for pinned jiti/module
-virtualization and Bun-specific runtime verification.
+stale-process invalidation, and timeout/protocol cleanup. The active
+`leaf-C2d` implementation checkpoint now embeds byte-identical `jiti@2.7.0`
+and Babel assets, selects aliases versus virtual modules using the pinned
+Node/Bun option split, normalizes extension paths like upstream, preserves
+shared exported-object values across configured mirror keys, and re-evaluates
+the interactive extension set on `/reload`. Print, JSON, RPC, and interactive
+startup register queued native providers into the live Models facade before
+provider/model lookup. S-027 remains open only for the built-in pi/TypeBox JS
+module graph, compiled-Bun/Node-SEA branches, and full reload
+lifecycle/resource/flag evidence.
 
 ## Checkpoint 2026-08-25 — progress gate and release verification
 
@@ -44,10 +50,13 @@ documentation, checker, and real-binary evidence. The unit/mock checker suite
 (`node --test
 scripts/conversion-progress.test.mjs`, 7 passed), and the authoritative
 checker is **Conversion progress: 96.99% (161/166; 5 open)**. The extension
-loader now has native Node TypeScript stripping and deterministic TSX/virtual-
-module boundary diagnostics; the live mode adapter maps extension tool results,
-host actions, and synchronous context snapshots and is covered by 15 loader
-tests plus 3 integration tests. #97 is closed with
+loader now embeds pinned `jiti@2.7.0`/Babel assets, transforms TS/TSX through
+`jiti/static`, covers configured alias/virtual-module loading, and emits
+deterministic known-module diagnostics; the live mode adapter maps extension
+tool results, host actions, and synchronous context snapshots and is covered
+by 19 loader tests plus 4 integration tests. Bun 1.4.0 runs the same loader
+fixture set. Interactive reload re-evaluates changed extension source and
+refreshes the tool catalog. #97 is closed with
 `cargo build --workspace --release --offline` and the full release suite using
 `cargo test --workspace --release --offline --quiet -- --test-threads=2`.
 The bounded test concurrency is required to keep the live tmux/PTY fixtures

@@ -1135,7 +1135,10 @@ export default function (pi) {
     let error = runner
         .execute_command("slow", "args")
         .expect_err("slow callback must time out");
-    assert!(error.contains("Extension bridge request timed out after 250ms"));
+    assert!(
+        error.contains("Extension bridge request timed out after 250ms"),
+        "unexpected timeout error: {error}"
+    );
     let second_error = runner
         .execute_command("slow", "args")
         .expect_err("timed-out bridge must stay closed");

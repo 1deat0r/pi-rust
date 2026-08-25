@@ -274,6 +274,11 @@ pub struct ResolvedCommand {
 pub struct Extension {
     pub path: String,
     pub resolved_path: String,
+    /// Keeps the mode-scoped runtime alive for external callback closures.
+    /// The bridge process holds only a weak reference so invalidation can
+    /// terminate it without creating an `Extension -> process -> runtime`
+    /// ownership cycle.
+    pub runtime: Option<Arc<Mutex<ExtensionRuntime>>>,
     pub hidden: bool,
     pub source_info: SourceInfo,
     pub handlers: BTreeMap<String, Vec<HandlerFn>>,

@@ -19,11 +19,15 @@ S-027 now has a native-provider bridge protocol and fixture for `streamSimple`
 callback input plus start/text/done events. The Rust boundary adapter also
 converts provider definitions and native events into typed pi-ai provider
 streams/models, with the typed `Models::stream_simple` path covered by the
-external fixture. Print, JSON, RPC, and interactive startup now register these
-providers before model lookup; the binary print fixture covers the production
-selection path. It remains open for jiti-compatible module virtualization and
-Bun verification. The current context/action object and ordered mid-execution
-signal/update path are covered by the focused integration and external-bridge
-fixtures; the remaining provider/runtime leaves are intentionally not repeated
-as done claims here.
+external fixture. The bridge now embeds byte-identical `jiti@2.7.0`/Babel
+assets, covers TS/TSX, configured aliases and virtual modules under Node and
+Bun 1.4.0, normalizes extension paths like upstream, and re-evaluates the
+interactive extension set on `/reload`. Print, JSON, RPC, and interactive
+startup register these providers before model lookup; the binary print fixture
+covers the production selection path. It remains open for the actual built-in
+pi/TypeBox JS module graph, compiled-Bun/Node-SEA virtual-module branches, and
+full reload lifecycle/resource/flag evidence. The current context/action
+object and ordered mid-execution signal/update path are covered by the focused
+integration and external-bridge fixtures; the remaining provider/runtime
+leaves are intentionally not repeated as done claims here.
 The final process gates are S-004, S-065, S-066, and #100.
