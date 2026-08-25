@@ -126,6 +126,11 @@ no pending UI-request channel; an inbound `extension_ui_response` is safely
 ignored as upstream does when no request is pending. Credentialed live-provider
 inference was not used for this protocol-only checkpoint.
 
+This scoped implementation and documentation checkpoint is committed and
+pushed as `952256c5c230daf8f204f41d7ffb8d7b20c38696`; local `HEAD` and
+`origin/main` were verified equal. The pre-existing untracked and unrelated
+working-tree changes remain preserved and outside this commit.
+
 ## Bounded pi-agent lifecycle parity checkpoint — 2026-08-26
 
 No numbered conversion-ledger row changed in this bounded slice. It refines

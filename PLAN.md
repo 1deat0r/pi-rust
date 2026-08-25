@@ -102,6 +102,11 @@ finishing, so it is not part of this change. Remaining protocol limitation:
 the Rust extension host has no pending extension-UI request channel, so it can
 consume a response envelope but cannot originate/resolve UI requests yet.
 
+This bounded checkpoint is committed and pushed as
+`952256c5c230daf8f204f41d7ffb8d7b20c38696`; local and remote `main` hashes
+match. The next RPC-specific dependency is a Rust extension-UI request channel;
+the unrelated restored `radius.rs` borrow error remains outside this slice.
+
 ## Checkpoint 2026-08-26 — bounded pi-agent lifecycle parity
 
 This bounded slice refines the existing S-018/S-019/S-038 evidence without

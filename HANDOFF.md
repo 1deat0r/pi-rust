@@ -146,10 +146,14 @@ temporary one-line repair of unrelated untracked `radius.rs`; it was restored
 before this checkpoint and will not be committed. With it restored, the normal
 coding-agent rebuild remains blocked by that existing `E0515`.
 
-Next action: stage only the scoped source/fixture files plus
-`CONVERSION-LEDGER.md`, `PLAN.md`, and `HANDOFF.md`, commit, push `main`, and
-verify local/remote hashes. Do not stage `AGENTS.md`, provider/auth files,
-interactive files, or any `pi-tui` changes.
+This checkpoint is committed and pushed as
+`952256c5c230daf8f204f41d7ffb8d7b20c38696`; `git rev-parse HEAD` and
+`git ls-remote origin refs/heads/main` were verified equal. The branch is
+`main`; the working tree still contains unrelated pre-existing dirty changes,
+including the unstaged OAuth-refresh hunk in `rpc.rs`, provider/auth work,
+interactive work, `pi-tui` work, untracked `AGENTS.md`, and the untracked
+Radius file. None was staged. The next RPC-specific dependency is implementing
+the Rust extension-UI request channel; do not stage those unrelated paths.
 
 ## Current bounded pi-agent lifecycle checkpoint — 2026-08-26
 
