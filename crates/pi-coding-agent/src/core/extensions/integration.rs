@@ -10,7 +10,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pi_agent::tools::{AgentTool, AgentToolResult, ToolExecuteFn, ToolUpdateCallback};
-use pi_ai::types::{json_tool, ContentBlock};
+use pi_ai::auth::{ApiKeyAuth, ApiKeyCredential, AuthCheck, AuthContext, AuthResult, ModelAuth};
+use pi_ai::event_stream::{create_error_stream, AssistantMessageEventStream};
+use pi_ai::model::Model;
+use pi_ai::models::{
+    create_provider, CreateProviderOptions, Models, ProviderApiSpec, ProviderStreams,
+};
+use pi_ai::types::{
+    json_tool, AssistantMessage, AssistantMessageEvent, ContentBlock, Context, DoneReason,
+    ErrorReason, SimpleStreamOptions, StopReason, StreamOptions,
+};
 use serde_json::{json, Value};
 
 use crate::args::Args;
@@ -18,7 +27,445 @@ use crate::core::settings::SettingsManager;
 
 use super::loader::{discover_and_load_extensions, load_extensions_with_host_actions};
 use super::runner::ExtensionRunner;
-use super::types::{ExtensionHostAction, ExtensionHostActions, ExtensionLoadError, RegisteredTool};
+use super::types::{
+    ExtensionHostAction, ExtensionHostActions, ExtensionLoadError,
+    PendingNativeProviderRegistration, RegisteredTool,
+};
+
+fn native_context_value(context: &Context) -> Value {
+    json!({
+        "systemPrompt": context.system_prompt,
+        "messages": context.messages,
+        "tools": context.tools,
+    })
+}
+
+fn native_stream_options_value(options: Option<&StreamOptions>) -> Value {
+    let Some(options) = options else {
+        return Value::Null;
+    };
+    json!({
+        "temperature": options.temperature,
+        "samplingParams": options.sampling_params,
+        "maxTokens": options.max_tokens,
+        "sessionId": options.session_id,
+        "metadata": options.metadata,
+    })
+}
+
+fn native_simple_options_value(options: Option<&SimpleStreamOptions>) -> Value {
+    let Some(options) = options else {
+        return Value::Null;
+    };
+    let mut value = native_stream_options_value(Some(&options.base));
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "reasoning".to_string(),
+            options
+                .reasoning
+                .map(|reasoning| Value::String(format!("{reasoning:?}")))
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "thinkingBudgets".to_string(),
+            serde_json::to_value(&options.thinking_budgets).unwrap_or(Value::Null),
+        );
+    }
+    value
+}
+
+fn default_native_message(model: &Model) -> AssistantMessage {
+    let mut message = AssistantMessage::new();
+    message.set_api_provider_model(&model.api, &model.provider, &model.id);
+    message
+}
+
+fn parse_stop_reason(value: Option<&Value>) -> Option<StopReason> {
+    value
+        .and_then(Value::as_str)
+        .and_then(|value| serde_json::from_value(Value::String(value.to_string())).ok())
+}
+
+fn parse_assistant_message(value: Option<&Value>, model: &Model) -> AssistantMessage {
+    let Some(value) = value else {
+        return default_native_message(model);
+    };
+    if let Ok(message) = serde_json::from_value::<AssistantMessage>(value.clone()) {
+        return message;
+    }
+    let mut message = default_native_message(model);
+    if let Some(content) = value.get("content") {
+        if let Ok(content) = serde_json::from_value::<Vec<ContentBlock>>(content.clone()) {
+            message.set_content(content);
+        }
+    }
+    if let Some(reason) =
+        parse_stop_reason(value.get("stopReason").or_else(|| value.get("stop_reason")))
+    {
+        message.set_stop_reason(reason);
+    }
+    if let Some(error) = value
+        .get("errorMessage")
+        .or_else(|| value.get("error_message"))
+        .and_then(Value::as_str)
+    {
+        message.set_error_message(error);
+    }
+    if let Some(usage) = value.get("usage") {
+        if let Ok(usage) = serde_json::from_value(usage.clone()) {
+            message.set_usage(usage);
+        }
+    }
+    message
+}
+
+fn parse_done_reason(value: Option<&Value>) -> DoneReason {
+    match value.and_then(Value::as_str).unwrap_or("stop") {
+        "length" => DoneReason::Length,
+        "tool_use" | "toolUse" => DoneReason::ToolUse,
+        "deferred" => DoneReason::Deferred,
+        _ => DoneReason::Stop,
+    }
+}
+
+fn parse_error_reason(value: Option<&Value>) -> ErrorReason {
+    match value.and_then(Value::as_str).unwrap_or("error") {
+        "aborted" => ErrorReason::Aborted,
+        _ => ErrorReason::Error,
+    }
+}
+
+fn parse_native_event(value: &Value, model: &Model) -> Result<AssistantMessageEvent, String> {
+    let event_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "native provider event is missing type".to_string())?;
+    let partial = || parse_assistant_message(value.get("partial"), model);
+    let index = || {
+        value
+            .get("contentIndex")
+            .or_else(|| value.get("content_index"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize
+    };
+    match event_type {
+        "start" => Ok(AssistantMessageEvent::Start { partial: partial() }),
+        "text_start" => Ok(AssistantMessageEvent::TextStart {
+            content_index: index(),
+            partial: partial(),
+        }),
+        "text_delta" => Ok(AssistantMessageEvent::TextDelta {
+            content_index: index(),
+            delta: value
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            partial: partial(),
+        }),
+        "text_end" => Ok(AssistantMessageEvent::TextEnd {
+            content_index: index(),
+            content: value
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            partial: partial(),
+        }),
+        "thinking_start" => Ok(AssistantMessageEvent::ThinkingStart {
+            content_index: index(),
+            partial: partial(),
+        }),
+        "thinking_delta" => Ok(AssistantMessageEvent::ThinkingDelta {
+            content_index: index(),
+            delta: value
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            partial: partial(),
+        }),
+        "thinking_end" => Ok(AssistantMessageEvent::ThinkingEnd {
+            content_index: index(),
+            content: value
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            partial: partial(),
+        }),
+        "tool_call_start" => Ok(AssistantMessageEvent::ToolCallStart {
+            content_index: index(),
+            partial: partial(),
+        }),
+        "tool_call_delta" => Ok(AssistantMessageEvent::ToolCallDelta {
+            content_index: index(),
+            delta: value
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            partial: partial(),
+        }),
+        "tool_call_end" => {
+            let tool_call = value
+                .get("toolCall")
+                .or_else(|| value.get("tool_call"))
+                .cloned()
+                .ok_or_else(|| "native tool_call_end event is missing toolCall".to_string())?;
+            let tool_call = serde_json::from_value(tool_call)
+                .map_err(|error| format!("invalid native tool call: {error}"))?;
+            Ok(AssistantMessageEvent::ToolCallEnd {
+                content_index: index(),
+                tool_call,
+                partial: partial(),
+            })
+        }
+        "done" => Ok(AssistantMessageEvent::Done {
+            reason: parse_done_reason(value.get("reason")),
+            message: parse_assistant_message(value.get("message"), model),
+        }),
+        "error" => Ok(AssistantMessageEvent::Error {
+            reason: parse_error_reason(value.get("reason")),
+            error_message: parse_assistant_message(
+                value.get("errorMessage").or_else(|| value.get("message")),
+                model,
+            ),
+        }),
+        other => Err(format!("unsupported native provider event type: {other}")),
+    }
+}
+
+fn native_events_to_stream(model: &Model, events: Vec<Value>) -> AssistantMessageEventStream {
+    let mut stream = AssistantMessageEventStream::new();
+    let mut terminal = false;
+    for event in events {
+        match parse_native_event(&event, model) {
+            Ok(parsed) => {
+                terminal = matches!(
+                    parsed,
+                    AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+                );
+                stream.push(parsed);
+            }
+            Err(error) => {
+                return create_error_stream(&model.api, &model.provider, &model.id, error);
+            }
+        }
+    }
+    if !terminal {
+        return create_error_stream(
+            &model.api,
+            &model.provider,
+            &model.id,
+            "native provider callback ended without a terminal event".to_string(),
+        );
+    }
+    stream
+}
+
+fn native_provider_streams(
+    registration: &PendingNativeProviderRegistration,
+) -> Result<ProviderStreams, String> {
+    let full = registration
+        .callbacks
+        .get("stream")
+        .cloned()
+        .or_else(|| registration.callbacks.get("streamSimple").cloned())
+        .ok_or_else(|| {
+            format!(
+                "native provider {:?} has no stream callback",
+                registration.provider
+            )
+        })?;
+    let simple = registration
+        .callbacks
+        .get("streamSimple")
+        .cloned()
+        .or_else(|| registration.callbacks.get("stream").cloned())
+        .ok_or_else(|| {
+            format!(
+                "native provider {:?} has no stream callback",
+                registration.provider
+            )
+        })?;
+    let stream = Arc::new(
+        move |model: &Model, context: &Context, options: Option<&StreamOptions>| {
+            let events = full(
+                serde_json::to_value(model).unwrap_or(Value::Null),
+                native_context_value(context),
+                native_stream_options_value(options),
+            );
+            match events {
+                Ok(events) => native_events_to_stream(model, events),
+                Err(error) => create_error_stream(&model.api, &model.provider, &model.id, error),
+            }
+        },
+    );
+    let stream_simple = Arc::new(
+        move |model: &Model, context: &Context, options: Option<&SimpleStreamOptions>| {
+            let events = simple(
+                serde_json::to_value(model).unwrap_or(Value::Null),
+                native_context_value(context),
+                native_simple_options_value(options),
+            );
+            match events {
+                Ok(events) => native_events_to_stream(model, events),
+                Err(error) => create_error_stream(&model.api, &model.provider, &model.id, error),
+            }
+        },
+    );
+    Ok(ProviderStreams {
+        stream,
+        stream_simple,
+        fetch_deferred: None,
+        cancel_deferred: None,
+    })
+}
+
+struct NativeProviderAuth;
+
+impl ApiKeyAuth for NativeProviderAuth {
+    fn name(&self) -> &str {
+        "extension provider"
+    }
+
+    fn check(
+        &self,
+        _ctx: &AuthContext,
+        _credential: Option<&ApiKeyCredential>,
+    ) -> Option<AuthCheck> {
+        Some(AuthCheck {
+            source: Some("extension".to_string()),
+            auth_type: "api_key",
+        })
+    }
+
+    fn resolve(
+        &self,
+        _ctx: &AuthContext,
+        _credential: Option<&ApiKeyCredential>,
+    ) -> Option<AuthResult> {
+        Some(AuthResult {
+            auth: ModelAuth::default(),
+            env: None,
+            source: Some("extension".to_string()),
+        })
+    }
+}
+
+fn native_models(registration: &PendingNativeProviderRegistration) -> Result<Vec<Model>, String> {
+    let definition = registration
+        .definition
+        .as_object()
+        .ok_or_else(|| "native provider definition must be an object".to_string())?;
+    let default_api = definition
+        .get("api")
+        .and_then(Value::as_str)
+        .unwrap_or("openai-completions");
+    let default_base_url = definition
+        .get("baseUrl")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let raw_models = definition
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("native provider {:?} has no models", registration.provider))?;
+    raw_models
+        .iter()
+        .map(|raw| {
+            let mut object = raw
+                .as_object()
+                .cloned()
+                .ok_or_else(|| "native provider model must be an object".to_string())?;
+            let id = object
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| "native provider model is missing id".to_string())?;
+            object
+                .entry("name".to_string())
+                .or_insert_with(|| Value::String(id.clone()));
+            object
+                .entry("api".to_string())
+                .or_insert_with(|| Value::String(default_api.to_string()));
+            object
+                .entry("provider".to_string())
+                .or_insert_with(|| Value::String(registration.provider.clone()));
+            object
+                .entry("baseUrl".to_string())
+                .or_insert_with(|| Value::String(default_base_url.to_string()));
+            object
+                .entry("reasoning".to_string())
+                .or_insert(Value::Bool(false));
+            object
+                .entry("input".to_string())
+                .or_insert_with(|| json!(["text"]));
+            object.entry("cost".to_string()).or_insert_with(
+                || json!({"input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0}),
+            );
+            object
+                .entry("contextWindow".to_string())
+                .or_insert(Value::from(128_000_u64));
+            object
+                .entry("maxTokens".to_string())
+                .or_insert(Value::from(16_384_u64));
+            serde_json::from_value(Value::Object(object))
+                .map_err(|error| format!("invalid native provider model {id:?}: {error}"))
+        })
+        .collect()
+}
+
+/// Register an externally-defined native provider in the Rust Models facade.
+/// The bridge owns callback execution; this helper owns typed model and event
+/// conversion so mode startup can bind the provider without a second runtime.
+pub fn register_native_provider(
+    models: &Models,
+    registration: &PendingNativeProviderRegistration,
+) -> Result<(), String> {
+    let definition = registration
+        .definition
+        .as_object()
+        .ok_or_else(|| "native provider definition must be an object".to_string())?;
+    let provider = create_provider(CreateProviderOptions {
+        id: registration.provider.clone(),
+        name: definition
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        base_url: definition
+            .get("baseUrl")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        headers: None,
+        auth: pi_ai::auth::ProviderAuth {
+            api_key: Some(Arc::new(NativeProviderAuth)),
+            oauth: None,
+        },
+        models: native_models(registration)?,
+        api: ProviderApiSpec::Single(native_provider_streams(registration)?),
+        filter_models: None,
+    });
+    models.set_provider(provider);
+    Ok(())
+}
+
+/// Register every native provider queued by a loaded extension set.
+pub fn register_loaded_native_providers(
+    models: &Models,
+    loaded: &LoadedExtensions,
+) -> Result<usize, String> {
+    let registrations = loaded
+        .runtime
+        .lock()
+        .map_err(|_| "Extension runtime lock poisoned".to_string())?
+        .pending_native_provider_registrations
+        .clone();
+    for registration in &registrations {
+        register_native_provider(models, registration)?;
+    }
+    Ok(registrations.len())
+}
 
 #[derive(Debug)]
 struct ExtensionHostStateInner {
@@ -459,6 +906,7 @@ impl ExtensionHostActions for ExtensionHostState {
 pub struct LoadedExtensions {
     pub runner: Arc<ExtensionRunner>,
     pub host: Arc<ExtensionHostState>,
+    pub runtime: Arc<Mutex<super::types::ExtensionRuntime>>,
     pub errors: Vec<ExtensionLoadError>,
 }
 
@@ -490,12 +938,14 @@ pub fn load_for_mode(
         result.bind_core_with_actions(host.clone());
         result
     };
+    let runtime = result.runtime.clone();
     let mut runner = ExtensionRunner::new(result.extensions, result.runtime, cwd.to_string());
     runner.set_ui_context(mode, has_ui);
     let runner = Arc::new(runner);
     LoadedExtensions {
         runner,
         host,
+        runtime,
         errors: result.errors,
     }
 }

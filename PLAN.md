@@ -30,11 +30,11 @@ The current extension bridge (`leaf-C2d`) is a persistent Node/Bun JSONL
 boundary with deterministic async command/hook/renderer/provider fixtures,
 local JS/TS imports, live external-tool callbacks, a production-shaped shared
 runtime bind, synchronous getter snapshots, callback-scoped context signal and
-control actions, ordered tool updates, a bridge-native-provider event
-protocol, stale-process invalidation, and timeout/protocol cleanup. S-027
-remains open for pinned jiti/module virtualization, typed conversion of native
-provider events into pi-ai `ProviderStreams`/`Models`, Bun-specific runtime
-verification, and live mode/model-registry wiring.
+control actions, ordered tool updates, a bridge-native-provider event protocol,
+typed native-provider conversion into pi-ai `ProviderStreams`/`Models`,
+stale-process invalidation, and timeout/protocol cleanup. S-027 remains open
+for pinned jiti/module virtualization, Bun-specific runtime verification, and
+live mode/model-registry wiring.
 
 ## Checkpoint 2026-08-25 — progress gate and release verification
 
@@ -70,7 +70,7 @@ Current review matrix:
 | Providers, catalog, auth, proxy | unit/mock/live rows S-005–S-020 and S-063 | confirm intentional live/network exclusions are labeled |
 | Agent, harness, modes, RPC, server/client | unit/mock/live rows S-021–S-049 | compare lifecycle, persistence, and wire envelopes to pinned upstream |
 | TUI and terminal | unit/mock/live rows S-050–S-057 | rerun the bounded PTY/release command and inspect the default-parallel timeout note |
-| Extensions | 13 parity tests, 15 loader tests, 3 integration tests, production print/JSON/RPC/interactive binding | inspect S-027's jiti, native-provider, Bun, context, signal/update, and active-tool residuals |
+| Extensions | 15 parity tests, 15 loader tests, 4 integration tests, 34 extension-slice tests, typed native-provider adapter, production print/JSON/RPC/interactive binding | inspect S-027's jiti, Bun, live mode/model-registry, context, signal/update, and active-tool residuals |
 | Evals and release | parity rows S-058–S-064 and #97 live release suite | verify the command is reproducible from the current checkout |
 | Inventory and documentation | S-004/S-065/S-066 remain open | review the fresh source/TODO reports, then perform final synchronization and denominator freeze |
 

@@ -29,13 +29,15 @@ dependency-safe action.
 The extension boundary now uses a persistent Node/Bun JSONL bridge with
 deterministic command, hook, renderer, provider-config, local JS/TS import,
 live-tool, host-action, context-action, thinking/model, callback-scoped signal,
-native-provider event, stale-process, timeout,
+native-provider event, typed native-provider adapter, stale-process, timeout,
 protocol, and failure-isolation fixtures, plus a shared-runtime bind helper. Print,
 JSON, RPC, and interactive modes load configured extensions and expose live
 extension tools through their agent contexts. Full S-027 remains open for
-pinned jiti/module virtualization, typed native-provider event conversion/model-
-registry wiring, Bun-specific runtime verification, and the remaining full
-agent-loop provider/tool semantics.
+pinned jiti/module virtualization, Bun-specific runtime verification, live
+mode/model-registry wiring, and the remaining full agent-loop provider/tool
+semantics. Typed native-provider event conversion into the pi-ai
+`ProviderStreams`/`Models` facade is now covered by the focused external
+fixture.
 
 The port already includes substantial CLI and runtime work, including the
 in-process agent loop, stateful harness-backed print, JSON, and interactive

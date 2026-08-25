@@ -501,6 +501,8 @@ pub struct PendingProviderRegistration {
 #[derive(Clone)]
 pub struct PendingNativeProviderRegistration {
     pub provider: String,
+    /// Provider object fields excluding executable callback functions.
+    pub definition: Value,
     pub callbacks: BTreeMap<String, NativeProviderCallbackFn>,
     pub extension_path: String,
 }
@@ -509,6 +511,7 @@ impl std::fmt::Debug for PendingNativeProviderRegistration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PendingNativeProviderRegistration")
             .field("provider", &self.provider)
+            .field("definition", &self.definition)
             .field("callbacks", &self.callbacks.keys().collect::<Vec<_>>())
             .field("extension_path", &self.extension_path)
             .finish()

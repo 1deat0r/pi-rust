@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
 
-use pi_coding_agent::core::extensions::integration::ExtensionHostState;
+use pi_coding_agent::core::extensions::integration::{
+    register_native_provider, ExtensionHostState,
+};
 use pi_coding_agent::core::extensions::loader::{
     create_extension_runtime, discover_extensions_in_dir, load_extension_from_factory,
     load_extensions, load_extensions_with_host_actions, run_external_extension,
@@ -769,8 +771,8 @@ export default async function (pi) {
     let _ = fs::remove_dir_all(root);
 }
 
-#[test]
-fn node_bridge_native_provider_round_trips_callback_inputs_and_events() {
+#[tokio::test]
+async fn node_bridge_native_provider_round_trips_callback_inputs_and_events() {
     let root = std::env::temp_dir().join(format!(
         "pi-extension-bridge-native-provider-{}",
         uuid::Uuid::new_v4()
@@ -785,12 +787,23 @@ fn node_bridge_native_provider_round_trips_callback_inputs_and_events() {
 export default function (pi) {
   pi.registerProvider({
     id: "demo",
+    name: "Demo Provider",
+    api: "openai-completions",
+    models: [{
+      id: "demo-model",
+      name: "Demo Model",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    }],
     streamSimple: async function* (model, context, options) {
       yield { type: "start", partial: { role: "assistant", content: [], stopReason: "pending" } };
       yield {
         type: "text_delta",
         contentIndex: 0,
-        delta: `${model.id}/${context.mode}/${options.temperature}`,
+        delta: `${model.id}/${context.systemPrompt ?? context.mode ?? "none"}/${options.temperature}`,
       };
       yield {
         type: "done",
@@ -854,6 +867,44 @@ export default function (pi) {
     );
     assert_eq!(events[1]["delta"], "demo-model/fixture/0.25");
     assert_eq!(events[2]["reason"], "stop");
+
+    let models = pi_ai::models::create_models(Default::default());
+    register_native_provider(&models, &native_providers[0]).expect("register native provider");
+    let model = models
+        .get_model("demo", "demo-model")
+        .expect("registered native model");
+    let context = pi_ai::types::Context {
+        system_prompt: Some("fixture".to_string()),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let options = pi_ai::types::SimpleStreamOptions {
+        base: pi_ai::types::StreamOptions {
+            temperature: Some(0.25),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let (typed_events, final_message) = models
+        .stream_simple(&model, &context, Some(&options))
+        .collect()
+        .await;
+    assert_eq!(typed_events.len(), 3);
+    assert!(matches!(
+        typed_events[0],
+        pi_ai::AssistantMessageEvent::Start { .. }
+    ));
+    assert!(
+        matches!(typed_events[1], pi_ai::AssistantMessageEvent::TextDelta { ref delta, .. } if delta == "demo-model/fixture/0.25")
+    );
+    assert!(matches!(
+        typed_events[2],
+        pi_ai::AssistantMessageEvent::Done { .. }
+    ));
+    assert_eq!(
+        final_message.content(),
+        &[pi_ai::types::ContentBlock::text("done")]
+    );
 
     let _ = fs::remove_dir_all(root);
 }

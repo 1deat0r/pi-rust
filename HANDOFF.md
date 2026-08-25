@@ -1443,3 +1443,33 @@ This bridge-only increment is ready for its own focused commit after
 `cargo fmt --all -- --check`, strict coding-agent clippy, extension tests, and
 `git diff --check`; do not mark S-027 complete until the typed provider and
 runtime-boundary gates are independently evidenced.
+
+## Active checkpoint — 2026-08-25 — typed native-provider adapter
+
+The native-provider boundary now retains non-callback provider definitions and
+adapts them into typed pi-ai `ProviderStreams`/`Models`. The adapter maps the
+Rust context and stream options into the upstream callback shape, converts
+start/text/thinking/tool/done/error events, rejects malformed or unterminated
+event sequences with typed error streams, and registers declared provider
+models. The external fixture now exercises `Models::stream_simple` end to end;
+S-027 remains open for production mode/model-registry wiring, pinned
+jiti/module virtualization, and Bun verification.
+
+Exact validation passed:
+
+```text
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test extensions_parity --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::extensions::integration::tests --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib core::extensions --quiet
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib --quiet -- --test-threads=2
+/home/mustbearnold/.cargo/bin/cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings
+/home/mustbearnold/.cargo/bin/cargo fmt --all -- --check
+git diff --check
+node scripts/conversion-progress.mjs
+Conversion progress: 96.99% (161/166; 5 open)
+```
+
+The next dependency-safe action is to wire the adapter into the production
+interactive/RPC/print/JSON model setup, then obtain an independent S-004 review
+before the clean-room and final denominator gates. The pre-existing untracked
+`AGENTS.md` remains untouched and unstaged.

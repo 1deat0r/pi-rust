@@ -267,6 +267,7 @@ impl<'a> ExtensionApi<'a> {
             .pending_native_provider_registrations
             .push(PendingNativeProviderRegistration {
                 provider: provider.to_string(),
+                definition: serde_json::json!({"id": provider}),
                 callbacks: std::collections::BTreeMap::new(),
                 extension_path: self.extension_path.clone(),
             });
@@ -598,7 +599,10 @@ const api = {
     if (callbacks.size === 0) {
       throw new Error(`Native provider ${nameOrProvider.id} must define at least one callback`);
     }
-    state.nativeProviders.push({ name: nameOrProvider.id, callbacks });
+    const definition = Object.fromEntries(
+      Object.entries(nameOrProvider).filter(([, value]) => typeof value !== "function"),
+    );
+    state.nativeProviders.push({ name: nameOrProvider.id, callbacks, definition });
   },
   unregisterProvider(name) {
     assertActive();
@@ -668,9 +672,10 @@ function metadata() {
     entryRenderers: [...state.entryRenderers.keys()],
     markdownTransformer: state.markdownTransformer !== undefined,
     providers: state.providers,
-    nativeProviders: state.nativeProviders.map(({ name, callbacks }) => ({
+    nativeProviders: state.nativeProviders.map(({ name, callbacks, definition }) => ({
       name,
       callbacks: [...callbacks.keys()],
+      definition,
     })),
     registrations: state.registrations,
   };
@@ -1976,7 +1981,11 @@ fn external_extension_from_metadata(
             queue_native_provider_registration(
                 runtime,
                 PendingNativeProviderRegistration {
-                    provider: name,
+                    provider: name.clone(),
+                    definition: provider
+                        .get("definition")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({"id": name})),
                     callbacks,
                     extension_path: extension_path.to_string(),
                 },

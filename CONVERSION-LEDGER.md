@@ -958,19 +958,21 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       tool updates. A bridge-only native-provider protocol now accepts provider
       objects, retains callback metadata, invokes async/iterable callbacks, and
       returns deterministic raw event sequences; the external parity fixture
-      proves `streamSimple` input and start/text/done events. The task remains
-      open because pinned upstream jiti/module virtualization, typed conversion
-      of those events into pi-ai `ProviderStreams`/`Models`, Bun-specific
-      verification, and live mode/model-registry wiring remain outside the
-      proven bridge surface.
-      No completion checkbox is claimed. Evidence:
+      proves `streamSimple` input and start/text/done events. The Rust adapter
+      now maps native context/options, model definitions, and
+      start/text/thinking/tool/done/error events into typed pi-ai
+      `ProviderStreams` and `Models`; the typed `Models::stream_simple` path is
+      exercised by the same external fixture. The task remains open because
+      pinned upstream jiti/module virtualization, Bun-specific verification,
+      and production mode/model-registry wiring remain outside the proven bridge
+      surface. No completion checkbox is claimed. Evidence:
       `cargo test -p pi-coding-agent --offline --test extensions_parity --quiet`
       (15 passed), `cargo test -p pi-coding-agent --offline --lib
       core::extensions::loader::tests --quiet` (15 passed), `cargo test -p
       pi-coding-agent --offline --lib core::extensions::integration::tests
-      --quiet` (4 passed), and `cargo test -p pi-coding-agent --offline --lib
-      --quiet` (476 passed). The package-wide target `cargo test -p
-      pi-coding-agent --offline --quiet`, the live context fixture, strict
+      --quiet` (4 passed), `cargo test -p pi-coding-agent --offline --lib
+      core::extensions --quiet` (34 passed), and `cargo test -p pi-coding-agent
+      --offline --lib --quiet -- --test-threads=2` (478 passed). Strict
       coding-agent clippy, package formatting, and `git diff --check` also
       pass.
 - [x] S-028 Port the upstream self-update path (`pi update --self`) or document
