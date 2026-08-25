@@ -4,7 +4,7 @@
 
 The existing conversion goal is resumed under the scoped unlazy contract
 `.unlazy/full-conversion-20260825/`. The current authoritative checker output
-is **Conversion progress: 94.58% (157/166; 9 open)**. The source inventory
+is **Conversion progress: 95.18% (158/166; 8 open)**. The source inventory
 and claim-reconciliation audit is complete; the current wave has unit, mock,
 and live evidence across providers, client/server, harness, and reconnects.
 
@@ -36,7 +36,7 @@ and full AgentToolResult/signal/update/active-tool semantics.
 
 S-003 is closed with the unit/mock checker suite (`node --test
 scripts/conversion-progress.test.mjs`, 7 passed), and the authoritative
-checker is **Conversion progress: 94.58% (157/166; 9 open)**. The extension
+checker is **Conversion progress: 95.18% (158/166; 8 open)**. The extension
 loader now has native Node TypeScript stripping and deterministic TSX/virtual-
 module boundary diagnostics; the live mode adapter maps extension tool results
 and is covered by 15 loader tests plus 3 integration tests. #97 is closed with
@@ -46,6 +46,34 @@ The bounded test concurrency is required to keep the live tmux/PTY fixtures
 from being starved by the host's default test fan-out. The next gates are the
 independent source/TODO reviewer, full real-binary audit, clean-room run, and
 final denominator/documentation freeze.
+
+## Session 13 reviewer preparation — 2026-08-25 (§0.3)
+
+The final convergence review is anchored to upstream commit
+`5cd93f688aaab89dbb6dfa4aca535f21796ae185` and the live checker output
+`Conversion progress: 95.18% (158/166; 8 open)`. The reviewer must use the
+ledger as the acceptance index, verify every checked row's evidence tier and
+exact command, and treat any source/TODO/export surface without a ledger ID
+as a blocker to S-001/S-066.
+
+Current review matrix:
+
+| Area | Evidence already accepted | Review condition |
+| --- | --- | --- |
+| Providers, catalog, auth, proxy | unit/mock/live rows S-005–S-020 and S-063 | confirm intentional live/network exclusions are labeled |
+| Agent, harness, modes, RPC, server/client | unit/mock/live rows S-021–S-049 | compare lifecycle, persistence, and wire envelopes to pinned upstream |
+| TUI and terminal | unit/mock/live rows S-050–S-057 | rerun the bounded PTY/release command and inspect the default-parallel timeout note |
+| Extensions | 13 parity tests, 15 loader tests, 3 integration tests, production print/JSON/RPC/interactive binding | inspect S-027's jiti, native-provider, Bun, context, signal/update, and active-tool residuals |
+| Evals and release | parity rows S-058–S-064 and #97 live release suite | verify the command is reproducible from the current checkout |
+| Inventory and documentation | S-001/S-002/S-065/S-066 still open | require the fresh source/TODO reports and no stale current claim |
+
+The fresh reviewer must be independent of the implementation agents, read
+`CONVERSION-LEDGER.md`, this plan, `HANDOFF.md`, the current unlazy audit
+reports, and the changed extension code, then record an explicit APPROVE,
+APPROVE-WITH-CONDITIONS, or BLOCKED verdict in the ignored reviewer artifact
+before S-004 is checked. The final audit commands are the release workspace
+tests with `--test-threads=2`, `git diff --check`, the progress checker, and
+the real-binary env/on-disk/RPC matrix from §2.2, §2.3, and §4.4.
 
 ## Checkpoint 2026-08-25 — first implementation wave
 

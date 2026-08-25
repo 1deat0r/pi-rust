@@ -6,7 +6,7 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-25)
 
-- The exhaustive checker reports **94.58% (157/166; 9 open)**. Run
+- The exhaustive checker reports **95.18% (158/166; 8 open)**. Run
   `node scripts/conversion-progress.mjs` after any ledger change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
@@ -633,7 +633,11 @@ Recut of the remaining work by user impact + risk:
       pi-tui target). The bounded test concurrency is required for the live
       tmux/PTY fixtures; the unbounded default parallel run can starve that
       terminal fixture and is not used as acceptance evidence.
-- [ ] 98. PLAN.md session-13 ledger update + reviewer-gate prep (§0.3).
+- [x] 98. PLAN.md session-13 ledger update + reviewer-gate prep (§0.3).
+      Evidence (unit/mock): `PLAN.md` now contains the current Session-13
+      reviewer matrix, pinned upstream revision, open-row inventory, evidence
+      conditions, and exact final-gate commands; `node scripts/conversion-progress.mjs`
+      and the release acceptance command are recorded for reproducibility.
 
 ## T9 — Final 100% verification pass
 
@@ -668,7 +672,7 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       `node --test scripts/conversion-progress.test.mjs` (7 passed) covers
       stable positive output, malformed status/IDs, duplicate numeric and
       supplemental IDs, and an empty task set; `node scripts/conversion-progress.mjs`
-      reports `Conversion progress: 94.58% (157/166; 9 open)` on the real
+      reports `Conversion progress: 95.18% (158/166; 8 open)` on the real
       ledger. The checker now validates every checklist-looking line instead
       of silently ignoring malformed task rows.
 - [ ] S-004 Run the independent-reviewer gate against this exhaustive ledger,

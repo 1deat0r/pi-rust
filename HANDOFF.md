@@ -8,8 +8,8 @@ The requested progress percentage is based on the exhaustive conversion
 ledger, not the original 100-item queue:
 
 ```text
-94.58% = 157 completed / 166 total tasks
-9 tasks remain open
+95.18% = 158 completed / 166 total tasks
+8 tasks remain open
 
 ```
 
@@ -33,7 +33,7 @@ binding and provider-precedence parity slice. The pre-existing untracked
 `git reset --hard`, `git checkout --`, broad revert commands, or `git clean`.
 
 Current status: branch `main`, progress checker reports
-`94.58% (157/166; 9 open)`. The latest pushed checkpoint is
+`95.18% (158/166; 8 open)`. The latest pushed checkpoint is
 `41d3107c2e33ef9eeb5ec7fb65581fe5ac3c8346`; the pre-existing untracked
 `AGENTS.md` remains untouched and must stay unstaged. The current worktree
 contains the next extension-loader/tool-result hardening and progress-checker
@@ -1296,7 +1296,7 @@ untracked `AGENTS.md` remains untouched and unstaged.
 The authoritative checker now reports:
 
 ```text
-Conversion progress: 94.58% (157/166; 9 open)
+Conversion progress: 95.18% (158/166; 8 open)
 ```
 
 Completed evidence in this checkpoint:
@@ -1341,3 +1341,20 @@ Remaining open rows are S-001, S-002, S-004, S-027, S-065, S-066, and
 #98–100. The next dependency-safe action is the independent source/TODO
 reviewer gate, followed by the full real-binary environment/on-disk/RPC audit
 and clean-room run. The progress checker must be rerun after each ledger edit.
+
+## Active checkpoint — 2026-08-25 — Session-13 reviewer preparation
+
+The Session-13 preparation item (#98) is now complete in `PLAN.md`. It adds
+the pinned upstream revision, current checker value, evidence-tier matrix,
+explicit S-027 residual review conditions, reviewer independence requirement,
+and the exact release/real-binary final-gate commands. The ledger and root
+documents are synchronized at:
+
+```text
+Conversion progress: 95.18% (158/166; 8 open)
+```
+
+`node scripts/conversion-progress.mjs` is the exact checker command. The
+remaining rows are S-001, S-002, S-004, S-027, S-065, S-066, #99, and #100.
+The next action is to consume the fresh source/TODO/full-surface audit reports
+and obtain an independent reviewer verdict before closing S-004.
