@@ -1,5 +1,8 @@
 //! VStack/HStack — port of `packages/tui/src/components/stack.ts`.
 
+use crate::layout::{
+    LayoutAlign, LayoutBasis, LayoutDirection, LayoutNode, StackLayoutEntry, StackLayoutNode,
+};
 use crate::tui::{Component, SharedComponent};
 
 /// Vertical stack: children render full-width and stack rows.
@@ -25,6 +28,20 @@ impl Component for VStack {
         for child in &self.children {
             child.lock().unwrap().invalidate();
         }
+    }
+
+    fn layout_node(&self) -> Option<LayoutNode> {
+        Some(LayoutNode::Stack(StackLayoutNode {
+            direction: LayoutDirection::Vertical,
+            entries: self
+                .children
+                .iter()
+                .cloned()
+                .map(StackLayoutEntry::new)
+                .collect(),
+            gap: 0,
+            align: LayoutAlign::Stretch,
+        }))
     }
 }
 
@@ -77,5 +94,25 @@ impl Component for HStack {
             lines.push(line);
         }
         lines
+    }
+
+    fn layout_node(&self) -> Option<LayoutNode> {
+        Some(LayoutNode::Stack(StackLayoutNode {
+            direction: LayoutDirection::Horizontal,
+            entries: self
+                .children
+                .iter()
+                .map(|(weight, component)| {
+                    let entry = StackLayoutEntry::new(component.clone());
+                    if *weight > 0.0 {
+                        entry.with_basis(LayoutBasis::Cells((*weight).floor() as usize))
+                    } else {
+                        entry.with_grow(1)
+                    }
+                })
+                .collect(),
+            gap: 0,
+            align: LayoutAlign::Stretch,
+        }))
     }
 }

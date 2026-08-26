@@ -1,5 +1,188 @@
-//! Layout constraints — port of `packages/tui/src/layout.ts` (the portion
-//! the stack components use): constraint types + a fixed-slice solver.
+//! Layout nodes and viewport layout — port of `packages/tui/src/layout.ts`
+//! and `layout-node.ts`.
+//!
+//! The original TypeScript implementation keeps layout metadata separate from
+//! rendering.  Rust does the same through [`LayoutNode`], which is returned by
+//! the optional `Component::layout_node` hook.  Components that do not expose
+//! a node continue to use their normal intrinsic rendering path.
+
+use std::sync::Arc;
+
+use crate::tui::{composite_tui_line, SharedComponent, CURSOR_MARKER};
+use crate::utils::{slice_by_column, visible_width};
+
+/// Dimensions available to a visibility predicate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutViewport {
+    pub width: usize,
+    pub height: usize,
+}
+
+/// A stack entry's intrinsic basis. `Auto` asks the child for its natural size.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LayoutBasis {
+    #[default]
+    Auto,
+    Cells(usize),
+}
+
+/// One child in a vertical or horizontal layout node.
+pub struct StackLayoutEntry {
+    pub component: SharedComponent,
+    pub basis: LayoutBasis,
+    pub grow: usize,
+    pub shrink: usize,
+    pub min_size: usize,
+    pub max_size: usize,
+    pub visible: Option<Arc<dyn Fn(LayoutViewport) -> bool + Send + Sync>>,
+}
+
+impl StackLayoutEntry {
+    pub fn new(component: SharedComponent) -> Self {
+        Self {
+            component,
+            basis: LayoutBasis::Auto,
+            grow: 0,
+            shrink: 1,
+            min_size: 0,
+            max_size: usize::MAX,
+            visible: None,
+        }
+    }
+
+    pub fn with_basis(mut self, basis: LayoutBasis) -> Self {
+        self.basis = basis;
+        self
+    }
+
+    pub fn with_grow(mut self, grow: usize) -> Self {
+        self.grow = grow;
+        self
+    }
+
+    pub fn with_shrink(mut self, shrink: usize) -> Self {
+        self.shrink = shrink;
+        self
+    }
+
+    pub fn with_min_size(mut self, min_size: usize) -> Self {
+        self.min_size = min_size;
+        self.max_size = self.max_size.max(min_size);
+        self
+    }
+
+    pub fn with_max_size(mut self, max_size: usize) -> Self {
+        self.max_size = max_size.max(self.min_size);
+        self
+    }
+
+    pub fn with_visibility(
+        mut self,
+        visible: impl Fn(LayoutViewport) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.visible = Some(Arc::new(visible));
+        self
+    }
+}
+
+impl Clone for StackLayoutEntry {
+    fn clone(&self) -> Self {
+        Self {
+            component: self.component.clone(),
+            basis: self.basis,
+            grow: self.grow,
+            shrink: self.shrink,
+            min_size: self.min_size,
+            max_size: self.max_size,
+            visible: self.visible.clone(),
+        }
+    }
+}
+
+/// Stack direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutDirection {
+    Vertical,
+    Horizontal,
+}
+
+/// Alignment used by a stack's cross axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutAlign {
+    Stretch,
+    Start,
+    Center,
+    End,
+}
+
+/// A stack node in the layout tree.
+#[derive(Clone)]
+pub struct StackLayoutNode {
+    pub direction: LayoutDirection,
+    pub entries: Vec<StackLayoutEntry>,
+    pub gap: usize,
+    pub align: LayoutAlign,
+}
+
+/// Scroll overscroll policy. `Chain` allows wheel/page operations to continue
+/// into an ancestor; `Contain` stops at this viewport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollOverscroll {
+    Chain,
+    Contain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollbarMode {
+    #[default]
+    Hidden,
+    Auto,
+    Always,
+}
+
+/// State needed by the layout engine for a scroll node.  The state is shared
+/// with the component so layout can reconcile a following-tail viewport after
+/// measuring its child without borrowing the component recursively.
+pub trait ScrollLayoutState: Send + Sync {
+    fn scroll_top(&self) -> usize;
+    fn primary(&self) -> bool;
+    fn overscroll(&self) -> ScrollOverscroll {
+        ScrollOverscroll::Chain
+    }
+    fn viewport_height(&self) -> usize;
+    fn is_following_end(&self) -> bool {
+        false
+    }
+    fn get_content_width(&self, width: usize) -> usize {
+        width
+    }
+    fn update_layout(&self, content_height: usize, viewport_height: usize);
+    fn scrollbar_visible(&self) -> bool {
+        false
+    }
+    fn scrollbar_style(&self, text: &str) -> String {
+        format!("\x1b[100m{text}\x1b[49m")
+    }
+    fn scroll_by(&self, _lines: isize) -> isize {
+        0
+    }
+    fn scroll_to_start(&self) {}
+    fn scroll_to_end(&self) {}
+}
+
+/// A scroll node containing the child that is laid out as scrollable content.
+#[derive(Clone)]
+pub struct ScrollLayoutNode {
+    pub component: SharedComponent,
+    pub state: Arc<dyn ScrollLayoutState>,
+}
+
+/// Layout metadata exposed by a component.
+#[derive(Clone)]
+pub enum LayoutNode {
+    Stack(StackLayoutNode),
+    Scroll(ScrollLayoutNode),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayoutConstraint {
@@ -77,6 +260,644 @@ pub fn solve_flex(total: u32, constraints: &[LayoutConstraint]) -> Vec<u32> {
         }
     }
     out
+}
+
+/// Return only stack entries visible for the current viewport.
+pub fn visible_stack_entries(
+    entries: &[StackLayoutEntry],
+    viewport: LayoutViewport,
+) -> Vec<StackLayoutEntry> {
+    entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .visible
+                .as_ref()
+                .is_none_or(|predicate| predicate(viewport))
+        })
+        .cloned()
+        .collect()
+}
+
+fn clamp_size(size: usize, entry: &StackLayoutEntry) -> usize {
+    size.max(entry.min_size)
+        .min(entry.max_size.max(entry.min_size))
+}
+
+fn distribute(sizes: &mut [usize], entries: &[StackLayoutEntry], mut amount: usize, grow: bool) {
+    while amount > 0 {
+        let candidates: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                if grow {
+                    (entry.grow > 0 && sizes[index] < entry.max_size).then_some(index)
+                } else {
+                    (entry.shrink > 0 && sizes[index] > entry.min_size).then_some(index)
+                }
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+
+        let total_weight: usize = candidates
+            .iter()
+            .map(|&index| {
+                let entry = &entries[index];
+                if grow {
+                    entry.grow
+                } else {
+                    entry.shrink.saturating_mul(sizes[index].max(1))
+                }
+            })
+            .sum();
+        if total_weight == 0 {
+            return;
+        }
+
+        let mut distributed = 0;
+        for index in candidates {
+            if amount == 0 {
+                break;
+            }
+            let entry = &entries[index];
+            let weight = if grow {
+                entry.grow
+            } else {
+                entry.shrink.saturating_mul(sizes[index].max(1))
+            };
+            let proposed = (amount.saturating_mul(weight) / total_weight).max(1);
+            let capacity = if grow {
+                entry.max_size.saturating_sub(sizes[index])
+            } else {
+                sizes[index].saturating_sub(entry.min_size)
+            };
+            let delta = proposed.min(capacity).min(amount);
+            if delta == 0 {
+                continue;
+            }
+            if grow {
+                sizes[index] += delta;
+            } else {
+                sizes[index] -= delta;
+            }
+            amount -= delta;
+            distributed += delta;
+        }
+        if distributed == 0 {
+            return;
+        }
+    }
+}
+
+/// Allocate stack sizes using upstream basis/grow/shrink/min/max semantics.
+pub fn allocate_stack_sizes(
+    entries: &[StackLayoutEntry],
+    intrinsic_sizes: &[usize],
+    available_size: Option<usize>,
+    gap: usize,
+) -> Vec<usize> {
+    let mut sizes: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let intrinsic = intrinsic_sizes.get(index).copied().unwrap_or(0);
+            clamp_size(
+                match entry.basis {
+                    LayoutBasis::Auto => intrinsic,
+                    LayoutBasis::Cells(value) => value,
+                },
+                entry,
+            )
+        })
+        .collect();
+    let Some(available_size) = available_size else {
+        return sizes;
+    };
+    let content_size = available_size.saturating_sub(entries.len().saturating_sub(1) * gap);
+    let total = sizes.iter().sum::<usize>();
+    if total < content_size {
+        distribute(&mut sizes, entries, content_size - total, true);
+    } else if total > content_size {
+        distribute(&mut sizes, entries, total - content_size, false);
+    }
+    sizes
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutRect {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+#[derive(Clone)]
+pub struct LayoutBox {
+    pub component: SharedComponent,
+    pub rect: LayoutRect,
+    pub clip: LayoutRect,
+    pub children: Vec<LayoutBox>,
+    pub parent: Option<usize>,
+    pub lines: Option<Vec<String>>,
+    pub line_offset: usize,
+    pub scroll_view: Option<Arc<dyn ScrollLayoutState>>,
+    pub scroll_content_lines: Option<Vec<String>>,
+    pub layer: usize,
+}
+
+pub struct LayoutFrame {
+    pub root: LayoutBox,
+    pub width: usize,
+    pub height: usize,
+    pub lines: Vec<String>,
+    pub primary_scroll_view: Option<Arc<dyn ScrollLayoutState>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollbarGeometry {
+    pub column: usize,
+    pub track_top: usize,
+    pub track_height: usize,
+    pub thumb_top: usize,
+    pub thumb_height: usize,
+    pub max_scroll_top: usize,
+}
+
+struct LayoutContext {
+    viewport: LayoutViewport,
+    render_cache: Vec<(usize, usize, Vec<String>)>,
+    primary_scroll_view: Option<Arc<dyn ScrollLayoutState>>,
+}
+
+fn component_key(component: &SharedComponent) -> usize {
+    Arc::as_ptr(component) as *const () as usize
+}
+
+fn render_cached(
+    context: &mut LayoutContext,
+    component: &SharedComponent,
+    width: usize,
+) -> Vec<String> {
+    let width = width.max(1);
+    let key = (component_key(component), width);
+    if let Some((_, _, lines)) = context
+        .render_cache
+        .iter()
+        .find(|entry| (entry.0, entry.1) == key)
+    {
+        return lines.clone();
+    }
+    let lines = component.lock().unwrap().render(width);
+    context.render_cache.push((key.0, key.1, lines.clone()));
+    lines
+}
+
+fn intersect(a: LayoutRect, b: LayoutRect) -> LayoutRect {
+    let right = a.x.saturating_add(a.width).min(b.x.saturating_add(b.width));
+    let bottom =
+        a.y.saturating_add(a.height)
+            .min(b.y.saturating_add(b.height));
+    let x = a.x.max(b.x);
+    let y = a.y.max(b.y);
+    LayoutRect {
+        x,
+        y,
+        width: right.saturating_sub(x),
+        height: bottom.saturating_sub(y),
+    }
+}
+
+fn translate_box(box_: &mut LayoutBox, delta_y: isize) {
+    box_.rect.y = box_.rect.y.saturating_add_signed(delta_y);
+    for child in &mut box_.children {
+        translate_box(child, delta_y);
+    }
+}
+
+fn layout_component(
+    context: &mut LayoutContext,
+    component: SharedComponent,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: Option<usize>,
+    clip: LayoutRect,
+) -> LayoutBox {
+    let width = width.max(1);
+    let node = component.lock().unwrap().layout_node();
+    let Some(node) = node else {
+        let lines = render_cached(context, &component, width);
+        let allocated_height = height.unwrap_or(lines.len());
+        let line_offset = if allocated_height > 0 && lines.len() > allocated_height {
+            lines
+                .iter()
+                .position(|line| line.contains(CURSOR_MARKER))
+                .filter(|&row| row >= allocated_height)
+                .map_or(0, |row| row - allocated_height + 1)
+        } else {
+            0
+        };
+        let rect = LayoutRect {
+            x,
+            y,
+            width,
+            height: allocated_height,
+        };
+        return LayoutBox {
+            component,
+            rect,
+            clip: intersect(clip, rect),
+            children: Vec::new(),
+            parent: None,
+            lines: Some(lines),
+            line_offset,
+            scroll_view: None,
+            scroll_content_lines: None,
+            layer: 0,
+        };
+    };
+
+    match node {
+        LayoutNode::Scroll(scroll) => {
+            let previous_top = scroll.state.scroll_top();
+            let content_width = scroll.state.get_content_width(width).max(1);
+            let child = layout_component(
+                context,
+                scroll.component.clone(),
+                x,
+                y.saturating_sub(previous_top),
+                content_width,
+                None,
+                clip,
+            );
+            let content_height = child.rect.height;
+            let viewport_height = height.unwrap_or(content_height);
+            scroll.state.update_layout(content_height, viewport_height);
+            let actual_top = scroll.state.scroll_top();
+            translate_box(&mut { child.clone() }, 0); // retain a simple borrow boundary below
+            let mut child = child;
+            translate_box(&mut child, previous_top as isize - actual_top as isize);
+            if scroll.state.primary() || context.primary_scroll_view.is_none() {
+                context.primary_scroll_view = Some(scroll.state.clone());
+            }
+            let rect = LayoutRect {
+                x,
+                y,
+                width,
+                height: viewport_height,
+            };
+            let child_clip = intersect(clip, rect);
+            let content_lines = render_cached(context, &scroll.component, content_width);
+            LayoutBox {
+                component,
+                rect,
+                clip: child_clip,
+                children: vec![child],
+                parent: None,
+                lines: None,
+                line_offset: 0,
+                scroll_view: Some(scroll.state),
+                scroll_content_lines: Some(content_lines),
+                layer: 0,
+            }
+        }
+        LayoutNode::Stack(stack) => {
+            let entries = visible_stack_entries(&stack.entries, context.viewport);
+            let gap_total = entries.len().saturating_sub(1) * stack.gap;
+            let rect_height;
+            let mut children = Vec::with_capacity(entries.len());
+            if stack.direction == LayoutDirection::Vertical {
+                let intrinsic: Vec<usize> = entries
+                    .iter()
+                    .map(|entry| match entry.basis {
+                        LayoutBasis::Cells(value) => value,
+                        LayoutBasis::Auto => render_cached(context, &entry.component, width).len(),
+                    })
+                    .collect();
+                let sizes = allocate_stack_sizes(&entries, &intrinsic, height, stack.gap);
+                rect_height = height.unwrap_or_else(|| sizes.iter().sum::<usize>() + gap_total);
+                let mut child_y = y;
+                let parent_clip = intersect(
+                    clip,
+                    LayoutRect {
+                        x,
+                        y,
+                        width,
+                        height: rect_height,
+                    },
+                );
+                for (entry, size) in entries.iter().zip(sizes.iter().copied()) {
+                    children.push(layout_component(
+                        context,
+                        entry.component.clone(),
+                        x,
+                        child_y,
+                        width,
+                        Some(size),
+                        parent_clip,
+                    ));
+                    child_y = child_y.saturating_add(size).saturating_add(stack.gap);
+                }
+            } else {
+                let intrinsic: Vec<usize> = entries
+                    .iter()
+                    .map(|entry| match entry.basis {
+                        LayoutBasis::Cells(value) => value,
+                        LayoutBasis::Auto => visible_width(
+                            &render_cached(context, &entry.component, width).join("\n"),
+                        ),
+                    })
+                    .collect();
+                let sizes = allocate_stack_sizes(&entries, &intrinsic, Some(width), stack.gap);
+                let child_heights: Vec<usize> = entries
+                    .iter()
+                    .zip(sizes.iter().copied())
+                    .map(|(entry, child_width)| {
+                        render_cached(context, &entry.component, child_width.max(1)).len()
+                    })
+                    .collect();
+                rect_height =
+                    height.unwrap_or_else(|| child_heights.iter().copied().max().unwrap_or(0));
+                let parent_clip = intersect(
+                    clip,
+                    LayoutRect {
+                        x,
+                        y,
+                        width,
+                        height: rect_height,
+                    },
+                );
+                let mut child_x = x;
+                for ((entry, child_width), child_height) in
+                    entries.iter().zip(sizes).zip(child_heights)
+                {
+                    let child_height = match stack.align {
+                        LayoutAlign::Stretch => rect_height,
+                        _ => child_height.min(rect_height),
+                    };
+                    let child_y = match stack.align {
+                        LayoutAlign::Center => y + rect_height.saturating_sub(child_height) / 2,
+                        LayoutAlign::End => y + rect_height.saturating_sub(child_height),
+                        _ => y,
+                    };
+                    if child_width > 0 {
+                        children.push(layout_component(
+                            context,
+                            entry.component.clone(),
+                            child_x,
+                            child_y,
+                            child_width,
+                            Some(child_height),
+                            parent_clip,
+                        ));
+                    } else {
+                        children.push(LayoutBox {
+                            component: entry.component.clone(),
+                            rect: LayoutRect {
+                                x: child_x,
+                                y: child_y,
+                                width: 0,
+                                height: child_height,
+                            },
+                            clip: LayoutRect {
+                                x: child_x,
+                                y: child_y,
+                                width: 0,
+                                height: 0,
+                            },
+                            children: Vec::new(),
+                            parent: None,
+                            lines: None,
+                            line_offset: 0,
+                            scroll_view: None,
+                            scroll_content_lines: None,
+                            layer: 0,
+                        });
+                    }
+                    child_x = child_x
+                        .saturating_add(child_width)
+                        .saturating_add(stack.gap);
+                }
+            }
+            let rect = LayoutRect {
+                x,
+                y,
+                width,
+                height: rect_height,
+            };
+            LayoutBox {
+                component,
+                rect,
+                clip: intersect(clip, rect),
+                children,
+                parent: None,
+                lines: None,
+                line_offset: 0,
+                scroll_view: None,
+                scroll_content_lines: None,
+                layer: 0,
+            }
+        }
+    }
+}
+
+fn paint_box(box_: &LayoutBox, screen: &mut [String], width: usize) {
+    if let Some(lines) = &box_.lines {
+        let first = box_.rect.y.max(box_.clip.y);
+        let last = box_
+            .rect
+            .y
+            .saturating_add(box_.rect.height)
+            .min(box_.clip.y.saturating_add(box_.clip.height))
+            .min(screen.len());
+        for (row, target) in screen.iter_mut().enumerate().take(last).skip(first) {
+            let source = box_.line_offset + row.saturating_sub(box_.rect.y);
+            let Some(line) = lines.get(source) else {
+                continue;
+            };
+            *target = if box_.rect.x == 0 && box_.rect.width >= width && target.is_empty() {
+                line.clone()
+            } else {
+                composite_tui_line(target, line, box_.rect.x, box_.rect.width, width)
+            };
+        }
+    }
+    for child in &box_.children {
+        paint_box(child, screen, width);
+    }
+    paint_scrollbar(box_, screen, width);
+}
+
+fn style_scrollbar_cell(line: &str, column: usize, width: usize, styled: &str) -> String {
+    composite_tui_line(line, styled, column, 1, width)
+}
+
+fn paint_scrollbar(box_: &LayoutBox, screen: &mut [String], width: usize) {
+    let Some(geometry) = get_scrollbar_geometry(box_) else {
+        return;
+    };
+    let Some(state) = &box_.scroll_view else {
+        return;
+    };
+    let styled = state.scrollbar_style("█");
+    for row in geometry.thumb_top..geometry.thumb_top + geometry.thumb_height {
+        if row < box_.clip.y
+            || row >= box_.clip.y.saturating_add(box_.clip.height)
+            || row >= screen.len()
+        {
+            continue;
+        }
+        screen[row] = style_scrollbar_cell(&screen[row], geometry.column, width, &styled);
+    }
+}
+
+/// Render a component tree into a clipped viewport and retain its geometry.
+pub fn render_layout_frame(root: SharedComponent, width: usize, height: usize) -> LayoutFrame {
+    let width = width.max(1);
+    let height = height.max(1);
+    let viewport = LayoutViewport { width, height };
+    let mut context = LayoutContext {
+        viewport,
+        render_cache: Vec::new(),
+        primary_scroll_view: None,
+    };
+    let root_box = layout_component(
+        &mut context,
+        root,
+        0,
+        0,
+        width,
+        Some(height),
+        LayoutRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+    );
+    let mut lines = vec![String::new(); height];
+    paint_box(&root_box, &mut lines, width);
+    LayoutFrame {
+        root: root_box,
+        width,
+        height,
+        lines,
+        primary_scroll_view: context.primary_scroll_view,
+    }
+}
+
+/// Find a scroll node by shared state identity.
+pub fn get_scroll_view_box(
+    frame: &LayoutFrame,
+    target: &Arc<dyn ScrollLayoutState>,
+) -> Option<LayoutRect> {
+    fn visit(box_: &LayoutBox, target: &Arc<dyn ScrollLayoutState>) -> Option<LayoutRect> {
+        if box_
+            .scroll_view
+            .as_ref()
+            .is_some_and(|state| Arc::ptr_eq(state, target))
+        {
+            return Some(box_.rect);
+        }
+        box_.children.iter().find_map(|child| visit(child, target))
+    }
+    visit(&frame.root, target)
+}
+
+/// Return scroll nodes whose clipped rectangles contain a point, deepest first.
+pub fn get_scroll_views_at(
+    frame: &LayoutFrame,
+    x: usize,
+    y: usize,
+) -> Vec<Arc<dyn ScrollLayoutState>> {
+    fn visit(
+        box_: &LayoutBox,
+        x: usize,
+        y: usize,
+        depth: usize,
+        out: &mut Vec<(usize, Arc<dyn ScrollLayoutState>)>,
+    ) {
+        let inside = |rect: LayoutRect| {
+            x >= rect.x
+                && y >= rect.y
+                && x < rect.x.saturating_add(rect.width)
+                && y < rect.y.saturating_add(rect.height)
+        };
+        if !inside(box_.clip) {
+            return;
+        }
+        if let Some(state) = &box_.scroll_view {
+            if inside(box_.rect) {
+                out.push((depth, state.clone()));
+            }
+        }
+        for child in &box_.children {
+            visit(child, x, y, depth + 1, out);
+        }
+    }
+    let mut found = Vec::new();
+    visit(&frame.root, x, y, 0, &mut found);
+    found.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+    found.into_iter().map(|(_, state)| state).collect()
+}
+
+/// Return the visible scrollbar geometry for a scroll layout box.
+pub fn get_scrollbar_geometry(box_: &LayoutBox) -> Option<ScrollbarGeometry> {
+    let state = box_.scroll_view.as_ref()?;
+    if !state.scrollbar_visible() || box_.rect.width == 0 || box_.rect.height == 0 {
+        return None;
+    }
+    let column = box_.rect.x + box_.rect.width - 1;
+    if column < box_.clip.x || column >= box_.clip.x.saturating_add(box_.clip.width) {
+        return None;
+    }
+    let content_height = box_
+        .children
+        .first()
+        .map(|child| child.rect.height)
+        .or_else(|| box_.scroll_content_lines.as_ref().map(Vec::len))
+        .unwrap_or(0);
+    let track_height = box_.rect.height;
+    let min_thumb_height = 2.min(track_height);
+    let thumb_height = if content_height == 0 {
+        track_height
+    } else {
+        track_height
+            .saturating_mul(track_height)
+            .saturating_add(content_height / 2)
+            .checked_div(content_height)
+            .unwrap_or(0)
+            .max(min_thumb_height)
+            .min(track_height)
+    };
+    let max_scroll_top = content_height.saturating_sub(track_height);
+    let max_thumb_top = track_height.saturating_sub(thumb_height);
+    let thumb_offset = if max_scroll_top == 0 {
+        0
+    } else {
+        (state.scroll_top().min(max_scroll_top) * max_thumb_top)
+            .checked_div(max_scroll_top)
+            .unwrap_or(0)
+    };
+    Some(ScrollbarGeometry {
+        column,
+        track_top: box_.rect.y,
+        track_height,
+        thumb_top: box_.rect.y + thumb_offset,
+        thumb_height,
+        max_scroll_top,
+    })
+}
+
+/// Clamp a rendered line to a terminal width without splitting a grapheme.
+pub fn clamp_layout_line(line: &str, width: usize) -> String {
+    if visible_width(line) <= width {
+        line.to_string()
+    } else {
+        slice_by_column(line, 0, width)
+    }
 }
 
 #[cfg(test)]
