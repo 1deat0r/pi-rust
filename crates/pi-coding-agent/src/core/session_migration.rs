@@ -9,6 +9,8 @@
 //! the coding-agent session runtime (P4/P8).
 
 use std::collections::HashSet;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -26,7 +28,6 @@ pub fn create_session_id() -> String {
 /// Mirrors upstream `assertValidSessionId` (same pattern as the JSONL repo).
 pub fn assert_valid_session_id(id: &str) -> Result<(), String> {
     let valid = !id.is_empty()
-        && id.len() <= 64
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
@@ -267,6 +268,7 @@ mod tests {
         assert!(assert_valid_session_id("-abc").is_err());
         assert!(assert_valid_session_id("abc-").is_err());
         assert!(assert_valid_session_id("a b").is_err());
+        assert!(assert_valid_session_id(&format!("a{}z", "x".repeat(128))).is_ok());
     }
 }
 
@@ -440,6 +442,20 @@ pub fn convert_legacy_to_v4(content: &str) -> Result<String, String> {
     Ok(out)
 }
 
+/// Give each migration attempt its own sibling staging file.  A fixed
+/// `.<session>.migration.tmp` name lets two pi processes overwrite one
+/// another's staged bytes and makes the loser report a false startup error
+/// after the winner publishes the file.  The process id is useful when
+/// inspecting a crashed run; the UUID also separates concurrent attempts in
+/// one process and avoids relying on timestamp resolution.
+fn migration_staging_path(path: &Path, file_name: &str) -> PathBuf {
+    path.with_file_name(format!(
+        ".{file_name}.migration-{}-{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ))
+}
+
 /// Migrate one legacy v1/v2/v3 file in place before a v4 repository opens it.
 /// The converted content is staged beside the source and atomically renamed so
 /// a failed conversion never replaces the user's original session file.
@@ -471,13 +487,24 @@ pub fn migrate_legacy_session_file(path: &Path) -> Result<bool, String> {
                 path.display()
             )
         })?;
-    let temporary_path = path.with_file_name(format!(".{file_name}.migration.tmp"));
-    std::fs::write(&temporary_path, converted).map_err(|error| {
-        format!(
+    let temporary_path = migration_staging_path(path, file_name);
+    let stage_result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)?;
+        file.write_all(converted.as_bytes())?;
+        // Ensure a successful rename never publishes a partially flushed
+        // conversion after a process or machine failure.
+        file.sync_all()
+    })();
+    if let Err(error) = stage_result {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(format!(
             "stage migrated session {}: {error}",
             temporary_path.display()
-        )
-    })?;
+        ));
+    }
     if let Err(error) = std::fs::rename(&temporary_path, path) {
         let _ = std::fs::remove_file(&temporary_path);
         return Err(format!(
@@ -664,7 +691,54 @@ mod filesystem_migration_tests {
             .unwrap()
             .contains(r#""kind":"header""#));
         assert!(!migrate_legacy_session_file(&path).unwrap());
-        assert!(!path.with_file_name(".session.jsonl.migration.tmp").exists());
+        let temporary_files = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".migration-"))
+            .collect::<Vec<_>>();
+        assert!(temporary_files.is_empty(), "staging files left behind");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_migrations_publish_valid_session_without_shared_staging() {
+        let root =
+            std::env::temp_dir().join(format!("pi-legacy-concurrent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.jsonl");
+        std::fs::write(&path, legacy_file()).unwrap();
+
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let path = path.clone();
+            workers.push(std::thread::spawn(move || {
+                migrate_legacy_session_file(&path)
+            }));
+        }
+        for worker in workers {
+            worker
+                .join()
+                .expect("migration worker should not panic")
+                .expect("concurrent migration should not report a staging race");
+        }
+
+        let migrated: Value = serde_json::from_str(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(migrated["kind"], "header");
+        assert_eq!(migrated["version"], 4);
+        let temporary_files = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".migration-"))
+            .collect::<Vec<_>>();
+        assert!(temporary_files.is_empty(), "staging files left behind");
         std::fs::remove_dir_all(root).unwrap();
     }
 
