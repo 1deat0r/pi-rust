@@ -13,7 +13,8 @@
 //! stored OAuth credentials through the auth-storage port and resolves env
 //! templates through resolve_config_value.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
@@ -21,9 +22,15 @@ use crate::args::{parse_args, ParseOutcome};
 use crate::config::{self, APP_NAME};
 use crate::core::auth_storage::{
     read_stored_credential, refresh_oauth_credential_in_storage, AuthStorage, Credential,
+    ReadOnlyAuthStorage,
 };
+use crate::core::model_config::{ModelConfig, ModelsJsonProvider};
 use crate::core::model_registry::ModelRegistry;
 use crate::core::model_resolver::{resolve_cli_model, RegistryView};
+use crate::core::provider_composer::{
+    apply_model_overrides, apply_models_json, config_value_env_var_names, is_command_config_value,
+};
+use crate::core::resolve_config_value::resolve_config_value;
 
 const DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS: u64 = 30 * 60 * 1000;
 
@@ -215,6 +222,29 @@ pub fn auth_credential_value(credential: &Credential) -> Option<String> {
     }
 }
 
+/// Extract a printable credential from the resolved request auth returned by
+/// pi-ai. This mirrors upstream `getAuthCredential`: ordinary providers use
+/// `auth.apiKey`, while providers such as Anthropic may expose a bearer token
+/// only through an `Authorization` header.
+pub fn auth_result_credential_value(auth: &pi_ai::auth::AuthResult) -> Option<String> {
+    if let Some(api_key) = auth.auth.api_key.as_deref() {
+        if !api_key.trim().is_empty() {
+            return Some(api_key.to_string());
+        }
+    }
+    auth.auth.headers.as_ref().and_then(|headers| {
+        headers.iter().find_map(|(name, value)| {
+            if !name.eq_ignore_ascii_case("authorization") {
+                return None;
+            }
+            let value = value.as_deref()?.trim();
+            let (scheme, token) = value.split_once(char::is_whitespace)?;
+            (scheme.eq_ignore_ascii_case("bearer") && !token.trim().is_empty())
+                .then(|| token.trim().to_string())
+        })
+    })
+}
+
 /// Resolve the stored credential for a provider from auth.json
 /// (upstream `getProviderCredential` with refresh=false for --no-refresh).
 pub fn stored_credential_for(provider: &str, auth_path: &std::path::Path) -> Option<Credential> {
@@ -232,29 +262,158 @@ pub async fn get_provider_credential(
     refresh: bool,
     min_expiry_ms: Option<u64>,
 ) -> Result<Option<Credential>, String> {
-    let Some(stored) = read_stored_credential(provider, auth_path) else {
-        return Ok(None);
-    };
-    if !refresh || !matches!(stored, Credential::OAuth { .. }) {
-        return Ok(Some(stored));
-    }
-    let Some(provider_entry) = registry.get_provider(provider) else {
-        return Ok(None);
-    };
-    let Some(oauth) = provider_entry.auth.oauth else {
-        // Preserve a stored OAuth bearer token when this provider has no
-        // refresh implementation. The upstream credential-print path still
-        // recognizes the stored credential type and returns its access token.
-        return Ok(Some(stored));
-    };
     let storage = AuthStorage::create(auth_path.to_path_buf());
-    refresh_oauth_credential_in_storage(&storage, provider, oauth, min_expiry_ms, None).await
+    let stored = storage
+        .read(
+            provider,
+            &crate::core::auth_storage::AuthOperationOptions::default(),
+        )
+        .await
+        .map_err(|error| format!("Failed to read auth credentials: {error}"))?;
+    if let Some(stored) = stored {
+        if !refresh || !matches!(stored, Credential::OAuth { .. }) {
+            return Ok(Some(stored));
+        }
+        let Some(provider_entry) = registry.get_provider(provider) else {
+            return Ok(Some(stored));
+        };
+        let Some(oauth) = provider_entry.auth.oauth else {
+            // Preserve a stored OAuth bearer token when this provider has no
+            // refresh implementation. The upstream credential-print path
+            // still recognizes the stored credential type and returns its
+            // access token.
+            return Ok(Some(stored));
+        };
+        return refresh_oauth_credential_in_storage(&storage, provider, oauth, min_expiry_ms, None)
+            .await;
+    }
+
+    let config = load_auth_model_config();
+    let configured_key = config
+        .get_provider(provider)
+        .and_then(|provider| provider.api_key.as_deref());
+    if configured_key.is_some() {
+        if let Some(value) = configured_api_key_value(config.get_provider(provider)) {
+            return Ok(Some(Credential::ApiKey {
+                key: Some(value),
+                env: None,
+            }));
+        }
+        // An explicitly configured but unresolved key takes precedence over
+        // inherited ambient auth, just as composeApiKeyAuth does upstream.
+        return Ok(None);
+    }
+
+    // No file credential or overriding models.json key: resolve ambient
+    // provider auth (environment, provider-specific files, or other pi-ai
+    // auth sources) exactly as a normal request would. The value is
+    // materialized only for explicit credential-printing or
+    // `auth check --credentials` paths.
+    if let Some(auth) = registry.models_facade().get_auth(provider, None) {
+        if let Some(value) = auth_result_credential_value(&auth) {
+            return Ok(Some(Credential::ApiKey {
+                key: Some(value),
+                env: auth.env,
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
+fn auth_model_config_path() -> PathBuf {
+    config::get_agent_dir().join("models.json")
+}
+
+fn load_auth_model_config() -> ModelConfig {
+    ModelConfig::load(Some(&auth_model_config_path()))
+}
+
+/// Add models.json-only providers to the catalog used by auth model
+/// resolution. ModelRegistry already overlays models.json onto bundled
+/// providers; this fills the remaining upstream case where a provider exists
+/// only in models.json.
+fn auth_model_catalog(registry: &ModelRegistry, config: &ModelConfig) -> Vec<pi_ai::model::Model> {
+    let mut models = registry.get_all();
+    for provider_id in config.get_provider_ids() {
+        if registry.get_provider(provider_id).is_some() {
+            continue;
+        }
+        let Some(provider_config) = config.get_provider(provider_id) else {
+            continue;
+        };
+        let Ok(custom_models) = apply_models_json(provider_id, &[], Some(provider_config)) else {
+            continue;
+        };
+        models.extend(apply_model_overrides(custom_models, Some(provider_config)));
+    }
+    models.sort_by(|left, right| {
+        format!("{}/{}", left.provider, left.id).cmp(&format!("{}/{}", right.provider, right.id))
+    });
+    models.dedup_by(|left, right| left.provider == right.provider && left.id == right.id);
+    models
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedAuthSource {
+    auth_type: String,
+    source: Option<String>,
+}
+
+fn configured_api_key_status(config: Option<&ModelsJsonProvider>) -> Option<ResolvedAuthSource> {
+    let raw_key = config?.api_key.as_deref()?;
+    if is_command_config_value(raw_key) {
+        // Pi treats a configured command as an available credential during a
+        // check; execution is deferred until a request actually resolves it.
+        return Some(ResolvedAuthSource {
+            auth_type: "api_key".to_string(),
+            source: Some("configured API key".to_string()),
+        });
+    }
+    let env_names = config_value_env_var_names(raw_key);
+    if env_names.iter().any(|name| {
+        std::env::var(name)
+            .ok()
+            .is_none_or(|value| value.trim().is_empty())
+    }) {
+        return None;
+    }
+    let value = resolve_config_value(raw_key, None)?;
+    if value.trim().is_empty() {
+        return None;
+    }
+    Some(ResolvedAuthSource {
+        auth_type: "api_key".to_string(),
+        source: Some("configured API key".to_string()),
+    })
+}
+
+fn configured_api_key_value(config: Option<&ModelsJsonProvider>) -> Option<String> {
+    let raw_key = config?.api_key.as_deref()?;
+    let value = resolve_config_value(raw_key, None)?;
+    (!value.trim().is_empty()).then_some(value)
+}
+
+fn provider_configured_from_facade(
+    provider: &str,
+    registry: &ModelRegistry,
+    config: &ModelConfig,
+) -> bool {
+    if config
+        .get_provider(provider)
+        .and_then(|provider| provider.api_key.as_deref())
+        .is_some()
+    {
+        return configured_api_key_status(config.get_provider(provider)).is_some();
+    }
+    registry.models_facade().check_auth(provider).is_some()
 }
 
 /// A minimal registry view over a ModelRegistry (for resolve_cli_model).
 struct RegistryViewAdapter<'a> {
-    registry: &'a ModelRegistry,
     all: Vec<pi_ai::model::Model>,
+    configured_providers: BTreeSet<String>,
+    _registry: std::marker::PhantomData<&'a ModelRegistry>,
 }
 
 impl<'a> RegistryView for RegistryViewAdapter<'a> {
@@ -262,8 +421,67 @@ impl<'a> RegistryView for RegistryViewAdapter<'a> {
         &self.all
     }
     fn has_configured_auth(&self, provider: &str) -> bool {
-        self.registry.has_configured_auth(provider)
+        self.configured_providers.contains(provider)
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedAuthTarget {
+    pub provider: String,
+    pub model: Option<pi_ai::model::Model>,
+}
+
+/// Resolve the effective provider and, when supplied, the effective model.
+/// This is the auth-command equivalent of upstream `resolveCliModel` and
+/// includes models.json-only model definitions.
+pub fn resolve_auth_target(
+    cli_provider: Option<&str>,
+    cli_model: Option<&str>,
+    registry: &ModelRegistry,
+) -> Result<ResolvedAuthTarget, String> {
+    resolve_auth_target_with_config(cli_provider, cli_model, registry, &load_auth_model_config())
+}
+
+fn resolve_auth_target_with_config(
+    cli_provider: Option<&str>,
+    cli_model: Option<&str>,
+    registry: &ModelRegistry,
+    config: &ModelConfig,
+) -> Result<ResolvedAuthTarget, String> {
+    if let Some(model_hint) = cli_model {
+        let all = auth_model_catalog(registry, config);
+        let configured_providers = registry
+            .models_facade()
+            .get_providers()
+            .into_iter()
+            .map(|provider| provider.id)
+            .chain(config.get_provider_ids().map(str::to_string))
+            .filter(|provider| provider_configured_from_facade(provider, registry, config))
+            .collect();
+        let view = RegistryViewAdapter {
+            all,
+            configured_providers,
+            _registry: std::marker::PhantomData,
+        };
+        let resolved = resolve_cli_model(cli_provider, Some(model_hint), None, &view);
+        if let Some(error) = resolved.error {
+            if resolved.model.is_none() {
+                return Err(error);
+            }
+        }
+        if let Some(model) = resolved.model {
+            return Ok(ResolvedAuthTarget {
+                provider: model.provider.clone(),
+                model: Some(model),
+            });
+        }
+    }
+    cli_provider
+        .map(|provider| ResolvedAuthTarget {
+            provider: provider.to_string(),
+            model: None,
+        })
+        .ok_or_else(|| "Unable to resolve an auth provider".to_string())
 }
 
 /// Resolve a provider from a `--provider`/`--model` pair, mirroring the
@@ -273,30 +491,84 @@ pub fn resolve_auth_provider(
     cli_model: Option<&str>,
     registry: &ModelRegistry,
 ) -> Result<String, String> {
-    if let Some(model) = cli_model {
-        let all = registry.get_all();
-        let view = RegistryViewAdapter {
-            registry,
-            all: all.clone(),
-        };
-        let resolved = resolve_cli_model(cli_provider, Some(model), None, &view);
-        if let (None, Some(error)) = (&resolved.model, &resolved.error) {
-            return Err(error.clone());
-        }
-        if let Some(model) = resolved.model {
-            return Ok(model.provider);
-        }
-    }
-    cli_provider
-        .map(|s| s.to_string())
-        .ok_or_else(|| "Unable to resolve an auth provider".to_string())
+    resolve_auth_target(cli_provider, cli_model, registry).map(|target| target.provider)
 }
 
-/// Check provider auth (upstream `checkProviderAuth`, refresh simplified).
-pub fn check_provider_auth(
+fn auth_result_from_source(provider: &str, source: Option<ResolvedAuthSource>) -> AuthCheckResult {
+    match source {
+        Some(source) => AuthCheckResult {
+            status: "ready".to_string(),
+            provider: provider.to_string(),
+            reason: None,
+            auth_type: Some(source.auth_type),
+        },
+        None => AuthCheckResult {
+            status: "not_ready".to_string(),
+            provider: provider.to_string(),
+            reason: Some("credentials_not_configured".to_string()),
+            auth_type: None,
+        },
+    }
+}
+
+fn provider_exists(provider: &str, registry: &ModelRegistry, config: &ModelConfig) -> bool {
+    registry.get_provider(provider).is_some() || config.get_provider(provider).is_some()
+}
+
+fn source_from_facade(provider: &str, registry: &ModelRegistry) -> Option<ResolvedAuthSource> {
+    registry
+        .models_facade()
+        .check_auth(provider)
+        .map(|check| ResolvedAuthSource {
+            auth_type: check.auth_type.to_string(),
+            source: check.source,
+        })
+}
+
+fn source_from_stored(
+    provider_entry: Option<&pi_ai::models::Provider>,
+    credential: &Credential,
+    config: Option<&ModelsJsonProvider>,
+) -> Option<ResolvedAuthSource> {
+    match credential {
+        Credential::OAuth { .. } => provider_entry
+            .and_then(|provider| provider.auth.oauth.as_ref())
+            .map(|_| ResolvedAuthSource {
+                auth_type: "oauth".to_string(),
+                source: Some("OAuth".to_string()),
+            }),
+        Credential::ApiKey { key, env } => {
+            if let Some(auth) = provider_entry.and_then(|provider| provider.auth.api_key.as_ref()) {
+                let credential = pi_ai::auth::ApiKeyCredential {
+                    key: key.clone(),
+                    env: env.clone(),
+                };
+                return auth
+                    .check(&pi_ai::auth::AuthContext::default(), Some(&credential))
+                    .map(|check| ResolvedAuthSource {
+                        auth_type: check.auth_type.to_string(),
+                        source: check.source,
+                    });
+            }
+
+            // models.json-only providers are composed into the upstream
+            // runtime even though this Rust registry has no low-level
+            // provider object for them. A stored non-empty key is therefore
+            // usable when the config declares an API-key auth method.
+            (config?.api_key.is_some() && key.as_deref().is_some_and(|key| !key.trim().is_empty()))
+                .then(|| ResolvedAuthSource {
+                    auth_type: "api_key".to_string(),
+                    source: Some("stored credential".to_string()),
+                })
+        }
+    }
+}
+
+fn auth_check_sync_with_config(
     provider: &str,
     registry: &ModelRegistry,
-    auth_path: &std::path::Path,
+    auth_path: &Path,
+    config: &ModelConfig,
 ) -> AuthCheckResult {
     if registry.get_error().is_some() {
         return AuthCheckResult {
@@ -306,7 +578,7 @@ pub fn check_provider_auth(
             auth_type: None,
         };
     }
-    if registry.get_provider(provider).is_none() {
+    if !provider_exists(provider, registry, config) {
         return AuthCheckResult {
             status: "not_ready".to_string(),
             provider: provider.to_string(),
@@ -314,27 +586,42 @@ pub fn check_provider_auth(
             auth_type: None,
         };
     }
-    let Some(credential) = read_stored_credential(provider, auth_path) else {
-        return AuthCheckResult {
-            status: "not_ready".to_string(),
-            provider: provider.to_string(),
-            reason: Some("credentials_not_configured".to_string()),
-            auth_type: None,
-        };
-    };
-    AuthCheckResult {
-        status: "ready".to_string(),
-        provider: provider.to_string(),
-        reason: None,
-        auth_type: Some(
-            if credential.credential_type() == "oauth" {
-                "oauth"
-            } else {
-                "api_key"
-            }
-            .to_string(),
-        ),
+    if let Some(stored) = read_stored_credential(provider, auth_path) {
+        return auth_result_from_source(
+            provider,
+            source_from_stored(
+                registry.get_provider(provider).as_ref(),
+                &stored,
+                config.get_provider(provider),
+            ),
+        );
     }
+    if config
+        .get_provider(provider)
+        .and_then(|provider| provider.api_key.as_deref())
+        .is_some()
+    {
+        return auth_result_from_source(
+            provider,
+            configured_api_key_status(config.get_provider(provider)),
+        );
+    }
+    if let Some(source) = source_from_facade(provider, registry) {
+        return auth_result_from_source(provider, Some(source));
+    }
+    auth_result_from_source(
+        provider,
+        configured_api_key_status(config.get_provider(provider)),
+    )
+}
+
+/// Check provider auth (upstream `checkProviderAuth`, synchronous facade).
+pub fn check_provider_auth(
+    provider: &str,
+    registry: &ModelRegistry,
+    auth_path: &std::path::Path,
+) -> AuthCheckResult {
+    auth_check_sync_with_config(provider, registry, auth_path, &load_auth_model_config())
 }
 
 /// Async auth check with upstream's refresh option. The status remains
@@ -347,6 +634,23 @@ pub async fn check_provider_auth_with_options(
     auth_path: &Path,
     refresh: bool,
 ) -> AuthCheckResult {
+    check_provider_auth_with_options_and_config(
+        provider,
+        registry,
+        auth_path,
+        refresh,
+        &load_auth_model_config(),
+    )
+    .await
+}
+
+async fn check_provider_auth_with_options_and_config(
+    provider: &str,
+    registry: &ModelRegistry,
+    auth_path: &Path,
+    refresh: bool,
+    config: &ModelConfig,
+) -> AuthCheckResult {
     if registry.get_error().is_some() {
         return AuthCheckResult {
             status: "invalid".to_string(),
@@ -355,39 +659,51 @@ pub async fn check_provider_auth_with_options(
             auth_type: None,
         };
     }
-    let Some(provider_entry) = registry.get_provider(provider) else {
+    if !provider_exists(provider, registry, config) {
         return AuthCheckResult {
             status: "not_ready".to_string(),
             provider: provider.to_string(),
             reason: Some("provider_not_found".to_string()),
             auth_type: None,
         };
-    };
-    let Some(credential) = read_stored_credential(provider, auth_path) else {
-        return AuthCheckResult {
-            status: "not_ready".to_string(),
-            provider: provider.to_string(),
-            reason: Some("credentials_not_configured".to_string()),
-            auth_type: None,
-        };
-    };
-    let auth_type = if credential.credential_type() == "oauth" {
-        "oauth"
+    }
+
+    // `--no-refresh` uses upstream ReadOnlyAuthStorage, whose strict load
+    // validation makes malformed auth.json an invalid state. The normal
+    // refresh path uses AuthStorage and preserves its fail-open read snapshot.
+    let options = crate::core::auth_storage::AuthOperationOptions::default();
+    let stored = if refresh {
+        AuthStorage::create(auth_path.to_path_buf())
+            .read(provider, &options)
+            .await
     } else {
-        "api_key"
+        ReadOnlyAuthStorage::new(auth_path.to_path_buf())
+            .read(provider, &options)
+            .await
     };
-    if refresh && matches!(credential, Credential::OAuth { .. }) {
-        if provider_entry.auth.oauth.is_none() {
+    let stored = match stored {
+        Ok(stored) => stored,
+        Err(_) => {
             return AuthCheckResult {
-                status: "not_ready".to_string(),
+                status: "invalid".to_string(),
                 provider: provider.to_string(),
-                reason: Some("credentials_not_configured".to_string()),
+                reason: Some("invalid_state".to_string()),
                 auth_type: None,
-            };
+            }
         }
-        match get_provider_credential(provider, registry, auth_path, true, None).await {
-            Ok(Some(_)) => {}
-            Ok(None) => {
+    };
+
+    if let Some(credential) = stored {
+        if refresh && matches!(credential, Credential::OAuth { .. }) {
+            let Some(provider_entry) = registry.get_provider(provider) else {
+                return AuthCheckResult {
+                    status: "not_ready".to_string(),
+                    provider: provider.to_string(),
+                    reason: Some("credentials_not_configured".to_string()),
+                    auth_type: None,
+                };
+            };
+            if provider_entry.auth.oauth.is_none() {
                 return AuthCheckResult {
                     status: "not_ready".to_string(),
                     provider: provider.to_string(),
@@ -395,22 +711,64 @@ pub async fn check_provider_auth_with_options(
                     auth_type: None,
                 };
             }
-            Err(_) => {
-                return AuthCheckResult {
-                    status: "invalid".to_string(),
-                    provider: provider.to_string(),
-                    reason: Some("invalid_state".to_string()),
-                    auth_type: None,
+            let refreshed =
+                match get_provider_credential(provider, registry, auth_path, true, None).await {
+                    Ok(Some(refreshed)) => refreshed,
+                    Ok(None) => {
+                        return AuthCheckResult {
+                            status: "not_ready".to_string(),
+                            provider: provider.to_string(),
+                            reason: Some("credentials_not_configured".to_string()),
+                            auth_type: None,
+                        }
+                    }
+                    Err(_) => {
+                        return AuthCheckResult {
+                            status: "invalid".to_string(),
+                            provider: provider.to_string(),
+                            reason: Some("invalid_state".to_string()),
+                            auth_type: None,
+                        }
+                    }
                 };
-            }
+            return auth_result_from_source(
+                provider,
+                source_from_stored(
+                    registry.get_provider(provider).as_ref(),
+                    &refreshed,
+                    config.get_provider(provider),
+                ),
+            );
         }
+
+        return auth_result_from_source(
+            provider,
+            source_from_stored(
+                registry.get_provider(provider).as_ref(),
+                &credential,
+                config.get_provider(provider),
+            ),
+        );
     }
-    AuthCheckResult {
-        status: "ready".to_string(),
-        provider: provider.to_string(),
-        reason: None,
-        auth_type: Some(auth_type.to_string()),
+
+    if config
+        .get_provider(provider)
+        .and_then(|provider| provider.api_key.as_deref())
+        .is_some()
+    {
+        return auth_result_from_source(
+            provider,
+            configured_api_key_status(config.get_provider(provider)),
+        );
     }
+    if let Some(source) = source_from_facade(provider, registry) {
+        return auth_result_from_source(provider, Some(source));
+    }
+
+    auth_result_from_source(
+        provider,
+        configured_api_key_status(config.get_provider(provider)),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -561,8 +919,19 @@ pub async fn handle_auth_command(args: &[String]) -> bool {
 
     // auth check.
     {
+        let target = match resolve_auth_target(
+            validated.provider.as_deref(),
+            validated.model.as_deref(),
+            &registry,
+        ) {
+            Ok(target) => target,
+            Err(message) => {
+                eprintln!("Error: {message}");
+                std::process::exit(2);
+            }
+        };
         let mut result = check_provider_auth_with_options(
-            validated.provider.as_deref().unwrap_or(""),
+            &target.provider,
             &registry,
             &auth_path,
             !command.no_refresh,
@@ -629,6 +998,70 @@ fn auth_exit(code: i32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::sync::Arc;
+
+    use pi_ai::auth::{
+        ApiKeyCredential, AuthContext, Credential as AiCredential, CredentialStore,
+        InMemoryCredentialStore, OAuthCredential,
+    };
+
+    fn test_registry(
+        env_values: &[(&str, &str)],
+        credentials: Option<Arc<dyn CredentialStore>>,
+    ) -> ModelRegistry {
+        let env_values: Arc<BTreeMap<String, String>> = Arc::new(
+            env_values
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect(),
+        );
+        let auth_context = AuthContext {
+            env: {
+                let env_values = Arc::clone(&env_values);
+                Arc::new(move |name| env_values.get(name).cloned())
+            },
+            file_exists: Arc::new(|_| false),
+        };
+        let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions {
+            auth_context: Some(auth_context),
+            credentials,
+            ..Default::default()
+        });
+        ModelRegistry::new(models, ModelConfig::default())
+    }
+
+    fn auth_fixture_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "pi-auth-command-{label}-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn cleanup_auth_fixture(path: &Path) {
+        let _ = fs::remove_file(path);
+        let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+        let _ = fs::remove_file(lock_path);
+    }
+
+    fn config_only_provider() -> ModelConfig {
+        ModelConfig::from_value(serde_json::json!({
+            "providers": {
+                "configured-only": {
+                    "baseUrl": "https://configured.example/v1",
+                    "api": "openai-responses",
+                    "apiKey": "configured-secret",
+                    "models": [{ "id": "configured-model", "reasoning": false }]
+                }
+            }
+        }))
+        .unwrap()
+    }
 
     #[test]
     fn parses_check_command() {
@@ -765,6 +1198,207 @@ mod tests {
         assert_eq!(
             auth_credential_value(&oauth).as_deref(),
             Some("access-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_check_uses_environment_credential_without_exposing_it() {
+        let registry = test_registry(&[("OPENAI_API_KEY", "env-secret")], None);
+        let config = ModelConfig::default();
+        let path = auth_fixture_path("env");
+
+        let result =
+            check_provider_auth_with_options_and_config("openai", &registry, &path, false, &config)
+                .await;
+
+        assert_eq!(result.status, "ready");
+        assert_eq!(result.provider, "openai");
+        assert_eq!(result.auth_type.as_deref(), Some("api_key"));
+        assert_eq!(result.reason, None);
+        let source = source_from_facade("openai", &registry).expect("environment auth source");
+        assert_eq!(source.source.as_deref(), Some("OPENAI_API_KEY"));
+
+        let credential = get_provider_credential("openai", &registry, &path, false, None)
+            .await
+            .unwrap()
+            .expect("environment credential");
+        assert_eq!(
+            auth_credential_value(&credential).as_deref(),
+            Some("env-secret")
+        );
+        assert!(!format!("{result:?}").contains("env-secret"));
+        cleanup_auth_fixture(&path);
+    }
+
+    #[tokio::test]
+    async fn auth_check_uses_stored_api_key_and_reports_metadata_only() {
+        let store = Arc::new(InMemoryCredentialStore::new());
+        store.modify("openai", &|_| {
+            Some(AiCredential::ApiKey(ApiKeyCredential {
+                key: Some("stored-secret".to_string()),
+                env: None,
+            }))
+        });
+        let registry = test_registry(&[], Some(store.clone()));
+        let config = ModelConfig::default();
+        let path = auth_fixture_path("stored-api");
+
+        let result =
+            check_provider_auth_with_options_and_config("openai", &registry, &path, false, &config)
+                .await;
+
+        assert_eq!(result.status, "ready");
+        assert_eq!(result.auth_type.as_deref(), Some("api_key"));
+        let source = source_from_facade("openai", &registry).expect("stored auth source");
+        assert_eq!(source.source.as_deref(), Some("stored credential"));
+        let credential = get_provider_credential("openai", &registry, &path, false, None)
+            .await
+            .unwrap()
+            .expect("stored credential");
+        assert_eq!(
+            auth_credential_value(&credential).as_deref(),
+            Some("stored-secret")
+        );
+        assert!(!format!("{result:?}").contains("stored-secret"));
+        cleanup_auth_fixture(&path);
+    }
+
+    #[tokio::test]
+    async fn auth_check_uses_stored_oauth_credential() {
+        let store = Arc::new(InMemoryCredentialStore::new());
+        store.modify("openai-codex", &|_| {
+            Some(AiCredential::OAuth(OAuthCredential {
+                access: "oauth-access-secret".to_string(),
+                refresh: "oauth-refresh-secret".to_string(),
+                expires: u64::MAX,
+                extra: BTreeMap::new(),
+            }))
+        });
+        let registry = test_registry(&[], Some(store));
+        let config = ModelConfig::default();
+        let path = auth_fixture_path("stored-oauth");
+
+        let result = check_provider_auth_with_options_and_config(
+            "openai-codex",
+            &registry,
+            &path,
+            false,
+            &config,
+        )
+        .await;
+
+        assert_eq!(result.status, "ready");
+        assert_eq!(result.auth_type.as_deref(), Some("oauth"));
+        let source = source_from_facade("openai-codex", &registry).expect("OAuth source");
+        assert_eq!(source.source.as_deref(), Some("OAuth"));
+        assert!(!format!("{result:?}").contains("oauth-access-secret"));
+        assert!(!format!("{result:?}").contains("oauth-refresh-secret"));
+        cleanup_auth_fixture(&path);
+    }
+
+    #[tokio::test]
+    async fn auth_check_reports_missing_credentials_truthfully() {
+        let registry = test_registry(&[], None);
+        let config = ModelConfig::default();
+        let path = auth_fixture_path("missing");
+
+        let result =
+            check_provider_auth_with_options_and_config("openai", &registry, &path, false, &config)
+                .await;
+
+        assert_eq!(result.status, "not_ready");
+        assert_eq!(result.provider, "openai");
+        assert_eq!(result.reason.as_deref(), Some("credentials_not_configured"));
+        assert_eq!(result.auth_type, None);
+        cleanup_auth_fixture(&path);
+    }
+
+    #[tokio::test]
+    async fn auth_check_reports_unknown_provider_without_secret_data() {
+        let registry = test_registry(&[], None);
+        let config = ModelConfig::default();
+        let path = auth_fixture_path("unknown-provider");
+
+        let result = check_provider_auth_with_options_and_config(
+            "not-a-provider",
+            &registry,
+            &path,
+            false,
+            &config,
+        )
+        .await;
+
+        assert_eq!(result.status, "not_ready");
+        assert_eq!(result.provider, "not-a-provider");
+        assert_eq!(result.reason.as_deref(), Some("provider_not_found"));
+        assert!(!format!("{result:?}").contains("secret"));
+        cleanup_auth_fixture(&path);
+    }
+
+    #[test]
+    fn auth_model_resolution_reports_unknown_model() {
+        let registry = test_registry(&[], None);
+        let config = ModelConfig::default();
+        let error =
+            resolve_auth_target_with_config(None, Some("not-a-real-model"), &registry, &config)
+                .unwrap_err();
+        assert!(error.contains("not-a-real-model"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn auth_check_resolves_models_json_provider_and_model() {
+        let registry = test_registry(&[], None);
+        let config = config_only_provider();
+        let path = auth_fixture_path("configured-only");
+
+        let target = resolve_auth_target_with_config(
+            None,
+            Some("configured-only/configured-model"),
+            &registry,
+            &config,
+        )
+        .expect("configured model target");
+        assert_eq!(target.provider, "configured-only");
+        assert_eq!(
+            target.model.as_ref().map(|model| model.id.as_str()),
+            Some("configured-model")
+        );
+
+        let result = check_provider_auth_with_options_and_config(
+            &target.provider,
+            &registry,
+            &path,
+            false,
+            &config,
+        )
+        .await;
+        assert_eq!(result.status, "ready");
+        assert_eq!(result.auth_type.as_deref(), Some("api_key"));
+        assert_eq!(
+            configured_api_key_status(config.get_provider("configured-only"))
+                .and_then(|source| source.source),
+            Some("configured API key".to_string())
+        );
+        cleanup_auth_fixture(&path);
+    }
+
+    #[test]
+    fn auth_result_credential_value_extracts_bearer_header_only() {
+        let auth = pi_ai::auth::AuthResult {
+            auth: pi_ai::auth::ModelAuth {
+                api_key: None,
+                headers: Some(BTreeMap::from([(
+                    "Authorization".to_string(),
+                    Some("Bearer header-secret".to_string()),
+                )])),
+                base_url: None,
+            },
+            env: None,
+            source: Some("test".to_string()),
+        };
+        assert_eq!(
+            auth_result_credential_value(&auth).as_deref(),
+            Some("header-secret")
         );
     }
 

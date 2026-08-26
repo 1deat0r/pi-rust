@@ -785,7 +785,7 @@ fn auth_check_json_unknown_provider_reports_reason() {
 }
 
 #[test]
-fn auth_check_json_malformed_credentials_reports_not_ready() {
+fn auth_check_json_malformed_credentials_reports_invalid() {
     let sandbox = Sandbox::new("auth-check-malformed");
     sandbox.write_global_settings(json!({}));
     fs::write(sandbox.agent_dir.join("auth.json"), "{not-json").unwrap();
@@ -801,13 +801,13 @@ fn auth_check_json_malformed_credentials_reports_not_ready() {
             "--json",
         ],
     );
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(sandbox.stderr(&out).is_empty());
     let parsed: serde_json::Value =
         serde_json::from_str(sandbox.stdout(&out).trim()).expect("json");
-    assert_eq!(parsed["status"], "not_ready");
+    assert_eq!(parsed["status"], "invalid");
     assert_eq!(parsed["provider"], "google");
-    assert_eq!(parsed["reason"], "credentials_not_configured");
+    assert_eq!(parsed["reason"], "invalid_state");
 }
 
 #[test]
