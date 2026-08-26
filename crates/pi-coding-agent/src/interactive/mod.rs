@@ -7,6 +7,7 @@
 //! loop. The terminal event loop lives in `crate::modes::interactive`.
 
 pub mod config_selector;
+pub mod easter_eggs;
 pub mod footer;
 pub mod session_meta;
 pub use session_meta::{picker_select_items, session_picker_items, SessionMetaForPicker};
@@ -33,6 +34,7 @@ use crate::interactive::tui_theme as t;
 /// a shared mutex so the frame renderer and input loop share ownership.
 pub enum Modal {
     Model(Arc<Mutex<selectors::ListSelector>>),
+    ScopedModels(Arc<Mutex<selectors::ScopedModelsSelector>>),
     Thinking(Arc<Mutex<selectors::ListSelector>>),
     Theme(Arc<Mutex<selectors::ListSelector>>),
     /// User-message selector for `/fork`.
@@ -113,11 +115,17 @@ pub fn build_scene(
     editor: &Arc<Mutex<Editor>>,
     footer_component: &Arc<Mutex<Text>>,
     modal_component: Option<SharedComponent>,
+    easter_egg_components: &[SharedComponent],
     pending: &str,
 ) -> Arc<Mutex<Scene>> {
     let mut children: Vec<SharedComponent> = Vec::new();
     let scroll_view: SharedComponent = Arc::new(Mutex::new(ScrollView::new(transcript.clone())));
     children.push(scroll_view);
+    // Scene truncation keeps the top of an overfull scene. Render the newest
+    // hidden component first so repeated/triggered announcements remain
+    // visible in a narrow terminal, matching the chat container's bottom
+    // anchored viewport.
+    children.extend(easter_egg_components.iter().rev().cloned());
     if let Some(modal) = modal_component {
         children.push(modal);
     }
@@ -132,7 +140,7 @@ pub fn build_scene(
         None,
     ))));
     children.push(footer_component.clone());
-    Arc::new(Mutex::new(Scene::new(children, None)))
+    Arc::new(Mutex::new(Scene::new(children, Some(0))))
 }
 
 /// Handle one submitted input: either a slash command or a prompt.
@@ -152,6 +160,13 @@ pub fn parse_submit(text: &str) -> SubmitAction {
                     command,
                     (!argument.is_empty()).then(|| argument.to_string()),
                 );
+            }
+            // Upstream keeps these Easter eggs out of the public command
+            // registry, but exact no-argument invocations still execute.
+            if argument.is_empty() {
+                if let Some(command) = slash::find_hidden_command(name) {
+                    return SubmitAction::Command(command, None);
+                }
             }
         }
         SubmitAction::Prompt(trimmed.to_string())
@@ -242,6 +257,24 @@ mod interactive_tests {
             SubmitAction::Prompt(p) => assert_eq!(p, "/unknowncmd"),
             _ => panic!("unknown command falls through to prompt"),
         }
+    }
+
+    #[test]
+    fn parse_submit_executes_hidden_commands_without_publishing_them() {
+        for name in ["debug", "arminsayshi", "dementedelves"] {
+            match parse_submit(&format!("/{name}")) {
+                SubmitAction::Command(command, argument) => {
+                    assert_eq!(command.name, name);
+                    assert!(argument.is_none());
+                }
+                SubmitAction::Prompt(prompt) => panic!("hidden command became prompt: {prompt}"),
+            }
+            assert!(find_command(name).is_none());
+        }
+        assert!(matches!(
+            parse_submit("/debug extra"),
+            SubmitAction::Prompt(_)
+        ));
     }
 
     #[test]

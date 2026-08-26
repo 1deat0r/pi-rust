@@ -11,10 +11,12 @@ use std::sync::{Arc, Mutex};
 
 use pi_agent::harness::{AgentHarness, AgentHarnessOptions, HarnessTool};
 use pi_agent::session::jsonl::repo::CreateOptions;
+use pi_agent::session::memory::{in_memory_metadata, InMemorySessionStorage};
 use pi_agent::session::session::Session as JsonlSession;
 use pi_agent::session::state::{ForkOptions, ForkPosition};
 use pi_agent::session::types::EntryNoStats;
 use pi_agent::session::JsonlSessionRepo;
+use pi_ai::auth::AuthInteraction;
 use pi_ai::model::Model;
 use pi_ai::types::{AssistantMessageEvent, Message};
 use serde_json::{json, Value};
@@ -51,12 +53,18 @@ struct InteractiveRuntime {
     faux_core: Option<pi_ai::providers::FauxProviderCore>,
     provider: String,
     model: Model,
+    /// Canonical models enabled for Ctrl+P cycling by `/scoped-models`.
+    /// Empty means the full available model catalog, matching Pi's default.
+    scoped_models: Vec<String>,
     messages: Vec<pi_agent::types::AgentMessage>,
     session: JsonlSession<pi_agent::fs::StdFileSystem>,
     repo: JsonlSessionRepo<pi_agent::fs::StdFileSystem>,
     session_root: String,
     session_id: String,
     session_name: Option<String>,
+    /// `--no-session` keeps the same session API in memory while preventing
+    /// all durable session files and selectors from mutating disk.
+    session_persistence: bool,
     system_prompt: Option<String>,
     tools_enabled: bool,
     builtin_tools_enabled: bool,
@@ -104,6 +112,115 @@ impl Drop for InteractiveTerminalGuard {
             Err(poisoned) => poisoned.into_inner(),
         };
         let _ = terminal.leave_raw();
+    }
+}
+
+/// Own one terminal reader for the entire interactive session.
+///
+/// Reading stdin through a new `spawn_blocking` task for every streaming turn
+/// loses input at the turn boundary: the abandoned blocking task can consume
+/// the first key of the next prompt while its result is no longer observed.
+/// Pi keeps one input loop alive for the whole TUI, so the Rust port does the
+/// same and shares its lossless event queue between the idle loop, streaming
+/// turns, and modal/auth flows.
+struct InteractiveInputReader {
+    terminal: Arc<Mutex<TerminalBackend>>,
+    receiver: tokio::sync::mpsc::UnboundedReceiver<Result<pi_tui::terminal::TerminalEvent, String>>,
+    stop: Arc<AtomicBool>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl InteractiveInputReader {
+    fn start(terminal: Arc<Mutex<TerminalBackend>>) -> Self {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let task_stop = Arc::clone(&stop);
+        let task_terminal = Arc::clone(&terminal);
+        let task = tokio::task::spawn_blocking(move || {
+            while !task_stop.load(Ordering::Acquire) {
+                let event = match task_terminal.lock() {
+                    Ok(mut terminal) => terminal
+                        .next_event()
+                        .map_err(|error| format!("read terminal input: {error}")),
+                    Err(_) => Err("terminal lock poisoned".to_string()),
+                };
+
+                match event {
+                    Ok(event) => {
+                        let reached_eof = matches!(
+                            &event,
+                            pi_tui::terminal::TerminalEvent::Key(key) if key.is_empty()
+                        ) && task_terminal
+                            .lock()
+                            .map(|terminal| terminal.stdin_eof())
+                            .unwrap_or(true);
+                        if reached_eof {
+                            let _ = sender.send(Ok(event));
+                            break;
+                        }
+                        // Poll timeouts are an internal wake-up, not user
+                        // input. Do not flood the async queue with them or
+                        // immediately reacquire the terminal mutex in a
+                        // tight loop and starve the renderer.
+                        if matches!(
+                            &event,
+                            pi_tui::terminal::TerminalEvent::Key(key) if key.is_empty()
+                        ) {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                            continue;
+                        }
+                        if sender.send(Ok(event)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = sender.send(Err(error));
+                        break;
+                    }
+                }
+            }
+        });
+
+        Self {
+            terminal,
+            receiver,
+            stop,
+            task: Some(task),
+        }
+    }
+
+    async fn recv(&mut self) -> Option<Result<pi_tui::terminal::TerminalEvent, String>> {
+        self.receiver.recv().await
+    }
+
+    fn pending_cancel(&mut self) -> bool {
+        while let Ok(event) = self.receiver.try_recv() {
+            let Ok(pi_tui::terminal::TerminalEvent::Key(raw)) = event else {
+                continue;
+            };
+            let key = parse_key(&raw);
+            if key.base == "esc" || key.base == "escape" || (key.ctrl && key.base == "c") {
+                return true;
+            }
+        }
+        false
+    }
+
+    async fn stop_worker(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
+    }
+
+    async fn restart(&mut self) {
+        self.stop_worker().await;
+        let replacement = Self::start(self.terminal.clone());
+        *self = replacement;
+    }
+
+    async fn shutdown(mut self) {
+        self.stop_worker().await;
     }
 }
 
@@ -647,6 +764,23 @@ async fn apply_pending_extension_lifecycle_actions(
         let action_type = action.get("type").and_then(Value::as_str).unwrap_or("");
         let options = action.get("options").unwrap_or(&Value::Null);
         let request_host = runtime.extensions.host.clone();
+        if !runtime.session_persistence
+            && matches!(action_type, "new_session" | "fork" | "switch_session")
+        {
+            let message = format!(
+                "extension {action_type} requires session persistence; remove --no-session"
+            );
+            let _ = request_host.complete_lifecycle_action(
+                request,
+                json!({
+                    "cancelled": true,
+                    "error": message,
+                    "snapshot": request_host.snapshot(),
+                }),
+            );
+            notes.push(message);
+            continue;
+        }
         let mut completion_sent = false;
         let result: Result<String, String> = match action_type {
             "new_session" => {
@@ -945,6 +1079,160 @@ fn apply_extension_turn_changes(runtime: &mut InteractiveRuntime) {
     }
 }
 
+/// Cycle the active model through the explicit scoped-models set. Pi uses
+/// Ctrl+P for this operation; an empty set intentionally leaves the normal
+/// model selector behavior unchanged.
+fn cycle_scoped_model(
+    runtime: &mut InteractiveRuntime,
+    settings: &mut SettingsManager,
+) -> Option<String> {
+    if runtime.scoped_models.len() < 2 {
+        return None;
+    }
+    let current = format!("{}/{}", runtime.provider, runtime.model.id);
+    let current_index = runtime
+        .scoped_models
+        .iter()
+        .position(|reference| reference.eq_ignore_ascii_case(&current))
+        .unwrap_or(0);
+    let next_reference =
+        runtime.scoped_models[(current_index + 1) % runtime.scoped_models.len()].clone();
+    let (provider, model_id) = next_reference.split_once('/')?;
+    let model = runtime.models.get_model(provider, model_id)?.clone();
+    runtime.provider = provider.to_string();
+    runtime.model = model;
+    let _ = it::apply_model_selection(settings, &next_reference);
+    Some(format!("Model: {next_reference}"))
+}
+
+fn apply_model_reference(
+    runtime: &mut InteractiveRuntime,
+    settings: &mut SettingsManager,
+    value: &str,
+) -> Result<String, String> {
+    let (provider, model_id) = value
+        .trim()
+        .split_once('/')
+        .filter(|(provider, model_id)| !provider.is_empty() && !model_id.is_empty())
+        .ok_or_else(|| "usage: /model <provider/model>".to_string())?;
+    let model = runtime
+        .models
+        .get_model(provider, model_id)
+        .ok_or_else(|| format!("model not found: {value}"))?;
+    runtime.provider = provider.to_string();
+    runtime.model = model;
+    settings.set_default_model_and_provider(provider.to_string(), model_id.to_string());
+    Ok(format!(
+        "Model: {}/{}",
+        runtime.provider, runtime.model.name
+    ))
+}
+
+fn maybe_add_daxnuts_component(
+    runtime: &InteractiveRuntime,
+    easter_egg_components: &mut Vec<SharedComponent>,
+    animation_until: &mut Option<std::time::Instant>,
+) {
+    if it::easter_eggs::is_daxnuts_model(&runtime.provider, &runtime.model.id) {
+        easter_egg_components.push(it::easter_eggs::daxnuts_component());
+        *animation_until = Some(std::time::Instant::now() + it::easter_eggs::animation_duration());
+    }
+}
+
+fn clear_easter_egg_components(
+    easter_egg_components: &mut Vec<SharedComponent>,
+    animation_until: &mut Option<std::time::Instant>,
+) {
+    easter_egg_components.clear();
+    *animation_until = None;
+}
+
+fn debug_render_lines(
+    transcript_md: &Arc<Mutex<Markdown>>,
+    editor: &Arc<Mutex<Editor>>,
+    footer_text: &Arc<Mutex<Text>>,
+    easter_egg_components: &[SharedComponent],
+    width: usize,
+) -> Vec<String> {
+    let mut lines = transcript_md.lock().unwrap().render(width);
+    for component in easter_egg_components {
+        lines.extend(component.lock().unwrap().render(width));
+    }
+    lines.extend(editor.lock().unwrap().render(width));
+    lines.extend(footer_text.lock().unwrap().render(width));
+    lines
+}
+
+fn iso_timestamp_now() -> String {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let seconds = elapsed.as_secs();
+    let days = (seconds / 86_400) as i64;
+    let day_seconds = seconds % 86_400;
+    let hour = day_seconds / 3_600;
+    let minute = (day_seconds % 3_600) / 60;
+    let second = day_seconds % 60;
+    let (year, month, day) = civil_date_from_unix_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{:03}Z",
+        elapsed.subsec_millis()
+    )
+}
+
+// Howard Hinnant's civil-date conversion, kept local so /debug does not add a
+// date/time dependency to the interactive runtime.
+fn civil_date_from_unix_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_part = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_part + 2) / 5 + 1;
+    let month = month_part + if month_part < 10 { 3 } else { -9 };
+    let year = year + if month <= 2 { 1 } else { 0 };
+    (year as i32, month as u32, day as u32)
+}
+
+fn write_debug_snapshot(
+    path: &std::path::Path,
+    width: usize,
+    height: usize,
+    lines: &[String],
+    messages: &[pi_agent::types::AgentMessage],
+) -> Result<(), String> {
+    let timestamp = iso_timestamp_now();
+    let mut data = format!(
+        "Debug output at {timestamp}\nTerminal: {width}x{height}\nTotal lines: {}\n\n",
+        lines.len(),
+    );
+    data.push_str("=== All rendered lines with visible widths ===\n");
+    for (index, line) in lines.iter().enumerate() {
+        data.push_str(&format!(
+            "[{index}] (w={}) {}\n",
+            pi_tui::utils::visible_width(line),
+            serde_json::to_string(line).unwrap_or_else(|_| "\"<invalid>\"".to_string()),
+        ));
+    }
+    data.push_str("\n=== Agent messages (JSONL) ===\n");
+    for message in messages {
+        data.push_str(
+            &serde_json::to_string(message)
+                .unwrap_or_else(|_| "{\"error\":\"message serialization failed\"}".to_string()),
+        );
+        data.push('\n');
+    }
+    data.push('\n');
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| format!("create parent: {error}"))?;
+    }
+    std::fs::write(path, data).map_err(|error| format!("write {}: {error}", path.display()))
+}
+
 struct InteractiveIdleGuard {
     host: Arc<ExtensionHostState>,
 }
@@ -975,8 +1263,12 @@ async fn start_interactive_turn(
     on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync>,
     steering_mode: Option<pi_agent::harness::agent_harness::QueueMode>,
     follow_up_mode: Option<pi_agent::harness::agent_harness::QueueMode>,
+    session_environment: Option<&crate::core::session_env::SessionEnvironmentGuard>,
 ) -> Result<InteractiveTurnWorker, String> {
     apply_extension_turn_changes(runtime);
+    if let Some(environment) = session_environment {
+        environment.set_model(&runtime.provider, &runtime.model.name);
+    }
     let idle_guard = InteractiveIdleGuard::new(runtime.extensions.host.clone());
     let prompt = pi_agent::agent::user_text_prompt(message.clone(), pi_ai::types::now_ms());
     let tools = interactive_turn_tools(runtime);
@@ -990,6 +1282,9 @@ async fn start_interactive_turn(
         ..Default::default()
     };
     let provider = runtime.provider.clone();
+    if provider != "faux" {
+        crate::core::model_runtime::refresh_provider_oauth_if_needed(&models, &provider).await?;
+    }
     let provider_uses_oauth = models
         .get_provider(&provider)
         .is_some_and(|registered| registered.auth.oauth.is_some());
@@ -1000,14 +1295,47 @@ async fn start_interactive_turn(
                 &pi_ai::providers::RegisterFauxProviderOptions::default(),
             )
         });
-        core.set_responses(vec![pi_ai::providers::FauxResponseStep::Message(
+        // The first response is tied to this submitted prompt. Additional
+        // responses are factories so steering/follow-up input typed while a
+        // faux turn is still streaming receives a real second response
+        // instead of exhausting the one-step fixture. This keeps the PTY
+        // harness faithful to a provider that can answer every queued turn;
+        // production providers never use this branch.
+        let mut responses = vec![pi_ai::providers::FauxResponseStep::Message(
             pi_ai::providers::faux_assistant_message(
                 vec![pi_ai::types::ContentBlock::text(format!(
                     "faux response to: {message}"
                 ))],
                 pi_ai::providers::FauxAssistantOptions::default(),
             ),
-        )]);
+        )];
+        for _ in 0..32 {
+            responses.push(pi_ai::providers::FauxResponseStep::Factory(Box::new(
+                |context: &pi_ai::types::Context,
+                 _options: Option<&pi_ai::types::SimpleStreamOptions>,
+                 _state: &pi_ai::providers::FauxProviderState,
+                 _model: &pi_ai::model::Model| {
+                    let prompt = context
+                        .messages
+                        .iter()
+                        .rev()
+                        .find_map(|message| match message {
+                            pi_ai::types::Message::User(user) => {
+                                Some(pi_agent::agent::user_content_text(user))
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    pi_ai::providers::faux_assistant_message(
+                        vec![pi_ai::types::ContentBlock::text(format!(
+                            "faux response to: {prompt}"
+                        ))],
+                        pi_ai::providers::FauxAssistantOptions::default(),
+                    )
+                },
+            )));
+        }
+        core.set_responses(responses);
         let stream_models = models.clone();
         let faux_stream_options = stream_options.clone();
         Arc::new(move |model, ctx| stream_models.stream(model, ctx, Some(&faux_stream_options)))
@@ -1099,7 +1427,7 @@ async fn stream_turn(
     message: String,
     on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync>,
 ) -> Result<Vec<pi_agent::types::AgentMessage>, String> {
-    let worker = start_interactive_turn(runtime, message, on_event, None, None).await?;
+    let worker = start_interactive_turn(runtime, message, on_event, None, None, None).await?;
     let new_messages = worker.task.await.map_err(|error| error.to_string())??;
     finish_interactive_turn(runtime, new_messages).await
 }
@@ -1121,6 +1449,7 @@ struct InteractiveStreamingUi<'a> {
     editor: &'a Arc<Mutex<Editor>>,
     transcript_md: &'a Arc<Mutex<Markdown>>,
     footer_text: &'a Arc<Mutex<Text>>,
+    easter_egg_components: &'a [SharedComponent],
     stream_buffer: &'a Arc<Mutex<String>>,
     pending_text: &'a mut String,
     hide_thinking: bool,
@@ -1141,10 +1470,18 @@ impl InteractiveStreamingUi<'_> {
             self.editor,
             self.footer_text,
             None,
+            self.easter_egg_components,
             self.pending_text,
         );
         self.tree.render(Some(&scene));
     }
+}
+
+struct InteractiveTurnInput<'a> {
+    input: &'a mut InteractiveInputReader,
+    steering_mode: &'a str,
+    follow_up_mode: &'a str,
+    session_environment: Option<&'a crate::core::session_env::SessionEnvironmentGuard>,
 }
 
 /// Run an interactive turn while continuing to consume terminal input.
@@ -1158,8 +1495,7 @@ async fn stream_turn_with_input(
     prompt: String,
     on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync>,
     ui: &mut InteractiveStreamingUi<'_>,
-    steering_mode: &str,
-    follow_up_mode: &str,
+    turn_input: InteractiveTurnInput<'_>,
 ) -> (
     Result<Vec<pi_agent::types::AgentMessage>, String>,
     Vec<InteractivePendingMessage>,
@@ -1169,16 +1505,17 @@ async fn stream_turn_with_input(
         runtime,
         prompt,
         on_event,
-        Some(if steering_mode == "all" {
+        Some(if turn_input.steering_mode == "all" {
             pi_agent::harness::agent_harness::QueueMode::All
         } else {
             pi_agent::harness::agent_harness::QueueMode::OneAtATime
         }),
-        Some(if follow_up_mode == "all" {
+        Some(if turn_input.follow_up_mode == "all" {
             pi_agent::harness::agent_harness::QueueMode::All
         } else {
             pi_agent::harness::agent_harness::QueueMode::OneAtATime
         }),
+        turn_input.session_environment,
     )
     .await
     {
@@ -1191,17 +1528,11 @@ async fn stream_turn_with_input(
         _idle_guard,
     } = worker;
     let mut turn = Box::pin(task);
-    let terminal = ui.tree.terminal_handle();
     let mut queued = Vec::new();
+    let mut redraw = tokio::time::interval(std::time::Duration::from_millis(50));
+    redraw.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        let event_terminal = terminal.clone();
-        let event_read = tokio::task::spawn_blocking(move || {
-            event_terminal
-                .lock()
-                .map_err(|_| "terminal lock poisoned".to_string())
-                .and_then(|mut terminal| terminal.next_event().map_err(|error| error.to_string()))
-        });
         tokio::select! {
             result = &mut turn => {
                 let result = match result {
@@ -1211,11 +1542,14 @@ async fn stream_turn_with_input(
                 };
                 return (result, Vec::new());
             }
-            event = event_read => {
+            _ = redraw.tick() => {
+                ui.render(&snapshot_messages);
+            }
+            event = turn_input.input.recv() => {
                 let event = match event {
-                    Ok(Ok(event)) => event,
-                    Ok(Err(error)) => return (Err(error), queued),
-                    Err(_) => return (Err("terminal input task failed".to_string()), queued),
+                    Some(Ok(event)) => event,
+                    Some(Err(error)) => return (Err(error), queued),
+                    None => return (Err("terminal input reader stopped".to_string()), queued),
                 };
                 match event {
                     pi_tui::terminal::TerminalEvent::Resize(_, height) => {
@@ -1251,7 +1585,12 @@ async fn stream_turn_with_input(
                                 .drain_submitted()
                                 .map(|text| (text, InteractiveQueueKind::Steering))
                         } else {
-                            ui.editor.lock().unwrap().handle_input(&key_str);
+                            let mut editor = ui.editor.lock().unwrap();
+                            if is_printable_input_batch(&key_str, &key) {
+                                editor.handle_input_burst(&key_str);
+                            } else {
+                                editor.handle_input(&key_str);
+                            }
                             None
                         };
 
@@ -1281,11 +1620,17 @@ async fn stream_turn_with_input(
 /// path and may provide custom summarization instructions.
 async fn compact_interactive(
     runtime: &mut InteractiveRuntime,
+    settings_manager: &SettingsManager,
     custom_instructions: Option<&str>,
     force: bool,
 ) -> Result<bool, String> {
     let operation = if force { "compact" } else { "auto-compact" };
-    let settings = pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS;
+    let (enabled, reserve_tokens, keep_recent_tokens) = settings_manager.get_compaction_settings();
+    let settings = pi_agent::harness::compaction::CompactionSettings {
+        enabled,
+        reserve_tokens,
+        keep_recent_tokens,
+    };
     if !force {
         let estimate = pi_agent::harness::compaction::estimate_context_tokens(&runtime.messages);
         if !pi_agent::harness::compaction::should_compact(
@@ -1324,10 +1669,11 @@ async fn compact_interactive(
             Box::pin(async move { models.complete_simple(&model, &ctx, Some(&opts)).await })
         });
     let options = pi_agent::harness::SimpleModels { complete_simple_fn };
+    let (retry_enabled, max_retries, base_delay_ms) = settings_manager.get_retry_settings();
     let retry = pi_ai::utils::retry::RetryPolicy {
-        enabled: false,
-        max_retries: 0,
-        base_delay_ms: 0,
+        enabled: retry_enabled,
+        max_retries: u32::try_from(max_retries).unwrap_or(u32::MAX),
+        base_delay_ms,
     };
     let result = pi_agent::harness::compaction::compact(
         &preparation,
@@ -1384,8 +1730,11 @@ async fn compact_interactive(
 /// summarize the history through the models facade and replace the in-memory
 /// context with the summary plus the retained tail. Returns true when
 /// compaction ran.
-async fn maybe_auto_compact(runtime: &mut InteractiveRuntime) -> Result<bool, String> {
-    compact_interactive(runtime, None, false).await
+async fn maybe_auto_compact(
+    runtime: &mut InteractiveRuntime,
+    settings: &SettingsManager,
+) -> Result<bool, String> {
+    compact_interactive(runtime, settings, None, false).await
 }
 
 /// Short cwd for banners (home-relative like the footer).
@@ -1636,6 +1985,34 @@ fn session_status(runtime: &InteractiveRuntime) -> String {
     status
 }
 
+/// Load the shipped changelog, allowing an explicit path to override it for
+/// development/package tests. Installed binaries use the embedded catalogue.
+fn changelog_content() -> String {
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("PI_CHANGELOG_PATH") {
+        candidates.push(std::path::PathBuf::from(path));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("CHANGELOG.md"));
+    }
+    candidates.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CHANGELOG.md"));
+    for path in candidates {
+        if let Some(content) = crate::core::changelog::read_path(&path) {
+            if !content.trim().is_empty() {
+                return content;
+            }
+        }
+    }
+    crate::core::changelog::embedded_content().to_string()
+}
+
+fn changelog_status() -> String {
+    format!(
+        "What's New\n{}",
+        crate::core::changelog::full_markdown(&changelog_content())
+    )
+}
+
 /// Append in-memory messages to a session's main lane (idempotent per call).
 async fn persist_messages_checked(
     session: &mut JsonlSession<pi_agent::fs::StdFileSystem>,
@@ -1752,6 +2129,9 @@ async fn run_share(runtime: &InteractiveRuntime, dry_run: bool) -> Result<String
     if dry_run {
         return Ok("PI_SHARE_DRY_RUN=1: /share skipped".to_string());
     }
+    if !runtime.session_persistence {
+        return Err("/share requires a persistent session; remove --no-session".to_string());
+    }
     let gh_auth = match run_gh(vec!["auth".to_string(), "status".to_string()]).await {
         Ok(out) => out,
         Err(_) => {
@@ -1799,51 +2179,223 @@ struct TuiAuthInteraction {
     terminal: Arc<Mutex<TerminalBackend>>,
 }
 
-impl pi_ai::auth::AuthInteraction for TuiAuthInteraction {
-    fn prompt(&self, prompt: &pi_ai::auth::AuthPrompt) -> Result<String, String> {
-        let message = match prompt {
-            pi_ai::auth::AuthPrompt::Text {
-                message,
-                placeholder,
-            } => {
-                let mut m = message.clone();
-                if let Some(p) = placeholder {
-                    m.push_str(&format!(" ({p})"));
-                }
-                m
+fn auth_prompt_message(prompt: &pi_ai::auth::AuthPrompt) -> String {
+    match prompt {
+        pi_ai::auth::AuthPrompt::Text {
+            message,
+            placeholder,
+        }
+        | pi_ai::auth::AuthPrompt::ManualCode {
+            message,
+            placeholder,
+        } => {
+            let mut rendered = message.clone();
+            if let Some(placeholder) = placeholder {
+                rendered.push_str(&format!(" ({placeholder})"));
             }
-            pi_ai::auth::AuthPrompt::Secret { message, .. } => message.clone(),
-            pi_ai::auth::AuthPrompt::ManualCode {
-                message,
-                placeholder,
-            } => {
-                let mut m = message.clone();
-                if let Some(p) = placeholder {
-                    m.push_str(&format!(" ({p})"));
+            rendered
+        }
+        pi_ai::auth::AuthPrompt::Secret { message, .. } => message.clone(),
+        pi_ai::auth::AuthPrompt::Select { message, options } => {
+            let mut rendered = message.clone();
+            for (index, option) in options.iter().enumerate() {
+                rendered.push_str(&format!("\n  {}. {}", index + 1, option.label));
+                if let Some(description) = &option.description {
+                    rendered.push_str(&format!(" — {description}"));
                 }
-                m
             }
-            pi_ai::auth::AuthPrompt::Select { message, options } => {
-                let mut m = message.clone();
-                for (i, opt) in options.iter().enumerate() {
-                    m.push_str(&format!("\n  {}. {}", i + 1, opt.label));
-                }
-                m
-            }
+            rendered
+        }
+    }
+}
+
+fn open_auth_browser(url: &str) -> bool {
+    if std::env::var_os("PI_OAUTH_NO_BROWSER").is_some() {
+        return false;
+    }
+    for command in ["xdg-open", "gio"] {
+        let mut process = std::process::Command::new(command);
+        if command == "gio" {
+            process.arg("open");
+        }
+        if process
+            .arg(url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn wrap_auth_line(text: &str, width: usize) -> Vec<String> {
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let next_len = if current.is_empty() {
+            word.len()
+        } else {
+            current.len() + 1 + word.len()
         };
-        let mut terminal = self.terminal.lock().unwrap();
-        terminal
-            .leave_raw()
-            .map_err(|e| format!("leave raw: {e}"))?;
-        println!("\n{message}");
-        let mut line = String::new();
-        std::io::stdin()
-            .read_line(&mut line)
-            .map_err(|e| format!("read input: {e}"))?;
-        terminal
-            .enter_raw()
-            .map_err(|e| format!("enter raw: {e}"))?;
-        Ok(line.trim().to_string())
+        if !current.is_empty() && next_len > width {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        if word.len() > width && current.is_empty() {
+            let mut remaining = word;
+            while remaining.len() > width {
+                let split_at = remaining
+                    .char_indices()
+                    .nth(width)
+                    .map(|(index, _)| index)
+                    .unwrap_or(remaining.len());
+                lines.push(remaining[..split_at].to_string());
+                remaining = &remaining[split_at..];
+            }
+            current.push_str(remaining);
+        } else {
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn render_auth_panel(
+    terminal: &Arc<Mutex<TerminalBackend>>,
+    banner: &str,
+    prompt: &str,
+    input: &str,
+) {
+    let width = terminal.lock().unwrap().width().max(24);
+    let inner_width = width.saturating_sub(4).max(20);
+    let mut lines = Vec::new();
+    if !banner.is_empty() {
+        lines.extend(wrap_auth_line(banner, inner_width));
+        lines.push(String::new());
+    }
+    lines.extend(wrap_auth_line(prompt, inner_width));
+    lines.push(String::new());
+    lines.extend(wrap_auth_line(&format!("❯ {input}"), inner_width));
+    let border = "─".repeat(inner_width + 2);
+    let mut rendered = String::from(pi_tui::terminal::CLEAR_SCREEN_HOME);
+    rendered.push_str(&format!("╭{border}╮\r\n"));
+    for line in lines {
+        let padding = inner_width.saturating_sub(line.chars().count());
+        rendered.push_str(&format!("│ {line}{} │\r\n", " ".repeat(padding)));
+    }
+    rendered.push_str(&format!("╰{border}╯\r\n"));
+    terminal.lock().unwrap().write_raw(&rendered);
+}
+
+/// Read a short auth answer through the terminal backend while retaining raw
+/// mode. `next_event` has a bounded poll timeout, so an OAuth callback can set
+/// `abort` and wake this prompt without leaving a blocked stdin reader behind.
+fn prompt_terminal_with_abort(
+    banner: &Arc<Mutex<String>>,
+    terminal: &Arc<Mutex<TerminalBackend>>,
+    prompt: &pi_ai::auth::AuthPrompt,
+    abort: &AtomicBool,
+) -> Result<String, String> {
+    let message = auth_prompt_message(prompt);
+    let banner = banner.lock().unwrap().clone();
+    let secret = matches!(prompt, pi_ai::auth::AuthPrompt::Secret { .. });
+    let mut answer = String::new();
+    render_auth_panel(terminal, &banner, &message, "");
+    let result = loop {
+        if abort.load(Ordering::SeqCst) {
+            break Err("Login cancelled".to_string());
+        }
+        let event = match terminal.lock().unwrap().next_event() {
+            Ok(event) => event,
+            Err(error) => break Err(format!("read auth input: {error}")),
+        };
+        let pi_tui::terminal::TerminalEvent::Key(raw) = event else {
+            continue;
+        };
+        if raw.is_empty() {
+            continue;
+        }
+        let key = parse_key(&raw);
+        if key.base == "enter" && !key.ctrl && !key.alt {
+            break Ok(answer);
+        }
+        if key.base == "esc" || key.base == "escape" || (key.ctrl && key.base == "c") {
+            abort.store(true, Ordering::SeqCst);
+            break Err("Login cancelled".to_string());
+        }
+        if key.base == "backspace" || (key.ctrl && key.base == "h") {
+            answer.pop();
+        } else if !key.ctrl && !key.alt {
+            answer.push_str(&key.base);
+        }
+        let visible = if secret {
+            "•".repeat(answer.chars().count())
+        } else {
+            answer.clone()
+        };
+        render_auth_panel(terminal, &banner, &message, &visible);
+    };
+    result
+}
+
+impl pi_ai::auth::AuthInteraction for TuiAuthInteraction {
+    fn supports_async_prompt(&self) -> bool {
+        true
+    }
+
+    fn prompt(&self, prompt: &pi_ai::auth::AuthPrompt) -> Result<String, String> {
+        let abort = AtomicBool::new(false);
+        let answer = prompt_terminal_with_abort(&self.banner, &self.terminal, prompt, &abort)?;
+        let answer = answer.trim();
+        if let pi_ai::auth::AuthPrompt::Select { options, .. } = prompt {
+            // Pi's selectors accept Enter as the highlighted first option. The
+            // auth prompt is rendered inline in the active TUI, so preserve
+            // that same default instead of treating an empty Enter as an
+            // unknown method/provider.
+            if answer.is_empty() {
+                if let Some(option) = options.first() {
+                    return Ok(option.id.clone());
+                }
+            }
+            if let Ok(index) = answer.parse::<usize>() {
+                if let Some(option) = options.get(index.saturating_sub(1)) {
+                    return Ok(option.id.clone());
+                }
+            }
+            if options.iter().any(|option| option.id == answer) {
+                return Ok(answer.to_string());
+            }
+        }
+        Ok(answer.to_string())
+    }
+
+    fn prompt_async_with_abort<'a>(
+        &'a self,
+        prompt: &'a pi_ai::auth::AuthPrompt,
+        abort: Arc<AtomicBool>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
+    {
+        let terminal = self.terminal.clone();
+        let banner = self.banner.clone();
+        let prompt = prompt.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                prompt_terminal_with_abort(&banner, &terminal, &prompt, &abort)
+            })
+            .await
+            .map_err(|error| format!("auth prompt task failed: {error}"))?
+        })
     }
 
     fn notify(&self, event: &pi_ai::auth::AuthEvent) {
@@ -1853,10 +2405,22 @@ impl pi_ai::auth::AuthInteraction for TuiAuthInteraction {
                 verification_uri,
                 ..
             } => {
-                format!("Open {verification_uri} and enter code: {user_code}")
+                let browser = open_auth_browser(verification_uri);
+                let prefix = if browser {
+                    "A browser window should open."
+                } else {
+                    "Open this URL in a browser."
+                };
+                format!("{prefix} {verification_uri} and enter code: {user_code}")
             }
             pi_ai::auth::AuthEvent::AuthUrl { url, .. } => {
-                format!("Open this URL to sign in: {url}")
+                let browser = open_auth_browser(url);
+                let prefix = if browser {
+                    "A browser window should open."
+                } else {
+                    "Open this URL to sign in:"
+                };
+                format!("{prefix} {url}")
             }
             pi_ai::auth::AuthEvent::Progress { message } => message.clone(),
             pi_ai::auth::AuthEvent::Info { message, .. } => message.clone(),
@@ -1878,10 +2442,6 @@ async fn run_oauth_login(
         .get_providers()
         .into_iter()
         .filter(|p| p.auth.oauth.is_some())
-        .filter(|p| match provider_ref {
-            Some(r) => p.id == r || p.name.as_str() == r,
-            None => true,
-        })
         .collect();
     if providers.is_empty() {
         return Err(match provider_ref {
@@ -1889,9 +2449,36 @@ async fn run_oauth_login(
             None => "no OAuth-capable providers registered".to_string(),
         });
     }
-    let provider = &providers[0];
-    let oauth = provider.auth.oauth.as_ref().expect("filtered for oauth");
     let interaction = TuiAuthInteraction { banner, terminal };
+    let selected_provider = match provider_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(provider) => provider.to_string(),
+        None => interaction.prompt(&pi_ai::auth::AuthPrompt::Select {
+            message: "Select provider to configure:".to_string(),
+            options: providers
+                .iter()
+                .map(|provider| pi_ai::auth::AuthSelectOption {
+                    id: provider.id.clone(),
+                    label: provider.name.clone(),
+                    description: provider
+                        .auth
+                        .oauth
+                        .as_ref()
+                        .and_then(|oauth| oauth.login_label().map(str::to_string)),
+                })
+                .collect(),
+        })?,
+    };
+    let provider = providers
+        .iter()
+        .find(|provider| {
+            provider.id.eq_ignore_ascii_case(&selected_provider)
+                || provider.name.eq_ignore_ascii_case(&selected_provider)
+        })
+        .ok_or_else(|| format!("no OAuth login available for provider {selected_provider:?}"))?;
+    let oauth = provider.auth.oauth.as_ref().expect("filtered for oauth");
     let credential = oauth.login(&interaction).await?;
     let auth = crate::core::auth_storage::AuthStorage::create(config::get_auth_path());
     let opts = crate::core::auth_storage::AuthOperationOptions::default();
@@ -1914,12 +2501,218 @@ async fn run_oauth_login(
     Ok(format!("logged in to {provider_id} via OAuth"))
 }
 
+async fn run_api_key_login(
+    models: &pi_ai::models::Models,
+    provider_ref: Option<&str>,
+    banner: Arc<Mutex<String>>,
+    terminal: Arc<Mutex<TerminalBackend>>,
+) -> Result<String, String> {
+    let providers: Vec<pi_ai::models::Provider> = models
+        .get_providers()
+        .into_iter()
+        .filter(|provider| provider.auth.api_key.is_some())
+        .collect();
+    if providers.is_empty() {
+        return Err("no API-key providers registered".to_string());
+    }
+    let interaction = TuiAuthInteraction { banner, terminal };
+    let selected_provider = match provider_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(provider) => provider.to_string(),
+        None => interaction.prompt(&pi_ai::auth::AuthPrompt::Select {
+            message: "Select provider to configure with an API key:".to_string(),
+            options: providers
+                .iter()
+                .map(|provider| pi_ai::auth::AuthSelectOption {
+                    id: provider.id.clone(),
+                    label: provider.name.clone(),
+                    description: provider
+                        .auth
+                        .api_key
+                        .as_ref()
+                        .map(|auth| auth.name().to_string()),
+                })
+                .collect(),
+        })?,
+    };
+    let provider = providers
+        .iter()
+        .find(|provider| {
+            provider.id.eq_ignore_ascii_case(&selected_provider)
+                || provider.name.eq_ignore_ascii_case(&selected_provider)
+        })
+        .ok_or_else(|| format!("no API-key login available for provider {selected_provider:?}"))?;
+    let key = interaction.prompt(&pi_ai::auth::AuthPrompt::Secret {
+        message: format!("Enter API key for {}:", provider.name),
+        placeholder: Some("stored securely in auth.json".to_string()),
+    })?;
+    if key.trim().is_empty() {
+        return Err("API key cannot be empty".to_string());
+    }
+    let auth = crate::core::auth_storage::AuthStorage::create(config::get_auth_path());
+    let opts = crate::core::auth_storage::AuthOperationOptions::default();
+    let provider_id = provider.id.clone();
+    let key = key.trim().to_string();
+    auth.modify(
+        &provider_id,
+        move |_| {
+            let key = key.clone();
+            Box::pin(async move {
+                Ok(Some(crate::core::auth_storage::Credential::ApiKey {
+                    key: Some(key),
+                    env: None,
+                }))
+            })
+        },
+        &opts,
+    )
+    .await?;
+    Ok(format!("logged in to {provider_id} via API key"))
+}
+
+async fn run_login(
+    models: &pi_ai::models::Models,
+    provider_ref: Option<&str>,
+    banner: Arc<Mutex<String>>,
+    terminal: Arc<Mutex<TerminalBackend>>,
+) -> Result<String, String> {
+    let providers = models.get_providers();
+    let interaction = TuiAuthInteraction {
+        banner: banner.clone(),
+        terminal: terminal.clone(),
+    };
+    let method = if let Some(provider_ref) = provider_ref {
+        let provider = providers
+            .iter()
+            .find(|provider| {
+                provider.id.eq_ignore_ascii_case(provider_ref.trim())
+                    || provider.name.eq_ignore_ascii_case(provider_ref.trim())
+            })
+            .ok_or_else(|| format!("no OAuth login available for provider {provider_ref:?}"))?;
+        match (
+            provider.auth.oauth.is_some(),
+            provider.auth.api_key.is_some(),
+        ) {
+            (true, true) => interaction.prompt(&pi_ai::auth::AuthPrompt::Select {
+                message: format!("Select authentication method for {}:", provider.name),
+                options: vec![
+                    pi_ai::auth::AuthSelectOption {
+                        id: "oauth".to_string(),
+                        label: provider
+                            .auth
+                            .oauth
+                            .as_ref()
+                            .and_then(|oauth| oauth.login_label().map(str::to_string))
+                            .unwrap_or_else(|| "Sign in with an account".to_string()),
+                        description: None,
+                    },
+                    pi_ai::auth::AuthSelectOption {
+                        id: "api_key".to_string(),
+                        label: "Sign in with an API key".to_string(),
+                        description: None,
+                    },
+                ],
+            })?,
+            (true, false) => "oauth".to_string(),
+            (false, true) => "api_key".to_string(),
+            (false, false) => return Err(format!("provider {provider_ref:?} has no login method")),
+        }
+    } else {
+        let has_oauth = providers
+            .iter()
+            .any(|provider| provider.auth.oauth.is_some());
+        let has_api_key = providers
+            .iter()
+            .any(|provider| provider.auth.api_key.is_some());
+        match (has_oauth, has_api_key) {
+            (true, true) => interaction.prompt(&pi_ai::auth::AuthPrompt::Select {
+                message: "Select authentication method:".to_string(),
+                options: vec![
+                    pi_ai::auth::AuthSelectOption {
+                        id: "oauth".to_string(),
+                        label: "Sign in with an account".to_string(),
+                        description: Some("subscription providers".to_string()),
+                    },
+                    pi_ai::auth::AuthSelectOption {
+                        id: "api_key".to_string(),
+                        label: "Sign in with an API key".to_string(),
+                        description: Some("API providers".to_string()),
+                    },
+                ],
+            })?,
+            (true, false) => "oauth".to_string(),
+            (false, true) => "api_key".to_string(),
+            (false, false) => return Err("no login providers registered".to_string()),
+        }
+    };
+    match method.as_str() {
+        "oauth" => run_oauth_login(models, provider_ref, banner, terminal).await,
+        "api_key" => run_api_key_login(models, provider_ref, banner, terminal).await,
+        other => Err(format!("unknown authentication method {other:?}")),
+    }
+}
+
+/// Remove one credential saved by `/login`. With no provider argument this
+/// mirrors Pi's selector instead of making the user guess the stored id.
+async fn run_oauth_logout(
+    models: &pi_ai::models::Models,
+    provider_ref: Option<&str>,
+    banner: Arc<Mutex<String>>,
+    terminal: Arc<Mutex<TerminalBackend>>,
+) -> Result<String, String> {
+    let auth = crate::core::auth_storage::AuthStorage::create(config::get_auth_path());
+    let opts = crate::core::auth_storage::AuthOperationOptions::default();
+    let credentials = auth.list(&opts).await?;
+    if credentials.is_empty() && provider_ref.is_none() {
+        return Ok("No stored credentials to remove. Environment variables and models.json config are unchanged.".to_string());
+    }
+
+    if let Some(provider) = provider_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        auth.delete(provider, &opts).await?;
+        return Ok(format!("logged out {provider}"));
+    }
+
+    let interaction = TuiAuthInteraction { banner, terminal };
+    let selected_provider = interaction.prompt(&pi_ai::auth::AuthPrompt::Select {
+        message: "Select provider to logout:".to_string(),
+        options: credentials
+            .iter()
+            .map(|credential| pi_ai::auth::AuthSelectOption {
+                id: credential.provider_id.clone(),
+                label: models
+                    .get_provider(&credential.provider_id)
+                    .map(|provider| provider.name)
+                    .unwrap_or_else(|| credential.provider_id.clone()),
+                description: Some(credential.credential_type.to_string()),
+            })
+            .collect(),
+    })?;
+    let provider_id = credentials
+        .iter()
+        .find(|credential| {
+            credential.provider_id == selected_provider
+                || models
+                    .get_provider(&credential.provider_id)
+                    .is_some_and(|provider| provider.name == selected_provider)
+        })
+        .map(|credential| credential.provider_id.clone())
+        .ok_or_else(|| format!("no stored credentials for provider {selected_provider:?}"))?;
+    auth.delete(&provider_id, &opts).await?;
+    Ok(format!("logged out {provider_id}"))
+}
+
 /// Wrap a modal in a renderable SharedComponent for the frame.
 fn modal_shared(modal: &mut Modal) -> SharedComponent {
     match modal {
         Modal::Model(sel) | Modal::Thinking(sel) | Modal::Theme(sel) | Modal::Fork(sel) => {
             sel.clone() as SharedComponent
         }
+        Modal::ScopedModels(sel) => sel.clone() as SharedComponent,
         Modal::Settings(panel) => panel.clone() as SharedComponent,
         Modal::Resume(sel, _) => sel.clone() as SharedComponent,
     }
@@ -1929,7 +2722,17 @@ fn modal_shared(modal: &mut Modal) -> SharedComponent {
 pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Result<(), String> {
     let mut settings = settings;
     let cwd = config::cwd();
-    let models = crate::core::model_registry::builtin_models();
+    let models = {
+        let base = crate::core::model_registry::builtin_models();
+        match crate::core::model_config::models_json_path() {
+            Some(path) => crate::core::model_registry::ModelRegistry::new(
+                base,
+                crate::core::model_config::ModelConfig::load(Some(&path)),
+            )
+            .into_models(),
+            None => base,
+        }
+    };
     let provider = crate::run::resolve_run_provider(args.provider.as_deref(), &settings);
     let model_hint = crate::run::resolve_run_model(
         args.model.as_deref(),
@@ -1937,21 +2740,40 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         !crate::run::has_explicit_provider(args.provider.as_deref()),
     );
 
-    // Session repo + initial session.
-    let session_root = args
-        .session_dir
-        .clone()
-        .map(|d| config::expand_tilde_path(&d))
-        .unwrap_or_else(|| config::get_session_dir().to_string_lossy().into_owned());
-    std::fs::create_dir_all(&session_root).map_err(|e| format!("create session dir: {e}"))?;
-    crate::core::session_migration::migrate_legacy_sessions_in_root(std::path::Path::new(
-        &session_root,
-    ))
-    .map_err(|e| format!("migrate legacy sessions: {e}"))?;
+    // Session repo + initial session. Keep the repository object available to
+    // the mode even for an ephemeral run, but do not create its directory or
+    // resolve persistent selectors when `--no-session` is active.
+    let session_root = crate::run::resolve_session_root(args, Some(&settings));
+    let session_persistence = !args.no_session;
+    let selects_existing =
+        args.continue_session || args.resume || args.session.is_some() || args.fork.is_some();
+    if !session_persistence && selects_existing {
+        return Err(
+            "--continue, --resume, --session, and --fork require session persistence".to_string(),
+        );
+    }
+    if session_persistence {
+        std::fs::create_dir_all(&session_root).map_err(|e| format!("create session dir: {e}"))?;
+        crate::core::session_migration::migrate_legacy_sessions_in_root(std::path::Path::new(
+            &session_root,
+        ))
+        .map_err(|e| format!("migrate legacy sessions: {e}"))?;
+    }
     let mut repo = JsonlSessionRepo::new(pi_agent::fs::StdFileSystem::new(&cwd), &session_root);
     let mut initial_status_banner = String::new();
     let source_selector = args.fork.as_deref().or(args.session.as_deref());
-    let mut session = if let Some(selector) = source_selector {
+    let mut session = if !session_persistence {
+        let mut metadata = in_memory_metadata(
+            args.session_id
+                .clone()
+                .or_else(|| std::env::var(config::ENV_SESSION_ID).ok())
+                .unwrap_or_else(|| format!("interactive-{}", pi_agent::session::new_id())),
+            None,
+        );
+        metadata.cwd = cwd.clone();
+        let storage = Arc::new(Mutex::new(InMemorySessionStorage::new(metadata)));
+        JsonlSession::from_in_memory(storage)
+    } else if let Some(selector) = source_selector {
         let selected_path = config::expand_tilde_path(selector);
         if std::path::Path::new(&selected_path).is_file() {
             crate::core::session_migration::migrate_legacy_session_file(std::path::Path::new(
@@ -2097,6 +2919,14 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             model_hint.as_deref(),
         )?
     };
+    let session_path = session.get_metadata().await.path;
+    let _session_environment = crate::core::session_env::install(
+        &session_id,
+        &session_path,
+        &provider,
+        &model.name,
+        &initial_thinking_level,
+    );
 
     let extension_resources = extensions.resources.clone();
     register_interactive_themes(args, &settings, &extension_resources, &cwd);
@@ -2114,12 +2944,14 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         faux_core,
         provider: provider.clone(),
         model: model.clone(),
+        scoped_models: Vec::new(),
         messages: Vec::new(),
         session,
         repo,
         session_root: session_root.clone(),
         session_id: session_id.clone(),
         session_name,
+        session_persistence,
         system_prompt,
         tools_enabled: !args.no_tools,
         builtin_tools_enabled: !args.no_tools && !args.no_builtin_tools,
@@ -2148,15 +2980,41 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         ))
     };
 
-    // The Rust port does not yet carry the upstream changelog catalogue, so
-    // the persisted last-changelog version is the compatible update boundary:
-    // report once on a fresh install and once when the shipped version moves.
-    // The transport is backgrounded and independently honors PI_OFFLINE and
-    // the PI_TELEMETRY/settings opt-out.
-    let should_report_install_telemetry =
-        settings.get_last_changelog_version() != Some(config::VERSION);
+    // Match upstream startup changelog behavior: resumed sessions do not get
+    // release notes, a first install records the current version silently,
+    // and a version change displays only the newly released entries.
+    let mut startup_changelog = None;
+    let mut should_report_install_telemetry = false;
+    if initial_status_banner.is_empty() {
+        let content = changelog_content();
+        let last_version = settings.get_last_changelog_version().map(str::to_string);
+        match last_version {
+            None => {
+                settings.set_last_changelog_version(config::VERSION.to_string());
+                should_report_install_telemetry = true;
+            }
+            Some(last_version) => {
+                if let Some(markdown) =
+                    crate::core::changelog::new_markdown(&content, &last_version)
+                {
+                    let latest_version = crate::core::changelog::parse_changelog(&content)
+                        .first()
+                        .map(|entry| entry.version())
+                        .unwrap_or_else(|| config::VERSION.to_string());
+                    startup_changelog = Some(if settings.get_collapse_changelog() {
+                        format!(
+                            "Updated to v{latest_version}. Use /changelog to view full changelog."
+                        )
+                    } else {
+                        format!("What's New\n{markdown}")
+                    });
+                    settings.set_last_changelog_version(config::VERSION.to_string());
+                    should_report_install_telemetry = true;
+                }
+            }
+        }
+    }
     if should_report_install_telemetry {
-        settings.set_last_changelog_version(config::VERSION.to_string());
         let telemetry_enabled =
             crate::core::telemetry::is_install_telemetry_enabled_from_env(&settings);
         if telemetry_enabled && std::env::var_os("PI_OFFLINE").is_none() {
@@ -2169,10 +3027,15 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
 
     // Terminal + components.
     let terminal = Arc::new(Mutex::new(TerminalBackend::new()));
+    let tui_mode = args
+        .tui_mode
+        .as_deref()
+        .unwrap_or_else(|| settings.get_tui_mode());
+    let use_alt_screen = tui_mode == "fullscreen";
     terminal
         .lock()
         .unwrap()
-        .enter_raw()
+        .enter_raw_with_alt_screen(use_alt_screen)
         .map_err(|e| format!("enter raw: {e}"))?;
     let _terminal_guard = InteractiveTerminalGuard {
         terminal: terminal.clone(),
@@ -2227,15 +3090,33 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
 
     let mut modal: Option<Modal> = None;
     let mut status_banner = initial_status_banner;
+    if let Some(changelog) = startup_changelog {
+        status_banner = changelog;
+    }
     let stream_buffer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let mut streaming = false;
     let mut pending_text = String::new();
+    let mut easter_egg_components: Vec<SharedComponent> = Vec::new();
+    let mut easter_egg_animation_until: Option<std::time::Instant> = None;
+    let mut last_ctrl_c: Option<std::time::Instant> = None;
+    // Branch discovery spawns `git`; doing that once per keypress makes fast
+    // pasted/typed paths lag badly enough that the queued Enter arrives after
+    // the test/user-visible interaction deadline. Refresh at most once per
+    // second while keeping the footer current during normal work.
+    let mut footer_branch = footer::git_branch(&cwd);
+    let mut footer_branch_checked_at = std::time::Instant::now();
 
     tree.focus(editor.clone());
     tree.query_cell_size();
+    let mut input = InteractiveInputReader::start(tree.terminal_handle());
 
     let result = tokio::time::timeout(std::time::Duration::from_secs(24 * 60 * 60), async {
         loop {
+            if easter_egg_animation_until
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+            {
+                easter_egg_animation_until = None;
+            }
             if theme_changed.swap(false, Ordering::Acquire) {
                 transcript_md
                     .lock()
@@ -2280,10 +3161,17 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
 
             // 2) Footer.
             {
+                let now = std::time::Instant::now();
+                if now.duration_since(footer_branch_checked_at)
+                    >= std::time::Duration::from_secs(1)
+                {
+                    footer_branch = footer::git_branch(&cwd);
+                    footer_branch_checked_at = now;
+                }
                 let (usage, cache_hit_rate) = footer_usage_from_entries(&runtime.cache_entries);
                 let fd = FooterData {
                     cwd: cwd.clone(),
-                    branch: footer::git_branch(&cwd),
+                    branch: footer_branch.clone(),
                     session_name: runtime.session_name.clone(),
                     model_label: Some(format!("{}/{}", runtime.provider, runtime.model.name)),
                     thinking: Some(thinking_level.clone()),
@@ -2291,7 +3179,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     usage,
                     cache_hit_rate,
                 };
-                let lines = footer::render_footer(&fd, 80);
+                let terminal_width = tree.terminal_handle().lock().unwrap().width();
+                let lines = footer::render_footer(&fd, terminal_width);
                 footer_text.lock().unwrap().set_text(lines.join("\n"));
             }
 
@@ -2300,12 +3189,34 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 Some(m) => Some(modal_shared(m)),
                 None => None,
             };
-            let scene = it::build_scene(&transcript_md, &editor, &footer_text, modal_comp, &pending_text);
+            let scene = it::build_scene(
+                &transcript_md,
+                &editor,
+                &footer_text,
+                modal_comp,
+                &easter_egg_components,
+                &pending_text,
+            );
             tree.render(Some(&scene));
 
+            // Upstream's startup benchmark initializes and renders the real
+            // TUI, gives terminal capability probes a short window to settle,
+            // then restores the terminal without waiting for user input.
+            if crate::config::env_flag("PI_STARTUP_BENCHMARK") {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                return Ok(());
+            }
+
             // 4) Input.
-            let term = tree.terminal_handle();
-            let ev = term.lock().unwrap().next_event().map_err(|e| e.to_string())?;
+            let ev = tokio::select! {
+                event = input.recv() => {
+                    event.ok_or_else(|| "terminal input reader stopped".to_string())??
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)),
+                    if easter_egg_animation_until.is_some() => {
+                    continue;
+                }
+            };
             let key_str = match ev {
                 pi_tui::terminal::TerminalEvent::Key(k) => k,
                 pi_tui::terminal::TerminalEvent::Resize(_w, h) => {
@@ -2327,11 +3238,45 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     status_banner = "Press Ctrl+C again to quit".to_string();
                     continue;
                 }
+                let now = std::time::Instant::now();
+                let draft = editor.lock().unwrap().get_text();
+                if !draft.is_empty() {
+                    if last_ctrl_c.is_some_and(|previous| {
+                        now.duration_since(previous) <= std::time::Duration::from_millis(500)
+                    }) {
+                        return Ok(());
+                    }
+                    editor.lock().unwrap().set_text("");
+                    status_banner = "Input cleared. Press Ctrl+C again to quit".to_string();
+                    last_ctrl_c = Some(now);
+                    continue;
+                }
                 return Ok(());
             }
+            last_ctrl_c = None;
             let editor_text = editor.lock().unwrap().get_text();
             if should_exit_on_key(&key, &editor_text) {
                 return Ok(());
+            }
+
+            if modal.is_none() && !streaming && key.ctrl && key.base == "p" {
+                let cycled_model = cycle_scoped_model(&mut runtime, &mut settings);
+                if cycled_model.is_some() {
+                    maybe_add_daxnuts_component(
+                        &runtime,
+                        &mut easter_egg_components,
+                        &mut easter_egg_animation_until,
+                    );
+                }
+                status_banner = cycled_model.unwrap_or_else(|| {
+                    if runtime.scoped_models.is_empty() {
+                        "No scoped models configured; use /scoped-models first".to_string()
+                    } else {
+                        "Only one scoped model configured".to_string()
+                    }
+                });
+                _session_environment.set_model(&runtime.provider, &runtime.model.name);
+                continue;
             }
 
             // Modal input handling.
@@ -2348,7 +3293,14 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         if let Some(m) = runtime.models.get_model(&p, &id) {
                                             runtime.model = m;
                                         }
+                                        _session_environment
+                                            .set_model(&runtime.provider, &runtime.model.name);
                                         status_banner = format!("Model: {}", item.label);
+                                        maybe_add_daxnuts_component(
+                                            &runtime,
+                                            &mut easter_egg_components,
+                                            &mut easter_egg_animation_until,
+                                        );
                                     }
                                 }
                                 close_modal = true;
@@ -2359,6 +3311,31 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             _ => {}
                         }
                     }
+                    Modal::ScopedModels(sel) => {
+                        let mut guard = sel.lock().unwrap();
+                        match guard.handle(&key) {
+                            it::selectors::ScopedModelsAction::Toggle { model, enabled } => {
+                                status_banner = format!(
+                                    "{} {}",
+                                    if enabled { "Enabled" } else { "Disabled" },
+                                    model
+                                );
+                            }
+                            it::selectors::ScopedModelsAction::Cancel => {
+                                runtime.scoped_models = guard.selected_models();
+                                status_banner = if runtime.scoped_models.is_empty() {
+                                    "Scoped model cycling disabled".to_string()
+                                } else {
+                                    format!(
+                                        "Scoped models: {}",
+                                        runtime.scoped_models.join(", ")
+                                    )
+                                };
+                                close_modal = true;
+                            }
+                            it::selectors::ScopedModelsAction::None => {}
+                        }
+                    }
                     Modal::Thinking(sel) => {
                         let mut guard = sel.lock().unwrap();
                         match guard.handle(&key) {
@@ -2367,6 +3344,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     settings.set_default_thinking_level(&item.value);
                                     thinking_level = item.value.clone();
                                     hide_thinking = item.value == "off";
+                                    _session_environment.set_reasoning_level(&thinking_level);
                                     status_banner = format!("Thinking: {}", item.value);
                                 }
                                 close_modal = true;
@@ -2485,6 +3463,10 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                             runtime.messages = messages;
                                             runtime.cache_entries = cache_entries;
                                             runtime.persisted_until = runtime.messages.len();
+                                            clear_easter_egg_components(
+                                                &mut easter_egg_components,
+                                                &mut easter_egg_animation_until,
+                                            );
                                             let notes = replace_extensions(
                                                 &mut runtime,
                                                 &settings,
@@ -2536,6 +3518,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 "thinking" => {
                                     settings.set_default_thinking_level(&value);
                                     thinking_level = value.clone();
+                                    _session_environment.set_reasoning_level(&thinking_level);
                                 }
                                 "images" => {
                                     settings.set_show_images(value == "on");
@@ -2570,7 +3553,11 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 if key.ctrl && key.base == "c" {
                     continue;
                 }
-                e.handle_input(&key_str);
+                if is_printable_input_batch(&key_str, &key) {
+                    e.handle_input_burst(&key_str);
+                } else {
+                    e.handle_input(&key_str);
+                }
             }
 
             // Submit?
@@ -2631,6 +3618,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     editor: &editor,
                                     transcript_md: &transcript_md,
                                     footer_text: &footer_text,
+                                    easter_egg_components: &easter_egg_components,
                                     stream_buffer: &stream_buffer,
                                     pending_text: &mut pending_text,
                                     hide_thinking,
@@ -2640,13 +3628,30 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     next_turn.text,
                                     on_event,
                                     &mut ui,
-                                    settings.get_steering_mode(),
-                                    settings.get_follow_up_mode(),
+                                    InteractiveTurnInput {
+                                        input: &mut input,
+                                        steering_mode: settings.get_steering_mode(),
+                                        follow_up_mode: settings.get_follow_up_mode(),
+                                        session_environment: Some(&_session_environment),
+                                    },
                                 )
                                 .await
                             };
-                            if let Err(error) = turn_result {
-                                status_banner = error;
+                            match &turn_result {
+                                Err(error) => status_banner = error.clone(),
+                                Ok(messages) => {
+                                    if let Some(error) = messages.iter().find_map(|message| {
+                                        let pi_agent::types::AgentMessage::Core(
+                                            pi_ai::types::Message::Assistant(assistant),
+                                        ) = message
+                                        else {
+                                            return None;
+                                        };
+                                        assistant.error_message().map(str::to_string)
+                                    }) {
+                                        status_banner = error;
+                                    }
+                                }
                             }
                             let new_messages = runtime.messages[message_start..].to_vec();
                             append_cache_entries_from_messages(&mut runtime.cache_entries, &new_messages);
@@ -2667,7 +3672,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             }
                             // Auto-compaction: summarize history when the context
                             // approaches the model window (upstream compaction loop).
-                            match maybe_auto_compact(&mut runtime).await {
+                            match maybe_auto_compact(&mut runtime, &settings).await {
                                 Ok(true) => status_banner = "context compacted (auto)".to_string(),
                                 Ok(false) => {}
                                 Err(e) => status_banner = e,
@@ -2677,8 +3682,36 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     SubmitAction::Command(command, arg) => {
                         match command.kind {
                             SlashKind::Model => {
+                                if let Some(value) = arg.as_deref() {
+                                    match apply_model_reference(&mut runtime, &mut settings, value) {
+                                        Ok(message) => {
+                                            _session_environment
+                                                .set_model(&runtime.provider, &runtime.model.name);
+                                            status_banner = message;
+                                            maybe_add_daxnuts_component(
+                                                &runtime,
+                                                &mut easter_egg_components,
+                                                &mut easter_egg_animation_until,
+                                            );
+                                        }
+                                        Err(error) => status_banner = error,
+                                    }
+                                } else {
+                                    let items =
+                                        it::selectors::model_selector_items(&runtime.models, None);
+                                    modal = Some(Modal::Model(Arc::new(Mutex::new(
+                                        ListSelector::new_slash_layout(items, 10),
+                                    ))));
+                                }
+                            }
+                            SlashKind::ScopedModels => {
                                 let items = it::selectors::model_selector_items(&runtime.models, None);
-                                modal = Some(Modal::Model(Arc::new(Mutex::new(ListSelector::new_slash_layout(items, 10)))));
+                                modal = Some(Modal::ScopedModels(Arc::new(Mutex::new(
+                                    it::selectors::ScopedModelsSelector::new(
+                                        items,
+                                        &runtime.scoped_models,
+                                    ),
+                                ))));
                             }
                             SlashKind::Thinking => {
                                 let items = it::selectors::thinking_selector_items();
@@ -2695,8 +3728,15 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             SlashKind::Session => {
                                 status_banner = session_status(&runtime);
                             }
+                            SlashKind::Changelog => {
+                                status_banner = changelog_status();
+                            }
                             SlashKind::Clear => {
                                 runtime.messages.clear();
+                                clear_easter_egg_components(
+                                    &mut easter_egg_components,
+                                    &mut easter_egg_animation_until,
+                                );
                                 // `/clear` starts a fresh prompt-cache segment
                                 // while retaining the session's historical
                                 // accounting.
@@ -2715,72 +3755,193 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             SlashKind::Quit => {
                                 return Ok(());
                             }
+                            SlashKind::Login => {
+                                let provider_ref = arg
+                                    .as_deref()
+                                    .map(|s| s.trim())
+                                    .filter(|s| !s.is_empty());
+                                let banner = Arc::new(Mutex::new(String::new()));
+                                let term = tree.terminal_handle();
+                                input.stop_worker().await;
+                                let auth_result = if input.pending_cancel() {
+                                    Err("Login cancelled".to_string())
+                                } else {
+                                    run_login(&runtime.models, provider_ref, banner, term).await
+                                };
+                                match auth_result {
+                                    Ok(message) => status_banner = message,
+                                    Err(error) => status_banner = error,
+                                }
+                                input.restart().await;
+                                tree.terminal_handle()
+                                    .lock()
+                                    .unwrap()
+                                    .write_raw(pi_tui::terminal::CLEAR_SCREEN_HOME);
+                                tree.invalidate();
+                            }
+                            SlashKind::Logout => {
+                                let provider_ref = arg
+                                    .as_deref()
+                                    .map(|s| s.trim())
+                                    .filter(|s| !s.is_empty());
+                                let banner = Arc::new(Mutex::new(String::new()));
+                                let term = tree.terminal_handle();
+                                input.stop_worker().await;
+                                let logout_result = if input.pending_cancel() {
+                                    Err("Logout cancelled".to_string())
+                                } else {
+                                    run_oauth_logout(&runtime.models, provider_ref, banner, term)
+                                        .await
+                                };
+                                match logout_result {
+                                    Ok(message) => status_banner = message,
+                                    Err(error) => status_banner = format!("logout failed: {error}"),
+                                }
+                                input.restart().await;
+                                tree.terminal_handle()
+                                    .lock()
+                                    .unwrap()
+                                    .write_raw(pi_tui::terminal::CLEAR_SCREEN_HOME);
+                                tree.invalidate();
+                            }
                             SlashKind::Compact => {
                                 let instructions = arg
                                     .as_deref()
                                     .map(str::trim)
                                     .filter(|value| !value.is_empty());
-                                match compact_interactive(&mut runtime, instructions, true).await {
+                                match compact_interactive(
+                                    &mut runtime,
+                                    &settings,
+                                    instructions,
+                                    true,
+                                )
+                                .await
+                                {
                                     Ok(true) => status_banner = "context compacted".to_string(),
                                     Ok(false) => status_banner = "nothing to compact".to_string(),
                                     Err(error) => status_banner = error,
                                 }
                             }
-                            SlashKind::Unsupported => match command.name {
-                                "export" => {
-                                    let meta = runtime.session.get_metadata().await;
-                                    match crate::core::export_html::export_session_file(
-                                        &meta.path,
-                                        arg.as_deref(),
-                                        None,
-                                    ) {
-                                        Ok(path) => {
-                                            status_banner = format!("exported session to {path}");
-                                        }
-                                        Err(e) => {
-                                            status_banner = format!("export failed: {e}");
+                            SlashKind::Debug => {
+                                let terminal_handle = tree.terminal_handle();
+                                let terminal = terminal_handle.lock().unwrap();
+                                let width = terminal.width();
+                                let height = terminal.height();
+                                drop(terminal);
+                                let lines = debug_render_lines(
+                                    &transcript_md,
+                                    &editor,
+                                    &footer_text,
+                                    &easter_egg_components,
+                                    width,
+                                );
+                                let path = std::path::Path::new(&runtime.extension_agent_dir)
+                                    .join(format!("{}-debug.log", config::APP_NAME));
+                                match write_debug_snapshot(
+                                    &path,
+                                    width,
+                                    height,
+                                    &lines,
+                                    &runtime.messages,
+                                ) {
+                                    Ok(()) => {
+                                        status_banner =
+                                            format!("✓ Debug log written\n{}", path.display());
+                                    }
+                                    Err(error) => {
+                                        status_banner = format!("debug failed: {error}");
+                                    }
+                                }
+                            }
+                            SlashKind::ArminSaysHi => {
+                                easter_egg_components.push(it::easter_eggs::armin_component());
+                                easter_egg_animation_until = Some(
+                                    std::time::Instant::now()
+                                        + it::easter_eggs::animation_duration(),
+                                );
+                            }
+                            SlashKind::DementedDelves => {
+                                easter_egg_components.push(it::easter_eggs::earendil_component());
+                            }
+                            SlashKind::Export => {
+                                    if !runtime.session_persistence {
+                                        status_banner =
+                                            "export requires a persistent session; remove --no-session"
+                                                .to_string();
+                                    } else {
+                                        let meta = runtime.session.get_metadata().await;
+                                        match crate::core::export_html::export_session_file(
+                                            &meta.path,
+                                            arg.as_deref(),
+                                            None,
+                                        ) {
+                                            Ok(path) => {
+                                                status_banner = format!("exported session to {path}");
+                                            }
+                                            Err(e) => {
+                                                status_banner = format!("export failed: {e}");
+                                            }
                                         }
                                     }
                                 }
-                                "new" => {
+                                SlashKind::New => {
                                     if !session_switch_allowed(&runtime, "new", None) {
                                         status_banner = "new session cancelled by extension".to_string();
                                     } else {
                                         let previous_session_file =
                                             runtime.session.get_metadata().await.path;
                                         let new_id = pi_agent::session::new_id();
-                                        match runtime
-                                            .repo
-                                            .create(CreateOptions {
-                                                id: Some(new_id.clone()),
-                                                cwd: runtime.cwd.clone(),
-                                                parent_session_id: None,
-                                                metadata: None,
-                                                fork_options: ForkOptions::Tree,
-                                            })
-                                            .await
-                                        {
+                                        let new_session = if runtime.session_persistence {
+                                            runtime
+                                                .repo
+                                                .create(CreateOptions {
+                                                    id: Some(new_id.clone()),
+                                                    cwd: runtime.cwd.clone(),
+                                                    parent_session_id: None,
+                                                    metadata: None,
+                                                    fork_options: ForkOptions::Tree,
+                                                })
+                                                .await
+                                        } else {
+                                            let mut metadata = in_memory_metadata(new_id.clone(), None);
+                                            metadata.cwd = runtime.cwd.clone();
+                                            Ok(JsonlSession::from_in_memory(Arc::new(Mutex::new(
+                                                InMemorySessionStorage::new(metadata),
+                                            ))))
+                                        };
+                                        match new_session {
                                         Ok(new_session) => {
                                             let target_session_file =
                                                 new_session.get_metadata().await.path;
+                                            let previous_target = runtime
+                                                .session_persistence
+                                                .then_some(previous_session_file.as_str());
+                                            let target = runtime
+                                                .session_persistence
+                                                .then_some(target_session_file.as_str());
                                             shutdown_extensions_before_session_replace(
                                                 &runtime,
                                                 "new",
-                                                Some(&target_session_file),
+                                                target,
                                             );
                                             runtime.session = new_session;
                                             runtime.session_id = new_id;
+                                            runtime.session_name = None;
                                             runtime.messages.clear();
                                             runtime.cache_entries.clear();
                                             runtime.persisted_until = 0;
+                                            clear_easter_egg_components(
+                                                &mut easter_egg_components,
+                                                &mut easter_egg_animation_until,
+                                            );
                                             transcript_md.lock().unwrap().set_text("");
                                             let notes = replace_extensions(
                                                 &mut runtime,
                                                 &settings,
                                                 &thinking_level,
                                                 "new",
-                                                Some(&previous_session_file),
-                                                Some(&target_session_file),
+                                                previous_target,
+                                                target,
                                             );
                                             status_banner = format!(
                                                 "started new session {} in {}",
@@ -2800,44 +3961,50 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         }
                                     }
                                 }
-                                "resume" => {
-                                    match crate::core::session_migration::migrate_legacy_sessions_in_root(
-                                        std::path::Path::new(&runtime.session_root),
-                                    ) {
-                                        Ok(_) => match runtime.repo.list(Some(&runtime.cwd)).await {
-                                            Ok(sessions) if !sessions.is_empty() => {
-                                                // Exclude the current session so the picker offers
-                                                // other sessions (newest-first default).
-                                                let sessions = resumable_sessions(sessions, &runtime.session_id);
-                                                if sessions.is_empty() {
-                                                    status_banner =
-                                                        "no sessions found to resume in this directory"
-                                                            .to_string();
-                                                } else {
-                                                    let picker = it::session_picker_items(sessions);
-                                                    let items = it::picker_select_items(&picker);
-                                                    modal = Some(Modal::Resume(
-                                                        Arc::new(Mutex::new(ListSelector::new(
-                                                            items, 10,
-                                                        ))),
-                                                        picker,
-                                                    ));
+                                SlashKind::Resume => {
+                                    if !runtime.session_persistence {
+                                        status_banner =
+                                            "resume requires a persistent session; remove --no-session"
+                                                .to_string();
+                                    } else {
+                                        match crate::core::session_migration::migrate_legacy_sessions_in_root(
+                                            std::path::Path::new(&runtime.session_root),
+                                        ) {
+                                            Ok(_) => match runtime.repo.list(Some(&runtime.cwd)).await {
+                                                Ok(sessions) if !sessions.is_empty() => {
+                                                    // Exclude the current session so the picker offers
+                                                    // other sessions (newest-first default).
+                                                    let sessions = resumable_sessions(sessions, &runtime.session_id);
+                                                    if sessions.is_empty() {
+                                                        status_banner =
+                                                            "no sessions found to resume in this directory"
+                                                                .to_string();
+                                                    } else {
+                                                        let picker = it::session_picker_items(sessions);
+                                                        let items = it::picker_select_items(&picker);
+                                                        modal = Some(Modal::Resume(
+                                                            Arc::new(Mutex::new(ListSelector::new(
+                                                                items, 10,
+                                                            ))),
+                                                            picker,
+                                                        ));
+                                                    }
                                                 }
-                                            }
-                                            Ok(_) => {
-                                                status_banner =
-                                                    "no sessions found to resume in this directory".to_string();
-                                            }
+                                                Ok(_) => {
+                                                    status_banner =
+                                                        "no sessions found to resume in this directory".to_string();
+                                                }
+                                                Err(e) => {
+                                                    status_banner = format!("list sessions failed: {e}");
+                                                }
+                                            },
                                             Err(e) => {
-                                                status_banner = format!("list sessions failed: {e}");
+                                                status_banner = format!("migrate legacy sessions failed: {e}");
                                             }
-                                        },
-                                        Err(e) => {
-                                            status_banner = format!("migrate legacy sessions failed: {e}");
                                         }
                                     }
                                 }
-                                "name" => {
+                                SlashKind::Name => {
                                     match arg.as_deref() {
                                         Some(name) if !name.trim().is_empty() => {
                                             match runtime.session.set_name(Some(name.trim())).await {
@@ -2855,8 +4022,12 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         }
                                     }
                                 }
-                                "import" => {
-                                    let mut import_path: Option<String> = None;
+                                SlashKind::Import => {
+                                    if !runtime.session_persistence {
+                                        status_banner =
+                                            "import requires a persistent session; remove --no-session"
+                                                .to_string();
+                                    } else {
                                     match arg.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
                                         None => {
                                             status_banner = "usage: /import <session.jsonl>".to_string();
@@ -2912,7 +4083,6 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                         let Some(resolved_path) = resolved_path else {
                                                             return Ok(());
                                                         };
-                                                        import_path = Some(resolved_path.clone());
                                                         let metadata = match crate::run::metadata_from_session_path(
                                                             std::path::Path::new(&resolved_path),
                                                         ) {
@@ -2952,6 +4122,10 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                                 runtime.messages = messages;
                                                                 runtime.cache_entries = cache_entries;
                                                                 runtime.persisted_until = runtime.messages.len();
+                                                                clear_easter_egg_components(
+                                                                    &mut easter_egg_components,
+                                                                    &mut easter_egg_animation_until,
+                                                                );
                                                                 let notes = replace_extensions(
                                                                     &mut runtime,
                                                                     &settings,
@@ -2984,9 +4158,9 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                             }
                                         }
                                     }
-                                    let _ = &import_path;
+                                    }
                                 }
-                                "reload" => {
+                                SlashKind::Reload => {
                                     let theme_before = settings
                                         .get_theme_setting()
                                         .unwrap_or(crate::theme::DEFAULT_THEME)
@@ -3026,18 +4200,29 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         status_banner = format!("reloaded settings ({})", notes.join("; "));
                                     }
                                 }
-                                "fork" => {
-                                    let items = fork_selector_items(&runtime.session).await;
-                                    if items.is_empty() {
-                                        status_banner = "No messages to fork from".to_string();
+                                SlashKind::Fork => {
+                                    if !runtime.session_persistence {
+                                        status_banner =
+                                            "fork requires a persistent session; remove --no-session"
+                                                .to_string();
                                     } else {
-                                        let last = items.len().saturating_sub(1);
-                                        let mut selector = ListSelector::new_slash_layout(items, 10);
-                                        selector.set_selected_index(last);
-                                        modal = Some(Modal::Fork(Arc::new(Mutex::new(selector))));
+                                        let items = fork_selector_items(&runtime.session).await;
+                                        if items.is_empty() {
+                                            status_banner = "No messages to fork from".to_string();
+                                        } else {
+                                            let last = items.len().saturating_sub(1);
+                                            let mut selector = ListSelector::new_slash_layout(items, 10);
+                                            selector.set_selected_index(last);
+                                            modal = Some(Modal::Fork(Arc::new(Mutex::new(selector))));
+                                        }
                                     }
                                 }
-                                "clone" => {
+                                SlashKind::Clone => {
+                                    if !runtime.session_persistence {
+                                        status_banner =
+                                            "clone requires a persistent session; remove --no-session"
+                                                .to_string();
+                                    } else {
                                     match runtime.session.get_leaf_id().await.ok().flatten() {
                                         Some(entry_id) => {
                                             let result = execute_interactive_fork(
@@ -3063,8 +4248,9 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                             status_banner = "Nothing to clone yet".to_string();
                                         }
                                     }
+                                    }
                                 }
-                                "trust" => {
+                                SlashKind::Trust => {
                                     match arg.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()) {
                                         Some(choice) if matches!(choice.as_str(), "allow" | "deny" | "ask") => {
                                             settings.set_default_project_trust(&choice);
@@ -3075,7 +4261,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         }
                                     }
                                 }
-                                "copy" => {
+                                SlashKind::Copy => {
                                     // Copy the last assistant message text. Without a system
                                     // clipboard binary the text is surfaced in the banner instead.
                                     let mut text = String::new();
@@ -3126,31 +4312,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         }
                                     }
                                 }
-                                "login" => {
-                                    let provider_ref = arg.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
-                                    let banner = Arc::new(Mutex::new(String::new()));
-                                    let term = tree.terminal_handle();
-                                    match run_oauth_login(&runtime.models, provider_ref, banner.clone(), term).await {
-                                        Ok(message) => status_banner = message,
-                                        Err(e) => status_banner = e,
-                                    }
-                                }
-                                "logout" => {
-                                    match arg.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                                        Some(provider) => {
-                                            let auth = crate::core::auth_storage::AuthStorage::create(config::get_auth_path());
-                                            let opts = crate::core::auth_storage::AuthOperationOptions::default();
-                                            match auth.delete(provider, &opts).await {
-                                                Ok(()) => status_banner = format!("logged out {provider}"),
-                                                Err(e) => status_banner = format!("logout failed: {e}"),
-                                            }
-                                        }
-                                        None => {
-                                            status_banner = "usage: /logout <provider>".to_string();
-                                        }
-                                    }
-                                }
-                                "tree" => {
+                                SlashKind::Tree => {
                                     let entries = runtime
                                         .session
                                         .find_entries(&pi_agent::session::state::EntryQuery {
@@ -3217,7 +4379,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         }
                                     }
                                 }
-                                "share" => {
+                                SlashKind::Share => {
                                     // Persist unpersisted messages so the exported HTML
                                     // matches the current transcript.
                                     if runtime.messages.len() > runtime.persisted_until {
@@ -3232,13 +4394,6 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         Err(e) => status_banner = e,
                                     }
                                 }
-                                _ => {
-                                    status_banner = format!(
-                                        "`/{}` is not wired in the interactive port yet",
-                                        command.name
-                                    );
-                                }
-                            },
                         }
                     }
                 }
@@ -3246,6 +4401,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         }
     })
     .await;
+
+    input.shutdown().await;
 
     // Persist messages that were added after the last session-switch
     // operation (resume/fork/clone advance the watermark; the rest already
@@ -3265,6 +4422,40 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     }
 }
 
+/// The terminal reader may coalesce adjacent printable input.  Named key
+/// strings are also printable ASCII, so exclude the complete key-string
+/// vocabulary before treating a multi-character event as text.
+fn is_printable_input_batch(raw: &str, key: &TuiKey) -> bool {
+    raw.chars().count() > 1
+        && !raw.contains('\x1b')
+        && raw.chars().all(|character| !character.is_control())
+        && !key.ctrl
+        && !key.alt
+        && !key.shift
+        && !matches!(
+            raw,
+            "enter"
+                | "esc"
+                | "escape"
+                | "backspace"
+                | "delete"
+                | "tab"
+                | "shift+tab"
+                | "up"
+                | "down"
+                | "left"
+                | "right"
+                | "home"
+                | "end"
+                | "pageup"
+                | "pagedown"
+                | "f1"
+                | "f2"
+                | "f3"
+                | "f4"
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3280,6 +4471,19 @@ mod tests {
         assert!(should_exit_on_key(&ctrl_d, ""));
         assert!(!should_exit_on_key(&ctrl_d, "draft"));
         assert!(!should_exit_on_key(&parse_key("ctrl+c"), ""));
+    }
+
+    #[test]
+    fn debug_timestamp_matches_upstream_iso_shape() {
+        let timestamp = iso_timestamp_now();
+        assert_eq!(timestamp.len(), 24);
+        assert_eq!(&timestamp[4..5], "-");
+        assert_eq!(&timestamp[7..8], "-");
+        assert_eq!(&timestamp[10..11], "T");
+        assert_eq!(&timestamp[13..14], ":");
+        assert_eq!(&timestamp[16..17], ":");
+        assert_eq!(&timestamp[19..20], ".");
+        assert_eq!(&timestamp[23..24], "Z");
     }
 
     #[tokio::test]
@@ -3862,12 +5066,14 @@ mod tests {
             faux_core,
             provider: "faux".to_string(),
             model,
+            scoped_models: Vec::new(),
             messages: Vec::new(),
             session,
             repo,
             session_root: session_root.to_string_lossy().into_owned(),
             session_id,
             session_name: None,
+            session_persistence: true,
             system_prompt: None,
             tools_enabled: true,
             builtin_tools_enabled: true,
@@ -4179,17 +5385,24 @@ mod tests {
         // prepare_compaction reads session entries, so persist the messages.
         persist_messages(&mut runtime.session, &runtime.messages).await;
         runtime.persisted_until = runtime.messages.len();
+        let settings = SettingsManager::in_memory(crate::core::settings::SettingsMap::new());
+        let (enabled, reserve_tokens, keep_recent_tokens) = settings.get_compaction_settings();
+        let compaction_settings = pi_agent::harness::compaction::CompactionSettings {
+            enabled,
+            reserve_tokens,
+            keep_recent_tokens,
+        };
         let estimate = pi_agent::harness::compaction::estimate_context_tokens(&runtime.messages);
         assert!(
             pi_agent::harness::compaction::should_compact(
                 estimate.tokens,
                 runtime.model.context_window,
-                &pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS
+                &compaction_settings
             ),
             "test setup: context should be over threshold (tokens={})",
             estimate.tokens
         );
-        let compacted = maybe_auto_compact(&mut runtime)
+        let compacted = maybe_auto_compact(&mut runtime, &settings)
             .await
             .expect("auto-compact");
         assert!(compacted, "compaction should have run");
@@ -4229,7 +5442,8 @@ mod tests {
             "hi".to_string(),
             pi_ai::types::now_ms(),
         ));
-        let compacted = maybe_auto_compact(&mut runtime)
+        let settings = SettingsManager::in_memory(crate::core::settings::SettingsMap::new());
+        let compacted = maybe_auto_compact(&mut runtime, &settings)
             .await
             .expect("auto-compact");
         assert!(!compacted, "no compaction under threshold");
@@ -4244,9 +5458,11 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let mut runtime = test_runtime(&root).await;
 
-        let compacted = compact_interactive(&mut runtime, Some("Focus on decisions"), true)
-            .await
-            .expect("manual compact");
+        let settings = SettingsManager::in_memory(crate::core::settings::SettingsMap::new());
+        let compacted =
+            compact_interactive(&mut runtime, &settings, Some("Focus on decisions"), true)
+                .await
+                .expect("manual compact");
 
         assert!(!compacted);
         assert!(runtime.messages.is_empty());

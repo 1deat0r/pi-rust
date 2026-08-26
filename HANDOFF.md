@@ -46,6 +46,43 @@ All sections below whose headings say “Current checkpoint” and which contain
 older percentages or commits are historical snapshots from earlier turns.
 The latest active sections near the end of this file supersede them.
 
+## Current extension contract checkpoint — 2026-08-26
+
+The compile repair and EXT-009–011 implementation are green within the
+assigned Rust extension scope. `ExtensionContext` now exposes a live host
+handle for the audited session/model/trust/queue/signal/action surface, with
+typed pending outcomes for queued lifecycle/model operations and stale-context
+rejection. The UI broker emits correlated `extension_ui_request` records,
+resolves `extension_ui_response` records for select/confirm/input/editor and
+custom overlays, bounds waits, handles cancellation, and records malformed,
+unknown, and late diagnostics. It also implements fire-and-forget UI state,
+terminal listener dispatch, widget/header/footer/thinking-label surfaces,
+autocomplete/editor factories, themes, editor text, and tool expansion.
+Registered tools retain all upstream metadata and callback forms; preparation,
+updates, catalog publication, and JSON render callbacks are live.
+
+Exact focused validation completed with the direct stable toolchain:
+
+```text
+cargo test -p pi-coding-agent --offline --lib core::extensions -- --nocapture --test-threads=1  # 57 passed
+cargo test -p pi-coding-agent --test extensions_parity --offline -- --nocapture --test-threads=1  # 9 passed
+cargo test -p pi-coding-agent --offline --lib 'modes::rpc::tests::rpc_' -- --nocapture --test-threads=1  # 16 passed
+cargo check -p pi-coding-agent --tests --offline  # Finished successfully
+/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo clippy -p pi-coding-agent --lib --offline -- -D warnings -A clippy::invalid_regex  # Finished successfully
+/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt --edition 2021 --check crates/pi-coding-agent/src/core/extensions/types.rs crates/pi-coding-agent/src/core/extensions/integration.rs crates/pi-coding-agent/src/core/extensions/runner.rs crates/pi-coding-agent/src/core/extensions/loader.rs crates/pi-coding-agent/src/core/extensions/wrapper.rs crates/pi-coding-agent/src/modes/rpc.rs crates/pi-coding-agent/tests/extensions_parity.rs
+git diff --check
+```
+
+The authoritative Cargo audit remains `Conversion progress: 100.00%
+(166/166; 0 open)`, with zero audit blockers and zero workspace JS/TS source
+files. The only lint residual is the unrelated untracked
+`crates/pi-coding-agent/src/core/changelog.rs` look-ahead regex when the
+package clippy command is run without the explicit `invalid_regex` isolation.
+Concrete pi-tui component construction and the interactive raw-PTY hook remain
+host-owned work outside this slice; this lane supplies the renderer-neutral
+JSON/native factory and RPC broker contracts and does not edit `interactive.rs`
+or `pi-tui`.
+
 ## Current exhaustive usability-test checkpoint — 2026-08-26
 
 The Rust product binary has been tested across deterministic offline/faux
@@ -117,8 +154,9 @@ Implemented behavior:
   `"followUp"` while a run is active. Queued extension commands fail with the
   upstream-style boundary error.
 - JSONL dispatch consumes `extension_ui_response` envelopes without emitting a
-  false unknown-command response; actual UI request generation/resolution is
-  still unavailable in the Rust extension host.
+  false unknown-command response; the current Rust extension host now emits
+  correlated UI requests, resolves real responses, and diagnoses malformed,
+  unknown, and late response records.
 - JSONL regressions cover LF-only records and U+2028/U+2029 preservation. The
   binary test covers project prompt/skill discovery, a real multi-turn faux RPC
   session, and the inbound UI-response envelope.
@@ -152,8 +190,8 @@ This checkpoint is committed and pushed as
 `main`; the working tree still contains unrelated pre-existing dirty changes,
 including the unstaged OAuth-refresh hunk in `rpc.rs`, provider/auth work,
 interactive work, `pi-tui` work, untracked `AGENTS.md`, and the untracked
-Radius file. None was staged. The next RPC-specific dependency is implementing
-the Rust extension-UI request channel; do not stage those unrelated paths.
+Radius file. None was staged. The extension UI request channel is now
+implemented; do not stage those unrelated paths.
 
 ## Current bounded pi-agent lifecycle checkpoint — 2026-08-26
 
@@ -1764,3 +1802,78 @@ compiled-Bun/Node-SEA identities are not present in the current distribution,
 and that the Rust interactive host has no session-bound resource loader for
 full upstream reload events/resources. Keep those boundaries explicit; do
 not close S-027 with mock-only detection or a path-based module fixture.
+## Active 2026-08-26 exhaustive behavioral-parity campaign
+
+The historical source/conversion ledger still reports `100.00% (166/166)`,
+but that number is not functional parity. The active acceptance index is
+`docs/EXHAUSTIVE-PARITY-INVENTORY.md` with 283 unique capability IDs. The
+campaign is still in progress: implementation lanes are being integrated and
+the debug/release, PTY/TUI, real-provider, clean-environment, and installed
+PATH gates have not all passed in the current worktree. Do not claim 1:1 or
+flawless behavior until the active root gates contain measured evidence.
+
+## Current interactive hidden-command/Daxnuts checkpoint — 2026-08-26
+
+Branch `main` is unchanged at `de82599172fac888b3d1c59113d3ddef9644ee9d`,
+matching `git ls-remote origin refs/heads/main`. The working tree is shared and
+already dirty; no extension broker file was changed for this checkpoint.
+
+Implementation files changed for this interactive slice:
+
+- `crates/pi-coding-agent/src/interactive/easter_eggs.rs` — new Rust-native
+  Armin, Earendil, and Daxnuts components; bounded render-time animation;
+  exact upstream DAX payload; width-safe output; image/ESC/model tests.
+- `crates/pi-coding-agent/src/interactive/slash.rs` — hidden exact command
+  lookup plus exhaustive explicit `SlashKind` registry variants.
+- `crates/pi-coding-agent/src/interactive/mod.rs` — hidden command parsing and
+  scene/component integration.
+- `crates/pi-coding-agent/src/modes/interactive.rs` — `/debug` ISO snapshot,
+  exact `getDebugLogPath` equivalent, hidden dispatch, model trigger, resize
+  redraw, and component cleanup on reset/switch.
+- `crates/pi-coding-agent/tests/interactive_slash_complete_pty.rs` — real
+  tmux PTY success/repeat/narrow/resize/cancellation/error/quit-restoration
+  coverage.
+- `docs/EXHAUSTIVE-PARITY-INVENTORY.md`, `CONVERSION-LEDGER.md`, `PLAN.md`,
+  `HANDOFF.md`, and `GATES.md` — synchronized interactive evidence and
+  remaining unrelated validation boundaries.
+
+Exact validation:
+
+```text
+/home/mustbearnold/.cargo/bin/cargo check -p pi-coding-agent --offline
+  exit 0
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib interactive::easter_eggs -- --test-threads=1
+  6 passed; 0 failed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib modes::interactive::tests::debug_timestamp_matches_upstream_iso_shape -- --exact --test-threads=1
+  1 passed; 0 failed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib interactive::interactive_tests::parse_submit_executes_hidden_commands_without_publishing_them -- --exact --test-threads=1
+  1 passed; 0 failed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test interactive_slash_complete_pty -- --test-threads=1
+  4 passed; 0 failed; 62.51s
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test interactive_full_matrix -- --test-threads=1
+  7 passed; 0 failed; 12.88s
+/home/mustbearnold/.cargo/bin/cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings -A clippy::invalid_regex -A clippy::needless_update -A clippy::drop_non_drop
+  exit 0
+/home/mustbearnold/.cargo/bin/rustfmt --edition 2021 --check <five scoped interactive files>
+  exit 0
+git diff --check
+  exit 0
+```
+
+The DAX source comparison reports `rust_len=6144 upstream_len=6144
+equal=True`, with SHA-256
+`4a1df9e4bdd8ecbf6beb4ddc6c7dfa6b80a16f0ff6e18fb9e0139d415ad59f1d` for both.
+The duplicate model-trigger count is 1; no `not wired` or
+`SlashKind::Unsupported` match remains; the PTY `/debug` assertion confirms
+the `pi-debug.log` path under `PI_CODING_AGENT_DIR` and the ISO `...T...Z`
+header.
+
+The unmodified strict clippy command
+`cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings`
+still reports four pre-existing diagnostics in `core/changelog.rs`,
+`core/extensions/integration.rs`, and `modes/rpc.rs`. The workspace-wide
+`cargo fmt --all -- --check` also reports pre-existing diffs in unrelated
+files; the five scoped interactive files pass direct rustfmt. These unrelated
+files remain untouched. The legacy required
+`node scripts/conversion-progress.mjs` path remains absent (`MODULE_NOT_FOUND`);
+the Cargo-native audit remains the authoritative progress check.

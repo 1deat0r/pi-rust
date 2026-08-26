@@ -5,18 +5,22 @@
 //! Each builtin command knows its name, description, argument hint, and
 //! whether it opens a modal selector versus acting immediately.
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlashKind {
     /// Opens the model selector.
     Model,
     /// Opens the thinking-level selector.
     Thinking,
+    /// Opens the scoped-model cycling selector.
+    ScopedModels,
     /// Opens the settings selector.
     Settings,
     /// Opens the theme selector.
     Theme,
     /// Shows session info.
     Session,
+    /// Shows the shipped changelog catalogue.
+    Changelog,
     /// Manually compacts the session.
     Compact,
     /// Clears the visible transcript.
@@ -27,8 +31,40 @@ pub enum SlashKind {
     Quit,
     /// Shows the available commands.
     Help,
-    /// Stateful commands handled by name in the interactive loop.
-    Unsupported,
+    /// Starts provider authentication.
+    Login,
+    /// Removes a stored provider credential.
+    Logout,
+    /// Writes a debug snapshot to the agent directory.
+    Debug,
+    /// Shows the Armin hidden component.
+    ArminSaysHi,
+    /// Shows the Earendil announcement hidden component.
+    DementedDelves,
+    /// Export the current session.
+    Export,
+    /// Import and resume a session.
+    Import,
+    /// Share the current session.
+    Share,
+    /// Copy the last assistant message.
+    Copy,
+    /// Set the session display name.
+    Name,
+    /// Fork from a previous user message.
+    Fork,
+    /// Clone the current session.
+    Clone,
+    /// Show the session tree.
+    Tree,
+    /// Set the project trust default.
+    Trust,
+    /// Start a new session.
+    New,
+    /// Resume a different session.
+    Resume,
+    /// Reload settings and extensions.
+    Reload,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +95,12 @@ pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
         kind: SlashKind::Thinking,
     },
     BuiltinSlashCommand {
+        name: "scoped-models",
+        description: "Enable/disable models for Ctrl+P cycling",
+        argument_hint: None,
+        kind: SlashKind::ScopedModels,
+    },
+    BuiltinSlashCommand {
         name: "theme",
         description: "Select terminal theme",
         argument_hint: None,
@@ -69,6 +111,12 @@ pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
         description: "Show session info and stats",
         argument_hint: None,
         kind: SlashKind::Session,
+    },
+    BuiltinSlashCommand {
+        name: "changelog",
+        description: "Show changelog entries",
+        argument_hint: None,
+        kind: SlashKind::Changelog,
     },
     BuiltinSlashCommand {
         name: "compact",
@@ -104,90 +152,119 @@ pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
         name: "export",
         description: "Export session (HTML default, or .html/.jsonl)",
         argument_hint: Some("<path>"),
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Export,
     },
     BuiltinSlashCommand {
         name: "import",
         description: "Import and resume a session from a JSONL file",
         argument_hint: Some("<path>"),
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Import,
     },
     BuiltinSlashCommand {
         name: "share",
         description: "Share session as a secret GitHub gist",
         argument_hint: None,
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Share,
     },
     BuiltinSlashCommand {
         name: "copy",
         description: "Copy last agent message to clipboard",
         argument_hint: None,
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Copy,
     },
     BuiltinSlashCommand {
         name: "name",
         description: "Set session display name",
         argument_hint: None,
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Name,
     },
     BuiltinSlashCommand {
         name: "fork",
         description: "Create a new fork from a previous user message",
         argument_hint: None,
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Fork,
     },
     BuiltinSlashCommand {
         name: "clone",
         description: "Duplicate the current session at the current position",
         argument_hint: None,
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Clone,
     },
     BuiltinSlashCommand {
         name: "tree",
         description: "Navigate session tree (switch branches)",
         argument_hint: None,
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Tree,
     },
     BuiltinSlashCommand {
         name: "trust",
         description: "Save project trust decision for future sessions",
         argument_hint: None,
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Trust,
     },
     BuiltinSlashCommand {
         name: "login",
         description: "Configure provider authentication",
         argument_hint: Some("<provider>"),
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Login,
     },
     BuiltinSlashCommand {
         name: "logout",
         description: "Remove provider authentication",
         argument_hint: None,
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Logout,
     },
     BuiltinSlashCommand {
         name: "new",
         description: "Start a new session",
         argument_hint: None,
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::New,
     },
     BuiltinSlashCommand {
         name: "resume",
         description: "Resume a different session",
         argument_hint: None,
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Resume,
     },
     BuiltinSlashCommand {
         name: "reload",
         description: "Reload keybindings and settings",
         argument_hint: None,
-        kind: SlashKind::Unsupported,
+        kind: SlashKind::Reload,
     },
 ];
 
 pub fn find_command(name: &str) -> Option<&'static BuiltinSlashCommand> {
     BUILTIN_SLASH_COMMANDS.iter().find(|c| c.name == name)
+}
+
+const HIDDEN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
+    BuiltinSlashCommand {
+        name: "debug",
+        description: "Write a debug render/session snapshot",
+        argument_hint: None,
+        kind: SlashKind::Debug,
+    },
+    BuiltinSlashCommand {
+        name: "arminsayshi",
+        description: "Show the Armin greeting",
+        argument_hint: None,
+        kind: SlashKind::ArminSaysHi,
+    },
+    BuiltinSlashCommand {
+        name: "dementedelves",
+        description: "Show the Earendil announcement",
+        argument_hint: None,
+        kind: SlashKind::DementedDelves,
+    },
+];
+
+/// Hidden commands are executable but intentionally absent from the public
+/// registry, autocomplete, and help, matching upstream behavior.
+pub fn find_hidden_command(name: &str) -> Option<&'static BuiltinSlashCommand> {
+    HIDDEN_SLASH_COMMANDS
+        .iter()
+        .find(|command| command.name == name)
 }
 
 /// True when the text (trimmed) is a full slash command invocation.
@@ -236,4 +313,37 @@ pub fn help_banner() -> String {
         .collect::<Vec<_>>()
         .join(" ");
     format!("commands: {names}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_contains_upstream_scoped_and_changelog_commands() {
+        assert!(
+            BUILTIN_SLASH_COMMANDS.len() >= 23,
+            "registry must include every upstream command plus supported Rust extras"
+        );
+        assert_eq!(
+            find_command("scoped-models").map(|command| &command.kind),
+            Some(&SlashKind::ScopedModels)
+        );
+        assert_eq!(
+            find_command("changelog").map(|command| &command.kind),
+            Some(&SlashKind::Changelog)
+        );
+    }
+
+    #[test]
+    fn help_and_invocation_cover_new_commands() {
+        let banner = help_banner();
+        assert!(banner.contains("/scoped-models"));
+        assert!(banner.contains("/changelog"));
+        assert_eq!(
+            parse_invocation("  /scoped-models"),
+            (Some("scoped-models"), "")
+        );
+        assert_eq!(parse_invocation("/changelog"), (Some("changelog"), ""));
+    }
 }

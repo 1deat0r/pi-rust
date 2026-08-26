@@ -1,6 +1,41 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
-## Active 2026-08-25 full-conversion execution tree
+## Active 2026-08-26 exhaustive behavioral-parity execution tree
+
+The source/conversion ledger's historical `100.00% (166/166)` result is not
+the acceptance result for this campaign. The active contract is
+`.unlazy/exhaustive-parity-20260826/` and
+`docs/EXHAUSTIVE-PARITY-INVENTORY.md`, which currently indexes 283 unique
+capability IDs. Implementation and real-test integration are still in flight;
+no 1:1 or flawless claim is valid until the root gates and every residual are
+closed with evidence.
+
+## Current 2026-08-26 extension contract checkpoint — EXT-009–011
+
+The native extension contract is implemented and tested in the assigned
+extension types, loader, runner, integration, and RPC boundaries. EXT-009
+provides a live Rust `ExtensionContext` host handle for the full audited
+session/model/trust/queue/signal/action surface, including typed pending
+lifecycle/model outcomes and stale-context rejection. EXT-010 provides a
+correlated, bounded, cancellation-aware UI broker for dialogs and
+fire-and-forget actions, plus terminal listeners, custom overlays, widgets,
+header/footer, hidden-thinking labels, autocomplete/editor factories, themes,
+editor state, and tool expansion. EXT-011 stores all upstream tool-definition
+metadata and callback forms, applies preparation before execution, forwards
+live updates, publishes metadata, and invokes open-JSON render callbacks.
+
+RPC now forwards emitted `extension_ui_request` records, resolves matching
+`extension_ui_response` records, reports malformed/unknown/late responses, and
+dispatches `extension_ui_input` through the live terminal-listener broker.
+Permanent evidence is green: 57 extension-module tests, 9 external parity
+tests, and 16 RPC tests; `cargo check -p pi-coding-agent --tests --offline`
+and focused clippy with the unrelated invalid-regex lint isolated both pass.
+The remaining host boundary is intentional: this slice does not edit
+`interactive.rs` or `pi-tui`, so factory values are renderer-neutral
+JSON/native callbacks and the raw interactive PTY hookup still belongs to the
+host-owned TUI layer.
+
+## Historical 2026-08-25 full-conversion execution tree
 
 The existing conversion goal is resumed under the scoped unlazy contract
 `.unlazy/full-conversion-20260825/`. The current authoritative checker output
@@ -98,14 +133,15 @@ The legacy Node progress script is absent and returns `MODULE_NOT_FOUND`.
 The only test-environment caveat is the unrelated pre-existing untracked
 `crates/pi-ai/src/providers/radius.rs` borrow-check error: focused coding-agent
 builds used a temporary reversible one-line repair and restored the file before
-finishing, so it is not part of this change. Remaining protocol limitation:
-the Rust extension host has no pending extension-UI request channel, so it can
-consume a response envelope but cannot originate/resolve UI requests yet.
+finishing, so it is not part of this change. The former no-broker condition is
+closed by the current EXT-009–011 checkpoint above; the remaining concrete TUI
+component and raw interactive PTY hookup stays outside this slice.
 
 This bounded checkpoint is committed and pushed as
 `952256c5c230daf8f204f41d7ffb8d7b20c38696`; local and remote `main` hashes
-match. The next RPC-specific dependency is a Rust extension-UI request channel;
-the unrelated restored `radius.rs` borrow error remains outside this slice.
+match. The extension request-channel follow-up is now implemented in the
+current EXT-009–011 checkpoint; the unrelated restored `radius.rs` borrow
+error remains outside this slice.
 
 ## Checkpoint 2026-08-26 — bounded pi-agent lifecycle parity
 
@@ -2227,3 +2263,31 @@ Agent: pi (Codex)   HEAD: S-011 pushed checkpoint → (working tree)
 - S-012 is now ledger-complete at `65.66% (109/166; 57 open)`. The next
   dependency-safe action is S-013 GitHub Copilot OAuth refresh and enterprise
   domain/token-exchange parity.
+
+## Current interactive hidden-command parity checkpoint — 2026-08-26
+
+The requested interactive slice is implemented and live-tested within its
+assigned boundary. `crates/pi-coding-agent/src/interactive/easter_eggs.rs`
+contains bounded Rust-native Armin, Earendil, and Daxnuts components;
+`interactive/slash.rs` keeps the three hidden names out of public help while
+dispatching exact no-argument invocations; and
+`modes/interactive.rs` handles `/debug`, all registered command kinds, model
+selection triggers, resize redraw, and cleanup. No animation task is spawned.
+
+The Daxnuts payload is verbatim from pinned upstream
+`interactive/components/daxnuts.ts`: 6,144 characters, equal payload SHA-256
+`4a1df9e4bdd8ecbf6beb4ddc6c7dfa6b80a16f0ff6e18fb9e0139d415ad59f1d`. Unit
+coverage asserts a non-empty image and real ESC bytes. The complete
+`interactive_slash_complete_pty` target passes 4/4, including all registered
+slash commands, hidden success/repeat, 38x12 and 110x34 resize, cancellation,
+invalid-command arguments, and quit/raw-terminal restoration. The
+`interactive_full_matrix` target passes 7/7.
+
+Exact supporting checks pass: package `cargo check`, the focused hidden/parser/
+timestamp tests, scoped rustfmt, `git diff --check`, and clippy with the three
+pre-existing non-interactive diagnostics explicitly allowed. The strict
+unmodified package clippy command remains red only for those existing
+diagnostics in `core/changelog.rs`, `core/extensions/integration.rs`, and
+`modes/rpc.rs`; fixing them would violate the assigned scope. The next
+dependency-safe action is to preserve this interactive checkpoint and resolve
+that separate clippy debt in its owning scope.

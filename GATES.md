@@ -159,6 +159,7 @@ Scope: preserve the completed interactive slash-command, project-trust, deferred
 - [x] G27: pi-telemetry passes all-target clippy with warnings denied
   CHECK: /home/mustbearnold/.cargo/bin/cargo clippy -p pi-telemetry --offline --all-targets -- -D warnings
   EXPECT: Finished `dev` profile
+
   EVIDENCE: exit=0; shell=/bin/sh; cwd=/run/media/mustbearnold/Projects/AI Agents/pi-rust; path=06dd37959781/23 entries; output=Finished `dev` profile [optimized + debuginfo] target(s) in 0.06s
 
 - [x] G28: pi-ai and its telemetry dependency pass the strict clippy gate
@@ -224,3 +225,112 @@ Scope: preserve the completed interactive slash-command, project-trust, deferred
       S-012 progress
   CHECK: node scripts/conversion-progress.mjs
   EXPECT: Conversion progress:
+
+## Current slice: complete EXT-011 native tool-definition parity
+
+- [x] G38: the native registered-tool model stores every upstream ToolDefinition
+      metadata field in an open Rust representation, including label, prompt
+      hints, constrained sampling, render-shell policy, preparation, execution
+      mode, and render callbacks
+  CHECK: /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-coding-agent --offline --lib core::extensions::types::tests::registered_tool_definition_metadata_is_preserved --quiet
+  EXPECT: test result: ok
+  EVIDENCE: 1 passed; 0 failed
+
+- [x] G39: prepareArguments is applied before native execute, live onUpdate
+      values reach the host callback, and renderCall/renderResult receive and
+      return open JSON request/response values
+  CHECK: /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-coding-agent --offline --lib core::extensions::integration::tests::native_registered_tool_contract_is_live --quiet
+  EXPECT: test result: ok
+  EVIDENCE: 1 passed; 0 failed
+
+- [x] G40: the external parity target covers registration, metadata, prepared
+      execution, updates, and the normal AgentTool adapter path
+  CHECK: /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-coding-agent --offline --test extensions_parity --quiet
+  EXPECT: test result: ok
+  EVIDENCE: 9 passed; 0 failed
+
+- [x] G41: the coding-agent package compiles and the focused source/test scope
+      has no formatting or whitespace defects
+  CHECK: /bin/sh -c 'RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTDOC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo check -p pi-coding-agent --tests --offline && /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt --edition 2021 --check crates/pi-coding-agent/src/core/extensions/types.rs crates/pi-coding-agent/src/core/extensions/integration.rs crates/pi-coding-agent/src/core/extensions/runner.rs crates/pi-coding-agent/src/core/extensions/loader.rs crates/pi-coding-agent/src/core/extensions/wrapper.rs crates/pi-coding-agent/src/modes/rpc.rs crates/pi-coding-agent/tests/extensions_parity.rs && git diff --check && printf "EXT011_STATIC_CHECKS_PASS\\n"'
+  EXPECT: EXT011_STATIC_CHECKS_PASS
+  EVIDENCE: exit=0; package test-target check, focused format check, and diff check passed
+  EVIDENCE: exit=0; package check, workspace format check, and diff check passed
+
+- [x] G42: clippy is warning-clean for the package once the pre-existing
+      changelog invalid-regex diagnostic is explicitly isolated
+  CHECK: /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo clippy -p pi-coding-agent --lib --offline -- -D warnings -A clippy::invalid_regex
+  EXPECT: Finished `dev` profile
+  EVIDENCE: exit=0; finished successfully
+
+## Current slice: complete EXT-009/010 live context and UI broker parity
+
+- [x] G43: native handlers can call the full ExtensionContext host surface,
+      including getters, state mutations, queued lifecycle/model actions,
+      messaging, compaction, abort, shutdown, signal, and tool updates
+  CHECK: /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-coding-agent --offline --lib core::extensions::integration::tests::native_handler_can_call_the_bound_extension_host_context --quiet
+  EXPECT: test result: ok
+  EVIDENCE: 1 passed; 0 failed; included in the 57-test core::extensions suite
+
+- [x] G44: the UI broker covers dialog success, cancellation, timeout, late
+      and malformed responses, concurrent ids, fire-and-forget actions,
+      terminal listener dispatch/cleanup, custom overlays, factories, themes,
+      editor state, and tool expansion
+  CHECK: /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-coding-agent --offline --lib core::extensions -- --nocapture --test-threads=1
+  EXPECT: test result: ok
+  EVIDENCE: 57 passed; 0 failed
+
+- [x] G45: RPC routes live select/confirm/input/editor responses and terminal
+      input through the host broker, including diagnostic output
+  CHECK: /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-coding-agent --offline --lib 'modes::rpc::tests::rpc_' -- --nocapture --test-threads=1
+  EXPECT: test result: ok
+  EVIDENCE: 16 passed; 0 failed
+
+- [x] G46: the external extension parity target remains green after the
+      context/UI/tool contract changes
+  CHECK: /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test -p pi-coding-agent --test extensions_parity --offline -- --nocapture --test-threads=1
+  EXPECT: test result: ok
+  EVIDENCE: 9 passed; 0 failed
+
+- [x] G47: package tests compile and focused extension/RPC files are formatted
+      and whitespace-clean
+  CHECK: /bin/sh -c 'RUSTC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTDOC=/home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo check -p pi-coding-agent --tests --offline && /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt --edition 2021 --check crates/pi-coding-agent/src/core/extensions/types.rs crates/pi-coding-agent/src/core/extensions/integration.rs crates/pi-coding-agent/src/core/extensions/runner.rs crates/pi-coding-agent/src/core/extensions/loader.rs crates/pi-coding-agent/src/core/extensions/wrapper.rs crates/pi-coding-agent/src/modes/rpc.rs crates/pi-coding-agent/tests/extensions_parity.rs && git diff --check'
+  EXPECT: exit 0
+  EVIDENCE: exit=0; check finished successfully; rustfmt and diff check passed
+
+- [x] G48: the Rust-native conversion audit remains authoritative and reports
+      no ledger/source/JS blockers after the extension checkpoint
+  CHECK: /home/mustbearnold/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo run -p pi-coding-agent --offline --bin conversion_audit -- all
+  EXPECT: Conversion progress: 100.00% (166/166; 0 open); audit blockers: 0; workspace JS/TS source files: 0
+  EVIDENCE: exit=0
+
+## Interactive hidden-command evidence — 2026-08-26
+
+These scoped evidence rows are separate from the extension contract gates above;
+they do not claim unrelated workspace clippy or formatting debt.
+
+- [x] Interactive hidden components and Daxnuts payload are unit-tested.
+  CHECK: `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib interactive::easter_eggs -- --test-threads=1`
+  EVIDENCE: 6 passed, 0 failed; includes width 1–64 safety, completion text,
+  exact provider/model predicate, non-empty 6,144-character image, and real
+  ESC-byte scanline.
+
+- [x] Hidden parsing and upstream ISO debug timestamp are unit-tested.
+  CHECK: the focused `interactive::interactive_tests::parse_submit_executes_hidden_commands_without_publishing_them` and `modes::interactive::tests::debug_timestamp_matches_upstream_iso_shape` Cargo tests.
+  EVIDENCE: 1 passed for each test, 0 failed.
+
+- [x] All registered slash commands and hidden component lifecycle paths have
+  real tmux PTY coverage.
+  CHECK: `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test interactive_slash_complete_pty -- --test-threads=1`
+  EVIDENCE: 4 passed, 0 failed, including success, repeat, narrow/resize,
+  cancellation, command errors, quit, and terminal restoration.
+
+- [x] The broader interactive PTY matrix remains green.
+  CHECK: `/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test interactive_full_matrix -- --test-threads=1`
+  EVIDENCE: 7 passed, 0 failed.
+
+- [x] The coding-agent package compiles and the scoped source is formatted.
+  CHECK: `cargo check -p pi-coding-agent --offline`, direct rustfmt over the
+  five scoped interactive files, and `git diff --check`.
+  EVIDENCE: all three exit 0. Unmodified workspace `cargo fmt --all --
+  --check` and strict package clippy remain blocked only by unrelated dirty
+  files/diagnostics documented in HANDOFF.md.

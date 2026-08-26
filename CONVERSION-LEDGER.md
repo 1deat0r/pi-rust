@@ -6,6 +6,13 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-26)
 
+The `166/166` figure below is the historical source/conversion ledger, not
+behavioral parity. The active acceptance campaign is the exhaustive
+283-ID inventory in `docs/EXHAUSTIVE-PARITY-INVENTORY.md`; it remains open
+until the real debug/release, PTY/TUI, provider, clean-environment, and
+installation gates pass. Do not report this ledger percentage as the product's
+functional completion percentage.
+
 - The Rust-native checker reports **100.00% (166/166; 0 open)**. Run
   `/home/mustbearnold/.cargo/bin/cargo run -p pi-coding-agent --offline --bin
   conversion_audit -- all` after any ledger or source-audit change; the same
@@ -18,9 +25,11 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
   Rust as a static document. This is the accepted distribution boundary for
   the user's 100%-Rust requirement.
 - S-008 constrained JSON-schema and OpenAI grammar custom-tool parity is
-  complete with unit/mock evidence in the pi-ai adaptor suite. The final
-  workspace tests, strict clippy, release build/tests, formatting, diff, and
-  Cargo-native audit gates all pass.
+  complete with unit/mock evidence in the pi-ai adaptor suite. The last
+  committed workspace/release gate passed its strict clippy, build/test,
+  formatting, diff, and Cargo-native audit checks. The current extension
+  checkpoint's scoped clippy gate is green; the only unisolated package-clippy
+  residual is the unrelated untracked changelog regex recorded below.
 - S-009 Codex WebSocket session caching/reuse is complete with mock/unit
   evidence. The implementation covers session/account cache keying, cached
   context deltas, idle/max-age eviction, missing-continuation recovery, and
@@ -44,6 +53,55 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 - The original 100 entries remain the historical work queue. The supplemental
   S1 section is authoritative for residual provider, harness, runtime, TUI,
   RPC, auxiliary client/server, evaluation, and final-audit work.
+
+## Current extension contract checkpoint — 2026-08-26
+
+The EXT-009–011 extension contract slice is implemented in the Rust-native
+extension boundary. No numbered conversion checkbox changed: this is
+behavioral evidence for the exhaustive inventory IDs.
+
+- EXT-009 exposes the live `ExtensionContext` host handle for session/model
+  capabilities, trust/idle/queue/signal state, abort/shutdown, messaging and
+  entries, session metadata/labels, tool and command catalogs, model/thinking
+  changes, context usage, compaction, system-prompt access, and tool updates.
+  Queued lifecycle/model changes retain typed pending outcomes; stale contexts
+  reject calls after invalidation.
+- EXT-010 uses a correlated native UI broker for select/confirm/input/editor,
+  cancellation, bounded waits, unknown/late/malformed diagnostics, and all
+  fire-and-forget UI actions. Terminal listeners, custom overlays, widgets,
+  header/footer, hidden-thinking labels, autocomplete/editor factories, theme
+  state, editor state, and tool expansion are stateful broker surfaces. RPC
+  forwards `extension_ui_request` records and routes `extension_ui_response`
+  records back to the waiting callback; `extension_ui_input` dispatches real
+  listener transformations and consume results.
+- EXT-011 retains every upstream tool-definition field in an open Rust form:
+  label, prompt metadata, constrained sampling (`false` or JSON), render-shell
+  policy, argument preparation, execution mode, execute, render-call, and
+  render-result callbacks. Preparation, live updates, metadata publication,
+  and renderer callback invocation are covered by permanent tests.
+
+Focused direct-stable offline evidence is green:
+
+```text
+cargo test -p pi-coding-agent --offline --lib core::extensions -- --nocapture --test-threads=1
+  57 passed; 0 failed
+cargo test -p pi-coding-agent --test extensions_parity --offline -- --nocapture --test-threads=1
+  9 passed; 0 failed
+cargo test -p pi-coding-agent --offline --lib 'modes::rpc::tests::rpc_' -- --nocapture --test-threads=1
+  16 passed; 0 failed
+cargo check -p pi-coding-agent --tests --offline
+  Finished successfully
+cargo clippy -p pi-coding-agent --lib --offline -- -D warnings -A clippy::invalid_regex
+  Finished successfully
+```
+
+The strict package clippy command without the explicit allow remains blocked
+only by the unrelated untracked `crates/pi-coding-agent/src/core/changelog.rs`
+look-ahead regex diagnostic; no extension-scope file is involved. The
+renderer-neutral factory contract intentionally stops at JSON/native callback
+materialization because `interactive.rs` and `pi-tui` are outside this slice;
+the concrete TUI component adapter and raw interactive PTY hook must be wired
+by that host-owned boundary.
 
 ## Exhaustive usability-test checkpoint — 2026-08-26
 
@@ -120,11 +178,11 @@ borrow error; it was restored exactly and was not staged. With that unrelated
 file restored, a normal coding-agent rebuild remains blocked by its existing
 `E0515` error. No `interactive.rs` or `pi-tui` file was changed in this slice.
 
-Remaining RPC limitations are unchanged and explicit: Rust does not yet emit
-or resolve extension UI requests because the current Rust extension host has
-no pending UI-request channel; an inbound `extension_ui_response` is safely
-ignored as upstream does when no request is pending. Credentialed live-provider
-inference was not used for this protocol-only checkpoint.
+The former RPC no-broker condition was closed by the current extension
+contract checkpoint above: the Rust host now originates correlated requests,
+resolves real responses, and diagnoses unknown/late/malformed records. No
+`interactive.rs` or `pi-tui` file was changed in this slice. Credentialed
+live-provider inference was not used for this protocol-only checkpoint.
 
 This scoped implementation and documentation checkpoint is committed and
 pushed as `952256c5c230daf8f204f41d7ffb8d7b20c38696`; local `HEAD` and
@@ -1444,3 +1502,58 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 - Tasks roughly: ~40 pure ports of pinned upstream files, ~30 audit-then-close,
   ~20 tests/verification, ~10 process/gates.
 - When a task's "upstream file" is named, pin it to commit 5cd93f688aaab89dbb6dfa4aca535f21796ae185 (v0.84.2).
+
+## Interactive hidden-command parity checkpoint — 2026-08-26
+
+No numbered conversion row changed: the `166/166` Cargo-native conversion
+ledger remains the historical source/conversion measure, while the active
+behavioral acceptance rows live in `docs/EXHAUSTIVE-PARITY-INVENTORY.md`.
+This checkpoint closes the requested interactive implementation slice in the
+working tree.
+
+Implemented in the assigned scope:
+
+- `/debug` now writes `config::get_agent_dir()/pi-debug.log`, matching the
+  upstream `getDebugLogPath()` equivalent, with ISO-8601/RFC3339 UTC
+  timestamps, terminal dimensions, bounded rendered-line diagnostics, and
+  Agent-message JSONL.
+- `/arminsayshi` and `/dementedelves` are hidden exact no-argument commands
+  with Rust-native, width-safe components. Animation uses render-time bounded
+  `Instant` state; no task or interval is spawned.
+- OpenCode plus a case-insensitive `kimi-k2.5` model id triggers the Rust
+  Daxnuts component. Its embedded `DAX_HEX` is the exact 6,144-character
+  payload from pinned upstream `daxnuts.ts`; truecolor half-block rendering
+  uses actual ESC bytes and has a non-empty-image regression test.
+- `BUILTIN_SLASH_COMMANDS` dispatch is exhaustive over `SlashKind`; the
+  defensive `not wired`/`Unsupported` catch-all is absent.
+
+Evidence (unit/live):
+
+```text
+/home/mustbearnold/.cargo/bin/cargo check -p pi-coding-agent --offline
+  exit 0
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib interactive::easter_eggs -- --test-threads=1
+  6 passed; 0 failed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib modes::interactive::tests::debug_timestamp_matches_upstream_iso_shape -- --exact --test-threads=1
+  1 passed; 0 failed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --lib interactive::interactive_tests::parse_submit_executes_hidden_commands_without_publishing_them -- --exact --test-threads=1
+  1 passed; 0 failed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test interactive_slash_complete_pty -- --test-threads=1
+  4 passed; 0 failed
+/home/mustbearnold/.cargo/bin/cargo test -p pi-coding-agent --offline --test interactive_full_matrix -- --test-threads=1
+  7 passed; 0 failed
+/home/mustbearnold/.cargo/bin/cargo clippy -p pi-coding-agent --offline --all-targets -- -D warnings -A clippy::invalid_regex -A clippy::needless_update -A clippy::drop_non_drop
+  exit 0
+/home/mustbearnold/.cargo/bin/rustfmt --edition 2021 --check <five scoped interactive files>
+  exit 0
+git diff --check
+  exit 0
+```
+
+The exact payload comparison reports Rust/upstream lengths `6144/6144`, equal
+payloads, and SHA-256
+`4a1df9e4bdd8ecbf6beb4ddc6c7dfa6b80a16f0ff6e18fb9e0139d415ad59f1d` for both.
+The unmodified strict clippy command still reports four unrelated existing
+diagnostics in `core/changelog.rs`, `core/extensions/integration.rs`, and
+`modes/rpc.rs`; those files were not changed because they are outside the
+interactive assignment.
