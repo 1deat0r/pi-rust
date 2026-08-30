@@ -177,3 +177,5 @@ Phase 2.5 (pi-coding-agent gate) likewise does not touch TUI rows.
 
 Phase 2.7 (pi-tui gate) does not touch TUI rows: the lint gate is a
 build-health boundary, not behavioral evidence.
+
+Phase 2.6 (AuthStorageError) likewise does not touch TUI rows.

@@ -5507,7 +5507,8 @@ async fn run_oauth_login(
         },
         &opts,
     )
-    .await?;
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(format!("logged in to {provider_id} via OAuth"))
 }
 
@@ -5591,7 +5592,8 @@ async fn run_api_key_login(
         },
         &opts,
     )
-    .await?;
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(format!("logged in to {provider_id} via API key"))
 }
 
@@ -5693,7 +5695,7 @@ async fn run_oauth_logout(
 ) -> Result<String, String> {
     let auth = crate::core::auth_storage::AuthStorage::create(config::get_auth_path());
     let opts = crate::core::auth_storage::AuthOperationOptions::default();
-    let credentials = auth.list(&opts).await?;
+    let credentials = auth.list(&opts).await.map_err(|e| e.to_string())?;
     if credentials.is_empty() && provider_ref.is_none() {
         return Ok("No stored credentials to remove. Environment variables and models.json config are unchanged.".to_string());
     }
@@ -5702,7 +5704,9 @@ async fn run_oauth_logout(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        auth.delete(provider, &opts).await?;
+        auth.delete(provider, &opts)
+            .await
+            .map_err(|e| e.to_string())?;
         return Ok(format!("logged out {provider}"));
     }
 
@@ -5731,7 +5735,9 @@ async fn run_oauth_logout(
         })
         .map(|credential| credential.provider_id.clone())
         .ok_or_else(|| format!("no stored credentials for provider {selected_provider:?}"))?;
-    auth.delete(&provider_id, &opts).await?;
+    auth.delete(&provider_id, &opts)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(format!("logged out {provider_id}"))
 }
 

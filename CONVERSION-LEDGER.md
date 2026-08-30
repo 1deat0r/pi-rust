@@ -1916,3 +1916,6 @@ unchanged.
 
 Phase 2.7 completed the hard-gate rollout: every workspace crate now enforces
 the panic-path lint gate; ledger rows unchanged.
+
+Phase 2.6 introduced typed AuthStorageError for the async auth-storage
+surface; ledger rows unchanged.

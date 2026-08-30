@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use thiserror::Error;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -69,9 +70,22 @@ pub struct AuthOperationOptions {
     pub signal: Option<Arc<AtomicBool>>,
 }
 
-fn throw_if_aborted(signal: Option<&Arc<AtomicBool>>) -> Result<(), String> {
+/// Typed error for the async auth-storage surface. `Display` is the exact
+/// message text the previous `Result<_, AuthStorageError>` implementation produced, so
+/// banners and diagnostics are unchanged.
+#[derive(Debug, Clone, Error)]
+#[error("{0}")]
+pub struct AuthStorageError(pub String);
+
+impl From<String> for AuthStorageError {
+    fn from(message: String) -> Self {
+        Self(message)
+    }
+}
+
+fn throw_if_aborted(signal: Option<&Arc<AtomicBool>>) -> Result<(), AuthStorageError> {
     if signal.is_some_and(|s| s.load(Ordering::SeqCst)) {
-        return Err("Aborted".to_string());
+        return Err("Aborted".to_string().into());
     }
     Ok(())
 }
@@ -93,8 +107,9 @@ pub type LockFuture<'a, T> =
 /// `withLockAsync` callback: `(current) => Promise<LockResult<T>>`. The
 /// callback parses the borrowed `current` into owned data before boxing, so
 /// its returned future is `'static`.
-pub type LockCallback<T> =
-    Box<dyn FnOnce(Option<&str>) -> BoxFuture<'static, Result<LockResult<T>, String>> + Send>;
+pub type LockCallback<T> = Box<
+    dyn FnOnce(Option<&str>) -> BoxFuture<'static, Result<LockResult<T>, AuthStorageError>> + Send,
+>;
 
 /// Storage backend (upstream `AuthStorageBackend`): unlocked mutation of the
 /// current value behind a lock. The two concrete backends (file, in-memory)
@@ -117,7 +132,7 @@ impl AuthStorageBackend {
         &self,
         f: LockCallback<T>,
         options: &AuthOperationOptions,
-    ) -> BoxFuture<'_, Result<T, String>>
+    ) -> BoxFuture<'_, Result<T, AuthStorageError>>
     where
         T: Send + 'static,
     {
@@ -140,7 +155,7 @@ fn rand_fraction() -> f64 {
 async fn sleep_abortable(
     duration: Duration,
     signal: Option<&Arc<AtomicBool>>,
-) -> Result<(), String> {
+) -> Result<(), AuthStorageError> {
     let deadline = std::time::Instant::now() + duration;
     loop {
         throw_if_aborted(signal)?;
@@ -154,20 +169,23 @@ async fn sleep_abortable(
 
 static AUTH_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn sync_parent_directory(parent: &Path) -> Result<(), String> {
+fn sync_parent_directory(parent: &Path) -> Result<(), AuthStorageError> {
     fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| {
-            format!(
+            AuthStorageError(format!(
                 "failed to sync auth directory {}: {error}",
                 parent.display()
-            )
+            ))
         })
 }
 
-fn write_auth_file(path: &Path, content: &str) -> Result<(), String> {
+fn write_auth_file(path: &Path, content: &str) -> Result<(), AuthStorageError> {
     let Some(parent) = path.parent() else {
-        return Err(format!("auth path has no parent: {}", path.display()));
+        return Err(AuthStorageError(format!(
+            "auth path has no parent: {}",
+            path.display()
+        )));
     };
     fs::create_dir_all(parent).map_err(|error| {
         format!(
@@ -294,7 +312,7 @@ impl FileAuthStorageBackend {
         Self { auth_path }
     }
 
-    fn ensure_parent_dir(&self) -> Result<(), String> {
+    fn ensure_parent_dir(&self) -> Result<(), AuthStorageError> {
         if let Some(parent) = self.auth_path.parent() {
             let existed = parent.exists();
             fs::create_dir_all(parent).map_err(|error| {
@@ -317,7 +335,7 @@ impl FileAuthStorageBackend {
         Ok(())
     }
 
-    fn ensure_file_exists(&self) -> Result<(), String> {
+    fn ensure_file_exists(&self) -> Result<(), AuthStorageError> {
         if !self.auth_path.exists() {
             write_auth_file(&self.auth_path, "{}")?;
         }
@@ -330,7 +348,7 @@ impl FileAuthStorageBackend {
         PathBuf::from(path)
     }
 
-    fn acquire_lock_sync_with_retry(&self) -> Result<AuthLockGuard, String> {
+    fn acquire_lock_sync_with_retry(&self) -> Result<AuthLockGuard, AuthStorageError> {
         let max_attempts = 10;
         let delay_ms = 20;
         let lock_path = self.lock_path();
@@ -347,22 +365,22 @@ impl FileAuthStorageBackend {
                         continue;
                     }
                     if attempt == max_attempts {
-                        return Err(
-                            "Failed to acquire auth storage lock: lock is already held".to_string()
-                        );
+                        return Err("Failed to acquire auth storage lock: lock is already held"
+                            .to_string()
+                            .into());
                     }
                     std::thread::sleep(Duration::from_millis(delay_ms));
                 }
-                Err(AuthLockOpenError::Other(message)) => return Err(message),
+                Err(AuthLockOpenError::Other(message)) => return Err(message.into()),
             }
         }
-        Err("Failed to acquire auth storage lock".to_string())
+        Err("Failed to acquire auth storage lock".to_string().into())
     }
 
     async fn acquire_lock_async(
         &self,
         signal: Option<&Arc<AtomicBool>>,
-    ) -> Result<AuthLockGuard, String> {
+    ) -> Result<AuthLockGuard, AuthStorageError> {
         let stale_ms = 30_000;
         let max_delay_ms = 2_000;
         let deadline = std::time::Instant::now() + Duration::from_millis(stale_ms);
@@ -376,7 +394,7 @@ impl FileAuthStorageBackend {
                         if s.load(Ordering::SeqCst) {
                             drop(file);
                             let _ = fs::remove_file(&lock_path);
-                            return Err("Aborted".to_string());
+                            return Err("Aborted".to_string().into());
                         }
                     }
                     return Ok(AuthLockGuard {
@@ -389,9 +407,9 @@ impl FileAuthStorageBackend {
                     let remaining_ms =
                         deadline.saturating_duration_since(std::time::Instant::now());
                     if remaining_ms.is_zero() {
-                        return Err(
-                            "Failed to acquire auth storage lock: lock is already held".to_string()
-                        );
+                        return Err("Failed to acquire auth storage lock: lock is already held"
+                            .to_string()
+                            .into());
                     }
                     if remove_dead_auth_lock(&lock_path) {
                         continue;
@@ -407,27 +425,27 @@ impl FileAuthStorageBackend {
                     );
                     sleep_abortable(Duration::from_millis(delay_ms), signal).await?;
                 }
-                Err(AuthLockOpenError::Other(message)) => return Err(message),
+                Err(AuthLockOpenError::Other(message)) => return Err(message.into()),
             }
         }
     }
 
-    fn read_current(&self) -> Result<Option<String>, String> {
+    fn read_current(&self) -> Result<Option<String>, AuthStorageError> {
         match fs::read_to_string(&self.auth_path) {
             Ok(content) => Ok(Some(content)),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!(
+            Err(error) => Err(AuthStorageError(format!(
                 "failed to read auth file {}: {error}",
                 self.auth_path.display()
-            )),
+            ))),
         }
     }
 
-    fn write_next(&self, next: String) -> Result<(), String> {
+    fn write_next(&self, next: String) -> Result<(), AuthStorageError> {
         write_auth_file(&self.auth_path, &next)
     }
 
-    fn read_consistent(&self) -> Result<Option<String>, String> {
+    fn read_consistent(&self) -> Result<Option<String>, AuthStorageError> {
         let lock_path = self.lock_path();
         if !self.auth_path.exists() && !lock_path.exists() {
             return Ok(None);
@@ -440,7 +458,7 @@ impl FileAuthStorageBackend {
     async fn read_consistent_async(
         &self,
         signal: Option<&Arc<AtomicBool>>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, AuthStorageError> {
         throw_if_aborted(signal)?;
         self.ensure_parent_dir()?;
         let _lock_guard = self.acquire_lock_async(signal).await?;
@@ -481,7 +499,7 @@ impl FileAuthStorageBackend {
         &self,
         f: LockCallback<T>,
         options: &AuthOperationOptions,
-    ) -> BoxFuture<'_, Result<T, String>>
+    ) -> BoxFuture<'_, Result<T, AuthStorageError>>
     where
         T: Send + 'static,
     {
@@ -499,7 +517,7 @@ impl FileAuthStorageBackend {
             if let Some(next) = next {
                 this.write_next(next)?;
             }
-            Ok::<T, String>(result)
+            Ok::<T, AuthStorageError>(result)
         })
     }
 }
@@ -538,7 +556,7 @@ impl InMemoryAuthStorageBackend {
         &self,
         f: LockCallback<T>,
         options: &AuthOperationOptions,
-    ) -> BoxFuture<'_, Result<T, String>>
+    ) -> BoxFuture<'_, Result<T, AuthStorageError>>
     where
         T: Send + 'static,
     {
@@ -580,7 +598,7 @@ impl ReadOnlyAuthStorage {
     }
 
     #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
-    fn load(&self) -> Result<AuthStorageData, String> {
+    fn load(&self) -> Result<AuthStorageData, AuthStorageError> {
         if let Some(data) = self
             .data
             .lock()
@@ -596,12 +614,16 @@ impl ReadOnlyAuthStorage {
                     Some(AuthStorageData::new());
                 return Ok(AuthStorageData::new());
             }
-            Err(error) => return Err(format!("Failed to read auth.json: {error}")),
+            Err(error) => {
+                return Err(AuthStorageError(format!(
+                    "Failed to read auth.json: {error}"
+                )))
+            }
         };
         let parsed: Value = serde_json::from_str(strip_bom(&content))
             .map_err(|e| format!("Failed to read auth.json: {e}"))?;
         if !parsed.is_object() {
-            return Err("Invalid auth.json: expected an object".to_string());
+            return Err("Invalid auth.json: expected an object".to_string().into());
         }
         let mut data = AuthStorageData::new();
         for (provider_id, credential) in parsed.as_object().unwrap() {
@@ -620,7 +642,7 @@ impl ReadOnlyAuthStorage {
         &self,
         provider_id: &str,
         options: &AuthOperationOptions,
-    ) -> Result<Option<Credential>, String> {
+    ) -> Result<Option<Credential>, AuthStorageError> {
         throw_if_aborted(options.signal.as_ref())?;
         let credential = self.load()?.get(provider_id).cloned();
         throw_if_aborted(options.signal.as_ref())?;
@@ -635,7 +657,7 @@ impl ReadOnlyAuthStorage {
     pub async fn list(
         &self,
         options: &AuthOperationOptions,
-    ) -> Result<Vec<CredentialInfo>, String> {
+    ) -> Result<Vec<CredentialInfo>, AuthStorageError> {
         throw_if_aborted(options.signal.as_ref())?;
         let credentials = self
             .load()?
@@ -652,19 +674,25 @@ impl ReadOnlyAuthStorage {
     pub async fn modify(
         &self,
         _provider_id: &str,
-        _f: impl FnMut(Option<&Credential>) -> BoxFuture<'static, Result<Option<Credential>, String>>
+        _f: impl FnMut(
+                Option<&Credential>,
+            ) -> BoxFuture<'static, Result<Option<Credential>, AuthStorageError>>
             + Send,
         _options: &AuthOperationOptions,
-    ) -> Result<Option<Credential>, String> {
-        Err("Read-only credential storage cannot modify auth.json".to_string())
+    ) -> Result<Option<Credential>, AuthStorageError> {
+        Err("Read-only credential storage cannot modify auth.json"
+            .to_string()
+            .into())
     }
 
     pub async fn delete(
         &self,
         _provider_id: &str,
         _options: &AuthOperationOptions,
-    ) -> Result<(), String> {
-        Err("Read-only credential storage cannot modify auth.json".to_string())
+    ) -> Result<(), AuthStorageError> {
+        Err("Read-only credential storage cannot modify auth.json"
+            .to_string()
+            .into())
     }
 
     pub fn is_read_only_error() -> &'static str {
@@ -673,11 +701,11 @@ impl ReadOnlyAuthStorage {
 }
 
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
-fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), String> {
+fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), AuthStorageError> {
     if !credential.is_object() {
-        return Err(format!(
+        return Err(AuthStorageError(format!(
             "Invalid auth.json credential for provider \"{provider_id}\""
-        ));
+        )));
     }
     let value = credential.as_object().unwrap();
     match value.get("type").and_then(Value::as_str) {
@@ -692,9 +720,9 @@ fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), Stri
             if valid_key && valid_env {
                 Ok(())
             } else {
-                Err(format!(
+                Err(AuthStorageError(format!(
                     "Invalid auth.json credential for provider \"{provider_id}\""
-                ))
+                )))
             }
         }
         Some("oauth") => {
@@ -704,14 +732,14 @@ fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), Stri
             if valid {
                 Ok(())
             } else {
-                Err(format!(
+                Err(AuthStorageError(format!(
                     "Invalid auth.json credential for provider \"{provider_id}\""
-                ))
+                )))
             }
         }
-        _ => Err(format!(
+        _ => Err(AuthStorageError(format!(
             "Invalid auth.json credential for provider \"{provider_id}\""
-        )),
+        ))),
     }
 }
 
@@ -778,7 +806,7 @@ fn shared_auth_file_read_state(path: &Path) -> Arc<Mutex<AuthFileReadState>> {
     state
 }
 
-type AuthFileReloadResult = Result<(AuthStorageData, Option<String>), String>;
+type AuthFileReloadResult = Result<(AuthStorageData, Option<String>), AuthStorageError>;
 
 /// One in-flight file reload shared by all readers of the same path. The
 /// future itself is run in a task so an aborting caller can stop waiting while
@@ -904,12 +932,12 @@ impl AuthStorage {
         Self::from_storage(AuthStorageBackend::InMemory(storage))
     }
 
-    fn parse_storage_data(content: Option<&str>) -> Result<AuthStorageData, String> {
+    fn parse_storage_data(content: Option<&str>) -> Result<AuthStorageData, AuthStorageError> {
         let Some(content) = content.filter(|c| !c.trim().is_empty()) else {
             return Ok(AuthStorageData::new());
         };
         serde_json::from_str::<AuthStorageData>(strip_bom(content))
-            .map_err(|error| format!("Failed to read auth.json: {error}"))
+            .map_err(|error| AuthStorageError(format!("Failed to read auth.json: {error}")))
     }
 
     fn read_under_lock(&self) -> Option<String> {
@@ -932,7 +960,7 @@ impl AuthStorage {
         &self,
         reload: Arc<AuthFileReload>,
         options: &AuthOperationOptions,
-    ) -> Result<AuthStorageData, String> {
+    ) -> Result<AuthStorageData, AuthStorageError> {
         let result = await_auth_file_reload(&reload, options.signal.as_ref()).await;
         let remove_reload = {
             let mut state = self
@@ -997,7 +1025,7 @@ impl AuthStorage {
     async fn read_latest_data(
         &self,
         options: &AuthOperationOptions,
-    ) -> Result<AuthStorageData, String> {
+    ) -> Result<AuthStorageData, AuthStorageError> {
         throw_if_aborted(options.signal.as_ref())?;
         // In-memory stores are read freshly each time (their value is the
         // source of truth); file stores are cached by revision and reloaded
@@ -1068,7 +1096,7 @@ impl AuthStorage {
         &self,
         provider: &str,
         options: &AuthOperationOptions,
-    ) -> Result<Option<Credential>, String> {
+    ) -> Result<Option<Credential>, AuthStorageError> {
         let credential = self.read_latest_data(options).await?.get(provider).cloned();
         throw_if_aborted(options.signal.as_ref())?;
         let Some(credential) = credential else {
@@ -1081,11 +1109,13 @@ impl AuthStorage {
     pub async fn modify(
         &self,
         provider: &str,
-        mut f: impl FnMut(Option<&Credential>) -> BoxFuture<'static, Result<Option<Credential>, String>>
+        mut f: impl FnMut(
+                Option<&Credential>,
+            ) -> BoxFuture<'static, Result<Option<Credential>, AuthStorageError>>
             + Send
             + 'static,
         options: &AuthOperationOptions,
-    ) -> Result<Option<Credential>, String> {
+    ) -> Result<Option<Credential>, AuthStorageError> {
         let provider = provider.to_string();
         let result = self
             .storage
@@ -1134,7 +1164,7 @@ impl AuthStorage {
         &self,
         provider: &str,
         options: &AuthOperationOptions,
-    ) -> Result<(), String> {
+    ) -> Result<(), AuthStorageError> {
         let provider = provider.to_string();
         self.storage
             .with_lock_async(
@@ -1170,7 +1200,7 @@ impl AuthStorage {
     pub async fn list(
         &self,
         options: &AuthOperationOptions,
-    ) -> Result<Vec<CredentialInfo>, String> {
+    ) -> Result<Vec<CredentialInfo>, AuthStorageError> {
         let entries = self.read_latest_data(options).await?;
         throw_if_aborted(options.signal.as_ref())?;
         Ok(entries
@@ -1369,7 +1399,7 @@ pub async fn refresh_oauth_credential_in_storage(
     oauth: Arc<dyn pi_ai::auth::OAuthAuth>,
     min_validity_ms: Option<u64>,
     signal: Option<Arc<AtomicBool>>,
-) -> Result<Option<Credential>, String> {
+) -> Result<Option<Credential>, AuthStorageError> {
     let options = AuthOperationOptions {
         signal: signal.clone(),
     };
@@ -1430,9 +1460,9 @@ pub async fn refresh_oauth_credential_in_storage(
     if let Some(min_validity_ms) = min_validity_ms {
         if let Some(Credential::OAuth { expires, .. }) = modified.as_ref() {
             if current_time_ms().saturating_add(min_validity_ms) >= *expires {
-                return Err(format!(
+                return Err(AuthStorageError(format!(
                     "OAuth refresh returned a token that expires too soon for {provider_id}"
-                ));
+                )));
             }
         }
     }

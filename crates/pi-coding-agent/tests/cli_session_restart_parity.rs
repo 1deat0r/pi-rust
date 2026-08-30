@@ -632,7 +632,7 @@ fn malformed_files_fail_closed_then_recover_and_cancellation_allows_restart() {
         &cancel_options,
     ));
     canceller.join().expect("join cancellation thread");
-    assert_eq!(cancelled.unwrap_err(), "Aborted");
+    assert_eq!(cancelled.unwrap_err().to_string(), "Aborted");
     assert!(
         lock_path.exists(),
         "cancellation removed another process lock"

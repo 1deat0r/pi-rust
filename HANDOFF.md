@@ -130,6 +130,31 @@ Next: Phase 2.6 typed errors for pi-coding-agent's contained core modules,
 and Phase 3 (converting invariant allows to real error returns where
 practical, `let _ =` swallow cleanup).
 
+## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 2.6 (typed AuthStorageError)
+
+Ninth campaign checkpoint, direct child of Phase 2.7 (`4219322`). The
+async auth-storage surface in pi-coding-agent now carries a typed error:
+`core::auth_storage::AuthStorageError` (thiserror newtype, Display equal to
+the previous message text, `From<String>` for abort/lock/IO plumbing).
+
+Converted: `throw_if_aborted`, `ensure_parent_dir`, `ensure_file_exists`,
+`read_current`, `read_consistent_async`, `acquire_lock_async`, `write_next`,
+the `LockCallback` type alias, `with_lock_async` + both backend impls, and
+the public `AuthStorage`/`ReadOnlyAuthStorage` async methods
+(read/modify/delete/list). All Display strings are byte-identical; callers
+in commands/auth.rs and modes/interactive.rs map to banner strings with
+`.to_string()` — user-visible diagnostics unchanged.
+
+The sync `with_lock_impl` boundary keeps its documented panics: they mirror
+upstream's unrecoverable-credential-store throws and remain behind scoped
+allows.
+
+Exact validation (with `QWEN_TOKEN_PLAN_API_KEY` exported): workspace
+all-targets check clean; strict workspace clippy; full workspace matrix
+exit 0, 2,805 passed; fmt/diff checks; `conversion_audit all`
+`Conversion progress: 100.00% (166/166; 0 open)`. No numbered ledger row
+changed.
+
 ## RESOLVED — push blocker — 2026-08-30 — six campaign commits pushed
 
 ROOT CAUSE (confirmed): the pushes did not fail because of the network —

@@ -70,6 +70,12 @@ pi-session-backends — are under the hard gate. **The entire workspace now
 enforces the panic-path gate.** pi-tui render-loop invariants carry scoped
 documented allows. Workspace matrix 2,805 passed; `conversion_audit all`
 green. No numbered ledger row changed.
+Phase 2.6 checkpoint: **typed AuthStorageError** introduced for the async
+auth-storage surface (plumbing, backends, and public read/modify/delete/
+list methods); Display strings byte-identical, downstream banners map via
+to_string; the sync fatal boundary keeps documented panics. Workspace
+matrix 2,805 passed; `conversion_audit all` green. No numbered ledger row
+changed.
 
 Next: Phase 2 crate conversions in order pi-server → pi-client → pi-ai →
 pi-agent → pi-coding-agent (core, then modes/bins) → pi-tui/pi-telemetry/

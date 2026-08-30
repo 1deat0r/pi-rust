@@ -286,7 +286,8 @@ pub async fn get_provider_credential(
             return Ok(Some(stored));
         };
         return refresh_oauth_credential_in_storage(&storage, provider, oauth, min_expiry_ms, None)
-            .await;
+            .await
+            .map_err(|e| e.to_string());
     }
 
     let config = load_auth_model_config();

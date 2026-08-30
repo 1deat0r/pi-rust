@@ -758,5 +758,6 @@ gates (`[workspace.lints.clippy] unwrap_used/expect_used/panic = "deny"`,
 opted into per crate via `[lints] workspace = true`). Converted crates so
 far: every workspace crate (`pi-evals`, `pi-server`, `pi-client`, `pi-ai`,
 `pi-agent`, `pi-coding-agent`, `pi-tui`, `pi-telemetry`,
-`pi-session-backends`). Test code carries scoped `#[allow]`s only.
+`pi-session-backends`).
+The async auth-storage surface also uses the typed `AuthStorageError`. Test code carries scoped `#[allow]`s only.
 See `PLAN.md` for the Rust-idiom campaign status.
