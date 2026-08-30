@@ -45,6 +45,14 @@ provider) in the test environment for multiple selector rows; with it set
 the full workspace matrix passes 2,805 tests. `conversion_audit all` green.
 No numbered ledger row changed.
 
+Phase 2.3b checkpoint: typed `PiAiError` thiserror enum introduced; the
+auth/OAuth stack (auth_flows, oauth, auth traits, provider impls in
+all/radius/cloudflare) now returns it with byte-identical Display text;
+host-side `AuthInteraction` intentionally stays String. Downstream
+pi-coding-agent maps at the boundary with unchanged user-visible text.
+Workspace matrix 2,805 passed; `conversion_audit all` green. No numbered
+ledger row changed.
+
 Next: Phase 2 crate conversions in order pi-server → pi-client → pi-ai →
 pi-agent → pi-coding-agent (core, then modes/bins) → pi-tui/pi-telemetry/
 pi-session-backends, each flipping its own gate to full deny.

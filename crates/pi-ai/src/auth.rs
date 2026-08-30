@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{fmt, path::Path};
 
+use crate::error::PiAiError;
 use crate::types::ProviderEnv;
 
 /// Stored api-key credential. `env` holds provider-scoped environment/config
@@ -330,13 +331,13 @@ pub trait ApiKeyAuth: Send + Sync {
     fn name(&self) -> &str;
     /// Standard interactive API-key setup. Ambient-only providers can leave
     /// this default in place by simply never calling it.
-    fn login(&self, interaction: &dyn AuthInteraction) -> Result<ApiKeyCredential, String> {
+    fn login(&self, interaction: &dyn AuthInteraction) -> Result<ApiKeyCredential, PiAiError> {
         if interaction
             .signal()
             .as_ref()
             .is_some_and(|signal| signal.load(Ordering::SeqCst))
         {
-            return Err("Login cancelled".to_string());
+            return Err(PiAiError::LoginCancelled);
         }
         let key = interaction.prompt(&AuthPrompt::Secret {
             message: format!("Enter {}", self.name()),
@@ -347,10 +348,10 @@ pub trait ApiKeyAuth: Send + Sync {
             .as_ref()
             .is_some_and(|signal| signal.load(Ordering::SeqCst))
         {
-            return Err("Login cancelled".to_string());
+            return Err(PiAiError::LoginCancelled);
         }
         if key.trim().is_empty() {
-            return Err("API key cannot be empty".to_string());
+            return Err(PiAiError::invalid_response("API key cannot be empty"));
         }
         Ok(ApiKeyCredential {
             key: Some(key),
@@ -374,7 +375,7 @@ pub trait OAuthAuth: Send + Sync {
     fn login_label(&self) -> Option<&str>;
     /// Run the interactive login flow (device code / callback server).
     /// Rejects on cancel/abort (upstream `login(interaction)`).
-    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String>;
+    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, PiAiError>;
     /// Exchange the refresh token for a fresh credential. Network call;
     /// errors on failure (invalid_grant etc.). Runs under the store lock
     /// (upstream `refresh(credential, signal)`).
@@ -382,7 +383,7 @@ pub trait OAuthAuth: Send + Sync {
         &self,
         credential: &OAuthCredential,
         signal: &std::sync::atomic::AtomicBool,
-    ) -> Result<OAuthCredential, String>;
+    ) -> Result<OAuthCredential, PiAiError>;
     fn to_auth(&self, credential: &OAuthCredential) -> Option<ModelAuth>;
 }
 

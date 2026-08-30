@@ -17,6 +17,7 @@ use crate::auth::{
     env_api_key_auth, AuthEvent, AuthInteraction, AuthPrompt, AuthSelectOption, ModelAuth,
     OAuthAuth, OAuthCredential, ProviderAuth,
 };
+use crate::error::PiAiError;
 use crate::model::{Model, ModelCost, ModelInput};
 use crate::models::{
     create_provider, ModelsPersistence, ModelsPublication, ModelsStoreEntry, Provider,
@@ -150,17 +151,17 @@ async fn wait_for_abort(signal: Arc<AtomicBool>) {
 async fn send_with_abort(
     request: reqwest::RequestBuilder,
     signal: Option<Arc<AtomicBool>>,
-) -> Result<reqwest::Response, String> {
+) -> Result<reqwest::Response, PiAiError> {
     let request = request.send();
     if let Some(signal) = signal {
         tokio::select! {
-            response = request => response.map_err(|error| format!("request failed: {error}")),
-            _ = wait_for_abort(signal) => Err("Request cancelled".to_string()),
+            response = request => response.map_err(|error| PiAiError::other(format!("request failed: {error}"))),
+            _ = wait_for_abort(signal) => Err(PiAiError::other("Request cancelled")),
         }
     } else {
         request
             .await
-            .map_err(|error| format!("request failed: {error}"))
+            .map_err(|error| PiAiError::other(format!("request failed: {error}")))
     }
 }
 
@@ -169,7 +170,7 @@ pub async fn load_radius_gateway_config(
     gateway: &str,
     api_key: Option<&str>,
     signal: Option<Arc<AtomicBool>>,
-) -> Result<RadiusGatewayConfig, String> {
+) -> Result<RadiusGatewayConfig, PiAiError> {
     let gateway = normalize_radius_gateway_url(gateway);
     let url = format!("{gateway}/v1/config");
     let client = reqwest::Client::new();
@@ -179,21 +180,23 @@ pub async fn load_radius_gateway_config(
     }
     let response = send_with_abort(request, signal).await?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| format!("Could not read Radius config from {gateway}: {error}"))?;
+    let body = response.text().await.map_err(|error| {
+        PiAiError::other(format!(
+            "Could not read Radius config from {gateway}: {error}"
+        ))
+    })?;
     if !status.is_success() {
-        return Err(format!(
+        return Err(PiAiError::other(format!(
             "Could not load Radius config from {gateway}: {}: {}",
             status.as_u16(),
             truncate_http_body(&body)
-        ));
+        )));
     }
-    let value: Value = serde_json::from_str(&body)
-        .map_err(|error| format!("Invalid Radius config from {gateway}: {error}"))?;
+    let value: Value = serde_json::from_str(&body).map_err(|error| {
+        PiAiError::invalid_response(format!("Invalid Radius config from {gateway}: {error}"))
+    })?;
     sanitize_radius_gateway_config(value)
-        .ok_or_else(|| format!("Invalid Radius config from {gateway}"))
+        .ok_or_else(|| PiAiError::invalid_response(format!("Invalid Radius config from {gateway}")))
 }
 
 fn radius_streams() -> ProviderStreams {
@@ -323,7 +326,8 @@ fn radius_refresh(
             };
             let config =
                 load_radius_gateway_config(&gateway, Some(&api_key), Some(context.signal.clone()))
-                    .await?;
+                    .await
+                    .map_err(|e| e.to_string())?;
             if context.aborted() {
                 return Ok(());
             }
@@ -482,7 +486,7 @@ async fn post_form(
 
 async fn request_device_authorization(
     gateway: &str,
-) -> Result<DeviceAuthorizationResponse, String> {
+) -> Result<DeviceAuthorizationResponse, PiAiError> {
     let mut form = BTreeMap::new();
     form.insert("client_id", OAUTH_CLIENT_ID.to_string());
     form.insert("scope", OAUTH_SCOPE.to_string());
@@ -521,10 +525,13 @@ async fn request_device_authorization(
             "Radius OAuth device authorization response is missing required fields".to_string()
         })?
         .to_string();
-    let parsed_uri = url::Url::parse(&verification_uri)
-        .map_err(|_| "Untrusted verification_uri in device code response".to_string())?;
+    let parsed_uri = url::Url::parse(&verification_uri).map_err(|_| {
+        PiAiError::invalid_response("Untrusted verification_uri in device code response")
+    })?;
     if !matches!(parsed_uri.scheme(), "http" | "https") {
-        return Err("Untrusted verification_uri in device code response".to_string());
+        return Err(PiAiError::invalid_response(
+            "Untrusted verification_uri in device code response",
+        ));
     }
     let expires_in = value
         .get("expires_in")
@@ -602,42 +609,49 @@ async fn request_oauth_token(
     })
 }
 
-async fn load_oauth_discovery(gateway: &str) -> Result<String, String> {
+async fn load_oauth_discovery(gateway: &str) -> Result<String, PiAiError> {
     let response = reqwest::Client::new()
         .get(format!("{gateway}/v1/oauth"))
         .header("accept", "application/json")
         .send()
         .await
-        .map_err(|error| format!("request failed: {error}"))?;
+        .map_err(|error| PiAiError::other(format!("request failed: {error}")))?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| format!("Could not read Radius OAuth config: {error}"))?;
+    let body = response.text().await.map_err(|error| {
+        PiAiError::other(format!("Could not read Radius OAuth config: {error}"))
+    })?;
     if !status.is_success() {
-        return Err(format!(
+        return Err(PiAiError::other(format!(
             "Could not load Radius OAuth config from {gateway}: {} {}",
             status.as_u16(),
             body
-        ));
+        )));
     }
-    let value: Value = serde_json::from_str(&body)
-        .map_err(|error| format!("Invalid Radius OAuth config from {gateway}: {error}"))?;
+    let value: Value = serde_json::from_str(&body).map_err(|error| {
+        PiAiError::invalid_response(format!(
+            "Invalid Radius OAuth config from {gateway}: {error}"
+        ))
+    })?;
     let endpoint = value
         .get("authorizationEndpoint")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("Invalid Radius OAuth config from {gateway}"))?;
-    let parsed = url::Url::parse(endpoint)
-        .map_err(|_| "Radius OAuth authorization endpoint is not a valid URL".to_string())?;
+        .ok_or_else(|| {
+            PiAiError::invalid_response(format!("Invalid Radius OAuth config from {gateway}"))
+        })?;
+    let parsed = url::Url::parse(endpoint).map_err(|_| {
+        PiAiError::invalid_response("Radius OAuth authorization endpoint is not a valid URL")
+    })?;
     if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("Radius OAuth authorization endpoint is not an HTTP URL".to_string());
+        return Err(PiAiError::invalid_response(
+            "Radius OAuth authorization endpoint is not an HTTP URL",
+        ));
     }
     Ok(parsed.to_string())
 }
 
 struct CallbackServer {
-    receiver: tokio::sync::oneshot::Receiver<Result<String, String>>,
+    receiver: tokio::sync::oneshot::Receiver<Result<String, PiAiError>>,
     task: tokio::task::JoinHandle<()>,
     port: u16,
 }
@@ -645,7 +659,7 @@ struct CallbackServer {
 async fn start_callback_server(
     expected_state: String,
     requested_port: u16,
-) -> Result<CallbackServer, String> {
+) -> Result<CallbackServer, PiAiError> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind((CALLBACK_HOST, requested_port))
@@ -655,7 +669,7 @@ async fn start_callback_server(
         .local_addr()
         .map_err(|error| format!("Radius OAuth callback address failed: {error}"))?
         .port();
-    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let (sender, receiver) = tokio::sync::oneshot::channel::<Result<String, PiAiError>>();
     let task = tokio::spawn(async move {
         let mut sender = Some(sender);
         loop {
@@ -721,7 +735,7 @@ async fn start_callback_server(
                 );
                 let _ = socket.write_all(response.as_bytes()).await;
                 if let Some(sender) = sender.take() {
-                    let _ = sender.send(Err(body));
+                    let _ = sender.send(Err(PiAiError::other(body)));
                 }
                 return;
             }
@@ -787,7 +801,7 @@ impl RadiusOAuth {
     async fn login_device(
         &self,
         interaction: &dyn AuthInteraction,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         let device = request_device_authorization(&self.gateway).await?;
         interaction.notify(&AuthEvent::DeviceCode {
             user_code: device.user_code.clone(),
@@ -833,7 +847,7 @@ impl RadiusOAuth {
     async fn login_browser(
         &self,
         interaction: &dyn AuthInteraction,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         let authorization_endpoint = load_oauth_discovery(&self.gateway).await?;
         let (verifier, challenge) = generate_pkce();
         let state = uuid::Uuid::new_v4().to_string();
@@ -861,7 +875,7 @@ impl RadiusOAuth {
         });
         let code = match callback.receiver.await {
             Ok(result) => result?,
-            Err(_) => return Err("OAuth callback did not complete.".to_string()),
+            Err(_) => return Err(PiAiError::other("OAuth callback did not complete.")),
         };
         callback.task.abort();
         let mut form = BTreeMap::new();
@@ -872,7 +886,7 @@ impl RadiusOAuth {
         form.insert("code_verifier", verifier);
         request_oauth_token(&self.gateway, form)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| PiAiError::other(error.to_string()))
     }
 }
 
@@ -890,27 +904,32 @@ impl OAuthAuth for RadiusOAuth {
         None
     }
 
-    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
-        let method = interaction.prompt(&AuthPrompt::Select {
-            message: format!("Sign in to {}:", self.name),
-            options: vec![
-                AuthSelectOption {
-                    id: "browser".to_string(),
-                    label: "Sign in with browser (recommended)".to_string(),
-                    description: None,
-                },
-                AuthSelectOption {
-                    id: "device-code".to_string(),
-                    label: "Sign in with device code (when signing in from another device)"
-                        .to_string(),
-                    description: None,
-                },
-            ],
-        })?;
+    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, PiAiError> {
+        let method = interaction
+            .prompt(&AuthPrompt::Select {
+                message: format!("Sign in to {}:", self.name),
+                options: vec![
+                    AuthSelectOption {
+                        id: "browser".to_string(),
+                        label: "Sign in with browser (recommended)".to_string(),
+                        description: None,
+                    },
+                    AuthSelectOption {
+                        id: "device-code".to_string(),
+                        label: "Sign in with device code (when signing in from another device)"
+                            .to_string(),
+                        description: None,
+                    },
+                ],
+            })
+            .map_err(|e| e.to_string())?;
         match method.as_str() {
             "browser" => self.login_browser(interaction).await,
             "device-code" => self.login_device(interaction).await,
-            other => Err(format!("Unknown {} sign-in method: {other}", self.name)),
+            other => Err(PiAiError::invalid_response(format!(
+                "Unknown {} sign-in method: {other}",
+                self.name
+            ))),
         }
     }
 
@@ -918,9 +937,9 @@ impl OAuthAuth for RadiusOAuth {
         &self,
         credential: &OAuthCredential,
         signal: &AtomicBool,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         if signal.load(Ordering::SeqCst) {
-            return Err("Login cancelled".to_string());
+            return Err(PiAiError::LoginCancelled);
         }
         let mut form = BTreeMap::new();
         form.insert("grant_type", "refresh_token".to_string());
@@ -930,7 +949,7 @@ impl OAuthAuth for RadiusOAuth {
             .await
             .map_err(|error| error.to_string())?;
         if signal.load(Ordering::SeqCst) {
-            return Err("Login cancelled".to_string());
+            return Err(PiAiError::LoginCancelled);
         }
         Ok(result)
     }

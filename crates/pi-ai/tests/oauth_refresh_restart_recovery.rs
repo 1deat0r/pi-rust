@@ -204,7 +204,7 @@ fn successful_token_response(account_id: &str) -> MockResponse {
 
 fn assert_redacted(error: &str, secrets: &[&str]) {
     for secret in secrets {
-        assert!(!error.contains(secret));
+        assert!(!error.to_string().contains(secret));
     }
 }
 
@@ -258,14 +258,15 @@ async fn invalid_grant_is_classified_actionably_without_a_retry_or_secret_echo()
     let signal = AtomicBool::new(false);
 
     let error = oauth.refresh(&credential, &signal).await.unwrap_err();
+    let error = error.to_string();
 
     assert_eq!(server.token_requests(), 1);
     assert_eq!(
-        classify_oauth_failure(&error),
+        classify_oauth_failure(&error.to_string()),
         OAuthFailureKind::InvalidGrant
     );
-    assert!(error.contains("/login openai-codex"));
-    assert_redacted(&error, &[REFRESH_TOKEN, &old_access]);
+    assert!(error.to_string().contains("/login openai-codex"));
+    assert_redacted(&error.to_string(), &[REFRESH_TOKEN, &old_access]);
 }
 
 #[tokio::test]
@@ -285,15 +286,16 @@ async fn malformed_jwt_account_extraction_is_non_retryable_and_redacted() {
     let signal = AtomicBool::new(false);
 
     let error = oauth.refresh(&credential, &signal).await.unwrap_err();
+    let error = error.to_string();
 
     assert_eq!(server.token_requests(), 1);
     assert_eq!(
-        classify_oauth_failure(&error),
+        classify_oauth_failure(&error.to_string()),
         OAuthFailureKind::AccountExtraction
     );
-    assert!(error.contains("accountId"));
-    assert!(error.contains("/login openai-codex"));
-    assert_redacted(&error, &[malformed_access, REFRESH_TOKEN]);
+    assert!(error.to_string().contains("accountId"));
+    assert!(error.to_string().contains("/login openai-codex"));
+    assert_redacted(&error.to_string(), &[malformed_access, REFRESH_TOKEN]);
 }
 
 #[tokio::test]
@@ -308,13 +310,14 @@ async fn malformed_token_response_is_classified_without_retry() {
     let signal = AtomicBool::new(false);
 
     let error = oauth.refresh(&credential, &signal).await.unwrap_err();
+    let error = error.to_string();
 
     assert_eq!(server.token_requests(), 1);
     assert_eq!(
-        classify_oauth_failure(&error),
+        classify_oauth_failure(&error.to_string()),
         OAuthFailureKind::MalformedResponse
     );
-    assert!(error.contains("/login openai-codex"));
+    assert!(error.to_string().contains("/login openai-codex"));
 }
 
 #[tokio::test]
@@ -472,9 +475,15 @@ async fn browser_manual_authorization_errors_are_actionable_and_do_not_echo_inpu
     let error = oauth.login(&interaction).await.unwrap_err();
     drop(blocker);
 
-    assert_eq!(classify_oauth_failure(&error), OAuthFailureKind::Protocol);
-    assert!(error.contains("/login openai-codex"));
-    assert_redacted(&error, &["authorization-code-secret-must-not-echo"]);
+    assert_eq!(
+        classify_oauth_failure(&error.to_string()),
+        OAuthFailureKind::Protocol
+    );
+    assert!(error.to_string().contains("/login openai-codex"));
+    assert_redacted(
+        &error.to_string(),
+        &["authorization-code-secret-must-not-echo"],
+    );
     assert_eq!(server.token_requests(), 0);
 }
 

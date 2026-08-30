@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use crate::auth::{env_api_key_auth, ProviderAuth};
+use crate::error::PiAiError;
 use crate::model::Model;
 use crate::model_catalog::get_builtin_models;
 use crate::models::{create_provider, CreateProviderOptions, Models, Provider};
@@ -485,17 +486,17 @@ impl KimiCodingOAuth {
         signal: &crate::types::AbortSignal,
         operation: &str,
         cancel_message: &str,
-    ) -> Result<(reqwest::StatusCode, String), String> {
+    ) -> Result<(reqwest::StatusCode, String), PiAiError> {
         let response =
             crate::api::openai_completions::abortable(request.send(), Some(signal.clone()))
                 .await
                 .map_err(|_| cancel_message.to_string())?
-                .map_err(|_| format!("{operation} request failed"))?;
+                .map_err(|_| PiAiError::other(format!("{operation} request failed")))?;
         let status = response.status();
         let text = crate::api::openai_completions::abortable(response.text(), Some(signal.clone()))
             .await
             .map_err(|_| cancel_message.to_string())?
-            .map_err(|_| format!("{operation} response read failed"))?;
+            .map_err(|_| PiAiError::other(format!("{operation} response read failed")))?;
         Ok((status, text))
     }
 
@@ -510,22 +511,22 @@ impl KimiCodingOAuth {
         signal: &std::sync::atomic::AtomicBool,
         operation: &str,
         cancel_message: &str,
-    ) -> Result<(reqwest::StatusCode, String), String> {
+    ) -> Result<(reqwest::StatusCode, String), PiAiError> {
         if signal.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(cancel_message.to_string());
+            return Err(PiAiError::other(cancel_message));
         }
         let request = request.send();
         tokio::pin!(request);
         let response = tokio::select! {
-            response = &mut request => response.map_err(|_| format!("{operation} request failed"))?,
-            _ = Self::wait_for_refresh_abort(signal) => return Err(cancel_message.to_string()),
+            response = &mut request => response.map_err(|_| PiAiError::other(format!("{operation} request failed")))?,
+            _ = Self::wait_for_refresh_abort(signal) => return Err(PiAiError::other(cancel_message)),
         };
         let status = response.status();
         let body = response.text();
         tokio::pin!(body);
         let text = tokio::select! {
-            text = &mut body => text.map_err(|_| format!("{operation} response read failed"))?,
-            _ = Self::wait_for_refresh_abort(signal) => return Err(cancel_message.to_string()),
+            text = &mut body => text.map_err(|_| PiAiError::other(format!("{operation} response read failed")))?,
+            _ = Self::wait_for_refresh_abort(signal) => return Err(PiAiError::other(cancel_message)),
         };
         Ok((status, text))
     }
@@ -571,7 +572,7 @@ impl KimiCodingOAuth {
         &self,
         client: &reqwest::Client,
         signal: &crate::types::AbortSignal,
-    ) -> Result<KimiDeviceAuthorization, String> {
+    ) -> Result<KimiDeviceAuthorization, PiAiError> {
         let url = format!("{}/api/oauth/device_authorization", self.oauth_host());
         let (status, body) = Self::response_text(
             client
@@ -585,10 +586,10 @@ impl KimiCodingOAuth {
         )
         .await?;
         if !status.is_success() {
-            return Err(format!(
+            return Err(PiAiError::invalid_response(format!(
                 "Kimi Code device authorization failed with {}",
                 Self::status_detail(status, &body, &[])
-            ));
+            )));
         }
         let json =
             serde_json::from_str::<serde_json::Value>(&body).unwrap_or(serde_json::Value::Null);
@@ -609,7 +610,9 @@ impl KimiCodingOAuth {
             verification_uri_complete,
         )
         else {
-            return Err("Invalid Kimi Code device authorization response".to_string());
+            return Err(PiAiError::invalid_response(
+                "Invalid Kimi Code device authorization response",
+            ));
         };
         let interval_seconds = json
             .get("interval")
@@ -636,7 +639,7 @@ impl KimiCodingOAuth {
     fn parse_token_response(
         json: &serde_json::Value,
         operation: &str,
-    ) -> Result<KimiTokenResponse, String> {
+    ) -> Result<KimiTokenResponse, PiAiError> {
         let access = json
             .get("access_token")
             .and_then(|value| value.as_str())
@@ -650,15 +653,15 @@ impl KimiCodingOAuth {
             .and_then(|value| value.as_f64())
             .filter(|value| value.is_finite() && *value > 0.0);
         let (Some(access), Some(refresh), Some(expires_in)) = (access, refresh, expires_in) else {
-            return Err(format!(
+            return Err(PiAiError::invalid_response(format!(
                 "Kimi Code token {operation} response missing fields"
-            ));
+            )));
         };
         let expires_ms = expires_in * 1000.0;
         if !expires_ms.is_finite() || expires_ms > u64::MAX as f64 {
-            return Err(format!(
+            return Err(PiAiError::invalid_response(format!(
                 "Kimi Code token {operation} response missing fields"
-            ));
+            )));
         }
         Ok(KimiTokenResponse {
             access: access.to_string(),
@@ -672,7 +675,7 @@ impl KimiCodingOAuth {
         client: &reqwest::Client,
         device: &KimiDeviceAuthorization,
         signal: &crate::types::AbortSignal,
-    ) -> Result<KimiTokenResponse, String> {
+    ) -> Result<KimiTokenResponse, PiAiError> {
         let token_url = format!("{}/api/oauth/token", self.oauth_host());
         let device_code = device.device_code.clone();
         let client_for_poll = client.clone();
@@ -702,7 +705,9 @@ impl KimiCodingOAuth {
                     {
                         Ok(result) => result,
                         Err(error) => {
-                            return crate::oauth::DeviceCodePollResult::Failed { message: error };
+                            return crate::oauth::DeviceCodePollResult::Failed {
+                                message: error.to_string(),
+                            };
                         }
                     };
                     let json = serde_json::from_str::<serde_json::Value>(&body)
@@ -718,9 +723,9 @@ impl KimiCodingOAuth {
                     if status.is_success() && json.get("access_token").is_some() {
                         return match Self::parse_token_response(&json, "poll") {
                             Ok(token) => crate::oauth::DeviceCodePollResult::Complete(token),
-                            Err(error) => {
-                                crate::oauth::DeviceCodePollResult::Failed { message: error }
-                            }
+                            Err(error) => crate::oauth::DeviceCodePollResult::Failed {
+                                message: error.to_string(),
+                            },
                         };
                     }
                     let error = json.get("error").and_then(|value| value.as_str());
@@ -776,7 +781,7 @@ impl KimiCodingOAuth {
         client: &reqwest::Client,
         refresh_token: &str,
         signal: &std::sync::atomic::AtomicBool,
-    ) -> Result<KimiTokenResponse, String> {
+    ) -> Result<KimiTokenResponse, PiAiError> {
         let token_url = format!("{}/api/oauth/token", self.oauth_host());
         let mut last_error = None;
         for attempt in 0..=3u32 {
@@ -788,12 +793,12 @@ impl KimiCodingOAuth {
                 tokio::select! {
                     _ = &mut delay => {}
                     _ = Self::wait_for_refresh_abort(signal) => {
-                        return Err("Kimi Code token refresh aborted".to_string());
+                        return Err(PiAiError::other("Kimi Code token refresh aborted"));
                     }
                 }
             }
             if signal.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err("Kimi Code token refresh aborted".to_string());
+                return Err(PiAiError::other("Kimi Code token refresh aborted"));
             }
             let response = Self::response_text_ref(
                 client
@@ -812,7 +817,9 @@ impl KimiCodingOAuth {
             .await;
             let response = match response {
                 Ok(response) => response,
-                Err(error) if error == "Kimi Code token refresh aborted" => return Err(error),
+                Err(error) if error.to_string() == "Kimi Code token refresh aborted" => {
+                    return Err(error)
+                }
                 Err(error) => {
                     last_error = Some(error);
                     continue;
@@ -835,25 +842,25 @@ impl KimiCodingOAuth {
                 || status.as_u16() == 403
                 || error_code == Some("invalid_grant")
             {
-                return Err(format!(
+                return Err(PiAiError::other(format!(
                     "Kimi Code token refresh unauthorized (status {}){}",
                     status.as_u16(),
                     description
-                ));
+                )));
             }
             if (status.as_u16() == 429 || status.as_u16() >= 500) && attempt < 3 {
-                last_error = Some(format!(
+                last_error = Some(PiAiError::other(format!(
                     "Kimi Code token refresh failed with {}",
                     Self::status_detail(status, &body, &[refresh_token])
-                ));
+                )));
                 continue;
             }
-            return Err(format!(
+            return Err(PiAiError::other(format!(
                 "Kimi Code token refresh failed with {}",
                 Self::status_detail(status, &body, &[refresh_token])
-            ));
+            )));
         }
-        Err(last_error.unwrap_or_else(|| "Kimi Code token refresh failed".to_string()))
+        Err(last_error.unwrap_or_else(|| PiAiError::other("Kimi Code token refresh failed")))
     }
 }
 
@@ -874,22 +881,28 @@ impl crate::auth::OAuthAuth for KimiCodingOAuth {
     async fn login(
         &self,
         interaction: &dyn crate::auth::AuthInteraction,
-    ) -> Result<crate::auth::OAuthCredential, String> {
+    ) -> Result<crate::auth::OAuthCredential, PiAiError> {
         let signal = interaction
             .signal()
             .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
         if signal.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err("Login cancelled".to_string());
+            return Err(PiAiError::LoginCancelled);
         }
         let client = Self::client();
-        let device = self.start_device_authorization(&client, &signal).await?;
+        let device = self
+            .start_device_authorization(&client, &signal)
+            .await
+            .map_err(|e| e.to_string())?;
         interaction.notify(&crate::auth::AuthEvent::DeviceCode {
             user_code: device.user_code.clone(),
             verification_uri: device.verification_uri_complete.clone(),
             interval_seconds: Some(device.interval_seconds),
             expires_in_seconds: Some(device.expires_in_seconds),
         });
-        let token = self.poll_for_token(&client, &device, &signal).await?;
+        let token = self
+            .poll_for_token(&client, &device, &signal)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(crate::auth::OAuthCredential {
             refresh: token.refresh,
             access: token.access,
@@ -902,10 +915,11 @@ impl crate::auth::OAuthAuth for KimiCodingOAuth {
         &self,
         credential: &crate::auth::OAuthCredential,
         signal: &std::sync::atomic::AtomicBool,
-    ) -> Result<crate::auth::OAuthCredential, String> {
+    ) -> Result<crate::auth::OAuthCredential, PiAiError> {
         let token = self
             .refresh_token(&Self::client(), &credential.refresh, signal)
-            .await?;
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(crate::auth::OAuthCredential {
             refresh: token.refresh,
             access: token.access,
@@ -1341,47 +1355,53 @@ fn env_api_key_auth_with_env_check() -> Arc<dyn crate::auth::ApiKeyAuth> {
         fn login(
             &self,
             interaction: &dyn crate::auth::AuthInteraction,
-        ) -> Result<crate::auth::ApiKeyCredential, String> {
+        ) -> Result<crate::auth::ApiKeyCredential, PiAiError> {
             if interaction
                 .signal()
                 .as_ref()
                 .is_some_and(|signal| signal.load(std::sync::atomic::Ordering::SeqCst))
             {
-                return Err("Login cancelled".to_string());
+                return Err(PiAiError::LoginCancelled);
             }
-            let method = interaction.prompt(&crate::auth::AuthPrompt::Select {
-                message: "Select Amazon Bedrock authentication method:".to_string(),
-                options: vec![
-                    crate::auth::AuthSelectOption {
-                        id: "bearer-token".to_string(),
-                        label: "Bearer token".to_string(),
-                        description: None,
-                    },
-                    crate::auth::AuthSelectOption {
-                        id: "aws-profile".to_string(),
-                        label: "AWS profile".to_string(),
-                        description: None,
-                    },
-                    crate::auth::AuthSelectOption {
-                        id: "credential-chain".to_string(),
-                        label: "Existing AWS credential chain".to_string(),
-                        description: None,
-                    },
-                ],
-            })?;
+            let method = interaction
+                .prompt(&crate::auth::AuthPrompt::Select {
+                    message: "Select Amazon Bedrock authentication method:".to_string(),
+                    options: vec![
+                        crate::auth::AuthSelectOption {
+                            id: "bearer-token".to_string(),
+                            label: "Bearer token".to_string(),
+                            description: None,
+                        },
+                        crate::auth::AuthSelectOption {
+                            id: "aws-profile".to_string(),
+                            label: "AWS profile".to_string(),
+                            description: None,
+                        },
+                        crate::auth::AuthSelectOption {
+                            id: "credential-chain".to_string(),
+                            label: "Existing AWS credential chain".to_string(),
+                            description: None,
+                        },
+                    ],
+                })
+                .map_err(|e| e.to_string())?;
             if interaction
                 .signal()
                 .as_ref()
                 .is_some_and(|signal| signal.load(std::sync::atomic::Ordering::SeqCst))
             {
-                return Err("Login cancelled".to_string());
+                return Err(PiAiError::LoginCancelled);
             }
             if method == "bearer-token" {
                 return Ok(crate::auth::ApiKeyCredential {
-                    key: Some(interaction.prompt(&crate::auth::AuthPrompt::Secret {
-                        message: "Enter Amazon Bedrock bearer token".to_string(),
-                        placeholder: None,
-                    })?),
+                    key: Some(
+                        interaction
+                            .prompt(&crate::auth::AuthPrompt::Secret {
+                                message: "Enter Amazon Bedrock bearer token".to_string(),
+                                placeholder: None,
+                            })
+                            .map_err(|e| e.to_string())?,
+                    ),
                     env: None,
                 });
             }
@@ -1399,24 +1419,30 @@ fn env_api_key_auth_with_env_check() -> Arc<dyn crate::auth::ApiKeyAuth> {
                     key: None,
                     env: Some(std::collections::BTreeMap::from([(
                         "AWS_PROFILE".to_string(),
-                        interaction.prompt(&crate::auth::AuthPrompt::Text {
-                            message: "Enter AWS profile name".to_string(),
-                            placeholder: None,
-                        })?,
+                        interaction
+                            .prompt(&crate::auth::AuthPrompt::Text {
+                                message: "Enter AWS profile name".to_string(),
+                                placeholder: None,
+                            })
+                            .map_err(|e| e.to_string())?,
                     )])),
                 }),
                 "credential-chain" => {
-                    interaction.prompt(&crate::auth::AuthPrompt::Text {
-                        message: "Configure AWS credentials, then press Enter to continue"
-                            .to_string(),
-                        placeholder: None,
-                    })?;
+                    interaction
+                        .prompt(&crate::auth::AuthPrompt::Text {
+                            message: "Configure AWS credentials, then press Enter to continue"
+                                .to_string(),
+                            placeholder: None,
+                        })
+                        .map_err(|e| e.to_string())?;
                     Ok(crate::auth::ApiKeyCredential {
                         key: None,
                         env: None,
                     })
                 }
-                _ => Err(format!("Unknown Amazon Bedrock auth method: {method}")),
+                _ => Err(PiAiError::invalid_response(format!(
+                    "Unknown Amazon Bedrock auth method: {method}",
+                ))),
             }
         }
         fn check(
@@ -1734,52 +1760,60 @@ fn vertex_auth() -> Arc<dyn crate::auth::ApiKeyAuth> {
         fn login(
             &self,
             interaction: &dyn crate::auth::AuthInteraction,
-        ) -> Result<crate::auth::ApiKeyCredential, String> {
+        ) -> Result<crate::auth::ApiKeyCredential, PiAiError> {
             if interaction
                 .signal()
                 .as_ref()
                 .is_some_and(|signal| signal.load(std::sync::atomic::Ordering::SeqCst))
             {
-                return Err("Login cancelled".to_string());
+                return Err(PiAiError::LoginCancelled);
             }
-            let method = interaction.prompt(&crate::auth::AuthPrompt::Select {
-                message: "Select Google Vertex AI authentication method:".to_string(),
-                options: vec![
-                    crate::auth::AuthSelectOption {
-                        id: "api-key".to_string(),
-                        label: "Google Cloud API key".to_string(),
-                        description: None,
-                    },
-                    crate::auth::AuthSelectOption {
-                        id: "adc".to_string(),
-                        label: "Application Default Credentials".to_string(),
-                        description: None,
-                    },
-                    crate::auth::AuthSelectOption {
-                        id: "service-account".to_string(),
-                        label: "Service account credentials file".to_string(),
-                        description: None,
-                    },
-                ],
-            })?;
+            let method = interaction
+                .prompt(&crate::auth::AuthPrompt::Select {
+                    message: "Select Google Vertex AI authentication method:".to_string(),
+                    options: vec![
+                        crate::auth::AuthSelectOption {
+                            id: "api-key".to_string(),
+                            label: "Google Cloud API key".to_string(),
+                            description: None,
+                        },
+                        crate::auth::AuthSelectOption {
+                            id: "adc".to_string(),
+                            label: "Application Default Credentials".to_string(),
+                            description: None,
+                        },
+                        crate::auth::AuthSelectOption {
+                            id: "service-account".to_string(),
+                            label: "Service account credentials file".to_string(),
+                            description: None,
+                        },
+                    ],
+                })
+                .map_err(|e| e.to_string())?;
             if interaction
                 .signal()
                 .as_ref()
                 .is_some_and(|signal| signal.load(std::sync::atomic::Ordering::SeqCst))
             {
-                return Err("Login cancelled".to_string());
+                return Err(PiAiError::LoginCancelled);
             }
             if method == "api-key" {
                 return Ok(crate::auth::ApiKeyCredential {
-                    key: Some(interaction.prompt(&crate::auth::AuthPrompt::Secret {
-                        message: "Enter Google Cloud API key".to_string(),
-                        placeholder: None,
-                    })?),
+                    key: Some(
+                        interaction
+                            .prompt(&crate::auth::AuthPrompt::Secret {
+                                message: "Enter Google Cloud API key".to_string(),
+                                placeholder: None,
+                            })
+                            .map_err(|e| e.to_string())?,
+                    ),
                     env: None,
                 });
             }
             if method != "adc" && method != "service-account" {
-                return Err(format!("Unknown Google Vertex AI auth method: {method}"));
+                return Err(PiAiError::invalid_response(format!(
+                    "Unknown Google Vertex AI auth method: {method}",
+                )));
             }
             interaction.notify(&crate::auth::AuthEvent::Info {
                 message: if method == "adc" {
@@ -1794,19 +1828,27 @@ fn vertex_auth() -> Arc<dyn crate::auth::ApiKeyAuth> {
                     label: Some("Application Default Credentials".to_string()),
                 }],
             });
-            let project = interaction.prompt(&crate::auth::AuthPrompt::Text {
-                message: "Enter Google Cloud project ID".to_string(),
-                placeholder: None,
-            })?;
-            let location = interaction.prompt(&crate::auth::AuthPrompt::Text {
-                message: "Enter Google Cloud location".to_string(),
-                placeholder: None,
-            })?;
-            let credentials_path = if method == "service-account" {
-                Some(interaction.prompt(&crate::auth::AuthPrompt::Text {
-                    message: "Enter service account credentials file path".to_string(),
+            let project = interaction
+                .prompt(&crate::auth::AuthPrompt::Text {
+                    message: "Enter Google Cloud project ID".to_string(),
                     placeholder: None,
-                })?)
+                })
+                .map_err(|e| e.to_string())?;
+            let location = interaction
+                .prompt(&crate::auth::AuthPrompt::Text {
+                    message: "Enter Google Cloud location".to_string(),
+                    placeholder: None,
+                })
+                .map_err(|e| e.to_string())?;
+            let credentials_path = if method == "service-account" {
+                Some(
+                    interaction
+                        .prompt(&crate::auth::AuthPrompt::Text {
+                            message: "Enter service account credentials file path".to_string(),
+                            placeholder: None,
+                        })
+                        .map_err(|e| e.to_string())?,
+                )
             } else {
                 None
             };

@@ -243,7 +243,9 @@ async fn refresh_preserves_upstream_error_text_and_does_not_retry_model_throttli
         .unwrap_err();
     server.await.unwrap();
 
-    assert!(error.starts_with("429 Too Many Requests: {\"error\":\"too many requests\"}"));
+    assert!(error
+        .to_string()
+        .starts_with("429 Too Many Requests: {\"error\":\"too many requests\"}"));
     assert_eq!(requests.lock().unwrap().len(), 2);
 }
 
@@ -264,7 +266,7 @@ async fn invalid_token_response_fields_are_rejected_before_model_fetch() {
         .unwrap_err();
     server.await.unwrap();
 
-    assert_eq!(error, "Invalid Copilot token response fields");
+    assert_eq!(error.to_string(), "Invalid Copilot token response fields");
     assert_eq!(requests.lock().unwrap().len(), 1);
 }
 

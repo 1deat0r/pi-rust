@@ -333,9 +333,9 @@ async fn unauthorized_refresh_reports_safe_detail_without_echoing_tokens() {
         .refresh(&credential, &AtomicBool::new(false))
         .await
         .unwrap_err();
-    assert!(error.contains("Could not validate"));
-    assert!(!error.contains("refresh-secret"));
-    assert!(!error.contains("access-secret"));
+    assert!(error.to_string().contains("Could not validate"));
+    assert!(!error.to_string().contains("refresh-secret"));
+    assert!(!error.to_string().contains("access-secret"));
 }
 
 #[tokio::test]
@@ -352,8 +352,8 @@ async fn malformed_token_response_is_rejected_without_response_body_leakage() {
         .refresh(&credential, &AtomicBool::new(false))
         .await
         .unwrap_err();
-    assert!(error.contains("missing required fields"));
-    assert!(!error.contains("malformed-access"));
+    assert!(error.to_string().contains("missing required fields"));
+    assert!(!error.to_string().contains("malformed-access"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -373,7 +373,7 @@ async fn device_flow_cancellation_interrupts_a_pending_network_poll() {
         .unwrap()
         .unwrap()
         .unwrap_err();
-    assert_eq!(error, "Login cancelled");
+    assert_eq!(error.to_string(), "Login cancelled");
     assert!(fixture
         .requests()
         .iter()
@@ -393,6 +393,8 @@ async fn network_failure_is_reported_without_refresh_token_echo() {
         .refresh(&credential, &AtomicBool::new(false))
         .await
         .unwrap_err();
-    assert!(!error.contains("refresh-secret"));
-    assert!(error.contains("request failed") || error.contains("timed out"));
+    assert!(!error.to_string().contains("refresh-secret"));
+    assert!(
+        error.to_string().contains("request failed") || error.to_string().contains("timed out")
+    );
 }

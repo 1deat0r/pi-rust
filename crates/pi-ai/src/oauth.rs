@@ -21,6 +21,7 @@ use crate::auth::{
     OAuthCredential, OAuthFailureKind,
 };
 use crate::auth_flows::{poll_for_access_token, DeviceCodeResponse};
+use crate::error::PiAiError;
 use crate::model_catalog::get_builtin_models;
 use serde_json::Value;
 
@@ -81,9 +82,9 @@ pub async fn abortable_sleep(
     ms: u64,
     signal: Option<&Arc<AtomicBool>>,
     cancel_message: &str,
-) -> Result<(), String> {
+) -> Result<(), PiAiError> {
     if signal.map(|s| s.load(Ordering::SeqCst)).unwrap_or(false) {
-        return Err(cancel_message.to_string());
+        return Err(PiAiError::other(cancel_message));
     }
     let sleep = tokio::time::sleep(Duration::from_millis(ms));
     tokio::pin!(sleep);
@@ -92,7 +93,7 @@ pub async fn abortable_sleep(
         tokio::pin!(abort);
         tokio::select! {
             _ = &mut sleep => Ok(()),
-            _ = &mut abort => Err(cancel_message.to_string()),
+            _ = &mut abort => Err(PiAiError::other(cancel_message)),
         }
     } else {
         sleep.await;
@@ -116,9 +117,9 @@ async fn abortable_sleep_ref(
     ms: u64,
     signal: &AtomicBool,
     cancel_message: &str,
-) -> Result<(), String> {
+) -> Result<(), PiAiError> {
     if signal.load(Ordering::SeqCst) {
-        return Err(cancel_message.to_string());
+        return Err(PiAiError::other(cancel_message));
     }
     let sleep = tokio::time::sleep(Duration::from_millis(ms));
     tokio::pin!(sleep);
@@ -126,11 +127,15 @@ async fn abortable_sleep_ref(
     tokio::pin!(abort);
     tokio::select! {
         _ = &mut sleep => Ok(()),
-        _ = &mut abort => Err(cancel_message.to_string()),
+        _ = &mut abort => Err(PiAiError::other(cancel_message)),
     }
 }
 
-fn safe_http_error(operation: &str, phase: &str, error: &reqwest::Error) -> String {
+fn safe_http_error(operation: &str, phase: &str, error: &reqwest::Error) -> PiAiError {
+    PiAiError::http(safe_http_error_string(operation, phase, error))
+}
+
+fn safe_http_error_string(operation: &str, phase: &str, error: &reqwest::Error) -> String {
     // reqwest may include the full endpoint in its Display output. Auth
     // endpoints can be caller-configured, so keep URL credentials and query
     // material out of user-visible OAuth errors.
@@ -145,9 +150,9 @@ async fn request_with_optional_abort(
     request: reqwest::RequestBuilder,
     signal: Option<&AtomicBool>,
     operation: &str,
-) -> Result<reqwest::Response, String> {
+) -> Result<reqwest::Response, PiAiError> {
     if signal.is_some_and(|signal| signal.load(Ordering::SeqCst)) {
-        return Err(DEVICE_CODE_CANCEL_MESSAGE.to_string());
+        return Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE));
     }
     let request = request.send();
     tokio::pin!(request);
@@ -159,13 +164,13 @@ async fn request_with_optional_abort(
             tokio::pin!(abort);
             tokio::select! {
                 response = &mut request => response.map_err(|error| safe_http_error(operation, "request", &error)),
-                _ = &mut abort => Err(DEVICE_CODE_CANCEL_MESSAGE.to_string()),
-                _ = &mut timeout => Err(format!("{operation} request timed out")),
+                _ = &mut abort => Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE)),
+                _ = &mut timeout => Err(PiAiError::timeout(format!("{operation} request timed out"))),
             }
         }
         None => tokio::select! {
             response = &mut request => response.map_err(|error| safe_http_error(operation, "request", &error)),
-            _ = &mut timeout => Err(format!("{operation} request timed out")),
+            _ = &mut timeout => Err(PiAiError::timeout(format!("{operation} request timed out"))),
         },
     }
 }
@@ -174,7 +179,7 @@ async fn response_text_with_optional_abort(
     response: reqwest::Response,
     signal: Option<&AtomicBool>,
     operation: &str,
-) -> Result<String, String> {
+) -> Result<String, PiAiError> {
     let response = response.text();
     tokio::pin!(response);
     let timeout = tokio::time::sleep(OAUTH_HTTP_TIMEOUT);
@@ -185,13 +190,13 @@ async fn response_text_with_optional_abort(
             tokio::pin!(abort);
             tokio::select! {
                 text = &mut response => text.map_err(|error| safe_http_error(operation, "response read", &error)),
-                _ = &mut abort => Err(DEVICE_CODE_CANCEL_MESSAGE.to_string()),
-                _ = &mut timeout => Err(format!("{operation} response read timed out")),
+                _ = &mut abort => Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE)),
+                _ = &mut timeout => Err(PiAiError::timeout(format!("{operation} response read timed out"))),
             }
         }
         None => tokio::select! {
             text = &mut response => text.map_err(|error| safe_http_error(operation, "response read", &error)),
-            _ = &mut timeout => Err(format!("{operation} response read timed out")),
+            _ = &mut timeout => Err(PiAiError::timeout(format!("{operation} response read timed out"))),
         },
     }
 }
@@ -202,7 +207,7 @@ async fn read_callback_request(
     socket: &mut tokio::net::TcpStream,
     buffer: &mut [u8],
     cancel: &Arc<AtomicBool>,
-) -> Result<usize, String> {
+) -> Result<usize, PiAiError> {
     use tokio::io::AsyncReadExt;
 
     let read_headers = async {
@@ -232,8 +237,8 @@ async fn read_callback_request(
     tokio::pin!(abort);
     tokio::select! {
         result = &mut read_headers => result,
-        _ = &mut abort => Err(DEVICE_CODE_CANCEL_MESSAGE.to_string()),
-        _ = &mut timeout => Err("OAuth callback read timed out".to_string()),
+        _ = &mut abort => Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE)),
+        _ = &mut timeout => Err(PiAiError::timeout("OAuth callback read timed out")),
     }
 }
 
@@ -421,7 +426,7 @@ async fn poll_once<T>(
     poll: &mut DeviceCodePollFn<T>,
     signal: Option<Arc<AtomicBool>>,
     deadline: Option<Instant>,
-) -> Result<Option<DeviceCodePollResult<T>>, String> {
+) -> Result<Option<DeviceCodePollResult<T>>, PiAiError> {
     match (signal, deadline) {
         (Some(signal), Some(deadline)) => {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -436,7 +441,7 @@ async fn poll_once<T>(
             tokio::pin!(timeout);
             tokio::select! {
                 result = &mut poll_future => Ok(Some(result)),
-                _ = &mut abort => Err(DEVICE_CODE_CANCEL_MESSAGE.to_string()),
+                _ = &mut abort => Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE)),
                 _ = &mut timeout => Ok(None),
             }
         }
@@ -447,7 +452,7 @@ async fn poll_once<T>(
             tokio::pin!(abort);
             tokio::select! {
                 result = &mut poll_future => Ok(Some(result)),
-                _ = &mut abort => Err(DEVICE_CODE_CANCEL_MESSAGE.to_string()),
+                _ = &mut abort => Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE)),
             }
         }
         (None, Some(deadline)) => {
@@ -472,7 +477,7 @@ async fn poll_once<T>(
 /// (upstream `pollOAuthDeviceCodeFlow`, RFC 8628).
 pub async fn poll_oauth_device_code_flow<T>(
     options: &mut DeviceCodePollOptions<'_, T>,
-) -> Result<T, String> {
+) -> Result<T, PiAiError> {
     let deadline = options
         .expires_in_seconds
         .and_then(|seconds| Instant::now().checked_add(Duration::from_secs(seconds)));
@@ -510,7 +515,7 @@ pub async fn poll_oauth_device_code_flow<T>(
             .map(|s| s.load(Ordering::SeqCst))
             .unwrap_or(false)
         {
-            return Err(DEVICE_CODE_CANCEL_MESSAGE.to_string());
+            return Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE));
         }
         // An expired authorization window must not issue one final poll. This
         // is observable for zero/very short lifetimes and matches the
@@ -524,7 +529,7 @@ pub async fn poll_oauth_device_code_flow<T>(
         };
         match result {
             DeviceCodePollResult::Complete(value) => return Ok(value),
-            DeviceCodePollResult::Failed { message } => return Err(message),
+            DeviceCodePollResult::Failed { message } => return Err(PiAiError::other(message)),
             DeviceCodePollResult::Pending => {}
             DeviceCodePollResult::SlowDown { interval_seconds } => {
                 slow_down_responses += 1;
@@ -553,9 +558,9 @@ pub async fn poll_oauth_device_code_flow<T>(
     }
 
     if slow_down_responses > 0 {
-        Err(DEVICE_CODE_SLOW_DOWN_TIMEOUT_MESSAGE.to_string())
+        Err(PiAiError::timeout(DEVICE_CODE_SLOW_DOWN_TIMEOUT_MESSAGE))
     } else {
-        Err(DEVICE_CODE_TIMEOUT_MESSAGE.to_string())
+        Err(PiAiError::timeout(DEVICE_CODE_TIMEOUT_MESSAGE))
     }
 }
 
@@ -717,14 +722,15 @@ impl GitHubCopilotOAuth {
         signal: Option<&AtomicBool>,
         operation: &str,
         secrets: &[&str],
-    ) -> Result<Value, String> {
+    ) -> Result<Value, PiAiError> {
         let response = request_with_optional_abort(request, signal, operation).await?;
         let status = response.status();
         let text = response_text_with_optional_abort(response, signal, operation).await?;
         if !status.is_success() {
-            return Err(http_error(status, &text, secrets));
+            return Err(PiAiError::http(http_error(status, &text, secrets)));
         }
-        serde_json::from_str(&text).map_err(|error| format!("invalid JSON response: {error}"))
+        serde_json::from_str(&text)
+            .map_err(|error| PiAiError::invalid_response(format!("invalid JSON response: {error}")))
     }
 
     async fn exchange_access_token(
@@ -733,9 +739,9 @@ impl GitHubCopilotOAuth {
         refresh_token: &str,
         enterprise_domain: Option<&str>,
         signal: &AtomicBool,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         if signal.load(Ordering::SeqCst) {
-            return Err(DEVICE_CODE_CANCEL_MESSAGE.to_string());
+            return Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE));
         }
         let domain = enterprise_domain.unwrap_or("github.com");
         let urls = self.urls(domain);
@@ -749,7 +755,9 @@ impl GitHubCopilotOAuth {
         let raw =
             Self::request_json(request, Some(signal), "Copilot token", &[refresh_token]).await?;
         if !raw.is_object() {
-            return Err("Invalid Copilot token response".to_string());
+            return Err(PiAiError::invalid_response(
+                "Invalid Copilot token response",
+            ));
         }
         let token = raw.get("token").and_then(Value::as_str);
         let expires_at = raw
@@ -758,7 +766,9 @@ impl GitHubCopilotOAuth {
             .filter(|value| value.is_finite());
         let (Some(token), Some(expires_at)) = (token.filter(|token| !token.is_empty()), expires_at)
         else {
-            return Err("Invalid Copilot token response fields".to_string());
+            return Err(PiAiError::invalid_response(
+                "Invalid Copilot token response fields",
+            ));
         };
         let expires = (expires_at * 1000.0 - 5.0 * 60.0 * 1000.0).max(0.0) as u64;
         let mut extra = BTreeMap::new();
@@ -779,12 +789,12 @@ impl GitHubCopilotOAuth {
     fn parse_model_catalog(
         raw: &Value,
         allow_policy_fallback: bool,
-    ) -> Result<(Vec<String>, Vec<String>), String> {
+    ) -> Result<(Vec<String>, Vec<String>), PiAiError> {
         let data = raw
             .as_object()
             .and_then(|object| object.get("data"))
             .and_then(Value::as_array)
-            .ok_or_else(|| "Invalid Copilot models response".to_string())?;
+            .ok_or_else(|| PiAiError::invalid_response("Invalid Copilot models response"))?;
 
         let mut account_models = Vec::new();
         for item in data {
@@ -874,14 +884,14 @@ impl GitHubCopilotOAuth {
         signal: &AtomicBool,
         max_retries: u32,
         max_elapsed_ms: u64,
-    ) -> Result<(Vec<String>, Vec<String>), String> {
+    ) -> Result<(Vec<String>, Vec<String>), PiAiError> {
         let base_url = self.base_url(Some(token), enterprise_domain);
         let allow_policy_fallback = base_url == "https://api.individual.githubcopilot.com";
         let url = format!("{base_url}/models");
         let started = Instant::now();
         for retry in 0..=max_retries {
             if signal.load(Ordering::SeqCst) {
-                return Err(DEVICE_CODE_CANCEL_MESSAGE.to_string());
+                return Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE));
             }
             let mut request = client
                 .get(&url)
@@ -899,7 +909,7 @@ impl GitHubCopilotOAuth {
                     let text =
                         response_text_with_optional_abort(response, Some(signal), "Copilot models")
                             .await?;
-                    return Err(http_error(status, &text, &[token]));
+                    return Err(PiAiError::http(http_error(status, &text, &[token])));
                 };
                 let Some(deadline) = started.checked_add(Duration::from_millis(max_elapsed_ms))
                 else {
@@ -907,7 +917,7 @@ impl GitHubCopilotOAuth {
                     let text =
                         response_text_with_optional_abort(response, Some(signal), "Copilot models")
                             .await?;
-                    return Err(http_error(status, &text, &[token]));
+                    return Err(PiAiError::http(http_error(status, &text, &[token])));
                 };
                 if max_elapsed_ms == 0
                     || Instant::now()
@@ -918,7 +928,7 @@ impl GitHubCopilotOAuth {
                     let text =
                         response_text_with_optional_abort(response, Some(signal), "Copilot models")
                             .await?;
-                    return Err(http_error(status, &text, &[token]));
+                    return Err(PiAiError::http(http_error(status, &text, &[token])));
                 }
                 drop(response);
                 abortable_sleep_ref(delay_ms, signal, DEVICE_CODE_CANCEL_MESSAGE).await?;
@@ -928,10 +938,11 @@ impl GitHubCopilotOAuth {
             let text =
                 response_text_with_optional_abort(response, Some(signal), "Copilot models").await?;
             if !status.is_success() {
-                return Err(http_error(status, &text, &[token]));
+                return Err(PiAiError::http(http_error(status, &text, &[token])));
             }
-            let raw: Value = serde_json::from_str(&text)
-                .map_err(|error| format!("invalid JSON response: {error}"))?;
+            let raw: Value = serde_json::from_str(&text).map_err(|error| {
+                PiAiError::invalid_response(format!("invalid JSON response: {error}"))
+            })?;
             return Self::parse_model_catalog(&raw, allow_policy_fallback);
         }
         unreachable!("Copilot model retry loop always returns");
@@ -943,7 +954,7 @@ impl GitHubCopilotOAuth {
         client: &reqwest::Client,
         domain: &str,
         signal: &AtomicBool,
-    ) -> Result<DeviceCodeResponse, String> {
+    ) -> Result<DeviceCodeResponse, PiAiError> {
         let urls = self.urls(domain);
         let raw = Self::request_json(
             client
@@ -961,7 +972,7 @@ impl GitHubCopilotOAuth {
         )
         .await?;
         let Some(object) = raw.as_object() else {
-            return Err("Invalid device code response".to_string());
+            return Err(PiAiError::invalid_response("Invalid device code response"));
         };
         let device_code = object
             .get("device_code")
@@ -991,24 +1002,31 @@ impl GitHubCopilotOAuth {
                 .is_some_and(|value| interval.is_none() || !value.is_number())
             || expires_in.is_none()
         {
-            return Err("Invalid device code response fields".to_string());
+            return Err(PiAiError::invalid_response(
+                "Invalid device code response fields",
+            ));
         }
         let Some(verification_uri) = verification_uri else {
-            return Err("Invalid device code response fields".to_string());
+            return Err(PiAiError::invalid_response(
+                "Invalid device code response fields",
+            ));
         };
-        let parsed = url::Url::parse(verification_uri)
-            .map_err(|_| "Untrusted verification_uri in device code response".to_string())?;
+        let parsed = url::Url::parse(verification_uri).map_err(|_| {
+            PiAiError::invalid_response("Untrusted verification_uri in device code response")
+        })?;
         if (parsed.scheme() != "http" && parsed.scheme() != "https")
             || parsed.host_str().is_none()
             || !parsed.username().is_empty()
             || parsed.password().is_some()
         {
-            return Err("Untrusted verification_uri in device code response".to_string());
+            return Err(PiAiError::invalid_response(
+                "Untrusted verification_uri in device code response",
+            ));
         }
-        let device_code =
-            device_code.ok_or_else(|| "Invalid device code response fields".to_string())?;
-        let user_code =
-            user_code.ok_or_else(|| "Invalid device code response fields".to_string())?;
+        let device_code = device_code
+            .ok_or_else(|| PiAiError::invalid_response("Invalid device code response fields"))?;
+        let user_code = user_code
+            .ok_or_else(|| PiAiError::invalid_response("Invalid device code response fields"))?;
         Ok(DeviceCodeResponse {
             device_code: device_code.to_string(),
             user_code: user_code.to_string(),
@@ -1027,9 +1045,9 @@ impl GitHubCopilotOAuth {
         enterprise_domain: Option<&str>,
         model_id: &str,
         signal: &AtomicBool,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, PiAiError> {
         if signal.load(Ordering::SeqCst) {
-            return Err(DEVICE_CODE_CANCEL_MESSAGE.to_string());
+            return Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE));
         }
         let url = format!(
             "{}/models/{model_id}/policy",
@@ -1052,7 +1070,7 @@ impl GitHubCopilotOAuth {
                     Ok(response) => response,
                     Err(error) => {
                         if signal.load(Ordering::SeqCst) {
-                            return Err(DEVICE_CODE_CANCEL_MESSAGE.to_string());
+                            return Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE));
                         }
                         return Err(error);
                     }
@@ -1063,7 +1081,7 @@ impl GitHubCopilotOAuth {
                     let text =
                         response_text_with_optional_abort(response, Some(signal), "Copilot policy")
                             .await?;
-                    return Err(http_error(status, &text, &[token]));
+                    return Err(PiAiError::http(http_error(status, &text, &[token])));
                 };
                 let Some(deadline) = started.checked_add(Duration::from_millis(5_000)) else {
                     return Ok(false);
@@ -1076,7 +1094,7 @@ impl GitHubCopilotOAuth {
                     let text =
                         response_text_with_optional_abort(response, Some(signal), "Copilot policy")
                             .await?;
-                    return Err(http_error(status, &text, &[token]));
+                    return Err(PiAiError::http(http_error(status, &text, &[token])));
                 }
                 drop(response);
                 abortable_sleep_ref(delay_ms, signal, DEVICE_CODE_CANCEL_MESSAGE).await?;
@@ -1087,7 +1105,7 @@ impl GitHubCopilotOAuth {
                 let text =
                     response_text_with_optional_abort(response, Some(signal), "Copilot policy")
                         .await?;
-                return Err(http_error(status, &text, &[token]));
+                return Err(PiAiError::http(http_error(status, &text, &[token])));
             }
             return Ok(response.status().is_success());
         }
@@ -1109,7 +1127,7 @@ impl OAuthAuth for GitHubCopilotOAuth {
         None
     }
 
-    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
+    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, PiAiError> {
         let input = interaction.prompt(&crate::auth::AuthPrompt::Text {
             message: "GitHub Enterprise URL/domain (blank for github.com)".to_string(),
             placeholder: Some("company.ghe.com".to_string()),
@@ -1117,7 +1135,9 @@ impl OAuthAuth for GitHubCopilotOAuth {
         let trimmed = input.trim();
         let enterprise_domain = normalize_github_copilot_domain(&input);
         if !trimmed.is_empty() && enterprise_domain.is_none() {
-            return Err("Invalid GitHub Enterprise URL/domain".to_string());
+            return Err(PiAiError::invalid_response(
+                "Invalid GitHub Enterprise URL/domain",
+            ));
         }
         let domain = enterprise_domain
             .clone()
@@ -1126,7 +1146,7 @@ impl OAuthAuth for GitHubCopilotOAuth {
             .signal()
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
         if signal.load(Ordering::SeqCst) {
-            return Err(DEVICE_CODE_CANCEL_MESSAGE.to_string());
+            return Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE));
         }
         let client = reqwest::Client::new();
         let device = self
@@ -1190,7 +1210,7 @@ impl OAuthAuth for GitHubCopilotOAuth {
                     Ok(false) => {}
                     Err(error) => {
                         if signal.load(Ordering::SeqCst) {
-                            return Err(DEVICE_CODE_CANCEL_MESSAGE.to_string());
+                            return Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE));
                         }
                         let _ = error;
                         break;
@@ -1211,7 +1231,7 @@ impl OAuthAuth for GitHubCopilotOAuth {
         &self,
         credential: &OAuthCredential,
         signal: &AtomicBool,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         let enterprise_domain = Self::enterprise_domain(credential);
         let client = reqwest::Client::new();
         let mut credentials = self
@@ -1376,11 +1396,11 @@ fn openai_codex_authorization_error(input: &str) -> bool {
     })
 }
 
-fn openai_codex_manual_code(input: &str, expected_state: &str) -> Result<String, String> {
+fn openai_codex_manual_code(input: &str, expected_state: &str) -> Result<String, PiAiError> {
     if openai_codex_authorization_error(input) {
         return Err(
             "OpenAI Codex OAuth login failed [protocol]: authorization was denied or failed. Retry `/login openai-codex` or paste a fresh redirect URL."
-                .to_string(),
+                .into(),
         );
     }
     let parsed = parse_openai_codex_authorization_input(input);
@@ -1391,12 +1411,12 @@ fn openai_codex_manual_code(input: &str, expected_state: &str) -> Result<String,
     {
         return Err(
             "OpenAI Codex OAuth login failed [protocol]: state mismatch. Retry `/login openai-codex` with a fresh browser flow."
-                .to_string(),
+                .into(),
         );
     }
     parsed.code.ok_or_else(|| {
         "OpenAI Codex OAuth login failed [protocol]: authorization code is missing. Retry `/login openai-codex` or paste the complete redirect URL."
-            .to_string()
+            .into()
     })
 }
 
@@ -1414,22 +1434,26 @@ fn openai_codex_state() -> String {
     state
 }
 
-fn openai_codex_jwt_account_id(access_token: &str) -> Result<String, &'static str> {
+fn openai_codex_jwt_account_id(access_token: &str) -> Result<String, PiAiError> {
     let mut parts = access_token.split('.');
     let (Some(header), Some(payload), Some(signature), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
-        return Err("JWT must contain exactly three non-empty segments");
+        return Err(PiAiError::jwt(
+            "JWT must contain exactly three non-empty segments",
+        ));
     };
     if header.is_empty() || payload.is_empty() || signature.is_empty() {
-        return Err("JWT must contain exactly three non-empty segments");
+        return Err(PiAiError::jwt(
+            "JWT must contain exactly three non-empty segments",
+        ));
     }
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
         .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(payload))
-        .map_err(|_| "JWT payload is not valid base64url")?;
-    let payload: Value =
-        serde_json::from_slice(&decoded).map_err(|_| "JWT payload is not valid JSON")?;
+        .map_err(|_| PiAiError::jwt("JWT payload is not valid base64url"))?;
+    let payload: Value = serde_json::from_slice(&decoded)
+        .map_err(|_| PiAiError::jwt("JWT payload is not valid JSON"))?;
     let account_id = payload
         .get("https://api.openai.com/auth")
         .and_then(Value::as_object)
@@ -1476,7 +1500,8 @@ impl OpenAICodexError {
         )
     }
 
-    fn from_transport(operation: &'static str, error: String, secrets: &[&str]) -> Self {
+    fn from_transport(operation: &'static str, error: PiAiError, secrets: &[&str]) -> Self {
+        let error = error.to_string();
         let lower = error.to_ascii_lowercase();
         let kind = if lower == DEVICE_CODE_CANCEL_MESSAGE.to_ascii_lowercase()
             || lower.contains("login cancelled")
@@ -1509,7 +1534,12 @@ impl OpenAICodexError {
         Self::new(OAuthFailureKind::MalformedResponse, operation, detail)
     }
 
+    #[allow(dead_code)] // superseded by account_message; kept for upstream-parity naming
     fn account(operation: &'static str, reason: &'static str) -> Self {
+        Self::account_message(operation, reason.to_string())
+    }
+
+    fn account_message(operation: &'static str, reason: String) -> Self {
         Self::new(
             OAuthFailureKind::AccountExtraction,
             operation,
@@ -1684,7 +1714,7 @@ fn openai_codex_credentials_from_token(
     operation: &'static str,
 ) -> Result<OAuthCredential, OpenAICodexError> {
     let account_id = openai_codex_jwt_account_id(&token.access)
-        .map_err(|reason| OpenAICodexError::account(operation, reason))?;
+        .map_err(|reason| OpenAICodexError::account_message(operation, reason.to_string()))?;
     let mut extra = BTreeMap::new();
     extra.insert("accountId".to_string(), Value::String(account_id));
     Ok(OAuthCredential {
@@ -1702,7 +1732,7 @@ struct OpenAICodexCallbackServer {
 }
 
 impl OpenAICodexCallbackServer {
-    async fn bind(host: &str, port: u16, state: String) -> Result<Self, String> {
+    async fn bind(host: &str, port: u16, state: String) -> Result<Self, PiAiError> {
         // Upstream Pi keeps the manual-code path usable when the fixed
         // callback port is occupied. Preserve that recovery behavior instead
         // of turning a local bind collision into a login-wide failure.
@@ -1721,19 +1751,19 @@ impl OpenAICodexCallbackServer {
         })
     }
 
-    async fn wait_for_code(self, cancel: Arc<AtomicBool>) -> Result<Option<String>, String> {
+    async fn wait_for_code(self, cancel: Arc<AtomicBool>) -> Result<Option<String>, PiAiError> {
         tokio::time::timeout(
             OPENAI_CODEX_BROWSER_TIMEOUT,
             self.wait_for_code_until_cancel(cancel),
         )
         .await
-        .map_err(|_| "OpenAI Codex OAuth login timed out".to_string())?
+        .map_err(|_| PiAiError::timeout("OpenAI Codex OAuth login timed out"))?
     }
 
     async fn wait_for_code_until_cancel(
         self,
         cancel: Arc<AtomicBool>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, PiAiError> {
         let Some(listener) = self.listener else {
             return Ok(None);
         };
@@ -1814,7 +1844,7 @@ async fn write_oauth_callback_response(
     stream: &mut tokio::net::TcpStream,
     status: u16,
     message: &str,
-) -> Result<(), String> {
+) -> Result<(), PiAiError> {
     use tokio::io::AsyncWriteExt;
     let safe_message = message
         .replace('&', "&amp;")
@@ -1933,7 +1963,7 @@ impl OpenAICodexOAuth {
         verifier: &str,
         redirect_uri: &str,
         signal: &AtomicBool,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         let urls = self.urls();
         let request = client.post(urls.token_url).form(&[
             ("grant_type", "authorization_code"),
@@ -1951,14 +1981,15 @@ impl OpenAICodexOAuth {
         let token =
             read_openai_codex_token_response(response, "exchange", Some(signal), &[code, verifier])
                 .await
-                .map_err(|error| error.render())?;
-        openai_codex_credentials_from_token(token, "exchange").map_err(|error| error.render())
+                .map_err(|error| PiAiError::other(error.render()))?;
+        openai_codex_credentials_from_token(token, "exchange")
+            .map_err(|error| PiAiError::other(error.render()))
     }
 
     async fn login_browser(
         &self,
         interaction: &dyn AuthInteraction,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         let (verifier, challenge) = generate_pkce();
         let state = openai_codex_state();
         let callback =
@@ -2030,7 +2061,7 @@ impl OpenAICodexOAuth {
             _ = &mut external_cancel_future => {
                 callback_cancel.store(true, Ordering::SeqCst);
                 manual_abort.store(true, Ordering::SeqCst);
-                return Err("Login cancelled".to_string());
+                return Err(PiAiError::LoginCancelled);
             }
         };
         let signal = external_cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
@@ -2047,14 +2078,14 @@ impl OpenAICodexOAuth {
     async fn login_device(
         &self,
         interaction: &dyn AuthInteraction,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         let urls = self.urls();
         let client = reqwest::Client::new();
         let external_cancel = interaction
             .signal()
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
         if external_cancel.load(Ordering::SeqCst) {
-            return Err(DEVICE_CODE_CANCEL_MESSAGE.to_string());
+            return Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE));
         }
         let request = client
             .post(&urls.device_user_code_url)
@@ -2073,18 +2104,19 @@ impl OpenAICodexOAuth {
         )
         .await?;
         if status.as_u16() == 404 {
-            return Err("OpenAI Codex device code login is not enabled for this server. Use browser login or verify the server URL.".to_string());
+            return Err(PiAiError::invalid_response("OpenAI Codex device code login is not enabled for this server. Use browser login or verify the server URL."));
         }
         if !status.is_success() {
-            return Err(openai_codex_status_error(
+            return Err(PiAiError::other(openai_codex_status_error(
                 "device code request",
                 status,
                 &body,
                 &[],
-            ));
+            )));
         }
-        let json: Value = serde_json::from_str(&body)
-            .map_err(|_| "Invalid OpenAI Codex device code response".to_string())?;
+        let json: Value = serde_json::from_str(&body).map_err(|_| {
+            PiAiError::invalid_response("Invalid OpenAI Codex device code response")
+        })?;
         let device_auth_id = json
             .get("device_auth_id")
             .and_then(Value::as_str)
@@ -2103,10 +2135,14 @@ impl OpenAICodexOAuth {
         let (Some(device_auth_id), Some(user_code), Some(interval_seconds)) =
             (device_auth_id, user_code, interval_seconds)
         else {
-            return Err("Invalid OpenAI Codex device code response fields".to_string());
+            return Err(PiAiError::invalid_response(
+                "Invalid OpenAI Codex device code response fields",
+            ));
         };
         if !interval_seconds.is_finite() || interval_seconds < 0.0 {
-            return Err("Invalid OpenAI Codex device code interval".to_string());
+            return Err(PiAiError::invalid_response(
+                "Invalid OpenAI Codex device code interval",
+            ));
         }
         interaction.notify(&AuthEvent::DeviceCode {
             user_code: user_code.to_string(),
@@ -2258,11 +2294,11 @@ impl OpenAICodexOAuth {
                 result = &mut cancel_future => {
                     cancel.store(true, Ordering::SeqCst);
                     let _ = result;
-                    return Err("Login cancelled".to_string());
+                    return Err(PiAiError::LoginCancelled);
                 },
                 _ = &mut external_cancel_future => {
                     cancel.store(true, Ordering::SeqCst);
-                    return Err("Login cancelled".to_string());
+                    return Err(PiAiError::LoginCancelled);
                 }
             }
         } else {
@@ -2273,7 +2309,7 @@ impl OpenAICodexOAuth {
                 result = &mut poll_future => result?,
                 _ = &mut external_cancel_future => {
                     cancel.store(true, Ordering::SeqCst);
-                    return Err("Login cancelled".to_string());
+                    return Err(PiAiError::LoginCancelled);
                 }
             }
         };
@@ -2303,13 +2339,13 @@ impl OAuthAuth for OpenAICodexOAuth {
         Some("ChatGPT Plus/Pro")
     }
 
-    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
+    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, PiAiError> {
         if interaction
             .signal()
             .as_ref()
             .is_some_and(|signal| signal.load(Ordering::SeqCst))
         {
-            return Err(DEVICE_CODE_CANCEL_MESSAGE.to_string());
+            return Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE));
         }
         let method = interaction.prompt(&AuthPrompt::Select {
             message: "Select OpenAI Codex login method:".to_string(),
@@ -2331,12 +2367,14 @@ impl OAuthAuth for OpenAICodexOAuth {
             .as_ref()
             .is_some_and(|signal| signal.load(Ordering::SeqCst))
         {
-            return Err(DEVICE_CODE_CANCEL_MESSAGE.to_string());
+            return Err(PiAiError::other(DEVICE_CODE_CANCEL_MESSAGE));
         }
         match method.as_str() {
             "browser" => self.login_browser(interaction).await,
             "device_code" => self.login_device(interaction).await,
-            _ => Err(format!("Unknown OpenAI Codex login method: {method}")),
+            _ => Err(PiAiError::invalid_response(format!(
+                "Unknown OpenAI Codex login method: {method}",
+            ))),
         }
     }
 
@@ -2344,23 +2382,23 @@ impl OAuthAuth for OpenAICodexOAuth {
         &self,
         credential: &OAuthCredential,
         signal: &AtomicBool,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         if signal.load(Ordering::SeqCst) {
-            return Err(OpenAICodexError::cancelled("refresh").render());
+            return Err(OpenAICodexError::cancelled("refresh").render().into());
         }
 
         let refresh_lock = self.refresh_lock(&credential.refresh);
         let _refresh_guard = tokio::select! {
             guard = refresh_lock.lock() => guard,
             _ = wait_for_atomic_abort_ref(signal) => {
-                return Err(OpenAICodexError::cancelled("refresh").render());
+                return Err(OpenAICodexError::cancelled("refresh").render().into());
             }
         };
         let client = reqwest::Client::new();
         let mut attempt = 0u8;
         loop {
             if signal.load(Ordering::SeqCst) {
-                return Err(OpenAICodexError::cancelled("refresh").render());
+                return Err(OpenAICodexError::cancelled("refresh").render().into());
             }
             let request = client.post(self.urls().token_url).form(&[
                 ("grant_type", "refresh_token"),
@@ -2400,9 +2438,11 @@ impl OAuthAuth for OpenAICodexOAuth {
                     attempt += 1;
                     abortable_sleep_ref(50, signal, DEVICE_CODE_CANCEL_MESSAGE)
                         .await
-                        .map_err(|_| OpenAICodexError::cancelled("refresh").render())?;
+                        .map_err(|_| {
+                            PiAiError::other(OpenAICodexError::cancelled("refresh").render())
+                        })?;
                 }
-                Err(error) => return Err(error.render()),
+                Err(error) => return Err(PiAiError::other(error.render())),
             }
         }
     }
@@ -2495,7 +2535,7 @@ mod tests {
         options.expires_in_seconds = Some(60);
         options.signal = Some(signal);
         let err = poll_oauth_device_code_flow(&mut options).await.unwrap_err();
-        assert_eq!(err, DEVICE_CODE_CANCEL_MESSAGE);
+        assert_eq!(err.to_string(), DEVICE_CODE_CANCEL_MESSAGE);
     }
 
     #[tokio::test]
@@ -2506,7 +2546,7 @@ mod tests {
         options.interval_seconds = Some(1.0);
         options.expires_in_seconds = Some(2);
         let err = poll_oauth_device_code_flow(&mut options).await.unwrap_err();
-        assert_eq!(err, DEVICE_CODE_TIMEOUT_MESSAGE);
+        assert_eq!(err.to_string(), DEVICE_CODE_TIMEOUT_MESSAGE);
     }
 
     #[tokio::test]
@@ -2523,7 +2563,7 @@ mod tests {
 
         let err = poll_oauth_device_code_flow(&mut options).await.unwrap_err();
 
-        assert_eq!(err, DEVICE_CODE_TIMEOUT_MESSAGE);
+        assert_eq!(err.to_string(), DEVICE_CODE_TIMEOUT_MESSAGE);
         assert_eq!(poll_count.load(Ordering::SeqCst), 0);
     }
 

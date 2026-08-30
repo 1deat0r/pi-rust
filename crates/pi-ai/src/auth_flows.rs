@@ -17,6 +17,7 @@ use std::time::Duration;
 use std::{future::Future, pin::Pin};
 
 use crate::auth::{AuthEvent, AuthInteraction, ModelAuth, OAuthAuth, OAuthCredential};
+use crate::error::PiAiError;
 use crate::oauth::{poll_oauth_device_code_flow, DeviceCodePollOptions, DeviceCodePollResult};
 
 /// RFC 8628 device-authorization response.
@@ -45,7 +46,11 @@ async fn wait_for_optional_abort(signal: Option<Arc<AtomicBool>>) {
     }
 }
 
-fn safe_http_error(operation: &str, phase: &str, error: &reqwest::Error) -> String {
+fn safe_http_error(operation: &str, phase: &str, error: &reqwest::Error) -> PiAiError {
+    PiAiError::http(safe_http_error_string(operation, phase, error))
+}
+
+fn safe_http_error_string(operation: &str, phase: &str, error: &reqwest::Error) -> String {
     // reqwest's Display implementation may include the complete request URL.
     // OAuth endpoints can be supplied by a caller, so never return that text
     // across the auth boundary where it could contain URL credentials or
@@ -62,9 +67,9 @@ async fn request_with_optional_abort(
     request: reqwest::RequestBuilder,
     signal: Option<&AtomicBool>,
     operation: &str,
-) -> Result<reqwest::Response, String> {
+) -> Result<reqwest::Response, PiAiError> {
     if signal.is_some_and(|signal| signal.load(Ordering::SeqCst)) {
-        return Err("Login cancelled".to_string());
+        return Err(PiAiError::LoginCancelled);
     }
     let request = request.send();
     tokio::pin!(request);
@@ -76,13 +81,13 @@ async fn request_with_optional_abort(
             tokio::pin!(abort);
             tokio::select! {
                 response = &mut request => response.map_err(|error| safe_http_error(operation, "request", &error)),
-                _ = &mut abort => Err("Login cancelled".to_string()),
-                _ = &mut timeout => Err(format!("{operation} request timed out")),
+                _ = &mut abort => Err(PiAiError::LoginCancelled),
+                _ = &mut timeout => Err(PiAiError::timeout(format!("{operation} request timed out"))),
             }
         }
         None => tokio::select! {
             response = &mut request => response.map_err(|error| safe_http_error(operation, "request", &error)),
-            _ = &mut timeout => Err(format!("{operation} request timed out")),
+            _ = &mut timeout => Err(PiAiError::timeout(format!("{operation} request timed out"))),
         },
     }
 }
@@ -91,7 +96,7 @@ async fn response_text_with_optional_abort(
     response: reqwest::Response,
     signal: Option<&AtomicBool>,
     operation: &str,
-) -> Result<String, String> {
+) -> Result<String, PiAiError> {
     let response = response.text();
     tokio::pin!(response);
     let timeout = tokio::time::sleep(AUTH_HTTP_TIMEOUT);
@@ -102,13 +107,13 @@ async fn response_text_with_optional_abort(
             tokio::pin!(abort);
             tokio::select! {
                 text = &mut response => text.map_err(|error| safe_http_error(operation, "response read", &error)),
-                _ = &mut abort => Err("Login cancelled".to_string()),
-                _ = &mut timeout => Err(format!("{operation} response read timed out")),
+                _ = &mut abort => Err(PiAiError::LoginCancelled),
+                _ = &mut timeout => Err(PiAiError::timeout(format!("{operation} response read timed out"))),
             }
         }
         None => tokio::select! {
             text = &mut response => text.map_err(|error| safe_http_error(operation, "response read", &error)),
-            _ = &mut timeout => Err(format!("{operation} response read timed out")),
+            _ = &mut timeout => Err(PiAiError::timeout(format!("{operation} response read timed out"))),
         },
     }
 }
@@ -121,7 +126,7 @@ async fn read_callback_request(
     socket: &mut tokio::net::TcpStream,
     buffer: &mut [u8],
     cancel: Option<&Arc<AtomicBool>>,
-) -> Result<usize, String> {
+) -> Result<usize, PiAiError> {
     use tokio::io::AsyncReadExt;
 
     let read_headers = async {
@@ -153,13 +158,13 @@ async fn read_callback_request(
             tokio::pin!(abort);
             tokio::select! {
                 result = &mut read_headers => result,
-                _ = &mut abort => Err("Login cancelled".to_string()),
-                _ = &mut timeout => Err("callback read timed out".to_string()),
+                _ = &mut abort => Err(PiAiError::LoginCancelled),
+                _ = &mut timeout => Err(PiAiError::timeout("callback read timed out")),
             }
         }
         None => tokio::select! {
             result = &mut read_headers => result,
-            _ = &mut timeout => Err("callback read timed out".to_string()),
+            _ = &mut timeout => Err(PiAiError::timeout("callback read timed out")),
         },
     }
 }
@@ -168,7 +173,7 @@ async fn write_callback_response(
     socket: &mut tokio::net::TcpStream,
     status: u16,
     html: &str,
-) -> Result<(), String> {
+) -> Result<(), PiAiError> {
     use tokio::io::AsyncWriteExt;
     let status_text = match status {
         200 => "OK",
@@ -249,7 +254,7 @@ async fn post_form_response(
     headers: &[(&str, &str)],
     signal: Option<&AtomicBool>,
     operation: &str,
-) -> Result<(reqwest::StatusCode, String), String> {
+) -> Result<(reqwest::StatusCode, String), PiAiError> {
     let mut request = client.post(url).form(form);
     for (key, value) in headers {
         request = request.header(*key, *value);
@@ -283,7 +288,7 @@ async fn post_json_text_with_signal(
     body: &serde_json::Value,
     signal: Option<&AtomicBool>,
     operation: &str,
-) -> Result<String, String> {
+) -> Result<String, PiAiError> {
     let request = client
         .post(url)
         .header("Content-Type", "application/json")
@@ -298,10 +303,10 @@ async fn post_json_text_with_signal(
     let status = response.status();
     let text = response_text_with_optional_abort(response, signal, operation).await?;
     if !status.is_success() {
-        return Err(format!(
+        return Err(PiAiError::http(format!(
             "{operation} failed: {}",
             http_error(status, &text, &secrets)
-        ));
+        )));
     }
     Ok(text)
 }
@@ -312,7 +317,7 @@ async fn post_form_json_with_signal(
     form: &[(&str, &str)],
     headers: &[(&str, &str)],
     signal: Option<&AtomicBool>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, PiAiError> {
     let secrets = form
         .iter()
         .map(|(_, value)| *value)
@@ -321,9 +326,10 @@ async fn post_form_json_with_signal(
     let (status, text) =
         post_form_response(client, url, form, headers, signal, "OAuth form").await?;
     if !status.is_success() {
-        return Err(http_error(status, &text, &secrets));
+        return Err(PiAiError::http(http_error(status, &text, &secrets)));
     }
-    serde_json::from_str(&text).map_err(|e| format!("invalid JSON response: {e}"))
+    serde_json::from_str(&text)
+        .map_err(|e| PiAiError::invalid_response(format!("invalid JSON response: {e}")))
 }
 
 async fn get_json_with_signal(
@@ -332,7 +338,7 @@ async fn get_json_with_signal(
     headers: &[(&str, &str)],
     signal: Option<&AtomicBool>,
     secrets: &[&str],
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, PiAiError> {
     let mut req = client.get(url);
     for (k, v) in headers {
         req = req.header(*k, *v);
@@ -341,9 +347,10 @@ async fn get_json_with_signal(
     let status = resp.status();
     let text = response_text_with_optional_abort(resp, signal, "OAuth GET").await?;
     if !status.is_success() {
-        return Err(http_error(status, &text, secrets));
+        return Err(PiAiError::http(http_error(status, &text, secrets)));
     }
-    serde_json::from_str(&text).map_err(|e| format!("invalid JSON response: {e}"))
+    serde_json::from_str(&text)
+        .map_err(|e| PiAiError::invalid_response(format!("invalid JSON response: {e}")))
 }
 
 /// Start an RFC 8628 device flow: POST the client_id/scope form and validate
@@ -353,7 +360,7 @@ pub async fn start_device_flow(
     device_code_url: &str,
     form: &[(&str, &str)],
     headers: &[(&str, &str)],
-) -> Result<DeviceCodeResponse, String> {
+) -> Result<DeviceCodeResponse, PiAiError> {
     start_device_flow_with_signal(client, device_code_url, form, headers, None).await
 }
 
@@ -363,25 +370,25 @@ async fn start_device_flow_with_signal(
     form: &[(&str, &str)],
     headers: &[(&str, &str)],
     signal: Option<&AtomicBool>,
-) -> Result<DeviceCodeResponse, String> {
+) -> Result<DeviceCodeResponse, PiAiError> {
     let data = post_form_json_with_signal(client, device_code_url, form, headers, signal).await?;
     let device_code = data
         .get("device_code")
         .and_then(|v| v.as_str())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "Invalid device code response fields".to_string())?
+        .ok_or_else(|| PiAiError::invalid_response("Invalid device code response fields"))?
         .to_string();
     let user_code = data
         .get("user_code")
         .and_then(|v| v.as_str())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "Invalid device code response fields".to_string())?
+        .ok_or_else(|| PiAiError::invalid_response("Invalid device code response fields"))?
         .to_string();
     let verification_uri = data
         .get("verification_uri")
         .and_then(|v| v.as_str())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "Invalid device code response fields".to_string())?
+        .ok_or_else(|| PiAiError::invalid_response("Invalid device code response fields"))?
         .to_string();
     let expires_in = data
         .get("expires_in")
@@ -393,27 +400,32 @@ async fn start_device_flow_with_signal(
                     .map(|seconds| seconds.floor() as u64)
             })
         })
-        .ok_or_else(|| "Invalid device code response fields".to_string())?;
+        .ok_or_else(|| PiAiError::invalid_response("Invalid device code response fields"))?;
     let interval = match data.get("interval") {
         Some(value) => Some(
             value
                 .as_f64()
                 .filter(|seconds| seconds.is_finite())
-                .ok_or_else(|| "Invalid device code response fields".to_string())?,
+                .ok_or_else(|| {
+                    PiAiError::invalid_response("Invalid device code response fields")
+                })?,
         ),
         None => None,
     };
 
     // The verification URI is opened in the user's browser; force it to be a
     // real http(s) URL so `open` cannot be pointed at an executable.
-    let parsed = url::Url::parse(&verification_uri)
-        .map_err(|_| "Untrusted verification_uri in device code response".to_string())?;
+    let parsed = url::Url::parse(&verification_uri).map_err(|_| {
+        PiAiError::invalid_response("Untrusted verification_uri in device code response")
+    })?;
     if (parsed.scheme() != "https" && parsed.scheme() != "http")
         || parsed.host_str().is_none()
         || !parsed.username().is_empty()
         || parsed.password().is_some()
     {
-        return Err("Untrusted verification_uri in device code response".to_string());
+        return Err(PiAiError::invalid_response(
+            "Untrusted verification_uri in device code response",
+        ));
     }
 
     Ok(DeviceCodeResponse {
@@ -435,7 +447,7 @@ pub async fn poll_for_access_token(
     headers: &[(&str, &str)],
     device: &DeviceCodeResponse,
     signal: Option<&Arc<AtomicBool>>,
-) -> Result<String, String> {
+) -> Result<String, PiAiError> {
     let mut options = DeviceCodePollOptions::new(Box::new({
         let client = client.clone();
         let token_url = token_url.to_string();
@@ -485,7 +497,11 @@ pub async fn poll_for_access_token(
                 .await
                 {
                     Ok(response) => response,
-                    Err(e) => return DeviceCodePollResult::Failed { message: e },
+                    Err(e) => {
+                        return DeviceCodePollResult::Failed {
+                            message: e.to_string(),
+                        }
+                    }
                 };
                 let data = match serde_json::from_str::<serde_json::Value>(&text) {
                     Ok(data) => data,
@@ -625,7 +641,7 @@ async fn copilot_token_exchange(
     refresh_token: &str,
     enterprise_domain: Option<&str>,
     signal: &AtomicBool,
-) -> Result<OAuthCredential, String> {
+) -> Result<OAuthCredential, PiAiError> {
     let domain = enterprise_domain.unwrap_or("github.com");
     let (_, _, copilot_token_url) = copilot_urls(domain);
     let mut headers = COPILOT_HEADERS.to_vec();
@@ -645,11 +661,11 @@ async fn copilot_token_exchange(
     let token = data
         .get("token")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "Invalid Copilot token response fields".to_string())?;
+        .ok_or_else(|| PiAiError::invalid_response("Invalid Copilot token response fields"))?;
     let expires_at = data
         .get("expires_at")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| "Invalid Copilot token response fields".to_string())?;
+        .ok_or_else(|| PiAiError::invalid_response("Invalid Copilot token response fields"))?;
     Ok(OAuthCredential {
         refresh: refresh_token.to_string(),
         access: token.to_string(),
@@ -692,7 +708,7 @@ impl OAuthAuth for GitHubCopilotOAuth {
         None
     }
 
-    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
+    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, PiAiError> {
         let input = interaction.prompt(&crate::auth::AuthPrompt::Text {
             message: "GitHub Enterprise URL/domain (blank for github.com)".to_string(),
             placeholder: Some("company.ghe.com".to_string()),
@@ -700,7 +716,9 @@ impl OAuthAuth for GitHubCopilotOAuth {
         let trimmed = input.trim();
         let enterprise_domain = normalize_domain(trimmed);
         if !trimmed.is_empty() && enterprise_domain.is_none() {
-            return Err("Invalid GitHub Enterprise URL/domain".to_string());
+            return Err(PiAiError::invalid_response(
+                "Invalid GitHub Enterprise URL/domain",
+            ));
         }
         let domain = enterprise_domain
             .clone()
@@ -710,7 +728,7 @@ impl OAuthAuth for GitHubCopilotOAuth {
             .signal()
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
         if signal.load(Ordering::SeqCst) {
-            return Err("Login cancelled".to_string());
+            return Err(PiAiError::LoginCancelled);
         }
 
         let client = reqwest::Client::new();
@@ -761,7 +779,7 @@ impl OAuthAuth for GitHubCopilotOAuth {
         &self,
         credential: &OAuthCredential,
         signal: &AtomicBool,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         let enterprise_domain = credential
             .extra
             .get("enterpriseUrl")
@@ -815,34 +833,41 @@ struct XaiDeviceCode {
     expires_in: u64,
 }
 
-fn xai_required_string(body: &serde_json::Value, field: &str) -> Result<String, String> {
+fn xai_required_string(body: &serde_json::Value, field: &str) -> Result<String, PiAiError> {
     body.get(field)
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| format!("Invalid xAI OAuth response field: {field}"))
+        .ok_or_else(|| {
+            PiAiError::invalid_response(format!("Invalid xAI OAuth response field: {field}"))
+        })
 }
 
-fn xai_positive_number(body: &serde_json::Value, field: &str) -> Result<u64, String> {
+fn xai_positive_number(body: &serde_json::Value, field: &str) -> Result<u64, PiAiError> {
     let valid = body
         .get(field)
         .and_then(|value| value.as_f64())
         .filter(|value| value.is_finite() && *value > 0.0)
         .map(|value| value.floor() as u64)
         .filter(|value| *value > 0);
-    valid.ok_or_else(|| format!("Invalid xAI OAuth response field: {field}"))
+    valid.ok_or_else(|| {
+        PiAiError::invalid_response(format!("Invalid xAI OAuth response field: {field}"))
+    })
 }
 
-fn xai_validate_verification_uri(raw: &str) -> Result<String, String> {
-    let parsed = url::Url::parse(raw)
-        .map_err(|_| "Untrusted verification URI in xAI OAuth response".to_string())?;
+fn xai_validate_verification_uri(raw: &str) -> Result<String, PiAiError> {
+    let parsed = url::Url::parse(raw).map_err(|_| {
+        PiAiError::invalid_response("Untrusted verification URI in xAI OAuth response")
+    })?;
     if parsed.scheme() != "https" {
-        return Err("Untrusted verification URI in xAI OAuth response".to_string());
+        return Err(PiAiError::invalid_response(
+            "Untrusted verification URI in xAI OAuth response",
+        ));
     }
     Ok(parsed.to_string())
 }
 
-fn xai_parse_device_code(body: &serde_json::Value) -> Result<XaiDeviceCode, String> {
+fn xai_parse_device_code(body: &serde_json::Value) -> Result<XaiDeviceCode, PiAiError> {
     let verification_uri =
         xai_validate_verification_uri(&xai_required_string(body, "verification_uri")?)?;
     let verification_uri_complete = body
@@ -892,23 +917,29 @@ async fn xai_post_form(
     form: &[(&str, &str)],
     signal: &AtomicBool,
     action: &str,
-) -> Result<(reqwest::StatusCode, serde_json::Value), String> {
+) -> Result<(reqwest::StatusCode, serde_json::Value), PiAiError> {
     let headers = [
         ("Accept", "application/json"),
         ("Content-Type", "application/x-www-form-urlencoded"),
     ];
     let (status, text) =
         post_form_response(client, url, form, &headers, Some(signal), "xAI OAuth").await?;
-    let body: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|_| format!("xAI OAuth returned invalid JSON (HTTP {})", status.as_u16()))?;
-    if !body.is_object() {
-        return Err(format!(
+    let body: serde_json::Value = serde_json::from_str(&text).map_err(|_| {
+        PiAiError::invalid_response(format!(
             "xAI OAuth returned invalid JSON (HTTP {})",
             status.as_u16()
-        ));
+        ))
+    })?;
+    if !body.is_object() {
+        return Err(PiAiError::invalid_response(format!(
+            "xAI OAuth returned invalid JSON (HTTP {})",
+            status.as_u16()
+        )));
     }
     if !status.is_success() && action == "device authorization" {
-        return Err(xai_request_failure(action, status, &body));
+        return Err(PiAiError::invalid_response(xai_request_failure(
+            action, status, &body,
+        )));
     }
     Ok((status, body))
 }
@@ -916,7 +947,7 @@ async fn xai_post_form(
 async fn xai_start_device_flow(
     client: &reqwest::Client,
     signal: &AtomicBool,
-) -> Result<XaiDeviceCode, String> {
+) -> Result<XaiDeviceCode, PiAiError> {
     let (_, body) = xai_post_form(
         client,
         XAI_DEVICE_CODE_URL,
@@ -935,7 +966,7 @@ async fn xai_start_device_flow(
 fn xai_credentials_from_token_response(
     body: &serde_json::Value,
     previous_refresh: Option<&str>,
-) -> Result<OAuthCredential, String> {
+) -> Result<OAuthCredential, PiAiError> {
     let access = xai_required_string(body, "access_token")?;
     let refresh = match body.get("refresh_token") {
         None => match previous_refresh.filter(|value| !value.is_empty()) {
@@ -962,7 +993,7 @@ async fn xai_poll_for_credentials(
     client: &reqwest::Client,
     device: &XaiDeviceCode,
     signal: Arc<AtomicBool>,
-) -> Result<OAuthCredential, String> {
+) -> Result<OAuthCredential, PiAiError> {
     let client = client.clone();
     let device_code = device.device_code.clone();
     let poll_signal = signal.clone();
@@ -985,12 +1016,18 @@ async fn xai_poll_for_credentials(
             .await;
             let (status, body) = match result {
                 Ok(result) => result,
-                Err(message) => return DeviceCodePollResult::Failed { message },
+                Err(message) => {
+                    return DeviceCodePollResult::Failed {
+                        message: message.to_string(),
+                    }
+                }
             };
             if status.is_success() {
                 return match xai_credentials_from_token_response(&body, None) {
                     Ok(credential) => DeviceCodePollResult::Complete(credential),
-                    Err(message) => DeviceCodePollResult::Failed { message },
+                    Err(message) => DeviceCodePollResult::Failed {
+                        message: message.to_string(),
+                    },
                 };
             }
             match body.get("error").and_then(|value| value.as_str()) {
@@ -1042,12 +1079,12 @@ impl OAuthAuth for XaiOAuth {
         Some("Sign in with SuperGrok or X Premium")
     }
 
-    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
+    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, PiAiError> {
         let signal = interaction
             .signal()
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
         if signal.load(Ordering::SeqCst) {
-            return Err("Login cancelled".to_string());
+            return Err(PiAiError::LoginCancelled);
         }
         let client = reqwest::Client::new();
         let device = xai_start_device_flow(&client, signal.as_ref()).await?;
@@ -1067,7 +1104,7 @@ impl OAuthAuth for XaiOAuth {
         &self,
         credential: &OAuthCredential,
         signal: &AtomicBool,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         let client = reqwest::Client::new();
         let (status, body) = xai_post_form(
             &client,
@@ -1082,7 +1119,11 @@ impl OAuthAuth for XaiOAuth {
         )
         .await?;
         if !status.is_success() {
-            return Err(xai_request_failure("token refresh", status, &body));
+            return Err(PiAiError::invalid_response(xai_request_failure(
+                "token refresh",
+                status,
+                &body,
+            )));
         }
         xai_credentials_from_token_response(&body, Some(&credential.refresh))
     }
@@ -1114,9 +1155,12 @@ struct CallbackServer {
 impl CallbackServer {
     /// Bind on 127.0.0.1 (ephemeral port unless `port` is Some) and return
     /// the server plus its callback URL.
-    async fn start_on(callback_path: String, port: Option<u16>) -> Result<(Self, String), String> {
+    async fn start_on(
+        callback_path: String,
+        port: Option<u16>,
+    ) -> Result<(Self, String), PiAiError> {
         if !callback_path.starts_with('/') || callback_path.contains(['?', '#']) {
-            return Err("Invalid OAuth callback path".to_string());
+            return Err(PiAiError::invalid_response("Invalid OAuth callback path"));
         }
         let callback_host = std::env::var("PI_OAUTH_CALLBACK_HOST")
             .ok()
@@ -1147,14 +1191,14 @@ impl CallbackServer {
 
     /// Bind an ephemeral port on 127.0.0.1 and return the server plus its
     /// callback URL.
-    async fn start(callback_path: String) -> Result<(Self, String), String> {
+    async fn start(callback_path: String) -> Result<(Self, String), PiAiError> {
         Self::start_on(callback_path, None).await
     }
 
     /// Accept one connection, parse the GET query, and reply with `html`.
     /// Returns the query string of the request.
     #[cfg(test)]
-    async fn wait_for_callback(&self, html: &str) -> Result<String, String> {
+    async fn wait_for_callback(&self, html: &str) -> Result<String, PiAiError> {
         self.wait_for_callback_with_cancel(html, None, None, None)
             .await
     }
@@ -1165,7 +1209,7 @@ impl CallbackServer {
         cancel: Option<Arc<AtomicBool>>,
         timeout: Option<Duration>,
         expected_state: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> Result<String, PiAiError> {
         self.wait_for_callback_with_cancel_and_error_policy(
             html,
             cancel,
@@ -1182,7 +1226,7 @@ impl CallbackServer {
         cancel: Option<Arc<AtomicBool>>,
         timeout: Option<Duration>,
         expected_state: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> Result<String, PiAiError> {
         self.wait_for_callback_with_cancel_and_error_policy(
             html,
             cancel,
@@ -1200,14 +1244,14 @@ impl CallbackServer {
         timeout: Option<Duration>,
         expected_state: Option<&str>,
         terminate_on_error: bool,
-    ) -> Result<String, String> {
+    ) -> Result<String, PiAiError> {
         let wait = async {
             loop {
                 if cancel
                     .as_ref()
                     .is_some_and(|signal| signal.load(Ordering::SeqCst))
                 {
-                    return Err("Login cancelled".to_string());
+                    return Err(PiAiError::LoginCancelled);
                 }
                 let accepted = self.listener.accept();
                 tokio::pin!(accepted);
@@ -1217,7 +1261,7 @@ impl CallbackServer {
                         tokio::pin!(abort);
                         tokio::select! {
                             accepted = &mut accepted => accepted,
-                            _ = &mut abort => return Err("Login cancelled".to_string()),
+                            _ = &mut abort => return Err(PiAiError::LoginCancelled),
                         }
                     }
                     None => accepted.await,
@@ -1295,7 +1339,7 @@ impl CallbackServer {
                     )
                     .await?;
                     if terminate_on_error {
-                        return Err("OAuth authorization failed".to_string());
+                        return Err(PiAiError::invalid_response("OAuth authorization failed"));
                     }
                     continue;
                 }
@@ -1315,7 +1359,7 @@ impl CallbackServer {
         match timeout {
             Some(timeout) => tokio::time::timeout(timeout, wait)
                 .await
-                .map_err(|_| "OAuth callback timed out".to_string())?,
+                .map_err(|_| PiAiError::timeout("OAuth callback timed out"))?,
             None => wait.await,
         }
     }
@@ -1388,7 +1432,7 @@ async fn openrouter_exchange_code(
     code: &str,
     verifier: &str,
     signal: &AtomicBool,
-) -> Result<OAuthCredential, String> {
+) -> Result<OAuthCredential, PiAiError> {
     openrouter_exchange_code_at(client, OPENROUTER_TOKEN_URL, code, verifier, signal).await
 }
 
@@ -1398,7 +1442,7 @@ async fn openrouter_exchange_code_at(
     code: &str,
     verifier: &str,
     signal: &AtomicBool,
-) -> Result<OAuthCredential, String> {
+) -> Result<OAuthCredential, PiAiError> {
     let body = serde_json::json!({
         "code": code,
         "code_verifier": verifier,
@@ -1425,7 +1469,9 @@ async fn openrouter_exchange_code_at(
             expires: u64::MAX,
             extra: Default::default(),
         }),
-        None => Err("OpenRouter OAuth response carries no \"key\"".to_string()),
+        None => Err(PiAiError::invalid_response(
+            "OpenRouter OAuth response carries no \"key\"",
+        )),
     }
 }
 
@@ -1452,7 +1498,7 @@ impl OAuthAuth for OpenRouterOAuth {
         Some("Sign in with OpenRouter")
     }
 
-    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
+    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, PiAiError> {
         let (verifier, challenge) = crate::oauth::generate_pkce();
         let callback_path = format!("/oauth/callback/{}", uuid::Uuid::new_v4());
         let (server, callback_url) = CallbackServer::start(callback_path).await?;
@@ -1461,7 +1507,7 @@ impl OAuthAuth for OpenRouterOAuth {
             .as_ref()
             .is_some_and(|signal| signal.load(Ordering::SeqCst))
         {
-            return Err("Login cancelled".to_string());
+            return Err(PiAiError::LoginCancelled);
         }
 
         let authorize_url = format!(
@@ -1495,12 +1541,12 @@ impl OAuthAuth for OpenRouterOAuth {
                 )
                 .await
                 .map_err(|error| {
-                    if error == "OAuth callback timed out" {
-                        "OpenRouter OAuth login timed out".to_string()
+                    if error.to_string() == "OAuth callback timed out" {
+                        PiAiError::timeout("OpenRouter OAuth login timed out")
                     } else {
                         error
                     }
-                })?;
+                }).map_err(|e| e.to_string())?;
             parse_authorization_code(&query)
                 .ok_or_else(|| "OpenRouter returned no authorization code".to_string())
         };
@@ -1510,12 +1556,20 @@ impl OAuthAuth for OpenRouterOAuth {
             message: "Complete sign-in in your browser, or paste the authorization code / redirect URL here:".to_string(),
             placeholder: Some(callback_url.clone()),
         };
-        let mut manual_future: Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>> =
-            if interaction.supports_async_prompt() {
-                Box::pin(interaction.prompt_async_with_abort(&manual_prompt, manual_abort.clone()))
-            } else {
-                Box::pin(async { interaction.prompt(&manual_prompt) })
-            };
+        let mut manual_future: Pin<
+            Box<dyn Future<Output = Result<String, PiAiError>> + Send + '_>,
+        > = if interaction.supports_async_prompt() {
+            let manual_abort = manual_abort.clone();
+            Box::pin(async move {
+                interaction
+                    .prompt_async_with_abort(&manual_prompt, manual_abort)
+                    .await
+                    .map_err(PiAiError::from)
+            })
+        } else {
+            let interaction = interaction;
+            Box::pin(async move { interaction.prompt(&manual_prompt).map_err(PiAiError::from) })
+        };
         let mut callback_future = Box::pin(callback_future);
         let external_cancel_future = wait_for_optional_abort(external_cancel.clone());
         tokio::pin!(external_cancel_future);
@@ -1532,7 +1586,7 @@ impl OAuthAuth for OpenRouterOAuth {
             _ = &mut external_cancel_future => {
                 callback_cancel.store(true, Ordering::SeqCst);
                 manual_abort.store(true, Ordering::SeqCst);
-                return Err("Login cancelled".to_string());
+                return Err(PiAiError::LoginCancelled);
             }
         };
 
@@ -1547,7 +1601,7 @@ impl OAuthAuth for OpenRouterOAuth {
         &self,
         credential: &OAuthCredential,
         _signal: &AtomicBool,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         // OpenRouter keys are permanent; refresh is a no-op.
         Ok(credential.clone())
     }
@@ -1582,7 +1636,7 @@ async fn anthropic_exchange_code(
     state: &str,
     verifier: &str,
     signal: &AtomicBool,
-) -> Result<OAuthCredential, String> {
+) -> Result<OAuthCredential, PiAiError> {
     anthropic_exchange_code_at(
         client,
         ANTHROPIC_TOKEN_URL,
@@ -1603,7 +1657,7 @@ async fn anthropic_exchange_code_at(
     state: &str,
     verifier: &str,
     signal: &AtomicBool,
-) -> Result<OAuthCredential, String> {
+) -> Result<OAuthCredential, PiAiError> {
     let body = serde_json::json!({
         "grant_type": "authorization_code",
         "client_id": ANTHROPIC_CLIENT_ID,
@@ -1626,16 +1680,16 @@ async fn anthropic_exchange_code_at(
         .get("access_token")
         .and_then(|v| v.as_str())
         .filter(|value| !value.is_empty())
-        .ok_or("missing access_token")?;
+        .ok_or_else(|| PiAiError::invalid_response("missing access_token"))?;
     let refresh = data
         .get("refresh_token")
         .and_then(|v| v.as_str())
         .filter(|value| !value.is_empty())
-        .ok_or("missing refresh_token")?;
+        .ok_or_else(|| PiAiError::invalid_response("missing refresh_token"))?;
     let expires_in = data
         .get("expires_in")
         .and_then(|v| v.as_u64())
-        .ok_or("missing expires_in")?;
+        .ok_or_else(|| PiAiError::invalid_response("missing expires_in"))?;
     let now_ms = crate::types::now_ms();
     Ok(OAuthCredential {
         refresh: refresh.to_string(),
@@ -1652,7 +1706,7 @@ async fn anthropic_refresh_token(
     client: &reqwest::Client,
     refresh_token: &str,
     signal: &AtomicBool,
-) -> Result<OAuthCredential, String> {
+) -> Result<OAuthCredential, PiAiError> {
     let body = serde_json::json!({
         "grant_type": "refresh_token",
         "client_id": ANTHROPIC_CLIENT_ID,
@@ -1672,16 +1726,16 @@ async fn anthropic_refresh_token(
         .get("access_token")
         .and_then(|v| v.as_str())
         .filter(|value| !value.is_empty())
-        .ok_or("missing access_token")?;
+        .ok_or_else(|| PiAiError::invalid_response("missing access_token"))?;
     let refresh = data
         .get("refresh_token")
         .and_then(|v| v.as_str())
         .filter(|value| !value.is_empty())
-        .ok_or("missing refresh_token")?;
+        .ok_or_else(|| PiAiError::invalid_response("missing refresh_token"))?;
     let expires_in = data
         .get("expires_in")
         .and_then(|v| v.as_u64())
-        .ok_or("missing expires_in")?;
+        .ok_or_else(|| PiAiError::invalid_response("missing expires_in"))?;
     let now_ms = crate::types::now_ms();
     Ok(OAuthCredential {
         refresh: refresh.to_string(),
@@ -1716,7 +1770,7 @@ impl OAuthAuth for AnthropicOAuth {
         None
     }
 
-    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
+    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, PiAiError> {
         let (verifier, challenge) = crate::oauth::generate_pkce();
         let (server, _) = CallbackServer::start_on(
             ANTHROPIC_CALLBACK_PATH.to_string(),
@@ -1728,7 +1782,7 @@ impl OAuthAuth for AnthropicOAuth {
             .as_ref()
             .is_some_and(|signal| signal.load(Ordering::SeqCst))
         {
-            return Err("Login cancelled".to_string());
+            return Err(PiAiError::LoginCancelled);
         }
 
         let auth_params = format!(
@@ -1767,7 +1821,9 @@ impl OAuthAuth for AnthropicOAuth {
             let parsed = parse_authorization_input(&query);
             match (parsed.code, parsed.state) {
                 (Some(code), Some(state)) => Ok((code, state)),
-                _ => Err("Missing code or state parameter".to_string()),
+                _ => Err(PiAiError::invalid_response(
+                    "Missing code or state parameter",
+                )),
             }
         };
 
@@ -1776,12 +1832,20 @@ impl OAuthAuth for AnthropicOAuth {
             message: "Complete login in your browser, or paste the authorization code / redirect URL here:".to_string(),
             placeholder: Some(ANTHROPIC_REDIRECT_URI.to_string()),
         };
-        let mut manual_future: Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>> =
-            if interaction.supports_async_prompt() {
-                Box::pin(interaction.prompt_async_with_abort(&manual_prompt, manual_abort.clone()))
-            } else {
-                Box::pin(async { interaction.prompt(&manual_prompt) })
-            };
+        let mut manual_future: Pin<
+            Box<dyn Future<Output = Result<String, PiAiError>> + Send + '_>,
+        > = if interaction.supports_async_prompt() {
+            let manual_abort = manual_abort.clone();
+            Box::pin(async move {
+                interaction
+                    .prompt_async_with_abort(&manual_prompt, manual_abort)
+                    .await
+                    .map_err(PiAiError::from)
+            })
+        } else {
+            let interaction = interaction;
+            Box::pin(async move { interaction.prompt(&manual_prompt).map_err(PiAiError::from) })
+        };
         let mut callback_future = Box::pin(callback_future);
         let external_cancel_future = wait_for_optional_abort(external_cancel.clone());
         tokio::pin!(external_cancel_future);
@@ -1796,19 +1860,19 @@ impl OAuthAuth for AnthropicOAuth {
                 let input = result?;
                 let parsed = parse_authorization_input(&input);
                 if parsed.state.as_deref().is_some_and(|state| state != verifier) {
-                    return Err("OAuth state mismatch".to_string());
+                    return Err(PiAiError::StateMismatch);
                 }
-                let code = parsed.code.ok_or_else(|| "Missing authorization code".to_string())?;
+                let code = parsed.code.ok_or_else(|| PiAiError::invalid_response("Missing authorization code"))?;
                 (code, parsed.state.unwrap_or_else(|| verifier.clone()))
             },
             _ = &mut external_cancel_future => {
                 callback_cancel.store(true, Ordering::SeqCst);
                 manual_abort.store(true, Ordering::SeqCst);
-                return Err("Login cancelled".to_string());
+                return Err(PiAiError::LoginCancelled);
             }
         };
         if state != verifier {
-            return Err("OAuth state mismatch".to_string());
+            return Err(PiAiError::StateMismatch);
         }
 
         interaction.notify(&AuthEvent::Progress {
@@ -1822,7 +1886,7 @@ impl OAuthAuth for AnthropicOAuth {
         &self,
         credential: &OAuthCredential,
         signal: &AtomicBool,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, PiAiError> {
         let client = reqwest::Client::new();
         anthropic_refresh_token(&client, &credential.refresh, signal).await
     }
@@ -1995,7 +2059,7 @@ mod tests {
         let mut untrusted = body;
         untrusted["verification_uri"] = serde_json::json!("http://accounts.x.ai/device");
         assert_eq!(
-            xai_parse_device_code(&untrusted).unwrap_err(),
+            xai_parse_device_code(&untrusted).unwrap_err().to_string(),
             "Untrusted verification URI in xAI OAuth response"
         );
     }
@@ -2114,7 +2178,10 @@ mod device_flow_tests {
         )
         .await
         .unwrap_err();
-        assert!(err.contains("Untrusted verification_uri"), "got: {err}");
+        assert!(
+            err.to_string().contains("Untrusted verification_uri"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -2190,8 +2257,8 @@ mod device_flow_tests {
         )
         .await
         .unwrap_err();
-        assert!(err.contains("access_denied"), "got: {err}");
-        assert!(err.contains("user said no"), "got: {err}");
+        assert!(err.to_string().contains("access_denied"), "got: {err}");
+        assert!(err.to_string().contains("user said no"), "got: {err}");
     }
 }
 
@@ -2313,7 +2380,7 @@ mod callback_server_tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(result.unwrap_err(), "Login cancelled");
+        assert_eq!(result.unwrap_err().to_string(), "Login cancelled");
     }
 
     #[tokio::test]

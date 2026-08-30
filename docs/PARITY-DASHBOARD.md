@@ -338,3 +338,5 @@ are unchanged by that work.
 Phase 2.2 (pi-client) does not move any dashboard dimension.
 
 Phase 2.3a (pi-ai) does not move any dashboard dimension.
+
+Phase 2.3b (PiAiError) does not move any dashboard dimension.

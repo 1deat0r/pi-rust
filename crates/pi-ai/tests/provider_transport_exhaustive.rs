@@ -1186,7 +1186,7 @@ async fn retry_timeout_and_abort_paths_are_exercised_where_supported() {
     cancel.store(true, std::sync::atomic::Ordering::SeqCst);
     let result = task.await.unwrap();
     server.await.unwrap();
-    assert_eq!(result.unwrap_err(), "Request cancelled");
+    assert_eq!(result.unwrap_err().to_string(), "Request cancelled");
 }
 
 #[tokio::test]

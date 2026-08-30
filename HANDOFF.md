@@ -2,6 +2,40 @@
 
 Date: 2026-08-30 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 2.3b (typed PiAiError)
+
+Fifth campaign checkpoint, direct child of Phase 2.3a. The auth/OAuth
+surface of pi-ai now carries a typed error: new `error::PiAiError`
+(thiserror; variants LoginCancelled, StateMismatch, InvalidResponse, Jwt,
+Http, Timeout, Other; every Display byte-identical to the prior message
+text; `From<String>`/`From<&str>` bridges for UI-string boundaries).
+
+Converted: `auth_flows.rs` (42 sites), `oauth.rs` (25), `auth.rs` traits
+(`OAuthAuth::login/refresh`, `ApiKeyAuth::login` now return PiAiError),
+plus the provider-side impls in `providers/all.rs`, `providers/radius.rs`,
+`api/cloudflare.rs` and the Bedrock/Copilot token paths. Fixed-string
+messages became structured variants; dynamic provider diagnostics use the
+`Other`/`InvalidResponse` payloads with unchanged text. The host-side
+`AuthInteraction::prompt` intentionally remains `Result<_, String>` (UI
+contract) and converts through `From` at the flow boundary.
+
+Downstream: pi-coding-agent's `run_oauth_login`/`run_api_key_login` and
+`LlamaApiKeyAuth` map at the boundary with `.to_string()` — user-visible
+text unchanged. Tests now assert on `error.to_string()` (the Display
+contract) or matching variants.
+
+Exact validation (with `QWEN_TOKEN_PLAN_API_KEY` exported): pi-ai hard-gate
+clippy clean; all 25 pi-ai test targets ok; complete workspace matrix exit
+0, 2,805 passed; strict workspace clippy; fmt/diff checks; `conversion_audit
+all` `Conversion progress: 100.00% (166/166; 0 open)`. No numbered ledger
+row changed. Remaining `Result<_, String>` in pi-ai lives in api/* streaming
+adaptors (transport/stream errors shared with pi-server's ByteConnection
+traits) and is the next target together with the pi-client transport
+unification.
+
+Next: Phase 2.4 pi-agent error unification + `unreachable!` cleanup, then
+the cross-crate transport error type.
+
 ## Push blocker — 2026-08-30 — Phase 2.3a commit is local-only
 
 The Phase 2.3a commit exists locally as `c611c74` (recreated after the

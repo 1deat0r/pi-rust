@@ -8,6 +8,7 @@
 pub mod api;
 pub mod auth;
 pub mod auth_flows;
+pub mod error;
 pub mod event_stream;
 pub mod images;
 pub mod model;

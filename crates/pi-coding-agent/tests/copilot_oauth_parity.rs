@@ -32,20 +32,32 @@ impl OAuthAuth for TestOAuth {
     fn login<'life0, 'life1, 'async_trait>(
         &'life0 self,
         _interaction: &'life1 dyn AuthInteraction,
-    ) -> Pin<Box<dyn Future<Output = Result<OAuthCredential, String>> + Send + 'async_trait>>
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<OAuthCredential, pi_ai::error::PiAiError>>
+                + Send
+                + 'async_trait,
+        >,
+    >
     where
         'life0: 'async_trait,
         'life1: 'async_trait,
         Self: Sync + 'async_trait,
     {
-        Box::pin(async { Err("not used".to_string()) })
+        Box::pin(async { Err(pi_ai::error::PiAiError::other("not used")) })
     }
 
     fn refresh<'life0, 'life1, 'life2, 'async_trait>(
         &'life0 self,
         _credential: &'life1 OAuthCredential,
         _signal: &'life2 AtomicBool,
-    ) -> Pin<Box<dyn Future<Output = Result<OAuthCredential, String>> + Send + 'async_trait>>
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<OAuthCredential, pi_ai::error::PiAiError>>
+                + Send
+                + 'async_trait,
+        >,
+    >
     where
         'life0: 'async_trait,
         'life1: 'async_trait,
@@ -53,7 +65,7 @@ impl OAuthAuth for TestOAuth {
         Self: Sync + 'async_trait,
     {
         let result = self.result.clone();
-        Box::pin(async move { result })
+        Box::pin(async move { result.map_err(pi_ai::error::PiAiError::other) })
     }
 
     fn to_auth(&self, credential: &OAuthCredential) -> Option<ModelAuth> {

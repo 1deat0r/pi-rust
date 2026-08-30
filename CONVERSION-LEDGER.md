@@ -1905,3 +1905,6 @@ locking, no production unwrap/expect); ledger rows unchanged.
 
 Phase 2.3a brought pi-ai under the hard lint gate (poison-tolerant locking,
 LazyLock regexes, guarded invariants); ledger rows unchanged.
+
+Phase 2.3b introduced the typed PiAiError for the pi-ai auth/OAuth surface;
+ledger rows unchanged.

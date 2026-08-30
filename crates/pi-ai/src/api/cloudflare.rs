@@ -27,6 +27,7 @@ use url::Url;
 use crate::auth::{
     ApiKeyAuth, ApiKeyCredential, AuthCheck, AuthContext, AuthResult, ModelAuth, ProviderAuth,
 };
+use crate::error::PiAiError;
 use crate::model::Model;
 use crate::models::ProviderStreams;
 use crate::types::{ProviderEnv, ProviderHeaders};
@@ -367,21 +368,27 @@ impl ApiKeyAuth for CloudflareAuth {
     fn login(
         &self,
         interaction: &dyn crate::auth::AuthInteraction,
-    ) -> Result<ApiKeyCredential, String> {
-        let key = interaction.prompt(&crate::auth::AuthPrompt::Secret {
-            message: "Enter Cloudflare API key".to_string(),
-            placeholder: None,
-        })?;
-        let account_id = interaction.prompt(&crate::auth::AuthPrompt::Text {
-            message: "Enter Cloudflare account ID".to_string(),
-            placeholder: None,
-        })?;
+    ) -> Result<ApiKeyCredential, PiAiError> {
+        let key = interaction
+            .prompt(&crate::auth::AuthPrompt::Secret {
+                message: "Enter Cloudflare API key".to_string(),
+                placeholder: None,
+            })
+            .map_err(|e| e.to_string())?;
+        let account_id = interaction
+            .prompt(&crate::auth::AuthPrompt::Text {
+                message: "Enter Cloudflare account ID".to_string(),
+                placeholder: None,
+            })
+            .map_err(|e| e.to_string())?;
         let mut env = ProviderEnv::from([(CLOUDFLARE_ACCOUNT_ID.to_string(), account_id)]);
         if self.kind == CloudflareAuthKind::AiGateway {
-            let gateway_id = interaction.prompt(&crate::auth::AuthPrompt::Text {
-                message: "Enter Cloudflare AI Gateway ID".to_string(),
-                placeholder: None,
-            })?;
+            let gateway_id = interaction
+                .prompt(&crate::auth::AuthPrompt::Text {
+                    message: "Enter Cloudflare AI Gateway ID".to_string(),
+                    placeholder: None,
+                })
+                .map_err(|e| e.to_string())?;
             env.insert(CLOUDFLARE_GATEWAY_ID.to_string(), gateway_id);
         }
         Ok(ApiKeyCredential {

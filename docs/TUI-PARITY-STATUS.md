@@ -168,3 +168,5 @@ and visual/interaction/overall remains 0/52.
 Phase 2.2 (pi-client) likewise does not touch TUI rows.
 
 Phase 2.3a (pi-ai) likewise does not touch TUI rows.
+
+Phase 2.3b (PiAiError) likewise does not touch TUI rows.

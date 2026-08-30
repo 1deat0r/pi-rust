@@ -349,7 +349,7 @@ async fn device_poll_cancels_an_in_flight_loopback_response() {
         .await
         .expect("poll cancellation timeout")
         .expect("poll task");
-    assert_eq!(result.unwrap_err(), "Login cancelled");
+    assert_eq!(result.unwrap_err().to_string(), "Login cancelled");
     server.abort();
 }
 
@@ -422,7 +422,7 @@ async fn openai_refresh_redacts_error_response_and_cancels_before_request() {
         )
         .await
         .expect_err("refresh must fail");
-    assert!(!error.contains("refresh-loopback-secret"));
+    assert!(!error.to_string().contains("refresh-loopback-secret"));
     server.await.expect("route server");
 
     let canceled = AtomicBool::new(true);
@@ -438,7 +438,7 @@ async fn openai_refresh_redacts_error_response_and_cancels_before_request() {
         )
         .await
         .expect_err("pre-canceled refresh");
-    assert_eq!(error, "Login cancelled");
+    assert_eq!(error.to_string(), "Login cancelled");
 }
 
 struct ModelsOAuth {
@@ -460,7 +460,10 @@ impl OAuthAuth for ModelsOAuth {
         Some("fixture")
     }
 
-    async fn login(&self, _interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
+    async fn login(
+        &self,
+        _interaction: &dyn AuthInteraction,
+    ) -> Result<OAuthCredential, pi_ai::error::PiAiError> {
         Ok(OAuthCredential {
             refresh: "login-refresh".to_string(),
             access: "login-access".to_string(),
@@ -473,13 +476,13 @@ impl OAuthAuth for ModelsOAuth {
         &self,
         _credential: &OAuthCredential,
         signal: &AtomicBool,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, pi_ai::error::PiAiError> {
         self.refresh_calls.fetch_add(1, Ordering::SeqCst);
         if signal.load(Ordering::SeqCst) {
-            return Err("Login cancelled".to_string());
+            return Err(pi_ai::error::PiAiError::other("Login cancelled"));
         }
         if self.fail_refresh {
-            return Err("fixture refresh failed".to_string());
+            return Err(pi_ai::error::PiAiError::other("fixture refresh failed"));
         }
         Ok(OAuthCredential {
             refresh: "rotated-refresh".to_string(),

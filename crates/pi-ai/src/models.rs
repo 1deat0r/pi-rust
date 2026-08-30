@@ -1233,7 +1233,7 @@ impl Models {
         let refreshed = match refreshed {
             Ok(refreshed) => refreshed,
             Err(error) => {
-                let detail = redact_oauth_error(&error, &current);
+                let detail = redact_oauth_error(&error.to_string(), &current);
                 return Err(ModelsError::new(
                     ModelsErrorCode::Oauth,
                     format!("OAuth refresh failed for {}: {detail}", provider.id),
@@ -1372,44 +1372,43 @@ impl Models {
                 format!("Unknown provider: {provider_id}"),
             )
         })?;
-        let credential = match auth_type {
-            AuthType::ApiKey => {
-                let api_key = provider.auth.api_key.as_ref().ok_or_else(|| {
-                    ModelsError::new(
-                        ModelsErrorCode::Auth,
-                        format!("{} does not support api_key login", provider.name),
-                    )
-                })?;
-                Credential::ApiKey(
-                    api_key
-                        .login(interaction)
-                        .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error))?,
-                )
-            }
-            AuthType::OAuth => {
-                let oauth = provider.auth.oauth.as_ref().ok_or_else(|| {
-                    ModelsError::new(
-                        ModelsErrorCode::Auth,
-                        format!("{} does not support oauth login", provider.name),
-                    )
-                })?;
-                let login = oauth.login(interaction);
-                tokio::pin!(login);
-                let oauth_credential = tokio::select! {
-                    result = &mut login => result,
-                    _ = Self::wait_for_abort(signal.clone()) => {
-                        return Err(ModelsError::new(ModelsErrorCode::Auth, "Login cancelled"));
-                    }
+        let credential =
+            match auth_type {
+                AuthType::ApiKey => {
+                    let api_key = provider.auth.api_key.as_ref().ok_or_else(|| {
+                        ModelsError::new(
+                            ModelsErrorCode::Auth,
+                            format!("{} does not support api_key login", provider.name),
+                        )
+                    })?;
+                    Credential::ApiKey(api_key.login(interaction).map_err(|error| {
+                        ModelsError::new(ModelsErrorCode::Auth, error.to_string())
+                    })?)
                 }
-                .map_err(|error| {
-                    ModelsError::new(
-                        ModelsErrorCode::Oauth,
-                        format!("OAuth login failed for {provider_id}: {error}"),
-                    )
-                })?;
-                Credential::OAuth(oauth_credential)
-            }
-        };
+                AuthType::OAuth => {
+                    let oauth = provider.auth.oauth.as_ref().ok_or_else(|| {
+                        ModelsError::new(
+                            ModelsErrorCode::Auth,
+                            format!("{} does not support oauth login", provider.name),
+                        )
+                    })?;
+                    let login = oauth.login(interaction);
+                    tokio::pin!(login);
+                    let oauth_credential = tokio::select! {
+                        result = &mut login => result,
+                        _ = Self::wait_for_abort(signal.clone()) => {
+                            return Err(ModelsError::new(ModelsErrorCode::Auth, "Login cancelled"));
+                        }
+                    }
+                    .map_err(|error| {
+                        ModelsError::new(
+                            ModelsErrorCode::Oauth,
+                            format!("OAuth login failed for {provider_id}: {error}"),
+                        )
+                    })?;
+                    Credential::OAuth(oauth_credential)
+                }
+            };
         if signal.load(Ordering::SeqCst) {
             return Err(ModelsError::new(ModelsErrorCode::Auth, "Login cancelled"));
         }
@@ -2447,6 +2446,7 @@ mod oauth_auth_tests {
     use crate::auth::{
         AuthEvent, AuthInteraction, AuthPrompt, ModelAuth, OAuthAuth, OAuthCredential,
     };
+    use crate::error::PiAiError;
 
     struct TestOAuthAuth;
     #[async_trait::async_trait]
@@ -2463,7 +2463,7 @@ mod oauth_auth_tests {
         async fn login(
             &self,
             _interaction: &dyn AuthInteraction,
-        ) -> Result<OAuthCredential, String> {
+        ) -> Result<OAuthCredential, PiAiError> {
             Ok(OAuthCredential {
                 refresh: "refresh-1".into(),
                 access: "access-1".into(),
@@ -2475,7 +2475,7 @@ mod oauth_auth_tests {
             &self,
             _credential: &OAuthCredential,
             _signal: &std::sync::atomic::AtomicBool,
-        ) -> Result<OAuthCredential, String> {
+        ) -> Result<OAuthCredential, PiAiError> {
             Err("not implemented".into())
         }
         fn to_auth(&self, credential: &OAuthCredential) -> Option<ModelAuth> {

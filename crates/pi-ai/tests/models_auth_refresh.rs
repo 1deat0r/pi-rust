@@ -70,7 +70,10 @@ impl OAuthAuth for FixtureOAuth {
         None
     }
 
-    async fn login(&self, _interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
+    async fn login(
+        &self,
+        _interaction: &dyn AuthInteraction,
+    ) -> Result<OAuthCredential, pi_ai::error::PiAiError> {
         Ok(OAuthCredential {
             refresh: "fixture-refresh-new".to_string(),
             access: self.refreshed_access.clone(),
@@ -83,7 +86,7 @@ impl OAuthAuth for FixtureOAuth {
         &self,
         credential: &OAuthCredential,
         _signal: &std::sync::atomic::AtomicBool,
-    ) -> Result<OAuthCredential, String> {
+    ) -> Result<OAuthCredential, pi_ai::error::PiAiError> {
         self.refreshes.fetch_add(1, Ordering::SeqCst);
         if let Some(started) = &self.refresh_started {
             started.notify_one();
@@ -92,7 +95,7 @@ impl OAuthAuth for FixtureOAuth {
             release.notified().await;
         }
         if let Some(error) = &self.refresh_error {
-            return Err(error.clone());
+            return Err(pi_ai::error::PiAiError::other(error.clone()));
         }
         Ok(OAuthCredential {
             refresh: "fixture-refresh-new".to_string(),

@@ -271,7 +271,7 @@ async fn offline_unknown_codex_login_method_matches_upstream_error() {
         })
         .await
         .expect_err("numeric aliases are not official login method ids");
-    assert_eq!(error, "Unknown OpenAI Codex login method: 1");
+    assert_eq!(error.to_string(), "Unknown OpenAI Codex login method: 1");
 }
 
 #[tokio::test]
@@ -282,7 +282,7 @@ async fn cancelling_login_method_selection_never_starts_browser_or_device_flow()
         .login(&CancellingSelectorInteraction { signal })
         .await
         .expect_err("cancelled selection");
-    assert_eq!(error, "Login cancelled");
+    assert_eq!(error.to_string(), "Login cancelled");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -357,10 +357,7 @@ async fn device_auth_failure_preserves_upstream_status_and_body() {
         .login(&DeviceInteraction::default())
         .await
         .expect_err("device auth failure");
-    assert_eq!(
-        error,
-        "OpenAI Codex device auth failed with status 500: {\"error\":\"server_error\",\"error_description\":\"try again later\"}"
-    );
+    assert_eq!(error.to_string(), "OpenAI Codex device auth failed with status 500: {\"error\":\"server_error\",\"error_description\":\"try again later\"}");
 }
 
 #[tokio::test]
@@ -371,9 +368,11 @@ async fn device_auth_failure_redacts_device_values_from_response_body() {
         .login(&DeviceInteraction::default())
         .await
         .expect_err("device auth failure");
-    assert!(!error.contains("fixture-device-id"));
-    assert!(!error.contains("ABCD-EFGH"));
-    assert!(error.contains("OpenAI Codex device auth failed with status 500"));
+    assert!(!error.to_string().contains("fixture-device-id"));
+    assert!(!error.to_string().contains("ABCD-EFGH"));
+    assert!(error
+        .to_string()
+        .contains("OpenAI Codex device auth failed with status 500"));
 }
 
 #[tokio::test]
