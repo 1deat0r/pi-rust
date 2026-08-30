@@ -130,27 +130,22 @@ Next: Phase 2.6 typed errors for pi-coding-agent's contained core modules,
 and Phase 3 (converting invariant allows to real error returns where
 practical, `let _ =` swallow cleanup).
 
-## Push blocker — 2026-08-30 — five campaign commits are local-only
+## RESOLVED — push blocker — 2026-08-30 — six campaign commits pushed
 
-The Phase 2.3a commit exists locally as `c611c74` (recreated after the
-first attempt `b48171f` was lost to repository corruption: 39 zero-length
-loose objects appeared when an interrupted push was killed; repair was
-`find .git/objects -type f -empty -delete`, `git reset --soft fb46809`,
-then re-staging the same campaign files from the intact worktree and
-re-committing). `git fsck` reports no reachable breakage; remaining
-`refs/codex/turn-diffs` ref errors are pre-existing and unrelated.
+ROOT CAUSE (confirmed): the pushes did not fail because of the network —
+the interrupted push had left missing loose blobs reachable from the new
+commits (three qwen-token-plan catalog data blobs). Every subsequent push
+walked the ref connectivity, hit the missing object, and died with the
+misleading "remote end hung up unexpectedly" / "unable to read" errors.
+gh auth status hanging is a separate, harmless local issue (mise shim).
 
-Pushing to `origin/main` currently fails reproducibly with
-`fatal: the remote end hung up unexpectedly` (three attempts, including
-with `http.postBuffer=500MB`), while small reads (`git ls-remote`) succeed
-and `gh auth status` hangs indefinitely. This host's GitHub HTTPS upload
-path is broken; the failure predates and is independent of the campaign
-changes. Local `main` (`b161865`) is ahead of `origin/main` (`fb46809`) by five
-commits: `c611c74`, `e02528a`, `b161865` (Phases 2.3a/2.3b), `3d777bf`
-(Phase 2.4), and this Phase 2.5 checkpoint. Per the commit gate protocol the local commit
-is preserved and local/remote parity is NOT claimed until the network
-issue clears; rerun `git push origin main` and verify
-`git rev-parse HEAD == git ls-remote origin refs/heads/main`.
+REPAIR: the three data files still held the original content; re-hashing
+them with `git hash-object -w` regenerated the exact missing OIDs
+(content-addressed), healing the history. `git rev-list --objects
+e02528a ^fb46809` then walked clean and the push succeeded.
+
+STATUS: local `main` and `origin/main` both resolve to `4219322`. All
+six campaign checkpoints are published. Local/remote parity restored.
 
 ## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 2.3a (pi-ai under the hard gate)
 
