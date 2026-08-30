@@ -38,7 +38,7 @@ stay synchronized.
 | TUI-009 | word navigation | PARTIAL | PARTIAL | OPEN | Unicode/navigation tests exist; all terminal encodings remain. |
 | TUI-010 | bracketed paste | PARTIAL | PARTIAL | OPEN | Real PTY proves sub-second large-paste marker echo and exact Unicode/multiline payload persistence after submit; remaining paste boundaries remain. |
 | TUI-011 | autocomplete | PARTIAL | PARTIAL | OPEN | Completion tests exist; every source and cancel boundary remains. |
-| TUI-012 | input buffer | PARTIAL | PARTIAL | OPEN | Fragmentation/timeout tests exist; complete overflow/EOF evidence remains. |
+| TUI-012 | input buffer | PASS | PASS | OPEN | Direct unit evidence covers the full contract: partial/fragmented sequences, escape timeout, bracketed paste, very-long-input boundaries, EOF (empty-buffer marker, repeated EOF, and EOF with a pending sequence kept flushable), and event ordering. Manual terminal comparison remains. |
 | TUI-013 | key decoding | PARTIAL | PARTIAL | OPEN | Key protocol tests and the real Kitty CSI-u press/release regression pass; the full emulator matrix remains. |
 | TUI-014 | keybinding config | PARTIAL | PARTIAL | OPEN | Registry/conflict tests exist; reload/extension precedence evidence remains. |
 | TUI-015 | slash command menu | PARTIAL | PARTIAL | OPEN | Slash completion is exercised; full menu interaction evidence remains. |
@@ -83,8 +83,8 @@ stay synchronized.
 ## Current measured percentages
 
 <!-- PARITY_AUDIT_TUI_METRICS:START -->
-TUI functional implementation: 21.15% (11/52)
-TUI test/evidence parity: 21.15% (11/52)
+TUI functional implementation: 23.08% (12/52)
+TUI test/evidence parity: 23.08% (12/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 <!-- PARITY_AUDIT_TUI_METRICS:END -->
@@ -133,8 +133,8 @@ Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
 Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
 Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
 Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
-TUI functional implementation: 21.15% (11/52)
-TUI test/evidence parity: 21.15% (11/52)
+TUI functional implementation: 23.08% (12/52)
+TUI test/evidence parity: 23.08% (12/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 18.42% (49/266 PASS; 194 PARTIAL; 23 OPEN)

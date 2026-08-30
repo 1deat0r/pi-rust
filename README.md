@@ -137,8 +137,8 @@ open.**
 The TUI acceptance tracker measures a separate contract across all 52 TUI
 capabilities. Its current generated checkpoint is:
 
-TUI functional implementation: 21.15% (11/52)
-TUI test/evidence parity: 21.15% (11/52)
+TUI functional implementation: 23.08% (12/52)
+TUI test/evidence parity: 23.08% (12/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 
@@ -155,8 +155,8 @@ Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
 Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
 Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
 Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
-TUI functional implementation: 21.15% (11/52)
-TUI test/evidence parity: 21.15% (11/52)
+TUI functional implementation: 23.08% (12/52)
+TUI test/evidence parity: 23.08% (12/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 18.42% (49/266 PASS; 194 PARTIAL; 23 OPEN)

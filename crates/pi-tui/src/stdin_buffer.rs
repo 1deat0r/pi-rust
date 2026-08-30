@@ -703,3 +703,26 @@ mod tests {
         assert!(buffer.flush().is_empty());
     }
 }
+
+#[test]
+fn eof_on_empty_buffer_emits_the_eof_marker_once() {
+    let mut buffer = StdinBuffer::new();
+    assert_eq!(buffer.process(""), vec![""]);
+    // A second EOF with nothing buffered must still signal EOF.
+    assert_eq!(buffer.process(""), vec![""]);
+    // Regular input keeps flowing afterwards.
+    assert_eq!(buffer.process("a"), vec!["a"]);
+}
+
+#[test]
+fn eof_with_a_pending_incomplete_sequence_keeps_it_flushable() {
+    let mut buffer = StdinBuffer::new();
+    // An EOF read while an escape sequence is still being assembled must
+    // not emit the partial sequence, must not lose it, and the buffered
+    // bytes stay recoverable through the normal timeout flush.
+    assert_eq!(buffer.process("\x1b[1;5"), Vec::<String>::new());
+    assert_eq!(buffer.process(""), Vec::<String>::new());
+    assert_eq!(buffer.get_buffer(), "\x1b[1;5");
+    assert_eq!(buffer.flush(), vec!["\x1b[1;5"]);
+    assert_eq!(buffer.get_buffer(), "");
+}

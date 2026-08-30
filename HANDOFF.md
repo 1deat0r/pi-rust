@@ -215,6 +215,22 @@ tests); strict workspace clippy; fmt/diff checks; `conversion_audit all`
 `Conversion progress: 100.00% (166/166; 0 open)`; `parity_audit tui`
 `PARITY_TUI_OK rows=52 functional=11 evidence=11 visual=0 overall=0`.
 
+## Checkpoint — 2026-08-30 — TUI-012 promoted to PASS (input buffer)
+
+TUI-012 (input buffer; contract: partial UTF-8, escape timeout, pasted
+bytes, overflow, EOF, event ordering) is promoted to PASS for functional
+and test/evidence dimensions after adding the missing EOF evidence:
+`eof_on_empty_buffer_emits_the_eof_marker_once` (EOF marker, repeated EOF,
+input flowing afterwards) and
+`eof_with_a_pending_incomplete_sequence_keeps_it_flushable` (EOF during
+sequence assembly emits nothing, loses nothing, and the timeout flush
+still recovers the buffered bytes). TUI functional and test/evidence
+dimensions move to 23.08% (12/52); visual/interaction remains OPEN.
+
+Exact validation: full workspace matrix exit 0, 2,809 passed; strict
+workspace clippy; fmt/diff checks; `parity_audit tui`
+`PARITY_TUI_OK rows=52 functional=12 evidence=12 visual=0 overall=0`.
+
 ## RESOLVED — push blocker — 2026-08-30 — six campaign commits pushed
 
 ROOT CAUSE (confirmed): the pushes did not fail because of the network —
@@ -603,8 +619,8 @@ serialized.
 
 The current TUI register remains conservative:
 
-TUI functional implementation: 21.15% (11/52)
-TUI test/evidence parity: 21.15% (11/52)
+TUI functional implementation: 23.08% (12/52)
+TUI test/evidence parity: 23.08% (12/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 
@@ -652,8 +668,8 @@ Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
 Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
 Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
 Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
-TUI functional implementation: 21.15% (11/52)
-TUI test/evidence parity: 21.15% (11/52)
+TUI functional implementation: 23.08% (12/52)
+TUI test/evidence parity: 23.08% (12/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 18.42% (49/266 PASS; 194 PARTIAL; 23 OPEN)
