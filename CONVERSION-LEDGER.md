@@ -4,19 +4,175 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
-## Current status (last updated 2026-08-26)
+## Current status (last updated 2026-08-30)
 
 The `166/166` figure below is the historical source/conversion ledger, not
 behavioral parity. The active acceptance campaign is the exhaustive
-283-ID inventory in `docs/EXHAUSTIVE-PARITY-INVENTORY.md`; it remains open
+318-ID inventory in `docs/EXHAUSTIVE-PARITY-INVENTORY.md`; it remains open
 until the real debug/release, PTY/TUI, provider, clean-environment, and
 installation gates pass. Do not report this ledger percentage as the product's
 functional completion percentage.
+
+The pi-rust distribution boundary is explicit: startup does not query the
+upstream Pi release service or show an `Update available: pi ...` banner.
+`pi update --extensions` and `pi update --models` retain their package/catalog
+scopes. `pi update` and `pi update --self` report the pi-rust source-repository
+rebuild workflow and never replace the compiled Rust binary.
+
+Latest serialized checkpoint: the JSON/session wave is parent-verified. JSON
+mode emits the official v3 session header and durable v3 records while native
+pi-agent v4 storage remains compatible; the streamed event sink writes
+incrementally, supplies the initial `toolCall` placeholder, normalizes
+`toolUse` stop reasons, and emits `agent_settled`. A real optimized-release
+Qwen tool turn matched the official Pi envelope on the checked path. The full
+workspace all-target matrix passes with 247 pi-agent, 433 pi-ai, 814
+pi-coding-agent, and 381 pi-tui library tests plus integration targets; strict
+workspace clippy and the optimized release build pass. The latest serialized
+package rerun additionally passes 435 pi-ai, 816 pi-coding-agent, and 382
+pi-tui library tests with all package integration targets and strict package
+check/clippy. These gates strengthen evidence only; the tracked row metrics
+below remain intentionally conservative.
 
 - The Rust-native checker reports **100.00% (166/166; 0 open)**. Run
   `/home/mustbearnold/.cargo/bin/cargo run -p pi-coding-agent --offline --bin
   conversion_audit -- all` after any ledger or source-audit change; the same
   value is copied into `PLAN.md` and `HANDOFF.md`.
+
+The source-ledger result remains separate from the behavioral TUI contract. The
+current root recheck passes R1–R8; the TUI register remains
+`19.23% / 19.23% / 0.00% / 0.00%` for functional, evidence,
+visual/interaction, and overall parity. A Kitty CSI-u release-filter
+regression now prevents one submenu Up/Down press from being applied twice, and
+the direct `!!` Bash-completion race has a ten-run optimized-release
+regression. The release auth PTY now also proves bracketed API-key paste,
+masking, persistence, and logout for `qwen-token-plan`. The complete workspace
+release suite is green; R8 now has exact official-Pi versus Rust release
+captures at 100x30 and 80x24, while the per-capability visual register remains
+open until each row receives its own complete review.
+
+The latest CLI source leaf also routes normal print-mode final text through the
+shared guarded stdout writer and is parent-verified by the pi 5/5 unit,
+experimental 4/4, and real CLI 6/6 suites. The subsequent CLI-044/047 leaf
+adds real print/JSON signal probes, interactive signal PTYs, broken-pipe
+help/version probes, RPC child-failure evidence, and strict-policy checks;
+vendor/platform, complete child-lifecycle, and visual boundaries remain open.
+The follow-up CLI-005..011 leaf adds release BOM/Unicode `@file` and missing
+file process evidence plus signal-aware print/JSON cancellation; live provider,
+Windows, and exhaustive input/file boundaries remain open.
+
+The Qwen Token Plan source wave is now parent-verified by the 7/7 provider
+matrix, pi-ai check/clippy, JSON, formatting, and diff gates; the three Qwen
+rows have implementation/evidence PARTIAL credit and runtime OPEN. The same
+wave passed the pi-tui 362-library/all-integration gate and the session
+restart/concurrency/run/interactive caller suites. The follow-up TUI source
+gate is also green; the project-trust audit confirmed that `/trust` still
+needs the upstream project-scoped modal integration, and no new row promotion
+is claimed for the current provider turn. The next source wave covers the
+remaining TUI rendering/tool/animation surfaces, Xiaomi/token-plan provider
+rows, and trust integration.
+
+The latest 2026-08-29 wave is parent-verified: pi-tui passed 382 library
+tests plus every integration target and strict clippy; the post-fix Anthropic
+provider matrix passed 9/9 and the full pi-ai matrix passed 435 library tests
+plus every integration target; the Xiaomi/Token Plan
+and Z.AI provider fixtures passed 2/2 and 3/3 with pi-ai check/clippy and
+JSON/static gates; and the trust/session caller gates passed project-trust
+13/13, `cli_trust` 9/9, session restart 6/6, interactive full matrix 7/7,
+real PTY 10/10 plus one intentional live ignore, slash completion 5/5, and
+run-unit 33/33 with coding-agent check/clippy/static gates. PROV-034..039 and
+TRUST-001/002 now carry conservative PARTIAL credit where applicable; no row
+reached PASS. Live vendor, full trust lifecycle, complete session path/error/
+restart, and visual boundaries remain open. The next source wave is
+dispatched separately below.
+
+The latest residual source wave is parent-verified by changelog 6/6 and skills
+12/12 focused tests plus coding-agent all-target check/clippy. Digit-starting
+colon links now follow upstream URL-scheme classification, and non-file
+`SKILL.md` markers no longer suppress valid skill discovery; no overall row is
+promoted without its complete runtime boundary.
+
+The native llama.cpp/local-provider slice is also parent-verified: its
+loopback catalog/auth/stream/load-unload/download-progress/cancellation/
+timeout/failure fixture passes 11/11 with coding-agent all-target clippy.
+PROV-040 now carries implementation and deterministic-evidence PARTIAL credit;
+external-server and platform/restart boundaries remain open.
+
+The environment/config checkpoint also passed `config::tests` 18/18,
+covering exact upstream `env_flag` truthiness and empty agent/session-root
+fallback. ENV-004, ENV-005, and ENV-006 now have implementation/evidence
+PARTIAL credit; clean-process and runtime precedence remain open.
+
+The OpenCode/OpenCode-Go/OpenRouter source wave is parent-verified: provider
+units 31/31, provider matrix 7/7, pi-ai all-targets 419 library tests plus
+every integration target, downstream coding-agent check/clippy, strict/static
+gates pass, and PROV-025..027 now have implementation/evidence PARTIAL credit.
+Live vendor and complete stream/error/retry boundaries remain open.
+
+The subsequent xAI source/runtime checkpoint is also parent-verified: xAI
+provider tests pass (33/33), the xAI OAuth tests pass within the 8-case
+auth-flow suite, the provider matrix passes 7/7, and the full pi-ai all-targets
+gate passes 425 library tests plus every integration target with strict clippy
+and downstream coding-agent check/clippy. PROV-033 now has conservative
+implementation/evidence PARTIAL credit; live xAI traffic, device
+authorization, and complete external stream/error/retry boundaries remain
+open.
+
+The latest serialized follow-up is parent-verified: pi-tui passed 370 library
+tests plus every integration target and strict clippy after the selector,
+overlay, and key-release test repairs; D1's session-environment change passed
+4 focused tests, coding-agent check, and strict clippy. These gates add
+evidence but do not promote a row without its complete contract.
+
+The latest provider recheck is parent-verified: Together and Vercel AI Gateway
+pass the complete pi-ai all-target suite (427 library tests plus every
+integration target), strict clippy, JSON/static validation, and downstream
+source gates. PROV-031/032 are PARTIAL for implementation and deterministic
+evidence; live vendor traffic and complete stream/error/retry/abort boundaries
+remain OPEN. Current non-TUI counts are implementation 49 PASS/194
+PARTIAL/23 OPEN and deterministic evidence 36 PASS/207 PARTIAL/23 OPEN.
+
+The latest verified source wave added terminal/image/scrollbar protocol coverage
+in pi-tui, provider-independent SSE/event-stream/abort coverage across seven
+AI adaptors, and the upstream HOME/USERPROFILE environment fix. The next
+disjoint source wave is active: B1 is taking a pi-tui-only parity slice, B2 is
+taking a non-TUI adapter/runtime slice outside JSON and session-v3 paths, and
+D1 is taking a separate non-TUI acceptance slice. Cargo verification remains
+serialized behind each source checkpoint.
+
+The synchronized progress dashboard is:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 19.23% (10/52)
+TUI test/evidence parity: 19.23% (10/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 18.42% (49/266 PASS; 194 PARTIAL; 23 OPEN)
+Non-TUI deterministic evidence parity: 13.53% (36/266 PASS; 207 PARTIAL; 23 OPEN)
+Non-TUI runtime-boundary parity: 13.91% (37/266 PASS; 154 PARTIAL; 75 OPEN)
+Non-TUI overall parity: 11.28% (30/266)
+Whole-product behavioral parity: 9.43% (30/318)
+
+The latest residual verification also passed the provider, agent-runtime,
+transcript/TUI, settings, component, and presentation package gates under
+`.unlazy/parity-20260827/`, followed by a serialized workspace test, strict
+clippy, and release-build recheck. This strengthens the evidence for those
+slices without changing the separate row-based percentages above; the live
+footer owner seam and terminal visual register remain open.
+
+The 2026-08-28 SI4 parent recheck additionally passed settings-panel 9/9,
+real settings PTY 2/2, core-settings 27/27, interactive-mode 50/50, the
+parity-audit validator 8/8, the full workspace test matrix, strict workspace
+Clippy, formatting/diff checks, and the optimized release build. The
+row-by-row settings contract remains open until every 29/31 capability-gated
+setting has explicit persistence/live/cancel/restart evidence.
+
+This block is synchronized by the Rust-native `parity_audit dashboard`
+command and the pre-commit hook; see `docs/PARITY-DASHBOARD.md` for metric
+definitions.
 - The final scope is explicitly Rust-only: no JavaScript/TypeScript source,
   Node/Bun runtime, npm dependency execution, or source-language extension
   loading is shipped. Compiled Rust factories provide the extension command,
@@ -54,6 +210,58 @@ functional completion percentage.
   S1 section is authoritative for residual provider, harness, runtime, TUI,
   RPC, auxiliary client/server, evaluation, and final-audit work.
 
+## Current exhaustive launch and live-provider checkpoint — 2026-08-26
+
+No numbered source-ledger row changed. The active acceptance inventory now
+contains 318 IDs, verified by the Rust-native `parity_audit inventory` command.
+The optimized Rust binary is installed as both `pi` and `pi-rust`; both PATH
+commands resolve to `target/release/pi` and report `pi 0.84.2`. The full debug
+and release workspace suites and strict workspace clippy pass.
+
+The real interactive release binary has also been exercised with the currently
+stored OpenAI Codex OAuth credential: two sequential interactive PTY turns
+returned the requested exact responses, and the real `/login` flow displayed
+the authentication selector, generated the `auth.openai.com` browser OAuth
+URL, and cancelled cleanly without replacing the credential. The release
+`interactive_auth_pty` suite additionally covers browser callback exchange,
+device-code exchange, persisted credentials, logout, cancellation, and a real
+loopback llama.cpp API-key validation path. These are current `live`/`local`/
+`release` evidence entries; they do not close every one of the 318 IDs.
+
+The final release package revalidation also fixed two real acceptance defects:
+the experimental Unix-server PTY/process test now isolates its empty session
+root from the operator's existing sessions, and the slash PTY expectation for
+an unknown `/login` provider now matches the truthful generic diagnostic. The
+focused test and complete release workspace matrix pass after both fixes.
+
+The safe operator commands are documented in `README.md`. The legacy
+`node scripts/conversion-progress.mjs` path referenced by older notes is absent
+from this Rust-only checkout; the authoritative current source-ledger command
+is:
+
+```text
+Conversion progress: 100.00% (166/166; 0 open)
+```
+
+from `cargo run -p pi-coding-agent --offline --bin conversion_audit -- all`.
+
+## Current tool-display and animation checkpoint — 2026-08-26
+
+The behavioral inventory was expanded to 318 IDs with eight explicit TUI
+acceptance rows (`TUI-045`–`TUI-052`) for animation timing, live tool display,
+and process coexistence. The Rust interactive loop now consumes the real rich
+agent tool lifecycle and renders compact Pi-style call/result blocks; normal
+TUI output does not serialize the model-facing JSON envelope. Focused tests,
+the release PTY with a real OpenAI Codex tool turn, terminal progress
+keepalive checks, and concurrent pi-rust process tests pass.
+
+This is behavioral evidence, not a claim that the 166-item source ledger has
+changed or that the whole product is complete. The official Pi source checkout
+available beside this repository has no installed dependencies or built
+artifacts, and the PATH `pi` command is this Rust release binary. Therefore
+official-JS-Pi coexistence and final manual visual side-by-side review remain
+unverified until a runnable official binary is supplied.
+
 ## Current extension contract checkpoint — 2026-08-26
 
 The EXT-009–011 extension contract slice is implemented in the Rust-native
@@ -84,24 +292,39 @@ Focused direct-stable offline evidence is green:
 
 ```text
 cargo test -p pi-coding-agent --offline --lib core::extensions -- --nocapture --test-threads=1
-  57 passed; 0 failed
+  58 passed; 0 failed
+cargo test -p pi-coding-agent --offline --lib core::extensions::integration::tests::default_mode_loader_seeds_parsed_extension_flags_before_lifecycle -- --nocapture --test-threads=1
+  1 passed; 0 failed (included in the 58-test suite)
 cargo test -p pi-coding-agent --test extensions_parity --offline -- --nocapture --test-threads=1
   9 passed; 0 failed
 cargo test -p pi-coding-agent --offline --lib 'modes::rpc::tests::rpc_' -- --nocapture --test-threads=1
   16 passed; 0 failed
 cargo check -p pi-coding-agent --tests --offline
   Finished successfully
-cargo clippy -p pi-coding-agent --lib --offline -- -D warnings -A clippy::invalid_regex
+cargo clippy -p pi-coding-agent --lib --offline -- -D warnings -A clippy::invalid_regex -A unused-imports -A unused-mut
   Finished successfully
 ```
 
-The strict package clippy command without the explicit allow remains blocked
-only by the unrelated untracked `crates/pi-coding-agent/src/core/changelog.rs`
-look-ahead regex diagnostic; no extension-scope file is involved. The
+The strict package clippy command without explicit isolation remains blocked by
+unrelated dirty-worktree diagnostics in `crates/pi-coding-agent/src/core/changelog.rs`
+(look-ahead regex) and `crates/pi-coding-agent/src/interactive/clipboard.rs`
+(unused import/mutability); no extension-scope file is involved. The
 renderer-neutral factory contract intentionally stops at JSON/native callback
 materialization because `interactive.rs` and `pi-tui` are outside this slice;
-the concrete TUI component adapter and raw interactive PTY hook must be wired
-by that host-owned boundary.
+the concrete TUI component adapter and raw interactive PTY hook remain that
+host-owned boundary. The default-loader flag helper and its last-value-wins,
+pre-lifecycle regression pass in the 58-test extension suite. A subsequent
+package revalidation is currently blocked by the excluded, actively changing
+`pi-tui` lane: `scroll_view.rs` lacks `ScrollbarMode: Default` and calls the
+missing `scrollbar_visible_locked`, while its geometry value is a tuple but is
+read through `thumb_top`/`thumb_height` fields. No extension-scope file is
+implicated.
+
+Scope boundary for duplicate validation lifecycle: `main.rs::validate_extension_flags`
+still uses a temporary mode loader to discover flag definitions before the real
+mode starts. Removing that extra validation-time lifecycle requires a
+definition-only loader call in `main.rs`, which is outside this checkpoint's
+allowed files.
 
 ## Exhaustive usability-test checkpoint — 2026-08-26
 
@@ -783,16 +1006,18 @@ Recut of the remaining work by user impact + risk:
       rpc_runtime_control_commands_update_settings_and_state`, the existing
       `rpc_applies_settings_to_stream_compaction_retry_and_queues`, queue-mode
       drain tests, and the full RPC suite.
-- [x] 89. `pi update` parity: version-plan checks use the upstream latest-release
-      endpoint/retry semantics; `--models` refreshes the pi.dev catalogs with
-      bounded parallel requests, retries, freshness/ETag handling, persistence,
-      and the existing `PI_SKIP_VERSION_CHECK` startup seam. (unit; mock)
-- [x] 90. Update tests cover offline/skip-check behavior, normalized release
-      payloads, model-catalog success and transient HTTP failure paths, and the
-      offline CLI update error. (unit; mock) Evidence: `cargo test -p
-      pi-coding-agent --offline --lib core::version_check::tests`, `cargo test
-      -p pi-coding-agent --offline --lib core::remote_catalog_provider::tests`,
-      and `cargo test -p pi-coding-agent --offline --test cli_commands update_`.
+- [x] 89. `pi update` distribution boundary: pi-rust performs no upstream
+      latest-release lookup and has no upstream update banner or self-replace
+      path. `--extensions` updates installed extension packages and `--models`
+      refreshes the pi.dev catalogs with bounded parallel requests, retries,
+      freshness/ETag handling, and persistence. (unit; local)
+- [x] 90. Update tests cover the Rust-repository self-update instruction,
+      non-zero boundary, absence of the old release lookup, model-catalog
+      success/transient HTTP failure paths, and package update behavior. (unit;
+      local) Evidence: `cargo test -p pi-coding-agent --offline --lib
+      core::version_check::tests`, `cargo test -p pi-coding-agent --offline
+      --lib core::remote_catalog_provider::tests`, and `cargo test -p
+      pi-coding-agent --offline --test cli_commands update_`.
 
 ## T8 — Evals, packaging, parity suite
 
@@ -1050,7 +1275,9 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       replay, eager beta headers, client injection, deferred tool references,
       and server-side fallback behavior. Evidence (mock):
       `/home/mustbearnold/.cargo/bin/cargo test -p pi-ai --offline --test
-      anthropic_provider_parity --quiet` (7 passed),
+      anthropic_provider_parity --quiet` (9 passed),
+      including preservation of a complete tool input supplied at
+      `content_block_start` when no incremental JSON delta follows,
       `/home/mustbearnold/.cargo/bin/cargo test -p pi-ai --offline --test
       anthropic_stream --quiet` (9 passed), the focused module tests, strict
       pi-ai clippy, owned-path formatting, and `git diff --check`.
@@ -1177,21 +1404,20 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
       --test-threads=1` (22 passed), and the full coding-agent library target
       (507 passed). The accepted limitation is explicit: arbitrary external
       JS/TS extension execution is not part of the Rust-only distribution.
-- [x] S-028 Port the upstream self-update path (`pi update --self`) or document
-      and test the exact supported replacement behavior for this distribution.
-      The compiled Rust binary performs the latest-release and `--force`
-      decision, then exits non-zero with the exact package-manager,
-      wrapper, or source-checkout replacement instruction instead of claiming
-      that the running executable was replaced. The README documents the
-      source-checkout rebuild command. Evidence (unit/mock):
+- [x] S-028 Document and test the exact supported replacement behavior for the
+      Rust distribution. The compiled binary performs no upstream latest-release
+      lookup; `pi update --self` exits non-zero with the pi-rust source-checkout
+      rebuild instruction instead of claiming that the running executable was
+      replaced. The README documents the source-checkout rebuild command.
+      Evidence (unit/local):
       `cargo test -p pi-coding-agent --offline
       commands::package::tests::self_update_fallback_instruction_matches_distribution_contract`,
       `cargo test -p pi-coding-agent --offline --test cli_commands update_`,
       and `cargo test --workspace --offline --quiet`.
 - [x] S-029 Complete install-telemetry report transport, opt-out, retry, and
       offline behavior where the upstream CLI performs the network ping.
-      `core/telemetry.rs` now sends the upstream version query with a Rust
-      Pi user-agent, uses a bounded five-second best-effort transport, retries
+      `core/telemetry.rs` now sends the separate anonymous install report with
+      a Rust Pi user-agent, uses a bounded five-second best-effort transport, retries
       transient network/429/5xx failures, and never surfaces report failure to
       the interactive UI. `PI_OFFLINE` short-circuits before transport;
       `PI_TELEMETRY` overrides the default-on `enableInstallTelemetry` setting;
@@ -1557,3 +1783,110 @@ The unmodified strict clippy command still reports four unrelated existing
 diagnostics in `core/changelog.rs`, `core/extensions/integration.rs`, and
 `modes/rpc.rs`; those files were not changed because they are outside the
 interactive assignment.
+
+## Current parent verification — 2026-08-29 — session-runtime cwd guard
+
+The parent gate verified the new `core::agent_session_runtime` session
+replacement boundary. Five focused tests pass, including rejection of a
+missing stored cwd before teardown and propagation of `previous_session_file`,
+and the coding-agent package check and strict all-target clippy pass. The
+import path also validates its effective cwd before replacing the active
+session. This promotes evidence for SES-009 and SES-012 only; complete
+session, restart, malformed-input, process, and interactive return matrices
+remain open.
+
+## Current parent verification — 2026-08-29 — package-wide parity wave
+
+After the session-runtime gate, the parent serialized the remaining package
+matrices. `pi-tui` passed 380 library tests plus every integration target and
+strict clippy; `pi-ai` passed 433 library tests plus every integration target,
+the model-catalog parity target (7/7), and strict clippy; and
+`pi-coding-agent` passed 809 library tests plus every integration target,
+package check, and strict clippy. Stable rustfmt, scoped diff checks, and the
+trailing-whitespace scan passed over all three package scopes.
+
+These gates strengthen evidence only. No row is promoted from partial/open
+without its own complete behavior, cancellation/error, process/live, and
+visual evidence. The authoritative dashboard remains whole-product
+behavioral 30/318 (9.43%), with TUI overall 0/52.
+
+The follow-on workspace all-target test matrix, strict workspace clippy, and
+optimized release build pass on the same tree. The installed `pi-rust`
+launcher resolves to the rebuilt `target/release/pi` binary and reports
+`pi 0.84.2`. This is release/build evidence only; row-specific live,
+process, platform, and visual boundaries remain governed by the acceptance
+register.
+
+## Latest serialized verification — 2026-08-29 — provider and harness follow-up
+
+The Qwen Token Plan model-derived base-URL loopback dispatch fixture passed
+1/1 with the actual provider closure, expected auth header, and streamed
+completion; `pi-ai` check and strict all-target clippy pass. The current
+`pi-agent` harness/environment tree passed 366 tests across all targets and
+strict clippy. These are evidence gates only; no parity row or percentage was
+promoted, and live vendor, platform, recovery, and complete TUI
+visual/interaction boundaries remain open.
+
+The same wave passed 17/17 focused alt-screen TUI tests, 35/35
+OpenAI-compatible handoff tests plus 5/5 cross-provider fixtures, and the
+noninteractive missing-session-CWD regression 1/1. Combined package check,
+strict clippy, stable formatting, and scoped diff checks pass; no row is
+promoted from focused evidence alone.
+
+## Latest serialized verification — 2026-08-29 — loopback routing and SSE
+
+The SSE parser focused suite passes 13/13. OpenAI Responses model-derived
+base-URL routing passes its real loopback stream test, and the CLI-035 process
+fixture passes 1/1 after proving the provider-visible `AGENTS.md` difference
+under `--no-context-files`. The post-fix package matrices pass 441 pi-ai
+library tests and 818 pi-coding-agent library tests plus all integration
+targets; package checks and strict clippy pass. These gates strengthen
+evidence only: live vendor, platform, recovery, and complete TUI
+visual/interaction boundaries remain open.
+
+## Latest serialized verification — 2026-08-29 — TUI autocomplete, Anthropic edge, and cross-project session
+
+The current package gates pass 386 pi-tui library tests, 442 pi-ai library
+tests, and 821 pi-coding-agent library tests, with every package integration
+target green; package check/clippy and the full workspace all-target,
+workspace clippy, and optimized release build also pass. The TUI slice adds
+mixed slash-command autocomplete, grapheme-safe cursor clamping, and
+cancellable file-search pipe draining. The Anthropic slice covers the
+thinking-budget zero/default edge and repair/abort/image-request paths. The
+cross-project session PTY passes both cancel-without-fork and explicit-yes
+fork-with-parent/transcript cases. This strengthens implementation/evidence
+only; visual/emulator, live-vendor, platform, recovery, and row-complete
+boundaries remain open.
+
+## Latest serialized verification — 2026-08-30 — OpenRouter images and session-id warning
+
+The latest focused OpenRouter image suite passes 13/13, including payload-hook
+mutation through a real loopback HTTP request, header precedence, retry
+cancellation, and malformed image-data handling. The interactive
+missing-session-id warning regression passes 1/1 with the upstream diagnostic;
+the full pi-ai matrix passes 443 library tests and all integration targets,
+and pi-coding-agent passes 822 library tests and all integration targets.
+Package check and strict clippy pass, as do stable formatting and whitespace
+checks. These gates strengthen implementation/evidence only; live-vendor,
+visual/emulator, platform, recovery, and row-complete boundaries remain open.
+
+## Latest serialized verification — 2026-08-30 — Z.AI providers and models.json listing
+
+The existing native Z.AI registrations are verified for both the international
+`zai` provider and the `zai-coding-cn` regional provider. The focused
+`zai_provider_parity` target passes 4/4, covering registration, catalogs,
+scoped API-key precedence, reasoning/tool/max-token request construction, and
+a real local loopback streaming request through the provider closure. The
+models.json list-models overlay/auth target passes 2/2, covering authenticated
+fuzzy search, unauthenticated filtering, and malformed-config diagnostics.
+
+The pi-ai all-target suite passes 444 library tests and all integration
+targets; pi-coding-agent passes 822 library tests and all integration targets;
+package check and strict all-target clippy pass. The fixtures use synthetic
+credentials and local servers only. No live Z.AI vendor request was made, so
+vendor quota/error/retry, platform, and complete parity boundaries remain
+open. The acceptance register and dashboard remain unchanged at 318/318
+indexed/scored, TUI overall 0/52, non-TUI overall 30/266, and whole-product
+behavioral parity 30/318 (9.43%). The rebuilt release binary exposes both
+providers through `--list-models glm-5.2` with their respective synthetic
+API-key environment variables.

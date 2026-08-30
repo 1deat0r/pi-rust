@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::EvalError;
 use crate::harness::{Harness, HarnessResult, JsonValue};
 
 pub const EVAL_HARNESS_ITERATION_ARTIFACT: &str = "vitestEvalsHarnessIteration";
@@ -39,13 +40,13 @@ pub fn parse_eval_harness_iteration_artifact(
 /// `canonicalizeJson`: deep-copies to plain JSON with sorted object keys,
 /// rejecting non-finite numbers, non-plain objects, sparse arrays, and
 /// circular references (mirror of the upstream validator).
-pub fn canonicalize_json(value: &JsonValue) -> Result<JsonValue, String> {
-    fn walk(value: &JsonValue, _ancestors: &mut Vec<usize>) -> Result<JsonValue, String> {
+pub fn canonicalize_json(value: &JsonValue) -> Result<JsonValue, EvalError> {
+    fn walk(value: &JsonValue, _ancestors: &mut Vec<usize>) -> Result<JsonValue, EvalError> {
         match value {
             JsonValue::Null | JsonValue::Bool(_) | JsonValue::String(_) => Ok(value.clone()),
             JsonValue::Number(number) => {
                 if number.as_f64().map(|f| !f.is_finite()).unwrap_or(true) {
-                    return Err("Eval input must contain only finite numbers.".to_string());
+                    return Err(EvalError::NonFiniteNumber);
                 }
                 Ok(value.clone())
             }
@@ -73,7 +74,7 @@ pub fn canonicalize_json(value: &JsonValue) -> Result<JsonValue, String> {
 
 /// `deriveInputKey`: a trimmed `id` string when the input object has one,
 /// else the sha256 of the canonical JSON.
-pub fn derive_input_key(input: &JsonValue) -> Result<String, String> {
+pub fn derive_input_key(input: &JsonValue) -> Result<String, EvalError> {
     if let JsonValue::Object(obj) = input {
         if let Some(JsonValue::String(id)) = obj.get("id") {
             let trimmed = id.trim();
@@ -84,11 +85,11 @@ pub fn derive_input_key(input: &JsonValue) -> Result<String, String> {
     }
     let canonical = canonicalize_json(input)?;
     let json = serde_json::to_string(&canonical)
-        .map_err(|error| format!("Eval input must be JSON-serializable: {error}"))?;
+        .map_err(|source| EvalError::InputNotSerializable { source })?;
     Ok(sha256_hex(json.as_bytes()))
 }
 
-pub fn derive_eval_group_key(input: &JsonValue, repetition: u32) -> Result<String, String> {
+pub fn derive_eval_group_key(input: &JsonValue, repetition: u32) -> Result<String, EvalError> {
     let input_key = derive_input_key(input)?;
     Ok(serde_json::to_string(&serde_json::json!([input_key, repetition])).unwrap_or_default())
 }
@@ -152,12 +153,12 @@ fn validate_options(
     baseline: &Harness<JsonValue>,
     candidates: &[Harness<JsonValue>],
     repetitions: u32,
-) -> Result<(), String> {
+) -> Result<(), EvalError> {
     if eval_set.trim().is_empty() {
-        return Err("evalSet must not be empty.".to_string());
+        return Err(EvalError::EmptyEvalSet);
     }
     if candidates.is_empty() {
-        return Err("At least one candidate harness is required.".to_string());
+        return Err(EvalError::MissingCandidates);
     }
     let mut names: Vec<&str> = Vec::new();
     names.push(&baseline.name);
@@ -166,10 +167,10 @@ fn validate_options(
     }
     let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
     if unique.len() != names.len() {
-        return Err("Harness names must be unique within an eval set.".to_string());
+        return Err(EvalError::DuplicateHarnessName);
     }
     if repetitions < 1 {
-        return Err("repetitions must be a positive integer.".to_string());
+        return Err(EvalError::InvalidRepetitions);
     }
     Ok(())
 }
@@ -189,10 +190,17 @@ fn with_iteration_artifact(
             serde_json::to_value(&artifact).unwrap_or_default(),
         );
         let mut result: HarnessResult<JsonValue> = base_run(input, context);
-        result.artifacts.insert(
+        // The upstream wrapper publishes context artifacts together with the
+        // harness result.  Preserve the same precedence: artifacts returned
+        // by the harness override context values, while the iteration record
+        // is authoritative over both.
+        let mut artifacts = context.artifacts.clone();
+        artifacts.extend(result.artifacts);
+        artifacts.insert(
             EVAL_HARNESS_ITERATION_ARTIFACT.to_string(),
             serde_json::to_value(&artifact).unwrap_or_default(),
         );
+        result.artifacts = artifacts;
         result
     })
 }
@@ -227,7 +235,7 @@ impl EvalHarnessIterationPlan {
 pub fn eval_harness_table(
     eval_set: &str,
     options: &EvalHarnessTableOptions,
-) -> Result<Vec<EvalHarnessTableRow>, String> {
+) -> Result<Vec<EvalHarnessTableRow>, EvalError> {
     validate_options(
         eval_set,
         &options.baseline,
@@ -260,6 +268,7 @@ pub fn eval_harness_table(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::harness::HarnessContext;

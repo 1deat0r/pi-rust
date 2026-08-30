@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Port of `packages/evals/test/vitest-evals/artifacts.test.ts`.
 
 use pi_evals::artifacts::{
@@ -101,6 +103,33 @@ fn persists_and_selects_attachments_belonging_to_the_reported_run() {
         assert_eq!(
             std::fs::read_to_string(root.join(&reference.path)).unwrap(),
             expected
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let session_path = root.join(&references[0].path);
+        let source_path = root.join(&references[1].path);
+        assert_eq!(
+            std::fs::metadata(session_path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(session_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(source_path).unwrap().permissions().mode() & 0o777,
+            0o600
         );
     }
     let _ = std::fs::remove_dir_all(&root);

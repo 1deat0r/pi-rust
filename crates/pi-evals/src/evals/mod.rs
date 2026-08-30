@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use serde_json::json;
 
+use crate::error::EvalFailures;
 use crate::harness::{Harness, HarnessContext, HarnessResult, HarnessUsage, PiCliRunnerOptions};
 use crate::harness_table::{derive_eval_group_key, EVAL_HARNESS_ITERATION_ARTIFACT};
 use crate::session_usage::SessionUsage;
@@ -82,7 +83,7 @@ pub fn run_pi_case(
     runner: &PiCliRunnerOptions,
     _input: &serde_json::Value,
     steps: &[serde_json::Value],
-    assert: &dyn Fn(&str) -> Result<Option<f64>, String>,
+    assert: &dyn Fn(&str) -> Result<Option<f64>, EvalFailures>,
     set_artifact: &mut dyn FnMut(&str, serde_json::Value),
 ) -> HarnessResult<serde_json::Value> {
     let started = std::time::Instant::now();
@@ -90,15 +91,70 @@ pub fn run_pi_case(
     let mut final_output = String::new();
     let mut session_usage = SessionUsage::default();
     let mut latest_session_jsonl = None;
-    let cwd = crate::harness::create_eval_root().join("workspace");
+    let eval_root = match crate::harness::create_eval_root() {
+        Ok(root) => root,
+        Err(error) => {
+            errors.push(error.to_string());
+            let result = HarnessResult {
+                output: json!({ "response": final_output }),
+                errors,
+                events: Vec::new(),
+                usage: HarnessUsage::from_session_usage(
+                    &session_usage,
+                    &runner.provider,
+                    &runner.model,
+                ),
+                artifacts: BTreeMap::new(),
+                timings: Some(crate::harness::HarnessTimings {
+                    total_ms: started.elapsed().as_secs_f64() * 1000.0,
+                }),
+            };
+            return result;
+        }
+    };
+    let cwd = eval_root.join("workspace");
     std::fs::create_dir_all(&cwd).ok();
+    let session_root = match crate::harness::create_session_root(&cwd) {
+        Ok(path) => path,
+        Err(error) => {
+            errors.push(error.to_string());
+            let result = HarnessResult {
+                output: json!({ "response": final_output }),
+                errors,
+                events: Vec::new(),
+                usage: HarnessUsage::from_session_usage(
+                    &session_usage,
+                    &runner.provider,
+                    &runner.model,
+                ),
+                artifacts: BTreeMap::new(),
+                timings: Some(crate::harness::HarnessTimings {
+                    total_ms: started.elapsed().as_secs_f64() * 1000.0,
+                }),
+            };
+            let _ = std::fs::remove_dir_all(&eval_root);
+            return result;
+        }
+    };
+    let mut has_prompt = false;
+    let mut prompt_count = 0usize;
 
     for step in steps {
-        let prompt = step
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let output = crate::harness::run_pi_binary(runner, &cwd, prompt);
+        if step.get("type").and_then(|v| v.as_str()) == Some("reload") {
+            continue;
+        }
+        let Some(prompt) = step.get("content").and_then(|v| v.as_str()) else {
+            errors.push("Pi eval prompt steps must contain string content.".to_string());
+            break;
+        };
+        prompt_count += 1;
+        let output = crate::harness::run_pi_binary_in_session(
+            runner,
+            &cwd,
+            prompt,
+            &session_root,
+            has_prompt,
+        );
         match output {
             Ok(output) => {
                 if output.exit_code != 0 {
@@ -110,21 +166,29 @@ pub fn run_pi_case(
                     break;
                 }
                 final_output = crate::harness::extract_response_text(&output.stdout);
-                session_usage.merge(&output.usage);
+                // A continued invocation returns the cumulative session
+                // snapshot. Replacing, rather than summing, avoids billing
+                // the first prompt twice.
+                session_usage = output.usage;
                 latest_session_jsonl = output.session_jsonl;
+                has_prompt = true;
             }
             Err(error) => {
-                errors.push(error);
+                errors.push(error.to_string());
                 break;
             }
         }
+    }
+
+    if prompt_count == 0 && errors.is_empty() {
+        errors.push("Pi eval input must include at least one prompt step.".to_string());
     }
 
     let _score = if errors.is_empty() {
         match assert(&final_output) {
             Ok(score) => score,
             Err(error) => {
-                errors.push(error);
+                errors.push(error.to_string());
                 None
             }
         }
@@ -132,37 +196,54 @@ pub fn run_pi_case(
         None
     };
 
+    let run_id = latest_session_jsonl
+        .as_deref()
+        .and_then(crate::harness::session_id_from_session_jsonl)
+        .unwrap_or_else(crate::harness_table::short_id);
+    let events = if let Some(session_jsonl) = latest_session_jsonl.as_deref() {
+        match crate::harness::transcript_events_from_session_jsonl(session_jsonl) {
+            Ok(events) => events,
+            Err(error) => {
+                errors.push(error.to_string());
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    let mut artifacts = BTreeMap::new();
+    artifacts.insert("response".to_string(), json!(final_output));
+    artifacts.insert("runId".to_string(), json!(run_id.clone()));
+    set_artifact("runId", json!(run_id));
     if let Some(session_jsonl) = latest_session_jsonl {
         set_artifact(
             crate::artifacts::PI_SESSION_SNAPSHOT_ARTIFACT,
+            json!(session_jsonl.clone()),
+        );
+        artifacts.insert(
+            crate::artifacts::PI_SESSION_SNAPSHOT_ARTIFACT.to_string(),
             json!(session_jsonl),
         );
     }
 
-    // Expose the final response for assertions and artifacts.
-    let mut artifacts = BTreeMap::new();
-    artifacts.insert("response".to_string(), json!(final_output));
-    set_artifact("runId", json!(crate::harness_table::short_id()));
-
-    HarnessResult {
+    let mut result = HarnessResult {
         output: json!({ "response": final_output }),
         errors,
-        events: vec![
-            crate::harness::TranscriptEvent::Message {
-                role: "user".into(),
-                content: "prompt".into(),
-            },
-            crate::harness::TranscriptEvent::Message {
-                role: "assistant".into(),
-                content: final_output.clone(),
-            },
-        ],
+        events,
         usage: HarnessUsage::from_session_usage(&session_usage, &runner.provider, &runner.model),
         artifacts,
         timings: Some(crate::harness::HarnessTimings {
             total_ms: started.elapsed().as_secs_f64() * 1000.0,
         }),
+    };
+    if let Err(error) = std::fs::remove_dir_all(&eval_root) {
+        result.errors.push(format!(
+            "failed to clean up eval root {}: {error}",
+            eval_root.display()
+        ));
     }
+    result
 }
 
 /// Default harness context used by the runner.

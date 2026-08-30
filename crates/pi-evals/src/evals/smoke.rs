@@ -7,6 +7,7 @@
 
 use serde_json::json;
 
+use crate::error::EvalFailures;
 use crate::harness::{PiCliRunnerOptions, PiRunOutput};
 use crate::session_usage::SessionUsage;
 
@@ -51,7 +52,7 @@ pub fn run_smoke(runner: &PiCliRunnerOptions, cwd: &std::path::Path, prompt: &st
         },
         Err(error) => SmokeOutcome {
             output: String::new(),
-            errors: vec![error],
+            errors: vec![error.to_string()],
             exit_code: -1,
             session_jsonl: None,
             usage: SessionUsage::default(),
@@ -64,7 +65,7 @@ pub fn run_smoke(runner: &PiCliRunnerOptions, cwd: &std::path::Path, prompt: &st
 pub fn assert_smoke_result(
     runner: &PiCliRunnerOptions,
     outcome: &SmokeOutcome,
-) -> Result<f64, String> {
+) -> Result<f64, EvalFailures> {
     let mut failures = Vec::new();
     if !outcome.errors.is_empty() {
         failures.extend(outcome.errors.iter().cloned());
@@ -90,7 +91,7 @@ pub fn assert_smoke_result(
     if failures.is_empty() {
         Ok(1.0)
     } else {
-        Err(failures.join("; "))
+        Err(EvalFailures(failures))
     }
 }
 

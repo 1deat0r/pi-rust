@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 use pi_evals::evals::extensions::{
     faux_extension_fixture, score_extension_result, unsupported_boundary, ExtensionOutcome,
 };
@@ -21,19 +23,39 @@ fn outcome(source: Option<&str>, response: &str, errors: &[&str]) -> ExtensionOu
     }
 }
 
+fn durable_success_session() -> String {
+    include_str!("fixtures/session-usage-v4.jsonl").to_string()
+}
+
 #[test]
 fn extension_judge_is_scorable_and_deterministic() {
     let source = r#"
         import { registerTool } from "@earendil-works/pi-coding-agent";
         registerTool({ name: "hello", description: "greeting" });
     "#;
-    let (score, rationale) = score_extension_result(
-        &runner("anthropic"),
-        &outcome(Some(source), "Hello, Bob!", &[]),
-    );
+    let mut extension = outcome(Some(source), "Hello, Bob!", &[]);
+    extension.session_jsonl = Some(durable_success_session());
+    let (score, rationale) = score_extension_result(&runner("anthropic"), &extension);
 
     assert_eq!(score, Some(1.0));
     assert_eq!(rationale, None);
+}
+
+#[test]
+fn extension_judge_rejects_a_claimed_greeting_without_a_successful_tool_trace() {
+    let source = r#"
+        import { registerTool } from "@earendil-works/pi-coding-agent";
+        registerTool({ name: "hello", description: "greeting" });
+    "#;
+    let mut extension = outcome(Some(source), "Hello, Bob!", &[]);
+    extension.session_jsonl = Some(include_str!("fixtures/session-usage-legacy.jsonl").to_string());
+
+    let (score, rationale) = score_extension_result(&runner("anthropic"), &extension);
+
+    assert_eq!(score, Some(0.0));
+    assert!(rationale
+        .expect("missing tool evidence has a rationale")
+        .contains("successful hello"));
 }
 
 #[test]

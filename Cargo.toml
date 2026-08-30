@@ -13,6 +13,14 @@ members = [
     "crates/pi-evals",
 ]
 
+# Rust-idiom campaign gates: production code must not panic through
+# unwrap/expect/panic!. Crates opt in with `[lints] workspace = true` as each
+# is converted; test modules carry a scoped `#[allow]` only.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
 [workspace.package]
 version = "0.84.2"
 edition = "2021"

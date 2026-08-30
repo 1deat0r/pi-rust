@@ -670,6 +670,11 @@ fn reason_label(reason: &DiagnosticReason) -> &'static str {
 /// Removes ANSI escape sequences (mirror of `stripVTControlCharacters` for
 /// tests).
 pub fn strip_ansi(text: &str) -> String {
-    let re = regex::Regex::new(r"\x1b\[[0-9;]*m").expect("static regex");
-    re.replace_all(text, "").into_owned()
+    // The pattern is a compile-time literal; a compile failure here is a
+    // build defect.
+    #[allow(clippy::panic)]
+    static ANSI_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
+    ANSI_PATTERN.replace_all(text, "").into_owned()
 }

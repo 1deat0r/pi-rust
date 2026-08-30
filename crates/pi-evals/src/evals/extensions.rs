@@ -9,9 +9,12 @@
 //! table (the two harnesses differ only in the prompts they run, mirroring
 //! the upstream intent of comparing prompt configurations).
 
+use std::sync::LazyLock;
+
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::error::EvalFailures;
 use crate::harness::PiCliRunnerOptions;
 use crate::session_usage::SessionUsage;
 
@@ -54,8 +57,15 @@ pub struct FauxExtensionExpected {
 /// produce the tool call needed to author and reload an extension, so the
 /// extension eval reports this exact versioned boundary instead of pretending
 /// that a skipped run is a model score.
-pub fn faux_extension_fixture() -> FauxExtensionFixture {
-    serde_json::from_str(FAUX_UNSUPPORTED_FIXTURE).expect("valid faux extension fixture")
+pub fn faux_extension_fixture() -> &'static FauxExtensionFixture {
+    // The fixture is embedded at compile time; a parse failure is a build
+    // defect, so panicking during first use is the honest invariant.
+    #[allow(clippy::panic)]
+    static FIXTURE: LazyLock<FauxExtensionFixture> = LazyLock::new(|| {
+        serde_json::from_str(FAUX_UNSUPPORTED_FIXTURE)
+            .unwrap_or_else(|error| panic!("valid faux extension fixture: {error}"))
+    });
+    &FIXTURE
 }
 
 pub fn unsupported_boundary(runner: &PiCliRunnerOptions) -> Option<String> {
@@ -105,15 +115,39 @@ pub fn run_extension_scenario(
     let mut usage = SessionUsage::default();
     let mut session_jsonl = None;
 
-    let run = |prompt: &str| crate::harness::run_pi_binary(runner, cwd, prompt);
-    match run(&steps.create_prompt) {
+    let session_root = match crate::harness::create_session_root(cwd) {
+        Ok(path) => path,
+        Err(error) => {
+            errors.push(error.to_string());
+            return ExtensionOutcome {
+                final_response,
+                extension_source: None,
+                errors,
+                session_jsonl,
+                usage,
+            };
+        }
+    };
+    let run = |prompt: &str, continue_session: bool| {
+        crate::harness::run_pi_binary_in_session(
+            runner,
+            cwd,
+            prompt,
+            &session_root,
+            continue_session,
+        )
+    };
+    match run(&steps.create_prompt, false) {
         Ok(first) if first.exit_code == 0 => {
-            usage.merge(&first.usage);
+            usage = first.usage;
             session_jsonl = first.session_jsonl.clone();
             // reload step: a second invocation picks up any authored files
-            match run(&steps.use_prompt) {
+            match run(&steps.use_prompt, true) {
                 Ok(second) if second.exit_code == 0 => {
-                    usage.merge(&second.usage);
+                    // The continued session snapshot already includes the
+                    // create step's usage; summing both snapshots would
+                    // double-count the first provider call.
+                    usage = second.usage;
                     session_jsonl = second.session_jsonl;
                     final_response = crate::harness::extract_response_text(&second.stdout);
                 }
@@ -124,7 +158,7 @@ pub fn run_extension_scenario(
                         second.stderr.trim()
                     ));
                 }
-                Err(error) => errors.push(error),
+                Err(error) => errors.push(error.to_string()),
             }
         }
         Ok(first) => {
@@ -134,7 +168,7 @@ pub fn run_extension_scenario(
                 first.stderr.trim()
             ));
         }
-        Err(error) => errors.push(error),
+        Err(error) => errors.push(error.to_string()),
     }
 
     let extension_path = cwd.join(".pi").join("extensions").join("hello.ts");
@@ -143,6 +177,18 @@ pub fn run_extension_scenario(
     } else {
         None
     };
+
+    // The subprocess runner owns the retained session just like the upstream
+    // in-process harness owns its temporary SessionManager root.  The JSONL
+    // snapshot above is already an owned string, so clean up the exact
+    // session directory before returning and surface cleanup failure as a
+    // harness error rather than leaving a misleading successful result.
+    if let Err(error) = std::fs::remove_dir_all(&session_root) {
+        errors.push(format!(
+            "failed to clean up eval session directory {}: {error}",
+            session_root.display()
+        ));
+    }
 
     ExtensionOutcome {
         final_response,
@@ -158,7 +204,7 @@ pub fn run_extension_scenario(
 pub fn assert_extension_result(
     _runner: &PiCliRunnerOptions,
     outcome: &ExtensionOutcome,
-) -> Result<f64, String> {
+) -> Result<f64, EvalFailures> {
     let mut failures = Vec::new();
     if !outcome.errors.is_empty() {
         failures.extend(outcome.errors.iter().cloned());
@@ -166,9 +212,15 @@ pub fn assert_extension_result(
     match &outcome.extension_source {
         None => failures.push("generated extension source is unavailable".to_string()),
         Some(source) => {
+            // The pattern is a compile-time literal; a compile failure here
+            // is a build defect.
+            #[allow(clippy::panic)]
+            static IMPORT_PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
+                regex::Regex::new(r#"\b(?:from|import)\s*[\"']([^\"']+)[\"']"#)
+                    .unwrap_or_else(|error| panic!("static extension import pattern: {error}"))
+            });
             let mut imports = Vec::new();
-            let import_pattern = regex::Regex::new(r#"\b(?:from|import)\s*[\"']([^\"']+)[\"']"#)
-                .expect("static extension import pattern");
+            let import_pattern = &*IMPORT_PATTERN;
             for captures in import_pattern.captures_iter(source).take(100) {
                 if let Some(spec) = captures.get(1) {
                     imports.push(spec.as_str().to_string());
@@ -205,10 +257,65 @@ pub fn assert_extension_result(
         failures.push("final response was not exactly \"Hello, Bob!\"".to_string());
     }
 
+    // A matching answer and source file are not sufficient evidence of the
+    // extension workflow.  The upstream judge receives tool calls/results
+    // from the live AgentSession; require the durable subprocess transcript
+    // to prove that hello({ name: "Bob" }) actually ran and returned the
+    // greeting.  Missing or malformed persistence is a failed assertion, not
+    // a provider-success claim.
+    match outcome.session_jsonl.as_deref() {
+        None => failures.push("durable session transcript is unavailable".to_string()),
+        Some(session_jsonl) => {
+            match crate::harness::transcript_events_from_session_jsonl(session_jsonl) {
+                Err(error) => failures.push(error.to_string()),
+                Ok(events) => {
+                    let hello_call = events.iter().find_map(|event| match event {
+                        crate::harness::TranscriptEvent::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        } if name == "hello"
+                            && arguments
+                                .as_ref()
+                                .and_then(|arguments| arguments.get("name"))
+                                .and_then(serde_json::Value::as_str)
+                                == Some("Bob") =>
+                        {
+                            Some(id.as_str())
+                        }
+                        _ => None,
+                    });
+                    let successful_hello = hello_call.is_some_and(|call_id| {
+                        events.iter().any(|event| {
+                            matches!(
+                                event,
+                                crate::harness::TranscriptEvent::ToolResult {
+                                    tool_call_id,
+                                    name,
+                                    content,
+                                    error,
+                                } if tool_call_id == call_id
+                                    && name == "hello"
+                                    && error.is_empty()
+                                    && content == &serde_json::json!("Hello, Bob!")
+                            )
+                        })
+                    });
+                    if !successful_hello {
+                        failures.push(
+                            "no successful hello({ name: \"Bob\" }) call returned \"Hello, Bob!\""
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     if failures.is_empty() {
         Ok(1.0)
     } else {
-        Err(failures.join("; "))
+        Err(EvalFailures(failures))
     }
 }
 
@@ -224,7 +331,7 @@ pub fn score_extension_result(
     }
     match assert_extension_result(runner, outcome) {
         Ok(score) => (Some(score), None),
-        Err(error) => (Some(0.0), Some(error)),
+        Err(error) => (Some(0.0), Some(error.to_string())),
     }
 }
 

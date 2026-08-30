@@ -9,6 +9,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::EvalError;
+
 /// Name of the session-artifact key stored in run artifacts.
 pub const PI_SESSION_SNAPSHOT_ARTIFACT: &str = "piSessionJsonl";
 
@@ -92,17 +94,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// `piSessionJsonl`, it is attached as `session.jsonl`.
 pub fn record_eval_session_artifact(
     run_artifacts: &std::collections::BTreeMap<String, serde_json::Value>,
-) -> Result<Option<EvalArtifact>, String> {
+) -> Result<Option<EvalArtifact>, EvalError> {
     let Some(session) = run_artifacts.get(PI_SESSION_SNAPSHOT_ARTIFACT) else {
         return Ok(None);
     };
     let run_id = run_artifacts
         .get("runId")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "Pi eval session artifact metadata is invalid.".to_string())?;
-    let session = session
-        .as_str()
-        .ok_or_else(|| "Pi eval session artifact metadata is invalid.".to_string())?;
+        .ok_or(EvalError::InvalidSessionArtifact)?;
+    let session = session.as_str().ok_or(EvalError::InvalidSessionArtifact)?;
     Ok(Some(EvalArtifact::Session {
         run_id: run_id.to_string(),
         attachments: vec![Attachment {
@@ -135,7 +135,7 @@ pub fn persist_eval_artifact_references(
     artifacts: &[EvalArtifact],
     run_id: &str,
     artifact_directory: &Path,
-) -> Result<Vec<ArtifactReference>, String> {
+) -> Result<Vec<ArtifactReference>, EvalError> {
     let mut references = Vec::new();
     for artifact in artifacts {
         if !artifact.is_session_or_source() || artifact.run_id() != Some(run_id) {
@@ -144,7 +144,7 @@ pub fn persist_eval_artifact_references(
         let category = match artifact {
             EvalArtifact::Session { .. } => "sessions",
             EvalArtifact::Source { .. } => "sources",
-            _ => unreachable!(),
+            EvalArtifact::Other => continue,
         };
         for attachment in artifact.attachments() {
             let name = attachment
@@ -153,15 +153,19 @@ pub fn persist_eval_artifact_references(
                 .next()
                 .unwrap_or(&attachment.name);
             if name != attachment.name || name.is_empty() {
-                return Err(format!("Invalid eval artifact name: {}", attachment.name));
+                return Err(EvalError::InvalidArtifactName {
+                    name: attachment.name.clone(),
+                });
             }
             let hash = sha256_hex(run_id.as_bytes());
             let directory = artifact_directory.join(category).join(hash);
             std::fs::create_dir_all(&directory)
-                .map_err(|error| format!("Failed to create artifact dir: {error}"))?;
+                .map_err(|source| EvalError::CreateArtifactDir { source })?;
+            restrict_permissions(&directory, 0o700)?;
             let path = directory.join(name);
             std::fs::write(&path, attachment.body.as_bytes())
-                .map_err(|error| format!("Failed to write artifact: {error}"))?;
+                .map_err(|source| EvalError::WriteArtifact { source })?;
+            restrict_permissions(&path, 0o600)?;
             let relative = path
                 .strip_prefix(artifact_directory)
                 .unwrap_or(&path)
@@ -174,6 +178,23 @@ pub fn persist_eval_artifact_references(
         }
     }
     Ok(references)
+}
+
+#[cfg(unix)]
+fn restrict_permissions(path: &Path, mode: u32) -> Result<(), EvalError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = std::fs::metadata(path)
+        .map_err(|source| EvalError::InspectArtifactPermissions { source })?
+        .permissions();
+    permissions.set_mode(mode);
+    std::fs::set_permissions(path, permissions)
+        .map_err(|source| EvalError::RestrictArtifactPermissions { source })
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path, _mode: u32) -> Result<(), EvalError> {
+    Ok(())
 }
 
 /// Result of a recorded run appended to `runs.jsonl` (port of the reporter

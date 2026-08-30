@@ -9,6 +9,7 @@
 //! `AgentSession`, so the scenario assertions exercise the shipped surface.
 
 pub mod artifacts;
+pub mod error;
 pub mod harness;
 pub mod harness_table;
 pub mod reporter;

@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 
 use crate::artifacts::{persist_eval_artifact_references, EvalArtifact, RunRecord, TestRecord};
+use crate::error::EvalError;
 
 pub struct ReporterOptions {
     pub artifact_directory: Option<PathBuf>,
@@ -35,12 +36,12 @@ pub fn append_harness_run_report(
     errors: &[String],
     artifacts: &[EvalArtifact],
     metadata: std::collections::BTreeMap<String, serde_json::Value>,
-) -> Result<(), String> {
+) -> Result<(), EvalError> {
     let Some(artifact_directory) = &options.artifact_directory else {
         return Ok(());
     };
     std::fs::create_dir_all(artifact_directory)
-        .map_err(|error| format!("Failed to create artifact dir: {error}"))?;
+        .map_err(|source| EvalError::CreateArtifactDir { source })?;
     let references = persist_eval_artifact_references(artifacts, run_id, artifact_directory)?;
     let record = RunRecord {
         schema_version: 1,
@@ -55,14 +56,14 @@ pub fn append_harness_run_report(
     };
     let path = artifact_directory.join("runs.jsonl");
     let line = serde_json::to_string(&record)
-        .map_err(|error| format!("Failed to serialize run record: {error}"))?;
+        .map_err(|source| EvalError::SerializeRunRecord { source })?;
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-        .map_err(|error| format!("Failed to open runs.jsonl: {error}"))?;
+        .map_err(|source| EvalError::OpenRunsJsonl { source })?;
     file.write_all(line.as_bytes())
         .and_then(|_| file.write_all(b"\n"))
-        .map_err(|error| format!("Failed to append run record: {error}"))
+        .map_err(|source| EvalError::AppendRunRecord { source })
 }

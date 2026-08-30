@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 use pi_evals::session_usage::{parse_session_usage, SessionUsage};
 
 const V4_FIXTURE: &str = include_str!("fixtures/session-usage-v4.jsonl");
@@ -50,7 +52,10 @@ fn rejects_invalid_session_jsonl_with_a_line_number() {
     )
     .expect_err("invalid JSONL must not become zero usage");
 
-    assert!(error.contains("session JSONL line 2"), "{error}");
+    assert!(
+        error.to_string().contains("session JSONL line 2"),
+        "{error}"
+    );
 }
 
 #[test]

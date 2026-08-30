@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Port of `packages/evals/test/vitest-evals/summary.test.ts`.
 
 use pi_evals::summary::{
