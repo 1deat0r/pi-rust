@@ -155,6 +155,34 @@ exit 0, 2,805 passed; fmt/diff checks; `conversion_audit all`
 `Conversion progress: 100.00% (166/166; 0 open)`. No numbered ledger row
 changed.
 
+## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 3 closed (campaign complete)
+
+Tenth and final campaign checkpoint, direct child of Phase 2.6 (`9762924`).
+
+Phase 3 findings and decisions:
+
+- **settings.rs / models_store.rs typed conversion: declined, deliberately.**
+  Their panics are the persistence path's unrecoverable-failure handling
+  (lock acquisition, file read/write, trust assertion) mirroring upstream's
+  thrown configuration errors. Converting to `Result` would ripple through
+  every settings mutation call site while changing no observable behavior;
+  they remain behind scoped, commented allows on the gated crates.
+- **`let _ =` swallow triage: no real swallows found.** Of ~223 production
+  `let _ =` sites: 32 are intentional fire-and-forget channel sends, 22 are
+  best-effort filesystem cleanup, and the remaining 169 are idiomatic
+  best-effort discards (stdout flush, child kill/wait, terminal restore,
+  catch_unwind, temp cleanup, event dispatch). No hidden error handling.
+
+Final campaign state: every workspace crate enforces the
+`unwrap_used`/`expect_used`/`panic` deny gate; ~400+ production lock panics
+eliminated; typed error surfaces live in pi-ai (`PiAiError`), pi-evals
+(`EvalError`/`EvalFailures`), and pi-coding-agent (`AuthStorageError`).
+
+Exact validation (with `QWEN_TOKEN_PLAN_API_KEY` exported): complete
+workspace matrix exit 0, 2,805 passed; strict workspace clippy; fmt/diff
+checks; `conversion_audit all` `Conversion progress: 100.00% (166/166; 0
+open)`. No numbered ledger row changed.
+
 ## RESOLVED — push blocker — 2026-08-30 — six campaign commits pushed
 
 ROOT CAUSE (confirmed): the pushes did not fail because of the network —

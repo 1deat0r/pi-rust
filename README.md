@@ -759,5 +759,9 @@ opted into per crate via `[lints] workspace = true`). Converted crates so
 far: every workspace crate (`pi-evals`, `pi-server`, `pi-client`, `pi-ai`,
 `pi-agent`, `pi-coding-agent`, `pi-tui`, `pi-telemetry`,
 `pi-session-backends`).
-The async auth-storage surface also uses the typed `AuthStorageError`. Test code carries scoped `#[allow]`s only.
+The async auth-storage surface also uses the typed `AuthStorageError`. Test
+code carries scoped `#[allow]`s only.
+Campaign closed 2026-08-30: the `let _ =` swallow triage found no hidden
+error handling, and the settings/models_store persistence panics are
+deliberate upstream-mirroring behavior behind documented allows.
 See `PLAN.md` for the Rust-idiom campaign status.

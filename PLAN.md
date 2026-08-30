@@ -93,6 +93,13 @@ error unification with pi-client/pi-ai (next phases). Evidence: pi-server
 clippy clean under the gate, 63 crate tests, workspace matrix 2,805 passed,
 strict workspace clippy, fmt/diff checks, `conversion_audit all`
 `100.00% (166/166; 0 open)`. No numbered ledger row changed.
+Phase 3 (closed): settings/models_store typed conversion declined
+deliberately — their panics are persistence-path unrecoverable-failure
+handling mirroring upstream, documented behind scoped allows. The
+`let _ =` triage found no hidden swallows (sends/cleanup/best-effort
+discards). Campaign complete: workspace-wide hard gate, typed surfaces for
+pi-ai auth/OAuth, pi-evals, and pi-coding-agent auth storage. No numbered
+ledger row changed.
 
 ## Active 2026-08-30 exhaustive behavioral-parity execution tree
 

@@ -179,3 +179,5 @@ Phase 2.7 (pi-tui gate) does not touch TUI rows: the lint gate is a
 build-health boundary, not behavioral evidence.
 
 Phase 2.6 (AuthStorageError) likewise does not touch TUI rows.
+
+Phase 3 campaign closure does not touch TUI rows.

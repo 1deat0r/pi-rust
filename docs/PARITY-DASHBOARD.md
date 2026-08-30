@@ -348,3 +348,5 @@ Phase 2.5 (pi-coding-agent gate) does not move any dashboard dimension.
 Phase 2.7 (workspace-wide gate) does not move any dashboard dimension.
 
 Phase 2.6 (AuthStorageError) does not move any dashboard dimension.
+
+Phase 3 campaign closure does not move any dashboard dimension.

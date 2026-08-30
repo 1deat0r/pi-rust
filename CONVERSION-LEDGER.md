@@ -1919,3 +1919,7 @@ the panic-path lint gate; ledger rows unchanged.
 
 Phase 2.6 introduced typed AuthStorageError for the async auth-storage
 surface; ledger rows unchanged.
+
+Phase 3 closed the campaign: settings/models_store panics documented as
+deliberate persistence-path handling; let _ = triage found no hidden
+swallows; ledger rows unchanged.
