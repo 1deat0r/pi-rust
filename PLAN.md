@@ -28,6 +28,13 @@ active), full pi-evals suite 35 tests pass, complete workspace matrix 2,805
 pass, strict workspace clippy, fmt/diff checks, `conversion_audit all`
 `100.00% (166/166; 0 open)`. No numbered ledger row changed.
 
+Phase 2.2 checkpoint: **pi-client** is under the hard gate. All production
+lock unwraps became poison-tolerant; no `.unwrap()`/`.expect()` remain in
+production code; `PiClientError` keeps its stable struct shape and already
+implements `Display`/`Error`. pi-client behavior is exercised through the
+pi-server e2e suites. Workspace matrix 2,805 passed; `conversion_audit all`
+green. No numbered ledger row changed.
+
 Next: Phase 2 crate conversions in order pi-server → pi-client → pi-ai →
 pi-agent → pi-coding-agent (core, then modes/bins) → pi-tui/pi-telemetry/
 pi-session-backends, each flipping its own gate to full deny.

@@ -2,6 +2,27 @@
 
 Date: 2026-08-30 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 2.2 (pi-client under the hard gate)
+
+Third campaign checkpoint, direct child of Phase 2.1 (`a75f420`). pi-client
+opts into the workspace hard lint gate and is clean with `-D warnings`:
+every production `lock()/read()/write().unwrap()` became poison-tolerant
+`unwrap_or_else(|error| error.into_inner())`; zero `.unwrap()`/`.expect()`
+remain in production code. `PiClientError` already implements
+`Display` + `std::error::Error`; its documented wire/struct shape is
+unchanged. pi-client has no inline or integration test targets; its behavior
+is exercised through pi-server's e2e suites (all pass).
+
+Exact validation: pi-client clippy clean under the gate; workspace matrix
+exit 0, 2,805 passed; strict workspace clippy; `cargo fmt --all -- --check`;
+`git diff --check`; `conversion_audit all`
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
+No numbered ledger row changed. Next: Phase 2.3 pi-ai — the largest value
+step: a typed `PiAiError` thiserror surface replacing 170 `Result<_, String>`
+sites (auth/transport/stream/parse variants, exact display strings
+preserved), plus production unwrap/expect cleanup.
+
 ## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 2.1 (pi-server under the hard gate)
 
 Second campaign checkpoint, committed as the direct child of the Phase 1

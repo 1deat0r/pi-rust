@@ -36,6 +36,14 @@ struct FakeTransport {
     decoder: Mutex<ClientMessageDecoder>,
 }
 
+struct EarlyDataFactory {
+    close_count: Arc<AtomicUsize>,
+}
+
+struct EarlyDataTransport {
+    close_count: Arc<AtomicUsize>,
+}
+
 impl FakeFactory {
     fn new(
         failures: impl IntoIterator<Item = String>,
@@ -82,6 +90,41 @@ impl TransportFactory for FakeFactory {
             });
             Ok(transport)
         })
+    }
+}
+
+impl TransportFactory for EarlyDataFactory {
+    fn connect<'a>(
+        &'a self,
+        handlers: TransportHandlers,
+    ) -> TransportFuture<'a, Result<Arc<dyn ByteTransport>, PiClientError>> {
+        Box::pin(async move {
+            send_server_message(
+                &handlers,
+                ServerMessage::Hello {
+                    version: pi_protocol::PROTOCOL_VERSION,
+                    connection_id: "early".into(),
+                    snapshot: base_snapshot(1),
+                },
+            );
+            Ok(Arc::new(EarlyDataTransport {
+                close_count: self.close_count.clone(),
+            }) as Arc<dyn ByteTransport>)
+        })
+    }
+}
+
+impl ByteTransport for EarlyDataTransport {
+    fn send<'a>(&'a self, _chunk: Vec<u8>) -> TransportFuture<'a, Result<(), PiClientError>> {
+        Box::pin(async {
+            Err(PiClientError {
+                message: "hello was not sent".into(),
+            })
+        })
+    }
+
+    fn close(&self) {
+        self.close_count.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -265,6 +308,53 @@ async fn reconnect_backoff_retries_factory_failures_with_deterministic_delays() 
     assert_eq!(snapshot.revision, 3);
     assert_eq!(factory.attempts(), 3);
     assert_eq!(client.connection_state(), ClientConnectionState::Connected);
+}
+
+#[tokio::test]
+async fn rejects_server_data_delivered_before_client_hello() {
+    let close_count = Arc::new(AtomicUsize::new(0));
+    let client = PiClient::with_transport_factory(
+        Arc::new(EarlyDataFactory {
+            close_count: close_count.clone(),
+        }),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+    );
+
+    let error = client.reconnect().await.unwrap_err();
+    assert_eq!(
+        error.message,
+        "Received server data before the client hello was sent"
+    );
+    assert_eq!(close_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        client.connection_state(),
+        ClientConnectionState::Disconnected
+    );
+}
+
+#[tokio::test]
+async fn rejects_a_non_handshake_message_before_server_hello() {
+    let factory = FakeFactory::new(Vec::<String>::new(), |index, message, handlers| {
+        if matches!(message, ClientMessage::Hello { .. }) {
+            send_server_message(
+                &handlers,
+                ServerMessage::Event {
+                    event: ServerEvent::ServerSnapshot {
+                        snapshot: base_snapshot(index as i64 + 1),
+                    },
+                },
+            );
+        }
+    });
+    let client = client(&factory, Duration::from_millis(100));
+
+    let error = client.reconnect().await.unwrap_err();
+    assert_eq!(error.message, "Expected server hello as first message");
+    assert_eq!(
+        client.connection_state(),
+        ClientConnectionState::Disconnected
+    );
 }
 
 #[tokio::test]
@@ -659,4 +749,43 @@ impl FakeTransport {
     fn index(&self) -> usize {
         self.connection.index
     }
+}
+
+#[tokio::test]
+async fn event_subscription_can_be_removed_without_affecting_connection() {
+    let factory = FakeFactory::new(Vec::<String>::new(), |index, message, handlers| {
+        if matches!(message, ClientMessage::Hello { .. }) {
+            hello(index, &handlers, 1);
+        }
+    });
+    let client = client(&factory, Duration::from_millis(100));
+    client.reconnect().await.unwrap();
+
+    let events = Arc::new(AtomicUsize::new(0));
+    let events_for_listener = events.clone();
+    let unsubscribe = client.subscribe(Arc::new(move |_| {
+        events_for_listener.fetch_add(1, Ordering::SeqCst);
+    }));
+    send_server_message(
+        &factory.connection(0).handlers,
+        ServerMessage::Event {
+            event: ServerEvent::ServerSnapshot {
+                snapshot: base_snapshot(2),
+            },
+        },
+    );
+    assert_eq!(events.load(Ordering::SeqCst), 1);
+
+    unsubscribe.unsubscribe();
+    send_server_message(
+        &factory.connection(0).handlers,
+        ServerMessage::Event {
+            event: ServerEvent::ServerSnapshot {
+                snapshot: base_snapshot(3),
+            },
+        },
+    );
+    assert_eq!(events.load(Ordering::SeqCst), 1);
+    assert_eq!(client.connection_state(), ClientConnectionState::Connected);
+    client.dispose().await.unwrap();
 }

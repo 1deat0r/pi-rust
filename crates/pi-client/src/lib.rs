@@ -27,6 +27,70 @@ pub struct PiClientError {
     pub message: String,
 }
 
+/// Stable error classification for callers that need to recover without
+/// parsing user-facing text.  The wire-compatible `PiClientError` shape is
+/// intentionally unchanged so existing integrations that construct it with a
+/// struct literal keep compiling; classification is derived at the boundary
+/// from the same conditions that create the error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PiClientErrorKind {
+    Disconnected,
+    Disposed,
+    SessionOwnership,
+    SessionDetached,
+    Timeout,
+    Protocol,
+    Transport,
+    InvalidRequest,
+    Other,
+}
+
+impl PiClientError {
+    pub fn kind(&self) -> PiClientErrorKind {
+        let message = self.message.to_ascii_lowercase();
+        if message.contains("disposed") {
+            PiClientErrorKind::Disposed
+        } else if message.contains("disconnected")
+            || message.contains("connection closed")
+            || message.contains("connection attempt")
+        {
+            PiClientErrorKind::Disconnected
+        } else if message.contains("already has an active lease")
+            || message.contains("has an exclusive lease")
+            || message.contains("ownership")
+        {
+            PiClientErrorKind::SessionOwnership
+        } else if message.contains("session ") && message.contains("detached") {
+            PiClientErrorKind::SessionDetached
+        } else if message.contains("timed out") || message.contains("timeout") {
+            PiClientErrorKind::Timeout
+        } else if message.starts_with("connect:")
+            || message.starts_with("send:")
+            || message.starts_with("transport")
+        {
+            PiClientErrorKind::Transport
+        } else if message.contains("protocol")
+            || message.contains("response ")
+            || message.contains("hello")
+            || message.contains("frame")
+        {
+            PiClientErrorKind::Protocol
+        } else if message.contains("invalid") || message.contains("unexpected") {
+            PiClientErrorKind::InvalidRequest
+        } else {
+            PiClientErrorKind::Other
+        }
+    }
+
+    pub fn is_disconnected(&self) -> bool {
+        self.kind() == PiClientErrorKind::Disconnected
+    }
+
+    pub fn is_disposed(&self) -> bool {
+        self.kind() == PiClientErrorKind::Disposed
+    }
+}
+
 impl std::fmt::Display for PiClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.message)
@@ -51,6 +115,28 @@ pub struct ConnectionStateChange {
 pub type EventListener = Arc<dyn Fn(&ServerEvent) + Send + Sync>;
 pub type ConnectionStateListener = Arc<dyn Fn(&ConnectionStateChange) + Send + Sync>;
 pub type ConnectionStateUnsubscribe = Box<dyn Fn() + Send + Sync>;
+
+/// Handle for a general event subscription. It is intentionally not a
+/// `#[must_use]` closure: existing callers that only need to observe events
+/// can keep using `subscribe` as a statement, while callers that need to stop
+/// receiving events can call [`Self::unsubscribe`].
+pub struct EventSubscription {
+    listeners: Arc<Mutex<Vec<Option<EventListener>>>>,
+    index: usize,
+}
+
+impl EventSubscription {
+    pub fn unsubscribe(&self) {
+        if let Some(slot) = self
+            .listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_mut(self.index)
+        {
+            *slot = None;
+        }
+    }
+}
 
 /// Deterministic reconnect retry policy. reconnect() remains a single
 /// upstream-compatible connection attempt; this explicit helper adds bounded
@@ -118,7 +204,7 @@ pub struct PiClient {
     transport_factory: Arc<dyn transport::TransportFactory>,
     connection: Arc<Mutex<Option<Arc<dyn transport::ByteTransport>>>>,
     pending: Arc<Mutex<HashMap<String, PendingEntry>>>,
-    listeners: Arc<Mutex<Vec<EventListener>>>,
+    listeners: Arc<Mutex<Vec<Option<EventListener>>>>,
     connection_state: Arc<Mutex<ClientConnectionState>>,
     connection_state_listeners: Arc<Mutex<Vec<Option<ConnectionStateListener>>>>,
     snapshot: Arc<Mutex<Option<ServerSnapshot>>>,
@@ -228,7 +314,10 @@ impl PiClient {
     }
 
     pub fn connection_state(&self) -> ClientConnectionState {
-        *self.connection_state.lock().unwrap()
+        *self
+            .connection_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     pub fn is_connected(&self) -> bool {
@@ -244,44 +333,70 @@ impl PiClient {
         listener: impl Fn(&ConnectionStateChange) + Send + Sync + 'static,
     ) -> ConnectionStateUnsubscribe {
         let listener: ConnectionStateListener = Arc::new(listener);
-        let mut listeners = self.connection_state_listeners.lock().unwrap();
+        let mut listeners = self
+            .connection_state_listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         listeners.push(Some(listener));
         let index = listeners.len() - 1;
         let listeners = self.connection_state_listeners.clone();
         Box::new(move || {
-            if let Some(slot) = listeners.lock().unwrap().get_mut(index) {
+            if let Some(slot) = listeners
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_mut(index)
+            {
                 *slot = None;
             }
         })
     }
 
-    pub fn subscribe(&self, listener: EventListener) {
-        self.listeners.lock().unwrap().push(listener);
+    pub fn subscribe(&self, listener: EventListener) -> EventSubscription {
+        let mut listeners = self
+            .listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        listeners.push(Some(listener));
+        let index = listeners.len() - 1;
+        EventSubscription {
+            listeners: self.listeners.clone(),
+            index,
+        }
     }
 
     pub fn subscribe_snapshot(
         &self,
         listener: impl Fn(&ServerSnapshot) + Send + Sync + 'static,
     ) -> ConnectionStateUnsubscribe {
-        let mut listeners = self.snapshot_listeners.lock().unwrap();
+        let mut listeners = self
+            .snapshot_listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         listeners.push(Some(Arc::new(listener)));
         let index = listeners.len() - 1;
         let listeners = self.snapshot_listeners.clone();
         Box::new(move || {
-            if let Some(slot) = listeners.lock().unwrap().get_mut(index) {
+            if let Some(slot) = listeners
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_mut(index)
+            {
                 *slot = None;
             }
         })
     }
 
     pub fn snapshot(&self) -> Option<ServerSnapshot> {
-        self.snapshot.lock().unwrap().clone()
+        self.snapshot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     pub fn session_snapshot(&self, session_id: &str) -> Option<pi_protocol::SessionSnapshot> {
         self.session_snapshots
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .get(session_id)
             .cloned()
     }
@@ -291,7 +406,10 @@ impl PiClient {
             return Err(error("PiClient is disposed"));
         }
         {
-            let mut state = self.connection_state.lock().unwrap();
+            let mut state = self
+                .connection_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             if *state != ClientConnectionState::Disconnected {
                 return Err(error(format!("PiClient is already {}", state_name(*state))));
             }
@@ -305,7 +423,10 @@ impl PiClient {
 
         let epoch = self.connection_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let (handshake_tx, handshake_rx) = tokio::sync::oneshot::channel();
-        *self.handshake.lock().unwrap() = Some(handshake_tx);
+        *self
+            .handshake
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(handshake_tx);
         let decoder = Arc::new(Mutex::new(
             ServerMessageDecoder::new(&FrameDecoderOptions {
                 max_frame_length: Some(self.max_frame_length),
@@ -338,9 +459,15 @@ impl PiClient {
                 || self.connection_state() != ClientConnectionState::Connecting
             {
                 transport.close();
-                return Err(error("connection attempt is no longer current"));
+                return match handshake_rx.await {
+                    Ok(result) => result,
+                    Err(_) => Err(error("connection attempt is no longer current")),
+                };
             }
-            *self.connection.lock().unwrap() = Some(transport.clone());
+            *self
+                .connection
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(transport.clone());
             let frame = pi_protocol::encode_client_message(
                 &ClientMessage::Hello {
                     version: pi_protocol::PROTOCOL_VERSION,
@@ -411,7 +538,7 @@ impl PiClient {
         let transport = self
             .connection
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .clone()
             .ok_or_else(|| error("client is disconnected"))?;
         let id = format!("r{}", self.next_request_id.fetch_add(1, Ordering::Relaxed));
@@ -428,12 +555,18 @@ impl PiClient {
             message: format!("encode: {protocol_error}"),
         })?;
         let (resolve, receive) = tokio::sync::oneshot::channel();
-        self.pending.lock().unwrap().insert(
-            id.clone(),
-            PendingEntry::Active(Pending { command, resolve }),
-        );
+        self.pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                id.clone(),
+                PendingEntry::Active(Pending { command, resolve }),
+            );
         if let Err(send_error) = transport.send(frame).await {
-            self.pending.lock().unwrap().remove(&id);
+            self.pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&id);
             self.connection_lost(epoch, send_error.clone());
             return Err(send_error);
         }
@@ -442,7 +575,10 @@ impl PiClient {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(error("connection closed before response")),
             Err(_) => {
-                let mut pending = self.pending.lock().unwrap();
+                let mut pending = self
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
                 if matches!(pending.get(&id), Some(PendingEntry::Active(_))) {
                     pending.insert(id, PendingEntry::TimedOut);
                 }
@@ -476,11 +612,26 @@ impl PiClient {
             self.reset_connection_state();
             self.invalidate_all_leases();
         }
-        self.listeners.lock().unwrap().clear();
-        self.connection_state_listeners.lock().unwrap().clear();
-        self.snapshot_listeners.lock().unwrap().clear();
-        self.session_snapshot_listeners.lock().unwrap().clear();
-        self.session_event_listeners.lock().unwrap().clear();
+        self.listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.connection_state_listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.snapshot_listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.session_snapshot_listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.session_event_listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
         Ok(())
     }
 
@@ -488,7 +639,24 @@ impl PiClient {
         if self.connection_epoch.load(Ordering::SeqCst) != epoch {
             return;
         }
-        let messages = match decoder.lock().unwrap().push(&chunk) {
+        if self.connection_state() == ClientConnectionState::Connecting
+            && self
+                .connection
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_none()
+        {
+            self.connection_lost(
+                epoch,
+                error("Received server data before the client hello was sent"),
+            );
+            return;
+        }
+        let messages = match decoder
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(&chunk)
+        {
             Ok(messages) => messages,
             Err(protocol_error) => {
                 self.connection_lost(
@@ -511,7 +679,11 @@ impl PiClient {
     }
 
     fn handle_close(&self, epoch: u64, decoder: Arc<Mutex<ServerMessageDecoder>>) {
-        let connection_error = match decoder.lock().unwrap().end() {
+        let connection_error = match decoder
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .end()
+        {
             Ok(()) => error("Byte transport closed"),
             Err(protocol_error) => PiClientError {
                 message: protocol_error.to_string(),
@@ -524,10 +696,19 @@ impl PiClient {
         if self.connection_epoch.load(Ordering::SeqCst) != epoch {
             return;
         }
+        if self.connection_state() == ClientConnectionState::Connecting
+            && !matches!(
+                message,
+                ServerMessage::Hello { .. } | ServerMessage::HelloError { .. }
+            )
+        {
+            self.connection_lost(epoch, error("Expected server hello as first message"));
+            return;
+        }
         match message {
             ServerMessage::Hello { snapshot, .. } => {
                 if self.connection_state() != ClientConnectionState::Connecting {
-                    self.connection_lost(epoch, error("unexpected handshake message"));
+                    self.connection_lost(epoch, error("Unexpected handshake message"));
                     return;
                 }
                 self.apply_server_snapshot(snapshot.clone());
@@ -540,13 +721,22 @@ impl PiClient {
                 {
                     return;
                 }
-                if let Some(sender) = self.handshake.lock().unwrap().take() {
+                if let Some(sender) = self
+                    .handshake
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take()
+                {
                     let _ = sender.send(Ok(snapshot));
                 }
             }
             ServerMessage::HelloError {
                 error: protocol_error,
             } => {
+                if self.connection_state() != ClientConnectionState::Connecting {
+                    self.connection_lost(epoch, error("Unexpected handshake message"));
+                    return;
+                }
                 self.connection_lost(
                     epoch,
                     PiClientError {
@@ -560,12 +750,13 @@ impl PiClient {
                 result,
                 error: protocol_error,
             } => {
-                let pending = self.pending.lock().unwrap().remove(&id);
+                let pending = self
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(&id);
                 let Some(pending) = pending else {
-                    self.connection_lost(
-                        epoch,
-                        error(format!("response has no matching request: {id}")),
-                    );
+                    self.connection_lost(epoch, error("Response has no matching request"));
                     return;
                 };
                 let PendingEntry::Active(Pending { command, resolve }) = pending else {
@@ -588,7 +779,7 @@ impl PiClient {
                 };
                 if !command_matches(&command, &result) {
                     let mismatch = error(format!(
-                        "response command {} does not match {}",
+                        "Response command {} does not match {}",
                         result_name(&result),
                         command_name(&command)
                     ));
@@ -615,7 +806,10 @@ impl PiClient {
             return;
         }
         let changed = {
-            let mut state = self.connection_state.lock().unwrap();
+            let mut state = self
+                .connection_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             if *state == ClientConnectionState::Disconnected {
                 false
             } else {
@@ -626,8 +820,16 @@ impl PiClient {
         if !changed {
             return;
         }
-        let connection = self.connection.lock().unwrap().take();
-        let handshake = self.handshake.lock().unwrap().take();
+        let connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        let handshake = self
+            .handshake
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         self.reject_pending(connection_error.clone());
         self.reset_connection_state();
         self.invalidate_all_leases();
@@ -644,7 +846,12 @@ impl PiClient {
     }
 
     fn reject_pending(&self, connection_error: PiClientError) {
-        let entries = std::mem::take(&mut *self.pending.lock().unwrap());
+        let entries = std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
         for entry in entries.into_values() {
             if let PendingEntry::Active(Pending { resolve, .. }) = entry {
                 let _ = resolve.send(Err(connection_error.clone()));
@@ -653,9 +860,18 @@ impl PiClient {
     }
 
     fn reset_connection_state(&self) {
-        *self.snapshot.lock().unwrap() = None;
-        self.session_snapshots.lock().unwrap().clear();
-        self.attached_sessions.lock().unwrap().clear();
+        *self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+        self.session_snapshots
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.attached_sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
     }
 
     fn set_connection_state(
@@ -664,7 +880,10 @@ impl PiClient {
         state_error: Option<PiClientError>,
     ) {
         let changed = {
-            let mut current = self.connection_state.lock().unwrap();
+            let mut current = self
+                .connection_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             if *current == state {
                 false
             } else {
@@ -681,7 +900,11 @@ impl PiClient {
     }
 
     fn notify_connection_state(&self, change: ConnectionStateChange) {
-        let listeners = self.connection_state_listeners.lock().unwrap().clone();
+        let listeners = self
+            .connection_state_listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         for listener in listeners.into_iter().flatten() {
             let _ = catch_unwind(AssertUnwindSafe(|| listener(&change)));
         }
@@ -689,7 +912,10 @@ impl PiClient {
 
     fn apply_server_snapshot(&self, snapshot: ServerSnapshot) {
         let should_apply = {
-            let mut current = self.snapshot.lock().unwrap();
+            let mut current = self
+                .snapshot
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             if current
                 .as_ref()
                 .is_some_and(|previous| snapshot.revision < previous.revision)
@@ -703,7 +929,11 @@ impl PiClient {
         if !should_apply {
             return;
         }
-        let listeners = self.snapshot_listeners.lock().unwrap().clone();
+        let listeners = self
+            .snapshot_listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         for listener in listeners.into_iter().flatten() {
             let _ = catch_unwind(AssertUnwindSafe(|| listener(&snapshot)));
         }
@@ -718,7 +948,10 @@ impl PiClient {
                     snapshot.attached = false;
                     self.apply_session_snapshot(snapshot, true);
                 } else {
-                    self.attached_sessions.lock().unwrap().remove(session_id);
+                    self.attached_sessions
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .remove(session_id);
                 }
             }
             CommandResult::Create { session }
@@ -743,8 +976,14 @@ impl PiClient {
             }
             ServerEvent::SessionRemoved { session_id } => {
                 self.invalidate_session_leases(session_id);
-                self.session_snapshots.lock().unwrap().remove(session_id);
-                self.attached_sessions.lock().unwrap().remove(session_id);
+                self.session_snapshots
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(session_id);
+                self.attached_sessions
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(session_id);
             }
             ServerEvent::SessionProgress { .. } => {}
         }
@@ -752,7 +991,10 @@ impl PiClient {
 
     fn apply_session_snapshot(&self, snapshot: pi_protocol::SessionSnapshot, force: bool) {
         let should_apply = {
-            let mut snapshots = self.session_snapshots.lock().unwrap();
+            let mut snapshots = self
+                .session_snapshots
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let should_apply = force
                 || snapshots
                     .get(&snapshot.id)
@@ -768,15 +1010,18 @@ impl PiClient {
         if snapshot.attached || (!force && self.has_active_session_lease(&snapshot.id)) {
             self.attached_sessions
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|error| error.into_inner())
                 .insert(snapshot.id.clone());
         } else {
-            self.attached_sessions.lock().unwrap().remove(&snapshot.id);
+            self.attached_sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&snapshot.id);
         }
         let listeners = self
             .session_snapshot_listeners
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .get(&snapshot.id)
             .cloned()
             .unwrap_or_default();
@@ -786,8 +1031,12 @@ impl PiClient {
     }
 
     fn notify_event_listeners(&self, event: &ServerEvent) {
-        let listeners = self.listeners.lock().unwrap().clone();
-        for listener in listeners {
+        let listeners = self
+            .listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        for listener in listeners.into_iter().flatten() {
             let _ = catch_unwind(AssertUnwindSafe(|| listener(event)));
         }
         let session_id = match event {
@@ -800,7 +1049,7 @@ impl PiClient {
             let listeners = self
                 .session_event_listeners
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|error| error.into_inner())
                 .get(session_id)
                 .cloned()
                 .unwrap_or_default();
@@ -817,7 +1066,7 @@ impl PiClient {
     fn has_active_session_lease(&self, session_id: &str) -> bool {
         self.lease_registry
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .counts
             .get(session_id)
             .copied()
@@ -826,19 +1075,31 @@ impl PiClient {
     }
 
     pub(crate) fn is_session_attached(&self, session_id: &str) -> bool {
-        self.attached_sessions.lock().unwrap().contains(session_id)
+        self.attached_sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(session_id)
     }
 
     pub(crate) fn forget_session_snapshot(
         &self,
         session_id: &str,
     ) -> Option<pi_protocol::SessionSnapshot> {
-        self.attached_sessions.lock().unwrap().remove(session_id);
-        self.session_snapshots.lock().unwrap().remove(session_id)
+        self.attached_sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(session_id);
+        self.session_snapshots
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(session_id)
     }
 
     pub(crate) fn restore_session_snapshot(&self, snapshot: pi_protocol::SessionSnapshot) {
-        let mut snapshots = self.session_snapshots.lock().unwrap();
+        let mut snapshots = self
+            .session_snapshots
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if snapshots.contains_key(&snapshot.id) {
             return;
         }
@@ -847,7 +1108,10 @@ impl PiClient {
         snapshots.insert(id.clone(), snapshot);
         drop(snapshots);
         if attached {
-            self.attached_sessions.lock().unwrap().insert(id);
+            self.attached_sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(id);
         }
     }
 
@@ -856,14 +1120,21 @@ impl PiClient {
         session_id: &str,
         listener: impl Fn(&pi_protocol::SessionSnapshot) + Send + Sync + 'static,
     ) -> ConnectionStateUnsubscribe {
-        let mut listeners = self.session_snapshot_listeners.lock().unwrap();
+        let mut listeners = self
+            .session_snapshot_listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let entries = listeners.entry(session_id.to_string()).or_default();
         entries.push(Some(Arc::new(listener)));
         let index = entries.len() - 1;
         let listeners = self.session_snapshot_listeners.clone();
         let session_id = session_id.to_string();
         Box::new(move || {
-            if let Some(entries) = listeners.lock().unwrap().get_mut(&session_id) {
+            if let Some(entries) = listeners
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_mut(&session_id)
+            {
                 if let Some(slot) = entries.get_mut(index) {
                     *slot = None;
                 }
@@ -876,14 +1147,21 @@ impl PiClient {
         session_id: &str,
         listener: impl Fn(&ServerEvent) + Send + Sync + 'static,
     ) -> ConnectionStateUnsubscribe {
-        let mut listeners = self.session_event_listeners.lock().unwrap();
+        let mut listeners = self
+            .session_event_listeners
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let entries = listeners.entry(session_id.to_string()).or_default();
         entries.push(Some(Arc::new(listener)));
         let index = entries.len() - 1;
         let listeners = self.session_event_listeners.clone();
         let session_id = session_id.to_string();
         Box::new(move || {
-            if let Some(entries) = listeners.lock().unwrap().get_mut(&session_id) {
+            if let Some(entries) = listeners
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_mut(&session_id)
+            {
                 if let Some(slot) = entries.get_mut(index) {
                     *slot = None;
                 }
@@ -894,7 +1172,7 @@ impl PiClient {
     pub(crate) fn session_operation(&self, session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.session_operations
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .entry(session_id.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
@@ -905,7 +1183,10 @@ impl PiClient {
         session_id: &str,
         mode: SessionLeaseMode,
     ) -> Result<SessionLeaseToken, PiClientError> {
-        let mut registry = self.lease_registry.lock().unwrap();
+        let mut registry = self
+            .lease_registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let count = registry.counts.get(session_id).copied().unwrap_or(0);
         if mode == SessionLeaseMode::Exclusive && count > 0 {
             return Err(error(format!(
@@ -932,7 +1213,10 @@ impl PiClient {
     }
 
     pub(crate) fn release_session_lease(&self, token: &SessionLeaseToken) {
-        let mut registry = self.lease_registry.lock().unwrap();
+        let mut registry = self
+            .lease_registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let Some(session_id) = registry.active.remove(&token.id) else {
             return;
         };
@@ -948,7 +1232,10 @@ impl PiClient {
     }
 
     pub(crate) fn lease_is_reserved(&self, token: &SessionLeaseToken) -> bool {
-        let registry = self.lease_registry.lock().unwrap();
+        let registry = self
+            .lease_registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         registry.active.get(&token.id) == Some(&token.session_id)
             && registry
                 .generations
@@ -961,7 +1248,7 @@ impl PiClient {
     pub(crate) fn lease_generation_is_current(&self, token: &SessionLeaseToken) -> bool {
         self.lease_registry
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .generations
             .get(&token.session_id)
             .copied()
@@ -972,7 +1259,7 @@ impl PiClient {
     pub(crate) fn mark_cleanup_required(&self, session_id: &str) {
         self.lease_registry
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .cleanup_required
             .insert(session_id.to_string());
     }
@@ -980,13 +1267,16 @@ impl PiClient {
     pub(crate) fn take_cleanup_required(&self, session_id: &str) -> bool {
         self.lease_registry
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .cleanup_required
             .remove(session_id)
     }
 
     pub(crate) fn invalidate_session_leases(&self, session_id: &str) {
-        let mut registry = self.lease_registry.lock().unwrap();
+        let mut registry = self
+            .lease_registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         registry.active.retain(|_, id| id != session_id);
         registry.counts.remove(session_id);
         registry.exclusive.remove(session_id);
@@ -999,7 +1289,10 @@ impl PiClient {
     }
 
     fn invalidate_all_leases(&self) {
-        let mut registry = self.lease_registry.lock().unwrap();
+        let mut registry = self
+            .lease_registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut session_ids: HashSet<String> = registry.active.values().cloned().collect();
         session_ids.extend(registry.counts.keys().cloned());
         session_ids.extend(registry.exclusive.keys().cloned());
@@ -1029,7 +1322,7 @@ impl PiClient {
         let count = self
             .lease_registry
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .counts
             .get(&token.session_id)
             .copied()

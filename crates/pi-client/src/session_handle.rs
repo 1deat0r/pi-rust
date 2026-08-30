@@ -53,14 +53,22 @@ impl ReleaseCompletion {
     }
 
     fn complete(&self, result: Result<(), PiClientError>) {
-        *self.result.lock().unwrap() = Some(result);
+        *self
+            .result
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(result);
         self.notify.notify_waiters();
     }
 
     async fn wait(&self) -> Result<(), PiClientError> {
         loop {
             let notified = self.notify.notified();
-            if let Some(result) = self.result.lock().unwrap().clone() {
+            if let Some(result) = self
+                .result
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+            {
                 return result;
             }
             notified.await;
@@ -80,7 +88,12 @@ impl Subscription {
     }
 
     fn unsubscribe(&self) {
-        if let Some(unsubscribe) = self.unsubscribe.lock().unwrap().take() {
+        if let Some(unsubscribe) = self
+            .unsubscribe
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
             unsubscribe();
         }
     }
@@ -115,8 +128,13 @@ impl SessionHandle {
 
     pub fn attached(&self) -> bool {
         self.refresh_status();
-        matches!(&*self.status.lock().unwrap(), LeaseStatus::Active)
-            && self.client.is_session_attached(&self.id)
+        matches!(
+            &*self
+                .status
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            LeaseStatus::Active
+        ) && self.client.is_session_attached(&self.id)
     }
 
     pub fn active(&self) -> bool {
@@ -153,7 +171,7 @@ impl SessionHandle {
             }));
         self.subscriptions
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .push(subscription.clone());
         Box::new(move || subscription.unsubscribe())
     }
@@ -177,7 +195,7 @@ impl SessionHandle {
         }));
         self.subscriptions
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .push(subscription.clone());
         Box::new(move || subscription.unsubscribe())
     }
@@ -263,14 +281,22 @@ impl SessionHandle {
 
     fn is_active(&self) -> bool {
         self.refresh_status();
-        matches!(&*self.status.lock().unwrap(), LeaseStatus::Active)
-            && self.client.is_connected()
+        matches!(
+            &*self
+                .status
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            LeaseStatus::Active
+        ) && self.client.is_connected()
             && self.client.is_session_attached(&self.id)
     }
 
     fn refresh_status(&self) {
         let current = self.client.lease_generation_is_current(&self.token);
-        let mut status = self.status.lock().unwrap();
+        let mut status = self
+            .status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if current {
             return;
         }
@@ -302,24 +328,38 @@ impl SessionHandle {
     async fn release(&self, relinquish_on_failure: bool) -> Result<(), PiClientError> {
         let (completion, owner) = loop {
             self.refresh_status();
-            let current = *self.status.lock().unwrap();
+            let current = *self
+                .status
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             match current {
                 LeaseStatus::Released | LeaseStatus::Invalidated => return Ok(()),
                 LeaseStatus::Releasing => {
-                    if let Some(completion) = self.release_completion.lock().unwrap().clone() {
+                    if let Some(completion) = self
+                        .release_completion
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .clone()
+                    {
                         break (completion, false);
                     }
                     tokio::task::yield_now().await;
                 }
                 LeaseStatus::Active => {
                     self.assert_active()?;
-                    let mut status = self.status.lock().unwrap();
+                    let mut status = self
+                        .status
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
                     if !matches!(*status, LeaseStatus::Active) {
                         continue;
                     }
                     let completion = Arc::new(ReleaseCompletion::new());
                     *status = LeaseStatus::Releasing;
-                    *self.release_completion.lock().unwrap() = Some(completion.clone());
+                    *self
+                        .release_completion
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = Some(completion.clone());
                     break (completion, true);
                 }
             }
@@ -333,7 +373,10 @@ impl SessionHandle {
             .release_lease_once(&self.token, relinquish_on_failure)
             .await;
         {
-            let mut status = self.status.lock().unwrap();
+            let mut status = self
+                .status
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             match &result {
                 Ok(()) => *status = LeaseStatus::Released,
                 Err(_) if relinquish_on_failure => *status = LeaseStatus::Released,
@@ -345,7 +388,12 @@ impl SessionHandle {
     }
 
     fn clear_subscriptions(&self) {
-        let subscriptions = std::mem::take(&mut *self.subscriptions.lock().unwrap());
+        let subscriptions = std::mem::take(
+            &mut *self
+                .subscriptions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
         for subscription in subscriptions {
             subscription.unsubscribe();
         }
@@ -358,7 +406,10 @@ fn handle_is_active(
     status: &Arc<Mutex<LeaseStatus>>,
 ) -> bool {
     let current = client.lease_generation_is_current(token);
-    let active = matches!(&*status.lock().unwrap(), LeaseStatus::Active);
+    let active = matches!(
+        &*status.lock().unwrap_or_else(|error| error.into_inner()),
+        LeaseStatus::Active
+    );
     current && active && client.is_connected() && client.is_session_attached(&token.session_id)
 }
 

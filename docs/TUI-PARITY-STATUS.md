@@ -164,3 +164,5 @@ behavioral and terminal visual boundaries are individually accepted.
 The Rust-idiom campaign checkpoints (pi-evals, pi-server typed errors and
 lint gates) do not touch TUI rows: functional/test-evidence remains 10/52
 and visual/interaction/overall remains 0/52.
+
+Phase 2.2 (pi-client) likewise does not touch TUI rows.

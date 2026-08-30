@@ -334,3 +334,5 @@ variables.
 The Rust-idiom campaign checkpoints (typed errors, hard lint gates in
 pi-evals and pi-server) do not move any dashboard dimension; all counts above
 are unchanged by that work.
+
+Phase 2.2 (pi-client) does not move any dashboard dimension.

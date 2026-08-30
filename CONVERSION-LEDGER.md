@@ -1899,3 +1899,6 @@ checkpoints keep the checker green:
 workspace JS/TS source files. Phase 1 converted pi-evals; Phase 2.1 brought
 pi-server under the hard lint gate with poison-tolerant locking and no
 behavioral change (workspace matrix 2,805 tests passed).
+
+Phase 2.2 brought pi-client under the hard lint gate (poison-tolerant
+locking, no production unwrap/expect); ledger rows unchanged.
