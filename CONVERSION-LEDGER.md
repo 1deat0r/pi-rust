@@ -1927,3 +1927,22 @@ swallows; ledger rows unchanged.
 Protocol-layer checkpoint (2026-08-30): the cbor/codec/framing/schemas
 parity wave lands with its synchronized registers; source ledger unchanged
 at `Conversion progress: 100.00% (166/166; 0 open)`.
+
+TUI-006 (editor deletion) promoted to PASS for functional and test/evidence
+dimensions after completing its contract coverage. Source ledger unchanged at
+`Conversion progress: 100.00% (166/166; 0 open)`. Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 21.15% (11/52)
+TUI test/evidence parity: 21.15% (11/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 18.42% (49/266 PASS; 194 PARTIAL; 23 OPEN)
+Non-TUI deterministic evidence parity: 13.53% (36/266 PASS; 207 PARTIAL; 23 OPEN)
+Non-TUI runtime-boundary parity: 13.91% (37/266 PASS; 154 PARTIAL; 75 OPEN)
+Non-TUI overall parity: 11.28% (30/266)
+Whole-product behavioral parity: 9.43% (30/318)

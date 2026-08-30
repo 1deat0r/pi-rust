@@ -610,3 +610,42 @@ fn slash_autocomplete_enter_without_item_still_submits() {
     let submitted = e.drain_submitted();
     assert_eq!(submitted.as_deref(), Some("/nonsense"));
 }
+
+#[test]
+fn backspace_deletes_whole_graphemes() {
+    // A family emoji is one user-perceived character (multiple unicode
+    // scalar values); backspace and delete must remove it as a unit.
+    let mut e = editor(40);
+    e.set_text("a\u{1F468}\u{200D}\u{1F9B2}b");
+    e.handle_input("end");
+    e.handle_input("backspace");
+    assert_eq!(e.get_text(), "a\u{1F468}\u{200D}\u{1F9B2}");
+    e.handle_input("backspace");
+    assert_eq!(e.get_text(), "a");
+    // A third backspace removes the leading "a", leaving the empty editor.
+    e.handle_input("backspace");
+    assert_eq!(e.get_text(), "");
+
+    // Delete-forwards also crosses the same grapheme as one unit.
+    let mut e = editor(40);
+    e.set_text("a\u{1F468}\u{200D}\u{1F9B2}");
+    e.handle_input("home");
+    e.handle_input("delete");
+    assert_eq!(e.get_text(), "\u{1F468}\u{200D}\u{1F9B2}");
+    e.handle_input("delete");
+    assert_eq!(e.get_text(), "");
+}
+
+#[test]
+fn deletion_on_empty_editor_is_a_noop() {
+    let mut e = editor(24);
+    e.handle_input("backspace");
+    assert_eq!(e.get_text(), "");
+    e.handle_input("delete");
+    assert_eq!(e.get_text(), "");
+    // Also empty after clearing.
+    e.set_text("x");
+    e.set_text("");
+    e.handle_input("backspace");
+    assert_eq!(e.get_text(), "");
+}

@@ -32,7 +32,7 @@ stay synchronized.
 | TUI-003 | resize | PARTIAL | PARTIAL | OPEN | Resize matrix and retained-layout tests pass; complete emulator review remains. |
 | TUI-004 | differential renderer | PARTIAL | PARTIAL | OPEN | Differential/cursor tests pass; all churn and stale-cell cases remain. |
 | TUI-005 | editor insertion | PARTIAL | PARTIAL | OPEN | Unicode/editor unit coverage, immediate cached-scene repaint, and real rapid-burst PTY echo exist; full inventory boundary evidence remains. |
-| TUI-006 | editor deletion | PARTIAL | PARTIAL | OPEN | Grapheme/delete tests exist; complete interaction evidence remains. |
+| TUI-006 | editor deletion | PASS | PASS | OPEN | Direct unit evidence covers the full contract: backspace/delete, multi-scalar grapheme deletion as one unit, line joins, and empty-editor no-ops. Manual terminal comparison remains. |
 | TUI-007 | editor history | PARTIAL | PARTIAL | OPEN | History unit coverage exists; persistence-scope comparison remains. |
 | TUI-008 | kill/yank/undo | PARTIAL | PARTIAL | OPEN | Core unit coverage exists; complete parity boundary evidence remains. |
 | TUI-009 | word navigation | PARTIAL | PARTIAL | OPEN | Unicode/navigation tests exist; all terminal encodings remain. |
@@ -83,8 +83,8 @@ stay synchronized.
 ## Current measured percentages
 
 <!-- PARITY_AUDIT_TUI_METRICS:START -->
-TUI functional implementation: 19.23% (10/52)
-TUI test/evidence parity: 19.23% (10/52)
+TUI functional implementation: 21.15% (11/52)
+TUI test/evidence parity: 21.15% (11/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 <!-- PARITY_AUDIT_TUI_METRICS:END -->
@@ -133,8 +133,8 @@ Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
 Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
 Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
 Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
-TUI functional implementation: 19.23% (10/52)
-TUI test/evidence parity: 19.23% (10/52)
+TUI functional implementation: 21.15% (11/52)
+TUI test/evidence parity: 21.15% (11/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 18.42% (49/266 PASS; 194 PARTIAL; 23 OPEN)

@@ -196,6 +196,25 @@ uncommitted parity-wave code from the worktree; only local artifacts
 (`.zcode/`, `rust_out`, `doc/`, the preserved untracked `AGENTS.md`)
 remain untracked.
 
+## Checkpoint — 2026-08-30 — TUI-006 promoted to PASS (editor deletion)
+
+First per-row promotion of the behavioral-parity evidence lane. TUI-006
+(editor deletion; contract: backspace/delete, grapheme boundaries, line
+joins, empty editor) is promoted to PASS for functional and test/evidence
+dimensions after adding the missing direct unit evidence:
+`backspace_deletes_whole_graphemes` (multi-scalar emoji grapheme removed
+as one unit by both backspace and delete, with cursor clamping through
+the sequence) and `deletion_on_empty_editor_is_a_noop`. All 39 editor
+tests pass; visual/interaction remains OPEN pending manual terminal
+comparison. TUI functional and test/evidence dimensions move to 21.15%
+(11/52); all registers and dashboard metrics synchronized via
+`parity_audit`.
+
+Exact validation: full workspace matrix exit 0, 2,807 passed (two new
+tests); strict workspace clippy; fmt/diff checks; `conversion_audit all`
+`Conversion progress: 100.00% (166/166; 0 open)`; `parity_audit tui`
+`PARITY_TUI_OK rows=52 functional=11 evidence=11 visual=0 overall=0`.
+
 ## RESOLVED — push blocker — 2026-08-30 — six campaign commits pushed
 
 ROOT CAUSE (confirmed): the pushes did not fail because of the network —
@@ -584,8 +603,8 @@ serialized.
 
 The current TUI register remains conservative:
 
-TUI functional implementation: 19.23% (10/52)
-TUI test/evidence parity: 19.23% (10/52)
+TUI functional implementation: 21.15% (11/52)
+TUI test/evidence parity: 21.15% (11/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 
@@ -633,8 +652,8 @@ Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
 Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
 Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
 Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
-TUI functional implementation: 19.23% (10/52)
-TUI test/evidence parity: 19.23% (10/52)
+TUI functional implementation: 21.15% (11/52)
+TUI test/evidence parity: 21.15% (11/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 18.42% (49/266 PASS; 194 PARTIAL; 23 OPEN)
