@@ -65,6 +65,8 @@ pub enum SlashKind {
     Resume,
     /// Reload settings and extensions.
     Reload,
+    /// Open the native llama.cpp model manager.
+    Llama,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +77,9 @@ pub struct BuiltinSlashCommand {
     pub kind: SlashKind,
 }
 
+/// The public builtin registry is intentionally the exact 0.84.2 list.
+/// Native/experimental handlers may remain in `SlashKind`, but commands that
+/// are not in this list must fall through to extension/prompt dispatch.
 pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
     BuiltinSlashCommand {
         name: "settings",
@@ -101,63 +106,15 @@ pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
         kind: SlashKind::ScopedModels,
     },
     BuiltinSlashCommand {
-        name: "theme",
-        description: "Select terminal theme",
-        argument_hint: None,
-        kind: SlashKind::Theme,
-    },
-    BuiltinSlashCommand {
-        name: "session",
-        description: "Show session info and stats",
-        argument_hint: None,
-        kind: SlashKind::Session,
-    },
-    BuiltinSlashCommand {
-        name: "changelog",
-        description: "Show changelog entries",
-        argument_hint: None,
-        kind: SlashKind::Changelog,
-    },
-    BuiltinSlashCommand {
-        name: "compact",
-        description: "Manually compact the session context",
-        argument_hint: None,
-        kind: SlashKind::Compact,
-    },
-    BuiltinSlashCommand {
-        name: "clear",
-        description: "Clear the terminal screen",
-        argument_hint: None,
-        kind: SlashKind::Clear,
-    },
-    BuiltinSlashCommand {
-        name: "hotkeys",
-        description: "Show all keyboard shortcuts",
-        argument_hint: None,
-        kind: SlashKind::Hotkeys,
-    },
-    BuiltinSlashCommand {
-        name: "help",
-        description: "Show available commands",
-        argument_hint: None,
-        kind: SlashKind::Help,
-    },
-    BuiltinSlashCommand {
-        name: "quit",
-        description: "Quit pi",
-        argument_hint: None,
-        kind: SlashKind::Quit,
-    },
-    BuiltinSlashCommand {
         name: "export",
-        description: "Export session (HTML default, or .html/.jsonl)",
-        argument_hint: Some("<path>"),
+        description: "Export session (HTML default, or specify path: .html/.jsonl)",
+        argument_hint: None,
         kind: SlashKind::Export,
     },
     BuiltinSlashCommand {
         name: "import",
         description: "Import and resume a session from a JSONL file",
-        argument_hint: Some("<path>"),
+        argument_hint: None,
         kind: SlashKind::Import,
     },
     BuiltinSlashCommand {
@@ -177,6 +134,24 @@ pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
         description: "Set session display name",
         argument_hint: None,
         kind: SlashKind::Name,
+    },
+    BuiltinSlashCommand {
+        name: "session",
+        description: "Show session info and stats",
+        argument_hint: None,
+        kind: SlashKind::Session,
+    },
+    BuiltinSlashCommand {
+        name: "changelog",
+        description: "Show changelog entries",
+        argument_hint: None,
+        kind: SlashKind::Changelog,
+    },
+    BuiltinSlashCommand {
+        name: "hotkeys",
+        description: "Show all keyboard shortcuts",
+        argument_hint: None,
+        kind: SlashKind::Hotkeys,
     },
     BuiltinSlashCommand {
         name: "fork",
@@ -221,6 +196,12 @@ pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
         kind: SlashKind::New,
     },
     BuiltinSlashCommand {
+        name: "compact",
+        description: "Manually compact the session context",
+        argument_hint: None,
+        kind: SlashKind::Compact,
+    },
+    BuiltinSlashCommand {
         name: "resume",
         description: "Resume a different session",
         argument_hint: None,
@@ -228,9 +209,15 @@ pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
     },
     BuiltinSlashCommand {
         name: "reload",
-        description: "Reload keybindings and settings",
+        description: "Reload keybindings, extensions, skills, prompts, themes, and context files",
         argument_hint: None,
         kind: SlashKind::Reload,
+    },
+    BuiltinSlashCommand {
+        name: "quit",
+        description: "Quit pi",
+        argument_hint: None,
+        kind: SlashKind::Quit,
     },
 ];
 
@@ -316,14 +303,44 @@ pub fn help_banner() -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
     #[test]
     fn registry_contains_upstream_scoped_and_changelog_commands() {
-        assert!(
-            BUILTIN_SLASH_COMMANDS.len() >= 23,
-            "registry must include every upstream command plus supported Rust extras"
+        assert_eq!(BUILTIN_SLASH_COMMANDS.len(), 23);
+        let names: Vec<_> = BUILTIN_SLASH_COMMANDS
+            .iter()
+            .map(|command| command.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "settings",
+                "model",
+                "thinking",
+                "scoped-models",
+                "export",
+                "import",
+                "share",
+                "copy",
+                "name",
+                "session",
+                "changelog",
+                "hotkeys",
+                "fork",
+                "clone",
+                "tree",
+                "trust",
+                "login",
+                "logout",
+                "new",
+                "compact",
+                "resume",
+                "reload",
+                "quit",
+            ]
         );
         assert_eq!(
             find_command("scoped-models").map(|command| &command.kind),
@@ -333,6 +350,12 @@ mod tests {
             find_command("changelog").map(|command| &command.kind),
             Some(&SlashKind::Changelog)
         );
+        for removed in ["help", "theme", "clear", "llama"] {
+            assert!(
+                find_command(removed).is_none(),
+                "unexpected public builtin {removed}"
+            );
+        }
     }
 
     #[test]

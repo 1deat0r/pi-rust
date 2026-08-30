@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Real process-isolation coverage for concurrent pi-rust invocations.
 //!
 //! Each child receives a clean environment, a distinct agent/config/auth
@@ -50,8 +52,10 @@ impl Sandbox {
             fs::create_dir_all(path).expect("create isolated process directory");
         }
 
-        // The run deliberately omits --provider/--model, so this file proves
-        // that each child resolves its config from its own PI_CODING_AGENT_DIR.
+        // Keep the settings file populated for the isolated-root assertions.
+        // The turn command below explicitly selects the test-only faux
+        // provider because saved defaults are auth-gated and faux is not part
+        // of the production builtin registry.
         let settings = serde_json::json!({
             "defaultProvider": "faux",
             "defaultModel": "faux-1",
@@ -105,6 +109,8 @@ impl Sandbox {
     fn turn_command(&self, session_id: &str, prompt: &str) -> Command {
         let mut command = self.command();
         command
+            .env("PI_PROVIDER", "faux")
+            .env("PI_MODEL", "faux-1")
             .args(["--print", "--no-tools", "--session-id", session_id, prompt])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -271,8 +277,8 @@ fn concurrent_instances_keep_terminal_and_persistence_state_separate() {
         stdout(&right_output),
         "faux response to: RIGHT_PARALLEL_PROMPT\n"
     );
-    assert!(stderr(&left_output).is_empty());
-    assert!(stderr(&right_output).is_empty());
+    assert!(stderr(&left_output).contains("creating a new session"));
+    assert!(stderr(&right_output).contains("creating a new session"));
 
     assert_session(&left, "left-session");
     assert_session(&right, "right-session");

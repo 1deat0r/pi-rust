@@ -55,8 +55,13 @@ fn parse_color(color: &str) -> Option<(u8, u8, u8)> {
             return Some((r, g, b));
         }
     }
-    // rgb(r,g,b)
-    if let Some(rest) = color.strip_prefix("rgb(").and_then(|s| s.strip_suffix(')')) {
+    // Upstream accepts optional whitespace between `rgb` and `(` and around
+    // each component (`/^rgb\s*\(\s*(\d+)\s*,.../`).
+    if let Some(rest) = color
+        .strip_prefix("rgb")
+        .and_then(|s| s.trim_start().strip_prefix('('))
+        .and_then(|s| s.strip_suffix(')'))
+    {
         let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
         if parts.len() == 3 {
             if let (Ok(r), Ok(g), Ok(b)) = (
@@ -443,11 +448,71 @@ fn content_text(content: Option<&Value>) -> String {
         Some(Value::String(text)) => text.clone(),
         Some(Value::Array(blocks)) => blocks
             .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
             .filter_map(|block| block.get("text").and_then(Value::as_str))
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
     }
+}
+
+/// Extract text blocks with the same concatenation used by the upstream tree
+/// and search views. Message rendering intentionally uses `content_text`,
+/// which inserts a newline between independent text blocks.
+fn extract_content(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect(),
+        _ => String::new(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillBlock<'a> {
+    name: &'a str,
+    _location: &'a str,
+    content: &'a str,
+    user_message: Option<&'a str>,
+}
+
+/// Parse the structural wrapper emitted for `/skill` invocations. The
+/// wrapper is transcript data, not user-authored Markdown; the exporter must
+/// render its body and optional prompt as separate sibling blocks.
+fn parse_skill_block(text: &str) -> Option<SkillBlock<'_>> {
+    let rest = text.strip_prefix("<skill name=\"")?;
+    let name_end = rest.find("\" location=\"")?;
+    let name = &rest[..name_end];
+    if name.is_empty() {
+        return None;
+    }
+    let rest = &rest[name_end + "\" location=\"".len()..];
+    let location_end = rest.find("\">\n")?;
+    let location = &rest[..location_end];
+    if location.is_empty() {
+        return None;
+    }
+    let body = &rest[location_end + "\">\n".len()..];
+    let closing = "\n</skill>";
+    let close_at = body.find(closing)?;
+    let content = &body[..close_at];
+    let suffix = &body[close_at + closing.len()..];
+    let user_message = match suffix {
+        "" => None,
+        suffix => Some(suffix.strip_prefix("\n\n")?.trim()).filter(|text| !text.is_empty()),
+    };
+    if !suffix.is_empty() && !suffix.starts_with("\n\n") {
+        return None;
+    }
+    Some(SkillBlock {
+        name,
+        _location: location,
+        content,
+        user_message,
+    })
 }
 
 fn content_images(content: Option<&Value>) -> Vec<&Value> {
@@ -502,7 +567,8 @@ fn shorten_path(path: &str) -> String {
     for prefix in ["/Users/", "/home/"] {
         if let Some(rest) = path.strip_prefix(prefix) {
             if let Some((user, remainder)) = rest.split_once('/') {
-                return format!("~/{user}{remainder}");
+                let _ = user;
+                return format!("~{remainder}");
             }
         }
     }
@@ -734,15 +800,34 @@ fn result_images(entry: &Value) -> Vec<&Value> {
         .unwrap_or_default()
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 fn render_output(output: &str, language: Option<&str>) -> String {
-    let mut html = String::from("<div class=\"tool-output\"><pre><code");
-    if let Some(language) = language.filter(|language| !language.is_empty()) {
-        let _ = write!(html, " class=\"language-{}\"", escape_html(language));
+    if language.filter(|language| !language.is_empty()).is_none() {
+        // Plain output is line-oriented in the upstream template. Avoid
+        // literal indentation/newlines in the generated HTML so whitespace in
+        // the captured process output remains the only displayed whitespace.
+        let mut html = String::from("<div class=\"tool-output\">");
+        for line in replace_tabs(output).split('\n') {
+            let _ = write!(html, "<div>{}</div>", escape_html(line));
+        }
+        html.push_str("</div>");
+        return html;
     }
+
+    let mut html = String::from("<div class=\"tool-output\"><pre><code");
+    let language = language.expect("language was checked above");
+    let _ = write!(html, " class=\"language-{}\"", escape_html(language));
     html.push('>');
     html.push_str(&escape_html(&replace_tabs(output)));
     html.push_str("</code></pre></div>");
     html
+}
+
+/// HTML returned by an extension renderer has already gone through its
+/// ANSI/theme escaping pipeline. Preserve that markup, while removing only
+/// the wrapper's leading/trailing layout whitespace.
+fn render_pre_rendered_html(value: &str) -> String {
+    value.trim().to_string()
 }
 
 fn language_from_path(path: Option<&str>) -> Option<&'static str> {
@@ -808,7 +893,7 @@ fn render_tool_call(
             };
             let _ = write!(html, "<div class=\"tool-command\">$ {command}</div>");
             if let Some(result) = result {
-                let output = result_text(result);
+                let output = result_text(result).trim().to_string();
                 if !output.is_empty() {
                     html.push_str(&render_output(&output, None));
                 }
@@ -846,10 +931,18 @@ fn render_tool_call(
         }
         "write" => {
             let path = display_argument(args, &["file_path", "path"], "");
-            let _ = write!(
-                html,
-                "<div class=\"tool-header\"><span class=\"tool-name\">write</span> <span class=\"tool-path\">{path}</span></div>"
-            );
+            html.push_str("<div class=\"tool-header\"><span class=\"tool-name\">write</span> ");
+            let _ = write!(html, "<span class=\"tool-path\">{path}</span>");
+            if let Ok(Some(content)) = string_argument(args, &["content"]) {
+                let line_count = content.split('\n').count();
+                if line_count > 10 {
+                    let _ = write!(
+                        html,
+                        " <span class=\"line-count\">({line_count} lines)</span>"
+                    );
+                }
+            }
+            html.push_str("</div>");
             match string_argument(args, &["content"]) {
                 Ok(Some(content)) if !content.is_empty() => html.push_str(&render_output(
                     content,
@@ -864,7 +957,7 @@ fn render_tool_call(
                 _ => {}
             }
             if let Some(result) = result {
-                let output = result_text(result);
+                let output = result_text(result).trim().to_string();
                 if !output.trim().is_empty() {
                     html.push_str(&render_output(&output, None));
                 }
@@ -900,7 +993,7 @@ fn render_tool_call(
                     }
                     html.push_str("</div>");
                 } else {
-                    let output = result_text(result);
+                    let output = result_text(result).trim().to_string();
                     if !output.trim().is_empty() {
                         html.push_str(&render_output(&output, None));
                     }
@@ -922,37 +1015,78 @@ fn render_tool_call(
             }
             html.push_str("</div>");
             if let Some(result) = result {
-                let output = result_text(result);
+                let output = result_text(result).trim().to_string();
                 if !output.is_empty() {
                     html.push_str(&render_output(&output, None));
                 }
             }
         }
         _ => {
-            let _ = write!(
-                html,
-                "<div class=\"tool-header\"><span class=\"tool-name\">{}</span></div>",
-                escape_html(name)
-            );
+            let mut rendered_result = false;
             if let Some(rendered) = rendered_tools
                 .and_then(|tools| tools.get(call_id))
                 .and_then(Value::as_object)
             {
-                for key in ["callHtml", "resultHtmlCollapsed", "resultHtmlExpanded"] {
-                    if let Some(value) = rendered.get(key).and_then(Value::as_str) {
-                        html.push_str(&render_output(value, None));
+                if let Some(value) = rendered.get("callHtml").and_then(Value::as_str) {
+                    html.push_str("<div class=\"tool-header ansi-rendered\">");
+                    html.push_str(&render_pre_rendered_html(value));
+                    html.push_str("</div>");
+                } else {
+                    let _ = write!(
+                        html,
+                        "<div class=\"tool-header\"><span class=\"tool-name\">{}</span></div>",
+                        escape_html(name)
+                    );
+                }
+                let collapsed = rendered
+                    .get("resultHtmlCollapsed")
+                    .and_then(Value::as_str)
+                    .map(render_pre_rendered_html);
+                let expanded = rendered
+                    .get("resultHtmlExpanded")
+                    .and_then(Value::as_str)
+                    .map(render_pre_rendered_html);
+                match (collapsed, expanded) {
+                    (Some(collapsed), Some(expanded)) if collapsed != expanded => {
+                        rendered_result = true;
+                        let _ = write!(
+                            html,
+                            "<div class=\"tool-output expandable ansi-rendered\"><div class=\"output-preview\">{collapsed}</div><div class=\"output-full\">{expanded}</div></div>"
+                        );
                     }
+                    (Some(_), Some(expanded)) | (None, Some(expanded)) => {
+                        rendered_result = true;
+                        let _ = write!(
+                            html,
+                            "<div class=\"tool-output ansi-rendered\">{expanded}</div>"
+                        );
+                    }
+                    (Some(collapsed), None) => {
+                        rendered_result = true;
+                        let _ = write!(
+                            html,
+                            "<div class=\"tool-output ansi-rendered\">{collapsed}</div>"
+                        );
+                    }
+                    (None, None) => {}
                 }
             } else {
+                let _ = write!(
+                    html,
+                    "<div class=\"tool-header\"><span class=\"tool-name\">{}</span></div>",
+                    escape_html(name)
+                );
                 html.push_str(&render_output(
                     &json_pretty(args.unwrap_or(&Value::Null)),
                     None,
                 ));
             }
-            if let Some(result) = result {
-                let output = result_text(result);
-                if !output.is_empty() {
-                    html.push_str(&render_output(&output, None));
+            if !rendered_result {
+                if let Some(result) = result {
+                    let output = result_text(result).trim().to_string();
+                    if !output.is_empty() {
+                        html.push_str(&render_output(&output, None));
+                    }
                 }
             }
         }
@@ -961,41 +1095,10 @@ fn render_tool_call(
     html
 }
 
-fn render_tool_result_entry(entry: &Value, entries: &[Value]) -> String {
-    let message = entry.get("message").unwrap_or(&Value::Null);
-    let call_id = message
-        .get("toolCallId")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if !call_id.is_empty() && find_tool_call(entries, call_id).is_some() {
-        return format!(
-            "<div class=\"tool-result-reference\" data-entry-id=\"{}\">Tool result rendered with tool call <code>{}</code>.</div>",
-            escape_html(&entry_id(entry, 0)),
-            escape_html(call_id)
-        );
-    }
-    let status = if message
-        .get("isError")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        "error"
-    } else {
-        "success"
-    };
-    let mut html = format!(
-        "<div class=\"tool-execution {status}\" data-entry-id=\"{}\"><div class=\"tool-header\">Tool result</div>",
-        escape_html(&entry_id(entry, 0))
-    );
-    for image in result_images(entry) {
-        html.push_str(&render_image(image, "tool-image"));
-    }
-    let output = result_text(entry);
-    if !output.is_empty() {
-        html.push_str(&render_output(&output, None));
-    }
-    html.push_str("</div>");
-    html
+fn render_tool_result_entry(_entry: &Value, _entries: &[Value]) -> String {
+    // A matched result is rendered inside its assistant tool-call block. This
+    // avoids duplicating output in the transcript, matching template.js.
+    String::new()
 }
 
 fn render_message_entry(
@@ -1017,6 +1120,37 @@ fn render_message_entry(
 
     match role {
         "user" => {
+            let text = content_text(content);
+            if let Some(skill) = parse_skill_block(&text) {
+                let mut html = format!(
+                    "<div class=\"skill-user-entry\" id=\"entry-{id_attr}\">{timestamp}<div class=\"skill-invocation\">"
+                );
+                let _ = write!(
+                    html,
+                    "<div class=\"skill-invocation-label\">[skill] {}</div><div class=\"skill-invocation-collapsed\">{} (click to expand)</div><div class=\"skill-invocation-content markdown-content\">{}</div>",
+                    escape_html(skill.name),
+                    escape_html(skill.name),
+                    render_markdown(skill.content)
+                );
+                html.push_str("</div>");
+                let images = content_images(content);
+                if skill.user_message.is_some() || !images.is_empty() {
+                    html.push_str("<div class=\"user-message\">");
+                    for image in images {
+                        html.push_str(&render_image(image, "message-image"));
+                    }
+                    if let Some(user_message) = skill.user_message {
+                        let _ = write!(
+                            html,
+                            "<div class=\"markdown-content\">{}</div>",
+                            render_markdown(user_message)
+                        );
+                    }
+                    html.push_str("</div>");
+                }
+                html.push_str("</div>");
+                return html;
+            }
             let _ = write!(
                 html,
                 "<article class=\"user-message\" id=\"entry-{id_attr}\">"
@@ -1184,6 +1318,13 @@ fn render_entry(
             render_markdown(entry.get("summary").and_then(Value::as_str).unwrap_or_default())
         ),
         Some("custom_message") => {
+            if !entry
+                .get("display")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+            {
+                return String::new();
+            }
             let content = entry
                 .get("content")
                 .and_then(Value::as_str)
@@ -1217,6 +1358,10 @@ struct ExportStats {
     output_tokens: u64,
     cache_read_tokens: u64,
     cache_write_tokens: u64,
+    input_cost: f64,
+    output_cost: f64,
+    cache_read_cost: f64,
+    cache_write_cost: f64,
     models: Vec<String>,
 }
 
@@ -1229,6 +1374,14 @@ fn u64_field(value: Option<&Value>) -> u64 {
                 .and_then(|number| number.try_into().ok())
         })
         .unwrap_or(0)
+}
+
+fn f64_field(value: Option<&Value>) -> f64 {
+    value
+        .and_then(Value::as_f64)
+        .or_else(|| value.and_then(Value::as_i64).map(|number| number as f64))
+        .or_else(|| value.and_then(Value::as_u64).map(|number| number as f64))
+        .unwrap_or(0.0)
 }
 
 fn compute_stats(entries: &[Value]) -> ExportStats {
@@ -1267,6 +1420,19 @@ fn compute_stats(entries: &[Value]) -> ExportStats {
                             stats.output_tokens += u64_field(usage.get("output"));
                             stats.cache_read_tokens += u64_field(usage.get("cacheRead"));
                             stats.cache_write_tokens += u64_field(usage.get("cacheWrite"));
+                            if let Some(cost) = usage.get("cost") {
+                                stats.input_cost +=
+                                    f64_field(cost.get("input").or_else(|| cost.get("inputCost")));
+                                stats.output_cost += f64_field(
+                                    cost.get("output").or_else(|| cost.get("outputCost")),
+                                );
+                                stats.cache_read_cost += f64_field(
+                                    cost.get("cacheRead").or_else(|| cost.get("cache_read")),
+                                );
+                                stats.cache_write_cost += f64_field(
+                                    cost.get("cacheWrite").or_else(|| cost.get("cache_write")),
+                                );
+                            }
                         }
                     }
                 }
@@ -1310,6 +1476,32 @@ fn render_header(data: &SessionData) -> String {
     } else {
         stats.models.join(", ")
     };
+    let mut message_parts = Vec::new();
+    if stats.user_messages > 0 {
+        message_parts.push(format!("{} user", stats.user_messages));
+    }
+    if stats.assistant_messages > 0 {
+        message_parts.push(format!("{} assistant", stats.assistant_messages));
+    }
+    if stats.tool_results > 0 {
+        message_parts.push(format!("{} tool results", stats.tool_results));
+    }
+    if stats.custom_messages > 0 {
+        message_parts.push(format!("{} custom", stats.custom_messages));
+    }
+    if stats.compactions > 0 {
+        message_parts.push(format!("{} compactions", stats.compactions));
+    }
+    if stats.branch_summaries > 0 {
+        message_parts.push(format!("{} branch summaries", stats.branch_summaries));
+    }
+    let message_summary = if message_parts.is_empty() {
+        "0".to_string()
+    } else {
+        message_parts.join(", ")
+    };
+    let total_cost =
+        stats.input_cost + stats.output_cost + stats.cache_read_cost + stats.cache_write_cost;
 
     let mut html = String::from("<section class=\"header session-header\">");
     let _ = write!(html, "<h1>Session: {}</h1>", escape_html(session_id));
@@ -1331,8 +1523,7 @@ fn render_header(data: &SessionData) -> String {
     );
     let _ = write!(
         html,
-        "<div class=\"info-item\"><span class=\"info-label\">Messages:</span><span class=\"info-value\">{} user, {} assistant, {} tool results</span></div>",
-        stats.user_messages, stats.assistant_messages, stats.tool_results
+        "<div class=\"info-item\"><span class=\"info-label\">Messages:</span><span class=\"info-value\">{message_summary}</span></div>"
     );
     let _ = write!(
         html,
@@ -1346,6 +1537,10 @@ fn render_header(data: &SessionData) -> String {
         format_tokens(stats.output_tokens),
         format_tokens(stats.cache_read_tokens),
         format_tokens(stats.cache_write_tokens)
+    );
+    let _ = write!(
+        html,
+        "<div class=\"info-item\"><span class=\"info-label\">Cost:</span><span class=\"info-value\">${total_cost:.3}</span></div>"
     );
     html.push_str("</div>");
 
@@ -1430,13 +1625,21 @@ fn active_path_ids(entries: &[Value], leaf_id: Option<&str>) -> HashSet<String> 
     ids
 }
 
-fn label_for_entry<'a>(entries: &'a [Value], id: &str) -> Option<&'a str> {
-    entries.iter().find_map(|entry| {
-        (entry.get("type").and_then(Value::as_str) == Some("label")
-            && entry.get("targetId").and_then(Value::as_str) == Some(id))
-        .then(|| entry.get("label").and_then(Value::as_str))
-        .flatten()
-    })
+fn label_for_entry(entries: &[Value], id: &str) -> Option<String> {
+    let mut label = None;
+    for entry in entries {
+        if entry.get("type").and_then(Value::as_str) != Some("label")
+            || entry.get("targetId").and_then(Value::as_str) != Some(id)
+        {
+            continue;
+        }
+        label = entry
+            .get("label")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+    }
+    label
 }
 
 fn tree_text(entry: &Value, entries: &[Value]) -> String {
@@ -1445,19 +1648,45 @@ fn tree_text(entry: &Value, entries: &[Value]) -> String {
         .unwrap_or_default();
     let text = match entry.get("type").and_then(Value::as_str) {
         Some("message") => match message_role(entry) {
-            Some("user") => format!(
-                "user: {}",
-                truncate_chars(
-                    &normalize_tree_text(&content_text(
-                        entry.get("message").and_then(message_content)
-                    )),
-                    100
-                )
-            ),
+            Some("user") => {
+                let content = entry.get("message").and_then(message_content);
+                let raw_text = extract_content(content);
+                if let Some(skill) = parse_skill_block(&raw_text) {
+                    let user_message = skill
+                        .user_message
+                        .map(|text| {
+                            format!(
+                                " · user: {}",
+                                truncate_chars(&normalize_tree_text(text), 100)
+                            )
+                        })
+                        .unwrap_or_default();
+                    format!("skill: {}{user_message}", truncate_chars(skill.name, 100))
+                } else {
+                    format!(
+                        "user: {}",
+                        truncate_chars(&normalize_tree_text(&raw_text), 100)
+                    )
+                }
+            }
             Some("assistant") => {
-                let content = content_text(entry.get("message").and_then(message_content));
+                let message = entry.get("message").unwrap_or(&Value::Null);
+                let content = extract_content(message_content(message));
                 if content.trim().is_empty() {
-                    "assistant: (no text)".to_string()
+                    match message.get("stopReason").and_then(Value::as_str) {
+                        Some("aborted") => "assistant: (aborted)".to_string(),
+                        Some("error") => format!(
+                            "assistant: {}",
+                            truncate_chars(
+                                message
+                                    .get("errorMessage")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("Unknown error"),
+                                100
+                            )
+                        ),
+                        _ => "assistant: (no text)".to_string(),
+                    }
                 } else {
                     format!(
                         "assistant: {}",
@@ -1512,7 +1741,14 @@ fn tree_text(entry: &Value, entries: &[Value]) -> String {
                 .and_then(Value::as_str)
                 .unwrap_or("custom"),
             truncate_chars(
-                &normalize_tree_text(&json_string(entry.get("content").unwrap_or(&Value::Null))),
+                &normalize_tree_text(
+                    entry
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| { extract_content(entry.get("content")) })
+                        .as_str(),
+                ),
                 100
             )
         ),
@@ -1643,8 +1879,13 @@ pub struct LoadedSession {
 /// If the file is empty or its first parsed record is not a valid header, all
 /// entries are dropped and `(None, [], None)` is returned — exactly like
 /// upstream `loadEntriesFromFile`, which returns `[]` for a headerless file.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 pub fn load_session_file(path: &str) -> Result<LoadedSession, ExportError> {
-    let content = std::fs::read_to_string(path)?;
+    // Node's StringDecoder replaces malformed UTF-8 while reading JSONL. Use
+    // the same loss-tolerant boundary so a bad auxiliary line does not make a
+    // valid session unexportable.
+    let bytes = std::fs::read(path)?;
+    let content = String::from_utf8_lossy(&bytes);
     let mut file_entries: Vec<Value> = Vec::new();
     for line in content.lines() {
         if line.trim().is_empty() {
@@ -1711,7 +1952,7 @@ pub fn load_session_file(path: &str) -> Result<LoadedSession, ExportError> {
 
 /// Format an epoch (seconds, nanos) as an ISO-8601 UTC timestamp (used to
 /// synthesize the HTML viewer's `timestamp` for pi-agent v4 headers).
-fn time_from_epoch_ms(secs: u64, nanos: u32) -> String {
+pub(crate) fn time_from_epoch_ms(secs: u64, nanos: u32) -> String {
     let days = secs.div_euclid(86_400);
     let secs_of_day = secs.rem_euclid(86_400);
     let (y, m, d) = civil_from_days(days as i64);
@@ -1730,6 +1971,12 @@ fn time_from_epoch_ms(secs: u64, nanos: u32) -> String {
         ss,
         nanos / 1_000_000
     )
+}
+
+/// Format a millisecond epoch as the ISO-8601 timestamp used by v3 session
+/// headers at the JSON output boundary.
+pub(crate) fn iso8601_timestamp_from_epoch_ms(epoch_ms: u64) -> String {
+    time_from_epoch_ms(epoch_ms / 1_000, ((epoch_ms % 1_000) * 1_000_000) as u32)
 }
 
 /// Howard Hinnant's civil-from-days algorithm.
@@ -1766,6 +2013,15 @@ pub fn export_session_file(
         return Err(ExportError::msg(format!("File not found: {input_path}")));
     }
     let loaded = load_session_file(input_path)?;
+    // `SessionManager.open` rejects a non-empty existing file whose parsed
+    // records do not begin with a valid session header. Keep the loader
+    // tolerant for callers that only need to inspect parsed entries, but do
+    // not turn an invalid export source into a misleading empty transcript.
+    if loaded.header.is_none() && std::fs::metadata(resolved_input)?.len() > 0 {
+        return Err(ExportError::msg(format!(
+            "Session file is not a valid {APP_NAME} session: {input_path}"
+        )));
+    }
     let data = SessionData {
         header: loaded
             .header
@@ -1795,18 +2051,120 @@ fn default_output_path(input_path: &str, output_path: Option<&str>) -> String {
     format!("{APP_NAME}-session-{basename}.html")
 }
 
-/// Pre-render custom tool calls/results (upstream `preRenderCustomTools`).
-///
-/// The current port has no custom tool renderers (the extension system is
-/// pending), so every custom-tool block is skipped exactly as upstream does
-/// when `toolRenderer` returns `undefined` for a tool — i.e. no-op delivery.
-/// Kept as a named function so the entry-scan contract is documented and the
-/// extension-backed implementation can slot in when extensions land.
-pub fn pre_render_custom_tools(_entries: &[Value]) -> Map<String, Value> {
-    Map::new()
+/// Pre-render custom tool calls/results using the callback-compatible renderer
+/// above, with a safe generic fallback when no extension renderer is present.
+pub fn pre_render_custom_tools_with_renderers<Call, Result>(
+    entries: &[Value],
+    mut render_call: Call,
+    mut render_result: Result,
+) -> Map<String, Value>
+where
+    Call: FnMut(&str, &str, &Value) -> Option<String>,
+    Result: FnMut(&str, &str, &Value, &Value, bool) -> Option<(Option<String>, Option<String>)>,
+{
+    let mut rendered_tools = Map::new();
+    for entry in entries {
+        if entry.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(message) = entry.get("message") else {
+            continue;
+        };
+        match message.get("role").and_then(Value::as_str) {
+            Some("assistant") => {
+                let Some(blocks) = message.get("content").and_then(Value::as_array) else {
+                    continue;
+                };
+                for block in blocks {
+                    if block.get("type").and_then(Value::as_str) != Some("toolCall") {
+                        continue;
+                    }
+                    let id = block.get("id").and_then(Value::as_str).unwrap_or_default();
+                    let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    if id.is_empty() || is_template_rendered_tool(name) {
+                        continue;
+                    }
+                    if let Some(call_html) =
+                        render_call(id, name, block.get("arguments").unwrap_or(&Value::Null))
+                    {
+                        rendered_tools
+                            .insert(id.to_string(), serde_json::json!({ "callHtml": call_html }));
+                    }
+                }
+            }
+            Some("toolResult") => {
+                let id = message
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if id.is_empty() {
+                    continue;
+                }
+                let name = message
+                    .get("toolName")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool");
+                if !rendered_tools.contains_key(id) && is_template_rendered_tool(name) {
+                    continue;
+                }
+                let content = message.get("content").unwrap_or(&Value::Null);
+                let details = message.get("details").unwrap_or(&Value::Null);
+                let is_error = message
+                    .get("isError")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let Some((collapsed, expanded)) =
+                    render_result(id, name, content, details, is_error)
+                else {
+                    continue;
+                };
+                let rendered = rendered_tools
+                    .entry(id.to_string())
+                    .or_insert_with(|| serde_json::json!({}));
+                let Some(object) = rendered.as_object_mut() else {
+                    continue;
+                };
+                if let Some(collapsed) = collapsed {
+                    object.insert("resultHtmlCollapsed".to_string(), Value::String(collapsed));
+                }
+                if let Some(expanded) = expanded {
+                    object.insert("resultHtmlExpanded".to_string(), Value::String(expanded));
+                }
+            }
+            _ => {}
+        }
+    }
+    rendered_tools
+}
+
+pub fn pre_render_custom_tools(entries: &[Value]) -> Map<String, Value> {
+    pre_render_custom_tools_with_renderers(
+        entries,
+        |_id, name, args| {
+            Some(format!(
+                "<span class=\"tool-name\">{}</span><pre>{}</pre>",
+                escape_html(name),
+                escape_html(&json_pretty(args))
+            ))
+        },
+        |_id, _name, content, _details, is_error| {
+            let output = content_text(Some(content)).trim().to_string();
+            if output.is_empty() {
+                return Some((None, None));
+            }
+            let class_name = if is_error { "error" } else { "success" };
+            let mut html = format!("<div class=\"custom-result {class_name}\">");
+            for line in replace_tabs(&output).split('\n') {
+                let _ = write!(html, "<div>{}</div>", escape_html(line));
+            }
+            html.push_str("</div>");
+            Some((None, Some(html)))
+        },
+    )
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -1837,6 +2195,13 @@ mod tests {
         assert_eq!(adjust_brightness("#000000", 0.7), "rgb(0, 0, 0)");
         assert_eq!(adjust_brightness("#ffffff", 0.5), "rgb(128, 128, 128)");
         assert_eq!(adjust_brightness("not-a-color", 0.5), "not-a-color");
+    }
+
+    #[test]
+    fn parses_upstream_rgb_whitespace_forms() {
+        assert_eq!(parse_color("rgb(1, 2, 3)"), Some((1, 2, 3)));
+        assert_eq!(parse_color("rgb ( 1 , 2 , 3 )"), Some((1, 2, 3)));
+        assert_eq!(parse_color("rgb( 1,\t2, 3 )"), Some((1, 2, 3)));
     }
 
     #[test]
@@ -2000,7 +2365,7 @@ mod tests {
     #[test]
     fn default_output_name() {
         static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let dir =
             std::env::temp_dir().join(format!("pi-export-{}-{}", std::process::id(), line!()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2038,5 +2403,75 @@ mod tests {
         assert!(is_template_rendered_tool("bash"));
         assert!(is_template_rendered_tool("edit"));
         assert!(!is_template_rendered_tool("custom_tool"));
+    }
+
+    #[test]
+    fn content_text_ignores_text_fields_on_non_text_blocks() {
+        let content = serde_json::json!([
+            {"type": "toolCall", "text": "must not become user text"},
+            {"type": "text", "text": "first"},
+            {"type": "image", "text": "must also be ignored"},
+            {"type": "text", "text": "second"}
+        ]);
+        assert_eq!(content_text(Some(&content)), "first\nsecond");
+    }
+
+    #[test]
+    fn header_reports_non_message_stats_and_total_cost() {
+        let data = SessionData {
+            header: serde_json::json!({
+                "type": "session",
+                "id": "stats-session",
+                "timestamp": "2026-08-22T00:00:00.000Z",
+                "cwd": "/tmp"
+            }),
+            entries: vec![
+                serde_json::json!({
+                    "type": "message",
+                    "id": "assistant-1",
+                    "message": {
+                        "role": "assistant",
+                        "provider": "faux",
+                        "model": "fixture",
+                        "content": [],
+                        "usage": {
+                            "input": 3,
+                            "output": 2,
+                            "cacheRead": 1,
+                            "cacheWrite": 0,
+                            "cost": {
+                                "input": 0.1,
+                                "output": 0.02,
+                                "cacheRead": 0.003,
+                                "cacheWrite": 0.002
+                            }
+                        }
+                    }
+                }),
+                serde_json::json!({
+                    "type": "custom_message",
+                    "customType": "fixture",
+                    "content": "custom"
+                }),
+                serde_json::json!({
+                    "type": "compaction",
+                    "tokensBefore": 100,
+                    "summary": "summary"
+                }),
+                serde_json::json!({
+                    "type": "branch_summary",
+                    "summary": "branch"
+                }),
+            ],
+            leaf_id: None,
+            system_prompt: None,
+            tools: None,
+            rendered_tools: None,
+        };
+        let header = render_header(&data);
+        assert!(header.contains("1 custom"));
+        assert!(header.contains("1 compactions"));
+        assert!(header.contains("1 branch summaries"));
+        assert!(header.contains("$0.125"));
     }
 }

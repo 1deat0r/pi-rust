@@ -8,6 +8,7 @@
 //! Rust factory through [`load_extension_from_factory`].
 
 use std::collections::BTreeSet;
+use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -29,7 +30,8 @@ pub const RUST_NATIVE_ONLY_ERROR: &str = "Rust-native-only extension loader";
 ///
 /// Factories are evaluated synchronously by Rust and can register the same
 /// callback, tool, renderer, flag, and provider surfaces used by the runner.
-/// Runtime actions remain unavailable until the host binds the shared runtime.
+/// Host binding supplies the live runtime actions and UI broker used by those
+/// callbacks once the mode has constructed its host state.
 pub struct ExtensionApi<'a> {
     extension: &'a mut Extension,
     runtime: Arc<Mutex<ExtensionRuntime>>,
@@ -284,12 +286,13 @@ impl<'a> ExtensionApi<'a> {
     }
 }
 
-/// Resolve non-source extension metadata entries from a directory.
+/// Resolve extension entrypoints from a directory.
 ///
-/// JavaScript/TypeScript manifest entries and their conventional index files
-/// are deliberately excluded. There is no executable filesystem extension
-/// ABI in the zero-JS build; native extensions are registered by Rust factory
-/// at compile time.
+/// This follows the upstream manifest/index precedence for explicitly
+/// configured directories. Source-language entries are retained so the
+/// Rust-only boundary can report an actionable unsupported-load diagnostic;
+/// automatic discovery remains disabled below because there is no executable
+/// filesystem extension ABI in this build.
 pub fn resolve_extension_entries(dir: &Path) -> Option<Vec<PathBuf>> {
     let package_json = dir.join("package.json");
     if package_json.exists() {
@@ -298,7 +301,7 @@ pub fn resolve_extension_entries(dir: &Path) -> Option<Vec<PathBuf>> {
                 let mut entries = Vec::new();
                 for ext_path in &manifest.extensions {
                     let resolved = dir.join(ext_path);
-                    if resolved.exists() && !is_source_extension_path(&resolved) {
+                    if resolved.exists() {
                         entries.push(resolved);
                     }
                 }
@@ -308,24 +311,64 @@ pub fn resolve_extension_entries(dir: &Path) -> Option<Vec<PathBuf>> {
             }
         }
     }
+
+    // A configured directory follows the same entrypoint fallback as the
+    // upstream loader. An explicit directory must not silently discard an
+    // existing source entry: the Rust-only boundary reports it as unsupported
+    // at load time.
+    for filename in ["index.ts", "index.js"] {
+        let index = dir.join(filename);
+        if index.exists() {
+            return Some(vec![index]);
+        }
+    }
+
     None
 }
 
 fn is_source_extension_path(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|extension| extension.to_str()),
-        Some("js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx")
+        Some("js" | "ts")
     )
 }
 
 /// Discover extension paths for the legacy filesystem layout.
 ///
-/// There are no dynamically loadable filesystem Rust factories, so automatic
-/// discovery intentionally returns no executable entries. The resolver above
-/// remains available for package metadata/path inspection, while explicit
-/// paths still receive the deterministic zero-JS error from `load_extensions`.
-pub fn discover_extensions_in_dir(_dir: &Path) -> Vec<PathBuf> {
-    Vec::new()
+/// The filesystem entries are not executable by this Rust build, but they
+/// must still be discovered so callers can report the actionable Rust-only
+/// diagnostic instead of silently ignoring a configured extension. This keeps
+/// the upstream one-level discovery contract without introducing a JS/TS
+/// runtime.
+pub fn discover_extensions_in_dir(dir: &Path) -> Vec<PathBuf> {
+    discover_explicit_extensions_in_dir(dir)
+}
+
+/// Discover source entrypoints below an explicitly configured directory.
+/// The resulting paths are intentionally sent through the Rust-only loader so
+/// every source gets an actionable diagnostic without invoking Node/Bun.
+fn discover_explicit_extensions_in_dir(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut discovered = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if (file_type.is_file() || file_type.is_symlink()) && is_source_extension_path(&path) {
+            discovered.push(path);
+            continue;
+        }
+        if file_type.is_dir() || file_type.is_symlink() {
+            if let Some(entries) = resolve_extension_entries(&path) {
+                discovered.extend(entries);
+            }
+        }
+    }
+    discovered.sort();
+    discovered
 }
 
 fn filesystem_extension_error(path: &str) -> String {
@@ -400,7 +443,9 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 }
 
 /// Load one filesystem path. The `runner` parameter is retained for source
-/// compatibility but is intentionally ignored under the zero-JS policy.
+/// compatibility; filesystem modules are represented by an explicit
+/// Rust-native load error. Native extensions enter through
+/// [`load_extension_from_factory`].
 pub fn load_extension(
     extension_path: &str,
     _cwd: &str,
@@ -538,9 +583,8 @@ fn add_discovered_paths(
 }
 
 /// Discover standard project/global locations and explicit configured paths.
-/// Automatic locations are now empty because no filesystem module is
-/// executable; explicit configured paths are retained as errors so users get
-/// a clear migration diagnostic rather than a silent success.
+/// Automatic locations are retained as errors so users get a clear migration
+/// diagnostic rather than a silent success.
 pub fn discover_and_load_extensions(
     configured_paths: &[String],
     cwd: &str,
@@ -549,7 +593,7 @@ pub fn discover_and_load_extensions(
     runner: Option<&str>,
 ) -> LoadExtensionsResult {
     let mut all_paths = Vec::new();
-    let mut rejected_auto_paths = Vec::new();
+    let mut explicit_errors = Vec::new();
     let mut seen = BTreeSet::new();
 
     let local_ext_dir = Path::new(cwd).join(CONFIG_DIR_NAME).join("extensions");
@@ -570,33 +614,46 @@ pub fn discover_and_load_extensions(
 
     for path in configured_paths {
         let resolved = resolve_relative_path(path, cwd);
+        if !resolved.exists() {
+            if seen.insert(resolved.clone()) {
+                let path = resolved.to_string_lossy().into_owned();
+                explicit_errors.push(ExtensionLoadError {
+                    path: path.clone(),
+                    error: format!("Extension path does not exist: {path}"),
+                });
+            }
+            continue;
+        }
         if resolved.is_dir() {
-            // Keep resolver semantics available for direct callers, but do
-            // not turn a package's unsupported source entry into an automatic
-            // load attempt. Report explicitly configured unsupported entries
-            // after the rest of the path collection is complete.
-            for entry in resolve_extension_entries(&resolved).unwrap_or_default() {
+            let entries = resolve_extension_entries(&resolved)
+                .unwrap_or_else(|| discover_explicit_extensions_in_dir(&resolved));
+            // Explicit directories are expanded just like upstream. The
+            // resulting source files remain rejected by the Rust-only loader,
+            // but are no longer silently ignored.
+            for entry in entries {
                 if seen.insert(entry.clone()) {
-                    rejected_auto_paths.push(entry);
+                    let path = entry.to_string_lossy().into_owned();
+                    explicit_errors.push(ExtensionLoadError {
+                        path: path.clone(),
+                        error: filesystem_extension_error(&path),
+                    });
                 }
             }
             continue;
         }
         // An explicitly configured file is intentionally surfaced as an
         // error, making the zero-JS migration actionable.
-        add_discovered_paths(cwd, &mut seen, &mut all_paths, [resolved]);
+        if seen.insert(resolved.clone()) {
+            let path = resolved.to_string_lossy().into_owned();
+            explicit_errors.push(ExtensionLoadError {
+                path: path.clone(),
+                error: filesystem_extension_error(&path),
+            });
+        }
     }
 
     let mut result = load_extensions(&all_paths, cwd, runtime, runner);
-    result
-        .errors
-        .extend(rejected_auto_paths.into_iter().map(|path| {
-            let path = path.to_string_lossy().into_owned();
-            ExtensionLoadError {
-                path: path.clone(),
-                error: filesystem_extension_error(&path),
-            }
-        }));
+    result.errors.extend(explicit_errors);
     result
 }
 
@@ -679,6 +736,7 @@ fn extract_synthetic_source(extension_path: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::core::extensions::runner::ExtensionRunner;
@@ -726,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_entries_ignores_source_language_manifest_paths() {
+    fn resolve_entries_preserves_source_language_manifest_paths() {
         let dir = sandbox("source-entries");
         fs::write(
             dir.join("package.json"),
@@ -736,15 +794,27 @@ mod tests {
         fs::write(dir.join("main.ts"), "source").expect("write source entry");
         fs::write(dir.join("other.js"), "source").expect("write source entry");
         fs::write(dir.join("native.rust"), "metadata").expect("write native entry");
-        let entries = resolve_extension_entries(&dir).expect("native manifest entry");
-        assert_eq!(entries, vec![dir.join("native.rust")]);
+        let entries = resolve_extension_entries(&dir).expect("manifest entries");
+        assert_eq!(
+            entries,
+            vec![
+                dir.join("main.ts"),
+                dir.join("other.js"),
+                dir.join("native.rust")
+            ]
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn automatic_discovery_never_selects_unsupported_source_files() {
+    fn automatic_discovery_selects_source_files_for_explicit_diagnostics() {
         let dir = sandbox("discovery");
-        assert!(discover_extensions_in_dir(&dir).is_empty());
+        fs::write(dir.join("extension.ts"), "source").expect("write source entry");
+        fs::write(dir.join("ignored.tsx"), "source").expect("write ignored entry");
+        assert_eq!(
+            discover_extensions_in_dir(&dir),
+            vec![dir.join("extension.ts")]
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -756,6 +826,107 @@ mod tests {
         assert_eq!(error.path, path.to_string_lossy());
         assert!(error.error.contains(RUST_NATIVE_ONLY_ERROR));
         assert!(error.error.contains("load_extension_from_factory"));
+    }
+
+    #[test]
+    fn explicit_missing_path_uses_the_upstream_diagnostic() {
+        let root = sandbox("missing-explicit");
+        let missing = root.join("missing.ts");
+        let result = discover_and_load_extensions(
+            &[missing.to_string_lossy().into_owned()],
+            &root.to_string_lossy(),
+            &root.to_string_lossy(),
+            None,
+            None,
+        );
+
+        assert!(result.extensions.is_empty());
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].path, missing.to_string_lossy());
+        assert_eq!(
+            result.errors[0].error,
+            format!("Extension path does not exist: {}", missing.display())
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_directory_reports_direct_and_nested_source_entries() {
+        let root = sandbox("configured-sources");
+        let extension_dir = root.join("extensions");
+        let nested = extension_dir.join("nested");
+        fs::create_dir_all(&nested).expect("create extension directories");
+        fs::write(extension_dir.join("direct.ts"), "source").expect("write direct source");
+        fs::write(nested.join("index.js"), "source").expect("write nested source");
+
+        let result = discover_and_load_extensions(
+            &[extension_dir.to_string_lossy().into_owned()],
+            &root.to_string_lossy(),
+            &root.to_string_lossy(),
+            None,
+            None,
+        );
+
+        assert!(result.extensions.is_empty());
+        let paths = result
+            .errors
+            .iter()
+            .map(|error| error.path.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                extension_dir
+                    .join("direct.ts")
+                    .to_string_lossy()
+                    .into_owned(),
+                nested.join("index.js").to_string_lossy().into_owned(),
+            ]
+        );
+        assert!(result
+            .errors
+            .iter()
+            .all(|error| error.error.contains(RUST_NATIVE_ONLY_ERROR)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_path_errors_keep_configured_order() {
+        let root = sandbox("configured-order");
+        let missing = root.join("missing.ts");
+        let existing = root.join("existing.ts");
+        let directory = root.join("directory");
+        fs::write(&existing, "source").expect("write existing source");
+        fs::create_dir_all(&directory).expect("create configured directory");
+        fs::write(directory.join("index.ts"), "source").expect("write directory source");
+
+        let result = discover_and_load_extensions(
+            &[
+                missing.to_string_lossy().into_owned(),
+                existing.to_string_lossy().into_owned(),
+                directory.to_string_lossy().into_owned(),
+            ],
+            &root.to_string_lossy(),
+            &root.to_string_lossy(),
+            None,
+            None,
+        );
+
+        assert_eq!(result.errors.len(), 3);
+        assert_eq!(result.errors[0].path, missing.to_string_lossy());
+        assert_eq!(
+            result.errors[0].error,
+            format!("Extension path does not exist: {}", missing.display())
+        );
+        assert_eq!(result.errors[1].path, existing.to_string_lossy());
+        assert_eq!(
+            result.errors[2].path,
+            directory.join("index.ts").to_string_lossy()
+        );
+        assert!(result.errors[1..]
+            .iter()
+            .all(|error| error.error.contains(RUST_NATIVE_ONLY_ERROR)));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -782,12 +953,14 @@ mod tests {
                 )?;
                 api.register_tool(RegisteredTool {
                     name: "native-tool".to_string(),
+                    label: "Native tool".to_string(),
                     description: "Rust tool".to_string(),
                     parameters: json!({"type": "object"}),
                     source_info: SourceInfo::synthetic("<inline:rust>", "inline", None),
                     execute: Some(Arc::new(|request: ToolExecutionRequest| {
                         Ok(json!({"id": request.tool_call_id, "params": request.params}))
                     })),
+                    ..Default::default()
                 })?;
                 api.register_flag(
                     "native-flag",
@@ -809,17 +982,24 @@ mod tests {
         assert!(extension.commands.contains_key("echo"));
         assert!(extension.tools.contains_key("native-tool"));
         assert_eq!(
-            runtime.lock().unwrap().flag_values["native-flag"],
+            runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .flag_values["native-flag"],
             "default"
         );
         assert_eq!(
-            runtime.lock().unwrap().pending_provider_registrations[0].name,
+            runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pending_provider_registrations[0]
+                .name,
             "native-config"
         );
         assert_eq!(
             runtime
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|error| error.into_inner())
                 .pending_native_provider_registrations[0]
                 .provider,
             "native-provider"
@@ -873,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn host_action_loading_binds_a_rust_runtime_without_a_bridge() {
+    fn host_action_loading_binds_a_rust_runtime_and_host_actions() {
         let result = load_extensions_with_host_actions(
             &[],
             "/fixture/project",
@@ -914,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_directory_ignores_unsupported_manifest_entries() {
+    fn configured_directory_reports_unsupported_manifest_entries() {
         let root = sandbox("configured-manifest");
         let extension_dir = root.join("extensions");
         fs::create_dir_all(&extension_dir).expect("create extension dir");
@@ -923,6 +1103,7 @@ mod tests {
             r#"{ "pi": { "extensions": ["entry.ts"] } }"#,
         )
         .expect("write package manifest");
+        fs::write(extension_dir.join("entry.ts"), "source").expect("write source entry");
 
         let result = discover_and_load_extensions(
             &[extension_dir.to_string_lossy().into_owned()],
@@ -932,7 +1113,12 @@ mod tests {
             None,
         );
         assert!(result.extensions.is_empty());
-        assert!(result.errors.is_empty());
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(
+            result.errors[0].path,
+            extension_dir.join("entry.ts").to_string_lossy()
+        );
+        assert!(result.errors[0].error.contains(RUST_NATIVE_ONLY_ERROR));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -942,6 +1128,8 @@ mod tests {
             mode: "print".to_string(),
             cwd: "/fixture/project".to_string(),
             has_ui: false,
+            ui: super::super::types::ExtensionUiContext::default(),
+            host: super::super::types::ExtensionHostContext::default(),
         };
         assert_eq!(context.mode, "print");
     }

@@ -67,7 +67,8 @@ impl<R: AsyncRead + Unpin> JsonlLineReader<R> {
                 }
                 // EOF with a trailing unterminated line.
                 let line = std::mem::take(&mut self.pending);
-                return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
+                let line = line.strip_suffix(b"\r").unwrap_or(&line);
+                return Ok(Some(String::from_utf8_lossy(line).into_owned()));
             }
             self.pending.extend_from_slice(&buf[..n]);
         }
@@ -84,6 +85,7 @@ pub async fn write_json_line<W: AsyncWrite + Unpin>(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -165,6 +167,18 @@ mod tests {
         assert_eq!(reader.next_line().await.unwrap().as_deref(), Some(""));
         assert_eq!(reader.next_line().await.unwrap().as_deref(), Some(""));
         assert_eq!(reader.next_line().await.unwrap().as_deref(), Some("{}"));
+        assert_eq!(reader.next_line().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn line_reader_strips_cr_from_final_unterminated_line() {
+        let input: &[u8] = b"{\"c\":3}\r";
+        let mut reader = JsonlLineReader::new(input);
+
+        assert_eq!(
+            reader.next_line().await.unwrap().as_deref(),
+            Some("{\"c\":3}")
+        );
         assert_eq!(reader.next_line().await.unwrap(), None);
     }
 }

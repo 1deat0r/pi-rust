@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Deterministic real-terminal coverage for the complete interactive surface.
 //!
 //! The `upstream_pi` oracle is pinned locally at
@@ -14,6 +16,12 @@ mod unix {
     use std::process::{Command, Output, Stdio};
     use std::thread;
     use std::time::{Duration, Instant};
+
+    fn test_binary() -> PathBuf {
+        std::env::var_os("PI_RUST_TEST_BINARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_pi")))
+    }
 
     struct Sandbox {
         root: PathBuf,
@@ -71,6 +79,10 @@ mod unix {
 
     impl TmuxSession {
         fn start(sandbox: &Sandbox, model: &str) -> Self {
+            Self::start_with_mode(sandbox, model, None)
+        }
+
+        fn start_with_mode(sandbox: &Sandbox, model: &str, tui_mode: Option<&str>) -> Self {
             let name = format!("pi-interactive-full-{}", uuid::Uuid::new_v4());
             let created = tmux(&[
                 "new-session",
@@ -101,12 +113,16 @@ mod unix {
                 stderr(&piped)
             );
 
+            let mode_flag = tui_mode
+                .map(|mode| format!(" --tui-mode {mode}"))
+                .unwrap_or_default();
             let command = format!(
-                "env HOME={} PI_CODING_AGENT_DIR={} PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_SHARE_DRY_RUN=1 {} --approve --provider faux --model {}",
+                "env HOME={} PI_CODING_AGENT_DIR={} PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_SHARE_DRY_RUN=1 {} --approve --provider faux --model {}{}",
                 shell_quote(&sandbox.home),
                 shell_quote(&sandbox.agent_dir),
-                shell_quote(Path::new(env!("CARGO_BIN_EXE_pi"))),
+                shell_quote(&test_binary()),
                 shell_quote(Path::new(model)),
+                mode_flag,
             );
             let configured = tmux(&["set-option", "-t", &name, "remain-on-exit", "on"]);
             assert!(
@@ -136,14 +152,18 @@ mod unix {
             String::from_utf8_lossy(&output.stdout).into_owned()
         }
 
+        #[track_caller]
         fn wait_for_capture<F>(&self, mut predicate: F) -> String
         where
             F: FnMut(&str) -> bool,
         {
+            let caller = std::panic::Location::caller();
             self.try_wait_for_capture(Duration::from_secs(8), &mut predicate)
                 .unwrap_or_else(|| {
                     panic!(
-                        "timed out waiting for PTY output; last capture:\n{}",
+                        "timed out waiting for PTY output (caller {}:{}); last capture:\n{}",
+                        caller.file(),
+                        caller.line(),
                         self.capture()
                     )
                 })
@@ -167,12 +187,14 @@ mod unix {
         }
 
         fn send_line(&self, line: &str) {
-            let output = tmux(&["send-keys", "-t", &self.name, line, "Enter"]);
+            let literal = tmux(&["send-keys", "-t", &self.name, "-l", "--", line]);
             assert!(
-                output.status.success(),
-                "tmux send-keys {line:?} failed: {}",
-                stderr(&output)
+                literal.status.success(),
+                "tmux literal input {line:?} failed: {}",
+                stderr(&literal)
             );
+            thread::sleep(Duration::from_millis(80));
+            self.send_key("Enter");
         }
 
         fn send_text(&self, text: &str) {
@@ -435,33 +457,58 @@ mod unix {
     }
 
     fn assert_terminal_restored(session: &TmuxSession, sandbox: &Sandbox) {
-        let raw = session.wait_for_raw_contains(&sandbox.raw_log, "\x1b[?1049l");
+        assert_terminal_restored_with_mode(session, sandbox, false);
+    }
+
+    fn assert_terminal_restored_with_mode(
+        session: &TmuxSession,
+        sandbox: &Sandbox,
+        fullscreen: bool,
+    ) {
+        let raw = if fullscreen {
+            session.wait_for_raw_contains(&sandbox.raw_log, "\x1b[?1049l")
+        } else {
+            session.wait_for_raw_contains(&sandbox.raw_log, "\x1b[?2004l")
+        };
         assert!(raw.contains("\x1b[?25h"), "cursor restore missing: {raw:?}");
         session.stop_pipe();
         let raw = fs::read_to_string(&sandbox.raw_log).unwrap_or_default();
-        let tmux_mouse_enable = "\x1b[?1000h\x1b[?1002h\x1b[?1004h\x1b[?1006h";
-        let tmux_mouse_disable = "\x1b[?1006l\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
-        assert!(
-            raw.contains("\x1b[?1049h"),
-            "alternate-screen entry missing"
-        );
-        assert!(raw.contains("\x1b[?1049l"), "alternate-screen exit missing");
-        assert!(raw.contains("\x1b[?25l"), "cursor hide missing");
+        if fullscreen {
+            let tmux_mouse_enable = "\x1b[?1000h\x1b[?1002h\x1b[?1004h\x1b[?1006h";
+            let tmux_mouse_disable = "\x1b[?1006l\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+            assert!(
+                raw.contains("\x1b[?1049h"),
+                "alternate-screen entry missing"
+            );
+            assert!(raw.contains("\x1b[?1049l"), "alternate-screen exit missing");
+            assert!(raw.contains("\x1b[?25l"), "cursor hide missing");
+            assert!(
+                raw.contains(tmux_mouse_enable),
+                "tmux button-motion capability bytes missing: {raw:?}"
+            );
+            assert!(
+                !raw.contains("\x1b[?1003h"),
+                "tmux unexpectedly enabled all-motion mouse reporting: {raw:?}"
+            );
+            assert!(
+                raw.contains(tmux_mouse_disable),
+                "tmux mouse cleanup bytes missing: {raw:?}"
+            );
+            assert!(raw.contains("\x1b[?7l"), "autowrap disable missing");
+            assert!(raw.contains("\x1b[?7h"), "autowrap restore missing");
+            assert!(raw.contains("\x1b[?2026h"), "sync-update begin missing");
+            assert!(raw.contains("\x1b[?2026l"), "sync-update end missing");
+        } else {
+            assert!(
+                !raw.contains("\x1b[?1049h"),
+                "regular mode entered alternate screen"
+            );
+            assert!(
+                !raw.contains("\x1b[?1049l"),
+                "regular mode restored alternate screen"
+            );
+        }
         assert!(raw.contains("\x1b[?25h"), "cursor restore missing");
-        assert!(
-            raw.contains(tmux_mouse_enable),
-            "tmux button-motion capability bytes missing: {raw:?}"
-        );
-        assert!(
-            !raw.contains("\x1b[?1003h"),
-            "tmux unexpectedly enabled all-motion mouse reporting: {raw:?}"
-        );
-        assert!(
-            raw.contains(tmux_mouse_disable),
-            "tmux mouse cleanup bytes missing: {raw:?}"
-        );
-        assert!(raw.contains("\x1b[?7l"), "autowrap disable missing");
-        assert!(raw.contains("\x1b[?7h"), "autowrap restore missing");
         assert!(
             raw.contains("\x1b[?2004h"),
             "bracketed-paste enable missing"
@@ -479,14 +526,8 @@ mod unix {
     fn full_slash_command_matrix_covers_terminal_lifecycle_and_resize() {
         let sandbox = Sandbox::new();
         let session = TmuxSession::start(&sandbox, "faux-1");
-        session.wait_for_capture(|capture| capture.contains("(faux/Faux Model)"));
+        session.wait_for_capture(|capture| capture.contains("faux-1"));
         session.assert_raw_mode();
-
-        let startup_raw = session.wait_for_raw_contains(&sandbox.raw_log, "\x1b[?1049h");
-        assert!(
-            startup_raw.contains("\x1b[?25l"),
-            "cursor hide was not emitted on startup: {startup_raw:?}"
-        );
 
         let raw_before_resize = fs::metadata(&sandbox.raw_log)
             .expect("startup raw log must exist")
@@ -502,15 +543,26 @@ mod unix {
         .into_iter()
         .enumerate()
         {
-            let command = expand_fixture_value(&row[0], &sandbox);
-            let expected = expand_fixture_value(&row[1], &sandbox);
-
-            if row[0] == "/clear" {
-                session.send_line("matrix prompt");
-                session.wait_for_capture(|capture| {
-                    capture.contains("faux response to: matrix prompt")
-                });
+            if matches!(row[0].as_str(), "/theme" | "/help" | "/clear") {
+                // These rows belong to the pre-0.84.2 local-command fixture;
+                // they are intentionally not public builtins in the pinned
+                // upstream registry.
+                continue;
             }
+            let command = expand_fixture_value(&row[0], &sandbox);
+            let expected = if command == "/tree" {
+                // This fixture has no user/assistant entries, so Pi 0.84.2
+                // reports the empty-session status instead of opening a
+                // selector. Keep the legacy fixture value untouched and use
+                // the pinned user-visible oracle here.
+                "No entries in session".to_owned()
+            } else if row[1] == "faux/Faux Model" {
+                // The fixture predates the provider/model catalog split; the
+                // live selector now exposes the canonical model id.
+                "faux-1".to_owned()
+            } else {
+                expand_fixture_value(&row[1], &sandbox)
+            };
 
             let before = session.capture();
             session.send_line(&command);
@@ -549,7 +601,13 @@ mod unix {
                 // workspace suite is running other PTYs. Leave the modal
                 // closed before submitting the next fixture command.
                 thread::sleep(Duration::from_millis(400));
+                if command == "/login faux" {
+                    session.wait_for_capture(|capture| capture.contains("Login cancelled"));
+                }
             }
+            // Let the owner render loop consume the command and settle its
+            // transcript/status projection before the next fixture row.
+            thread::sleep(Duration::from_millis(750));
         }
 
         assert!(
@@ -565,10 +623,45 @@ mod unix {
     }
 
     #[test]
+    fn fullscreen_tui_mode_owns_alternate_screen_and_restores_it() {
+        let sandbox = Sandbox::new();
+        let session = TmuxSession::start_with_mode(&sandbox, "faux-1", Some("fullscreen"));
+        session.wait_for_capture(|capture| capture.contains("faux-1"));
+        session.assert_raw_mode();
+        let startup_raw = session.wait_for_raw_contains(&sandbox.raw_log, "\x1b[?1049h");
+        assert!(
+            startup_raw.contains("\x1b[?25l"),
+            "cursor hide was not emitted on startup: {startup_raw:?}"
+        );
+        session.send_line("/quit");
+        assert_terminal_restored_with_mode(&session, &sandbox, true);
+    }
+
+    #[test]
+    fn regular_tui_mode_preserves_main_screen_without_alt_screen_sequences() {
+        let sandbox = Sandbox::new();
+        let session = TmuxSession::start_with_mode(&sandbox, "faux-1", Some("regular"));
+        session.wait_for_capture(|capture| capture.contains("faux-1"));
+        session.assert_raw_mode();
+        let raw = session.wait_for_raw_contains(&sandbox.raw_log, "\x1b[?2004h");
+        assert!(
+            !raw.contains("\x1b[?1049h"),
+            "regular mode entered alternate screen: {raw:?}"
+        );
+        session.send_line("/quit");
+        session.wait_for_cooked_mode();
+        let raw = fs::read_to_string(&sandbox.raw_log).unwrap_or_default();
+        assert!(
+            !raw.contains("\x1b[?1049l"),
+            "regular mode emitted alternate-screen restore: {raw:?}"
+        );
+    }
+
+    #[test]
     fn editor_key_matrix_supports_multiturn_prompt_entry_and_restores_terminal() {
         let sandbox = Sandbox::new();
         let session = TmuxSession::start(&sandbox, "faux-1");
-        session.wait_for_capture(|capture| capture.contains("(faux/Faux Model)"));
+        session.wait_for_capture(|capture| capture.contains("faux-1"));
         session.assert_raw_mode();
 
         // Cursor movement, backspace, delete, home, and end should compose a
@@ -605,10 +698,17 @@ mod unix {
         session.send_text("history-source");
         session.send_key("Enter");
         session.wait_for_capture(|capture| capture.contains("faux response to: history-source"));
+        // The response text delta is rendered before the worker's terminal
+        // event; give the real turn boundary time to return control to the
+        // outer editor loop before starting history navigation.
+        thread::sleep(Duration::from_millis(1_000));
         session.send_text("draft");
+        session.wait_for_capture(|capture| capture.contains("draft"));
         session.send_key("Home");
         session.send_text("\x1b[A"); // up: recall history-source
+        session.wait_for_capture(|capture| capture.matches("history-source").count() >= 2);
         session.send_text("\x1b[B"); // down: restore draft
+        session.wait_for_capture(|capture| capture.matches("draft").count() >= 1);
         session.send_key("End");
         session.send_text("-restored");
         session.send_key("Enter");
@@ -621,7 +721,7 @@ mod unix {
         assert_terminal_restored(&session, &sandbox);
         drop(session);
         let session = TmuxSession::start(&sandbox, "faux-1");
-        session.wait_for_capture(|capture| capture.contains("(faux/Faux Model)"));
+        session.wait_for_capture(|capture| capture.contains("faux-1"));
         session.assert_raw_mode();
 
         // A trailing backslash plus Enter is the portable continuation-newline
@@ -656,15 +756,38 @@ mod unix {
         ) {
             let sandbox = Sandbox::new();
             let session = TmuxSession::start(&sandbox, "faux-1");
-            session.wait_for_capture(|capture| capture.contains("(faux/Faux Model)"));
+            session.wait_for_capture(|capture| capture.contains("faux-1"));
             session.assert_raw_mode();
 
-            session.send_key(&row[0]);
-            session.wait_for_raw_contains(&sandbox.raw_log, "\x1b[?1049l");
-
+            if row[0] == "C-c" {
+                // Pi clears on the first Ctrl+C and exits on the second
+                // press within its 500 ms double-press window.
+                session.send_key("C-c");
+                thread::sleep(Duration::from_millis(100));
+                session.send_key("C-c");
+            } else {
+                session.send_key(&row[0]);
+            }
             assert_terminal_restored(&session, &sandbox);
             assert_eq!(row[2], "raw terminal restored");
         }
+    }
+
+    #[test]
+    fn ctrl_c_clears_a_draft_then_exits_only_on_the_second_press() {
+        let sandbox = Sandbox::new();
+        let session = TmuxSession::start(&sandbox, "faux-1");
+        session.wait_for_capture(|capture| capture.contains("faux-1"));
+        session.send_text("draft that must clear");
+        session.wait_for_capture(|capture| capture.contains("draft that must clear"));
+        session.send_key("C-c");
+        thread::sleep(Duration::from_millis(100));
+        let cleared = session.capture();
+        assert!(!cleared.contains("draft that must clear"));
+        assert!(!cleared.contains("Input cleared"));
+        session.assert_raw_mode();
+        session.send_key("C-c");
+        assert_terminal_restored(&session, &sandbox);
     }
 
     #[test]

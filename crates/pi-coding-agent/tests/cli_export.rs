@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Binary-level tests for `pi --export <file> [output]` (CLI wiring of the
 //! export-html pipeline; the HTML parity itself is covered by
 //! export_html_parity.rs against the oracle goldens).
@@ -111,6 +113,32 @@ fn export_default_output_name() {
     // lands there.
     let html = fs::read_to_string(cwd.join(printed)).unwrap();
     assert!(html.contains("<html"));
+}
+
+#[test]
+fn export_runs_before_json_mode_dispatch() {
+    let sandbox = Sandbox::new("export-before-mode");
+    let cwd = sandbox.root.clone();
+    let out = sandbox.pi(
+        &cwd,
+        &[
+            "--mode",
+            "json",
+            "--export",
+            fixture("export_session.jsonl").to_str().unwrap(),
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    assert!(
+        sandbox.stdout(&out).starts_with("Exported to: "),
+        "export must be handled before --mode json, stdout: {}",
+        sandbox.stdout(&out)
+    );
+    assert!(
+        !sandbox.stderr(&out).contains("provider"),
+        "export should not initialize a provider: {}",
+        sandbox.stderr(&out)
+    );
 }
 
 #[test]

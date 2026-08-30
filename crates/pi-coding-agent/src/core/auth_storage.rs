@@ -8,10 +8,11 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -151,14 +152,134 @@ async fn sleep_abortable(
     }
 }
 
-fn write_auth_file(path: &Path, content: &str) {
+static AUTH_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn sync_parent_directory(parent: &Path) -> Result<(), String> {
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed to sync auth directory {}: {error}",
+                parent.display()
+            )
+        })
+}
+
+fn write_auth_file(path: &Path, content: &str) -> Result<(), String> {
+    let Some(parent) = path.parent() else {
+        return Err(format!("auth path has no parent: {}", path.display()));
+    };
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create auth directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("auth.json");
+    let counter = AUTH_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path = parent.join(format!(
+        ".{name}.tmp-{}-{}-{counter}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true).mode(0o600);
-    if let Ok(mut file) = options.open(path) {
-        use std::io::Write;
-        let _ = file.write_all(content.as_bytes());
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    options.write(true).create_new(true).mode(0o600);
+    let mut file = options.open(&temp_path).map_err(|error| {
+        format!(
+            "failed to create temporary auth file {}: {error}",
+            temp_path.display()
+        )
+    })?;
+    let result = (|| {
+        file.write_all(content.as_bytes())
+            .map_err(|error| format!("failed to write auth file {}: {error}", path.display()))?;
+        file.sync_all().map_err(|error| {
+            format!(
+                "failed to sync temporary auth file {}: {error}",
+                temp_path.display()
+            )
+        })?;
+        drop(file);
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600)).map_err(|error| {
+            format!(
+                "failed to set auth file permissions {}: {error}",
+                temp_path.display()
+            )
+        })?;
+        fs::rename(&temp_path, path)
+            .map_err(|error| format!("failed to replace auth file {}: {error}", path.display()))?;
+        sync_parent_directory(parent)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
     }
+    result
+}
+
+struct AuthLockGuard {
+    _file: fs::File,
+    path: PathBuf,
+}
+
+impl Drop for AuthLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn process_is_alive(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).exists()
+}
+
+fn remove_dead_auth_lock(path: &Path) -> bool {
+    let owner = fs::read_to_string(path)
+        .ok()
+        .and_then(|content| content.trim().parse::<u32>().ok());
+    let dead = match owner {
+        Some(pid) if pid == std::process::id() => false,
+        Some(pid) => !process_is_alive(pid),
+        None => fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
+            .map(|age| age >= Duration::from_secs(30))
+            .unwrap_or(false),
+    };
+    dead && fs::remove_file(path).is_ok()
+}
+
+enum AuthLockOpenError {
+    AlreadyExists,
+    Other(String),
+}
+
+fn open_auth_lock(path: &Path) -> Result<fs::File, AuthLockOpenError> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            return Err(AuthLockOpenError::AlreadyExists)
+        }
+        Err(error) => {
+            return Err(AuthLockOpenError::Other(format!(
+                "Failed to acquire auth storage lock: {error}"
+            )))
+        }
+    };
+    if let Err(error) = writeln!(file, "{}", std::process::id()).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(AuthLockOpenError::Other(format!(
+            "Failed to initialize auth storage lock: {error}"
+        )));
+    }
+    Ok(file)
 }
 
 /// File-backed auth storage. Adds a `.<file>.lock` sibling (upstream
@@ -173,17 +294,34 @@ impl FileAuthStorageBackend {
         Self { auth_path }
     }
 
-    fn ensure_parent_dir(&self) {
+    fn ensure_parent_dir(&self) -> Result<(), String> {
         if let Some(parent) = self.auth_path.parent() {
-            let _ = fs::create_dir_all(parent);
-            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+            let existed = parent.exists();
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "failed to create auth directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+            if !existed {
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).map_err(
+                    |error| {
+                        format!(
+                            "failed to secure auth directory {}: {error}",
+                            parent.display()
+                        )
+                    },
+                )?;
+            }
         }
+        Ok(())
     }
 
-    fn ensure_file_exists(&self) {
+    fn ensure_file_exists(&self) -> Result<(), String> {
         if !self.auth_path.exists() {
-            write_auth_file(&self.auth_path, "{}");
+            write_auth_file(&self.auth_path, "{}")?;
         }
+        Ok(())
     }
 
     fn lock_path(&self) -> PathBuf {
@@ -192,24 +330,30 @@ impl FileAuthStorageBackend {
         PathBuf::from(path)
     }
 
-    fn acquire_lock_sync_with_retry(&self) -> Result<fs::File, String> {
+    fn acquire_lock_sync_with_retry(&self) -> Result<AuthLockGuard, String> {
         let max_attempts = 10;
         let delay_ms = 20;
         let lock_path = self.lock_path();
         for attempt in 1..=max_attempts {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&lock_path)
-            {
-                Ok(file) => return Ok(file),
-                Err(error) => {
-                    let is_elocked = error.kind() == std::io::ErrorKind::AlreadyExists;
-                    if !is_elocked || attempt == max_attempts {
-                        return Err(format!("Failed to acquire auth storage lock: {error}"));
+            match open_auth_lock(&lock_path) {
+                Ok(file) => {
+                    return Ok(AuthLockGuard {
+                        _file: file,
+                        path: lock_path,
+                    })
+                }
+                Err(AuthLockOpenError::AlreadyExists) => {
+                    if remove_dead_auth_lock(&lock_path) {
+                        continue;
+                    }
+                    if attempt == max_attempts {
+                        return Err(
+                            "Failed to acquire auth storage lock: lock is already held".to_string()
+                        );
                     }
                     std::thread::sleep(Duration::from_millis(delay_ms));
                 }
+                Err(AuthLockOpenError::Other(message)) => return Err(message),
             }
         }
         Err("Failed to acquire auth storage lock".to_string())
@@ -218,7 +362,7 @@ impl FileAuthStorageBackend {
     async fn acquire_lock_async(
         &self,
         signal: Option<&Arc<AtomicBool>>,
-    ) -> Result<fs::File, String> {
+    ) -> Result<AuthLockGuard, String> {
         let stale_ms = 30_000;
         let max_delay_ms = 2_000;
         let deadline = std::time::Instant::now() + Duration::from_millis(stale_ms);
@@ -226,27 +370,31 @@ impl FileAuthStorageBackend {
         let lock_path = self.lock_path();
         loop {
             throw_if_aborted(signal)?;
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&lock_path)
-            {
+            match open_auth_lock(&lock_path) {
                 Ok(file) => {
                     if let Some(s) = signal {
                         if s.load(Ordering::SeqCst) {
+                            drop(file);
                             let _ = fs::remove_file(&lock_path);
                             return Err("Aborted".to_string());
                         }
                     }
-                    return Ok(file);
+                    return Ok(AuthLockGuard {
+                        _file: file,
+                        path: lock_path,
+                    });
                 }
-                Err(error) => {
-                    let is_elocked = error.kind() == std::io::ErrorKind::AlreadyExists;
+                Err(AuthLockOpenError::AlreadyExists) => {
                     throw_if_aborted(signal)?;
                     let remaining_ms =
                         deadline.saturating_duration_since(std::time::Instant::now());
-                    if !is_elocked || remaining_ms.is_zero() {
-                        return Err(format!("Failed to acquire auth storage lock: {error}"));
+                    if remaining_ms.is_zero() {
+                        return Err(
+                            "Failed to acquire auth storage lock: lock is already held".to_string()
+                        );
+                    }
+                    if remove_dead_auth_lock(&lock_path) {
+                        continue;
                     }
                     let base_delay_ms = std::cmp::min(
                         10u64.saturating_mul(1u64 << retry.min(30)),
@@ -259,38 +407,73 @@ impl FileAuthStorageBackend {
                     );
                     sleep_abortable(Duration::from_millis(delay_ms), signal).await?;
                 }
+                Err(AuthLockOpenError::Other(message)) => return Err(message),
             }
         }
     }
 
-    fn read_current(&self) -> Option<String> {
-        fs::read_to_string(&self.auth_path).ok()
+    fn read_current(&self) -> Result<Option<String>, String> {
+        match fs::read_to_string(&self.auth_path) {
+            Ok(content) => Ok(Some(content)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!(
+                "failed to read auth file {}: {error}",
+                self.auth_path.display()
+            )),
+        }
     }
 
-    fn write_next(&self, next: String) {
-        write_auth_file(&self.auth_path, &next);
+    fn write_next(&self, next: String) -> Result<(), String> {
+        write_auth_file(&self.auth_path, &next)
+    }
+
+    fn read_consistent(&self) -> Result<Option<String>, String> {
+        let lock_path = self.lock_path();
+        if !self.auth_path.exists() && !lock_path.exists() {
+            return Ok(None);
+        }
+        self.ensure_parent_dir()?;
+        let _lock_guard = self.acquire_lock_sync_with_retry()?;
+        self.read_current()
+    }
+
+    async fn read_consistent_async(
+        &self,
+        signal: Option<&Arc<AtomicBool>>,
+    ) -> Result<Option<String>, String> {
+        throw_if_aborted(signal)?;
+        self.ensure_parent_dir()?;
+        let _lock_guard = self.acquire_lock_async(signal).await?;
+        self.ensure_file_exists()?;
+        throw_if_aborted(signal)?;
+        self.read_current()
     }
 }
 
 impl FileAuthStorageBackend {
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn with_lock_impl<T>(&self, f: &mut dyn FnMut(Option<&str>) -> LockResult<T>) -> T {
-        self.ensure_parent_dir();
-        self.ensure_file_exists();
-
-        let lock_file = match self.acquire_lock_sync_with_retry() {
+        if let Err(message) = self.ensure_parent_dir() {
+            panic!("{message}");
+        }
+        let _lock_guard = match self.acquire_lock_sync_with_retry() {
             Ok(file) => file,
             Err(message) => panic!("{message}"),
         };
+        if let Err(message) = self.ensure_file_exists() {
+            panic!("{message}");
+        }
         let result = {
-            let current = self.read_current();
+            let current = self
+                .read_current()
+                .unwrap_or_else(|message| panic!("{message}"));
             let LockResult { result, next } = f(current.as_deref());
             if let Some(next) = next {
-                self.write_next(next);
+                self.write_next(next)
+                    .unwrap_or_else(|message| panic!("{message}"));
             }
             result
         };
-        drop(lock_file);
-        let _ = fs::remove_file(self.lock_path());
         result
     }
 
@@ -306,22 +489,17 @@ impl FileAuthStorageBackend {
         let options = options.clone();
         Box::pin(async move {
             throw_if_aborted(options.signal.as_ref())?;
-            this.ensure_parent_dir();
-            this.ensure_file_exists();
+            this.ensure_parent_dir()?;
 
-            let lock_file = this.acquire_lock_async(options.signal.as_ref()).await?;
-            let result = async {
-                let current = this.read_current();
-                let LockResult { result, next } = f(current.as_deref()).await?;
-                if let Some(next) = next {
-                    this.write_next(next);
-                }
-                Ok::<T, String>(result)
+            let _lock_guard = this.acquire_lock_async(options.signal.as_ref()).await?;
+            this.ensure_file_exists()?;
+            let current = this.read_current()?;
+            let LockResult { result, next } = f(current.as_deref()).await?;
+            throw_if_aborted(options.signal.as_ref())?;
+            if let Some(next) = next {
+                this.write_next(next)?;
             }
-            .await;
-            drop(lock_file);
-            let _ = fs::remove_file(this.lock_path());
-            result
+            Ok::<T, String>(result)
         })
     }
 }
@@ -344,10 +522,14 @@ impl InMemoryAuthStorageBackend {
 
 impl InMemoryAuthStorageBackend {
     fn with_lock_impl<T>(&self, f: &mut dyn FnMut(Option<&str>) -> LockResult<T>) -> T {
-        let current = self.value.lock().unwrap().clone();
+        let current = self
+            .value
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         let LockResult { result, next } = f(current.as_deref());
         if let Some(next) = next {
-            *self.value.lock().unwrap() = Some(next);
+            *self.value.lock().unwrap_or_else(|error| error.into_inner()) = Some(next);
         }
         result
     }
@@ -368,11 +550,14 @@ impl InMemoryAuthStorageBackend {
         Box::pin(async move {
             let _guard = self.async_lock.lock().await;
             throw_if_aborted(options_clone.signal.as_ref())?;
-            let current = value.lock().unwrap().clone();
+            let current = value
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
             let locked = f(current.as_deref()).await?;
             throw_if_aborted(options_clone.signal.as_ref())?;
             if let Some(next) = locked.next {
-                *value.lock().unwrap() = Some(next);
+                *value.lock().unwrap_or_else(|error| error.into_inner()) = Some(next);
             }
             Ok(locked.result)
         })
@@ -394,14 +579,21 @@ impl ReadOnlyAuthStorage {
         }
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn load(&self) -> Result<AuthStorageData, String> {
-        if let Some(data) = self.data.lock().unwrap().as_ref() {
+        if let Some(data) = self
+            .data
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
             return Ok(data.clone());
         }
         let content = match fs::read_to_string(&self.auth_path) {
             Ok(content) => content,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                *self.data.lock().unwrap() = Some(AuthStorageData::new());
+                *self.data.lock().unwrap_or_else(|error| error.into_inner()) =
+                    Some(AuthStorageData::new());
                 return Ok(AuthStorageData::new());
             }
             Err(error) => return Err(format!("Failed to read auth.json: {error}")),
@@ -420,7 +612,7 @@ impl ReadOnlyAuthStorage {
                 })?;
             data.insert(provider_id.clone(), credential);
         }
-        *self.data.lock().unwrap() = Some(data.clone());
+        *self.data.lock().unwrap_or_else(|error| error.into_inner()) = Some(data.clone());
         Ok(data)
     }
 
@@ -435,20 +627,9 @@ impl ReadOnlyAuthStorage {
         let Some(credential) = credential else {
             return Ok(None);
         };
-        // Command-configured keys are returned untouched; template keys are
-        // resolved (upstream ReadOnlyAuthStorage.read).
-        if let Credential::ApiKey { key: Some(key), .. } = &credential {
-            if !is_command_config_value(key) {
-                if let Some(resolved) = resolve_config_value(key, None) {
-                    let mut resolved_credential = credential.clone();
-                    if let Credential::ApiKey { key: k, .. } = &mut resolved_credential {
-                        *k = Some(resolved);
-                    }
-                    return Ok(Some(resolved_credential));
-                }
-            }
-        }
-        Ok(Some(credential))
+        // Command-configured keys are returned untouched; template and
+        // literal keys are resolved with the credential's env map.
+        Ok(Some(resolve_api_key_credential(&credential, true)))
     }
 
     pub async fn list(
@@ -491,6 +672,7 @@ impl ReadOnlyAuthStorage {
     }
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), String> {
     if !credential.is_object() {
         return Err(format!(
@@ -533,6 +715,36 @@ fn validate_credential(provider_id: &str, credential: &Value) -> Result<(), Stri
     }
 }
 
+/// Resolve the configured value of an API-key credential. The credential's
+/// `env` map is provider-specific configuration and must take precedence over
+/// the process environment, matching `resolveConfigValue(value, credential.env)`
+/// in the upstream store.
+fn resolve_api_key_credential(credential: &Credential, leave_commands: bool) -> Credential {
+    let Credential::ApiKey {
+        key: Some(key),
+        env,
+    } = credential
+    else {
+        return credential.clone();
+    };
+    if leave_commands && is_command_config_value(key) {
+        return credential.clone();
+    }
+
+    let env_map = env.as_ref().map(|values| {
+        values
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect::<std::collections::HashMap<_, _>>()
+    });
+    let resolved_key = resolve_config_value(key, env_map.as_ref());
+    let mut resolved = credential.clone();
+    if let Credential::ApiKey { key, .. } = &mut resolved {
+        *key = resolved_key;
+    }
+    resolved
+}
+
 /// `{dev}:{ino}:{size}:{mtimeNs}:{ctimeNs}` file revision (upstream
 /// `getFileRevision`).
 fn get_file_revision(path: &Path) -> Option<String> {
@@ -547,27 +759,124 @@ fn get_file_revision(path: &Path) -> Option<String> {
     ))
 }
 
+/// A file read snapshot is shared by every `AuthStorage` instance for the
+/// same path. The upstream store does this so a model runtime, `/login`, and
+/// `/logout` do not each maintain a stale copy of auth.json. Weak entries let
+/// short-lived test/config paths disappear instead of retaining all paths for
+/// the lifetime of the process.
+fn shared_auth_file_read_state(path: &Path) -> Arc<Mutex<AuthFileReadState>> {
+    static STATES: std::sync::OnceLock<Mutex<BTreeMap<PathBuf, Weak<Mutex<AuthFileReadState>>>>> =
+        std::sync::OnceLock::new();
+    let states = STATES.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut states = states.lock().unwrap_or_else(|error| error.into_inner());
+    states.retain(|_, state| state.strong_count() > 0);
+    if let Some(state) = states.get(path).and_then(Weak::upgrade) {
+        return state;
+    }
+    let state = Arc::new(Mutex::new(AuthFileReadState::default()));
+    states.insert(path.to_path_buf(), Arc::downgrade(&state));
+    state
+}
+
+type AuthFileReloadResult = Result<(AuthStorageData, Option<String>), String>;
+
+/// One in-flight file reload shared by all readers of the same path. The
+/// future itself is run in a task so an aborting caller can stop waiting while
+/// another reader continues to use the same reload result.
+struct AuthFileReload {
+    result: Mutex<Option<AuthFileReloadResult>>,
+    notify: tokio::sync::Notify,
+    readers: AtomicUsize,
+    cancel: Arc<AtomicBool>,
+}
+
+fn spawn_auth_file_reload(path: PathBuf, reload: Arc<AuthFileReload>) {
+    tokio::spawn(async move {
+        let backend = FileAuthStorageBackend::new(path.clone());
+        let result = async {
+            let content = backend.read_consistent_async(Some(&reload.cancel)).await?;
+            let data = AuthStorage::parse_storage_data(content.as_deref())?;
+            Ok((data, get_file_revision(&path)))
+        }
+        .await;
+        *reload
+            .result
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(result);
+        reload.notify.notify_waiters();
+    });
+}
+
+async fn await_auth_file_reload(
+    reload: &AuthFileReload,
+    signal: Option<&Arc<AtomicBool>>,
+) -> AuthFileReloadResult {
+    loop {
+        throw_if_aborted(signal)?;
+        let notified = reload.notify.notified();
+        if let Some(result) = reload
+            .result
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+        {
+            return result;
+        }
+        if let Some(signal) = signal {
+            tokio::select! {
+                _ = notified => {}
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                    throw_if_aborted(Some(signal))?;
+                }
+            }
+        } else {
+            notified.await;
+        }
+    }
+}
+
 /// Writable credential store backed by a JSON file (upstream `AuthStorage`).
 pub struct AuthStorage {
     storage: AuthStorageBackend,
     auth_path: Option<PathBuf>,
-    read_state: Mutex<AuthFileReadState>,
+    read_state: Arc<Mutex<AuthFileReadState>>,
 }
 
 #[derive(Default, Clone)]
 struct AuthFileReadState {
     data: AuthStorageData,
     revision: Option<String>,
+    reload: Option<Arc<AuthFileReload>>,
 }
 
 impl AuthStorage {
     fn new(storage: AuthStorageBackend, auth_path: Option<PathBuf>) -> Self {
+        let read_state = auth_path
+            .as_deref()
+            .map(shared_auth_file_read_state)
+            .unwrap_or_default();
         let mut storage = Self {
             storage,
             auth_path,
-            read_state: Mutex::new(AuthFileReadState::default()),
+            read_state,
         };
-        storage.reload();
+        let should_reload = storage
+            .auth_path
+            .as_deref()
+            .map(|path| {
+                let revision = get_file_revision(path);
+                let cached_revision = storage
+                    .read_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .revision
+                    .clone();
+                revision.is_none() || revision != cached_revision
+            })
+            .unwrap_or(true);
+        if should_reload {
+            storage.reload();
+        }
         storage
     }
 
@@ -582,6 +891,7 @@ impl AuthStorage {
         Self::new(storage, None)
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub fn in_memory(data: AuthStorageData) -> Self {
         let mut storage = InMemoryAuthStorageBackend::new();
         // Initialize through the same value slot the backend treats as the
@@ -594,11 +904,12 @@ impl AuthStorage {
         Self::from_storage(AuthStorageBackend::InMemory(storage))
     }
 
-    fn parse_storage_data(content: Option<&str>) -> AuthStorageData {
-        content
-            .filter(|c| !c.trim().is_empty())
-            .and_then(|c| serde_json::from_str::<AuthStorageData>(strip_bom(c)).ok())
-            .unwrap_or_default()
+    fn parse_storage_data(content: Option<&str>) -> Result<AuthStorageData, String> {
+        let Some(content) = content.filter(|c| !c.trim().is_empty()) else {
+            return Ok(AuthStorageData::new());
+        };
+        serde_json::from_str::<AuthStorageData>(strip_bom(content))
+            .map_err(|error| format!("Failed to read auth.json: {error}"))
     }
 
     fn read_under_lock(&self) -> Option<String> {
@@ -617,17 +928,72 @@ impl AuthStorage {
         self.auth_path.as_deref().and_then(get_file_revision)
     }
 
+    async fn wait_for_file_reload(
+        &self,
+        reload: Arc<AuthFileReload>,
+        options: &AuthOperationOptions,
+    ) -> Result<AuthStorageData, String> {
+        let result = await_auth_file_reload(&reload, options.signal.as_ref()).await;
+        let remove_reload = {
+            let mut state = self
+                .read_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            reload.readers.fetch_sub(1, Ordering::SeqCst);
+            if state
+                .reload
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &reload))
+                && reload.readers.load(Ordering::SeqCst) == 0
+            {
+                state.reload = None;
+                true
+            } else {
+                false
+            }
+        };
+        if remove_reload {
+            reload.cancel.store(true, Ordering::SeqCst);
+        }
+
+        match result {
+            Ok((data, revision)) => {
+                let mut state = self
+                    .read_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                state.data = data.clone();
+                state.revision = revision;
+                drop(state);
+                throw_if_aborted(options.signal.as_ref())?;
+                Ok(data)
+            }
+            Err(_error) if options.signal.is_none() => Ok(self
+                .read_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .data
+                .clone()),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Reload credentials from storage (preserves the last valid snapshot on
     /// failure, like upstream).
     pub fn reload(&mut self) {
         let content = self.read_under_lock();
         let revision = self.current_revision();
-        let data = Self::parse_storage_data(content.as_deref());
-        let mut state = self.read_state.lock().unwrap();
-        state.data = data;
-        state.revision = revision;
+        if let Ok(data) = Self::parse_storage_data(content.as_deref()) {
+            let mut state = self
+                .read_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.data = data;
+            state.revision = revision;
+        }
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     async fn read_latest_data(
         &self,
         options: &AuthOperationOptions,
@@ -638,21 +1004,59 @@ impl AuthStorage {
         // under the lock when the file changes.
         let (data, revision) = if self.auth_path.is_none() {
             let content = self.read_under_lock();
-            (Self::parse_storage_data(content.as_deref()), None)
+            let data = match Self::parse_storage_data(content.as_deref()) {
+                Ok(data) => data,
+                Err(error) if options.signal.is_some() => return Err(error),
+                Err(_) => {
+                    return Ok(self
+                        .read_state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .data
+                        .clone())
+                }
+            };
+            (data, None)
         } else {
-            let cached = self.read_state.lock().unwrap();
-            let revision = self.current_revision();
-            if revision == cached.revision && cached.revision.is_some() {
-                return Ok(cached.data.clone());
+            {
+                let cached = self
+                    .read_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let revision = self.current_revision();
+                if revision == cached.revision && cached.revision.is_some() {
+                    return Ok(cached.data.clone());
+                }
             }
-            drop(cached);
-            let content = self.read_under_lock();
-            let revision = self.current_revision();
-            let data = Self::parse_storage_data(content.as_deref());
-            (data, revision)
+            let (reload, should_start) = {
+                let mut state = self
+                    .read_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if let Some(existing) = state.reload.clone() {
+                    existing.readers.fetch_add(1, Ordering::SeqCst);
+                    (existing, false)
+                } else {
+                    let reload = Arc::new(AuthFileReload {
+                        result: Mutex::new(None),
+                        notify: tokio::sync::Notify::new(),
+                        readers: AtomicUsize::new(1),
+                        cancel: Arc::new(AtomicBool::new(false)),
+                    });
+                    state.reload = Some(reload.clone());
+                    (reload, true)
+                }
+            };
+            if should_start {
+                spawn_auth_file_reload(self.auth_path.clone().unwrap(), reload.clone());
+            }
+            return self.wait_for_file_reload(reload, options).await;
         };
         {
-            let mut state = self.read_state.lock().unwrap();
+            let mut state = self
+                .read_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             state.data = data.clone();
             state.revision = revision;
         }
@@ -670,18 +1074,10 @@ impl AuthStorage {
         let Some(credential) = credential else {
             return Ok(None);
         };
-        if let Credential::ApiKey { key: Some(key), .. } = &credential {
-            if let Some(resolved) = resolve_config_value(key, None) {
-                let mut resolved_credential = credential.clone();
-                if let Credential::ApiKey { key: k, .. } = &mut resolved_credential {
-                    *k = Some(resolved);
-                }
-                return Ok(Some(resolved_credential));
-            }
-        }
-        Ok(Some(credential))
+        Ok(Some(resolve_api_key_credential(&credential, false)))
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub async fn modify(
         &self,
         provider: &str,
@@ -696,7 +1092,10 @@ impl AuthStorage {
             .with_lock_async(
                 Box::new(move |content| {
                     let provider = provider.clone();
-                    let current_data = Self::parse_storage_data(content);
+                    let current_data = match Self::parse_storage_data(content) {
+                        Ok(data) => data,
+                        Err(error) => return Box::pin(async move { Err(error) }),
+                    };
                     let current = current_data.get(&provider).cloned();
                     let f_result = f(current.as_ref());
                     Box::pin(async move {
@@ -721,12 +1120,16 @@ impl AuthStorage {
         // Refresh the in-memory snapshot from what was actually written.
         let content = self.read_under_lock();
         let revision = self.current_revision();
-        let mut state = self.read_state.lock().unwrap();
-        state.data = Self::parse_storage_data(content.as_deref());
+        let mut state = self
+            .read_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.data = Self::parse_storage_data(content.as_deref())?;
         state.revision = revision;
         Ok(result)
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub async fn delete(
         &self,
         provider: &str,
@@ -737,7 +1140,10 @@ impl AuthStorage {
             .with_lock_async(
                 Box::new(move |content| {
                     let provider = provider.clone();
-                    let mut current_data = Self::parse_storage_data(content);
+                    let mut current_data = match Self::parse_storage_data(content) {
+                        Ok(data) => data,
+                        Err(error) => return Box::pin(async move { Err(error) }),
+                    };
                     current_data.remove(&provider);
                     let next = serde_json::to_string_pretty(&current_data).unwrap();
                     Box::pin(async move {
@@ -752,8 +1158,11 @@ impl AuthStorage {
             .await?;
         let content = self.read_under_lock();
         let revision = self.current_revision();
-        let mut state = self.read_state.lock().unwrap();
-        state.data = Self::parse_storage_data(content.as_deref());
+        let mut state = self
+            .read_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.data = Self::parse_storage_data(content.as_deref())?;
         state.revision = revision;
         Ok(())
     }
@@ -777,9 +1186,141 @@ impl AuthStorage {
 /// One-off synchronous read of a stored credential from an auth.json file,
 /// without instantiating a store or resolving configured key values.
 pub fn read_stored_credential(provider_id: &str, auth_path: &Path) -> Option<Credential> {
-    let content = fs::read_to_string(auth_path).ok()?;
+    let content = FileAuthStorageBackend::new(auth_path.to_path_buf())
+        .read_consistent()
+        .ok()
+        .flatten()?;
     let data: AuthStorageData = serde_json::from_str(strip_bom(&content)).ok()?;
     data.get(provider_id).cloned()
+}
+
+/// Synchronous `pi-ai` credential-store adapter used by the model runtime.
+///
+/// The interactive login command writes through [`AuthStorage`], while model
+/// requests resolve through `pi-ai::Models`, whose trait is synchronous in the
+/// Rust port. Reading the file on every operation keeps both surfaces pointed
+/// at the same source of truth: a credential saved by `/login` is immediately
+/// usable by the already-running TUI, and `/logout` takes effect without a
+/// restart.
+#[derive(Clone)]
+pub struct FileCredentialStore {
+    auth_path: PathBuf,
+}
+
+impl FileCredentialStore {
+    pub fn new(auth_path: PathBuf) -> Self {
+        Self { auth_path }
+    }
+
+    fn read_all(&self) -> AuthStorageData {
+        FileAuthStorageBackend::new(self.auth_path.clone())
+            .read_consistent()
+            .ok()
+            .flatten()
+            .and_then(|content| serde_json::from_str::<AuthStorageData>(strip_bom(&content)).ok())
+            .unwrap_or_default()
+    }
+}
+
+fn pi_ai_credential_from_storage(credential: &Credential) -> pi_ai::auth::Credential {
+    match credential {
+        Credential::ApiKey { key, env } => {
+            pi_ai::auth::Credential::ApiKey(pi_ai::auth::ApiKeyCredential {
+                key: key.clone(),
+                env: env.clone(),
+            })
+        }
+        Credential::OAuth {
+            access,
+            refresh,
+            expires,
+            extra,
+        } => pi_ai::auth::Credential::OAuth(pi_ai::auth::OAuthCredential {
+            access: access.clone(),
+            refresh: refresh.clone(),
+            expires: *expires,
+            extra: extra.clone(),
+        }),
+    }
+}
+
+fn storage_credential_from_pi_ai(credential: &pi_ai::auth::Credential) -> Credential {
+    match credential {
+        pi_ai::auth::Credential::ApiKey(credential) => Credential::ApiKey {
+            key: credential.key.clone(),
+            env: credential.env.clone(),
+        },
+        pi_ai::auth::Credential::OAuth(credential) => Credential::OAuth {
+            access: credential.access.clone(),
+            refresh: credential.refresh.clone(),
+            expires: credential.expires,
+            extra: credential.extra.clone(),
+        },
+    }
+}
+
+impl pi_ai::auth::CredentialStore for FileCredentialStore {
+    fn read(&self, provider_id: &str) -> Option<pi_ai::auth::Credential> {
+        self.read_all().get(provider_id).map(|credential| {
+            let resolved = resolve_api_key_credential(credential, false);
+            pi_ai_credential_from_storage(&resolved)
+        })
+    }
+
+    fn list(&self) -> Vec<pi_ai::auth::CredentialInfo> {
+        self.read_all()
+            .into_iter()
+            .map(|(provider_id, credential)| pi_ai::auth::CredentialInfo {
+                provider_id,
+                credential_type: credential.credential_type(),
+            })
+            .collect()
+    }
+
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
+    fn modify(
+        &self,
+        provider_id: &str,
+        f: &dyn Fn(Option<&pi_ai::auth::Credential>) -> Option<pi_ai::auth::Credential>,
+    ) -> Option<pi_ai::auth::Credential> {
+        let backend = FileAuthStorageBackend::new(self.auth_path.clone());
+        let mut result = None;
+        backend.with_lock_impl(&mut |content| {
+            let mut data = AuthStorage::parse_storage_data(content)
+                .unwrap_or_else(|error| panic!("Cannot modify malformed auth.json: {error}"));
+            let current = data.get(provider_id).map(pi_ai_credential_from_storage);
+            let next = f(current.as_ref());
+            let next_content = next.map(|next| {
+                data.insert(
+                    provider_id.to_string(),
+                    storage_credential_from_pi_ai(&next),
+                );
+                result = data.get(provider_id).map(pi_ai_credential_from_storage);
+                serde_json::to_string_pretty(&data).unwrap()
+            });
+            if next_content.is_none() {
+                result = current;
+            }
+            LockResult {
+                result: (),
+                next: next_content,
+            }
+        });
+        result
+    }
+
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
+    fn delete(&self, provider_id: &str) {
+        let backend = FileAuthStorageBackend::new(self.auth_path.clone());
+        backend.with_lock_impl(&mut |content| {
+            let mut data = AuthStorage::parse_storage_data(content)
+                .unwrap_or_else(|error| panic!("Cannot delete from malformed auth.json: {error}"));
+            let next = data
+                .remove(provider_id)
+                .map(|_| serde_json::to_string_pretty(&data).unwrap());
+            LockResult { result: (), next }
+        });
+    }
 }
 
 /// The default OAuth validity window used by upstream auth resolution.
@@ -899,6 +1440,7 @@ pub async fn refresh_oauth_credential_in_storage(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::fs;
@@ -1001,6 +1543,51 @@ mod tests {
     }
 
     #[test]
+    fn file_credential_store_is_live_model_runtime_source() {
+        use pi_ai::auth::CredentialStore as _;
+
+        let path = temp_auth_path("runtime-source");
+        let _ = fs::remove_file(&path);
+        let storage = AuthStorage::create(path.clone());
+        let options = AuthOperationOptions::default();
+        runtime().block_on(async {
+            storage
+                .modify(
+                    "openai-codex",
+                    |_| {
+                        Box::pin(async {
+                            Ok(Some(Credential::OAuth {
+                                access: "fixture-access".to_string(),
+                                refresh: "fixture-refresh".to_string(),
+                                expires: current_time_ms() + 60 * 60 * 1000,
+                                extra: BTreeMap::new(),
+                            }))
+                        })
+                    },
+                    &options,
+                )
+                .await
+                .unwrap();
+        });
+
+        let credentials = Arc::new(FileCredentialStore::new(path.clone()));
+        let models = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions {
+            credentials: Some(credentials.clone()),
+            ..Default::default()
+        });
+        models.set_provider(pi_ai::providers::openai_codex_provider());
+        let auth = models
+            .get_auth("openai-codex", None)
+            .expect("stored OAuth is visible to Models");
+        assert_eq!(auth.auth.api_key.as_deref(), Some("fixture-access"));
+
+        credentials.delete("openai-codex");
+        assert!(models.get_auth("openai-codex", None).is_none());
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(Path::new(&format!("{}.lock", path.display())));
+    }
+
+    #[test]
     fn read_only_missing_file_is_empty() {
         let store = ReadOnlyAuthStorage::new(temp_auth_path("missing"));
         let opts = AuthOperationOptions::default();
@@ -1016,7 +1603,8 @@ mod tests {
         write_auth_file(
             &path,
             r#"{"openai":{"type":"api_key","key":"sk-1"},"bad":{"type":"unknown"}}"#,
-        );
+        )
+        .unwrap();
         let store = ReadOnlyAuthStorage::new(path.clone());
         let opts = AuthOperationOptions::default();
         runtime().block_on(async {
@@ -1031,7 +1619,8 @@ mod tests {
         write_auth_file(
             &path,
             r#"{"openai":{"type":"api_key","key":"$PI_TEST_RO_KEY"}}"#,
-        );
+        )
+        .unwrap();
         std::env::set_var("PI_TEST_RO_KEY", "resolved-ro");
         let store = ReadOnlyAuthStorage::new(path.clone());
         let opts = AuthOperationOptions::default();
@@ -1055,7 +1644,7 @@ mod tests {
     fn read_only_modify_is_rejected() {
         let path = temp_auth_path("ro-reject");
         let _ = fs::remove_file(&path);
-        write_auth_file(&path, "{}");
+        write_auth_file(&path, "{}").unwrap();
         let store = ReadOnlyAuthStorage::new(path);
         let opts = AuthOperationOptions::default();
         runtime().block_on(async {
@@ -1073,7 +1662,8 @@ mod tests {
         write_auth_file(
             &path,
             r#"{"google":{"type":"api_key","key":"!echo gg-key"}}"#,
-        );
+        )
+        .unwrap();
         // Returns the raw stored value (command config untouched).
         let credential = read_stored_credential("google", &path).unwrap();
         assert_eq!(
@@ -1092,7 +1682,8 @@ mod tests {
         write_auth_file(
             &path,
             r#"{"github":{"type":"oauth","access":"acc","refresh":"ref","expires":123,"scope":["repo"]}}"#,
-        );
+        )
+        .unwrap();
         let credential = read_stored_credential("github", &path).unwrap();
         match credential {
             Credential::OAuth {
@@ -1115,5 +1706,272 @@ mod tests {
             _ => panic!("expected oauth"),
         }
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn credential_env_map_wins_for_read_and_model_store_resolution() {
+        let env_name = format!("PI_RUST_AUTH_SCOPED_{}", std::process::id());
+        let scoped_value = "provider-scoped-value";
+        let credential = Credential::ApiKey {
+            key: Some(format!("${env_name}")),
+            env: Some(BTreeMap::from([(
+                env_name.clone(),
+                scoped_value.to_string(),
+            )])),
+        };
+
+        let mut data = AuthStorageData::new();
+        data.insert("scoped".to_string(), credential.clone());
+        let storage = AuthStorage::in_memory(data);
+        let options = AuthOperationOptions::default();
+        runtime().block_on(async {
+            assert_eq!(
+                storage.read("scoped", &options).await.unwrap(),
+                Some(Credential::ApiKey {
+                    key: Some(scoped_value.to_string()),
+                    env: Some(credential_env(env_name.clone())),
+                })
+            );
+        });
+
+        let path = temp_auth_path("scoped-env");
+        write_auth_file(
+            &path,
+            &serde_json::to_string(&AuthStorageData::from([("scoped".to_string(), credential)]))
+                .unwrap(),
+        )
+        .unwrap();
+        let read_only = ReadOnlyAuthStorage::new(path.clone());
+        runtime().block_on(async {
+            assert_eq!(
+                read_only.read("scoped", &options).await.unwrap(),
+                Some(Credential::ApiKey {
+                    key: Some(scoped_value.to_string()),
+                    env: Some(credential_env(env_name.clone())),
+                })
+            );
+        });
+
+        use pi_ai::auth::CredentialStore as _;
+        let store = FileCredentialStore::new(path.clone());
+        let resolved = store.read("scoped").expect("stored credential");
+        match resolved {
+            pi_ai::auth::Credential::ApiKey(api_key) => {
+                assert_eq!(api_key.key.as_deref(), Some(scoped_value));
+                assert_eq!(api_key.env, Some(credential_env(env_name)));
+            }
+            _ => panic!("expected api-key credential"),
+        }
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(Path::new(&format!("{}.lock", path.display())));
+    }
+
+    #[test]
+    fn unresolved_template_key_is_not_exposed_as_a_literal() {
+        let env_name = format!("PI_RUST_AUTH_MISSING_{}", std::process::id());
+        let credential = Credential::ApiKey {
+            key: Some(format!("${env_name}")),
+            env: None,
+        };
+        let mut data = AuthStorageData::new();
+        data.insert("missing".to_string(), credential);
+        let storage = AuthStorage::in_memory(data);
+        let options = AuthOperationOptions::default();
+        let resolved = runtime()
+            .block_on(storage.read("missing", &options))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            resolved,
+            Credential::ApiKey {
+                key: None,
+                env: None
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_file_reload_preserves_last_valid_snapshot() {
+        let path = temp_auth_path("reload-invalid");
+        write_auth_file(&path, r#"{"provider":{"type":"api_key","key":"stable"}}"#).unwrap();
+        let mut storage = AuthStorage::create(path.clone());
+        let options = AuthOperationOptions::default();
+        let before = runtime()
+            .block_on(storage.read("provider", &options))
+            .unwrap();
+
+        fs::write(&path, "{not valid json").unwrap();
+        storage.reload();
+        let after = runtime()
+            .block_on(storage.read("provider", &options))
+            .unwrap();
+        assert_eq!(after, before);
+
+        let signaled = AuthOperationOptions {
+            signal: Some(Arc::new(AtomicBool::new(false))),
+        };
+        assert!(runtime()
+            .block_on(storage.read("provider", &signaled))
+            .is_err());
+        assert!(runtime()
+            .block_on(storage.modify("other", |_| Box::pin(async { Ok(None) }), &options,))
+            .is_err());
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(Path::new(&format!("{}.lock", path.display())));
+    }
+
+    #[test]
+    fn file_reload_state_is_shared_and_coalesces_waiting_readers() {
+        let path = temp_auth_path("reload-coalesced");
+        let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+        write_auth_file(&path, r#"{"provider":{"type":"api_key","key":"old"}}"#).unwrap();
+
+        let first = Arc::new(AuthStorage::create(path.clone()));
+        let second = Arc::new(AuthStorage::create(path.clone()));
+        assert!(Arc::ptr_eq(&first.read_state, &second.read_state));
+
+        // Change the revision and hold the lock so the first reload remains
+        // in flight while the second reader joins it.
+        write_auth_file(
+            &path,
+            r#"{"provider":{"type":"api_key","key":"new-value"}}"#,
+        )
+        .unwrap();
+        fs::write(&lock_path, format!("{}\n", std::process::id())).unwrap();
+
+        let result = runtime().block_on(async {
+            let first_task = tokio::spawn({
+                let first = first.clone();
+                async move {
+                    first
+                        .read("provider", &AuthOperationOptions::default())
+                        .await
+                }
+            });
+            let first_started = tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    let readers = first
+                        .read_state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .reload
+                        .as_ref()
+                        .map(|reload| reload.readers.load(Ordering::SeqCst))
+                        .unwrap_or(0);
+                    if readers >= 1 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .is_ok();
+            if !first_started {
+                let _ = first_task.await;
+                return Err("first auth reader did not start".to_string());
+            }
+
+            let second_task = tokio::spawn({
+                let second = second.clone();
+                async move {
+                    second
+                        .read("provider", &AuthOperationOptions::default())
+                        .await
+                }
+            });
+            let two_readers = tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    let readers = first
+                        .read_state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .reload
+                        .as_ref()
+                        .map(|reload| reload.readers.load(Ordering::SeqCst))
+                        .unwrap_or(0);
+                    if readers >= 2 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .is_ok();
+            let reload_count = first
+                .read_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .reload
+                .as_ref()
+                .map(|reload| reload.readers.load(Ordering::SeqCst));
+            let _ = fs::remove_file(&lock_path);
+            if !two_readers {
+                first_task.abort();
+                second_task.abort();
+                return Err(format!("second auth reader did not join: {reload_count:?}"));
+            }
+
+            let first_value = tokio::time::timeout(Duration::from_secs(2), first_task)
+                .await
+                .map_err(|_| "first auth reader timed out".to_string())?
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+            let second_value = tokio::time::timeout(Duration::from_secs(2), second_task)
+                .await
+                .map_err(|_| "second auth reader timed out".to_string())?
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+            Ok((reload_count, first_value, second_value))
+        });
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+        let (reload_count, first_value, second_value) = result.unwrap();
+        assert_eq!(reload_count, Some(2));
+        assert_eq!(first_value, second_value);
+        assert_eq!(
+            first_value,
+            Some(Credential::ApiKey {
+                key: Some("new-value".to_string()),
+                env: None,
+            })
+        );
+    }
+
+    #[test]
+    fn new_reuses_unchanged_shared_file_snapshot_without_reloading() {
+        let path = temp_auth_path("constructor-snapshot");
+        let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+        write_auth_file(&path, r#"{"provider":{"type":"api_key","key":"stable"}}"#).unwrap();
+
+        let first = AuthStorage::create(path.clone());
+        // The unchanged revision lets a second storage instance reuse the
+        // shared snapshot. Holding the lock makes an accidental constructor
+        // reload fail deterministically instead of merely doing redundant IO.
+        fs::write(&lock_path, format!("{}\n", std::process::id())).unwrap();
+        let second = AuthStorage::create(path.clone());
+        let value = runtime()
+            .block_on(second.read("provider", &AuthOperationOptions::default()))
+            .unwrap();
+        assert_eq!(
+            value,
+            Some(Credential::ApiKey {
+                key: Some("stable".to_string()),
+                env: None,
+            })
+        );
+        drop(first);
+        drop(second);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&lock_path);
+    }
+
+    fn credential_env(name: String) -> BTreeMap<String, String> {
+        BTreeMap::from([(name, "provider-scoped-value".to_string())])
     }
 }

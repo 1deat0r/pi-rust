@@ -40,6 +40,12 @@ pub fn apply_global_http_proxy_settings(agent_dir: impl AsRef<Path>) -> Result<(
     let Ok(contents) = std::fs::read_to_string(&path) else {
         return Ok(());
     };
+    // An empty settings file is a valid empty scope. Keep the early process
+    // bootstrap consistent with SettingsManager instead of reporting a JSON
+    // parse warning before the normal settings load runs.
+    if contents.is_empty() {
+        return Ok(());
+    }
     let value: Value = serde_json::from_str(crate::core::settings::strip_bom(&contents))
         .map_err(|error| format!("invalid settings JSON at {}: {error}", path.display()))?;
     let proxy = value.get("httpProxy").and_then(Value::as_str);
@@ -48,20 +54,24 @@ pub fn apply_global_http_proxy_settings(agent_dir: impl AsRef<Path>) -> Result<(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::fs;
     use std::sync::{Mutex, OnceLock};
 
     use serde_json::json;
 
     use super::{
-        apply_http_proxy_settings, DEFAULT_AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS,
-        DEFAULT_HTTP_IDLE_TIMEOUT_MS,
+        apply_global_http_proxy_settings, apply_http_proxy_settings,
+        DEFAULT_AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS, DEFAULT_HTTP_IDLE_TIMEOUT_MS,
     };
     use crate::core::settings::parse_http_idle_timeout_ms;
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     fn restore(key: &str, value: Option<std::ffi::OsString>) {
@@ -121,5 +131,19 @@ mod tests {
         assert_eq!(parse_http_idle_timeout_ms(&json!(1.99)), Some(1));
         assert_eq!(parse_http_idle_timeout_ms(&json!("")), None);
         assert_eq!(parse_http_idle_timeout_ms(&json!(-1)), None);
+    }
+
+    #[test]
+    fn empty_settings_file_is_accepted_by_process_bootstrap() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-http-dispatcher-empty-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("settings.json"), "").unwrap();
+
+        assert!(apply_global_http_proxy_settings(&root).is_ok());
+        let _ = fs::remove_dir_all(root);
     }
 }

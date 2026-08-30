@@ -599,6 +599,28 @@ pub fn configured_request_auth_status(
     })
 }
 
+/// Resolve literal and environment-template API keys from models.json for a
+/// non-persistent runtime auth check. Command-backed keys remain deferred to
+/// the request/auth boundary and are intentionally not executed here.
+pub fn resolve_models_json_api_key(config: &ModelsJsonProvider) -> Option<String> {
+    let value = config.api_key.as_deref()?;
+    if is_command_config_value(value) {
+        return None;
+    }
+    let names = config_value_env_var_names(value);
+    if names.is_empty() {
+        return (!value.trim().is_empty()).then_some(value.to_owned());
+    }
+    let mut resolved = value.to_owned();
+    for name in names {
+        let replacement = std::env::var(&name).ok()?;
+        resolved = resolved
+            .replace(&format!("${{{name}}}"), &replacement)
+            .replace(&format!("${name}"), &replacement);
+    }
+    (!resolved.trim().is_empty()).then_some(resolved)
+}
+
 /// Resolve configured request headers for a model (port of
 /// `resolveCompatibilityRequestConfig` without credential-free header
 /// resolution).
@@ -651,6 +673,7 @@ pub struct CompatibilityRequestConfig {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::core::model_config::ModelConfig;

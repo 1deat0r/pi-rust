@@ -10,9 +10,16 @@ rust-version.workspace = true
 name = "pi"
 path = "src/main.rs"
 
+[[bin]]
+name = "parity_audit"
+path = "src/bin/parity_audit.rs"
+
 [dependencies]
 pi-ai = { path = "../pi-ai" }
 pi-agent = { path = "../pi-agent" }
+pi-client = { path = "../pi-client" }
+pi-server = { path = "../pi-server" }
+pi-protocol = { path = "../pi-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 indexmap = { workspace = true }
@@ -29,3 +36,6 @@ regex = { workspace = true }
 pi-tui = { path = "../pi-tui" }
 crossterm = "0.28"
 reqwest = { workspace = true }
+
+[lints]
+workspace = true

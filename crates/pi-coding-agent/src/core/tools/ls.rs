@@ -12,7 +12,7 @@ use pi_agent::tools::truncate::{truncate_head_with, DEFAULT_MAX_BYTES};
 use pi_agent::tools::{AgentTool, AgentToolResult};
 use pi_ai::types::json_tool;
 
-use super::bytes_limit_notice;
+use super::{bytes_limit_notice, truncation_details, ToolOutput};
 
 const DEFAULT_LIMIT: u64 = 500;
 
@@ -22,6 +22,18 @@ pub async fn ls_execute(
     path: Option<&str>,
     limit: Option<u64>,
 ) -> Result<String, String> {
+    Ok(ls_execute_with_details(cwd, path, limit, None).await?.text)
+}
+
+async fn ls_execute_with_details(
+    cwd: &str,
+    path: Option<&str>,
+    limit: Option<u64>,
+    signal: Option<Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<ToolOutput, String> {
+    if pi_agent::agent::is_aborted(signal.as_ref()) {
+        return Err("Operation aborted".to_string());
+    }
     let dir_path = resolve_tool_path(cwd, path.unwrap_or("."));
     let effective_limit = limit.unwrap_or(DEFAULT_LIMIT);
 
@@ -35,11 +47,11 @@ pub async fn ls_execute(
         return Err(format!("Not a directory: {dir_path}"));
     }
 
-    let mut entries: Vec<String> = std::fs::read_dir(&dir_path)
-        .map_err(|e| format!("Cannot read directory: {e}"))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
+    let read_dir =
+        std::fs::read_dir(&dir_path).map_err(|e| format!("Cannot read directory: {e}"))?;
+    let mut entries = collect_entry_names(
+        read_dir.map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned())),
+    )?;
 
     // Sort alphabetically, case-insensitive (JS localeCompare on lowercase);
     // stable sort keeps readdir order for equal foldings, like upstream.
@@ -48,6 +60,9 @@ pub async fn ls_execute(
     let mut results: Vec<String> = Vec::new();
     let mut entry_limit_reached = false;
     for entry in &entries {
+        if pi_agent::agent::is_aborted(signal.as_ref()) {
+            return Err("Operation aborted".to_string());
+        }
         if results.len() >= effective_limit as usize {
             entry_limit_reached = true;
             break;
@@ -62,12 +77,15 @@ pub async fn ls_execute(
     }
 
     if results.is_empty() {
-        return Ok("(empty directory)".to_string());
+        return Ok(ToolOutput {
+            text: "(empty directory)".to_string(),
+            details: None,
+        });
     }
 
     let raw_output = results.join("\n");
     let truncation = truncate_head_with(&raw_output, 1_000_000, DEFAULT_MAX_BYTES);
-    let mut output = truncation.content;
+    let mut output = truncation.content.clone();
     let mut notices: Vec<String> = Vec::new();
     if entry_limit_reached {
         notices.push(format!(
@@ -81,7 +99,23 @@ pub async fn ls_execute(
     if !notices.is_empty() {
         output.push_str(&format!("\n\n[{}]", notices.join(". ")));
     }
-    Ok(output)
+    let mut details = serde_json::Map::new();
+    if entry_limit_reached {
+        details.insert(
+            "entryLimitReached".to_string(),
+            serde_json::json!(effective_limit),
+        );
+    }
+    if truncation.truncated {
+        details.insert(
+            "truncation".to_string(),
+            truncation_details(&truncation, raw_output.len(), 1_000_000),
+        );
+    }
+    Ok(ToolOutput {
+        text: output,
+        details: (!details.is_empty()).then_some(serde_json::Value::Object(details)),
+    })
 }
 
 /// Builds the `ls` tool bound to a working directory.
@@ -99,21 +133,43 @@ pub fn ls_tool(cwd: String) -> AgentTool {
             }),
         ),
         "List directory",
-        Arc::new(move |_tool_call_id, args, _signal, _on_update| {
+        Arc::new(move |_tool_call_id, args, signal, _on_update| {
             let cwd = cwd.clone();
             Box::pin(async move {
+                if pi_agent::agent::is_aborted(signal.as_ref()) {
+                    return Err("Operation aborted".to_string());
+                }
                 let path = args.get("path").and_then(|v| v.as_str());
                 let limit = args.get("limit").and_then(|v| v.as_u64());
-                match ls_execute(&cwd, path, limit).await {
-                    Ok(output) => Ok(AgentToolResult::output(output)),
+                match ls_execute_with_details(&cwd, path, limit, signal.clone()).await {
+                    Ok(_output) if pi_agent::agent::is_aborted(signal.as_ref()) => {
+                        Err("Operation aborted".to_string())
+                    }
+                    Ok(output) => Ok(AgentToolResult {
+                        content: vec![pi_ai::types::ContentBlock::text(output.text)],
+                        details: output.details,
+                        ..AgentToolResult::default()
+                    }),
                     Err(e) => Err(e),
                 }
             })
         }),
     )
+    .with_experimental_sampling()
+}
+
+fn collect_entry_names<I>(entries: I) -> Result<Vec<String>, String>
+where
+    I: IntoIterator<Item = Result<String, std::io::Error>>,
+{
+    entries
+        .into_iter()
+        .map(|entry| entry.map_err(|error| format!("Cannot read directory: {error}")))
+        .collect()
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::fs;
@@ -158,6 +214,30 @@ mod tests {
         assert_eq!(lines[2], "README.md");
         assert_eq!(lines[3], "src/");
         assert_eq!(lines[4], "vendor/");
+    }
+
+    #[test]
+    fn directory_iterator_errors_are_not_silently_dropped() {
+        let error = collect_entry_names(vec![
+            Ok("first".to_string()),
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "fixture permission denied",
+            )),
+        ])
+        .unwrap_err();
+        assert_eq!(error, "Cannot read directory: fixture permission denied");
+    }
+
+    #[tokio::test]
+    async fn aborts_before_listing_directory() {
+        let tree = Tree::new("aborted");
+        let abort = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let error =
+            ls_execute_with_details(&tree.root.display().to_string(), None, None, Some(abort))
+                .await
+                .unwrap_err();
+        assert_eq!(error, "Operation aborted");
     }
 
     #[tokio::test]

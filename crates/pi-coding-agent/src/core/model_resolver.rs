@@ -7,9 +7,12 @@
 //! port). The runtime/auth boundary is represented by a small `RegistryView`
 //! trait so the functions stay testable without a live model runtime.
 
-use pi_ai::model::Model;
+use std::collections::BTreeSet;
 
-use crate::core::model_runtime::default_model_per_provider;
+use pi_ai::model::Model;
+use pi_ai::models::Models;
+
+use crate::core::model_runtime::{default_model_per_provider, DEFAULT_PROVIDER_ORDER};
 
 /// Known thinking levels (upstream `isValidThinkingLevel`).
 pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -35,13 +38,13 @@ fn is_alias(id: &str) -> bool {
     if id.ends_with("-latest") {
         return true;
     }
-    !id.ends_with(|c: char| c.is_ascii_digit()) || {
-        let last = id.len();
-        let start = last.saturating_sub(8);
-        let suffix = &id[start..last];
-        let has_date_pattern = suffix.len() == 8 && suffix.bytes().all(|b| b.is_ascii_digit());
-        !has_date_pattern
-    }
+    let bytes = id.as_bytes();
+    let has_date_suffix = bytes.len() >= 9
+        && bytes[bytes.len() - 9] == b'-'
+        && bytes[bytes.len() - 8..]
+            .iter()
+            .all(|byte| byte.is_ascii_digit());
+    !has_date_suffix
 }
 
 /// Find an exact model reference match. Supports either a bare model id or a
@@ -482,6 +485,18 @@ pub struct ResolveCliModelResult {
 pub trait RegistryView {
     fn models(&self) -> &[Model];
     fn has_configured_auth(&self, provider: &str) -> bool;
+
+    /// Return the models that can actually be used with the current
+    /// credentials. The default implementation keeps existing lightweight
+    /// test adapters source-compatible while making the auth gate explicit
+    /// for initial model selection.
+    fn available_models(&self) -> Vec<Model> {
+        self.models()
+            .iter()
+            .filter(|model| self.has_configured_auth(&model.provider))
+            .cloned()
+            .collect()
+    }
 }
 
 impl RegistryView for &[Model] {
@@ -502,6 +517,52 @@ impl RegistryView for Vec<Model> {
     }
 }
 
+/// Stable snapshot of the catalog and provider-auth state used by the
+/// synchronous coding-agent resolver. `Models` exposes owned vectors, so the
+/// snapshot makes the resolver independent of facade locks and deterministic
+/// in tests while preserving the live auth result observed at bootstrap.
+#[derive(Debug, Clone, Default)]
+pub struct RegistrySnapshot {
+    models: Vec<Model>,
+    configured_providers: BTreeSet<String>,
+}
+
+impl RegistrySnapshot {
+    pub fn from_models(models: &Models) -> Self {
+        let providers = models.get_providers();
+        let configured_providers = providers
+            .into_iter()
+            .filter(|provider| models.check_auth(&provider.id).is_some())
+            .map(|provider| provider.id)
+            .collect();
+        Self {
+            models: models.get_models(None),
+            configured_providers,
+        }
+    }
+
+    #[cfg(test)]
+    fn from_parts(models: Vec<Model>, configured_providers: &[&str]) -> Self {
+        Self {
+            models,
+            configured_providers: configured_providers
+                .iter()
+                .map(|provider| (*provider).to_string())
+                .collect(),
+        }
+    }
+}
+
+impl RegistryView for RegistrySnapshot {
+    fn models(&self) -> &[Model] {
+        &self.models
+    }
+
+    fn has_configured_auth(&self, provider: &str) -> bool {
+        self.configured_providers.contains(provider)
+    }
+}
+
 /// Resolve a single model from CLI flags (upstream `resolveCliModel`).
 ///
 /// Supports `--provider <provider> --model <pattern>` and
@@ -509,6 +570,7 @@ impl RegistryView for Vec<Model> {
 /// `pattern:level`, and building fallback custom-model ids scoped to the
 /// provider's base model.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 pub fn resolve_cli_model(
     cli_provider: Option<&str>,
     cli_model: Option<&str>,
@@ -746,7 +808,160 @@ pub fn resolve_cli_model(
     }
 }
 
+/// Result of the upstream `findInitialModel` selection pass.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InitialModelResult {
+    pub model: Option<Model>,
+    pub thinking_level: String,
+    pub fallback_message: Option<String>,
+}
+
+/// Inputs to the initial model selection pass. CLI and environment values are
+/// kept separate so their precedence remains visible at the call site, while
+/// settings provider/model values are intentionally paired as one saved
+/// default candidate.
+pub struct InitialModelOptions<'a> {
+    pub cli_provider: Option<&'a str>,
+    pub cli_model: Option<&'a str>,
+    pub env_provider: Option<&'a str>,
+    pub env_model: Option<&'a str>,
+    pub scoped_models: &'a [ScopedModel],
+    pub is_continuing: bool,
+    pub default_provider: Option<&'a str>,
+    pub default_model_id: Option<&'a str>,
+    pub default_thinking_level: Option<&'a str>,
+    pub registry: &'a dyn RegistryView,
+}
+
+fn initial_model_result(model: Option<Model>, thinking_level: Option<&str>) -> InitialModelResult {
+    InitialModelResult {
+        model,
+        thinking_level: thinking_level.unwrap_or(DEFAULT_THINKING_LEVEL).to_string(),
+        fallback_message: None,
+    }
+}
+
+fn canonical_provider(registry: &dyn RegistryView, requested: &str) -> Option<String> {
+    registry
+        .models()
+        .iter()
+        .find(|model| model.provider.eq_ignore_ascii_case(requested))
+        .map(|model| model.provider.clone())
+}
+
+fn default_model_for_provider(registry: &dyn RegistryView, requested: &str) -> Option<Model> {
+    let provider = canonical_provider(registry, requested)?;
+    let mut provider_models = registry
+        .models()
+        .iter()
+        .filter(|model| model.provider == provider);
+    if let Some(default_id) = default_model_per_provider(&provider) {
+        if let Some(model) = provider_models.clone().find(|model| model.id == default_id) {
+            return Some(model.clone());
+        }
+    }
+    provider_models.next().cloned()
+}
+
+/// Find the initial model using the same observable ordering as upstream
+/// `findInitialModel`:
+///
+/// 1. explicit CLI values, then explicit environment values;
+/// 2. the first scoped model for a new session;
+/// 3. a paired saved provider/model only when that provider is authenticated;
+/// 4. the first authenticated provider's default model, then its first model;
+/// 5. no model when no provider has usable credentials.
+pub fn find_initial_model(options: InitialModelOptions<'_>) -> Result<InitialModelResult, String> {
+    let explicit_provider = options.cli_provider.or(options.env_provider);
+    let explicit_model = options.cli_model.or(options.env_model);
+
+    // Explicit selection is allowed to target a provider without ambient
+    // auth: callers may supply --api-key at request time. It must therefore
+    // resolve against the complete catalog, not only authenticated models.
+    if explicit_provider.is_some() || explicit_model.is_some() {
+        if let Some(model_id) = explicit_model {
+            let resolved =
+                resolve_cli_model(explicit_provider, Some(model_id), None, options.registry);
+            if let Some(error) = resolved.error {
+                return Err(error);
+            }
+            if let Some(model) = resolved.model {
+                return Ok(initial_model_result(
+                    Some(model),
+                    resolved.thinking_level.as_deref(),
+                ));
+            }
+        } else if let Some(provider) = explicit_provider {
+            let canonical = canonical_provider(options.registry, provider).ok_or_else(|| {
+                format!(
+                    "Unknown provider \"{provider}\". Use --list-models to see available providers/models."
+                )
+            })?;
+            let model = default_model_for_provider(options.registry, &canonical).ok_or_else(|| {
+                format!(
+                    "Provider {canonical:?} has no models cataloged (check the bundled model catalog)"
+                )
+            })?;
+            return Ok(initial_model_result(Some(model), None));
+        }
+
+        return Err("No model selected. Use --list-models to see available models.".to_string());
+    }
+
+    // Scoped models are produced from the available catalog by the caller;
+    // preserve their order and thinking override for new sessions.
+    if !options.is_continuing {
+        if let Some(scoped) = options.scoped_models.first() {
+            return Ok(initial_model_result(
+                Some(scoped.model.clone()),
+                scoped
+                    .thinking_level
+                    .as_deref()
+                    .or(options.default_thinking_level),
+            ));
+        }
+    }
+
+    // A saved default is valid only as a pair and only while its provider is
+    // authenticated. This prevents a stale Google default from shadowing an
+    // available Qwen token-plan credential, which was the observed parity
+    // mismatch.
+    if let (Some(provider), Some(model_id)) = (options.default_provider, options.default_model_id) {
+        if let Some(model) = options
+            .registry
+            .models()
+            .iter()
+            .find(|model| model.provider == provider && model.id == model_id)
+            .filter(|model| options.registry.has_configured_auth(&model.provider))
+        {
+            return Ok(initial_model_result(
+                Some(model.clone()),
+                options.default_thinking_level,
+            ));
+        }
+    }
+
+    let available_models = options.registry.available_models();
+    for provider in DEFAULT_PROVIDER_ORDER {
+        let Some(default_id) = default_model_per_provider(provider) else {
+            continue;
+        };
+        if let Some(model) = available_models
+            .iter()
+            .find(|model| model.provider == *provider && model.id == default_id)
+        {
+            return Ok(initial_model_result(Some(model.clone()), None));
+        }
+    }
+
+    Ok(initial_model_result(
+        available_models.into_iter().next(),
+        None,
+    ))
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -771,6 +986,25 @@ mod tests {
             model("openrouter", "something/else", Some("Other")),
             model("xai", "grok-4.6", Some("Grok 4.6")),
         ]
+    }
+
+    fn initial_options<'a>(
+        registry: &'a RegistrySnapshot,
+        default_provider: Option<&'a str>,
+        default_model_id: Option<&'a str>,
+    ) -> InitialModelOptions<'a> {
+        InitialModelOptions {
+            cli_provider: None,
+            cli_model: None,
+            env_provider: None,
+            env_model: None,
+            scoped_models: &[],
+            is_continuing: false,
+            default_provider,
+            default_model_id,
+            default_thinking_level: None,
+            registry,
+        }
     }
 
     #[test]
@@ -883,6 +1117,94 @@ mod tests {
     fn resolve_cli_model_no_models() {
         let result = resolve_cli_model(None, Some("x"), None, &Vec::<Model>::new());
         assert!(result.error.unwrap().contains("No models available"));
+    }
+
+    #[test]
+    fn find_initial_model_uses_authenticated_saved_default_pair() {
+        let registry = RegistrySnapshot::from_parts(
+            vec![model("google", "gemini-3.1-pro-preview", None)],
+            &["google"],
+        );
+        let result = find_initial_model(initial_options(
+            &registry,
+            Some("google"),
+            Some("gemini-3.1-pro-preview"),
+        ))
+        .unwrap();
+        assert_eq!(
+            result
+                .model
+                .as_ref()
+                .map(|model| (model.provider.as_str(), model.id.as_str())),
+            Some(("google", "gemini-3.1-pro-preview"))
+        );
+    }
+
+    #[test]
+    fn find_initial_model_skips_unauthenticated_saved_default() {
+        let registry = RegistrySnapshot::from_parts(
+            vec![
+                model("google", "gemini-3.1-pro-preview", None),
+                model("qwen-token-plan", "qwen3.7-max", None),
+            ],
+            &["qwen-token-plan"],
+        );
+        let result = find_initial_model(initial_options(
+            &registry,
+            Some("google"),
+            Some("gemini-3.1-pro-preview"),
+        ))
+        .unwrap();
+        let model = result.model.unwrap();
+        assert_eq!(model.provider, "qwen-token-plan");
+        assert_eq!(model.id, "qwen3.7-max");
+    }
+
+    #[test]
+    fn find_initial_model_uses_the_only_authenticated_provider_default() {
+        let registry = RegistrySnapshot::from_parts(
+            vec![
+                model("google", "gemini-3.1-pro-preview", None),
+                model("qwen-token-plan", "qwen3.7-max", None),
+            ],
+            &["qwen-token-plan"],
+        );
+        let result = find_initial_model(initial_options(&registry, None, None)).unwrap();
+        let model = result.model.unwrap();
+        assert_eq!(model.provider, "qwen-token-plan");
+        assert_eq!(model.id, "qwen3.7-max");
+    }
+
+    #[test]
+    fn find_initial_model_returns_no_model_without_credentials() {
+        let registry = RegistrySnapshot::from_parts(
+            vec![model("google", "gemini-3.1-pro-preview", None)],
+            &[],
+        );
+        let result = find_initial_model(initial_options(&registry, None, None)).unwrap();
+        assert!(result.model.is_none());
+        assert_eq!(result.thinking_level, DEFAULT_THINKING_LEVEL);
+    }
+
+    #[test]
+    fn find_initial_model_cli_values_override_environment_and_saved_defaults() {
+        let registry = RegistrySnapshot::from_parts(
+            vec![
+                model("google", "gemini-3.1-pro-preview", None),
+                model("qwen-token-plan", "qwen3.7-max", None),
+            ],
+            &[],
+        );
+        let mut options =
+            initial_options(&registry, Some("google"), Some("gemini-3.1-pro-preview"));
+        options.env_provider = Some("google");
+        options.env_model = Some("google/gemini-3.1-pro-preview");
+        options.cli_provider = Some("qwen-token-plan");
+        options.cli_model = Some("qwen3.7-max");
+        let result = find_initial_model(options).unwrap();
+        let model = result.model.unwrap();
+        assert_eq!(model.provider, "qwen-token-plan");
+        assert_eq!(model.id, "qwen3.7-max");
     }
 
     #[test]

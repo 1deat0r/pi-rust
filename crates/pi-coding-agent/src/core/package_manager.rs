@@ -16,6 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use indexmap::IndexMap;
 use serde_json::Value;
 
 use crate::config::CONFIG_DIR_NAME;
@@ -125,6 +126,7 @@ fn get_npm_version_range(version: Option<&str>) -> Option<String> {
 }
 
 /// Split an npm spec into name and version (upstream `parseNpmSpec`).
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 pub fn parse_npm_spec(spec: &str) -> (String, Option<String>) {
     let re = regex::Regex::new(r"^(@?[^@]+(?:/[^@]+)?)(?:@(.+))?$").unwrap();
     match re.captures(spec) {
@@ -416,11 +418,17 @@ impl ParsedSource {
 /// resolution (upstream `ResourceAccumulator`).
 #[derive(Debug, Default)]
 struct ResourceAccumulator {
-    extensions: std::collections::HashMap<String, (PathMetadata, bool)>,
-    skills: std::collections::HashMap<String, (PathMetadata, bool)>,
-    prompts: std::collections::HashMap<String, (PathMetadata, bool)>,
-    themes: std::collections::HashMap<String, (PathMetadata, bool)>,
+    extensions: ResourceMap,
+    skills: ResourceMap,
+    prompts: ResourceMap,
+    themes: ResourceMap,
 }
+
+/// The upstream accumulator uses JavaScript `Map`, whose insertion order is
+/// observable after precedence sorting. Keep that order deterministic in Rust
+/// as well; a randomized `HashMap` would make same-rank resource order vary
+/// between processes.
+type ResourceMap = IndexMap<String, (PathMetadata, bool)>;
 
 /// One of the four configurable resource types (upstream `ResourceType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -573,74 +581,6 @@ fn os_rel_posix(root: &Path, path: &Path) -> String {
     }
 }
 
-/// Port of upstream `collectFiles`: recursive collection of files matching
-/// `file_pattern`, skipping dotfiles and `node_modules`, honoring ignore rules
-/// and symlinks.
-fn collect_files(
-    dir: &Path,
-    file_pattern: Option<&regex::Regex>,
-    skip_node_modules: bool,
-    root_dir: &Path,
-) -> Vec<String> {
-    let mut ig = pi_agent::harness::skills::IgnoreMatcher::default();
-    add_ignore_rules(&mut ig, dir, root_dir);
-    collect_files_inner(dir, file_pattern, skip_node_modules, root_dir, &mut ig)
-}
-
-fn collect_files_inner(
-    dir: &Path,
-    file_pattern: Option<&regex::Regex>,
-    skip_node_modules: bool,
-    root_dir: &Path,
-    ig: &mut pi_agent::harness::skills::IgnoreMatcher,
-) -> Vec<String> {
-    let mut files = Vec::new();
-    let entries = match fs::read_dir(dir) {
-        Ok(it) => it,
-        Err(_) => return files,
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy().into_owned();
-        if name_str.starts_with('.') {
-            continue;
-        }
-        if skip_node_modules && name_str == "node_modules" {
-            continue;
-        }
-        let full_path = entry.path();
-        let (is_dir, is_file) = entry_is_dir_or_file(&entry);
-        let rel_path = os_rel_posix(root_dir, &full_path);
-        let ignore_path = if is_dir {
-            format!("{rel_path}/")
-        } else {
-            rel_path
-        };
-        if ig.ignores(&ignore_path) {
-            continue;
-        }
-        if is_dir {
-            add_ignore_rules(ig, &full_path, root_dir);
-            files.extend(collect_files_inner(
-                &full_path,
-                file_pattern,
-                skip_node_modules,
-                root_dir,
-                ig,
-            ));
-        } else if is_file {
-            if let Some(pattern) = file_pattern {
-                if pattern.is_match(&name_str) {
-                    files.push(path_to_string(&full_path));
-                }
-            } else {
-                files.push(path_to_string(&full_path));
-            }
-        }
-    }
-    files
-}
-
 fn entry_is_dir_or_file(entry: &fs::DirEntry) -> (bool, bool) {
     let file_type = match entry.file_type() {
         Ok(ft) => ft,
@@ -747,26 +687,103 @@ fn collect_auto_extension_entries(_dir: &Path, _root_dir: &Path) -> Vec<String> 
     Vec::new()
 }
 
-/// Port of upstream `collectAutoPromptEntries`: flat `.md` files in a dir.
-fn collect_auto_prompt_entries(dir: &Path, root_dir: &Path) -> Vec<String> {
-    collect_files(
-        dir,
-        Some(&file_pattern_regex(ResourceType::Prompts)),
-        true,
-        root_dir,
-    )
+/// Port of upstream `collectAutoPromptEntries`/`collectAutoThemeEntries`:
+/// inspect only direct children of the configured resource directory. Nested
+/// files belong to packages or explicit paths, not top-level auto-discovery.
+fn collect_flat_resource_entries(dir: &Path, resource_type: ResourceType) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut matcher = pi_agent::harness::skills::IgnoreMatcher::default();
+    add_ignore_rules(&mut matcher, dir, dir);
+    let pattern = file_pattern_regex(resource_type);
+    let dir_entries = match fs::read_dir(dir) {
+        Ok(it) => it,
+        Err(_) => return entries,
+    };
+    for entry in dir_entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') || name_str == "node_modules" {
+            continue;
+        }
+        let full_path = entry.path();
+        let (_is_dir, is_file) = entry_is_dir_or_file(&entry);
+        let relative = os_rel_posix(dir, &full_path);
+        if matcher.ignores(&relative) {
+            continue;
+        }
+        if is_file && pattern.is_match(&name_str) {
+            entries.push(path_to_string(&full_path));
+        }
+    }
+    entries
 }
 
-/// Port of upstream `collectAutoThemeEntries`: flat `.json` files in a dir.
-fn collect_auto_theme_entries(dir: &Path, root_dir: &Path) -> Vec<String> {
-    collect_files(
-        dir,
-        Some(&file_pattern_regex(ResourceType::Themes)),
-        true,
-        root_dir,
-    )
+fn collect_auto_prompt_entries(dir: &Path, _root_dir: &Path) -> Vec<String> {
+    collect_flat_resource_entries(dir, ResourceType::Prompts)
 }
 
+fn collect_auto_theme_entries(dir: &Path, _root_dir: &Path) -> Vec<String> {
+    collect_flat_resource_entries(dir, ResourceType::Themes)
+}
+
+/// Package convention directories use upstream `collectFiles`, which walks
+/// recursively (unlike the top-level auto-discovery helpers above). Keeping
+/// the two paths separate matters for packages such as `prompts/reviews/*.md`
+/// and `themes/dark/*.json`.
+fn collect_recursive_resource_entries(
+    dir: &Path,
+    resource_type: ResourceType,
+    root_dir: &Path,
+) -> Vec<String> {
+    let mut matcher = pi_agent::harness::skills::IgnoreMatcher::default();
+    let pattern = file_pattern_regex(resource_type);
+    collect_recursive_resource_entries_inner(dir, root_dir, &mut matcher, &pattern)
+}
+
+fn collect_recursive_resource_entries_inner(
+    dir: &Path,
+    root_dir: &Path,
+    matcher: &mut pi_agent::harness::skills::IgnoreMatcher,
+    pattern: &regex::Regex,
+) -> Vec<String> {
+    let mut entries = Vec::new();
+    if !dir.is_dir() {
+        return entries;
+    }
+    add_ignore_rules(matcher, dir, root_dir);
+    let dir_entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return entries,
+    };
+    for entry in dir_entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') || name_str == "node_modules" {
+            continue;
+        }
+        let full_path = entry.path();
+        let (is_dir, is_file) = entry_is_dir_or_file(&entry);
+        let relative = os_rel_posix(root_dir, &full_path);
+        let ignore_path = if is_dir {
+            format!("{relative}/")
+        } else {
+            relative
+        };
+        if matcher.ignores(&ignore_path) {
+            continue;
+        }
+        if is_dir {
+            entries.extend(collect_recursive_resource_entries_inner(
+                &full_path, root_dir, matcher, pattern,
+            ));
+        } else if is_file && pattern.is_match(&name_str) {
+            entries.push(path_to_string(&full_path));
+        }
+    }
+    entries
+}
+
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 fn file_pattern_regex(resource_type: ResourceType) -> regex::Regex {
     let raw = FILE_PATTERNS
         .iter()
@@ -777,13 +794,14 @@ fn file_pattern_regex(resource_type: ResourceType) -> regex::Regex {
 }
 
 /// Port of upstream `collectResourceFiles`: dispatch by type — skills and
-/// extensions use smart discovery, prompts/themes use flat recursive collection.
+/// extensions use smart discovery, prompts/themes use recursive collection.
 fn collect_resource_files(dir: &Path, resource_type: ResourceType, root_dir: &Path) -> Vec<String> {
     match resource_type {
         ResourceType::Skills => collect_skill_entries(dir, SkillDiscoveryMode::Pi, root_dir),
         ResourceType::Extensions => collect_auto_extension_entries(dir, root_dir),
-        ResourceType::Prompts => collect_auto_prompt_entries(dir, root_dir),
-        ResourceType::Themes => collect_auto_theme_entries(dir, root_dir),
+        ResourceType::Prompts | ResourceType::Themes => {
+            collect_recursive_resource_entries(dir, resource_type, root_dir)
+        }
     }
 }
 
@@ -1129,8 +1147,12 @@ pub struct PackageManagerOptions {
 impl PackageManager {
     pub fn new(options: PackageManagerOptions) -> Self {
         Self {
-            cwd: options.cwd,
-            agent_dir: options.agent_dir,
+            cwd: crate::core::settings::resolve_path(&options.cwd)
+                .to_string_lossy()
+                .into_owned(),
+            agent_dir: crate::core::settings::resolve_path(&options.agent_dir)
+                .to_string_lossy()
+                .into_owned(),
             settings_manager: options.settings_manager,
             progress_callback: None,
         }
@@ -1190,7 +1212,9 @@ impl PackageManager {
     }
 
     fn resolve_path(&self, input: &str) -> PathBuf {
-        let input = expand_home(input);
+        // Match upstream resolvePath(..., { trim: true }): CLI whitespace is
+        // not part of a local package path, and leading `~` is expanded.
+        let input = expand_home(input.trim());
         let path = PathBuf::from(&input);
         let joined = if path.is_absolute() {
             path
@@ -1201,7 +1225,7 @@ impl PackageManager {
     }
 
     fn resolve_path_from_base(&self, input: &str, base_dir: &Path) -> PathBuf {
-        let path = PathBuf::from(expand_home(input));
+        let path = PathBuf::from(expand_home(input.trim()));
         let joined = if path.is_absolute() {
             path
         } else {
@@ -1664,6 +1688,7 @@ impl PackageManager {
     // git install internals
     // ------------------------------------------------------------------
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn install_git(&self, source: &GitSource, scope: SourceScope) -> Result<(), String> {
         let target_dir = self.get_git_install_path(source, scope);
         if target_dir.exists() {
@@ -2000,6 +2025,7 @@ impl PackageManager {
         Ok(self.to_resolved_paths(&accumulator))
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn resolve_package_sources(
         &self,
         sources: &[(PackageSource, &'static str)],
@@ -2147,10 +2173,23 @@ impl PackageManager {
         base_dir: &Path,
     ) {
         let resolved = self.resolve_path_from_base(&source.path, base_dir);
+        if resolved.is_file() {
+            // Upstream preserves an explicit file source as an extension
+            // entry. Keep that boundary visible to the Rust-native loader so
+            // it can report the actionable unsupported-source diagnostic for
+            // JS/TS (or an unregistered native artifact), rather than
+            // silently dropping the user's explicit path.
+            let mut file_metadata = metadata.clone();
+            file_metadata.base_dir = resolved.parent().map(path_to_string);
+            self.add_resource(
+                &mut accumulator.extensions,
+                &path_to_string(&resolved),
+                &file_metadata,
+                true,
+            );
+            return;
+        }
         if !resolved.is_dir() {
-            // Filesystem extension paths are not executable in the current
-            // Rust-native loader. Compiled extensions must be registered
-            // through a Rust factory.
             return;
         }
         let mut package_metadata = metadata.clone();
@@ -2195,7 +2234,7 @@ impl PackageManager {
         &self,
         entries: &[String],
         resource_type: ResourceType,
-        target: &mut std::collections::HashMap<String, (PathMetadata, bool)>,
+        target: &mut ResourceMap,
         metadata: &PathMetadata,
         base_dir: &Path,
     ) {
@@ -2293,7 +2332,7 @@ impl PackageManager {
         &self,
         package_root: &Path,
         resource_type: ResourceType,
-        target: &mut std::collections::HashMap<String, (PathMetadata, bool)>,
+        target: &mut ResourceMap,
         metadata: &PathMetadata,
     ) {
         if resource_type_is_executable(resource_type) {
@@ -2323,7 +2362,7 @@ impl PackageManager {
         package_root: &Path,
         user_patterns: &[String],
         resource_type: ResourceType,
-        target: &mut std::collections::HashMap<String, (PathMetadata, bool)>,
+        target: &mut ResourceMap,
         metadata: &PathMetadata,
     ) {
         if resource_type_is_executable(resource_type) {
@@ -2350,7 +2389,7 @@ impl PackageManager {
         package_root: &Path,
         user_patterns: Option<&Vec<String>>,
         resource_type: ResourceType,
-        target: &mut std::collections::HashMap<String, (PathMetadata, bool)>,
+        target: &mut ResourceMap,
         metadata: &PathMetadata,
     ) {
         if resource_type_is_executable(resource_type) {
@@ -2421,7 +2460,7 @@ impl PackageManager {
         entries: &[String],
         root: &Path,
         resource_type: ResourceType,
-        target: &mut std::collections::HashMap<String, (PathMetadata, bool)>,
+        target: &mut ResourceMap,
         metadata: &PathMetadata,
     ) {
         if resource_type_is_executable(resource_type) {
@@ -2654,7 +2693,7 @@ impl PackageManager {
         &self,
         accumulator: &'a mut ResourceAccumulator,
         resource_type: ResourceType,
-    ) -> &'a mut std::collections::HashMap<String, (PathMetadata, bool)> {
+    ) -> &'a mut ResourceMap {
         match resource_type {
             ResourceType::Extensions => &mut accumulator.extensions,
             ResourceType::Skills => &mut accumulator.skills,
@@ -2665,7 +2704,7 @@ impl PackageManager {
 
     fn add_resource(
         &self,
-        map: &mut std::collections::HashMap<String, (PathMetadata, bool)>,
+        map: &mut ResourceMap,
         path: &str,
         metadata: &PathMetadata,
         enabled: bool,
@@ -2683,11 +2722,7 @@ impl PackageManager {
     }
 
     fn to_resolved_paths(&self, accumulator: &ResourceAccumulator) -> ResolvedPaths {
-        let map_to_resolved = |entries: &std::collections::HashMap<
-            String,
-            (PathMetadata, bool),
-        >|
-         -> Vec<ResolvedResource> {
+        let map_to_resolved = |entries: &ResourceMap| -> Vec<ResolvedResource> {
             let mut resolved: Vec<(String, PathMetadata, bool)> = entries
                 .iter()
                 .map(|(path, (metadata, enabled))| (path.clone(), metadata.clone(), *enabled))
@@ -2795,7 +2830,7 @@ struct SettingsDirs {
 fn accumulator_target(
     accumulator: &mut ResourceAccumulator,
     resource_type: ResourceType,
-) -> &mut std::collections::HashMap<String, (PathMetadata, bool)> {
+) -> &mut ResourceMap {
     match resource_type {
         ResourceType::Extensions => &mut accumulator.extensions,
         ResourceType::Skills => &mut accumulator.skills,
@@ -2804,12 +2839,7 @@ fn accumulator_target(
     }
 }
 
-fn accumulator_add(
-    map: &mut std::collections::HashMap<String, (PathMetadata, bool)>,
-    path: &str,
-    metadata: &PathMetadata,
-    enabled: bool,
-) {
+fn accumulator_add(map: &mut ResourceMap, path: &str, metadata: &PathMetadata, enabled: bool) {
     if path.is_empty() {
         return;
     }
@@ -2974,11 +3004,13 @@ fn pathdiff(base: &Path, target: &Path) -> String {
 /// Panic-free stand-in for `throw new Error` in path guards (the upstream
 /// `resolveManagedPath` throws; this prefix keeps the contract explicit for
 /// callers that propagate errors).
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 fn panic_write(message: &str) -> ! {
     panic!("{message}");
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::core::settings::PackageSourceObj;
@@ -3229,6 +3261,7 @@ mod resolve_tests {
     use super::*;
     use crate::interactive::config_selector::build_groups;
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn fixture(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("pi-pm-resolve-{}-{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&d);
@@ -3236,6 +3269,7 @@ mod resolve_tests {
         d
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn write(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -3252,6 +3286,7 @@ mod resolve_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn resolve_auto_discovers_user_resources() {
         let cwd = fixture("auto-cwd");
         let agent = fixture("auto-agent");
@@ -3301,6 +3336,32 @@ mod resolve_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
+    fn resolve_extension_sources_retains_explicit_file_for_loader_diagnostic() {
+        let cwd = fixture("explicit-file-cwd");
+        let agent = fixture("explicit-file-agent");
+        let extension = agent.join("extension.ts");
+        write(&extension, "export default function extension() {}\n");
+        let pm = resolve_manager(&cwd, &agent);
+
+        let resolved = pm
+            .resolve_extension_sources(&[path_to_string(&extension)], false, false)
+            .unwrap();
+
+        assert_eq!(resolved.extensions.len(), 1);
+        let entry = &resolved.extensions[0];
+        assert_eq!(entry.path, path_to_string(&extension));
+        assert!(entry.enabled);
+        assert_eq!(
+            entry.metadata.base_dir.as_deref(),
+            extension.parent().map(path_to_string).as_deref()
+        );
+        let _ = std::fs::remove_dir_all(&cwd);
+        let _ = std::fs::remove_dir_all(&agent);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn resolve_discovers_project_resources_when_trusted() {
         let cwd = fixture("proj-cwd");
         let agent = fixture("proj-agent");
@@ -3326,6 +3387,7 @@ mod resolve_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn settings_local_entries_become_user_local_resources() {
         let cwd = fixture("local-cwd");
         let agent = fixture("local-agent");
@@ -3359,6 +3421,64 @@ mod resolve_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
+    fn resolve_preserves_insertion_order_for_same_precedence_resources() {
+        let cwd = fixture("ordered-cwd");
+        let agent = fixture("ordered-agent");
+        let second = cwd.join("second.md");
+        let first = cwd.join("first.md");
+        write(&second, "second\n");
+        write(&first, "first\n");
+
+        let mut settings = crate::core::settings::SettingsMap::new();
+        settings.insert(
+            "prompts".to_string(),
+            Value::Array(vec![
+                Value::String(path_to_string(&second)),
+                Value::String(path_to_string(&first)),
+            ]),
+        );
+        let pm = PackageManager::new(PackageManagerOptions {
+            cwd: cwd.display().to_string(),
+            agent_dir: agent.display().to_string(),
+            settings_manager: SettingsManager::in_memory(settings),
+        });
+
+        let resolved = pm.resolve(None).unwrap();
+        let paths: Vec<String> = resolved
+            .prompts
+            .iter()
+            .map(|resource| resource.path.clone())
+            .collect();
+        assert_eq!(paths, vec![path_to_string(&second), path_to_string(&first)]);
+
+        let _ = std::fs::remove_dir_all(&cwd);
+        let _ = std::fs::remove_dir_all(&agent);
+    }
+
+    #[test]
+    fn package_convention_prompt_and_theme_files_are_recursive() {
+        let root = fixture("recursive-package-resources");
+        let prompts = root.join("prompts");
+        let themes = root.join("themes");
+        write(&prompts.join("reviews").join("release.md"), "release\n");
+        write(&themes.join("variants").join("dim.json"), "{}\n");
+
+        let prompt_paths = collect_resource_files(&prompts, ResourceType::Prompts, &prompts);
+        let theme_paths = collect_resource_files(&themes, ResourceType::Themes, &themes);
+        assert_eq!(
+            prompt_paths,
+            vec![path_to_string(&prompts.join("reviews/release.md"))]
+        );
+        assert_eq!(
+            theme_paths,
+            vec![path_to_string(&themes.join("variants/dim.json"))]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn package_filter_ignores_executable_extensions_and_keeps_resources() {
         let cwd = fixture("filter-cwd");
         let agent = fixture("filter-agent");
@@ -3425,6 +3545,7 @@ mod resolve_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn ignore_file_excludes_auto_discovered_skill() {
         let cwd = fixture("ignore-cwd");
         let agent = fixture("ignore-agent");
@@ -3447,6 +3568,7 @@ mod resolve_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn npm_package_resolution_is_rejected_without_install() {
         let cwd = fixture("skip-cwd");
         let agent = fixture("skip-agent");
@@ -3462,6 +3584,7 @@ mod resolve_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn on_missing_error_action_propagates() {
         let cwd = fixture("missing-cwd");
         let agent = fixture("missing-agent");
@@ -3477,6 +3600,7 @@ mod resolve_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn resolve_feeds_build_groups() {
         let cwd = fixture("groups-cwd");
         let agent = fixture("groups-agent");

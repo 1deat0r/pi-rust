@@ -3,11 +3,13 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
-use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::io::{ErrorKind, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -163,6 +165,48 @@ pub fn strip_bom(content: &str) -> &str {
     content.strip_prefix('\u{FEFF}').unwrap_or(content)
 }
 
+/// Resolve a user-supplied path the same way the upstream `resolvePath`
+/// helper does: expand a leading `~`, anchor relative paths at the current
+/// working directory, and collapse `.`/`..` lexically without requiring the
+/// target to exist.
+pub fn resolve_path(input: &str) -> PathBuf {
+    let expanded = config::expand_tilde_path(input);
+    let path = PathBuf::from(expanded);
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    normalize_path(absolute)
+}
+
+fn normalize_path(path: PathBuf) -> PathBuf {
+    let absolute = path.is_absolute();
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(Path::new(component.as_os_str())),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let can_pop = normalized
+                    .components()
+                    .next_back()
+                    .is_some_and(|last| matches!(last, Component::Normal(_)));
+                if can_pop {
+                    normalized.pop();
+                } else if !absolute {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+    normalized
+}
+
 // ---------------------------------------------------------------------------
 // Settings storage layer (ported from settings-manager.ts)
 // ---------------------------------------------------------------------------
@@ -225,7 +269,7 @@ impl SettingsStorage for InMemorySettingsStorage {
             SettingsScope::Global => &self.global,
             SettingsScope::Project => &self.project,
         };
-        let mut guard = slot.lock().unwrap();
+        let mut guard = slot.lock().unwrap_or_else(|error| error.into_inner());
         let next = f(guard.as_deref());
         if let Some(next) = next {
             *guard = Some(next);
@@ -233,7 +277,80 @@ impl SettingsStorage for InMemorySettingsStorage {
     }
 }
 
-/// Holds an exclusive `.lock` file; removes it on drop (like upstream
+static SETTINGS_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn settings_lock_path(path: &Path) -> PathBuf {
+    // A lock must exist even before the target file or its parent directory
+    // does. The stable hash lets independent processes coordinate first
+    // writes without making a clean startup create `.pi` or the agent dir.
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in path.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    std::env::temp_dir()
+        .join("pi-rust-settings-locks")
+        .join(format!("{hash:016x}.lock"))
+}
+
+fn settings_sibling_lock_path(path: &Path) -> PathBuf {
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    PathBuf::from(lock_path)
+}
+
+fn process_is_alive(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).exists()
+}
+
+fn remove_dead_settings_lock(path: &Path) -> bool {
+    let owner = fs::read_to_string(path)
+        .ok()
+        .and_then(|content| content.trim().parse::<u32>().ok());
+    let dead = match owner {
+        Some(pid) if pid == std::process::id() => false,
+        Some(pid) => !process_is_alive(pid),
+        None => fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
+            .map(|age| age >= Duration::from_secs(30))
+            .unwrap_or(false),
+    };
+    dead && fs::remove_file(path).is_ok()
+}
+
+enum SettingsLockOpenError {
+    AlreadyExists,
+    Other(String),
+}
+
+fn open_settings_lock(path: &Path) -> Result<fs::File, SettingsLockOpenError> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            return Err(SettingsLockOpenError::AlreadyExists)
+        }
+        Err(error) => {
+            return Err(SettingsLockOpenError::Other(format!(
+                "failed to acquire settings lock {}: {error}",
+                path.display()
+            )))
+        }
+    };
+    if let Err(error) = writeln!(file, "{}", std::process::id()).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(SettingsLockOpenError::Other(format!(
+            "failed to initialize settings lock {}: {error}",
+            path.display()
+        )));
+    }
+    Ok(file)
+}
+
+/// Holds one exclusive lock file; removes it on drop (like upstream
 /// proper-lockfile release).
 struct LockGuard {
     _file: fs::File,
@@ -246,7 +363,12 @@ impl Drop for LockGuard {
     }
 }
 
-/// File backend with a sibling `.lock` file retried like upstream lockfile.
+struct LockSet {
+    _guards: Vec<LockGuard>,
+}
+
+/// File backend with a stable first-write lock and a sibling `.lock` for
+/// compatibility with existing/upstream writers once the target exists.
 pub struct FileSettingsStorage {
     global_settings_path: PathBuf,
     project_settings_path: PathBuf,
@@ -255,8 +377,8 @@ pub struct FileSettingsStorage {
 impl FileSettingsStorage {
     pub fn new(cwd: &str, agent_dir: &str) -> Self {
         Self {
-            global_settings_path: PathBuf::from(agent_dir).join("settings.json"),
-            project_settings_path: PathBuf::from(cwd)
+            global_settings_path: resolve_path(agent_dir).join("settings.json"),
+            project_settings_path: resolve_path(cwd)
                 .join(CONFIG_DIR_NAME)
                 .join("settings.json"),
         }
@@ -269,31 +391,49 @@ impl FileSettingsStorage {
         }
     }
 
-    fn acquire_lock_with_retry(path: &std::path::Path) -> LockGuard {
-        let mut lock_path = path.as_os_str().to_owned();
-        lock_path.push(".lock");
-        let lock_path = PathBuf::from(lock_path);
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
+    fn acquire_lock_with_retry(lock_path: &Path) -> LockGuard {
+        if let Some(parent) = lock_path.parent() {
+            let existed = parent.exists();
+            fs::create_dir_all(parent).unwrap_or_else(|error| {
+                panic!(
+                    "Failed to create settings lock directory {}: {error}",
+                    parent.display()
+                )
+            });
+            if !existed {
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap_or_else(
+                    |error| {
+                        panic!(
+                            "Failed to secure settings lock directory {}: {error}",
+                            parent.display()
+                        )
+                    },
+                );
+            }
+        }
         const MAX_ATTEMPTS: u32 = 10;
         const DELAY_MS: u64 = 20;
-        let mut last_error: Option<std::io::Error> = None;
+        let mut last_error = "unknown error".to_string();
         for attempt in 1..=MAX_ATTEMPTS {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&lock_path)
-            {
+            match open_settings_lock(lock_path) {
                 Ok(file) => {
                     return LockGuard {
                         _file: file,
-                        path: lock_path,
+                        path: lock_path.to_path_buf(),
                     }
                 }
-                Err(e) if e.kind() == ErrorKind::AlreadyExists && attempt < MAX_ATTEMPTS => {
-                    last_error = Some(e);
-                    thread::sleep(Duration::from_millis(DELAY_MS));
+                Err(SettingsLockOpenError::AlreadyExists) => {
+                    if remove_dead_settings_lock(lock_path) {
+                        continue;
+                    }
+                    last_error = "lock is already held".to_string();
+                    if attempt < MAX_ATTEMPTS {
+                        thread::sleep(Duration::from_millis(DELAY_MS));
+                    }
                 }
-                Err(e) => {
-                    last_error = Some(e);
+                Err(SettingsLockOpenError::Other(error)) => {
+                    last_error = error;
                     break;
                 }
             }
@@ -302,43 +442,108 @@ impl FileSettingsStorage {
             "Failed to acquire settings lock for {}: {}",
             lock_path.display(),
             last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "unknown error".to_string())
         );
+    }
+
+    fn acquire_scope_locks(path: &Path) -> LockSet {
+        let mut guards = vec![Self::acquire_lock_with_retry(&settings_lock_path(path))];
+        let sibling = settings_sibling_lock_path(path);
+        // The sibling lock is retained for interoperability with existing
+        // files and upstream processes. The existence check happens after the
+        // stable lock, so first-write creation is serialized too.
+        if path.exists() || sibling.exists() {
+            guards.push(Self::acquire_lock_with_retry(&sibling));
+        }
+        LockSet { _guards: guards }
     }
 }
 
+fn sync_settings_directory(parent: &Path) -> Result<(), String> {
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "failed to sync settings directory {}: {error}",
+                parent.display()
+            )
+        })
+}
+
+fn write_settings_file(path: &Path, content: &str) -> Result<(), String> {
+    let Some(parent) = path.parent() else {
+        return Err(format!("settings path has no parent: {}", path.display()));
+    };
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create settings directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("settings.json");
+    let counter = SETTINGS_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path = parent.join(format!(
+        ".{name}.tmp-{}-{}-{counter}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    let mut file = options.open(&temp_path).map_err(|error| {
+        format!(
+            "failed to create temporary settings file {}: {error}",
+            temp_path.display()
+        )
+    })?;
+    let result = (|| {
+        file.write_all(content.as_bytes()).map_err(|error| {
+            format!("failed to write settings file {}: {error}", path.display())
+        })?;
+        file.sync_all().map_err(|error| {
+            format!(
+                "failed to sync temporary settings file {}: {error}",
+                temp_path.display()
+            )
+        })?;
+        drop(file);
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600)).map_err(|error| {
+            format!(
+                "failed to set settings file permissions {}: {error}",
+                temp_path.display()
+            )
+        })?;
+        fs::rename(&temp_path, path).map_err(|error| {
+            format!(
+                "failed to replace settings file {}: {error}",
+                path.display()
+            )
+        })?;
+        sync_settings_directory(parent)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
 impl SettingsStorage for FileSettingsStorage {
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn with_lock(&self, scope: SettingsScope, f: &mut dyn FnMut(Option<&str>) -> Option<String>) {
         let path = self.path_for(scope);
-        let file_exists = path.exists();
-        let mut _lock_guard = if file_exists {
-            Some(Self::acquire_lock_with_retry(&path))
-        } else {
-            None
+        let _lock_set = Self::acquire_scope_locks(&path);
+        let current = match fs::read_to_string(&path) {
+            Ok(content) => Some(content),
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(error) => panic!("Failed to read settings file {}: {error}", path.display()),
         };
-        let current =
-            if file_exists {
-                Some(fs::read_to_string(&path).unwrap_or_else(|e| {
-                    panic!("Failed to read settings file {}: {e}", path.display())
-                }))
-            } else {
-                None
-            };
         let next = f(current.as_deref());
         if let Some(next) = next {
-            if let Some(dir) = path.parent() {
-                if !dir.exists() {
-                    fs::create_dir_all(dir)
-                        .unwrap_or_else(|e| panic!("Failed to create settings dir {dir:?}: {e}"));
-                }
-            }
-            if _lock_guard.is_none() {
-                _lock_guard = Some(Self::acquire_lock_with_retry(&path));
-            }
-            fs::write(&path, next).unwrap_or_else(|e| {
-                panic!("Failed to write settings file {}: {e}", path.display())
-            });
+            write_settings_file(&path, &next).unwrap_or_else(|error| panic!("{error}"));
         }
     }
 }
@@ -446,12 +651,17 @@ impl SettingsManager {
 
     /// Load from files at `<agent_dir>/settings.json` and `<cwd>/.pi/settings.json`.
     pub fn create(cwd: &str, agent_dir: &str, options: SettingsManagerCreateOptions) -> Self {
-        let storage = Arc::new(FileSettingsStorage::new(cwd, agent_dir));
+        let resolved_cwd = resolve_path(cwd);
+        let resolved_agent_dir = resolve_path(agent_dir);
+        let storage = Arc::new(FileSettingsStorage::new(
+            &resolved_cwd.to_string_lossy(),
+            &resolved_agent_dir.to_string_lossy(),
+        ));
         let manager = Self::from_storage_with_paths(
             storage,
             options,
-            Some(agent_dir.to_string()),
-            Some(cwd.to_string()),
+            Some(resolved_agent_dir.to_string_lossy().into_owned()),
+            Some(resolved_cwd.to_string_lossy().into_owned()),
         );
         crate::core::http_dispatcher::apply_http_proxy_settings(
             manager
@@ -473,6 +683,7 @@ impl SettingsManager {
     }
 
     /// In-memory manager; `settings` are migrated and seeded as the global scope.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub fn in_memory(settings: SettingsMap) -> Self {
         let storage = InMemorySettingsStorage::new();
         let mut migrated = settings.clone();
@@ -553,6 +764,12 @@ impl SettingsManager {
         let Some(content) = content else {
             return Ok(SettingsMap::new());
         };
+        // The upstream uses `if (!content) return {}` before stripping a BOM:
+        // an empty file is a valid empty settings scope, while whitespace (or
+        // a BOM followed by whitespace) still reports a JSON parse error.
+        if content.is_empty() {
+            return Ok(SettingsMap::new());
+        }
         let content = strip_bom(&content);
         Self::parse_settings_map(content)
     }
@@ -638,11 +855,15 @@ impl SettingsManager {
     }
 
     fn enqueue_write(&self, scope: SettingsScope, task: WriteTask) {
-        self.queue.lock().unwrap().push_back((scope, task));
+        self.queue
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push_back((scope, task));
     }
 
     /// Merge only the snapshot's modified fields over the *current* file
     /// content (the heart of "preserve externally added settings").
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn persist_scoped(
         storage: &dyn SettingsStorage,
         scope: SettingsScope,
@@ -656,7 +877,9 @@ impl SettingsManager {
                     let content = strip_bom(content);
                     // Migration applies to whatever is on disk (upstream
                     // `migrateSettings(JSON.parse(stripBom(current)))`).
-                    Self::parse_settings_map(content).unwrap_or_default()
+                    Self::parse_settings_map(content).unwrap_or_else(|error| {
+                        panic!("Failed to parse settings before persistence: {error}")
+                    })
                 }
                 None => SettingsMap::new(),
             };
@@ -726,6 +949,7 @@ impl SettingsManager {
         );
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn save_project(&mut self) {
         if let Err(e) = self.assert_project_trusted_for_write() {
             panic!("{e}");
@@ -752,6 +976,7 @@ impl SettingsManager {
         );
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn update_project_settings(&mut self, field: &str, update: impl FnOnce(&mut SettingsMap)) {
         if let Err(e) = self.assert_project_trusted_for_write() {
             panic!("{e}");
@@ -768,7 +993,7 @@ impl SettingsManager {
     /// used by long-running modes).
     pub fn flush_sync(&mut self) {
         let tasks: Vec<(SettingsScope, WriteTask)> = {
-            let mut q = self.queue.lock().unwrap();
+            let mut q = self.queue.lock().unwrap_or_else(|error| error.into_inner());
             q.drain(..).collect()
         };
         for (scope, task) in tasks {
@@ -798,7 +1023,7 @@ impl SettingsManager {
     /// again, mirroring upstream `enqueueWrite`.
     pub async fn flush(&mut self) {
         let tasks: Vec<(SettingsScope, WriteTask)> = {
-            let mut q = self.queue.lock().unwrap();
+            let mut q = self.queue.lock().unwrap_or_else(|error| error.into_inner());
             q.drain(..).collect()
         };
         for (scope, task) in tasks {
@@ -966,6 +1191,7 @@ impl SettingsManager {
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn set_global_nested(&mut self, field: &str, nested_key: &str, value: Value) {
         self.ensure_global_object(field);
         self.global_settings[field]
@@ -988,7 +1214,9 @@ impl SettingsManager {
 
     /// sessionDir with `~` expansion (normalizePath).
     pub fn get_session_dir(&self) -> Option<String> {
-        self.g_str("sessionDir").map(config::expand_tilde_path)
+        self.g_str("sessionDir")
+            .filter(|path| !path.is_empty())
+            .map(config::expand_tilde_path)
     }
 
     pub fn get_default_provider(&self) -> Option<&str> {
@@ -1065,6 +1293,7 @@ impl SettingsManager {
             .unwrap_or_default()
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub fn set_model_thinking_level(&mut self, provider: &str, model_id: &str, level: &str) {
         if !self.global_settings.contains_key("modelThinkingLevels") {
             self.global_settings.insert(
@@ -1368,6 +1597,7 @@ impl SettingsManager {
             .unwrap_or_default()
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub fn set_packages(&mut self, packages: Vec<PackageSource>) {
         let value = serde_json::to_value(packages).expect("packages serialize");
         self.set_global("packages", value);
@@ -1381,6 +1611,7 @@ impl SettingsManager {
             .unwrap_or_default()
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub fn set_project_packages(&mut self, packages: Vec<PackageSource>) {
         let value = serde_json::to_value(packages).expect("packages serialize");
         self.update_project_settings("packages", |settings| {
@@ -1483,13 +1714,11 @@ impl SettingsManager {
     }
 
     pub fn get_image_width_cells(&self) -> u64 {
-        match self
-            .g_nested("terminal", "imageWidthCells")
-            .and_then(|v| v.as_u64())
-        {
-            Some(width) => width.max(1),
-            None => 60,
-        }
+        self.g_nested("terminal", "imageWidthCells")
+            .and_then(Value::as_f64)
+            .filter(|width| width.is_finite())
+            .map(|width| width.floor().max(1.0) as u64)
+            .unwrap_or(60)
     }
 
     pub fn set_image_width_cells(&mut self, width: f64) {
@@ -1693,6 +1922,7 @@ impl SettingsManager {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -1873,6 +2103,38 @@ mod tests {
         assert_eq!(parse_http_idle_timeout_ms(&json!("5000")), Some(5000));
     }
 
+    #[test]
+    fn empty_session_dir_setting_is_not_an_override() {
+        let empty = SettingsManager::in_memory(m(json!({ "sessionDir": "" })));
+        assert_eq!(empty.get_session_dir(), None);
+
+        let configured = SettingsManager::in_memory(m(json!({
+            "sessionDir": "/tmp/pi-sessions"
+        })));
+        assert_eq!(
+            configured.get_session_dir().as_deref(),
+            Some("/tmp/pi-sessions")
+        );
+    }
+
+    #[test]
+    fn image_width_getter_floors_finite_persisted_numbers() {
+        let manager = SettingsManager::in_memory(m(json!({
+            "terminal": { "imageWidthCells": 80.9 }
+        })));
+        assert_eq!(manager.get_image_width_cells(), 80);
+
+        let minimum = SettingsManager::in_memory(m(json!({
+            "terminal": { "imageWidthCells": 0.25 }
+        })));
+        assert_eq!(minimum.get_image_width_cells(), 1);
+
+        let invalid = SettingsManager::in_memory(m(json!({
+            "terminal": { "imageWidthCells": "wide" }
+        })));
+        assert_eq!(invalid.get_image_width_cells(), 60);
+    }
+
     // ---- strip_bom --------------------------------------------------------
 
     #[test]
@@ -1883,5 +2145,66 @@ mod tests {
     #[test]
     fn strip_bom_passthrough_without_bom() {
         assert_eq!(strip_bom("{}"), "{}");
+    }
+
+    #[test]
+    fn resolve_path_anchors_relative_paths_and_collapses_dot_segments() {
+        let resolved = resolve_path("settings/../sessions/./current");
+        let expected = std::env::current_dir()
+            .unwrap()
+            .join("sessions")
+            .join("current");
+        assert_eq!(resolved, expected);
+        assert!(resolved.is_absolute());
+
+        assert_eq!(
+            resolve_path("/tmp/pi-settings/one/../two"),
+            PathBuf::from("/tmp/pi-settings/two")
+        );
+    }
+
+    #[test]
+    fn file_storage_paths_are_resolved_before_io() {
+        let storage = FileSettingsStorage::new(
+            "relative-project/../project",
+            "/tmp/pi-settings-agent/../pi-settings-agent-final",
+        );
+        assert_eq!(
+            storage.path_for(SettingsScope::Global),
+            PathBuf::from("/tmp/pi-settings-agent-final/settings.json")
+        );
+        assert_eq!(
+            storage.path_for(SettingsScope::Project),
+            std::env::current_dir()
+                .unwrap()
+                .join("project")
+                .join(CONFIG_DIR_NAME)
+                .join("settings.json")
+        );
+    }
+
+    #[test]
+    fn empty_settings_files_load_as_an_empty_scope_without_diagnostics() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-settings-empty-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cwd = root.join("project");
+        let agent_dir = root.join("agent");
+        std::fs::create_dir_all(cwd.join(CONFIG_DIR_NAME)).unwrap();
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("settings.json"), "").unwrap();
+        std::fs::write(cwd.join(CONFIG_DIR_NAME).join("settings.json"), "").unwrap();
+
+        let mut manager = SettingsManager::create(
+            &cwd.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            SettingsManagerCreateOptions::default(),
+        );
+        assert!(manager.get_global_settings().is_empty());
+        assert!(manager.get_project_settings().is_empty());
+        assert!(manager.drain_errors().is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

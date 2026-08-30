@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Binary-level resource tests (T6 #73/#74): `--skill`/`-ns` and
 //! `--prompt-template`/`-np` wiring in the run path, verified through the
 //! built `pi` binary.
@@ -220,7 +222,7 @@ fn no_approve_does_not_block_project_prompt_expansion_in_print_path() {
 }
 
 #[test]
-fn no_prompt_templates_overrides_an_explicit_template_path() {
+fn no_prompt_templates_keeps_an_explicit_template_path() {
     let sandbox = Sandbox::new("no-prompt-explicit");
     let cwd = sandbox.root.join("proj");
     fs::create_dir_all(&cwd).unwrap();
@@ -247,13 +249,21 @@ fn no_prompt_templates_overrides_an_explicit_template_path() {
     );
     assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
     let session = sandbox.session_content();
+    let user_turns: Vec<_> = session
+        .lines()
+        .filter(|line| line.contains("\"role\":\"user\""))
+        .collect();
     assert!(
-        session.contains("/explicit the docs"),
-        "expected literal prompt when -np suppresses explicit templates, got:\n{session}"
+        user_turns
+            .iter()
+            .any(|line| line.contains("Explicit template: the docs")),
+        "expected explicit template expansion when -np disables discovery, got:\n{session}"
     );
     assert!(
-        !session.contains("Explicit template: the docs"),
-        "explicit template should not expand under -np:\n{session}"
+        user_turns
+            .iter()
+            .all(|line| !line.contains("/explicit the docs")),
+        "explicit template invocation should not remain literal under -np:\n{session}"
     );
 }
 

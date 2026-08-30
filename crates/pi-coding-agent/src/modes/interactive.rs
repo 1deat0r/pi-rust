@@ -120,14 +120,17 @@ impl InteractiveRenderer {
     }
 
     fn query_cell_size(&mut self) -> bool {
-        self.terminal_handle().lock().unwrap().query_cell_size()
+        self.terminal_handle()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .query_cell_size()
     }
 
     fn consume_cell_size_response(&mut self, data: &str) -> bool {
         let consumed = self
             .terminal_handle()
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .consume_cell_size_response(data);
         if consumed {
             self.invalidate();
@@ -181,9 +184,15 @@ impl InteractiveRenderer {
 
         let terminal = self.terminal_handle();
         if fullscreen {
-            terminal.lock().unwrap().enter_alt_screen();
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .enter_alt_screen();
         } else {
-            terminal.lock().unwrap().leave_alt_screen();
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .leave_alt_screen();
         }
         *self = Self::new(terminal, fullscreen);
         self.set_show_hardware_cursor(show_hardware_cursor);
@@ -259,17 +268,26 @@ impl InteractiveRenderer {
                     // constructing TuiAltScreen, so its controller does not
                     // own the `started` flag. Leave only the alternate screen
                     // here and retain raw mode while Tree projects the scene.
-                    terminal.lock().unwrap().leave_alt_screen();
+                    terminal
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .leave_alt_screen();
                     let mut tree = Tree::new(terminal.clone());
                     if let Some(scene) = transcript {
                         tree.render(Some(scene));
                     }
                     // Match TuiMainScreen.beforeTerminalStop: leave the
                     // projected transcript above the shell prompt.
-                    terminal.lock().unwrap().write_raw("\r\n");
+                    terminal
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .write_raw("\r\n");
                 }
 
-                let _ = terminal.lock().unwrap().leave_raw();
+                let _ = terminal
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .leave_raw();
             }
         }
     }
@@ -408,6 +426,7 @@ pub struct InteractiveStatusLog {
 
 impl InteractiveStatusLog {
     /// Add an ordinary status at a precise transcript boundary.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub fn show_status(&mut self, message: impl Into<String>, message_index: usize) {
         let message = message.into();
         if message.trim().is_empty() {
@@ -952,7 +971,11 @@ impl InteractiveTranscriptChild {
     fn kind(&self) -> InteractiveTranscriptChildKind {
         match self {
             Self::Markdown(_) => InteractiveTranscriptChildKind::Markdown,
-            Self::Visual(component) => match component.lock().unwrap().kind {
+            Self::Visual(component) => match component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .kind
+            {
                 TranscriptVisualKind::User => InteractiveTranscriptChildKind::User,
                 TranscriptVisualKind::Tool => InteractiveTranscriptChildKind::Tool,
                 TranscriptVisualKind::Bash => InteractiveTranscriptChildKind::Bash,
@@ -964,46 +987,103 @@ impl InteractiveTranscriptChild {
 
     fn set_text(&mut self, text: String) {
         match self {
-            Self::Markdown(component) => component.lock().unwrap().set_text(text),
-            Self::Visual(component) => component.lock().unwrap().set_text(text),
-            Self::Text(component) => component.lock().unwrap().set_text(text),
+            Self::Markdown(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_text(text),
+            Self::Visual(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_text(text),
+            Self::Text(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_text(text),
             Self::Spacer(_) => {}
         }
     }
 
     fn render(&self, width: usize) -> Vec<String> {
         match self {
-            Self::Markdown(component) => component.lock().unwrap().render(width),
-            Self::Visual(component) => component.lock().unwrap().render(width),
-            Self::Spacer(component) => component.lock().unwrap().render(width),
-            Self::Text(component) => component.lock().unwrap().render(width),
+            Self::Markdown(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .render(width),
+            Self::Visual(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .render(width),
+            Self::Spacer(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .render(width),
+            Self::Text(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .render(width),
         }
     }
 
     fn invalidate(&self) {
         match self {
-            Self::Markdown(component) => component.lock().unwrap().invalidate(),
-            Self::Visual(component) => component.lock().unwrap().invalidate(),
-            Self::Spacer(component) => component.lock().unwrap().invalidate(),
-            Self::Text(component) => component.lock().unwrap().invalidate(),
+            Self::Markdown(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .invalidate(),
+            Self::Visual(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .invalidate(),
+            Self::Spacer(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .invalidate(),
+            Self::Text(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .invalidate(),
         }
     }
 
     fn set_focused(&self, focused: bool) {
         match self {
-            Self::Markdown(component) => component.lock().unwrap().set_focused(focused),
-            Self::Visual(component) => component.lock().unwrap().set_focused(focused),
-            Self::Spacer(component) => component.lock().unwrap().set_focused(focused),
-            Self::Text(component) => component.lock().unwrap().set_focused(focused),
+            Self::Markdown(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_focused(focused),
+            Self::Visual(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_focused(focused),
+            Self::Spacer(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_focused(focused),
+            Self::Text(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_focused(focused),
         }
     }
 
     fn set_height(&self, height: usize) {
         match self {
-            Self::Markdown(component) => component.lock().unwrap().set_height(height),
-            Self::Visual(component) => component.lock().unwrap().set_height(height),
-            Self::Spacer(component) => component.lock().unwrap().set_height(height),
-            Self::Text(component) => component.lock().unwrap().set_height(height),
+            Self::Markdown(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_height(height),
+            Self::Visual(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_height(height),
+            Self::Spacer(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_height(height),
+            Self::Text(component) => component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_height(height),
         }
     }
 }
@@ -1029,13 +1109,19 @@ impl InteractiveTranscriptView {
             // padding. Rebuild them on the next block projection so changing
             // `/settings` updates already-rendered transcript rows too.
             self.theme_dirty = true;
-            *self.rendered.lock().unwrap() = None;
+            *self
+                .rendered
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = None;
         }
     }
 
     fn invalidate_theme(&mut self) {
         self.theme_dirty = true;
-        *self.rendered.lock().unwrap() = None;
+        *self
+            .rendered
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
         for child in &self.children {
             child.invalidate();
         }
@@ -1155,13 +1241,21 @@ impl InteractiveTranscriptView {
         }
         self.blocks = blocks;
         self.theme_dirty = false;
-        *self.rendered.lock().unwrap() = None;
+        *self
+            .rendered
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
     }
 }
 
 impl Component for InteractiveTranscriptView {
     fn render(&self, width: usize) -> Vec<String> {
-        if let Some((cached_width, lines)) = self.rendered.lock().unwrap().as_ref() {
+        if let Some((cached_width, lines)) = self
+            .rendered
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
             if *cached_width == width {
                 return lines.clone();
             }
@@ -1171,12 +1265,18 @@ impl Component for InteractiveTranscriptView {
             .iter()
             .flat_map(|child| child.render(width))
             .collect::<Vec<_>>();
-        *self.rendered.lock().unwrap() = Some((width, lines.clone()));
+        *self
+            .rendered
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some((width, lines.clone()));
         lines
     }
 
     fn invalidate(&mut self) {
-        *self.rendered.lock().unwrap() = None;
+        *self
+            .rendered
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
         for child in &self.children {
             child.invalidate();
         }
@@ -1753,7 +1853,9 @@ fn start_interactive_bash_operation(
     let output = Arc::new(Mutex::new(String::new()));
     let output_for_callback = Arc::clone(&output);
     let callback: pi_agent::tools::bash::BashOutputCallback = Arc::new(move |snapshot| {
-        *output_for_callback.lock().unwrap() = snapshot;
+        *output_for_callback
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = snapshot;
     });
     let signal_for_task = Arc::clone(&signal);
     let command_for_task = command.clone();
@@ -1768,7 +1870,9 @@ fn start_interactive_bash_operation(
         .await
         .map_err(|error| error.to_string())
     });
-    *stream_buffer.lock().unwrap() = render_live_bash_execution(
+    *stream_buffer
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = render_live_bash_execution(
         &command,
         "",
         exclude_from_context,
@@ -2342,7 +2446,12 @@ async fn suspend_interactive(
         }
     };
 
-    let leave_raw_result = { terminal.lock().unwrap().leave_raw() };
+    let leave_raw_result = {
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .leave_raw()
+    };
     if let Err(error) = leave_raw_result {
         input.restart().await;
         return Err(format!("restore terminal before suspend: {error}"));
@@ -2358,7 +2467,7 @@ async fn suspend_interactive(
     if let Err(error) = unix_suspend::suspend_process_group() {
         let restore = terminal
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .enter_raw_with_alt_screen(use_alt_screen);
         input.restart().await;
         return Err(match restore {
@@ -2376,8 +2485,7 @@ async fn suspend_interactive(
                     break;
                 }
                 let restore = terminal
-                    .lock()
-                    .unwrap()
+                    .lock().unwrap_or_else(|error| error.into_inner())
                     .enter_raw_with_alt_screen(use_alt_screen);
                 input.restart().await;
                 return Err(match restore {
@@ -2391,7 +2499,7 @@ async fn suspend_interactive(
 
     let restore = terminal
         .lock()
-        .unwrap()
+        .unwrap_or_else(|error| error.into_inner())
         .enter_raw_with_alt_screen(use_alt_screen);
     input.restart().await;
     restore.map_err(|error| format!("restore terminal after SIGCONT: {error}"))
@@ -2695,9 +2803,12 @@ fn refresh_interactive_theme_views(
 ) {
     transcript_md
         .lock()
-        .unwrap()
+        .unwrap_or_else(|error| error.into_inner())
         .set_theme(it::tui_theme::markdown_theme());
-    transcript_view.lock().unwrap().invalidate_theme();
+    transcript_view
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .invalidate_theme();
 }
 
 fn loaded_native_provider_ids(loaded: &LoadedExtensions) -> Vec<String> {
@@ -2832,7 +2943,7 @@ fn refresh_startup_presentation(
     let Some(startup) = startup_presentation else {
         return;
     };
-    let mut startup = startup.lock().unwrap();
+    let mut startup = startup.lock().unwrap_or_else(|error| error.into_inner());
     let expanded = startup.is_expanded();
     startup.refresh(
         crate::config::VERSION,
@@ -3140,7 +3251,7 @@ async fn execute_interactive_fork(
     context
         .transcript_md
         .lock()
-        .unwrap()
+        .unwrap_or_else(|error| error.into_inner())
         .set_text(it::compose_transcript(
             &runtime.messages,
             context.hide_thinking,
@@ -3270,7 +3381,7 @@ async fn apply_pending_extension_lifecycle_actions(
                     runtime.messages.clear();
                     runtime.cache_entries.clear();
                     runtime.persisted_until = 0;
-                    transcript_md.lock().unwrap().set_text("");
+                    transcript_md.lock().unwrap_or_else(|error| error.into_inner()).set_text("");
                     let reload_notes = replace_extensions(
                         runtime,
                         settings,
@@ -3609,12 +3720,30 @@ fn debug_render_lines(
     easter_egg_components: &[SharedComponent],
     width: usize,
 ) -> Vec<String> {
-    let mut lines = transcript_md.lock().unwrap().render(width);
+    let mut lines = transcript_md
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .render(width);
     for component in easter_egg_components {
-        lines.extend(component.lock().unwrap().render(width));
+        lines.extend(
+            component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .render(width),
+        );
     }
-    lines.extend(editor.lock().unwrap().render(width));
-    lines.extend(footer_text.lock().unwrap().render(width));
+    lines.extend(
+        editor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .render(width),
+    );
+    lines.extend(
+        footer_text
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .render(width),
+    );
     lines
 }
 
@@ -3733,6 +3862,7 @@ struct InteractiveTurnResult {
     active_messages: Vec<pi_agent::types::AgentMessage>,
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 async fn start_interactive_turn(
     runtime: &mut InteractiveRuntime,
     message: String,
@@ -3948,7 +4078,11 @@ async fn start_interactive_turn(
                                 provider_uses_oauth,
                             );
                         }
-                        let callback = handler.lock().unwrap().as_ref().cloned();
+                        let callback = handler
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .as_ref()
+                            .cloned();
                         if let Some(callback) = callback {
                             callback(assistant_message_event);
                         }
@@ -3956,7 +4090,11 @@ async fn start_interactive_turn(
                     RichAgentEvent::ToolExecutionStart { .. }
                     | RichAgentEvent::ToolExecutionUpdate { .. }
                     | RichAgentEvent::ToolExecutionEnd { .. } => {
-                        let callback = tool_handler.lock().unwrap().as_ref().cloned();
+                        let callback = tool_handler
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .as_ref()
+                            .cloned();
                         if let Some(callback) = callback {
                             callback(&event);
                         }
@@ -3991,8 +4129,12 @@ async fn start_interactive_turn(
         .interactive_tool_event_handler
         .clone()
         .expect("interactive tool event handler installed");
-    *event_handler.lock().unwrap() = Some(on_event);
-    *tool_event_handler.lock().unwrap() = Some(on_tool_event);
+    *event_handler
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(on_event);
+    *tool_event_handler
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(on_tool_event);
 
     let task_harness = Arc::clone(&harness);
     let task_event_handler = event_handler.clone();
@@ -4003,8 +4145,12 @@ async fn start_interactive_turn(
             .run_prompt(vec![prompt])
             .await
             .map_err(|error| error.to_string());
-        *task_event_handler.lock().unwrap() = None;
-        *task_tool_event_handler.lock().unwrap() = None;
+        *task_event_handler
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+        *task_tool_event_handler
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
         let mut new_messages = run_result?;
         for message in &mut new_messages {
             if let pi_agent::types::AgentMessage::Core(Message::Assistant(assistant)) = message {
@@ -4149,11 +4295,17 @@ impl InteractiveStreamingUi<'_> {
     fn refresh_live_transcript(&mut self) {
         let options = self.render_options();
         let rendered = {
-            let mut live = self.live_transcript.lock().unwrap();
+            let mut live = self
+                .live_transcript
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             live.configure(options);
             live.render()
         };
-        *self.stream_buffer.lock().unwrap() = rendered;
+        *self
+            .stream_buffer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = rendered;
     }
 
     fn toggle_tool_output(&mut self) {
@@ -4166,9 +4318,14 @@ impl InteractiveStreamingUi<'_> {
         self.renderer.invalidate();
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn render(&mut self, snapshot_messages: &[pi_agent::types::AgentMessage]) {
         self.refresh_live_transcript();
-        let stream = self.stream_buffer.lock().unwrap().clone();
+        let stream = self
+            .stream_buffer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         let options = self.render_options();
         let projection_key = (
             snapshot_messages.len(),
@@ -4186,18 +4343,27 @@ impl InteractiveStreamingUi<'_> {
                 self.status_log,
             );
             let text = transcript_source_from_blocks(&blocks);
-            let mut transcript = self.transcript_md.lock().unwrap();
+            let mut transcript = self
+                .transcript_md
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             if transcript.text() != text {
                 transcript.set_text(text);
             }
             drop(transcript);
-            self.transcript_view.lock().unwrap().set_blocks(blocks);
-            self.status_text.lock().unwrap().set_text(
-                self.status_log
-                    .active_message()
-                    .map(|message| it::tui_theme::fg("muted", message))
-                    .unwrap_or_default(),
-            );
+            self.transcript_view
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_blocks(blocks);
+            self.status_text
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_text(
+                    self.status_log
+                        .active_message()
+                        .map(|message| it::tui_theme::fg("muted", message))
+                        .unwrap_or_default(),
+                );
             self.last_projection_key = Some(projection_key);
         }
         if self.cached_scene_pending.as_deref() != Some(self.pending_text.as_str()) {
@@ -4301,8 +4467,7 @@ async fn stream_turn_with_input(
                     pi_tui::terminal::TerminalEvent::Resize(_, height) => {
                         ui.renderer.invalidate();
                         ui.editor
-                            .lock()
-                            .unwrap()
+                            .lock().unwrap_or_else(|error| error.into_inner())
                             .set_terminal_rows(height as usize);
                     }
                     pi_tui::terminal::TerminalEvent::Key(key_str) => {
@@ -4361,7 +4526,7 @@ async fn stream_turn_with_input(
                             agent.clear_all_queues();
                             agent.abort();
                             {
-                                let mut editor = ui.editor.lock().unwrap();
+                                let mut editor = ui.editor.lock().unwrap_or_else(|error| error.into_inner());
                                 restore_interactive_queued_input(&mut editor, &queued);
                             }
                             let result = match turn.await {
@@ -4386,17 +4551,17 @@ async fn stream_turn_with_input(
                         // exactly like the upstream `matchesKey` path.
                         let editor_input = interactive_editor_input(&key_str, &key);
                         let queued_text = if is_streaming_follow_up_key(&key_str, &key) {
-                            let text = ui.editor.lock().unwrap().get_text();
-                            ui.editor.lock().unwrap().set_text("");
+                            let text = ui.editor.lock().unwrap_or_else(|error| error.into_inner()).get_text();
+                            ui.editor.lock().unwrap_or_else(|error| error.into_inner()).set_text("");
                             Some((text, InteractiveQueueKind::FollowUp))
                         } else if key.base == "enter" && !key.alt && !key.ctrl {
-                            let mut guard = ui.editor.lock().unwrap();
+                            let mut guard = ui.editor.lock().unwrap_or_else(|error| error.into_inner());
                             guard.handle_input(editor_input);
                             guard
                                 .drain_submitted()
                                 .map(|text| (text, InteractiveQueueKind::Steering))
                         } else {
-                            let mut editor = ui.editor.lock().unwrap();
+                            let mut editor = ui.editor.lock().unwrap_or_else(|error| error.into_inner());
                             if is_printable_input_batch(&key_str, &key) {
                                 insert_interactive_text_batch(&mut editor, &key_str);
                             } else {
@@ -4407,7 +4572,7 @@ async fn stream_turn_with_input(
 
                         if let Some((text, kind)) = queued_text {
                             if !text.trim().is_empty() {
-                                ui.editor.lock().unwrap().add_to_history(&text);
+                                ui.editor.lock().unwrap_or_else(|error| error.into_inner()).add_to_history(&text);
                                 let expanded_text = it::expand_skill_command(&text, &runtime.skills);
                                 let queued_message = pi_agent::agent::user_text_prompt(
                                     expanded_text,
@@ -4637,7 +4802,7 @@ async fn rehydrate_transcript(
         .collect();
     transcript_md
         .lock()
-        .unwrap()
+        .unwrap_or_else(|error| error.into_inner())
         .set_text(it::compose_transcript(&messages, hide_thinking, ""));
     (messages, cache_entries)
 }
@@ -4681,7 +4846,10 @@ fn sync_editor_border(
     if last_state.as_ref() == Some(&state) {
         return;
     }
-    editor.lock().unwrap().border_color = if bash_mode {
+    editor
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .border_color = if bash_mode {
         it::tui_theme::bash_mode_border()
     } else {
         it::tui_theme::thinking_border(thinking_level)
@@ -4999,7 +5167,10 @@ impl TuiAuthInteraction {
     }
 
     fn begin_dialog(&self, title: impl Into<String>) {
-        self.surface.lock().unwrap().set_dialog(title);
+        self.surface
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .set_dialog(title);
         render_auth_surface(&self.surface, &self.terminal);
     }
 }
@@ -5033,9 +5204,13 @@ fn render_auth_surface(
     surface: &Arc<Mutex<AuthSurfaceState>>,
     terminal: &Arc<Mutex<TerminalBackend>>,
 ) {
-    let width = terminal.lock().unwrap().width().max(24);
+    let width = terminal
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .width()
+        .max(24);
     let (lines, previous_lines) = {
-        let mut state = surface.lock().unwrap();
+        let mut state = surface.lock().unwrap_or_else(|error| error.into_inner());
         let lines = state.render_lines(width);
         let previous_lines = state.rendered_lines();
         state.set_rendered_lines(lines.len());
@@ -5059,7 +5234,10 @@ fn render_auth_surface(
         }
     }
     output.push_str("\r\n");
-    terminal.lock().unwrap().write_raw(&output);
+    terminal
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .write_raw(&output);
 }
 
 /// Read a short auth answer through the terminal backend while retaining raw
@@ -5072,7 +5250,7 @@ fn prompt_terminal_with_abort(
     abort: &AtomicBool,
 ) -> Result<String, String> {
     {
-        let mut state = surface.lock().unwrap();
+        let mut state = surface.lock().unwrap_or_else(|error| error.into_inner());
         match prompt {
             pi_ai::auth::AuthPrompt::Select { message, options } => state.set_selector(
                 message.clone(),
@@ -5087,7 +5265,11 @@ fn prompt_terminal_with_abort(
         if abort.load(Ordering::SeqCst) {
             break Err("Login cancelled".to_string());
         }
-        let event = match terminal.lock().unwrap().next_event() {
+        let event = match terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .next_event()
+        {
             Ok(event) => event,
             Err(error) => break Err(format!("read auth input: {error}")),
         };
@@ -5100,7 +5282,10 @@ fn prompt_terminal_with_abort(
                 if raw.is_empty() || is_key_release(&raw) {
                     continue;
                 }
-                let action = surface.lock().unwrap().handle_raw(&raw);
+                let action = surface
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .handle_raw(&raw);
                 match action {
                     AuthSurfaceAction::Submit(value) => break Ok(value),
                     AuthSurfaceAction::Cancel => {
@@ -5178,7 +5363,7 @@ impl pi_ai::auth::AuthInteraction for TuiAuthInteraction {
                 };
                 self.surface
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|error| error.into_inner())
                     .show_device_code(verification_uri, user_code);
                 format!("{prefix} {verification_uri} and enter code: {user_code}")
             }
@@ -5191,20 +5376,29 @@ impl pi_ai::auth::AuthInteraction for TuiAuthInteraction {
                 };
                 self.surface
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|error| error.into_inner())
                     .show_auth(url, instructions.as_deref());
                 format!("{prefix} {url}")
             }
             pi_ai::auth::AuthEvent::Progress { message } => {
-                self.surface.lock().unwrap().show_progress(message);
+                self.surface
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .show_progress(message);
                 message.clone()
             }
             pi_ai::auth::AuthEvent::Info { message, links } => {
-                self.surface.lock().unwrap().show_info(message, links);
+                self.surface
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .show_info(message, links);
                 message.clone()
             }
         };
-        *self.banner.lock().unwrap() = msg;
+        *self
+            .banner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = msg;
         render_auth_surface(&self.surface, &self.terminal);
     }
 }
@@ -5244,6 +5438,7 @@ fn auth_selector_status(
 /// Run the upstream `/login <provider>` OAuth flow: find the provider in the
 /// models registry, run its OAuth login, store the credential. Returns the
 /// final status message or an error.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 async fn run_oauth_login(
     models: &pi_ai::models::Models,
     provider_ref: Option<&str>,
@@ -5316,6 +5511,7 @@ async fn run_oauth_login(
     Ok(format!("logged in to {provider_id} via OAuth"))
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 async fn run_api_key_login(
     models: &pi_ai::models::Models,
     provider_ref: Option<&str>,
@@ -5566,6 +5762,7 @@ fn missing_session_id_warning(session_id: &str) -> String {
 }
 
 /// The interactive main loop. Returns Ok(()) on clean exit.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Result<(), String> {
     let mut settings = settings;
     let cwd = config::cwd();
@@ -6011,7 +6208,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     .map_err(|error| format!("watch SIGCONT: {error}"))?;
     terminal
         .lock()
-        .unwrap()
+        .unwrap_or_else(|error| error.into_inner())
         .enter_raw_with_alt_screen(use_alt_screen)
         .map_err(|e| format!("enter raw: {e}"))?;
     let _terminal_guard = InteractiveTerminalGuard {
@@ -6031,7 +6228,12 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         &runtime.skills,
         settings.get_enable_skill_commands(),
     );
-    editor.set_terminal_rows(terminal.lock().unwrap().height());
+    editor.set_terminal_rows(
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .height(),
+    );
     editor.set_padding_x(settings.get_editor_padding_x() as usize);
     let editor: Arc<Mutex<Editor>> = Arc::new(Mutex::new(editor));
 
@@ -6116,7 +6318,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     };
     transcript_scroll_view
         .lock()
-        .unwrap()
+        .unwrap_or_else(|error| error.into_inner())
         .set_scrollbar(fullscreen_scrollbar_mode(
             settings.get_fullscreen_scrollbar(),
             use_alt_screen,
@@ -6169,8 +6371,15 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     // scene is rebuilt on every frame, so constructing it inside build_scene
     // would reset the upstream 80 ms spinner before it can advance.
     let pending_loader = Arc::new(Mutex::new(pi_tui::components::Loader::new("")));
-    pending_loader.lock().unwrap().stop();
-    renderer.attach_loader_repaint(&mut pending_loader.lock().unwrap());
+    pending_loader
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .stop();
+    renderer.attach_loader_repaint(
+        &mut pending_loader
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
+    );
     let mut streaming = false;
     let mut llama_operation: Option<InteractiveLlamaOperation> = None;
     let mut bash_operation: Option<InteractiveBashOperation> = None;
@@ -6231,7 +6440,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         let key = parse_key(&key_str);
                         apply_interactive_editor_input(&editor, &key_str, &key);
                     }
-                    let bash_mode = editor.lock().unwrap().starts_with_non_whitespace('!');
+                    let bash_mode = editor.lock().unwrap_or_else(|error| error.into_inner()).starts_with_non_whitespace('!');
                     sync_editor_border(
                         &editor,
                         &thinking_level,
@@ -6256,12 +6465,12 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         Ok(Ok(capture)) => capture,
                         Ok(Err(error)) => {
                             status_banner = format!("bash failed: {error}");
-                            *stream_buffer.lock().unwrap() = String::new();
+                            *stream_buffer.lock().unwrap_or_else(|error| error.into_inner()) = String::new();
                             continue;
                         }
                         Err(error) => {
                             status_banner = format!("bash task failed: {error}");
-                            *stream_buffer.lock().unwrap() = String::new();
+                            *stream_buffer.lock().unwrap_or_else(|error| error.into_inner()) = String::new();
                             continue;
                         }
                     };
@@ -6289,10 +6498,10 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             .map(|error| format!("bash failed: {error}"))
                             .unwrap_or_default();
                     }
-                    *stream_buffer.lock().unwrap() = String::new();
+                    *stream_buffer.lock().unwrap_or_else(|error| error.into_inner()) = String::new();
                 } else {
-                    let output = operation.output.lock().unwrap().clone();
-                    *stream_buffer.lock().unwrap() = render_live_bash_execution(
+                    let output = operation.output.lock().unwrap_or_else(|error| error.into_inner()).clone();
+                    *stream_buffer.lock().unwrap_or_else(|error| error.into_inner()) = render_live_bash_execution(
                         &operation.command,
                         &output,
                         operation.exclude_from_context,
@@ -6394,7 +6603,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 }
                             }
                             Err(error) => {
-                                let progress = operation.progress.lock().unwrap().clone();
+                                let progress = operation.progress.lock().unwrap_or_else(|error| error.into_inner()).clone();
                                 status_banner = if progress.is_empty() {
                                     error
                                 } else {
@@ -6404,7 +6613,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         }
                     }
                 } else {
-                    let progress = operation.progress.lock().unwrap().clone();
+                    let progress = operation.progress.lock().unwrap_or_else(|error| error.into_inner()).clone();
                     pending_text = if progress.is_empty() {
                         format!("llama.cpp: {} …", operation.label)
                     } else {
@@ -6425,15 +6634,14 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             }
             if theme_changed.swap(false, Ordering::Acquire) {
                 transcript_md
-                    .lock()
-                    .unwrap()
+                    .lock().unwrap_or_else(|error| error.into_inner())
                     .set_theme(it::tui_theme::markdown_theme());
-                transcript_view.lock().unwrap().invalidate_theme();
+                transcript_view.lock().unwrap_or_else(|error| error.into_inner()).invalidate_theme();
                 renderer.invalidate();
                 owner_preparation_changed = true;
             }
 
-            let bash_mode = editor.lock().unwrap().starts_with_non_whitespace('!');
+            let bash_mode = editor.lock().unwrap_or_else(|error| error.into_inner()).starts_with_non_whitespace('!');
             sync_editor_border(
                 &editor,
                 &thinking_level,
@@ -6455,7 +6663,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             }
 
             let output_pad = settings.get_output_pad() as usize;
-            transcript_view.lock().unwrap().set_output_pad(output_pad);
+            transcript_view.lock().unwrap_or_else(|error| error.into_inner()).set_output_pad(output_pad);
             let render_options = it::messages::TranscriptRenderOptions {
                 hide_thinking,
                 show_images: settings.get_show_images(),
@@ -6469,18 +6677,18 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             // the owner loop so `/settings` changes take effect immediately
             // without waiting for another provider event.
             if streaming && bash_operation.is_none() && llama_operation.is_none() {
-                let mut live = live_transcript.lock().unwrap();
+                let mut live = live_transcript.lock().unwrap_or_else(|error| error.into_inner());
                 live.configure(render_options);
                 let live_rendered = live.render();
                 drop(live);
-                if *stream_buffer.lock().unwrap() != live_rendered {
-                    *stream_buffer.lock().unwrap() = live_rendered;
+                if *stream_buffer.lock().unwrap_or_else(|error| error.into_inner()) != live_rendered {
+                    *stream_buffer.lock().unwrap_or_else(|error| error.into_inner()) = live_rendered;
                 }
             }
             // Read the stream after the live projection has applied any
             // display-setting refresh so the same frame contains the newest
             // assistant/tool snapshot rather than waiting one loop tick.
-            let stream = stream_buffer.lock().unwrap().clone();
+            let stream = stream_buffer.lock().unwrap_or_else(|error| error.into_inner()).clone();
             let show_cache_miss_notices = settings.get_show_cache_miss_notices();
             let transcript_key = InteractiveTranscriptRenderKey {
                 message_count: runtime.messages.len(),
@@ -6509,19 +6717,16 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 let transcript_source = transcript_source_from_blocks(&transcript_blocks);
                 if last_composed_transcript.as_deref() != Some(transcript_source.as_str()) {
                     transcript_md
-                        .lock()
-                        .unwrap()
+                        .lock().unwrap_or_else(|error| error.into_inner())
                         .set_text(transcript_source.clone());
                     last_composed_transcript = Some(transcript_source);
                 }
                 transcript_view
-                    .lock()
-                    .unwrap()
+                    .lock().unwrap_or_else(|error| error.into_inner())
                     .set_blocks(transcript_blocks);
                 let status_tail_blocks = build_interactive_status_tail_blocks(&status_log);
                 status_tail_view
-                    .lock()
-                    .unwrap()
+                    .lock().unwrap_or_else(|error| error.into_inner())
                     .set_blocks(status_tail_blocks);
                 cached_transcript_key = Some(transcript_key);
             }
@@ -6539,7 +6744,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             // repeated announcement cannot consume composer dock height.
             if cached_document_shape.as_ref() != Some(&document_shape) {
                 owner_preparation_changed = true;
-                let mut document = document_container.lock().unwrap();
+                let mut document = document_container.lock().unwrap_or_else(|error| error.into_inner());
                 document.clear();
                 if let Some(startup) = &startup_presentation {
                     document.add_child(startup.clone() as SharedComponent);
@@ -6561,14 +6766,14 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     .unwrap_or_default();
                 if last_status_text.as_deref() != Some(rendered.as_str()) {
                     owner_preparation_changed = true;
-                    status_text.lock().unwrap().set_text(rendered.clone());
+                    status_text.lock().unwrap_or_else(|error| error.into_inner()).set_text(rendered.clone());
                     last_status_text = Some(rendered);
                 }
             }
 
             // 3) Footer.
             {
-                let terminal_width = renderer.terminal_handle().lock().unwrap().width();
+                let terminal_width = renderer.terminal_handle().lock().unwrap_or_else(|error| error.into_inner()).width();
                 let extension_statuses = runtime.extensions.host.extension_statuses();
                 // Auth is a scalar lookup, not a history-sized calculation;
                 // include it in the key so a login/logout or OAuth refresh
@@ -6644,7 +6849,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     );
                     let text = lines.join("\n");
                     if last_footer_text.as_deref() != Some(text.as_str()) {
-                        footer_text.lock().unwrap().set_text(text.clone());
+                        footer_text.lock().unwrap_or_else(|error| error.into_inner()).set_text(text.clone());
                         last_footer_text = Some(text);
                     }
                     cached_footer_key = Some(footer_key);
@@ -6740,7 +6945,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 pi_tui::terminal::TerminalEvent::Key(k) => k,
                 pi_tui::terminal::TerminalEvent::Resize(_w, h) => {
                     renderer.invalidate();
-                    editor.lock().unwrap().set_terminal_rows(h as usize);
+                    editor.lock().unwrap_or_else(|error| error.into_inner()).set_terminal_rows(h as usize);
                     continue;
                 }
             };
@@ -6809,14 +7014,14 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             if modal.is_none() && key.ctrl && key.base == "o" && !key.alt && !key.shift {
                 let expanded = !tool_output_expanded.fetch_xor(true, Ordering::AcqRel);
                 if let Some(startup) = &startup_presentation {
-                    startup.lock().unwrap().set_expanded(expanded);
+                    startup.lock().unwrap_or_else(|error| error.into_inner()).set_expanded(expanded);
                 }
                 // Expanding the startup/help component increases the retained
                 // document height. Keep Pi's `follow: "end"` behavior
                 // explicit here so the fixed composer/footer remain visible
                 // after the document grows beyond the terminal viewport.
-                transcript_scroll_view.lock().unwrap().scroll_to_end();
-                live_transcript.lock().unwrap().configure(
+                transcript_scroll_view.lock().unwrap_or_else(|error| error.into_inner()).scroll_to_end();
+                live_transcript.lock().unwrap_or_else(|error| error.into_inner()).configure(
                     it::messages::TranscriptRenderOptions {
                         hide_thinking,
                         show_images: settings.get_show_images(),
@@ -6849,7 +7054,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     continue;
                 }
                 let now = std::time::Instant::now();
-                let draft_is_empty = editor.lock().unwrap().is_empty();
+                let draft_is_empty = editor.lock().unwrap_or_else(|error| error.into_inner()).is_empty();
                 if last_ctrl_c.is_some_and(|previous| {
                     now.duration_since(previous) <= std::time::Duration::from_millis(500)
                 }) {
@@ -6859,7 +7064,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 // status message, even when it was already empty. A second
                 // press inside the 500 ms window exits the session.
                 if !draft_is_empty {
-                    editor.lock().unwrap().set_text("");
+                    editor.lock().unwrap_or_else(|error| error.into_inner()).set_text("");
                 }
                 last_ctrl_c = Some(now);
                 continue;
@@ -6890,7 +7095,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 && !key.alt
                 && !key.super_key;
             let editor_is_empty = if is_plain_escape || (key.ctrl && key.base == "d") {
-                editor.lock().unwrap().is_empty()
+                editor.lock().unwrap_or_else(|error| error.into_inner()).is_empty()
             } else {
                 false
             };
@@ -6916,8 +7121,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     Some(DoubleEscapeAction::Tree) => {
                         let terminal_height = renderer
                             .terminal_handle()
-                            .lock()
-                            .unwrap()
+                            .lock().unwrap_or_else(|error| error.into_inner())
                             .height();
                         match tree_selector_for_session(
                             &runtime.session,
@@ -6993,7 +7197,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 let mut close_modal = false;
                 match active_modal {
                     Modal::Model(sel) => {
-                        let mut guard = sel.lock().unwrap();
+                        let mut guard = sel.lock().unwrap_or_else(|error| error.into_inner());
                         let (selected_model, persist, should_close) = match guard.handle(&key) {
                             it::selectors::SelectorAction::Select(Some(idx))
                                 if idx < guard.count() => (guard.selected_model(), false, true),
@@ -7055,7 +7259,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     }
                     Modal::Llama(sel) => {
                         let action = {
-                            let mut guard = sel.lock().unwrap();
+                            let mut guard = sel.lock().unwrap_or_else(|error| error.into_inner());
                             match guard.handle(&key) {
                                 it::llama::LlamaSelectorAction::Select(action) => Some(action),
                                 it::llama::LlamaSelectorAction::Cancel => {
@@ -7075,8 +7279,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     // submitting the completed spec re-enters
                                     // this command and calls the real router.
                                     editor
-                                        .lock()
-                                        .unwrap()
+                                        .lock().unwrap_or_else(|error| error.into_inner())
                                         .set_text("/llama download ");
                                     status_banner =
                                         "enter <repo>:<quantization>, then press Enter".to_string();
@@ -7153,7 +7356,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         loaded,
                     } => {
                         let action = {
-                            let mut guard = selector.lock().unwrap();
+                            let mut guard = selector.lock().unwrap_or_else(|error| error.into_inner());
                             guard.handle(&key)
                         };
                         if let Some(action) = action {
@@ -7189,7 +7392,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         target,
                     } => {
                         let confirmed = {
-                            let mut guard = selector.lock().unwrap();
+                            let mut guard = selector.lock().unwrap_or_else(|error| error.into_inner());
                             guard.handle(&key)
                         };
                         if let Some(confirmed) = confirmed {
@@ -7209,7 +7412,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     }
                     Modal::HuggingFace(sel) => {
                         let selected = {
-                            let mut guard = sel.lock().unwrap();
+                            let mut guard = sel.lock().unwrap_or_else(|error| error.into_inner());
                             guard.handle(&key)
                         };
                         if let Some(result) = selected {
@@ -7231,7 +7434,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     }
                     Modal::HuggingFaceDownload(sel) => {
                         let selected = {
-                            let mut guard = sel.lock().unwrap();
+                            let mut guard = sel.lock().unwrap_or_else(|error| error.into_inner());
                             guard.handle(&key)
                         };
                         if let Some(action) = selected {
@@ -7285,7 +7488,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         }
                     }
                     Modal::ScopedModels(sel) => {
-                        let mut guard = sel.lock().unwrap();
+                        let mut guard = sel.lock().unwrap_or_else(|error| error.into_inner());
                         match guard.handle(&key) {
                             it::selectors::ScopedModelsAction::Toggle { model, enabled } => {
                                 status_banner = format!(
@@ -7310,7 +7513,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         }
                     }
                     Modal::Thinking(sel) => {
-                        let mut guard = sel.lock().unwrap();
+                        let mut guard = sel.lock().unwrap_or_else(|error| error.into_inner());
                         let (selected_item, persist, should_close) = match guard.handle(&key) {
                             it::selectors::SelectorAction::Select(Some(idx))
                                 if idx < guard.count() => (guard.selected_item(), false, true),
@@ -7346,7 +7549,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         }
                     }
                     Modal::Theme(sel) => {
-                        let mut guard = sel.lock().unwrap();
+                        let mut guard = sel.lock().unwrap_or_else(|error| error.into_inner());
                         match guard.handle(&key) {
                             it::selectors::SelectorAction::Select(Some(idx)) if idx < guard.count() => {
                                 if let Some(item) = guard.selected_item() {
@@ -7369,7 +7572,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     }
                     Modal::Fork(sel) => {
                         let selected_entry_id = {
-                            let mut guard = sel.lock().unwrap();
+                            let mut guard = sel.lock().unwrap_or_else(|error| error.into_inner());
                             match guard.handle(&key) {
                                 it::selectors::SelectorAction::Select(Some(idx))
                                     if idx < guard.count() => guard.selected_item().map(|item| item.value),
@@ -7401,7 +7604,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 &settings,
                             );
                             if let Some(text) = result.editor_text {
-                                editor.lock().unwrap().set_text(&text);
+                                editor.lock().unwrap_or_else(|error| error.into_inner()).set_text(&text);
                             }
                             status_log.clear();
                             status_banner = result.status;
@@ -7409,7 +7612,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     }
                     Modal::Resume(sel, sessions) => {
                         let action = {
-                            let mut guard = sel.lock().unwrap();
+                            let mut guard = sel.lock().unwrap_or_else(|error| error.into_inner());
                             guard.handle(&key)
                         };
                         let (mut close_resume, selected_session_path) = match action {
@@ -7440,7 +7643,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                 sessions[index].id.get(..8).unwrap_or(&sessions[index].id)
                                             );
                                             sessions.remove(index);
-                                            sel.lock().unwrap().set_sessions(
+                                            sel.lock().unwrap_or_else(|error| error.into_inner()).set_sessions(
                                                 it::session_meta::session_picker_records(sessions),
                                             );
                                         }
@@ -7558,7 +7761,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     }
                     Modal::CrossProjectSession(prompt) => {
                         let (action, source) = {
-                            let mut guard = prompt.lock().unwrap();
+                            let mut guard = prompt.lock().unwrap_or_else(|error| error.into_inner());
                             let action = guard.handle(&key);
                             (action, guard.source().clone())
                         };
@@ -7656,7 +7859,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     }
                     Modal::Trust(sel) => {
                         let action = {
-                            let mut guard = sel.lock().unwrap();
+                            let mut guard = sel.lock().unwrap_or_else(|error| error.into_inner());
                             guard.handle(&key)
                         };
                         match action {
@@ -7713,7 +7916,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     }
                     Modal::Tree(sel) => {
                         let action = {
-                            let mut guard = sel.lock().unwrap();
+                            let mut guard = sel.lock().unwrap_or_else(|error| error.into_inner());
                             guard.handle(&key)
                         };
                         match action {
@@ -7782,8 +7985,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                         &mut easter_egg_animation_until,
                                                     );
                                                     if let Some(text) = editor_text {
-                                                        if editor.lock().unwrap().get_text().trim().is_empty() {
-                                                            editor.lock().unwrap().set_text(&text);
+                                                        if editor.lock().unwrap_or_else(|error| error.into_inner()).get_text().trim().is_empty() {
+                                                            editor.lock().unwrap_or_else(|error| error.into_inner()).set_text(&text);
                                                         }
                                                     }
                                                     status_banner = "Navigated to selected point".to_string();
@@ -7803,14 +8006,14 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         }
                     }
                     Modal::Settings(panel) => {
-                        let was_submenu_open = panel.lock().unwrap().is_submenu_open();
+                        let was_submenu_open = panel.lock().unwrap_or_else(|error| error.into_inner()).is_submenu_open();
                         {
-                            let mut guard = panel.lock().unwrap();
+                            let mut guard = panel.lock().unwrap_or_else(|error| error.into_inner());
                             guard.handle_input(&key);
                         }
-                        let submenu_open = panel.lock().unwrap().is_submenu_open();
-                        let previews = { panel.lock().unwrap().drain_previews() };
-                        let changes = { panel.lock().unwrap().drain_changes() };
+                        let submenu_open = panel.lock().unwrap_or_else(|error| error.into_inner()).is_submenu_open();
+                        let previews = { panel.lock().unwrap_or_else(|error| error.into_inner()).drain_previews() };
+                        let changes = { panel.lock().unwrap_or_else(|error| error.into_inner()).drain_changes() };
                         let had_preview = !previews.is_empty();
                         for (id, value) in previews {
                             if id == "theme" {
@@ -7873,7 +8076,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 "skill-commands" => {
                                     let enabled = value == "true";
                                     settings.set_enable_skill_commands(enabled);
-                                    editor.lock().unwrap().set_autocomplete_provider(Box::new(
+                                    editor.lock().unwrap_or_else(|error| error.into_inner()).set_autocomplete_provider(Box::new(
                                         it::build_autocomplete_provider_with_skills(
                                             cwd.clone(),
                                             &runtime.skills,
@@ -7890,8 +8093,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     Ok(padding) => {
                                         settings.set_editor_padding_x(padding);
                                         editor
-                                            .lock()
-                                            .unwrap()
+                                            .lock().unwrap_or_else(|error| error.into_inner())
                                             .set_padding_x(padding.max(0.0) as usize);
                                     }
                                     Err(_) => {
@@ -7902,8 +8104,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     Ok(padding) => {
                                         settings.set_output_pad(padding);
                                         transcript_view
-                                            .lock()
-                                            .unwrap()
+                                            .lock().unwrap_or_else(|error| error.into_inner())
                                             .set_output_pad(padding as usize);
                                     }
                                     Err(_) => {
@@ -7913,7 +8114,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 "autocomplete-max-visible" => match value.parse::<f64>() {
                                     Ok(max_visible) => {
                                         settings.set_autocomplete_max_visible(max_visible);
-                                        editor.lock().unwrap().set_autocomplete_max_visible(
+                                        editor.lock().unwrap_or_else(|error| error.into_inner()).set_autocomplete_max_visible(
                                             max_visible.max(3.0) as usize,
                                         );
                                     }
@@ -7932,7 +8133,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     let enabled = value == "true";
                                     settings.set_show_terminal_progress(enabled);
                                     if !enabled {
-                                        renderer.terminal_handle().lock().unwrap().set_progress(false);
+                                        renderer.terminal_handle().lock().unwrap_or_else(|error| error.into_inner()).set_progress(false);
                                     }
                                 }
                                 "steering-mode" => {
@@ -8001,14 +8202,14 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 "hide-thinking" => {
                                     hide_thinking = value == "true";
                                     settings.set_hide_thinking_block(hide_thinking);
-                                    transcript_view.lock().unwrap().invalidate();
+                                    transcript_view.lock().unwrap_or_else(|error| error.into_inner()).invalidate();
                                 }
                                 "mermaid-rendering" => {
                                     settings.set_mermaid_rendering_mode(&value);
                                     if let Ok(mut mode) = mermaid_mode.lock() {
                                         *mode = value.clone();
                                     }
-                                    transcript_view.lock().unwrap().invalidate();
+                                    transcript_view.lock().unwrap_or_else(|error| error.into_inner()).invalidate();
                                 }
                                 "cache-miss-notices" => {
                                     settings.set_show_cache_miss_notices(value == "true");
@@ -8043,12 +8244,12 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                             if renderer.switch_mode(
                                                 fullscreen,
                                                 editor.clone(),
-                                                &mut pending_loader.lock().unwrap(),
+                                                &mut pending_loader.lock().unwrap_or_else(|error| error.into_inner()),
                                                 settings.get_show_hardware_cursor(),
                                                 settings.get_clear_on_shrink(),
                                             ) {
                                                 use_alt_screen = fullscreen;
-                                                transcript_scroll_view.lock().unwrap().set_scrollbar(
+                                                transcript_scroll_view.lock().unwrap_or_else(|error| error.into_inner()).set_scrollbar(
                                                     fullscreen_scrollbar_mode(
                                                         settings.get_fullscreen_scrollbar(),
                                                         fullscreen,
@@ -8058,7 +8259,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                 settings.set_tui_mode(&value);
                                                 status = Some(format!("TUI mode: {value}"));
                                             } else {
-                                                panel.lock().unwrap().update_value(
+                                                panel.lock().unwrap_or_else(|error| error.into_inner()).update_value(
                                                     "tui-mode",
                                                     if use_alt_screen {
                                                         "fullscreen"
@@ -8081,7 +8282,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 }
                                 "fullscreen-scrollbar" => {
                                     settings.set_fullscreen_scrollbar(&value);
-                                    transcript_scroll_view.lock().unwrap().set_scrollbar(
+                                    transcript_scroll_view.lock().unwrap_or_else(|error| error.into_inner()).set_scrollbar(
                                         fullscreen_scrollbar_mode(&value, use_alt_screen),
                                     );
                                 }
@@ -8182,7 +8383,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                         let configured = settings
                                                             .get_all_model_thinking_levels()
                                                             .len();
-                                                        panel.lock().unwrap().update_submenu_display_value(
+                                                        panel.lock().unwrap_or_else(|error| error.into_inner()).update_submenu_display_value(
                                                             "model-thinking",
                                                             if configured == 0 {
                                                                 "none".to_string()
@@ -8268,10 +8469,10 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 && ((key.ctrl && key.base == "v")
                     || (key.alt && key.base == "v" && cfg!(windows)));
             if external_editor_key {
-                let content = editor.lock().unwrap().get_expanded_text();
+                let content = editor.lock().unwrap_or_else(|error| error.into_inner()).get_expanded_text();
                 input.stop_worker().await;
                 let terminal_handle = renderer.terminal_handle();
-                let leave_error = terminal_handle.lock().unwrap().leave_raw().err();
+                let leave_error = terminal_handle.lock().unwrap_or_else(|error| error.into_inner()).leave_raw().err();
                 let result = if let Some(error) = leave_error {
                     it::external_editor::ExternalEditorResult::Failed(format!(
                         "restore terminal before external editor: {error}"
@@ -8286,15 +8487,14 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     .await
                 };
                 let reenter = terminal_handle
-                    .lock()
-                    .unwrap()
+                    .lock().unwrap_or_else(|error| error.into_inner())
                     .enter_raw_with_alt_screen(use_alt_screen);
                 input.restart().await;
                 match reenter {
                     Err(error) => status_banner = format!("terminal restore failed: {error}"),
                     Ok(()) => match result {
                         it::external_editor::ExternalEditorResult::Complete(content) => {
-                            editor.lock().unwrap().set_text(&content);
+                            editor.lock().unwrap_or_else(|error| error.into_inner()).set_text(&content);
                             status_banner = "external editor complete".to_string();
                         }
                         it::external_editor::ExternalEditorResult::Cancelled => {
@@ -8321,8 +8521,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     Some(image) => match it::clipboard::write_image_attachment(&image) {
                         Ok(path) => {
                             editor
-                                .lock()
-                                .unwrap()
+                                .lock().unwrap_or_else(|error| error.into_inner())
                                 .insert_text_at_cursor(&path.to_string_lossy());
                             status_banner = format!("pasted {} image", image.mime_type);
                         }
@@ -8330,7 +8529,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                     },
                     None => match text {
                         Some(text) => {
-                            editor.lock().unwrap().insert_text_at_cursor(&text);
+                            editor.lock().unwrap_or_else(|error| error.into_inner()).insert_text_at_cursor(&text);
                             status_banner = "pasted clipboard text".to_string();
                         }
                         None => status_banner =
@@ -8346,7 +8545,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                 continue;
             }
             apply_interactive_editor_input(&editor, &key_str, &key);
-            let bash_mode = editor.lock().unwrap().starts_with_non_whitespace('!');
+            let bash_mode = editor.lock().unwrap_or_else(|error| error.into_inner()).starts_with_non_whitespace('!');
             sync_editor_border(
                 &editor,
                 &thinking_level,
@@ -8361,7 +8560,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
             let immediately_repainted = renderer.render_cached_scene(cached_scene.as_ref());
 
             // Submit?
-            let submitted = editor.lock().unwrap().drain_submitted();
+            let submitted = editor.lock().unwrap_or_else(|error| error.into_inner()).drain_submitted();
             let had_submission = submitted.is_some();
             if let Some(submitted) = submitted {
                 if submitted.trim().is_empty() || streaming {
@@ -8400,7 +8599,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         };
                         continue;
                     }
-                    editor.lock().unwrap().add_to_history(&submitted);
+                    editor.lock().unwrap_or_else(|error| error.into_inner()).add_to_history(&submitted);
                     streaming = true;
                     pending_text.clear();
                     status_banner.clear();
@@ -8424,11 +8623,11 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             kind: InteractiveQueueKind::Steering,
                         }]);
                         while let Some(next_turn) = pending_turns.pop_front() {
-                            editor.lock().unwrap().add_to_history(&next_turn.text);
+                            editor.lock().unwrap_or_else(|error| error.into_inner()).add_to_history(&next_turn.text);
                             streaming = true;
                             let terminal_progress_enabled = settings.get_show_terminal_progress();
                             if terminal_progress_enabled {
-                                renderer.terminal_handle().lock().unwrap().set_progress(true);
+                                renderer.terminal_handle().lock().unwrap_or_else(|error| error.into_inner()).set_progress(true);
                             }
                             pending_text = interactive_working_message(next_turn.kind).to_string();
                             let render_options = it::messages::TranscriptRenderOptions {
@@ -8439,11 +8638,11 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 expand_tool_output: tool_output_expanded.load(Ordering::Acquire),
                             };
                             {
-                                let mut live = live_transcript.lock().unwrap();
+                                let mut live = live_transcript.lock().unwrap_or_else(|error| error.into_inner());
                                 live.clear();
                                 live.configure(render_options);
                             }
-                            *stream_buffer.lock().unwrap() = String::new();
+                            *stream_buffer.lock().unwrap_or_else(|error| error.into_inner()) = String::new();
                             let on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync> = {
                                 let live_transcript = live_transcript.clone();
                                 let stream_buffer = stream_buffer.clone();
@@ -8455,12 +8654,12 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     let rendered = it::messages::render_assistant_event_without_tool_calls_with_options(
                                         event, options,
                                     );
-                                    let mut live = live_transcript.lock().unwrap();
+                                    let mut live = live_transcript.lock().unwrap_or_else(|error| error.into_inner());
                                     live.configure(options);
                                     live.on_assistant_event(event, rendered);
                                     let rendered = live.render();
                                     drop(live);
-                                    *stream_buffer.lock().unwrap() = rendered;
+                                    *stream_buffer.lock().unwrap_or_else(|error| error.into_inner()) = rendered;
                                 })
                             };
                             let on_tool_event: Arc<dyn Fn(&RichAgentEvent) + Send + Sync> = {
@@ -8468,7 +8667,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 let stream_buffer = stream_buffer.clone();
                                 let tool_output_expanded = tool_output_expanded.clone();
                                 Arc::new(move |event: &RichAgentEvent| {
-                                    let mut live = live_transcript.lock().unwrap();
+                                    let mut live = live_transcript.lock().unwrap_or_else(|error| error.into_inner());
                                     let mut options = render_options;
                                     options.expand_tool_output =
                                         tool_output_expanded.load(Ordering::Acquire);
@@ -8476,7 +8675,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     live.on_tool_event(event);
                                     let rendered = live.render();
                                     drop(live);
-                                    *stream_buffer.lock().unwrap() = rendered;
+                                    *stream_buffer.lock().unwrap_or_else(|error| error.into_inner()) = rendered;
                                 })
                             };
                             let (turn_result, newly_queued) = {
@@ -8523,7 +8722,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 .await
                             };
                             if terminal_progress_enabled {
-                                renderer.terminal_handle().lock().unwrap().set_progress(false);
+                                renderer.terminal_handle().lock().unwrap_or_else(|error| error.into_inner()).set_progress(false);
                             }
                             if let Some(error) = interactive_turn_error_banner(&turn_result) {
                                 status_banner = error;
@@ -8537,8 +8736,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             append_cache_entries_from_messages(&mut runtime.cache_entries, &new_messages);
                             streaming = false;
                             pending_text = String::new();
-                            live_transcript.lock().unwrap().clear();
-                            *stream_buffer.lock().unwrap() = String::new();
+                            live_transcript.lock().unwrap_or_else(|error| error.into_inner()).clear();
+                            *stream_buffer.lock().unwrap_or_else(|error| error.into_inner()) = String::new();
                             pending_turns.extend(newly_queued);
                             let lifecycle_notes = apply_pending_extension_lifecycle_actions(
                                 &mut runtime,
@@ -8561,7 +8760,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             // approaches the model window (upstream compaction loop).
                             let terminal_progress_enabled = settings.get_show_terminal_progress();
                             if terminal_progress_enabled {
-                                renderer.terminal_handle().lock().unwrap().set_progress(true);
+                                renderer.terminal_handle().lock().unwrap_or_else(|error| error.into_inner()).set_progress(true);
                             }
                             match maybe_auto_compact(&mut runtime, &settings).await {
                                 Ok(true) => status_banner = "context compacted (auto)".to_string(),
@@ -8569,7 +8768,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 Err(e) => status_banner = e,
                             }
                             if terminal_progress_enabled {
-                                renderer.terminal_handle().lock().unwrap().set_progress(false);
+                                renderer.terminal_handle().lock().unwrap_or_else(|error| error.into_inner()).set_progress(false);
                             }
                         }
                     }
@@ -8757,7 +8956,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     "type": "compaction",
                                     "timestamp": pi_ai::types::now_ms(),
                                 }));
-                                transcript_md.lock().unwrap().set_text("");
+                                transcript_md.lock().unwrap_or_else(|error| error.into_inner()).set_text("");
                             }
                             SlashKind::Hotkeys => {
                                 status_banner = "hotkeys: enter submit · shift+enter newline · ctrl+c quit · ↑/↓ history · ctrl+w word-delete".to_string();
@@ -8775,7 +8974,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                     .filter(|s| !s.is_empty());
                                 let banner = Arc::new(Mutex::new(String::new()));
                                 let surface = Arc::new(Mutex::new(AuthSurfaceState::dialog("Login")));
-                                surface.lock().unwrap().set_context_row(
+                                surface.lock().unwrap_or_else(|error| error.into_inner()).set_context_row(
                                     "→ login       <provider> — Configure provider authentication",
                                 );
                                 let term = renderer.terminal_handle();
@@ -8856,7 +9055,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                             }
                             SlashKind::Debug => {
                                 let terminal_handle = renderer.terminal_handle();
-                                let terminal = terminal_handle.lock().unwrap();
+                                let terminal = terminal_handle.lock().unwrap_or_else(|error| error.into_inner());
                                 let width = terminal.width();
                                 let height = terminal.height();
                                 drop(terminal);
@@ -8970,7 +9169,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                 &mut easter_egg_components,
                                                 &mut easter_egg_animation_until,
                                             );
-                                            transcript_md.lock().unwrap().set_text("");
+                                            transcript_md.lock().unwrap_or_else(|error| error.into_inner()).set_text("");
                                             let notes = replace_extensions(
                                                 &mut runtime,
                                                 &settings,
@@ -9262,7 +9461,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         &settings,
                                         &thinking_level,
                                     ));
-                                    editor.lock().unwrap().set_autocomplete_provider(Box::new(
+                                    editor.lock().unwrap_or_else(|error| error.into_inner()).set_autocomplete_provider(Box::new(
                                         it::build_autocomplete_provider_with_skills(
                                             cwd.clone(),
                                             &runtime.skills,
@@ -9341,7 +9540,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                                 &settings,
                                             );
                                             if let Some(text) = result.editor_text {
-                                                editor.lock().unwrap().set_text(&text);
+                                                editor.lock().unwrap_or_else(|error| error.into_inner()).set_text(&text);
                                             }
                                             status_log.clear();
                                             status_banner = result.status;
@@ -9444,8 +9643,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 SlashKind::Tree => {
                                     let terminal_height = renderer
                                         .terminal_handle()
-                                        .lock()
-                                        .unwrap()
+                                        .lock().unwrap_or_else(|error| error.into_inner())
                                         .height();
                                     match tree_selector_for_session(
                                         &runtime.session,
@@ -9699,7 +9897,7 @@ fn insert_interactive_text_batch(editor: &mut Editor, text: &str) {
 
 fn apply_interactive_editor_input(editor: &Arc<Mutex<Editor>>, raw: &str, key: &TuiKey) {
     let editor_input = interactive_editor_input(raw, key);
-    let mut editor = editor.lock().unwrap();
+    let mut editor = editor.lock().unwrap_or_else(|error| error.into_inner());
     if is_printable_input_batch(raw, key) {
         insert_interactive_text_batch(&mut editor, raw);
     } else {
@@ -9708,6 +9906,7 @@ fn apply_interactive_editor_input(editor: &Arc<Mutex<Editor>>, raw: &str, key: &
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::core::extensions::{ExtensionHostAction, ExtensionHostActions};
@@ -9973,15 +10172,32 @@ mod tests {
             None,
         )));
 
-        terminal.lock().unwrap().begin_output_capture();
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
         renderer.render_scene(&scene);
-        let _ = terminal.lock().unwrap().take_output_capture();
+        let _ = terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take_output_capture();
 
-        editor.lock().unwrap().handle_input("a");
-        terminal.lock().unwrap().begin_output_capture();
+        editor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .handle_input("a");
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
         assert!(renderer.render_cached_scene(Some(&scene)));
-        let output = String::from_utf8(terminal.lock().unwrap().take_output_capture())
-            .expect("captured terminal output is UTF-8");
+        let output = String::from_utf8(
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_output_capture(),
+        )
+        .expect("captured terminal output is UTF-8");
         assert!(output.contains('a'));
     }
 
@@ -10069,21 +10285,36 @@ mod tests {
 
         sync_editor_border(&editor, "medium", false, &mut last_state);
         assert_eq!(
-            (editor.lock().unwrap().border_color)("─"),
+            (editor
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .border_color)("─"),
             it::tui_theme::thinking_border("medium")("─")
         );
 
-        editor.lock().unwrap().set_text("! printf hello");
+        editor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .set_text("! printf hello");
         sync_editor_border(&editor, "medium", true, &mut last_state);
         assert_eq!(
-            (editor.lock().unwrap().border_color)("─"),
+            (editor
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .border_color)("─"),
             it::tui_theme::bash_mode_border()("─")
         );
 
-        editor.lock().unwrap().set_text("");
+        editor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .set_text("");
         sync_editor_border(&editor, "high", false, &mut last_state);
         assert_eq!(
-            (editor.lock().unwrap().border_color)("─"),
+            (editor
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .border_color)("─"),
             it::tui_theme::thinking_border("high")("─")
         );
     }
@@ -10123,7 +10354,10 @@ mod tests {
         let events_for_handler = Arc::clone(&events);
         let handler = Arc::new(
             move |_: &crate::core::extensions::ExtensionContext, event: &Value| {
-                events_for_handler.lock().unwrap().push(event.clone());
+                events_for_handler
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event.clone());
                 Ok(Some(json!({"cancel": true})))
             },
         ) as crate::core::extensions::HandlerFn;
@@ -10153,7 +10387,7 @@ mod tests {
         assert!(!session_fork_allowed(&runtime, "leaf-entry", "at"));
         assert_eq!(runtime.session_id, original_session_id);
         assert_eq!(
-            *events.lock().unwrap(),
+            *events.lock().unwrap_or_else(|error| error.into_inner()),
             vec![json!({
                 "type": "session_before_fork",
                 "entryId": "leaf-entry",
@@ -10176,7 +10410,9 @@ mod tests {
         let seen_args_for_handler = Arc::clone(&seen_args);
         let handler = Arc::new(
             move |_: &crate::core::extensions::ExtensionContext, event: &Value| {
-                *seen_args_for_handler.lock().unwrap() =
+                *seen_args_for_handler
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) =
                     event["args"].as_str().unwrap_or_default().to_string();
                 Ok(Some(json!({"ok": true})))
             },
@@ -10215,7 +10451,10 @@ mod tests {
             execute_interactive_extension_command(&runtime, "/hello first second"),
             Some("/hello: {\"ok\":true}".to_string())
         );
-        assert_eq!(*seen_args.lock().unwrap(), "first second");
+        assert_eq!(
+            *seen_args.lock().unwrap_or_else(|error| error.into_inner()),
+            "first second"
+        );
         assert!(execute_interactive_extension_command(&runtime, "/model faux/faux-1").is_none());
 
         drop(runtime);
@@ -10242,7 +10481,7 @@ mod tests {
             move |_: &crate::core::extensions::ExtensionContext, _: &Value| {
                 before_events
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|error| error.into_inner())
                     .push("before_switch".to_string());
                 Ok(None)
             },
@@ -10252,7 +10491,10 @@ mod tests {
             .insert("session_before_switch".to_string(), vec![before_handler]);
         let shutdown_handler: crate::core::extensions::HandlerFn = Arc::new(
             move |_: &crate::core::extensions::ExtensionContext, _: &Value| {
-                shutdown_events.lock().unwrap().push("shutdown".to_string());
+                shutdown_events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push("shutdown".to_string());
                 Ok(None)
             },
         );
@@ -10304,7 +10546,9 @@ mod tests {
             .iter()
             .any(|note| note.contains("started new session")));
         assert_eq!(
-            *lifecycle_events.lock().unwrap(),
+            *lifecycle_events
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
             vec!["before_switch", "shutdown"]
         );
         let session_path = runtime.session.get_metadata().await.path;
@@ -10362,7 +10606,10 @@ mod tests {
                 false,
             ),
         ));
-        startup.lock().unwrap().set_expanded(true);
+        startup
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .set_expanded(true);
 
         let mut runtime = runtime;
         runtime
@@ -10377,7 +10624,7 @@ mod tests {
             });
         refresh_startup_presentation(Some(&startup), &runtime, &args, &settings);
 
-        let startup_guard = startup.lock().unwrap();
+        let startup_guard = startup.lock().unwrap_or_else(|error| error.into_inner());
         assert!(startup_guard.is_expanded());
         assert!(
             pi_tui::strip_ansi_codes(&startup_guard.render(120).join("\n")).contains("/review")
@@ -10445,7 +10692,9 @@ mod tests {
 
     #[test]
     fn interactive_extension_themes_retain_source_info() {
-        let _lock = crate::theme::test_theme_registry_lock().lock().unwrap();
+        let _lock = crate::theme::test_theme_registry_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let root = std::env::temp_dir().join(format!(
             "pi-interactive-theme-source-info-{}",
             uuid::Uuid::new_v4()
@@ -11050,7 +11299,10 @@ mod tests {
         let deltas_for_event = deltas.clone();
         let on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync> = Arc::new(move |event| {
             if let AssistantMessageEvent::TextDelta { delta, .. } = event {
-                deltas_for_event.lock().unwrap().push(delta.clone());
+                deltas_for_event
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(delta.clone());
             }
         });
 
@@ -11071,7 +11323,10 @@ mod tests {
                     ))
             )
         }));
-        assert!(!deltas.lock().unwrap().is_empty());
+        assert!(!deltas
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty());
         let entries = runtime
             .session
             .find_entries(&pi_agent::session::state::EntryQuery {

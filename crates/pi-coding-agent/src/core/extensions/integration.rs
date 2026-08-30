@@ -10,7 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use pi_agent::tools::{AgentTool, AgentToolResult, ToolExecuteFn, ToolUpdateCallback};
+use pi_agent::tools::{
+    AgentTool, AgentToolResult, ToolExecuteFn, ToolExecutionMode as AgentToolExecutionMode,
+    ToolPrepareArgumentsFn as AgentToolPrepareArgumentsFn, ToolUpdateCallback,
+};
 use pi_ai::auth::{ApiKeyAuth, ApiKeyCredential, AuthCheck, AuthContext, AuthResult, ModelAuth};
 use pi_ai::event_stream::{create_error_stream, AssistantMessageEventStream};
 use pi_ai::model::Model;
@@ -18,20 +21,22 @@ use pi_ai::models::{
     create_provider, CreateProviderOptions, Models, ProviderApiSpec, ProviderStreams,
 };
 use pi_ai::types::{
-    json_tool, AssistantMessage, AssistantMessageEvent, ContentBlock, Context, DoneReason,
-    ErrorReason, SimpleStreamOptions, StopReason, StreamOptions,
+    json_tool, AssistantMessage, AssistantMessageEvent, ConstrainedSampling, ContentBlock, Context,
+    DoneReason, ErrorReason, SimpleStreamOptions, StopReason, StreamOptions, StrictPreference,
 };
 use serde_json::{json, Value};
 
-use crate::args::Args;
+use crate::args::{Args, ExtensionFlagValue};
 use crate::core::settings::SettingsManager;
 
 use super::loader::{discover_and_load_extensions, load_extensions_with_host_actions};
 use super::runner::{ExtensionRunner, ResourceDiscovery};
 use super::types::{
     ExtensionHostAction, ExtensionHostActionOutcome, ExtensionHostActions, ExtensionLoadError,
-    LifecycleCompletionSink, PendingHostAction, PendingNativeProviderRegistration, RegisteredTool,
-    RequestedHostChanges,
+    ExtensionUiBroker, ExtensionUiDiagnostic, ExtensionUiRequestSink,
+    ExtensionUiResponseDisposition, LifecycleCompletionSink, PendingHostAction,
+    PendingNativeProviderRegistration, RegisteredTool, RequestedHostChanges, TerminalInputDispatch,
+    ToolExecutionMode, ToolUpdateFn,
 };
 
 fn native_context_value(context: &Context) -> Value {
@@ -40,6 +45,25 @@ fn native_context_value(context: &Context) -> Value {
         "messages": context.messages,
         "tools": context.tools,
     })
+}
+
+/// Convert the parser's extension-facing flag tokens into the runtime map
+/// consumed by native extension contexts.
+///
+/// This is deliberately only a value conversion: it does not load extensions
+/// or emit lifecycle events. The default mode loader calls it once before
+/// `session_start`, while reload/session-replacement callers pass their
+/// already-live flag snapshot through the explicit `*_and_flags` API.
+pub fn parsed_extension_flag_values(args: &Args) -> Option<BTreeMap<String, Value>> {
+    let mut values = BTreeMap::new();
+    for (name, value) in &args.extension_flag_values {
+        let value = match value {
+            ExtensionFlagValue::Boolean(value) => Value::Bool(*value),
+            ExtensionFlagValue::String(value) => Value::String(value.clone()),
+        };
+        values.insert(name.clone(), value);
+    }
+    (!values.is_empty()).then_some(values)
 }
 
 fn native_stream_options_value(options: Option<&StreamOptions>) -> Value {
@@ -580,6 +604,7 @@ pub struct ExtensionHostState {
     inner: Arc<Mutex<ExtensionHostStateInner>>,
     idle_wakeup: Arc<Condvar>,
     lifecycle_completion_sink: Arc<Mutex<Option<LifecycleCompletionSink>>>,
+    ui_broker: ExtensionUiBroker,
 }
 
 impl std::fmt::Debug for ExtensionHostState {
@@ -596,6 +621,7 @@ impl std::fmt::Debug for ExtensionHostState {
                 "has_lifecycle_completion_sink",
                 &has_lifecycle_completion_sink,
             )
+            .field("ui_broker", &self.ui_broker)
             .finish()
     }
 }
@@ -606,6 +632,7 @@ impl Default for ExtensionHostState {
             inner: Arc::new(Mutex::new(ExtensionHostStateInner::default())),
             idle_wakeup: Arc::new(Condvar::new()),
             lifecycle_completion_sink: Arc::new(Mutex::new(None)),
+            ui_broker: ExtensionUiBroker::new(),
         }
     }
 }
@@ -641,6 +668,69 @@ impl ExtensionHostState {
             .lock()
             .map(|inner| inner.active_tools.clone())
             .unwrap_or_default()
+    }
+
+    /// Return the correlated UI broker shared by native extension contexts
+    /// and the active mode. Clones refer to the same pending-request state.
+    pub fn ui_broker(&self) -> ExtensionUiBroker {
+        self.ui_broker.clone()
+    }
+
+    pub fn set_ui_enabled(&self, enabled: bool) {
+        self.ui_broker.set_enabled(enabled);
+    }
+
+    pub fn set_ui_request_sink(&self, sink: ExtensionUiRequestSink) {
+        self.ui_broker.set_request_sink(sink);
+    }
+
+    pub fn drain_ui_requests(&self) -> Vec<Value> {
+        self.ui_broker.drain_requests()
+    }
+
+    pub fn handle_ui_response(&self, response: &Value) -> ExtensionUiResponseDisposition {
+        self.ui_broker.handle_response(response)
+    }
+
+    /// Deliver raw terminal bytes to the listeners registered by native
+    /// extension UI contexts. The broker owns ordering, transformation, and
+    /// consume semantics, while the mode owns what it does with the returned
+    /// payload.
+    pub fn dispatch_terminal_input(&self, input: &str) -> Result<TerminalInputDispatch, String> {
+        self.ui_broker.dispatch_terminal_input(input)
+    }
+
+    pub fn ui_state_snapshot(&self) -> Value {
+        self.ui_broker.ui_state_snapshot()
+    }
+
+    pub fn set_ui_themes(&self, themes: Vec<Value>) {
+        self.ui_broker.set_themes(themes);
+    }
+
+    pub fn set_current_ui_theme(&self, theme: Option<Value>) {
+        self.ui_broker.set_current_theme(theme);
+    }
+
+    pub fn drain_ui_diagnostics(&self) -> Vec<ExtensionUiDiagnostic> {
+        self.ui_broker.drain_diagnostics()
+    }
+
+    /// Return live extension status rows for the interactive footer. The
+    /// broker retains these separately from general UI requests because the
+    /// interactive terminal owns their rendering.
+    pub fn extension_statuses(&self) -> Vec<(String, String)> {
+        self.ui_broker.extension_statuses()
+    }
+
+    /// Wake the interactive owner when a native extension changes a footer
+    /// status, including updates made from an extension worker thread.
+    pub fn extension_status_wakeup(&self) -> Arc<tokio::sync::Notify> {
+        self.ui_broker.status_wakeup()
+    }
+
+    pub fn cancel_ui_requests(&self) {
+        self.ui_broker.cancel_all();
     }
 
     /// Return the latest model request without consuming it. The mode can use
@@ -998,8 +1088,11 @@ impl ExtensionHostState {
             .unwrap_or_default()
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn snapshot_value_for(&self, tool_call_id: Option<&str>) -> Value {
         let inner = self.inner.lock().expect("extension host state lock");
+        let editor_text = self.ui_broker.editor_text();
+        let ui_state = self.ui_broker.ui_state_snapshot();
         let signal = tool_call_id
             .and_then(|tool_call_id| inner.tool_signals.get(tool_call_id))
             .or(inner.signal.as_ref())
@@ -1023,6 +1116,8 @@ impl ExtensionHostState {
             "contextUsage": inner.context_usage,
             "systemPrompt": inner.system_prompt,
             "systemPromptOptions": inner.system_prompt_options,
+            "editorText": editor_text,
+            "uiState": ui_state,
         })
     }
 
@@ -1321,6 +1416,10 @@ impl ExtensionHostActions for ExtensionHostState {
         self.dispatch_action(action, args)
     }
 
+    fn ui_broker(&self) -> ExtensionUiBroker {
+        ExtensionHostState::ui_broker(self)
+    }
+
     fn dispatch_with_outcome(
         &self,
         action: ExtensionHostAction,
@@ -1407,7 +1506,7 @@ pub fn load_for_mode_with_reason(
         session_name,
         thinking_level,
         reason,
-        None,
+        parsed_extension_flag_values(args),
     )
 }
 
@@ -1459,6 +1558,14 @@ pub fn load_for_mode_with_reason_and_flags_and_previous(
     previous_session_file: Option<&str>,
 ) -> LoadedExtensions {
     let host = Arc::new(ExtensionHostState::new(session_name, thinking_level));
+    // RPC installs its output sink only after the stdin/stdout loop exists.
+    // Enable its broker early so startup lifecycle fire-and-forget actions are
+    // retained in the outbox; `runner.create_context()` makes dialog calls
+    // fail fast until a worker-safe callback is running. The RPC mode binds
+    // the sink immediately before entering its loop and flushes the retained
+    // actions then. Other modes need their own terminal UI sink and therefore
+    // remain explicit until that adapter is installed.
+    host.set_ui_enabled(has_ui && mode == "rpc");
     host.set_system_prompt_options(json!({"cwd": cwd}));
     let mut configured_paths = args.extensions.clone();
     if !args.no_extensions {
@@ -1527,15 +1634,18 @@ pub fn install_tools(
         .map(|tool| tool.tool.name.clone())
         .collect::<Vec<_>>();
 
-    let extension_tools = extension_agent_tools(loaded.runner.clone(), loaded.host.clone());
-    for tool in &extension_tools {
-        all_tools.push(json!({
-            "name": tool.tool.name,
-            "description": tool.tool.description,
-            "parameters": tool.tool.parameters,
-        }));
+    let extension_definitions = loaded.runner.get_all_registered_tools();
+    let extension_tools = extension_definitions
+        .iter()
+        .cloned()
+        .map(|registered| {
+            extension_agent_tool(registered, loaded.runner.clone(), loaded.host.clone())
+        })
+        .collect::<Vec<_>>();
+    for definition in &extension_definitions {
+        all_tools.push(registered_tool_catalog_value(definition));
         if include_extensions {
-            active_tools.push(tool.tool.name.clone());
+            active_tools.push(definition.name.clone());
         }
     }
     let mut command_runner = loaded.runner.as_ref().clone();
@@ -1555,15 +1665,55 @@ pub fn install_tools(
     }
 }
 
-fn extension_agent_tools(
-    runner: Arc<ExtensionRunner>,
-    host: Arc<ExtensionHostState>,
-) -> Vec<AgentTool> {
-    runner
-        .get_all_registered_tools()
-        .into_iter()
-        .map(|registered| extension_agent_tool(registered, runner.clone(), host.clone()))
-        .collect()
+fn registered_tool_catalog_value(registered: &RegisteredTool) -> Value {
+    let mut catalog = json!({
+        "name": registered.name,
+        "label": registered.label,
+        "description": registered.description,
+        "parameters": registered.parameters,
+        "renderShell": registered.render_shell.protocol_name(),
+        "sourceInfo": {
+            "path": registered.source_info.path,
+            "source": registered.source_info.source,
+            "scope": registered.source_info.scope,
+            "origin": registered.source_info.origin,
+            "baseDir": registered.source_info.base_dir,
+        },
+    });
+    let Some(catalog) = catalog.as_object_mut() else {
+        return catalog;
+    };
+    if let Some(prompt_snippet) = &registered.prompt_snippet {
+        catalog.insert(
+            "promptSnippet".to_string(),
+            Value::String(prompt_snippet.clone()),
+        );
+    }
+    if let Some(prompt_guidelines) = &registered.prompt_guidelines {
+        catalog.insert(
+            "promptGuidelines".to_string(),
+            Value::Array(
+                prompt_guidelines
+                    .iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(constrained_sampling) = &registered.constrained_sampling {
+        catalog.insert(
+            "constrainedSampling".to_string(),
+            constrained_sampling.clone(),
+        );
+    }
+    if let Some(execution_mode) = registered.execution_mode {
+        catalog.insert(
+            "executionMode".to_string(),
+            Value::String(execution_mode.protocol_name().to_string()),
+        );
+    }
+    Value::Object(catalog.clone())
 }
 
 fn extension_agent_tool(
@@ -1577,6 +1727,11 @@ fn extension_agent_tool(
         &registered.description,
         &registered.parameters,
     );
+    let mut tool = tool;
+    tool.constrained_sampling = registered
+        .constrained_sampling
+        .as_ref()
+        .and_then(native_constrained_sampling);
     let execute: ToolExecuteFn = Arc::new(
         move |tool_call_id,
               params,
@@ -1594,9 +1749,21 @@ fn extension_agent_tool(
                 }
                 let before = host.active_tools();
                 host.begin_tool_execution(&tool_call_id, signal.clone());
+                let extension_update: Option<ToolUpdateFn> = on_update.clone().map(|on_update| {
+                    Arc::new(move |value: Value| {
+                        let result = extension_tool_result(value)?;
+                        on_update(&result);
+                        Ok(())
+                    }) as ToolUpdateFn
+                });
                 let execution_tool_call_id = tool_call_id.clone();
                 let execution = tokio::task::spawn_blocking(move || {
-                    runner.execute_tool(&tool_name, &execution_tool_call_id, params)
+                    runner.execute_tool_prepared_with_updates(
+                        &tool_name,
+                        &execution_tool_call_id,
+                        params,
+                        extension_update,
+                    )
                 })
                 .await;
                 let pending_updates = host.end_tool_execution(&tool_call_id);
@@ -1633,14 +1800,44 @@ fn extension_agent_tool(
             })
         },
     );
-    AgentTool::new(
-        tool,
-        format!(
-            "Extension: {registered_name}",
-            registered_name = registered.name
-        ),
-        execute,
-    )
+    let mut agent_tool = AgentTool::new(tool, registered.label.clone(), execute);
+    if let Some(prepare_arguments) = registered.prepare_arguments {
+        let prepare_arguments: AgentToolPrepareArgumentsFn =
+            Arc::new(move |params| prepare_arguments(params));
+        agent_tool = agent_tool.with_prepare_arguments(prepare_arguments);
+    }
+    if let Some(execution_mode) = registered.execution_mode {
+        let execution_mode = match execution_mode {
+            ToolExecutionMode::Sequential => AgentToolExecutionMode::Sequential,
+            ToolExecutionMode::Parallel => AgentToolExecutionMode::Parallel,
+        };
+        agent_tool = agent_tool.with_execution_mode(execution_mode);
+    }
+    agent_tool
+}
+
+fn native_constrained_sampling(value: &Value) -> Option<ConstrainedSampling> {
+    let object = value.as_object()?;
+    match object.get("type").and_then(Value::as_str)? {
+        "json_schema" => {
+            let strict = match object.get("strict").and_then(Value::as_str) {
+                Some("prefer") => StrictPreference::Prefer,
+                Some("require") => StrictPreference::Require,
+                _ => return None,
+            };
+            Some(ConstrainedSampling::JsonSchema { strict })
+        }
+        "grammar" => {
+            let variants = object
+                .get("variants")
+                .and_then(Value::as_object)?
+                .iter()
+                .map(|(name, definition)| Some((name.clone(), definition.as_str()?.to_string())))
+                .collect::<Option<BTreeMap<_, _>>>()?;
+            Some(ConstrainedSampling::Grammar { variants })
+        }
+        _ => None,
+    }
 }
 
 fn extension_tool_result(value: Value) -> Result<AgentToolResult, String> {
@@ -1730,8 +1927,10 @@ fn compact_json(value: &Value) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::core::extensions::types::ToolExecutionRequest;
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -1773,6 +1972,121 @@ mod tests {
             errors: Vec::new(),
             resources: ResourceDiscovery::default(),
         }
+    }
+
+    #[test]
+    fn default_mode_loader_seeds_parsed_extension_flags_before_lifecycle() {
+        let args = Args {
+            extension_flag_values: vec![
+                (
+                    "native-switch".to_string(),
+                    ExtensionFlagValue::Boolean(true),
+                ),
+                (
+                    "native-label".to_string(),
+                    ExtensionFlagValue::String("first".to_string()),
+                ),
+                (
+                    "native-label".to_string(),
+                    ExtensionFlagValue::String("last".to_string()),
+                ),
+            ],
+            ..Default::default()
+        };
+        let settings = SettingsManager::in_memory(Default::default());
+        let loaded = load_for_mode(
+            &args,
+            &settings,
+            "/tmp/pi-extension-flags",
+            "/tmp/pi-extension-flags-agent",
+            "print",
+            false,
+            None,
+            "medium",
+        );
+
+        assert_eq!(
+            parsed_extension_flag_values(&args),
+            Some(BTreeMap::from([
+                ("native-label".to_string(), json!("last")),
+                ("native-switch".to_string(), json!(true)),
+            ]))
+        );
+        assert_eq!(
+            loaded.runner.get_flag_values(),
+            BTreeMap::from([
+                ("native-label".to_string(), json!("last")),
+                ("native-switch".to_string(), json!(true)),
+            ])
+        );
+        assert!(loaded
+            .host
+            .drain_pending_lifecycle_action_metadata()
+            .is_empty());
+        loaded
+            .runner
+            .invalidate(Some("flag propagation test complete"));
+    }
+
+    #[test]
+    fn no_extensions_keeps_cli_paths_and_suppresses_settings_paths() {
+        let root = fixture_root("no-extensions-precedence");
+        let cli_path = root.join("cli.ts").to_string_lossy().into_owned();
+        let settings_path = root.join("settings.ts").to_string_lossy().into_owned();
+        let mut settings_values = crate::core::settings::SettingsMap::new();
+        settings_values.insert("extensions".to_string(), json!([settings_path.clone()]));
+        let settings = SettingsManager::in_memory(settings_values);
+
+        let cli_only_args = Args {
+            extensions: vec![cli_path.clone()],
+            no_extensions: true,
+            ..Default::default()
+        };
+        let cli_only = load_for_mode(
+            &cli_only_args,
+            &settings,
+            &root.to_string_lossy(),
+            &root.to_string_lossy(),
+            "print",
+            false,
+            None,
+            "medium",
+        );
+        assert_eq!(
+            cli_only
+                .errors
+                .iter()
+                .map(|error| error.path.clone())
+                .collect::<Vec<_>>(),
+            vec![cli_path.clone()]
+        );
+        cli_only
+            .runner
+            .invalidate(Some("no-extensions precedence test complete"));
+
+        let all_args = Args {
+            extensions: vec![cli_path.clone()],
+            ..Default::default()
+        };
+        let all = load_for_mode(
+            &all_args,
+            &settings,
+            &root.to_string_lossy(),
+            &root.to_string_lossy(),
+            "print",
+            false,
+            None,
+            "medium",
+        );
+        assert_eq!(
+            all.errors
+                .iter()
+                .map(|error| error.path.clone())
+                .collect::<Vec<_>>(),
+            vec![cli_path, settings_path]
+        );
+        all.runner
+            .invalidate(Some("extension precedence test complete"));
     }
 
     #[test]
@@ -2044,6 +2358,7 @@ mod tests {
         let loaded = loaded_native_extension(&root.to_string_lossy(), "print", false, |api| {
             api.register_tool(RegisteredTool {
                 name: "mode-tool".to_string(),
+                label: "Mode tool".to_string(),
                 description: "mode integration fixture".to_string(),
                 parameters: json!({"type": "object", "properties": {}}),
                 source_info: super::super::types::SourceInfo::synthetic(
@@ -2061,6 +2376,7 @@ mod tests {
                         },
                     }))
                 })),
+                ..Default::default()
             })?;
             api.register_command(
                 "mode-command",
@@ -2166,6 +2482,7 @@ mod tests {
         let loaded = loaded_native_extension(&root.to_string_lossy(), "print", false, |api| {
             api.register_tool(RegisteredTool {
                 name: "context-tool".to_string(),
+                label: "Context tool".to_string(),
                 description: "native context fixture".to_string(),
                 parameters: json!({"type": "object", "properties": {}}),
                 source_info: super::super::types::SourceInfo::synthetic(
@@ -2183,6 +2500,7 @@ mod tests {
                         },
                     }))
                 })),
+                ..Default::default()
             })?;
             Ok(())
         });
@@ -2207,6 +2525,456 @@ mod tests {
         loaded
             .runner
             .invalidate(Some("context action test complete"));
+    }
+
+    #[test]
+    fn native_registered_tool_contract_is_live() {
+        let prepared_seen = Arc::new(Mutex::new(Vec::new()));
+        let render_call_seen = Arc::new(Mutex::new(Vec::new()));
+        let render_result_seen = Arc::new(Mutex::new(Vec::new()));
+        let loaded = loaded_native_extension("/fixture/project", "rpc", true, {
+            let prepared_seen = prepared_seen.clone();
+            let render_call_seen = render_call_seen.clone();
+            let render_result_seen = render_result_seen.clone();
+            move |api| {
+                let prepared_seen_for_prepare = prepared_seen.clone();
+                let render_call_seen_for_callback = render_call_seen.clone();
+                let render_result_seen_for_callback = render_result_seen.clone();
+                api.register_tool(RegisteredTool {
+                    name: "contract-tool".to_string(),
+                    label: "Contract tool".to_string(),
+                    description: "full native tool contract".to_string(),
+                    prompt_snippet: Some("Use this tool for contract tests.".to_string()),
+                    prompt_guidelines: Some(vec![
+                        "Prepare arguments before execution.".to_string(),
+                        "Report partial updates.".to_string(),
+                    ]),
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {"value": {"type": "integer"}},
+                        "required": ["value"],
+                    }),
+                    constrained_sampling: Some(json!({
+                        "type": "json_schema",
+                        "strict": "require",
+                    })),
+                    render_shell: super::super::types::ToolRenderShell::SelfRendered,
+                    prepare_arguments: Some(Arc::new(move |mut params: Value| {
+                        prepared_seen_for_prepare
+                            .lock()
+                            .expect("prepare arguments observations")
+                            .push(params.clone());
+                        params["prepared"] = json!(true);
+                        params
+                    })),
+                    execution_mode: Some(ToolExecutionMode::Sequential),
+                    source_info: super::super::types::SourceInfo::synthetic(
+                        "<inline:contract-tool>",
+                        "rust-native",
+                        None,
+                    ),
+                    execute: Some(Arc::new(|request: ToolExecutionRequest| {
+                        assert_eq!(request.params["prepared"], true);
+                        request.update(json!({
+                            "content": [{"type": "text", "text": "partial"}],
+                            "details": {"partial": true},
+                        }))?;
+                        Ok(json!({
+                            "content": [{"type": "text", "text": "final"}],
+                            "details": {"prepared": request.params["prepared"]},
+                        }))
+                    })),
+                    render_call: Some(Arc::new(move |request| {
+                        render_call_seen_for_callback
+                            .lock()
+                            .expect("render call observations")
+                            .push(request.clone());
+                        Ok(json!({
+                            "kind": "call",
+                            "args": request.args,
+                            "theme": request.theme,
+                            "toolCallId": request.context.tool_call_id,
+                        }))
+                    })),
+                    render_result: Some(Arc::new(move |request| {
+                        render_result_seen_for_callback
+                            .lock()
+                            .expect("render result observations")
+                            .push(request.clone());
+                        Ok(json!({
+                            "kind": "result",
+                            "result": request.result,
+                            "expanded": request.options.expanded,
+                            "partial": request.options.is_partial,
+                        }))
+                    })),
+                })?;
+                Ok(())
+            }
+        });
+
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let updates_for_callback = updates.clone();
+        let on_update: ToolUpdateFn = Arc::new(move |value| {
+            updates_for_callback
+                .lock()
+                .expect("tool update observations")
+                .push(value);
+            Ok(())
+        });
+        let result = loaded
+            .runner
+            .execute_tool_with_updates(
+                "contract-tool",
+                "contract-call",
+                json!({"value": 7}),
+                Some(on_update),
+            )
+            .expect("full native tool execution");
+        assert_eq!(result["details"]["prepared"], true);
+        assert_eq!(
+            updates.lock().expect("tool update values").as_slice(),
+            &[json!({
+                "content": [{"type": "text", "text": "partial"}],
+                "details": {"partial": true},
+            })]
+        );
+        assert_eq!(
+            prepared_seen.lock().expect("prepared values").as_slice(),
+            &[json!({"value": 7})]
+        );
+
+        let mut tools = Vec::new();
+        install_tools(&loaded, &mut tools, true);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].label, "Contract tool");
+        assert!(tools[0].prepare_arguments.is_some());
+        assert!(matches!(
+            tools[0].execution_mode,
+            Some(AgentToolExecutionMode::Sequential)
+        ));
+        assert_eq!(
+            tools[0].tool.constrained_sampling,
+            Some(ConstrainedSampling::JsonSchema {
+                strict: StrictPreference::Require,
+            })
+        );
+        let prepared_by_agent_adapter =
+            (tools[0]
+                .prepare_arguments
+                .as_ref()
+                .expect("agent prepare callback"))(json!({"value": 9}));
+        assert_eq!(prepared_by_agent_adapter["prepared"], true);
+
+        let render_context = super::super::types::ToolRenderContext {
+            args: json!({"value": 7}),
+            tool_call_id: "contract-call".to_string(),
+            last_component: None,
+            state: json!({"state": "ready"}),
+            cwd: "/fixture/project".to_string(),
+            execution_started: true,
+            args_complete: true,
+            is_partial: false,
+            expanded: true,
+            show_images: false,
+            is_error: false,
+        };
+        let rendered_call = loaded
+            .runner
+            .render_tool_call(
+                "contract-tool",
+                json!({"value": 7}),
+                json!({"name": "dark"}),
+                render_context.clone(),
+            )
+            .expect("render call")
+            .expect("render call value");
+        assert_eq!(rendered_call["kind"], "call");
+        let rendered_result = loaded
+            .runner
+            .render_tool_result(
+                "contract-tool",
+                json!({"content": [{"type": "text", "text": "final"}]}),
+                super::super::types::ToolRenderResultOptions {
+                    expanded: true,
+                    is_partial: false,
+                },
+                json!({"name": "dark"}),
+                render_context,
+            )
+            .expect("render result")
+            .expect("render result value");
+        assert_eq!(rendered_result["kind"], "result");
+        assert_eq!(rendered_result["expanded"], true);
+        assert_eq!(
+            render_call_seen
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len(),
+            1
+        );
+        assert_eq!(
+            render_result_seen
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len(),
+            1
+        );
+
+        let snapshot = loaded.host.snapshot();
+        let catalog = snapshot["allTools"]
+            .as_array()
+            .expect("host tool catalog")
+            .iter()
+            .find(|tool| tool["name"] == "contract-tool")
+            .expect("contract tool catalog entry");
+        assert_eq!(catalog["label"], "Contract tool");
+        assert_eq!(
+            catalog["promptSnippet"],
+            "Use this tool for contract tests."
+        );
+        assert_eq!(
+            catalog["promptGuidelines"],
+            json!([
+                "Prepare arguments before execution.",
+                "Report partial updates.",
+            ])
+        );
+        assert_eq!(catalog["constrainedSampling"]["strict"], "require");
+        assert_eq!(catalog["renderShell"], "self");
+        assert_eq!(catalog["executionMode"], "sequential");
+    }
+
+    #[test]
+    fn native_handler_can_call_the_bound_extension_host_context() {
+        let loaded = loaded_native_extension("/fixture/project", "rpc", true, |api| {
+            api.register_tool(RegisteredTool {
+                name: "host-context-tool".to_string(),
+                label: "Host context tool".to_string(),
+                description: "exercise every native host-context capability".to_string(),
+                parameters: json!({"type": "object", "properties": {}}),
+                source_info: super::super::types::SourceInfo::synthetic(
+                    "<inline:host-context-tool>",
+                    "rust-native",
+                    None,
+                ),
+                execute: Some(Arc::new(|request| {
+                    let host = &request.context.host;
+                    let session_manager_name = host
+                        .session_manager()?
+                        .get_session_name()?
+                        .unwrap_or_default();
+                    let model_registry_tool_count = host.model_registry()?.get_all_tools()?.len();
+                    host.wait_for_idle()?;
+                    let new_session_pending = matches!(
+                        host.new_session(Some(json!({"reason": "test"})))?,
+                        ExtensionHostActionOutcome::Pending(_)
+                    );
+                    let fork_pending = matches!(
+                        host.fork(Some("entry-1"), Some(json!({"position": "at"})))?,
+                        ExtensionHostActionOutcome::Pending(_)
+                    );
+                    let navigate_pending = matches!(
+                        host.navigate_tree(Some("leaf-1"), Some(json!({"summarize": false})))?,
+                        ExtensionHostActionOutcome::Pending(_)
+                    );
+                    let switch_pending = matches!(
+                        host.switch_session(
+                            Some("/fixture/session.jsonl"),
+                            Some(json!({"withSession": null})),
+                        )?,
+                        ExtensionHostActionOutcome::Pending(_)
+                    );
+                    let reload_pending = matches!(
+                        host.reload(Some(json!({"reason": "test"})))?,
+                        ExtensionHostActionOutcome::Pending(_)
+                    );
+                    let send_message_completed = matches!(
+                        host.send_message(json!({"role": "user"}), Some(json!({"stream": false})))?,
+                        ExtensionHostActionOutcome::Completed(Value::Null)
+                    );
+                    let send_user_message_completed = matches!(
+                        host.send_user_message(
+                            json!("hello"),
+                            Some(json!({"deliverAs": "followUp"})),
+                        )?,
+                        ExtensionHostActionOutcome::Completed(Value::Null)
+                    );
+                    let append_entry_completed = matches!(
+                        host.append_entry("custom", Some(json!({"value": 1})))?,
+                        ExtensionHostActionOutcome::Completed(Value::Null)
+                    );
+                    host.set_session_name(Some("renamed"))?;
+                    let renamed_session = host.get_session_name()?.unwrap_or_default();
+                    host.set_label("entry-1", Some("important"))?;
+                    let active_tools = host.get_active_tools()?;
+                    let all_tools = host.get_all_tools()?;
+                    host.set_active_tools(&["tool-b".to_string()])?;
+                    let commands = host.get_commands()?;
+                    let thinking_before = host.get_thinking_level()?;
+                    host.set_thinking_level("high")?;
+                    let thinking_after = host.get_thinking_level()?;
+                    let model = host.model()?;
+                    let model_alias = host.get_model()?;
+                    let scoped_models = host.scoped_models()?;
+                    let scoped_models_alias = host.get_scoped_models()?;
+                    let model_change_pending = matches!(
+                        host.set_model(json!({"provider": "openai", "id": "model-b"}))?,
+                        ExtensionHostActionOutcome::Pending(_)
+                    );
+                    let is_idle = host.is_idle()?;
+                    let is_project_trusted = host.is_project_trusted()?;
+                    let signal_before = host.signal()?;
+                    let abort_completed = matches!(
+                        host.abort(None)?,
+                        ExtensionHostActionOutcome::Completed(Value::Null)
+                    );
+                    let signal_after = host.get_signal()?;
+                    let has_pending_messages = host.has_pending_messages()?;
+                    let shutdown_accepted = matches!(
+                        host.shutdown(None)?,
+                        ExtensionHostActionOutcome::Completed(Value::Null)
+                    );
+                    let context_usage = host.get_context_usage()?;
+                    let compact_accepted = matches!(
+                        host.compact(Some(json!({"reserveTokens": 10})))?,
+                        ExtensionHostActionOutcome::Completed(Value::Null)
+                    );
+                    let system_prompt = host.system_prompt()?;
+                    let system_prompt_options = host.system_prompt_options()?;
+                    host.tool_update(None, json!({"text": "progress"}))?;
+                    Ok(json!({
+                        "sessionManagerName": session_manager_name,
+                        "modelRegistryToolCount": model_registry_tool_count,
+                        "newSessionPending": new_session_pending,
+                        "forkPending": fork_pending,
+                        "navigatePending": navigate_pending,
+                        "switchPending": switch_pending,
+                        "reloadPending": reload_pending,
+                        "sendMessageCompleted": send_message_completed,
+                        "sendUserMessageCompleted": send_user_message_completed,
+                        "appendEntryCompleted": append_entry_completed,
+                        "renamedSession": renamed_session,
+                        "activeTools": active_tools,
+                        "allTools": all_tools,
+                        "commands": commands,
+                        "thinkingBefore": thinking_before,
+                        "thinkingAfter": thinking_after,
+                        "model": model,
+                        "modelAlias": model_alias,
+                        "modelChangePending": model_change_pending,
+                        "scopedModels": scoped_models,
+                        "scopedModelsAlias": scoped_models_alias,
+                        "isIdle": is_idle,
+                        "isProjectTrusted": is_project_trusted,
+                        "signalBefore": signal_before,
+                        "abortCompleted": abort_completed,
+                        "signalAfter": signal_after,
+                        "hasPendingMessages": has_pending_messages,
+                        "shutdownAccepted": shutdown_accepted,
+                        "contextUsage": context_usage,
+                        "compactAccepted": compact_accepted,
+                        "systemPrompt": system_prompt,
+                        "systemPromptOptions": system_prompt_options,
+                    }))
+                })),
+                ..Default::default()
+            })?;
+            Ok(())
+        });
+        loaded.host.set_catalog(
+            vec!["tool-a".to_string()],
+            vec![json!({"name": "tool-a"})],
+            vec![json!({"name": "host-command"})],
+        );
+        loaded
+            .host
+            .set_model(Some(json!({"provider": "openai", "id": "model-a"})));
+        loaded
+            .host
+            .set_scoped_models(vec![json!({"id": "model-a"}), json!({"id": "model-b"})]);
+        loaded.host.set_idle(true);
+        loaded.host.set_project_trusted(false);
+        loaded.host.set_has_pending_messages(true);
+        loaded.host.set_context_usage(Some(json!({"tokens": 42})));
+        loaded.host.set_system_prompt("system");
+        loaded
+            .host
+            .set_system_prompt_options(json!({"cwd": "/fixture/project"}));
+        loaded.host.set_signal(None);
+        let signal = Arc::new(AtomicBool::new(false));
+        loaded
+            .host
+            .begin_tool_execution("host-call", Some(signal.clone()));
+
+        let result = loaded
+            .runner
+            .execute_tool("host-context-tool", "host-call", json!({}))
+            .expect("native host-context tool");
+        let updates = loaded.host.end_tool_execution("host-call");
+
+        assert_eq!(result["sessionManagerName"], "");
+        assert_eq!(result["modelRegistryToolCount"], 1);
+        assert_eq!(result["newSessionPending"], true);
+        assert_eq!(result["forkPending"], true);
+        assert_eq!(result["navigatePending"], true);
+        assert_eq!(result["switchPending"], true);
+        assert_eq!(result["reloadPending"], true);
+        assert_eq!(result["sendMessageCompleted"], true);
+        assert_eq!(result["sendUserMessageCompleted"], true);
+        assert_eq!(result["appendEntryCompleted"], true);
+        assert_eq!(result["renamedSession"], "renamed");
+        assert_eq!(result["activeTools"], json!(["tool-a"]));
+        assert_eq!(result["allTools"], json!([{"name": "tool-a"}]));
+        assert_eq!(result["commands"], json!([{"name": "host-command"}]));
+        assert_eq!(result["thinkingBefore"], "medium");
+        assert_eq!(result["thinkingAfter"], "high");
+        assert_eq!(
+            result["model"],
+            json!({"provider": "openai", "id": "model-a"})
+        );
+        assert_eq!(result["modelAlias"], result["model"]);
+        assert_eq!(result["modelChangePending"], true);
+        assert_eq!(
+            result["scopedModels"],
+            json!([{"id": "model-a"}, {"id": "model-b"}])
+        );
+        assert_eq!(result["scopedModelsAlias"], result["scopedModels"]);
+        assert_eq!(result["isIdle"], true);
+        assert_eq!(result["isProjectTrusted"], false);
+        assert_eq!(result["signalBefore"], json!({"aborted": false}));
+        assert_eq!(result["abortCompleted"], true);
+        assert_eq!(result["signalAfter"], json!({"aborted": true}));
+        assert!(signal.load(Ordering::Acquire));
+        assert_eq!(result["hasPendingMessages"], true);
+        assert_eq!(result["shutdownAccepted"], true);
+        assert_eq!(result["contextUsage"], json!({"tokens": 42}));
+        assert_eq!(result["compactAccepted"], true);
+        assert_eq!(result["systemPrompt"], "system");
+        assert_eq!(
+            result["systemPromptOptions"],
+            json!({"cwd": "/fixture/project"})
+        );
+        assert_eq!(updates, vec![json!({"text": "progress"})]);
+        assert_eq!(
+            loaded.host.requested_active_tools(),
+            Some(vec!["tool-b".to_string()])
+        );
+        assert_eq!(
+            loaded.host.requested_model(),
+            Some(json!({"provider": "openai", "id": "model-b"}))
+        );
+        assert_eq!(loaded.host.drain_pending_messages().len(), 2);
+        assert_eq!(
+            loaded.host.drain_pending_entries(),
+            vec![json!({
+                "customType": "custom",
+                "data": {"value": 1},
+            })]
+        );
+        assert_eq!(loaded.host.drain_pending_lifecycle_actions().len(), 5);
+        assert_eq!(loaded.host.drain_pending_actions().len(), 3);
+        loaded.runner.invalidate(Some("host context test complete"));
     }
 
     #[test]
@@ -2240,5 +3008,45 @@ mod tests {
         }))
         .expect_err("explicit bridge error results must fail the Rust tool call");
         assert_eq!(error, "tool failed");
+    }
+
+    #[test]
+    fn host_ui_broker_forwards_and_resolves_a_real_native_request() {
+        let host = ExtensionHostState::new(None, "medium");
+        let broker = host.ui_broker();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        host.set_ui_request_sink(Arc::new(move |request| {
+            sender
+                .send(request)
+                .map_err(|_| "UI request receiver closed".to_string())
+        }));
+        host.set_ui_enabled(true);
+        let context = super::super::types::ExtensionUiContext::new(broker.clone(), true, true);
+        let worker = std::thread::spawn(move || context.input("Question", Some("hint"), None));
+        let request = receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("host should forward the UI request");
+        assert_eq!(request["method"], "input");
+        assert_eq!(request["placeholder"], "hint");
+        assert_eq!(
+            ExtensionHostActions::ui_broker(&host).handle_response(&json!({
+                "type": "extension_ui_response",
+                "id": request["id"],
+                "result": "answer"
+            })),
+            ExtensionUiResponseDisposition::Resolved
+        );
+        assert_eq!(
+            worker.join().expect("UI worker"),
+            Ok(Some("answer".to_string()))
+        );
+        // Input answers are returned to the callback; only the explicit
+        // editor/set-editor-text actions mutate the editor cache.
+        assert_eq!(host.snapshot()["editorText"], "");
+        host.ui_broker()
+            .set_editor_text("draft")
+            .expect("set editor text");
+        assert_eq!(host.snapshot()["editorText"], "draft");
+        assert!(host.ui_broker().pending_ids().is_empty());
     }
 }

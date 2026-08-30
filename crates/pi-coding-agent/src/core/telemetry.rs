@@ -5,7 +5,9 @@
 //! truthy value (`1`/`true`/`yes`, case-insensitive) it enables; set to
 //! anything else (`0`/`false`/`no`) it disables; unset it defers to the
 //! setting. The gate controls anonymous install/update reporting to
-//! `pi.dev` and the optional provider attribution headers.
+//! `pi.dev` and the optional provider attribution headers. This is separate
+//! from release/update discovery; pi-rust never uses it to show an update
+//! notice or replace its Rust binary.
 
 use crate::core::settings::SettingsManager;
 
@@ -13,12 +15,18 @@ use crate::core::settings::SettingsManager;
 /// `PI_INSTALL_TELEMETRY_URL` without changing the production contract.
 pub const INSTALL_TELEMETRY_URL: &str = "https://pi.dev/api/report-install";
 pub const INSTALL_TELEMETRY_TIMEOUT_MS: u64 = 5_000;
-const INSTALL_TELEMETRY_ATTEMPTS: usize = 3;
 
 /// Upstream `isTruthyEnvFlag`: only `1`, `true`, or `yes` (case-insensitive)
 /// count as enabled.
 fn is_truthy_env_flag(value: &str) -> bool {
     value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+}
+
+/// The upstream telemetry request checks `process.env.PI_OFFLINE` directly,
+/// so any non-empty value suppresses network activity while an explicitly
+/// empty value does not.
+pub(crate) fn is_offline_env_active(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
 }
 
 /// Upstream `isInstallTelemetryEnabled`. `telemetry_env` defaults to the
@@ -55,10 +63,10 @@ pub fn pi_user_agent(version: &str) -> String {
 
 /// Best-effort install/update report. The interactive caller launches this
 /// in the background, so network failure is never surfaced to the user or
-/// allowed to delay TUI startup. A short bounded retry loop covers transient
-/// transport/5xx failures while retaining the upstream five-second budget.
+/// allowed to delay TUI startup. Upstream makes one request, ignores the
+/// response status, and catches transport/timeout failures.
 pub async fn report_install_telemetry(version: &str, enabled: bool) -> Result<(), String> {
-    if std::env::var_os("PI_OFFLINE").is_some() || !enabled {
+    if is_offline_env_active(std::env::var("PI_OFFLINE").ok().as_deref()) || !enabled {
         return Ok(());
     }
 
@@ -70,37 +78,14 @@ pub async fn report_install_telemetry(version: &str, enabled: bool) -> Result<()
             .build()
             .map_err(|e| format!("create install telemetry client: {e}"))?;
         let endpoint = install_telemetry_endpoint();
-        let mut last_error = None;
-        for attempt in 0..INSTALL_TELEMETRY_ATTEMPTS {
-            let result = client
-                .get(&endpoint)
-                .query(&[("version", version)])
-                .header("User-Agent", pi_user_agent(version))
-                .send()
-                .await;
-            match result {
-                Ok(response)
-                    if !response.status().is_server_error()
-                        && response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS =>
-                {
-                    // The upstream fetch intentionally does not inspect the
-                    // response body or status; reaching the endpoint is the
-                    // observable contract.
-                    return Ok(());
-                }
-                Ok(response) => {
-                    last_error = Some(format!("install telemetry HTTP {}", response.status()));
-                }
-                Err(error) => {
-                    last_error = Some(format!("install telemetry request: {error}"));
-                }
-            }
-            if attempt + 1 < INSTALL_TELEMETRY_ATTEMPTS {
-                tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt as u64 + 1)))
-                    .await;
-            }
-        }
-        Err(last_error.unwrap_or_else(|| "install telemetry request failed".to_string()))
+        client
+            .get(&endpoint)
+            .query(&[("version", version)])
+            .header("User-Agent", pi_user_agent(version))
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("install telemetry request: {error}"))
     };
 
     match tokio::time::timeout(
@@ -115,6 +100,7 @@ pub async fn report_install_telemetry(version: &str, enabled: bool) -> Result<()
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -161,6 +147,14 @@ mod tests {
     }
 
     #[test]
+    fn offline_telemetry_guard_matches_direct_upstream_env_check() {
+        assert!(!is_offline_env_active(None));
+        assert!(!is_offline_env_active(Some("")));
+        assert!(is_offline_env_active(Some("0")));
+        assert!(is_offline_env_active(Some("1")));
+    }
+
+    #[test]
     fn user_agent_matches_upstream_shape() {
         let agent = pi_user_agent("1.2.3");
         assert!(agent.starts_with("pi/1.2.3 ("));
@@ -196,7 +190,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn report_retries_transient_failures_and_sends_contract_headers() {
+    async fn report_sends_one_best_effort_request_and_ignores_http_status() {
         let _lock = crate::core::environment_test_lock().await;
         let _restore = EnvRestore::capture();
         std::env::remove_var("PI_OFFLINE");
@@ -208,35 +202,23 @@ mod tests {
         );
         let server = tokio::spawn(async move {
             let mut requests = Vec::new();
-            for attempt in 0..INSTALL_TELEMETRY_ATTEMPTS {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                let mut buffer = [0_u8; 4096];
-                let size = stream.read(&mut buffer).await.unwrap();
-                requests.push(String::from_utf8_lossy(&buffer[..size]).to_string());
-                let status = if attempt + 1 == INSTALL_TELEMETRY_ATTEMPTS {
-                    "204 No Content"
-                } else {
-                    "503 Service Unavailable"
-                };
-                stream
-                    .write_all(
-                        format!(
-                            "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                        )
-                        .as_bytes(),
-                    )
-                    .await
-                    .unwrap();
-            }
+            let (mut stream, _) = listener.accept().await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buffer = [0_u8; 4096];
+            let size = stream.read(&mut buffer).await.unwrap();
+            requests.push(String::from_utf8_lossy(&buffer[..size]).to_string());
+            stream
+                .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
             requests
         });
 
         report_install_telemetry("1.2.3", true)
             .await
-            .expect("report should recover from transient failures");
+            .expect("HTTP status must not make the best-effort report fail");
         let requests = server.await.unwrap();
-        assert_eq!(requests.len(), INSTALL_TELEMETRY_ATTEMPTS);
+        assert_eq!(requests.len(), 1);
         assert!(requests[0].contains("GET /api/report-install?version=1.2.3"));
         assert!(requests[0]
             .to_ascii_lowercase()

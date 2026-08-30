@@ -22,6 +22,60 @@ pub const LIGHT_THEME: &str = "light";
 const BUILTIN_DARK: &str = include_str!("../data/themes/dark.json");
 const BUILTIN_LIGHT: &str = include_str!("../data/themes/light.json");
 
+const REQUIRED_COLOR_KEYS: &[&str] = &[
+    "accent",
+    "border",
+    "borderAccent",
+    "borderMuted",
+    "success",
+    "error",
+    "warning",
+    "muted",
+    "dim",
+    "text",
+    "thinkingText",
+    "selectedBg",
+    "userMessageBg",
+    "userMessageText",
+    "customMessageBg",
+    "customMessageText",
+    "customMessageLabel",
+    "toolPendingBg",
+    "toolSuccessBg",
+    "toolErrorBg",
+    "toolTitle",
+    "toolOutput",
+    "mdHeading",
+    "mdLink",
+    "mdLinkUrl",
+    "mdCode",
+    "mdCodeBlock",
+    "mdCodeBlockBorder",
+    "mdQuote",
+    "mdQuoteBorder",
+    "mdHr",
+    "mdListBullet",
+    "toolDiffAdded",
+    "toolDiffRemoved",
+    "toolDiffContext",
+    "syntaxComment",
+    "syntaxKeyword",
+    "syntaxFunction",
+    "syntaxVariable",
+    "syntaxString",
+    "syntaxNumber",
+    "syntaxType",
+    "syntaxOperator",
+    "syntaxPunctuation",
+    "thinkingOff",
+    "thinkingMinimal",
+    "thinkingLow",
+    "thinkingMedium",
+    "thinkingHigh",
+    "thinkingXhigh",
+    "bashMode",
+];
+
 /// A color value: hex string `#rrggbb`, empty string (default terminal
 /// color), a variable reference (a key in `vars`), or a 256-color index.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -62,9 +116,25 @@ fn parse_theme_json(label: &str, content: &str) -> Result<ThemeJson, String> {
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
     let theme: ThemeJson =
         serde_json::from_str(content).map_err(|e| format!("Failed to parse theme {label}: {e}"))?;
+    let mut missing_colors: Vec<_> = REQUIRED_COLOR_KEYS
+        .iter()
+        .filter(|key| !theme.colors.contains_key(**key))
+        .copied()
+        .collect();
+    if !missing_colors.is_empty() {
+        missing_colors.sort_unstable();
+        let missing = missing_colors
+            .iter()
+            .map(|key| format!("  - {key}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(format!(
+            "Invalid theme \"{label}\":\n\nMissing required color tokens:\n{missing}\n\nPlease add these colors to your theme's \"colors\" object.\nSee the built-in themes (dark.json, light.json) for reference values."
+        ));
+    }
     if theme.name.contains('/') {
         return Err(format!(
-            "Invalid theme name \"{}\": theme names cannot contain \"/\"",
+            "Invalid theme name \"{}\": theme names cannot contain \"/\" because it is reserved for automatic light/dark theme settings.",
             theme.name
         ));
     }
@@ -314,6 +384,7 @@ pub(crate) fn test_theme_registry_lock() -> &'static std::sync::Mutex<()> {
 }
 
 /// Built-in theme registry (embedded copies of the shipped dark/light JSON).
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 pub fn builtin_themes() -> BTreeMap<String, ThemeJson> {
     let mut map = BTreeMap::new();
     map.insert(
@@ -607,6 +678,7 @@ pub fn resolve_theme_setting(theme_setting: Option<&str>, terminal_theme: &str) 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -629,6 +701,18 @@ mod tests {
         assert_eq!(themes["light"].name, "light");
         assert!(themes["dark"].colors.contains_key("accent"));
         assert!(themes["dark"].export.is_some());
+    }
+
+    #[test]
+    fn invalid_theme_reports_missing_required_color_tokens() {
+        let error = parse_theme_json(
+            "fixture",
+            r##"{"name":"fixture","colors":{"accent":"#fff"}}"##,
+        )
+        .unwrap_err();
+        assert!(error.starts_with("Invalid theme \"fixture\":"));
+        assert!(error.contains("Missing required color tokens:"));
+        assert!(error.contains("  - bashMode"));
     }
 
     #[test]
@@ -770,7 +854,9 @@ mod tests {
 
     #[test]
     fn extension_theme_registration_parses_name_source_dedupes_and_replaces() {
-        let _lock = test_theme_registry_lock().lock().unwrap();
+        let _lock = test_theme_registry_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let dir = test_theme_dir("registration");
         std::fs::create_dir_all(&dir).unwrap();
         let first = dir.join("a.json");
@@ -809,7 +895,9 @@ mod tests {
 
     #[test]
     fn extension_theme_registration_retains_source_info() {
-        let _lock = test_theme_registry_lock().lock().unwrap();
+        let _lock = test_theme_registry_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let dir = test_theme_dir("source-info");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("extension.json");
@@ -843,7 +931,7 @@ mod tests {
     #[test]
     fn custom_theme_dir_loading() {
         static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         // Load a custom theme JSON from ~/.pi/agent/themes via a temp agent dir.
         let dir = std::env::temp_dir().join(format!("pi-theme-test-{}", std::process::id()));
         let themes = dir.join("themes");
@@ -945,7 +1033,7 @@ mod tests {
     #[test]
     fn default_theme_detection_from_env() {
         static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         // No COLORFGBG -> dark
         std::env::remove_var("COLORFGBG");
         assert_eq!(default_theme(), "dark");

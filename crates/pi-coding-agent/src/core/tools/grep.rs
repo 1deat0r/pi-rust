@@ -15,18 +15,32 @@ use pi_agent::tools::truncate::{truncate_head_with, DEFAULT_MAX_BYTES};
 use pi_agent::tools::{AgentTool, AgentToolResult};
 use pi_ai::types::json_tool;
 
-use super::bytes_limit_notice;
 use super::find::path_relative;
+use super::{bytes_limit_notice, truncation_details, wait_for_abort, ToolOutput};
 
 const DEFAULT_LIMIT: u64 = 100;
 const GREP_MAX_LINE_LENGTH: usize = 500;
 
 /// Upstream `truncateLine`: slice at `maxChars` + "… [truncated]".
+///
+/// JavaScript slices UTF-16 code units, while Rust strings are UTF-8. Keep
+/// whole Unicode scalar values so a multibyte match can never panic the tool
+/// at the output boundary; for BMP text this has the same limit as JS.
 fn truncate_line(line: &str, max_chars: usize) -> (String, bool) {
-    if line.len() <= max_chars {
+    if line.encode_utf16().count() <= max_chars {
         (line.to_string(), false)
     } else {
-        (format!("{}... [truncated]", &line[..max_chars]), true)
+        let mut end = 0;
+        let mut units = 0;
+        for (index, character) in line.char_indices() {
+            let character_units = character.len_utf16();
+            if units + character_units > max_chars {
+                break;
+            }
+            units += character_units;
+            end = index + character.len_utf8();
+        }
+        (format!("{}... [truncated]", &line[..end]), true)
     }
 }
 
@@ -63,6 +77,33 @@ pub async fn grep_execute(
     context: Option<u64>,
     limit: Option<u64>,
 ) -> Result<String, String> {
+    Ok(grep_execute_with_details(
+        cwd,
+        pattern,
+        path,
+        glob,
+        ignore_case,
+        literal,
+        context,
+        limit,
+        None,
+    )
+    .await?
+    .text)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn grep_execute_with_details(
+    cwd: &str,
+    pattern: &str,
+    path: Option<&str>,
+    glob: Option<&str>,
+    ignore_case: bool,
+    literal: bool,
+    context: Option<u64>,
+    limit: Option<u64>,
+    signal: Option<Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<ToolOutput, String> {
     let search_path = resolve_tool_path(cwd, path.unwrap_or("."));
 
     let is_directory = match std::fs::metadata(&search_path) {
@@ -97,6 +138,7 @@ pub async fn grep_execute(
         .args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|_| "ripgrep (rg) is not available and could not be downloaded".to_string())?;
 
@@ -121,7 +163,28 @@ pub async fn grep_execute(
     let mut match_limit_reached = false;
     let mut killed_due_to_limit = false;
 
-    while let Ok(Some(line)) = lines.next_line().await {
+    loop {
+        let next_line = if let Some(signal) = signal.as_ref() {
+            tokio::select! {
+                next_line = lines.next_line() => next_line,
+                _ = wait_for_abort(signal.clone()) => {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    return Err("Operation aborted".to_string());
+                }
+            }
+        } else {
+            lines.next_line().await
+        };
+        let line = match next_line {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(format!("grep: failed to read rg output: {error}"));
+            }
+        };
         if line.trim().is_empty() || match_count >= effective_limit {
             continue;
         }
@@ -175,7 +238,10 @@ pub async fn grep_execute(
     }
 
     if match_count == 0 {
-        return Ok("No matches found".to_string());
+        return Ok(ToolOutput {
+            text: "No matches found".to_string(),
+            details: None,
+        });
     }
 
     // Read file lines lazily for context blocks (upstream fileCache + readFile).
@@ -252,7 +318,7 @@ pub async fn grep_execute(
 
     let raw_output = output_lines.join("\n");
     let truncation = truncate_head_with(&raw_output, 1_000_000, DEFAULT_MAX_BYTES);
-    let mut output = truncation.content;
+    let mut output = truncation.content.clone();
     let mut notices: Vec<String> = Vec::new();
     if match_limit_reached {
         notices.push(format!(
@@ -271,7 +337,26 @@ pub async fn grep_execute(
     if !notices.is_empty() {
         output.push_str(&format!("\n\n[{}]", notices.join(". ")));
     }
-    Ok(output)
+    let mut details = serde_json::Map::new();
+    if match_limit_reached {
+        details.insert(
+            "matchLimitReached".to_string(),
+            serde_json::json!(effective_limit),
+        );
+    }
+    if truncation.truncated {
+        details.insert(
+            "truncation".to_string(),
+            truncation_details(&truncation, raw_output.len(), 1_000_000),
+        );
+    }
+    if lines_truncated {
+        details.insert("linesTruncated".to_string(), serde_json::json!(true));
+    }
+    Ok(ToolOutput {
+        text: output,
+        details: (!details.is_empty()).then_some(serde_json::Value::Object(details)),
+    })
 }
 
 /// Builds the `grep` tool bound to a working directory.
@@ -295,9 +380,12 @@ pub fn grep_tool(cwd: String) -> AgentTool {
             }),
         ),
         "Grep",
-        Arc::new(move |_tool_call_id, args, _signal, _on_update| {
+        Arc::new(move |_tool_call_id, args, signal, _on_update| {
             let cwd = cwd.clone();
             Box::pin(async move {
+                if pi_agent::agent::is_aborted(signal.as_ref()) {
+                    return Err("Operation aborted".to_string());
+                }
                 let pattern = args
                     .get("pattern")
                     .and_then(|v| v.as_str())
@@ -308,16 +396,37 @@ pub fn grep_tool(cwd: String) -> AgentTool {
                 let literal = args.get("literal").and_then(|v| v.as_bool()).unwrap_or(false);
                 let context = args.get("context").and_then(|v| v.as_u64());
                 let limit = args.get("limit").and_then(|v| v.as_u64());
-                match grep_execute(&cwd, pattern, path, glob, ignore_case, literal, context, limit).await {
-                    Ok(output) => Ok(AgentToolResult::output(output)),
+                match grep_execute_with_details(
+                    &cwd,
+                    pattern,
+                    path,
+                    glob,
+                    ignore_case,
+                    literal,
+                    context,
+                    limit,
+                    signal.clone(),
+                )
+                .await
+                {
+                    Ok(_output) if pi_agent::agent::is_aborted(signal.as_ref()) => {
+                        Err("Operation aborted".to_string())
+                    }
+                    Ok(output) => Ok(AgentToolResult {
+                        content: vec![pi_ai::types::ContentBlock::text(output.text)],
+                        details: output.details,
+                        ..AgentToolResult::default()
+                    }),
                     Err(e) => Err(e),
                 }
             })
         }),
     )
+    .with_experimental_sampling()
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::fs;
@@ -612,6 +721,17 @@ mod tests {
             out.contains("Some lines truncated to 500 chars. Use read tool to see full lines"),
             "got: {out}"
         );
+    }
+
+    #[test]
+    fn truncates_unicode_without_splitting_utf8() {
+        let line = format!("{}tail", "🙂".repeat(260));
+        let (truncated, was_truncated) = truncate_line(&line, GREP_MAX_LINE_LENGTH);
+        assert!(was_truncated);
+        assert!(truncated.ends_with("... [truncated]"));
+        let body = truncated.strip_suffix("... [truncated]").unwrap();
+        assert_eq!(body.encode_utf16().count(), GREP_MAX_LINE_LENGTH);
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
     }
 
     #[tokio::test]

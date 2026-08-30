@@ -2,7 +2,8 @@
 //! `packages/coding-agent/src/modes/interactive/theme/theme.ts`.
 //!
 //! Resolves theme colors through `crate::theme` (the JSON/color layer ported
-//! by the parent) and paints ANSI truecolor fg/bg sequences. Falls back to
+//! by the parent) and paints ANSI truecolor or ANSI256 fg/bg sequences based
+//! on the attached terminal's advertised capabilities. Falls back to
 //! uncolored text when a color is unknown.
 
 use std::collections::HashMap;
@@ -14,6 +15,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::theme;
 use indexmap::IndexMap;
+use pi_tui::terminal_image::get_capabilities;
 
 static THEME_STATE: RwLock<Option<ThemeState>> = RwLock::new(None);
 pub type ThemeChangeCallback = Arc<dyn Fn() + Send + Sync>;
@@ -154,9 +156,22 @@ fn color_value(name: &str) -> Option<String> {
     state.colors.get(name).cloned()
 }
 
-/// Resolve a color name to an RGB triple if known.
-fn color_rgb(name: &str) -> Option<(u8, u8, u8)> {
-    let value = color_value(name)?;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorMode {
+    Truecolor,
+    Ansi256,
+}
+
+fn color_mode() -> ColorMode {
+    if get_capabilities().true_color {
+        ColorMode::Truecolor
+    } else {
+        ColorMode::Ansi256
+    }
+}
+
+/// Resolve a hex color to an RGB triple if known.
+fn parse_color_rgb(value: &str) -> Option<(u8, u8, u8)> {
     let hex = value.trim_start_matches('#');
     if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
         let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
@@ -167,20 +182,106 @@ fn color_rgb(name: &str) -> Option<(u8, u8, u8)> {
     None
 }
 
-/// Wrap text with a truecolor foreground for a theme color name.
-pub fn fg(name: &str, text: impl AsRef<str>) -> String {
-    match color_rgb(name) {
-        Some((r, g, b)) => format!("\x1b[38;2;{r};{g};{b}m{}\x1b[39m", text.as_ref()),
-        None => text.as_ref().to_string(),
+const ANSI256_CUBE_VALUES: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+fn closest_cube_index(value: u8) -> usize {
+    let mut closest = 0;
+    let mut minimum = f64::INFINITY;
+    for (index, candidate) in ANSI256_CUBE_VALUES.iter().enumerate() {
+        let distance = f64::from(value.abs_diff(*candidate)).powi(2);
+        if distance < minimum {
+            minimum = distance;
+            closest = index;
+        }
+    }
+    closest
+}
+
+fn closest_gray_index(gray: f64) -> usize {
+    let mut closest = 0;
+    let mut minimum = f64::INFINITY;
+    for index in 0..24 {
+        let candidate = 8.0 + index as f64 * 10.0;
+        let distance = (gray - candidate).powi(2);
+        if distance < minimum {
+            minimum = distance;
+            closest = index;
+        }
+    }
+    closest
+}
+
+fn color_distance(left: (f64, f64, f64), right: (f64, f64, f64)) -> f64 {
+    let dr = left.0 - right.0;
+    let dg = left.1 - right.1;
+    let db = left.2 - right.2;
+    dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114
+}
+
+/// Match upstream's nearest-color selection for a 256-color terminal.
+fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
+    let r_index = closest_cube_index(r);
+    let g_index = closest_cube_index(g);
+    let b_index = closest_cube_index(b);
+    let cube = (
+        f64::from(ANSI256_CUBE_VALUES[r_index]),
+        f64::from(ANSI256_CUBE_VALUES[g_index]),
+        f64::from(ANSI256_CUBE_VALUES[b_index]),
+    );
+    let source = (f64::from(r), f64::from(g), f64::from(b));
+    let cube_distance = color_distance(source, cube);
+
+    let gray = (0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b)).round();
+    let gray_index = closest_gray_index(gray);
+    let gray_value = 8.0 + gray_index as f64 * 10.0;
+    let gray_distance = color_distance(source, (gray_value, gray_value, gray_value));
+    let spread = r.max(g).max(b) - r.min(g).min(b);
+
+    if spread < 10 && gray_distance < cube_distance {
+        (232 + gray_index) as u8
+    } else {
+        (16 + 36 * r_index + 6 * g_index + b_index) as u8
     }
 }
 
-/// Wrap text with a truecolor background for a theme color name.
-pub fn bg(name: &str, text: impl AsRef<str>) -> String {
-    match color_rgb(name) {
-        Some((r, g, b)) => format!("\x1b[48;2;{r};{g};{b}m{}\x1b[49m", text.as_ref()),
-        None => text.as_ref().to_string(),
+fn ansi_color(value: &str, foreground: bool, mode: ColorMode) -> Option<String> {
+    if value.is_empty() {
+        return Some(if foreground {
+            "\x1b[39m".to_string()
+        } else {
+            "\x1b[49m".to_string()
+        });
     }
+    let (r, g, b) = parse_color_rgb(value)?;
+    Some(match mode {
+        ColorMode::Truecolor => {
+            let channel = if foreground { 38 } else { 48 };
+            format!("\x1b[{channel};2;{r};{g};{b}m")
+        }
+        ColorMode::Ansi256 => {
+            let channel = if foreground { 38 } else { 48 };
+            format!("\x1b[{channel};5;{}m", rgb_to_ansi256(r, g, b))
+        }
+    })
+}
+
+fn paint(name: &str, text: &str, foreground: bool, mode: ColorMode) -> String {
+    let Some(color) = color_value(name).and_then(|value| ansi_color(&value, foreground, mode))
+    else {
+        return text.to_string();
+    };
+    let reset = if foreground { "\x1b[39m" } else { "\x1b[49m" };
+    format!("{color}{text}{reset}")
+}
+
+/// Wrap text with the terminal's native foreground color mode.
+pub fn fg(name: &str, text: impl AsRef<str>) -> String {
+    paint(name, text.as_ref(), true, color_mode())
+}
+
+/// Wrap text with the terminal's native background color mode.
+pub fn bg(name: &str, text: impl AsRef<str>) -> String {
+    paint(name, text.as_ref(), false, color_mode())
 }
 
 /// Bold text.
@@ -256,15 +357,45 @@ pub fn editor_border() -> std::sync::Arc<dyn Fn(&str) -> String + Send + Sync> {
     std::sync::Arc::new(|s| fg("borderMuted", s))
 }
 
+/// Return the editor border color used after Pi applies the active thinking
+/// level. The constructor starts with `borderMuted`; interactive mode then
+/// replaces it with this level-specific color before the first frame.
+pub fn thinking_border(level: &str) -> std::sync::Arc<dyn Fn(&str) -> String + Send + Sync> {
+    let token = match level {
+        "minimal" => "thinkingMinimal",
+        "low" => "thinkingLow",
+        "medium" => "thinkingMedium",
+        "high" => "thinkingHigh",
+        "xhigh" => "thinkingXhigh",
+        "max" => "thinkingMax",
+        "off" => "thinkingOff",
+        _ => "thinkingOff",
+    };
+    let token = token.to_string();
+    std::sync::Arc::new(move |s| fg(&token, s))
+}
+
+/// Return the editor border color used by Pi's bash mode.
+pub fn bash_mode_border() -> std::sync::Arc<dyn Fn(&str) -> String + Send + Sync> {
+    std::sync::Arc::new(|s| fg("bashMode", s))
+}
+
 /// Default style color fn for assistant thinking text.
 pub fn thinking_color() -> Box<dyn Fn(&str) -> String + Send + Sync> {
     Box::new(|s| fg("thinkingText", s))
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    fn expected_paint(value: &str, foreground: bool) -> String {
+        let prefix = ansi_color(value, foreground, color_mode()).unwrap();
+        let reset = if foreground { "\x1b[39m" } else { "\x1b[49m" };
+        format!("{prefix}x{reset}")
+    }
 
     fn test_theme_dir() -> PathBuf {
         std::env::temp_dir().join(format!("pi-tui-theme-{}", uuid::Uuid::new_v4()))
@@ -272,7 +403,9 @@ mod tests {
 
     #[test]
     fn registered_extension_theme_activation_updates_colors_and_name() {
-        let _lock = crate::theme::test_theme_registry_lock().lock().unwrap();
+        let _lock = crate::theme::test_theme_registry_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let dir = test_theme_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("extension.json");
@@ -287,7 +420,7 @@ mod tests {
         load_theme(&name);
 
         assert_eq!(active_theme_name().as_deref(), Some(name.as_str()));
-        assert_eq!(fg("accent", "x"), "\x1b[38;2;18;52;86mx\x1b[39m");
+        assert_eq!(fg("accent", "x"), expected_paint("#123456", true));
 
         crate::theme::register_theme_paths(&[], Path::new("."));
         let _ = std::fs::remove_dir_all(dir);
@@ -297,8 +430,23 @@ mod tests {
     fn markdown_theme_uses_upstream_theme_tokens_and_invalid_names_fall_back() {
         load_theme(crate::theme::DEFAULT_THEME);
         let markdown = markdown_theme();
-        assert_eq!((markdown.heading)("x"), "\x1b[38;2;240;198;116mx\x1b[39m");
-        assert_eq!(editor_border()("x"), "\x1b[38;2;80;80;80mx\x1b[39m");
+        assert_eq!((markdown.heading)("x"), expected_paint("#f0c674", true));
+        assert_eq!(editor_border()("x"), expected_paint("#505050", true));
+        assert_eq!(thinking_border("off")("x"), expected_paint("#505050", true));
+        assert_eq!(
+            thinking_border("medium")("x"),
+            expected_paint("#81a2be", true)
+        );
+        assert_eq!(
+            thinking_border("high")("x"),
+            expected_paint("#b294bb", true)
+        );
+        assert_eq!(
+            thinking_border("xhigh")("x"),
+            expected_paint("#d183e8", true)
+        );
+        assert_eq!(thinking_border("max")("x"), expected_paint("#ff5fff", true));
+        assert_eq!(bash_mode_border()("x"), expected_paint("#b5bd68", true));
 
         load_theme("missing-theme-for-fallback");
         assert_eq!(
@@ -326,7 +474,9 @@ mod tests {
         use std::thread;
         use std::time::{Duration, Instant};
 
-        let _lock = crate::theme::test_theme_registry_lock().lock().unwrap();
+        let _lock = crate::theme::test_theme_registry_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let dir = test_theme_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let first_path = dir.join("first.json");
@@ -358,7 +508,7 @@ mod tests {
 
         first["colors"]["accent"] = serde_json::Value::String("#aabbcc".to_string());
         std::fs::write(&first_path, serde_json::to_vec(&first).unwrap()).unwrap();
-        let expected = "\x1b[38;2;170;187;204mx\x1b[39m";
+        let expected = expected_paint("#aabbcc", true);
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && fg("accent", "x") != expected {
             thread::sleep(Duration::from_millis(25));
@@ -371,5 +521,33 @@ mod tests {
         stop_theme_watcher();
         crate::theme::register_theme_paths(&[], std::path::Path::new("."));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ansi_color_matches_upstream_truecolor_and_ansi256_modes() {
+        assert_eq!(
+            ansi_color("#123456", true, ColorMode::Truecolor),
+            Some("\x1b[38;2;18;52;86m".to_string())
+        );
+        assert_eq!(
+            ansi_color("#123456", true, ColorMode::Ansi256),
+            Some("\x1b[38;5;23m".to_string())
+        );
+        assert_eq!(
+            ansi_color("#8abeb7", false, ColorMode::Ansi256),
+            Some("\x1b[48;5;109m".to_string())
+        );
+        assert_eq!(
+            ansi_color("#808080", true, ColorMode::Ansi256),
+            Some("\x1b[38;5;244m".to_string())
+        );
+        assert_eq!(
+            ansi_color("", true, ColorMode::Ansi256),
+            Some("\x1b[39m".to_string())
+        );
+        assert_eq!(
+            ansi_color("", false, ColorMode::Ansi256),
+            Some("\x1b[49m".to_string())
+        );
     }
 }

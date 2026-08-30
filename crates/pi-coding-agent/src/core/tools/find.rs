@@ -14,7 +14,7 @@ use pi_agent::tools::truncate::{truncate_head_with, DEFAULT_MAX_BYTES};
 use pi_agent::tools::{AgentTool, AgentToolResult};
 use pi_ai::types::json_tool;
 
-use super::bytes_limit_notice;
+use super::{bytes_limit_notice, truncation_details, wait_for_abort, ToolOutput};
 
 const DEFAULT_LIMIT: u64 = 1000;
 
@@ -34,7 +34,7 @@ pub(crate) fn path_relative(from: &Path, to: &Path) -> String {
         parts.push(c.to_string_lossy().into_owned());
     }
     if parts.is_empty() {
-        ".".to_string()
+        String::new()
     } else {
         parts.join("/")
     }
@@ -43,12 +43,13 @@ pub(crate) fn path_relative(from: &Path, to: &Path) -> String {
 /// Upstream `relativizeFindResultPath`: relativize against the search root and
 /// normalize to posix separators, preserving a trailing directory separator.
 fn relativize_find_result_path(result_path: &str, search_path: &str) -> String {
-    let had_trailing_separator = result_path.ends_with('/');
+    let had_trailing_separator = result_path.ends_with('/') || result_path.ends_with('\\');
     let relative = if Path::new(result_path).is_absolute() {
         path_relative(Path::new(search_path), Path::new(result_path))
     } else {
         result_path.to_string()
     };
+    let relative = relative.replace('\\', "/");
     if had_trailing_separator && !relative.ends_with('/') {
         format!("{relative}/")
     } else {
@@ -76,6 +77,18 @@ pub async fn find_execute(
     path: Option<&str>,
     limit: Option<u64>,
 ) -> Result<String, String> {
+    Ok(find_execute_with_details(cwd, pattern, path, limit, None)
+        .await?
+        .text)
+}
+
+async fn find_execute_with_details(
+    cwd: &str,
+    pattern: &str,
+    path: Option<&str>,
+    limit: Option<u64>,
+    signal: Option<Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<ToolOutput, String> {
     let search_path = resolve_tool_path(cwd, path.unwrap_or("."));
     let effective_limit = limit.unwrap_or(DEFAULT_LIMIT);
 
@@ -103,12 +116,23 @@ pub async fn find_execute(
     args.push(effective_pattern);
     args.push(search_path.clone());
 
-    let output = tokio::process::Command::new("fd")
+    if pi_agent::agent::is_aborted(signal.as_ref()) {
+        return Err("Operation aborted".to_string());
+    }
+    let mut command = tokio::process::Command::new("fd");
+    command
         .args(&args)
         .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .map_err(|_| "fd is not available and could not be downloaded".to_string())?;
+        .kill_on_drop(true);
+    let output = if let Some(signal) = signal {
+        tokio::select! {
+            output = command.output() => output,
+            _ = wait_for_abort(signal) => return Err("Operation aborted".to_string()),
+        }
+    } else {
+        command.output().await
+    }
+    .map_err(|_| "fd is not available and could not be downloaded".to_string())?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -129,13 +153,16 @@ pub async fn find_execute(
         .collect();
 
     if relativized.is_empty() {
-        return Ok("No files found matching pattern".to_string());
+        return Ok(ToolOutput {
+            text: "No files found matching pattern".to_string(),
+            details: None,
+        });
     }
 
     let result_limit_reached = relativized.len() >= effective_limit as usize;
     let raw_output = relativized.join("\n");
     let truncation = truncate_head_with(&raw_output, 1_000_000, DEFAULT_MAX_BYTES);
-    let mut result_output = truncation.content;
+    let mut result_output = truncation.content.clone();
     let mut notices: Vec<String> = Vec::new();
     if result_limit_reached {
         notices.push(format!(
@@ -149,7 +176,23 @@ pub async fn find_execute(
     if !notices.is_empty() {
         result_output.push_str(&format!("\n\n[{}]", notices.join(". ")));
     }
-    Ok(result_output)
+    let mut details = serde_json::Map::new();
+    if result_limit_reached {
+        details.insert(
+            "resultLimitReached".to_string(),
+            serde_json::json!(effective_limit),
+        );
+    }
+    if truncation.truncated {
+        details.insert(
+            "truncation".to_string(),
+            truncation_details(&truncation, raw_output.len(), 1_000_000),
+        );
+    }
+    Ok(ToolOutput {
+        text: result_output,
+        details: (!details.is_empty()).then_some(serde_json::Value::Object(details)),
+    })
 }
 
 /// Builds the `find` tool bound to a working directory.
@@ -169,25 +212,37 @@ pub fn find_tool(cwd: String) -> AgentTool {
             }),
         ),
         "Find files",
-        Arc::new(move |_tool_call_id, args, _signal, _on_update| {
+        Arc::new(move |_tool_call_id, args, signal, _on_update| {
             let cwd = cwd.clone();
             Box::pin(async move {
+                if pi_agent::agent::is_aborted(signal.as_ref()) {
+                    return Err("Operation aborted".to_string());
+                }
                 let pattern = args
                     .get("pattern")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "find: missing required argument pattern".to_string())?;
                 let path = args.get("path").and_then(|v| v.as_str());
                 let limit = args.get("limit").and_then(|v| v.as_u64());
-                match find_execute(&cwd, pattern, path, limit).await {
-                    Ok(output) => Ok(AgentToolResult::output(output)),
+                match find_execute_with_details(&cwd, pattern, path, limit, signal.clone()).await {
+                    Ok(_output) if pi_agent::agent::is_aborted(signal.as_ref()) => {
+                        Err("Operation aborted".to_string())
+                    }
+                    Ok(output) => Ok(AgentToolResult {
+                        content: vec![pi_ai::types::ContentBlock::text(output.text)],
+                        details: output.details,
+                        ..AgentToolResult::default()
+                    }),
                     Err(e) => Err(e),
                 }
             })
         }),
     )
+    .with_experimental_sampling()
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::fs;
@@ -309,5 +364,19 @@ mod tests {
             &tree.root.display().to_string(),
         );
         assert_eq!(rel, "src/main.rs");
+    }
+
+    #[test]
+    fn relative_same_path_matches_node_empty_result() {
+        let path = Path::new("/tmp/pi-find-root");
+        assert_eq!(path_relative(path, path), "");
+        assert_eq!(
+            relativize_find_result_path("/tmp/pi-find-root", "/tmp/pi-find-root"),
+            ""
+        );
+        assert_eq!(
+            relativize_find_result_path("/tmp/pi-find-root/", "/tmp/pi-find-root"),
+            "/"
+        );
     }
 }

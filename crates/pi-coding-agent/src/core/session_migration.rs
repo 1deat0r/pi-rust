@@ -176,6 +176,7 @@ pub fn field<'a>(entry: &'a Value, key: &str) -> Option<&'a Value> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -565,6 +566,7 @@ mod v4_conversion_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn converts_v3_header_and_entries_to_v4() {
         let v4 = convert_legacy_to_v4(&v3_file()).unwrap();
         let lines: Vec<&str> = v4.trim().split('\n').collect();
@@ -586,6 +588,7 @@ mod v4_conversion_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn migrates_v1_entries_before_conversion() {
         let v1 = [
             r#"{"type":"session","id":"s1","timestamp":"2026-08-22T00:00:00.000Z","cwd":"/tmp"}"#,
@@ -614,6 +617,7 @@ mod repo_integration_tests {
     use pi_agent::session::jsonl::repo::JsonlSessionRepo;
 
     #[tokio::test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     async fn converted_v4_file_opens_in_the_repo() {
         let root = std::env::temp_dir().join(format!("pi-migrate-repo-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
@@ -677,6 +681,7 @@ mod filesystem_migration_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn rewrites_a_legacy_file_as_v4_and_is_idempotent() {
         let root = std::env::temp_dir().join(format!("pi-legacy-file-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
@@ -702,6 +707,7 @@ mod filesystem_migration_tests {
 
     #[cfg(unix)]
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn concurrent_migrations_publish_valid_session_without_shared_staging() {
         let root =
             std::env::temp_dir().join(format!("pi-legacy-concurrent-{}", uuid::Uuid::new_v4()));
@@ -743,6 +749,7 @@ mod filesystem_migration_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn migrates_all_jsonl_files_under_the_session_root() {
         let root = std::env::temp_dir().join(format!("pi-legacy-root-{}", uuid::Uuid::new_v4()));
         let directory = root.join("--tmp--");
@@ -758,6 +765,7 @@ mod filesystem_migration_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn leaves_non_session_or_malformed_files_untouched() {
         let root = std::env::temp_dir().join(format!("pi-legacy-invalid-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();

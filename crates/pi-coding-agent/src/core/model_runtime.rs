@@ -10,11 +10,115 @@ use pi_ai::auth::{ApiKeyAuth, AuthCheck, AuthContext, AuthResult, ModelAuth, Pro
 use pi_ai::event_stream::AssistantMessageEventStream;
 use pi_ai::model::Model;
 use pi_ai::models::{
-    create_provider, DeferredCancelOptions, DeferredFetchOptions, Models, ProviderApiSpec,
-    ProviderStreams,
+    create_provider, DeferredCancelOptions, DeferredFetchOptions, Models, ModelsRefreshOptions,
+    ProviderApiSpec, ProviderStreams,
 };
 use pi_ai::providers::{FauxProviderCore, RegisterFauxProviderOptions};
 use pi_ai::types::{AssistantMessage, Context, DeferredHandle, SimpleStreamOptions, StreamOptions};
+
+/// Provider iteration order used by upstream `findInitialModel` when it
+/// chooses among authenticated providers. Keep this separate from the
+/// catalog's registration order: the default-model table is the selection
+/// oracle, not the map order of the runtime facade.
+pub const DEFAULT_PROVIDER_ORDER: &[&str] = &[
+    "amazon-bedrock",
+    "ant-ling",
+    "anthropic",
+    "openai",
+    "azure-openai-responses",
+    "openai-codex",
+    "radius",
+    "nvidia",
+    "deepseek",
+    "google",
+    "google-vertex",
+    "github-copilot",
+    "openrouter",
+    "vercel-ai-gateway",
+    "xai",
+    "groq",
+    "cerebras",
+    "zai",
+    "zai-coding-cn",
+    "mistral",
+    "minimax",
+    "minimax-cn",
+    "moonshotai",
+    "moonshotai-cn",
+    "huggingface",
+    "fireworks",
+    "together",
+    "baseten",
+    "opencode",
+    "opencode-go",
+    "kimi-coding",
+    "cloudflare-workers-ai",
+    "cloudflare-ai-gateway",
+    "qwen-token-plan",
+    "qwen-token-plan-cn",
+    "qwen-token-plan-individual",
+    "xiaomi",
+    "xiaomi-token-plan-cn",
+    "xiaomi-token-plan-ams",
+    "xiaomi-token-plan-sgp",
+];
+
+/// Refresh a persisted OAuth credential before a network-backed turn. The
+/// low-level `pi-ai::Models` facade is intentionally synchronous in this Rust
+/// port, so the coding-agent boundary performs the upstream five-minute
+/// refresh/persist operation before handing the request to that facade.
+pub async fn refresh_provider_oauth_if_needed(
+    models: &Models,
+    provider_id: &str,
+) -> Result<(), String> {
+    let Some(provider) = models.get_provider(provider_id) else {
+        return Ok(());
+    };
+    let Some(oauth) = provider.auth.oauth else {
+        return Ok(());
+    };
+    let storage = crate::core::auth_storage::AuthStorage::create(crate::config::get_auth_path());
+    crate::core::auth_storage::refresh_oauth_credential_in_storage(
+        &storage,
+        provider_id,
+        oauth,
+        None,
+        None,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| format!("OAuth refresh failed for {provider_id}: {error}"))
+}
+
+/// Register and refresh the native llama.cpp provider when it is explicitly
+/// selected.  The provider is intentionally lazy: normal Pi startup does not
+/// contact localhost or Hugging Face, while `--provider llama.cpp` and an
+/// existing local catalog use the same real Models refresh boundary as every
+/// other dynamic provider.
+pub async fn register_llama_provider_if_selected(
+    models: &Models,
+    provider_id: &str,
+    allow_network: bool,
+) -> Result<(), String> {
+    if !provider_id.eq_ignore_ascii_case(crate::core::llama::LLAMA_PROVIDER_ID) {
+        return Ok(());
+    }
+
+    let controller = crate::core::llama::LlamaProviderController::new();
+    controller.register_into(models);
+    let result = models
+        .refresh(ModelsRefreshOptions {
+            allow_network,
+            providers: Some(vec![crate::core::llama::LLAMA_PROVIDER_ID.to_owned()]),
+            force: false,
+            signal: None,
+        })
+        .await;
+    if let Some((_, error)) = result.errors.into_iter().next() {
+        return Err(format!("llama.cpp model catalog refresh failed: {error}"));
+    }
+    Ok(())
+}
 
 /// The coding-agent-facing runtime facade. It keeps the auth-applied
 /// `pi-ai::Models` collection as the single dispatch seam for normal streams,
@@ -190,6 +294,7 @@ pub fn default_model_per_provider(provider: &str) -> Option<&'static str> {
         "openai" => "gpt-5.5",
         "azure-openai-responses" => "gpt-5.4",
         "openai-codex" => "gpt-5.5",
+        "radius" => "auto",
         "nvidia" => "nvidia/nemotron-3-super-120b-a12b",
         "deepseek" => "deepseek-v4-pro",
         "google" => "gemini-3.1-pro-preview",
@@ -258,6 +363,32 @@ pub fn resolve_run_model_for_provider(
     provider: &str,
     hint: Option<&str>,
 ) -> Result<Model, String> {
+    // A canonical `provider/model` hint is an explicit model selection even
+    // when the caller resolved its provider before the model catalog was
+    // available. Redirect it to that registered provider rather than trying
+    // to parse the model id inside the currently selected provider. This is
+    // the run-path equivalent of upstream `resolveCliModel`'s provider
+    // inference and preserves model flags when auth-based bootstrap changes
+    // the ambient provider.
+    if let Some(hint) = hint {
+        let trimmed = hint.trim();
+        if let Some((hint_provider, _)) = trimmed.split_once('/') {
+            if let Some(canonical_provider) = models
+                .get_providers()
+                .into_iter()
+                .find(|candidate| candidate.id.eq_ignore_ascii_case(hint_provider))
+                .map(|candidate| candidate.id)
+            {
+                if !canonical_provider.eq_ignore_ascii_case(provider) {
+                    return resolve_run_model_for_provider(
+                        models,
+                        &canonical_provider,
+                        Some(trimmed),
+                    );
+                }
+            }
+        }
+    }
     let provider_models = models.get_models(Some(provider));
     if provider_models.is_empty() {
         return Err(format!(
@@ -300,6 +431,7 @@ pub fn resolve_run_model_for_provider(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use pi_ai::providers::{faux_assistant_message, FauxAssistantOptions, FauxResponseStep};
@@ -369,12 +501,14 @@ mod tests {
             "groq",
             "mistral",
             "openrouter",
+            "radius",
         ] {
             assert!(
                 default_model_per_provider(p).is_some(),
                 "{p} missing default"
             );
         }
+        assert_eq!(default_model_per_provider("radius"), Some("auto"));
     }
 
     #[tokio::test]
@@ -451,7 +585,20 @@ mod tests {
             .error_message()
             .unwrap_or_default()
             .contains("cancelled"));
-        assert_eq!(core.state.lock().unwrap().deferred_fetch_count, 3);
-        assert_eq!(core.state.lock().unwrap().cancelled_deferred.len(), 1);
+        assert_eq!(
+            core.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .deferred_fetch_count,
+            3
+        );
+        assert_eq!(
+            core.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .cancelled_deferred
+                .len(),
+            1
+        );
     }
 }

@@ -1,26 +1,41 @@
 //! Rust-native equivalents of the upstream interactive hidden components.
 //!
-//! The TypeScript versions use timers to request renders. The Rust TUI owns
-//! the render loop, so these components use a monotonic start time instead.
-//! They never spawn a task and therefore have no worker to leak or join when a
-//! scene is replaced or the terminal exits.
+//! The TypeScript implementations use `setInterval` to advance their state
+//! and ask the TUI for a render. The Rust TUI already owns the render loop, so
+//! these components keep the same frame clock and state machine but consume
+//! due frames from `render`. This deliberately avoids a worker thread: there
+//! is nothing to leak when a scene is replaced or the terminal exits. The
+//! optional redraw callback is a small seam for callers/tests that need to
+//! observe the same invalidation events as the upstream UI callback.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pi_tui::tui::{Component, SharedComponent};
 use pi_tui::utils::{truncate_to_width, visible_width};
 
 use super::tui_theme as theme;
 
+/// Callback invoked once for every consumed animation frame.
+pub type RedrawCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
 const ARMIN_WIDTH: usize = 31;
 const ARMIN_HEIGHT: usize = 36;
+const ARMIN_BYTES_PER_ROW: usize = ARMIN_WIDTH.div_ceil(8);
 const ARMIN_DISPLAY_HEIGHT: usize = ARMIN_HEIGHT.div_ceil(2);
-const ARMIN_ANIMATION: Duration = Duration::from_millis(900);
+const ARMIN_FPS: u64 = 30;
+const ARMIN_FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / ARMIN_FPS);
+// The finite rain cleanup path is the longest effect for this exact XBM. Its
+// worst valid schedule is 212 callbacks: the initial drop can begin 35 rows
+// above the viewport, each of the remaining visible targets can reset up to
+// five rows above the viewport, and the final empty-column cleanup needs one
+// extra completion callback.
+const ARMIN_MAX_FRAMES: u64 = 212;
+const ARMIN_MAX_ANIMATION: Duration =
+    Duration::from_nanos((1_000_000_000 / ARMIN_FPS) * ARMIN_MAX_FRAMES);
 
 // Upstream XBM data: 1 is background, 0 is foreground, and bits are LSB
-// first. The deterministic scanline reveal below is the bounded Rust
-// equivalent of the upstream effect variants.
+// first.
 const ARMIN_BITS: [u8; 144] = [
     0xff, 0xff, 0xff, 0x7f, 0xff, 0xf0, 0xff, 0x7f, 0xff, 0xed, 0xff, 0x7f, 0xff, 0xdb, 0xff, 0x7f,
     0xff, 0xb7, 0xff, 0x7f, 0xff, 0x77, 0xfe, 0x7f, 0x3f, 0xf8, 0xfe, 0x7f, 0xdf, 0xff, 0xfe, 0x7f,
@@ -33,11 +48,135 @@ const ARMIN_BITS: [u8; 144] = [
     0xff, 0xff, 0xdf, 0x78, 0xff, 0xff, 0xdf, 0x7d, 0xff, 0xff, 0x3f, 0x7e, 0xff, 0xff, 0xff, 0x7f,
 ];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ArminEffect {
+    Typewriter,
+    Scanline,
+    Rain,
+    Fade,
+    Crt,
+    Glitch,
+    Dissolve,
+}
+
+const ARMIN_EFFECTS: [ArminEffect; 7] = [
+    ArminEffect::Typewriter,
+    ArminEffect::Scanline,
+    ArminEffect::Rain,
+    ArminEffect::Fade,
+    ArminEffect::Crt,
+    ArminEffect::Glitch,
+    ArminEffect::Dissolve,
+];
+
+impl ArminEffect {
+    const fn fps(self) -> u64 {
+        match self {
+            Self::Glitch => 60,
+            _ => 30,
+        }
+    }
+
+    const fn frame_interval(self) -> Duration {
+        if matches!(self, Self::Glitch) {
+            Duration::from_nanos(1_000_000_000 / self.fps())
+        } else {
+            ARMIN_FRAME_INTERVAL
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RainDrop {
+    y: i32,
+    settled: usize,
+}
+
+#[derive(Debug)]
+enum ArminEffectState {
+    Typewriter {
+        pos: usize,
+    },
+    Scanline {
+        row: usize,
+    },
+    Rain {
+        drops: Vec<RainDrop>,
+    },
+    Fade {
+        positions: Vec<(usize, usize)>,
+        idx: usize,
+    },
+    Crt {
+        expansion: usize,
+    },
+    Glitch {
+        phase: usize,
+        glitch_frames: usize,
+    },
+    Dissolve {
+        positions: Vec<(usize, usize)>,
+        idx: usize,
+    },
+}
+
+/// Small deterministic PRNG used only for the same visual randomization
+/// points as upstream's `Math.random()`. It is intentionally not a security
+/// primitive. A supplied seed makes every state transition reproducible in
+/// tests without sleeping or relying on a process-global RNG.
+#[derive(Clone, Debug)]
+struct VisualRng {
+    state: u64,
+}
+
+impl VisualRng {
+    fn new(seed: u64) -> Self {
+        Self {
+            state: if seed == 0 {
+                0x9e37_79b9_7f4a_7c15
+            } else {
+                seed
+            },
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        // xorshift64*: compact, deterministic, and sufficient for pixels and
+        // effect selection. The nonzero state is guaranteed by `new`.
+        let mut value = self.state;
+        value ^= value >> 12;
+        value ^= value << 25;
+        value ^= value >> 27;
+        self.state = value;
+        value.wrapping_mul(2_685_821_657_736_338_717)
+    }
+
+    fn unit(&mut self) -> f64 {
+        // Keep the result in [0, 1), like Math.random().
+        ((self.next_u64() >> 11) as f64) * (1.0 / 9_007_199_254_740_992.0)
+    }
+
+    fn index(&mut self, len: usize) -> usize {
+        if len == 0 {
+            0
+        } else {
+            (self.unit() * len as f64).floor() as usize
+        }
+    }
+}
+
+fn production_seed() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    now.as_nanos() as u64 ^ now.as_secs().rotate_left(17)
+}
+
 fn armin_pixel(x: usize, y: usize) -> bool {
     if x >= ARMIN_WIDTH || y >= ARMIN_HEIGHT {
         return false;
     }
-    let byte_index = y * ARMIN_WIDTH.div_ceil(8) + x / 8;
+    let byte_index = y * ARMIN_BYTES_PER_ROW + x / 8;
     let bit_index = x % 8;
     ((ARMIN_BITS[byte_index] >> bit_index) & 1) == 0
 }
@@ -57,18 +196,523 @@ fn armin_grid() -> Vec<Vec<char>> {
         .collect()
 }
 
+fn empty_armin_grid() -> Vec<Vec<char>> {
+    vec![vec![' '; ARMIN_WIDTH]; ARMIN_DISPLAY_HEIGHT]
+}
+
+fn shuffled_positions(rng: &mut VisualRng) -> Vec<(usize, usize)> {
+    let mut positions = (0..ARMIN_DISPLAY_HEIGHT)
+        .flat_map(|row| (0..ARMIN_WIDTH).map(move |x| (row, x)))
+        .collect::<Vec<_>>();
+    for index in (1..positions.len()).rev() {
+        let other = rng.index(index + 1);
+        positions.swap(index, other);
+    }
+    positions
+}
+
+fn rotate_row(row: &[char], offset: isize) -> Vec<char> {
+    let width = row.len();
+    if width == 0 {
+        return Vec::new();
+    }
+    (0..width)
+        .map(|index| {
+            let source = (index as isize + offset).rem_euclid(width as isize) as usize;
+            row[source]
+        })
+        .collect()
+}
+
+fn random_armin_effect(rng: &mut VisualRng) -> ArminEffect {
+    ARMIN_EFFECTS[rng.index(ARMIN_EFFECTS.len())]
+}
+
+fn initial_armin_state(
+    effect: ArminEffect,
+    rng: &mut VisualRng,
+) -> (Vec<Vec<char>>, ArminEffectState) {
+    match effect {
+        ArminEffect::Typewriter => (empty_armin_grid(), ArminEffectState::Typewriter { pos: 0 }),
+        ArminEffect::Scanline => (empty_armin_grid(), ArminEffectState::Scanline { row: 0 }),
+        ArminEffect::Rain => {
+            let drops = (0..ARMIN_WIDTH)
+                .map(|_| RainDrop {
+                    y: -(rng.index(ARMIN_DISPLAY_HEIGHT * 2) as i32),
+                    settled: 0,
+                })
+                .collect();
+            (empty_armin_grid(), ArminEffectState::Rain { drops })
+        }
+        ArminEffect::Fade => (
+            empty_armin_grid(),
+            ArminEffectState::Fade {
+                positions: shuffled_positions(rng),
+                idx: 0,
+            },
+        ),
+        ArminEffect::Crt => (empty_armin_grid(), ArminEffectState::Crt { expansion: 0 }),
+        ArminEffect::Glitch => (
+            empty_armin_grid(),
+            ArminEffectState::Glitch {
+                phase: 0,
+                glitch_frames: 8,
+            },
+        ),
+        ArminEffect::Dissolve => {
+            let chars = [' ', '░', '▒', '▓', '█', '▀', '▄'];
+            let noise = (0..ARMIN_DISPLAY_HEIGHT)
+                .map(|_| {
+                    (0..ARMIN_WIDTH)
+                        .map(|_| chars[rng.index(chars.len())])
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            (
+                noise,
+                ArminEffectState::Dissolve {
+                    positions: shuffled_positions(rng),
+                    idx: 0,
+                },
+            )
+        }
+    }
+}
+
+struct ArminRuntime {
+    effect: ArminEffect,
+    final_grid: Vec<Vec<char>>,
+    current_grid: Vec<Vec<char>>,
+    effect_state: ArminEffectState,
+    rng: VisualRng,
+    started: Instant,
+    frame_count: u64,
+    grid_version: u64,
+    running: bool,
+    cached_lines: Vec<String>,
+    cached_width: Option<usize>,
+    cached_version: u64,
+    #[cfg(test)]
+    elapsed_override: Option<Duration>,
+}
+
+impl ArminRuntime {
+    fn new(effect: ArminEffect, seed: u64) -> Self {
+        let mut rng = VisualRng::new(seed);
+        let (current_grid, effect_state) = initial_armin_state(effect, &mut rng);
+        Self {
+            effect,
+            final_grid: armin_grid(),
+            current_grid,
+            effect_state,
+            rng,
+            started: Instant::now(),
+            frame_count: 0,
+            grid_version: 0,
+            running: true,
+            cached_lines: Vec::new(),
+            cached_width: None,
+            cached_version: u64::MAX,
+            #[cfg(test)]
+            elapsed_override: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn test(effect: ArminEffect, seed: u64) -> Self {
+        let mut runtime = Self::new(effect, seed);
+        runtime.elapsed_override = Some(Duration::ZERO);
+        runtime
+    }
+
+    fn elapsed(&self) -> Duration {
+        #[cfg(test)]
+        if let Some(elapsed) = self.elapsed_override {
+            return elapsed;
+        }
+        self.started.elapsed()
+    }
+
+    fn sync_to_elapsed(&mut self) -> usize {
+        if !self.running {
+            return 0;
+        }
+        let interval = self.effect.frame_interval();
+        let due = self.elapsed().as_nanos() / interval.as_nanos();
+        let mut advanced = 0;
+        while self.running && self.frame_count < due as u64 {
+            self.tick_once();
+            advanced += 1;
+        }
+        advanced
+    }
+
+    fn tick_once(&mut self) -> bool {
+        if !self.running {
+            return true;
+        }
+        let done = self.tick_effect();
+        self.frame_count += 1;
+        self.grid_version = self.grid_version.wrapping_add(1);
+        if done {
+            self.running = false;
+        }
+        done
+    }
+
+    fn tick_effect(&mut self) -> bool {
+        match self.effect {
+            ArminEffect::Typewriter => self.tick_typewriter(),
+            ArminEffect::Scanline => self.tick_scanline(),
+            ArminEffect::Rain => self.tick_rain(),
+            ArminEffect::Fade => self.tick_fade(),
+            ArminEffect::Crt => self.tick_crt(),
+            ArminEffect::Glitch => self.tick_glitch(),
+            ArminEffect::Dissolve => self.tick_dissolve(),
+        }
+    }
+
+    fn tick_typewriter(&mut self) -> bool {
+        let ArminEffectState::Typewriter { pos } = &mut self.effect_state else {
+            unreachable!("typewriter effect state must match selected effect");
+        };
+        for _ in 0..3 {
+            let row = *pos / ARMIN_WIDTH;
+            let x = *pos % ARMIN_WIDTH;
+            if row >= ARMIN_DISPLAY_HEIGHT {
+                return true;
+            }
+            self.current_grid[row][x] = self.final_grid[row][x];
+            *pos += 1;
+        }
+        false
+    }
+
+    fn tick_scanline(&mut self) -> bool {
+        let ArminEffectState::Scanline { row } = &mut self.effect_state else {
+            unreachable!("scanline effect state must match selected effect");
+        };
+        if *row >= ARMIN_DISPLAY_HEIGHT {
+            return true;
+        }
+        self.current_grid[*row] = self.final_grid[*row].clone();
+        *row += 1;
+        false
+    }
+
+    fn tick_rain(&mut self) -> bool {
+        let final_grid = &self.final_grid;
+        let ArminEffectState::Rain { drops } = &mut self.effect_state else {
+            unreachable!("rain effect state must match selected effect");
+        };
+        let mut all_settled = true;
+        self.current_grid = empty_armin_grid();
+
+        for x in 0..ARMIN_WIDTH {
+            let drop = &mut drops[x];
+
+            // Draw settled pixels, matching the inclusive reverse loop in the
+            // upstream implementation.
+            for row in
+                (ARMIN_DISPLAY_HEIGHT.saturating_sub(drop.settled)..ARMIN_DISPLAY_HEIGHT).rev()
+            {
+                self.current_grid[row][x] = final_grid[row][x];
+            }
+
+            if drop.settled >= ARMIN_DISPLAY_HEIGHT {
+                continue;
+            }
+
+            all_settled = false;
+            let target_row = (0..=ARMIN_DISPLAY_HEIGHT - 1 - drop.settled)
+                .rev()
+                .find(|&row| final_grid[row][x] != ' ');
+
+            drop.y += 1;
+            match target_row {
+                Some(target_row) if drop.y >= 0 && drop.y < ARMIN_DISPLAY_HEIGHT as i32 => {
+                    if drop.y as usize >= target_row {
+                        drop.settled = ARMIN_DISPLAY_HEIGHT - target_row;
+                        drop.y = -(self.rng.index(5) as i32) - 1;
+                    } else {
+                        self.current_grid[drop.y as usize][x] = '▓';
+                    }
+                }
+                None => {
+                    // The pinned upstream loop leaves blank edge columns
+                    // running forever because it never assigns `settled` when
+                    // targetRow stays -1. Preserve the falling glyph while it
+                    // is visible, then settle the empty column once it exits
+                    // the grid so Rust has an explicit finite cleanup path.
+                    if drop.y >= ARMIN_DISPLAY_HEIGHT as i32 {
+                        drop.settled = ARMIN_DISPLAY_HEIGHT;
+                    } else if drop.y >= 0 {
+                        self.current_grid[drop.y as usize][x] = '▓';
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+
+        all_settled
+    }
+
+    fn tick_fade(&mut self) -> bool {
+        let final_grid = &self.final_grid;
+        let ArminEffectState::Fade { positions, idx } = &mut self.effect_state else {
+            unreachable!("fade effect state must match selected effect");
+        };
+        for _ in 0..15 {
+            if *idx >= positions.len() {
+                return true;
+            }
+            let (row, x) = positions[*idx];
+            self.current_grid[row][x] = final_grid[row][x];
+            *idx += 1;
+        }
+        false
+    }
+
+    fn tick_crt(&mut self) -> bool {
+        let final_grid = &self.final_grid;
+        let ArminEffectState::Crt { expansion } = &mut self.effect_state else {
+            unreachable!("crt effect state must match selected effect");
+        };
+        let mid_row = ARMIN_DISPLAY_HEIGHT / 2;
+        self.current_grid = empty_armin_grid();
+        let top = mid_row as isize - *expansion as isize;
+        let bottom = mid_row + *expansion;
+        let top = top.max(0) as usize;
+        let bottom = bottom.min(ARMIN_DISPLAY_HEIGHT - 1);
+        self.current_grid[top..=bottom].clone_from_slice(&final_grid[top..=bottom]);
+        *expansion += 1;
+        *expansion > ARMIN_DISPLAY_HEIGHT
+    }
+
+    fn tick_glitch(&mut self) -> bool {
+        let final_grid = &self.final_grid;
+        let ArminEffectState::Glitch {
+            phase,
+            glitch_frames,
+        } = &mut self.effect_state
+        else {
+            unreachable!("glitch effect state must match selected effect");
+        };
+        if *phase < *glitch_frames {
+            self.current_grid = final_grid
+                .iter()
+                .map(|row| {
+                    let offset = self.rng.index(7) as isize - 3;
+                    if self.rng.unit() < 0.3 {
+                        return rotate_row(row, offset);
+                    }
+                    if self.rng.unit() < 0.2 {
+                        return final_grid[self.rng.index(ARMIN_DISPLAY_HEIGHT)].clone();
+                    }
+                    row.clone()
+                })
+                .collect();
+            *phase += 1;
+            false
+        } else {
+            self.current_grid = final_grid.clone();
+            true
+        }
+    }
+
+    fn tick_dissolve(&mut self) -> bool {
+        let final_grid = &self.final_grid;
+        let ArminEffectState::Dissolve { positions, idx } = &mut self.effect_state else {
+            unreachable!("dissolve effect state must match selected effect");
+        };
+        for _ in 0..20 {
+            if *idx >= positions.len() {
+                return true;
+            }
+            let (row, x) = positions[*idx];
+            self.current_grid[row][x] = final_grid[row][x];
+            *idx += 1;
+        }
+        false
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn invalidate(&mut self) {
+        self.cached_width = None;
+    }
+
+    fn render_lines(&mut self, width: usize) -> Vec<String> {
+        if self.cached_width == Some(width) && self.cached_version == self.grid_version {
+            return self.cached_lines.clone();
+        }
+
+        let mut lines = self
+            .current_grid
+            .iter()
+            .map(|row| {
+                let content = row.iter().collect::<String>();
+                fit_line(&format!(" {}", theme::fg("accent", content)), width)
+            })
+            .collect::<Vec<_>>();
+        lines.push(fit_line(
+            &format!(" {}", theme::fg("accent", "ARMIN SAYS HI")),
+            width,
+        ));
+
+        self.cached_lines = lines;
+        self.cached_width = Some(width);
+        self.cached_version = self.grid_version;
+        self.cached_lines.clone()
+    }
+}
+
 /// The hidden Armin component.
 pub struct ArminComponent {
-    started: Instant,
-    grid: Vec<Vec<char>>,
+    runtime: Mutex<ArminRuntime>,
+    redraw: Option<RedrawCallback>,
 }
 
 impl ArminComponent {
     pub fn new() -> Self {
+        Self::with_seed(production_seed())
+    }
+
+    fn with_seed(seed: u64) -> Self {
+        let mut rng = VisualRng::new(seed);
+        let effect = random_armin_effect(&mut rng);
         Self {
-            started: Instant::now(),
-            grid: armin_grid(),
+            runtime: Mutex::new(ArminRuntime::new(effect, seed ^ 0xa5a5_5a5a_1234_5678)),
+            redraw: None,
         }
+    }
+
+    /// Construct the component with a redraw observer. Interactive mode can
+    /// keep using `new`; this seam is useful for a TUI scheduler or tests that
+    /// need to observe frame invalidation without a background timer.
+    pub fn with_redraw_callback(callback: RedrawCallback) -> Self {
+        let mut component = Self::new();
+        component.redraw = Some(callback);
+        component
+    }
+
+    fn notify_redraw(&self, frames: usize) {
+        if let Some(callback) = &self.redraw {
+            for _ in 0..frames {
+                callback();
+            }
+        }
+    }
+
+    /// Stop future frame consumption. No worker exists, but this explicit
+    /// lifecycle hook mirrors upstream `dispose()` and makes replacement
+    /// cleanup observable to callers.
+    pub fn dispose(&self) {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .stop();
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .running
+    }
+}
+
+#[cfg(test)]
+impl ArminComponent {
+    fn for_test(effect: ArminEffect, seed: u64) -> Self {
+        Self {
+            runtime: Mutex::new(ArminRuntime::test(effect, seed)),
+            redraw: None,
+        }
+    }
+
+    fn for_test_with_callback(effect: ArminEffect, seed: u64, callback: RedrawCallback) -> Self {
+        Self {
+            runtime: Mutex::new(ArminRuntime::test(effect, seed)),
+            redraw: Some(callback),
+        }
+    }
+
+    fn advance_for_test(&self, elapsed: Duration) -> usize {
+        let frames = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            runtime.elapsed_override = Some(elapsed);
+            runtime.sync_to_elapsed()
+        };
+        self.notify_redraw(frames);
+        frames
+    }
+
+    fn tick_for_test(&self) -> bool {
+        let (done, advanced) = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if runtime.running {
+                (runtime.tick_once(), 1)
+            } else {
+                (true, 0)
+            }
+        };
+        self.notify_redraw(advanced);
+        done
+    }
+
+    fn frame_count_for_test(&self) -> u64 {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .frame_count
+    }
+
+    fn effect_progress_for_test(&self) -> usize {
+        let runtime = self
+            .runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match &runtime.effect_state {
+            ArminEffectState::Typewriter { pos } => *pos,
+            ArminEffectState::Scanline { row } => *row,
+            ArminEffectState::Rain { drops } => drops.iter().map(|drop| drop.settled).sum(),
+            ArminEffectState::Fade { idx, .. } | ArminEffectState::Dissolve { idx, .. } => *idx,
+            ArminEffectState::Crt { expansion } => *expansion,
+            ArminEffectState::Glitch { phase, .. } => *phase,
+        }
+    }
+
+    fn current_grid_for_test(&self) -> Vec<Vec<char>> {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .current_grid
+            .clone()
+    }
+
+    fn final_grid_for_test(&self) -> Vec<Vec<char>> {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .final_grid
+            .clone()
+    }
+
+    fn cache_is_valid_for_test(&self) -> bool {
+        let runtime = self
+            .runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        runtime.cached_width.is_some() && runtime.cached_version == runtime.grid_version
     }
 }
 
@@ -78,39 +722,39 @@ impl Default for ArminComponent {
     }
 }
 
+impl Drop for ArminComponent {
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
+    fn drop(&mut self) {
+        self.runtime.get_mut().unwrap().stop();
+    }
+}
+
 impl Component for ArminComponent {
     fn render(&self, width: usize) -> Vec<String> {
-        let width = width.max(1);
-        let progress =
-            (self.started.elapsed().as_secs_f64() / ARMIN_ANIMATION.as_secs_f64()).min(1.0);
-        let revealed = ((progress * (ARMIN_DISPLAY_HEIGHT + 1) as f64).floor() as usize)
-            .min(ARMIN_DISPLAY_HEIGHT);
-        let mut lines = Vec::with_capacity(ARMIN_DISPLAY_HEIGHT + 1);
+        let frames = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            runtime.sync_to_elapsed()
+        };
+        self.notify_redraw(frames);
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .render_lines(width)
+    }
 
-        for row in 0..ARMIN_DISPLAY_HEIGHT {
-            let content = if row < revealed {
-                self.grid[row].iter().collect::<String>()
-            } else if row == revealed && revealed < ARMIN_DISPLAY_HEIGHT {
-                "─".repeat(ARMIN_WIDTH)
-            } else {
-                " ".repeat(ARMIN_WIDTH)
-            };
-            lines.push(fit_line(
-                &format!(" {}", theme::fg("accent", content)),
-                width,
-            ));
-        }
-        lines.push(fit_line(
-            &format!(" {}", theme::fg("accent", "ARMIN SAYS HI")),
-            width,
-        ));
-        lines
+    fn invalidate(&mut self) {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .invalidate();
     }
 }
 
 const DAX_WIDTH: usize = 32;
 const DAX_HEIGHT: usize = 32;
-const DAX_ANIMATION: Duration = Duration::from_millis(2_000);
 
 // Verbatim DAX_HEX from the pinned v0.84.2 upstream
 // `interactive/components/daxnuts.ts` at pinned commit
@@ -158,16 +802,49 @@ fn dax_scanline() -> String {
 
 /// The OpenCode + Kimi K2.5 Daxnuts component.
 pub struct DaxnutsComponent {
-    started: Instant,
-    image: Vec<String>,
+    runtime: Mutex<DaxnutsRuntime>,
+    redraw: Option<RedrawCallback>,
 }
 
 impl DaxnutsComponent {
     pub fn new() -> Self {
         Self {
-            started: Instant::now(),
-            image: dax_image(),
+            runtime: Mutex::new(DaxnutsRuntime::new()),
+            redraw: None,
         }
+    }
+
+    /// Construct the component with a redraw observer. The normal interactive
+    /// path keeps using `new`; this mirrors upstream's `requestRender` seam
+    /// without introducing a timer thread into the Rust component.
+    pub fn with_redraw_callback(callback: RedrawCallback) -> Self {
+        Self {
+            runtime: Mutex::new(DaxnutsRuntime::new()),
+            redraw: Some(callback),
+        }
+    }
+
+    fn notify_redraw(&self, frames: usize) {
+        if let Some(callback) = &self.redraw {
+            for _ in 0..frames {
+                callback();
+            }
+        }
+    }
+
+    /// Stop future frame consumption, matching upstream `dispose()`.
+    pub fn dispose(&self) {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .stop();
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .running
     }
 }
 
@@ -175,9 +852,67 @@ impl DaxnutsComponent {
 impl DaxnutsComponent {
     fn completed() -> Self {
         Self {
-            started: Instant::now() - DAX_ANIMATION,
-            image: dax_image(),
+            runtime: Mutex::new(DaxnutsRuntime::completed()),
+            redraw: None,
         }
+    }
+
+    fn for_test() -> Self {
+        Self {
+            runtime: Mutex::new(DaxnutsRuntime::test()),
+            redraw: None,
+        }
+    }
+
+    fn for_test_with_callback(callback: RedrawCallback) -> Self {
+        Self {
+            runtime: Mutex::new(DaxnutsRuntime::test()),
+            redraw: Some(callback),
+        }
+    }
+
+    fn advance_for_test(&self, elapsed: Duration) -> usize {
+        let frames = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            runtime.elapsed_override = Some(elapsed);
+            runtime.sync_to_elapsed()
+        };
+        self.notify_redraw(frames);
+        frames
+    }
+
+    fn tick_for_test(&self) -> bool {
+        let (done, advanced) = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if runtime.running {
+                (runtime.tick_once(), 1)
+            } else {
+                (true, 0)
+            }
+        };
+        self.notify_redraw(advanced);
+        done
+    }
+
+    fn tick_for_test_value(&self) -> u64 {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .tick
+    }
+
+    fn cache_is_valid_for_test(&self) -> bool {
+        let runtime = self
+            .runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        runtime.cached_width.is_some() && runtime.cached_tick == Some(runtime.tick)
     }
 }
 
@@ -187,22 +922,145 @@ impl Default for DaxnutsComponent {
     }
 }
 
+impl Drop for DaxnutsComponent {
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
+    fn drop(&mut self) {
+        self.runtime.get_mut().unwrap().stop();
+    }
+}
+
 impl Component for DaxnutsComponent {
     fn render(&self, width: usize) -> Vec<String> {
-        let width = width.max(1);
-        let progress =
-            (self.started.elapsed().as_secs_f64() / DAX_ANIMATION.as_secs_f64()).min(1.0);
-        let revealed = if self.image.is_empty() {
-            0
-        } else {
-            ((progress * (self.image.len() + 3) as f64).floor() as usize).min(self.image.len())
+        let frames = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            runtime.sync_to_elapsed()
         };
+        self.notify_redraw(frames);
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .render_lines(width)
+    }
+
+    fn invalidate(&mut self) {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .invalidate();
+    }
+}
+
+const DAX_TICK_INTERVAL: Duration = Duration::from_millis(80);
+const DAX_MAX_TICKS: u64 = 25;
+
+/// The Daxnuts component's exact upstream animation lifetime: one 80 ms
+/// interval for each of its 25 scheduled ticks.
+pub const fn daxnuts_animation_duration() -> Duration {
+    Duration::from_millis(DAX_MAX_TICKS * 80)
+}
+
+struct DaxnutsRuntime {
+    started: Instant,
+    tick: u64,
+    running: bool,
+    image: Vec<String>,
+    cached_lines: Vec<String>,
+    cached_width: Option<usize>,
+    cached_tick: Option<u64>,
+    #[cfg(test)]
+    elapsed_override: Option<Duration>,
+}
+
+impl DaxnutsRuntime {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            tick: 0,
+            running: true,
+            image: dax_image(),
+            cached_lines: Vec::new(),
+            cached_width: None,
+            cached_tick: None,
+            #[cfg(test)]
+            elapsed_override: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn completed() -> Self {
+        let mut runtime = Self::new();
+        runtime.elapsed_override = Some(DAX_TICK_INTERVAL * DAX_MAX_TICKS as u32);
+        runtime.sync_to_elapsed();
+        runtime
+    }
+
+    #[cfg(test)]
+    fn test() -> Self {
+        let mut runtime = Self::new();
+        runtime.elapsed_override = Some(Duration::ZERO);
+        runtime
+    }
+
+    fn elapsed(&self) -> Duration {
+        #[cfg(test)]
+        if let Some(elapsed) = self.elapsed_override {
+            return elapsed;
+        }
+        self.started.elapsed()
+    }
+
+    fn sync_to_elapsed(&mut self) -> usize {
+        if !self.running {
+            return 0;
+        }
+        let due = (self.elapsed().as_nanos() / DAX_TICK_INTERVAL.as_nanos())
+            .min(DAX_MAX_TICKS as u128) as u64;
+        let mut advanced = 0;
+        while self.running && self.tick < due {
+            self.tick_once();
+            advanced += 1;
+        }
+        advanced
+    }
+
+    fn tick_once(&mut self) -> bool {
+        if !self.running {
+            return true;
+        }
+        self.tick += 1;
+        self.cached_width = None;
+        if self.tick >= DAX_MAX_TICKS {
+            self.running = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn invalidate(&mut self) {
+        self.cached_width = None;
+    }
+
+    fn render_lines(&mut self, width: usize) -> Vec<String> {
+        if self.cached_width == Some(width) && self.cached_tick == Some(self.tick) {
+            return self.cached_lines.clone();
+        }
+
+        let revealed_rows = ((self.tick * (self.image.len() as u64 + 3)) / DAX_MAX_TICKS)
+            .min(self.image.len() as u64) as usize;
         let mut lines = vec![String::new()];
 
         for index in 0..self.image.len() {
-            let image_line = if index < revealed {
+            let image_line = if index < revealed_rows {
                 self.image[index].clone()
-            } else if index == revealed && revealed < self.image.len() {
+            } else if index == revealed_rows && revealed_rows < self.image.len() {
                 dax_scanline()
             } else {
                 " ".repeat(DAX_WIDTH)
@@ -211,7 +1069,9 @@ impl Component for DaxnutsComponent {
         }
 
         lines.push(String::new());
-        if progress >= 0.6 {
+        // Upstream computes textPhase = max(0, tick - 15). The first block
+        // therefore appears at tick 16, not at the continuous 60% point.
+        if self.tick > 15 {
             lines.push(center_line(
                 &theme::fg("accent", "Free Kimi K2.5 via OpenCode Zen"),
                 width,
@@ -224,8 +1084,11 @@ impl Component for DaxnutsComponent {
         } else {
             lines.extend([String::new(), String::new(), String::new()]);
         }
+
         lines.push(String::new());
-        if progress >= 0.6 {
+        // textPhase > 2 starts the second block at tick 18. The explicit
+        // completion condition is retained for parity if maxTicks changes.
+        if self.tick >= 18 || self.tick >= DAX_MAX_TICKS {
             lines.push(center_line(&theme::fg("dim", "Try OpenCode"), width));
             lines.push(center_line(
                 &theme::fg("mdLink", "https://mistral.ai/news/mistral-vibe-2-0"),
@@ -235,7 +1098,11 @@ impl Component for DaxnutsComponent {
             lines.extend([String::new(), String::new()]);
         }
         lines.push(String::new());
-        lines
+
+        self.cached_lines = lines;
+        self.cached_width = Some(width);
+        self.cached_tick = Some(self.tick);
+        self.cached_lines.clone()
     }
 }
 
@@ -297,9 +1164,11 @@ pub fn is_daxnuts_model(provider: &str, model_id: &str) -> bool {
     provider == "opencode" && model_id.to_ascii_lowercase().contains("kimi-k2.5")
 }
 
-/// The maximum period during which a hidden component needs animation redraws.
+/// The maximum period during which either hidden component needs animation
+/// redraws. The finite rain Armin effect is longest for this exact grid: 212
+/// 30-FPS callbacks, including its explicit cleanup and completion check.
 pub const fn animation_duration() -> Duration {
-    DAX_ANIMATION
+    ARMIN_MAX_ANIMATION
 }
 
 fn fit_line(line: &str, width: usize) -> String {
@@ -319,8 +1188,20 @@ fn center_line(line: &str, width: usize) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn plain(lines: &[String]) -> String {
+        pi_tui::utils::strip_terminal_sequences(&lines.join("\n"))
+    }
+
+    fn assert_width(lines: &[String], width: usize) {
+        for line in lines {
+            assert!(visible_width(line) <= width, "width {width}: {line:?}");
+        }
+    }
 
     #[test]
     fn hidden_components_are_safe_at_narrow_widths() {
@@ -336,6 +1217,212 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn armin_grid_matches_the_upstream_xbm_dimensions() {
+        assert_eq!(ARMIN_BITS.len(), ARMIN_HEIGHT * ARMIN_BYTES_PER_ROW);
+        let grid = armin_grid();
+        assert_eq!(grid.len(), ARMIN_DISPLAY_HEIGHT);
+        assert!(grid.iter().all(|row| row.len() == ARMIN_WIDTH));
+        assert!(grid.iter().flatten().any(|cell| *cell != ' '));
+        assert!(grid
+            .iter()
+            .flatten()
+            .all(|cell| { matches!(*cell, ' ' | '▀' | '▄' | '█') }));
+    }
+
+    #[test]
+    fn armin_effects_use_upstream_work_units_and_finish_cleanly() {
+        let cases = [
+            (ArminEffect::Typewriter, 187, 558),
+            (ArminEffect::Scanline, 19, 18),
+            (ArminEffect::Fade, 38, 558),
+            (ArminEffect::Crt, 19, 19),
+            (ArminEffect::Glitch, 9, 8),
+            (ArminEffect::Dissolve, 28, 558),
+        ];
+
+        for (effect, expected_frames, expected_progress) in cases {
+            let component = ArminComponent::for_test(effect, 0xfeed_face);
+            assert!(component.is_running(), "{effect:?} did not start");
+            let mut safety = 0;
+            while component.is_running() {
+                let done = component.tick_for_test();
+                safety += 1;
+                assert!(safety <= 200, "{effect:?} did not finish");
+                assert_eq!(done, !component.is_running());
+            }
+            assert_eq!(
+                component.frame_count_for_test(),
+                expected_frames,
+                "{effect:?}"
+            );
+            assert_eq!(
+                component.effect_progress_for_test(),
+                expected_progress,
+                "{effect:?}"
+            );
+            assert_eq!(
+                component.current_grid_for_test(),
+                component.final_grid_for_test()
+            );
+            assert!(component.tick_for_test());
+            assert_eq!(component.frame_count_for_test(), expected_frames);
+        }
+    }
+
+    #[test]
+    fn armin_each_effect_has_the_upstream_first_frame_shape() {
+        let typewriter = ArminComponent::for_test(ArminEffect::Typewriter, 1);
+        assert!(!typewriter.tick_for_test());
+        assert_eq!(typewriter.effect_progress_for_test(), 3);
+        let typewriter_grid = typewriter.current_grid_for_test();
+        let final_grid = typewriter.final_grid_for_test();
+        assert_eq!(&typewriter_grid[0][..3], &final_grid[0][..3]);
+
+        let scanline = ArminComponent::for_test(ArminEffect::Scanline, 1);
+        assert!(!scanline.tick_for_test());
+        let scanline_grid = scanline.current_grid_for_test();
+        let final_grid = scanline.final_grid_for_test();
+        assert_eq!(scanline_grid[0], final_grid[0]);
+        assert!(scanline_grid[1..].iter().flatten().all(|cell| *cell == ' '));
+
+        let fade = ArminComponent::for_test(ArminEffect::Fade, 1);
+        assert!(!fade.tick_for_test());
+        assert_eq!(fade.effect_progress_for_test(), 15);
+
+        let crt = ArminComponent::for_test(ArminEffect::Crt, 1);
+        assert!(!crt.tick_for_test());
+        let crt_grid = crt.current_grid_for_test();
+        let final_grid = crt.final_grid_for_test();
+        assert_eq!(
+            crt_grid[ARMIN_DISPLAY_HEIGHT / 2],
+            final_grid[ARMIN_DISPLAY_HEIGHT / 2]
+        );
+        assert!(crt_grid
+            .iter()
+            .enumerate()
+            .filter(|(row, _)| *row != ARMIN_DISPLAY_HEIGHT / 2)
+            .flat_map(|(_, row)| row.iter())
+            .all(|cell| *cell == ' '));
+
+        let glitch = ArminComponent::for_test(ArminEffect::Glitch, 1);
+        assert!(!glitch.tick_for_test());
+        assert_eq!(glitch.effect_progress_for_test(), 1);
+        assert!(glitch
+            .current_grid_for_test()
+            .iter()
+            .all(|row| row.len() == ARMIN_WIDTH));
+
+        let dissolve = ArminComponent::for_test(ArminEffect::Dissolve, 1);
+        let noise_chars = [' ', '░', '▒', '▓', '█', '▀', '▄'];
+        assert!(dissolve
+            .current_grid_for_test()
+            .iter()
+            .flatten()
+            .all(|cell| noise_chars.contains(cell)));
+        assert!(!dissolve.tick_for_test());
+        assert_eq!(dissolve.effect_progress_for_test(), 20);
+
+        let rain = ArminComponent::for_test(ArminEffect::Rain, 1);
+        assert_eq!(rain.effect_progress_for_test(), 0);
+        assert!(!rain.tick_for_test());
+        assert!(rain.effect_progress_for_test() <= ARMIN_WIDTH * ARMIN_DISPLAY_HEIGHT);
+    }
+
+    #[test]
+    fn armin_rain_settles_every_column_and_finishes_with_the_final_grid() {
+        let component = ArminComponent::for_test(ArminEffect::Rain, 0x1234_5678);
+        let mut safety = 0;
+        while component.is_running() {
+            let done = component.tick_for_test();
+            safety += 1;
+            assert!(safety <= 256, "rain effect did not finish");
+            assert_eq!(done, !component.is_running());
+        }
+        assert!(component.frame_count_for_test() > 0);
+        assert_eq!(
+            component.current_grid_for_test(),
+            component.final_grid_for_test()
+        );
+        assert_eq!(
+            component.effect_progress_for_test(),
+            ARMIN_WIDTH * ARMIN_DISPLAY_HEIGHT
+        );
+    }
+
+    #[test]
+    fn armin_tick_clock_has_30fps_and_glitch_60fps_semantics() {
+        assert_eq!(
+            ArminEffect::Typewriter.frame_interval(),
+            ARMIN_FRAME_INTERVAL
+        );
+        assert_eq!(
+            ArminEffect::Glitch.frame_interval(),
+            Duration::from_nanos(16_666_666)
+        );
+
+        let component = ArminComponent::for_test(ArminEffect::Scanline, 7);
+        assert_eq!(
+            component.advance_for_test(ARMIN_FRAME_INTERVAL - Duration::from_nanos(1)),
+            0
+        );
+        assert_eq!(component.frame_count_for_test(), 0);
+        assert_eq!(component.advance_for_test(ARMIN_FRAME_INTERVAL), 1);
+        assert_eq!(component.frame_count_for_test(), 1);
+        assert_eq!(component.advance_for_test(ARMIN_FRAME_INTERVAL * 3), 2);
+        assert_eq!(component.frame_count_for_test(), 3);
+    }
+
+    #[test]
+    fn armin_redraw_seam_and_dispose_are_deterministic_and_leak_free() {
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&redraws);
+        let component = ArminComponent::for_test_with_callback(
+            ArminEffect::Scanline,
+            11,
+            Arc::new(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        assert_eq!(component.advance_for_test(ARMIN_FRAME_INTERVAL * 2), 2);
+        assert_eq!(redraws.load(Ordering::SeqCst), 2);
+        component.dispose();
+        assert!(!component.is_running());
+        assert_eq!(component.advance_for_test(Duration::from_secs(10)), 0);
+        assert_eq!(redraws.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn armin_seed_injection_reproduces_random_effect_frames() {
+        for effect in ARMIN_EFFECTS {
+            let first = ArminComponent::for_test(effect, 0xabc0_1234);
+            let second = ArminComponent::for_test(effect, 0xabc0_1234);
+            for _ in 0..3 {
+                assert_eq!(first.tick_for_test(), second.tick_for_test());
+                assert_eq!(
+                    first.current_grid_for_test(),
+                    second.current_grid_for_test()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn armin_cache_invalidation_and_width_clipping_match_component_contract() {
+        let mut component = ArminComponent::for_test(ArminEffect::Typewriter, 2);
+        for width in 0..=64 {
+            let lines = component.render(width);
+            assert_eq!(lines.len(), ARMIN_DISPLAY_HEIGHT + 1);
+            assert_width(&lines, width);
+            assert!(component.cache_is_valid_for_test());
+        }
+        component.invalidate();
+        assert!(!component.cache_is_valid_for_test());
+        let lines = component.render(31);
+        assert_width(&lines, 31);
+        assert!(plain(&lines).contains("ARMIN SAYS HI"));
     }
 
     #[test]
@@ -359,8 +1446,41 @@ mod tests {
     }
 
     #[test]
-    fn animation_duration_is_bounded() {
-        assert!(animation_duration() <= Duration::from_secs(2));
+    fn animation_duration_covers_the_longest_upstream_effect() {
+        assert_eq!(animation_duration(), ARMIN_MAX_ANIMATION);
+        assert_eq!(ARMIN_MAX_FRAMES, worst_case_rain_frames(&armin_grid()));
+        assert_eq!(animation_duration(), Duration::from_nanos(212 * 33_333_333));
+        assert!(animation_duration() >= DAX_TICK_INTERVAL * DAX_MAX_TICKS as u32);
+    }
+
+    #[allow(clippy::needless_range_loop)]
+    fn worst_case_rain_frames(grid: &[Vec<char>]) -> u64 {
+        let initial_offset = (ARMIN_DISPLAY_HEIGHT * 2 - 1) as u64;
+        let reset_offset = 5_u64;
+        let mut maximum = 0;
+
+        for x in 0..ARMIN_WIDTH {
+            let rows = (0..ARMIN_DISPLAY_HEIGHT)
+                .rev()
+                .filter(|&row| grid[row][x] != ' ')
+                .collect::<Vec<_>>();
+            let frames = if let Some((&first, rest)) = rows.split_first() {
+                initial_offset
+                    + first as u64
+                    + rest
+                        .iter()
+                        .map(|&row| reset_offset + row as u64)
+                        .sum::<u64>()
+                    + ARMIN_DISPLAY_HEIGHT as u64
+                    + reset_offset
+                    + 1
+            } else {
+                initial_offset + ARMIN_DISPLAY_HEIGHT as u64 + 1
+            };
+            maximum = maximum.max(frames);
+        }
+
+        maximum
     }
 
     #[test]
@@ -375,5 +1495,91 @@ mod tests {
         let scanline = dax_scanline();
         assert!(scanline.contains('\x1b'));
         assert!(!scanline.contains(r"\x1b"));
+    }
+
+    #[test]
+    fn daxnuts_has_exact_80ms_25_tick_lifecycle_and_text_phases() {
+        let manual = DaxnutsComponent::for_test();
+        assert!(!manual.tick_for_test());
+        assert_eq!(manual.tick_for_test_value(), 1);
+
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&redraws);
+        let component = DaxnutsComponent::for_test_with_callback(Arc::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        assert_eq!(component.tick_for_test_value(), 0);
+        assert!(component.is_running());
+        assert_eq!(
+            component.advance_for_test(DAX_TICK_INTERVAL - Duration::from_nanos(1)),
+            0
+        );
+        assert_eq!(component.tick_for_test_value(), 0);
+        assert_eq!(component.advance_for_test(DAX_TICK_INTERVAL), 1);
+        assert_eq!(component.tick_for_test_value(), 1);
+
+        let tick15 = DAX_TICK_INTERVAL * 15;
+        assert_eq!(component.advance_for_test(tick15), 14);
+        let before_text = plain(&component.render(80));
+        assert!(!before_text.contains("Free Kimi K2.5 via OpenCode Zen"));
+        assert!(!before_text.contains("Try OpenCode"));
+
+        assert_eq!(component.advance_for_test(DAX_TICK_INTERVAL * 16), 1);
+        let first_text = plain(&component.render(80));
+        assert!(first_text.contains("Free Kimi K2.5 via OpenCode Zen"));
+        assert!(!first_text.contains("Try OpenCode"));
+
+        assert_eq!(component.advance_for_test(DAX_TICK_INTERVAL * 18), 2);
+        let second_text = plain(&component.render(80));
+        assert!(second_text.contains("Try OpenCode"));
+        assert_eq!(component.advance_for_test(DAX_TICK_INTERVAL * 25), 7);
+        assert_eq!(component.tick_for_test_value(), DAX_MAX_TICKS);
+        assert!(!component.is_running());
+        assert_eq!(redraws.load(Ordering::SeqCst), 25);
+        assert_eq!(component.advance_for_test(Duration::from_secs(10)), 0);
+        assert_eq!(redraws.load(Ordering::SeqCst), 25);
+    }
+
+    #[test]
+    fn daxnuts_cache_dimensions_and_completion_are_exact() {
+        let mut component = DaxnutsComponent::for_test();
+        let initial = component.render(80);
+        assert_eq!(initial.len(), 25);
+        assert!(component.cache_is_valid_for_test());
+        component.invalidate();
+        assert!(!component.cache_is_valid_for_test());
+
+        for width in 0..=64 {
+            let lines = component.render(width);
+            assert_eq!(lines.len(), 25);
+            assert_width(&lines, width);
+        }
+
+        let completed = DaxnutsComponent::completed().render(80);
+        let completed_plain = plain(&completed);
+        assert!(completed_plain.contains("Free Kimi K2.5 via OpenCode Zen"));
+        assert!(completed_plain.contains("\"Powered by daxnuts\""));
+        assert!(completed_plain.contains("Try OpenCode"));
+        assert!(completed_plain.contains("https://mistral.ai/news/mistral-vibe-2-0"));
+    }
+
+    #[test]
+    fn daxnuts_reveals_image_rows_with_the_upstream_scanline_schedule() {
+        let component = DaxnutsComponent::for_test();
+        let initial = component.render(80);
+        assert_eq!(initial[1], center_line(&dax_scanline(), 80));
+
+        assert_eq!(component.advance_for_test(DAX_TICK_INTERVAL), 1);
+        assert_eq!(component.render(80)[1], center_line(&dax_scanline(), 80));
+
+        assert_eq!(component.advance_for_test(DAX_TICK_INTERVAL * 2), 1);
+        assert_eq!(component.render(80)[1], center_line(&dax_image()[0], 80));
+
+        assert_eq!(component.advance_for_test(DAX_TICK_INTERVAL * 22), 20);
+        let complete_image = component.render(80);
+        assert!(!complete_image
+            .iter()
+            .any(|line| pi_tui::utils::strip_terminal_sequences(line).contains('▓')));
     }
 }

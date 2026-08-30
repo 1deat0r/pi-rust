@@ -156,6 +156,7 @@ pub fn parse_auth_command(args: &[String]) -> Result<Option<AuthCommand>, String
     }))
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 fn parse_min_expiry(value: &str) -> Option<u64> {
     let re = regex::Regex::new(r"^(\d+)(ms|s|m|h)$").unwrap();
     let caps = re.captures(value)?;
@@ -789,6 +790,7 @@ pub fn create_auth_check_model_registry() -> ModelRegistry {
 }
 
 /// `pi auth` dispatcher. Returns true when the args were an auth command.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 pub async fn handle_auth_command(args: &[String]) -> bool {
     if is_auth_command_help(args) {
         print_auth_command_help();
@@ -996,6 +998,7 @@ fn auth_exit(code: i32) -> ! {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;

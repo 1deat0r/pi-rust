@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Binary-level tests for the pi CLI package/config/auth commands
 //! (`pi install/remove/uninstall/update/list`, `pi config`, `pi auth`).
 //!
@@ -90,31 +92,39 @@ exit 0
         fake
     }
 
-    fn pi(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_pi"))
+    fn command(&self, cwd: &Path, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pi"));
+        command
+            .env_clear()
             .current_dir(cwd)
             .env("HOME", &self.home)
-            .env("PI_CODING_AGENT_DIR", &self.agent_dir)
-            .env_remove("PI_PROVIDER")
-            .env_remove("PI_MODEL")
-            .env_remove("PI_KEY")
-            .args(args)
-            .output()
-            .expect("spawn pi")
+            .env("PI_CODING_AGENT_DIR", &self.agent_dir);
+        if let Some(path) = std::env::var_os("PATH") {
+            command.env("PATH", path);
+        }
+        command.args(args);
+        command
+    }
+
+    fn pi(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
+        self.command(cwd, args).output().expect("spawn pi")
     }
 
     fn pi_offline(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_pi"))
-            .current_dir(cwd)
-            .env("HOME", &self.home)
-            .env("PI_CODING_AGENT_DIR", &self.agent_dir)
-            .env("PI_OFFLINE", "1")
-            .env_remove("PI_PROVIDER")
-            .env_remove("PI_MODEL")
-            .env_remove("PI_KEY")
-            .args(args)
-            .output()
-            .expect("spawn pi")
+        let mut command = self.command(cwd, args);
+        command.env("PI_OFFLINE", "1");
+        command.output().expect("spawn pi")
+    }
+
+    fn pi_with_version_endpoint(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        endpoint: &str,
+    ) -> std::process::Output {
+        let mut command = self.command(cwd, args);
+        command.env("PI_VERSION_CHECK_URL", endpoint);
+        command.output().expect("spawn pi")
     }
 
     fn stdout(&self, output: &std::process::Output) -> String {
@@ -422,13 +432,13 @@ fn install_help_prints_usage() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn update_reports_extensions_skipped_for_default_self() {
+fn update_self_reports_rust_install_boundary_without_upstream_query() {
     let sandbox = Sandbox::new("update-self");
     sandbox.write_global_settings(json!({ "packages": [] }));
     let cwd = project(&sandbox, "work");
-    let out = sandbox.pi_offline(&cwd, &["update"]);
-    // Offline update still resolves the self-update plan first, matching the
-    // upstream fetch failure instead of pretending the binary was updated.
+    // An invalid endpoint makes any accidental upstream version request fail
+    // immediately, without relying on network access or a live server.
+    let out = sandbox.pi_with_version_endpoint(&cwd, &["update"], "http://[::1");
     let stdout = sandbox.stdout(&out);
     assert!(
         stdout.contains("Extensions are skipped. Run pi update --extensions to update extensions."),
@@ -437,9 +447,34 @@ fn update_reports_extensions_skipped_for_default_self() {
     assert!(!out.status.success());
     let stderr = sandbox.stderr(&out);
     assert!(
-        stderr.contains("Could not determine latest pi version"),
+        stderr.contains("pi-rust cannot self-update this installation."),
         "{stderr}"
     );
+    assert!(
+        stderr.contains("pi-rust cannot self-update this compiled Rust installation."),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Update pi-rust from its source repository"),
+        "{stderr}"
+    );
+    assert!(!stdout.contains("Update available"), "{stdout}");
+    assert!(!stderr.contains("pi.dev"), "{stderr}");
+}
+
+#[test]
+fn update_help_does_not_claim_upstream_pi_self_update() {
+    let sandbox = Sandbox::new("update-help");
+    let cwd = project(&sandbox, "work");
+    let out = sandbox.pi(&cwd, &["update", "--help"]);
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    let stdout = sandbox.stdout(&out);
+    assert!(
+        stdout.contains("Explain how to update the pi-rust Rust binary"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("Update pi only"), "{stdout}");
+    assert!(!stdout.contains("npm"), "{stdout}");
 }
 
 #[test]

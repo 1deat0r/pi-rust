@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Export-html integration coverage for the Rust-only static renderer.
 //!
 //! The old JavaScript oracle/golden comparison intentionally no longer

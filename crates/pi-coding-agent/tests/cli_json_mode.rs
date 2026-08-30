@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Binary-level tests for `--mode json` (JSON event stream over stdout).
 
 use std::fs;
@@ -176,7 +178,7 @@ fn persisted_message_entries(path: &Path) -> Vec<serde_json::Value> {
         .expect("session JSONL")
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|entry| entry["kind"] == "entry" && entry["type"] == "message")
+        .filter(|entry| entry["type"] == "message")
         .collect()
 }
 
@@ -213,10 +215,21 @@ fn json_mode_emits_event_lines() {
     let stdout = sandbox.stdout(&out);
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(!lines.is_empty(), "expected JSON event lines");
-    // Every line is valid JSON with a type field.
+    let header: serde_json::Value = serde_json::from_str(lines[0]).expect("valid session header");
+    assert_eq!(header["type"], "session");
+    assert_eq!(header["version"], 3);
+    assert!(header["timestamp"]
+        .as_str()
+        .is_some_and(|value| value.ends_with('Z')));
+    assert_eq!(header["cwd"].as_str(), sandbox.root.to_str());
+    assert!(header["id"].as_str().is_some_and(|id| !id.is_empty()));
+    // Every event line is valid JSON with a type field; the first line is the
+    // durable session header emitted by the upstream JSON print lifecycle.
     for line in &lines {
         let v: serde_json::Value = serde_json::from_str(line).expect("valid JSON line");
-        assert!(v.get("type").is_some(), "event must carry a type: {line}");
+        if v["type"] != "session" {
+            assert!(v.get("type").is_some(), "event must carry a type: {line}");
+        }
     }
     // The stream includes message_update events and the final text.
     let has_update = lines.iter().any(|l| {
@@ -240,6 +253,17 @@ fn json_mode_emits_event_lines() {
     assert_eq!(assistant["message"]["model"], "faux-1");
     let persisted = sandbox.session_files();
     assert_eq!(persisted.len(), 1, "JSON mode must persist one session");
+    let durable_header: serde_json::Value = fs::read_to_string(&persisted[0])
+        .expect("durable session JSONL")
+        .lines()
+        .next()
+        .and_then(|line| serde_json::from_str(line).ok())
+        .expect("durable session header");
+    assert_eq!(durable_header["type"], "session");
+    assert_eq!(durable_header["version"], 3);
+    assert!(durable_header["timestamp"]
+        .as_str()
+        .is_some_and(|value| value.ends_with('Z')));
     let messages = persisted_message_entries(&persisted[0]);
     assert_eq!(
         messages.len(),
@@ -514,7 +538,9 @@ fn json_mode_streams_terminal_error_as_event_and_exits_zero() {
     let mut seen_error = false;
     for line in stdout.lines() {
         let v: serde_json::Value = serde_json::from_str(line).expect("valid JSON line");
-        assert!(v.get("type").is_some(), "event must carry a type: {line}");
+        if v["type"] != "session" {
+            assert!(v.get("type").is_some(), "event must carry a type: {line}");
+        }
         if v["type"] == "message_update" && v["assistantMessageEvent"]["type"] == "error" {
             seen_error = true;
             assert_eq!(v["assistantMessageEvent"]["error"]["provider"], "openai");

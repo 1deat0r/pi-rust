@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Permanent real-terminal two-turn coverage for the Rust `pi` binary.
 //!
 //! The test drives the actual line editor through tmux, checks both visible
@@ -60,6 +62,10 @@ mod unix {
 
     impl TmuxSession {
         fn start(sandbox: &Sandbox) -> Self {
+            Self::start_with_version_endpoint(sandbox, None)
+        }
+
+        fn start_with_version_endpoint(sandbox: &Sandbox, endpoint: Option<&str>) -> Self {
             let name = format!("pi-interactive-multiturn-{}", uuid::Uuid::new_v4());
             let created = tmux(&[
                 "new-session",
@@ -96,10 +102,20 @@ mod unix {
                 "pi test binary does not exist: {}",
                 binary.display()
             );
+            let version_endpoint = endpoint
+                .map(|value| format!(" PI_VERSION_CHECK_URL={value}"))
+                .unwrap_or_default();
+            let offline_environment = if endpoint.is_some() {
+                ""
+            } else {
+                " PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1"
+            };
             let command = format!(
-                "env HOME={} PI_CODING_AGENT_DIR={} PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_SHARE_DRY_RUN=1 {} --approve --provider faux --model faux-1; exec tail -f /dev/null",
+                "env HOME={} PI_CODING_AGENT_DIR={}{} PI_SHARE_DRY_RUN=1{} {} --approve --provider faux --model faux-1 --tui-mode fullscreen; exec tail -f /dev/null",
                 shell_quote(&sandbox.home),
                 shell_quote(&sandbox.agent_dir),
+                offline_environment,
+                version_endpoint,
                 shell_quote(&binary),
             );
             let configured = tmux(&["set-option", "-t", &name, "remain-on-exit", "on"]);
@@ -132,17 +148,26 @@ mod unix {
         where
             F: FnMut(&str) -> bool,
         {
+            self.wait_for_with_poll(&mut predicate, Duration::from_millis(25))
+                .1
+        }
+
+        fn wait_for_with_poll<F>(&self, predicate: &mut F, poll: Duration) -> (Duration, String)
+        where
+            F: FnMut(&str) -> bool,
+        {
+            let started = Instant::now();
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
                 let capture = self.capture();
                 if predicate(&capture) {
-                    return capture;
+                    return (started.elapsed(), capture);
                 }
                 assert!(
                     Instant::now() < deadline,
                     "timed out waiting for PTY output; last capture:\n{capture}"
                 );
-                thread::sleep(Duration::from_millis(25));
+                thread::sleep(poll);
             }
         }
 
@@ -151,6 +176,24 @@ mod unix {
             assert!(
                 output.status.success(),
                 "tmux send-keys {line:?} failed: {}",
+                stderr(&output)
+            );
+        }
+
+        fn send_text(&self, text: &str) {
+            let output = tmux(&["send-keys", "-l", "-t", &self.name, text]);
+            assert!(
+                output.status.success(),
+                "tmux literal send-keys {text:?} failed: {}",
+                stderr(&output)
+            );
+        }
+
+        fn send_key(&self, key: &str) {
+            let output = tmux(&["send-keys", "-t", &self.name, key]);
+            assert!(
+                output.status.success(),
+                "tmux send-keys {key:?} failed: {}",
                 stderr(&output)
             );
         }
@@ -262,7 +305,7 @@ mod unix {
     fn two_interactive_turns_persist_and_restore_terminal() {
         let sandbox = Sandbox::new();
         let session = TmuxSession::start(&sandbox);
-        session.wait_for(|capture| capture.contains("(faux/Faux Model)"));
+        session.wait_for(|capture| capture.contains("faux-1"));
 
         session.send_line("first release TUI turn");
         session.wait_for(|capture| capture.contains("faux response to: first release TUI turn"));
@@ -291,6 +334,120 @@ mod unix {
         );
         assert!(raw.contains("\x1b[?25l"), "cursor hide missing");
         assert!(raw.contains("\x1b[?25h"), "cursor restore missing");
+        session.wait_for_cooked_mode();
+        session.stop_pipe();
+    }
+
+    #[test]
+    fn composer_echoes_a_real_typing_burst_without_a_stall() {
+        let sandbox = Sandbox::new();
+        let session = TmuxSession::start(&sandbox);
+        session.wait_for(|capture| capture.contains("faux-1"));
+
+        let probe = "typing-lag-probe-42";
+        let started = Instant::now();
+        for character in probe.chars() {
+            session.send_text(&character.to_string());
+        }
+        let capture = session.wait_for(|capture| capture.contains(probe));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed <= Duration::from_millis(750),
+            "composer took {elapsed:?} to echo {probe:?}; last capture:\n{capture}"
+        );
+
+        // Use the editor's real kill-line binding so the probe does not get
+        // concatenated with the shutdown command while the input queue is
+        // still draining.
+        session.send_key("C-u");
+        session.send_line("/quit");
+        session.wait_for_raw(&sandbox, "\x1b[?1049l");
+        session.wait_for_cooked_mode();
+        session.stop_pipe();
+    }
+
+    #[test]
+    fn composer_echoes_each_real_keystroke_without_accumulating_input_lag() {
+        let sandbox = Sandbox::new();
+        let session = TmuxSession::start(&sandbox);
+        session.wait_for(|capture| capture.contains("faux-1"));
+
+        // Exercise the same hot path after real turns have populated the
+        // transcript. A regression that rebuilds all historical blocks on
+        // every composer key can look fine on an empty session while becoming
+        // visibly laggy once the user has been working for a while.
+        for turn in 0..6 {
+            let prompt = format!("latency history turn {turn}");
+            let response = format!("faux response to: {prompt}");
+            session.send_line(&prompt);
+            session.wait_for(|capture| capture.contains(&response));
+        }
+
+        let probe = "per-key-latency-Δ-42";
+        let mut expected = String::new();
+        let mut samples = Vec::new();
+        for character in probe.chars() {
+            expected.push(character);
+            let started = Instant::now();
+            session.send_text(&character.to_string());
+            let (waited, capture) = session.wait_for_with_poll(
+                &mut |capture: &str| capture.contains(&expected),
+                Duration::from_millis(2),
+            );
+            let elapsed = started.elapsed().max(waited);
+            samples.push(elapsed);
+            assert!(
+                elapsed <= Duration::from_millis(150),
+                "keystroke {character:?} took {elapsed:?} to echo; expected {expected:?}; last capture:\n{capture}"
+            );
+        }
+
+        samples.sort_unstable();
+        let p95 = samples[(samples.len() * 95 / 100).min(samples.len() - 1)];
+        let max = *samples.last().expect("probe must have samples");
+        eprintln!(
+            "composer per-key echo latency: samples={} p95={p95:?} max={max:?}",
+            samples.len()
+        );
+        assert!(
+            p95 <= Duration::from_millis(16),
+            "composer p95 echo latency exceeded one 60 Hz frame: {p95:?}; samples={samples:?}"
+        );
+        assert!(
+            max <= Duration::from_millis(50),
+            "composer max echo latency exceeded 50 ms: {max:?}; samples={samples:?}"
+        );
+
+        session.send_key("C-u");
+        session.send_line("/quit");
+        session.wait_for_raw(&sandbox, "\x1b[?1049l");
+        session.wait_for_cooked_mode();
+        session.stop_pipe();
+    }
+
+    #[test]
+    fn startup_does_not_query_upstream_pi_or_show_update_notice() {
+        let sandbox = Sandbox::new();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback probe");
+        listener
+            .set_nonblocking(true)
+            .expect("make loopback probe nonblocking");
+        let endpoint = format!("http://{}/latest-version", listener.local_addr().unwrap());
+        let session = TmuxSession::start_with_version_endpoint(&sandbox, Some(&endpoint));
+        let capture = session.wait_for(|capture| capture.contains("faux-1"));
+        assert!(!capture.contains("Update available"), "{capture}");
+        assert!(!capture.contains("pi.dev"), "{capture}");
+        thread::sleep(Duration::from_millis(500));
+        assert!(
+            listener.accept().is_err(),
+            "interactive startup unexpectedly queried the upstream release endpoint"
+        );
+        session.send_line("startup boundary check");
+        let capture = session
+            .wait_for(|capture| capture.contains("faux response to: startup boundary check"));
+        assert!(!capture.contains("Update available"), "{capture}");
+        session.send_line("/quit");
+        session.wait_for_raw(&sandbox, "\x1b[?1049l");
         session.wait_for_cooked_mode();
         session.stop_pipe();
     }

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! PTY coverage for the real `pi config` selector.
 //!
 //! The component tests exercise state transitions in isolation. This test

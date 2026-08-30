@@ -4,14 +4,14 @@
 /trust allow|default project trust: allow
 /reload|reloaded settings
 /share|share skipped
-/logout|usage: /logout
-/login faux|no OAuth login available
+/logout|No stored credentials to remove
+/login faux|Login cancelled|escape
 /logout faux|logged out faux
 /copy|no assistant message
 /name slash fixture|session name: slash fixture
 /new|started new session
 /resume|seed-
-/tree|session tree:
+/tree|Session Tree
 /clone|clone session
 /export $HTML|exported session to
 /import $SEED|imported

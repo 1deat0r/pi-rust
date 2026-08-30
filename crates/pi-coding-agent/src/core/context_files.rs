@@ -24,7 +24,7 @@ const CONTEXT_CANDIDATES: [&str; 5] = [
 ];
 
 fn strip_bom(s: &str) -> String {
-    s.trim_start_matches('\u{feff}').to_string()
+    s.strip_prefix('\u{feff}').unwrap_or(s).to_string()
 }
 
 /// `loadContextFileFromDir` — first candidate file present in `dir`.
@@ -60,7 +60,9 @@ pub struct GitPaths {
 }
 
 pub fn find_git_paths(cwd: &str) -> Option<GitPaths> {
-    let mut dir = PathBuf::from(cwd);
+    // `findGitPaths` receives a resolved cwd from the upstream loader. Keep
+    // the public Rust seam equivalent when callers pass a relative path.
+    let mut dir = crate::core::settings::resolve_path(cwd);
     loop {
         let git_path = dir.join(".git");
         if git_path.exists() {
@@ -75,7 +77,14 @@ pub fn find_git_paths(cwd: &str) -> Option<GitPaths> {
                 };
                 let trimmed = content.trim();
                 if let Some(git_dir_rel) = trimmed.strip_prefix("gitdir: ") {
-                    let git_dir = dir.join(git_dir_rel.trim());
+                    // Node's `resolve(dir, gitdir)` normalizes `.`/`..`
+                    // segments before returning the public metadata paths.
+                    // `Path::join` alone preserves those segments, which is
+                    // observable to footer/resource callers even though the
+                    // resulting path still opens successfully.
+                    let git_dir = crate::core::settings::resolve_path(
+                        &dir.join(git_dir_rel.trim()).to_string_lossy(),
+                    );
                     let head_path = git_dir.join("HEAD");
                     if !head_path.exists() {
                         return None;
@@ -83,7 +92,9 @@ pub fn find_git_paths(cwd: &str) -> Option<GitPaths> {
                     let commondir_path = git_dir.join("commondir");
                     let common_git_dir = if commondir_path.exists() {
                         match std::fs::read_to_string(&commondir_path) {
-                            Ok(c) => git_dir.join(c.trim()),
+                            Ok(c) => crate::core::settings::resolve_path(
+                                &git_dir.join(c.trim()).to_string_lossy(),
+                            ),
                             Err(_) => git_dir.clone(),
                         }
                     } else {
@@ -120,7 +131,8 @@ pub fn find_git_paths(cwd: &str) -> Option<GitPaths> {
 }
 
 fn canonical(p: &str) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p))
+    let resolved = crate::core::settings::resolve_path(p);
+    std::fs::canonicalize(&resolved).unwrap_or(resolved)
 }
 
 /// `findShadowedContextFile` — when the cwd is a linked worktree nested in its
@@ -152,8 +164,11 @@ fn find_shadowed_context_file(cwd: &str) -> Option<String> {
 /// `loadProjectContextFiles` — global context + cwd/ancestor context files,
 /// highest ancestor first, falling back correctly across worktree boundaries.
 pub fn load_project_context_files(cwd: &str, agent_dir: &str) -> Vec<ContextFile> {
-    let resolved_cwd = canonical(cwd);
-    let resolved_agent_dir = canonical(agent_dir);
+    // Match the upstream loader's lexical resolution: context provenance keeps
+    // the path spelling supplied by the caller (including a symlink), while
+    // canonicalization remains limited to worktree-shadow comparisons below.
+    let resolved_cwd = crate::core::settings::resolve_path(cwd);
+    let resolved_agent_dir = crate::core::settings::resolve_path(agent_dir);
 
     let mut context_files: Vec<ContextFile> = Vec::new();
     let mut seen_paths: Vec<PathBuf> = Vec::new();
@@ -222,6 +237,7 @@ pub fn format_project_context(files: &[ContextFile]) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -301,6 +317,36 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_linked_worktree_git_metadata_paths() {
+        let root = tmpdir("gitworktree");
+        let main_repo = root.join("main");
+        let common_git_dir = main_repo.join(".git");
+        let git_dir = common_git_dir.join("worktrees").join("feature");
+        let worktree = root.join("worktree");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(
+            main_repo.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/feature\n").unwrap();
+        std::fs::write(git_dir.join("commondir"), "../..\n").unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: ../main/.git/worktrees/feature\n",
+        )
+        .unwrap();
+
+        let paths = find_git_paths(&worktree.to_string_lossy()).expect("linked worktree paths");
+        assert_eq!(Path::new(&paths.common_git_dir), common_git_dir);
+        assert_eq!(Path::new(&paths.head_path), git_dir.join("HEAD"));
+        assert!(!paths.common_git_dir.contains(".."));
+        assert!(!paths.head_path.contains(".."));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn load_context_file_strips_bom_in_header_too() {
         let root = tmpdir("override");
         let cwd = root.join("proj");
@@ -316,6 +362,32 @@ mod tests {
         assert_eq!(files[0].content, "override");
         // only one loaded for the dir
         assert!(files[0].path.ends_with("AGENTS.override.md"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preserves_symlink_path_in_context_provenance() {
+        use std::os::unix::fs::symlink;
+
+        let root = tmpdir("symlink-provenance");
+        let real = root.join("real");
+        let alias = root.join("alias");
+        std::fs::create_dir_all(&real).unwrap();
+        write(&real.join("AGENTS.md"), "through the alias");
+        symlink(&real, &alias).unwrap();
+
+        let files = load_project_context_files(
+            &alias.to_string_lossy(),
+            &root.join("agent").to_string_lossy(),
+        );
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].content, "through the alias");
+        assert_eq!(
+            files[0].path,
+            alias.join("AGENTS.md").to_string_lossy().into_owned()
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

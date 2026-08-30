@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Binary-level flag-matrix test (T3 #47): fire every flag in the upstream
 //! `args.ts` surface and assert (a) recognized flags parse without an "unknown
 //! flags" diagnostic, (b) `--help` lists them, (c) error-valued diagnostics

@@ -209,7 +209,7 @@ fn run_config_selector(
     let terminal = Arc::new(Mutex::new(TerminalBackend::new()));
     terminal
         .lock()
-        .unwrap()
+        .unwrap_or_else(|error| error.into_inner())
         .enter_raw()
         .map_err(|e| format!("enter raw: {e}"))?;
     let mut tree = Tree::new(terminal.clone());
@@ -223,7 +223,7 @@ fn run_config_selector(
         tree.render(Some(&scene));
         let event = terminal
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .next_event()
             .map_err(|e| format!("read terminal: {e}"))?;
         match event {
@@ -236,7 +236,11 @@ fn run_config_selector(
             }
             TerminalEvent::Key(_) => {}
         }
-        if component.lock().unwrap().is_closed() {
+        if component
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_closed()
+        {
             break;
         }
     }
@@ -294,6 +298,7 @@ fn summarize_resources(manager: &PackageManager, agent_dir: &str) -> Vec<(String
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

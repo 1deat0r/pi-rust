@@ -71,7 +71,38 @@ changed.
 Next: Phase 2.5/2.6 pi-coding-agent error typing (largest remaining
 String-error surface), then the cross-crate transport error unification.
 
-## Push blocker — 2026-08-30 — three campaign commits are local-only
+## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 2.5 (pi-coding-agent under the hard gate)
+
+Seventh campaign checkpoint, direct child of Phase 2.4 (`3d777bf`). The
+largest crate, pi-coding-agent, now opts into
+`[workspace.lints.clippy] unwrap_used/expect_used/panic = "deny"` and is
+clean with `-D warnings`.
+
+Implemented:
+
+- Poison-tolerant locking across 29 files (interactive mode, settings,
+  auth storage, model store/runtime, extensions, RPC/JSON modes, theme).
+- 90 functions across 27 files carry scoped, commented
+  `#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]`
+  annotations marking checked invariants and deliberate
+  upstream-mirroring diagnostics — notably auth-storage lock/store
+  failures and settings parse panics that mirror upstream's
+  unrecoverable-configuration behavior. Converting those to typed errors
+  without changing user-visible text remains future work (Phase 3).
+- Test modules and `tests/*.rs` carry scoped allows only.
+
+PTY environment note: when a tmux server is shared with other sessions
+and cannot be killed, inject the provider credential into the server's
+global environment instead:
+`tmux set-environment -g QWEN_TOKEN_PLAN_API_KEY ...` — new test
+sessions then inherit it.
+
+Exact validation: complete workspace matrix exit 0, 2,805 passed (PTY
+suites included); strict workspace clippy; fmt/diff checks;
+`conversion_audit all` `Conversion progress: 100.00% (166/166; 0 open)`.
+No numbered ledger row changed.
+
+## Push blocker — 2026-08-30 — five campaign commits are local-only
 
 The Phase 2.3a commit exists locally as `c611c74` (recreated after the
 first attempt `b48171f` was lost to repository corruption: 39 zero-length
@@ -86,9 +117,9 @@ Pushing to `origin/main` currently fails reproducibly with
 with `http.postBuffer=500MB`), while small reads (`git ls-remote`) succeed
 and `gh auth status` hangs indefinitely. This host's GitHub HTTPS upload
 path is broken; the failure predates and is independent of the campaign
-changes. Local `main` (`b161865`) is ahead of `origin/main` (`fb46809`) by three
-commits: `c611c74` (Phase 2.3a pi-ai gate), `e02528a` (blocker note), and
-`b161865` (Phase 2.3b typed PiAiError). Per the commit gate protocol the local commit
+changes. Local `main` (`b161865`) is ahead of `origin/main` (`fb46809`) by five
+commits: `c611c74`, `e02528a`, `b161865` (Phases 2.3a/2.3b), `3d777bf`
+(Phase 2.4), and this Phase 2.5 checkpoint. Per the commit gate protocol the local commit
 is preserved and local/remote parity is NOT claimed until the network
 issue clears; rerun `git push origin main` and verify
 `git rev-parse HEAD == git ls-remote origin refs/heads/main`.

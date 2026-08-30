@@ -1,19 +1,27 @@
 //! Coding-agent core modules (port of `packages/coding-agent/src/core/`).
 
+pub mod agent_session_runtime;
+pub mod agent_session_services;
 pub mod auth_guidance;
 pub mod auth_storage;
 pub mod cache_stats;
+pub mod changelog;
 pub mod context_files;
 pub mod diagnostics;
 pub mod event_bus;
+pub mod experimental;
 pub mod export_html;
 pub mod extensions;
+pub mod fs_watch;
 pub mod http_dispatcher;
+pub mod llama;
+pub mod management_http;
 pub mod model_config;
 pub mod model_registry;
 pub mod model_resolver;
 pub mod model_runtime;
 pub mod models_store;
+pub mod output_guard;
 pub mod package_manager;
 pub mod pi_manifest;
 pub mod project_trust;
@@ -22,7 +30,9 @@ pub mod provider_attribution;
 pub mod provider_composer;
 pub mod remote_catalog_provider;
 pub mod resolve_config_value;
+pub mod sdk;
 pub mod session_cwd;
+pub mod session_env;
 pub mod session_migration;
 pub mod settings;
 pub mod skills;

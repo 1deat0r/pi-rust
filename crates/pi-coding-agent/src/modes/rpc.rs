@@ -17,27 +17,31 @@ use std::sync::{Arc, Mutex};
 
 use pi_agent::agent::AgentContext;
 use pi_agent::rich_agent::{
-    agent_tool_result_to_partial_json, run_rich_agent_loop, PendingMessageQueue, QueueMode,
-    RichAgentEvent, RichAgentLoopConfig,
+    agent_tool_result_to_partial_json, run_rich_agent_loop, AfterToolCallContext,
+    AfterToolCallResult, BeforeToolCallResult, PendingMessageQueue, QueueMode, RichAgentEvent,
+    RichAgentLoopConfig,
 };
 use pi_agent::session::jsonl::repo::CreateOptions;
 use pi_agent::session::session::Session as JsonlSession;
 
 use pi_agent::harness::events::HarnessEventBus;
 use pi_agent::harness::{run_with_harness_lifecycle, HarnessTelemetryContext, SimpleModels};
+use pi_agent::session::memory::{in_memory_metadata, InMemorySessionStorage};
+use pi_agent::session::session::SessionStorageKind;
 use pi_agent::session::state::{BranchBounds, EntryOrder, EntryQuery, ForkOptions, ForkPosition};
 use pi_agent::session::types::EntryNoStats;
 use pi_agent::session::JsonlSessionRepo;
 use pi_ai::model::Model;
 use pi_ai::models::Models;
-use pi_ai::types::{AssistantMessageEvent, ContentBlock, Message, UserContent};
+use pi_ai::types::{AssistantMessageEvent, ContentBlock, Message, ToolResultMessage, UserContent};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::args::Args;
 use crate::config;
 use crate::core::extensions::types::{
-    ExtensionHostAction, ExtensionHostActions, PendingHostAction,
+    ExtensionHostAction, ExtensionHostActions, ExtensionUiRequestSink,
+    ExtensionUiResponseDisposition, PendingHostAction,
 };
 use crate::core::extensions::{
     install_tools, load_for_mode, load_for_mode_with_reason_and_flags_and_previous,
@@ -50,6 +54,60 @@ use super::rpc_types::{failure, success, RpcCommand, RpcSessionState};
 
 /// Max output chars before a bash result is truncated (upstream threshold).
 const BASH_TRUNCATE_LIMIT: usize = 30_000;
+
+/// The RPC mode uses the same initial active-tool policy as the stateful
+/// upstream AgentSession. The registry still contains every available tool;
+/// only these names are sent to the model for a turn.
+const RPC_BUILTIN_TOOL_NAMES: [&str; 7] = ["bash", "read", "write", "edit", "ls", "find", "grep"];
+const RPC_DEFAULT_ACTIVE_TOOL_NAMES: [&str; 4] = ["read", "bash", "edit", "write"];
+
+fn rpc_is_builtin_tool_name(name: &str) -> bool {
+    RPC_BUILTIN_TOOL_NAMES.contains(&name)
+}
+
+fn rpc_select_active_tool_names(
+    args: &Args,
+    settings: &SettingsManager,
+    tools: &[pi_agent::tools::AgentTool],
+) -> Vec<String> {
+    let mut active = if args.no_tools {
+        Vec::new()
+    } else if let Some(explicit) = args.tools.clone() {
+        explicit
+    } else if args.no_builtin_tools {
+        tools
+            .iter()
+            .filter(|tool| !rpc_is_builtin_tool_name(&tool.tool.name))
+            .map(|tool| tool.tool.name.clone())
+            .collect()
+    } else {
+        settings.get_default_tools().unwrap_or_else(|| {
+            RPC_DEFAULT_ACTIVE_TOOL_NAMES
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect()
+        })
+    };
+
+    // Extension tools are implicitly active for a normal session, matching
+    // `includeAllExtensionTools: true`. An explicit --tools list remains an
+    // allowlist, while --no-tools/--no-builtin-tools retain their stronger
+    // policy boundaries.
+    if args.tools.is_none() && !args.no_tools && !args.no_builtin_tools {
+        active.extend(
+            tools
+                .iter()
+                .filter(|tool| !rpc_is_builtin_tool_name(&tool.tool.name))
+                .map(|tool| tool.tool.name.clone()),
+        );
+    }
+    if let Some(excluded) = &args.exclude_tools {
+        active.retain(|name| !excluded.iter().any(|excluded| excluded == name));
+    }
+    active.sort();
+    active.dedup();
+    active
+}
 
 type FauxResponseFactory = Box<
     dyn Fn(
@@ -69,6 +127,145 @@ fn rpc_user_message(text: &str, images: &[ContentBlock]) -> pi_agent::types::Age
         blocks,
         pi_ai::types::now_ms(),
     )))
+}
+
+/// Decode an extension message returned by `before_agent_start`. Upstream
+/// extensions commonly omit the optional presentation metadata on custom
+/// messages, while the Rust wire type keeps those fields explicit. Fill only
+/// those defaults; malformed messages are ignored by the RPC adapter just as
+/// an extension result with an unusable message would be by the JS session.
+fn rpc_extension_agent_message(value: serde_json::Value) -> Option<pi_agent::types::AgentMessage> {
+    if let Ok(message) = serde_json::from_value::<pi_agent::types::AgentMessage>(value.clone()) {
+        return Some(message);
+    }
+    let serde_json::Value::Object(mut object) = value else {
+        return None;
+    };
+    if object.get("role").and_then(serde_json::Value::as_str) != Some("custom") {
+        return None;
+    }
+    object
+        .entry("customType".to_string())
+        .or_insert_with(|| serde_json::Value::String("custom".to_string()));
+    object
+        .entry("content".to_string())
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    object
+        .entry("display".to_string())
+        .or_insert(serde_json::Value::Bool(true));
+    object
+        .entry("timestamp".to_string())
+        .or_insert_with(|| serde_json::json!(pi_ai::types::now_ms()));
+    serde_json::from_value(serde_json::Value::Object(object)).ok()
+}
+
+/// Convert the stateful extension hook boundary into the rich-loop hook used
+/// by RPC. The runner is retained by the detached prompt config so each turn
+/// invokes the same extension instance in registration order.
+fn rpc_before_tool_call_hook(
+    runner: Arc<crate::core::extensions::ExtensionRunner>,
+) -> pi_agent::rich_agent::BeforeToolCallHook {
+    Arc::new(move |context, _signal| {
+        let runner = runner.clone();
+        Box::pin(async move {
+            let event = serde_json::json!({
+                "type": "tool_call",
+                "toolName": context.tool_name.clone(),
+                "toolCallId": context.tool_call_id.clone(),
+                "input": context.args.clone(),
+            });
+            let result = runner.emit_tool_call(&event)?;
+            if let Some(updated_args) = result.get("input").or_else(|| result.get("args")).cloned()
+            {
+                context.args = updated_args;
+            }
+            Some(BeforeToolCallResult {
+                block: result
+                    .get("block")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+                reason: result
+                    .get("reason")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                terminate: result
+                    .get("terminate")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            })
+        })
+    })
+}
+
+/// Convert the rich-loop tool result into the extension runner's upstream
+/// hook shape, then apply the returned content/details/usage/error overrides
+/// through the runner's sequential result patch implementation.
+fn rpc_after_tool_call_hook(
+    runner: Arc<crate::core::extensions::ExtensionRunner>,
+) -> pi_agent::rich_agent::AfterToolCallHook {
+    Arc::new(move |context: AfterToolCallContext, _signal| {
+        let runner = runner.clone();
+        Box::pin(async move {
+            let usage = match &context.result {
+                ToolResultMessage::ToolResult { usage, .. } => usage.clone(),
+            };
+            let event = serde_json::json!({
+                "type": "tool_result",
+                "toolName": context.tool_name,
+                "toolCallId": context.tool_call_id,
+                "input": context.args,
+                "content": context.result.content(),
+                "details": context.result.details(),
+                "isError": context.is_error,
+                "usage": usage,
+            });
+            let result = runner.emit_tool_result(event)?;
+            let content = result.get("content").and_then(rpc_content_blocks);
+            let details = result.get("details").cloned();
+            let usage = result
+                .get("usage")
+                .filter(|value| !value.is_null())
+                .and_then(|value| serde_json::from_value(value.clone()).ok());
+            let is_error = result.get("isError").and_then(serde_json::Value::as_bool);
+            let added_tool_names = result
+                .get("addedToolNames")
+                .and_then(serde_json::Value::as_array)
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                });
+            let terminate = result.get("terminate").and_then(serde_json::Value::as_bool);
+            if content.is_none()
+                && details.is_none()
+                && usage.is_none()
+                && is_error.is_none()
+                && added_tool_names.is_none()
+                && terminate.is_none()
+            {
+                return None;
+            }
+            Some(AfterToolCallResult {
+                content,
+                details,
+                usage,
+                added_tool_names,
+                is_error,
+                terminate,
+            })
+        })
+    })
+}
+
+fn rpc_content_blocks(value: &serde_json::Value) -> Option<Vec<ContentBlock>> {
+    if value.is_null() {
+        return None;
+    }
+    serde_json::from_value::<Vec<ContentBlock>>(value.clone())
+        .ok()
+        .or_else(|| value.as_str().map(|text| vec![ContentBlock::text(text)]))
 }
 
 /// Decode the wire-level `ImageContent[]` shape used by prompt, steer, and
@@ -279,6 +476,30 @@ fn thinking_budgets(settings: &SettingsManager) -> Option<pi_ai::types::Thinking
     })
 }
 
+/// Return the error that the upstream `AgentSession.prompt()` reports when a
+/// non-queued prompt cannot pass model/auth preflight.  RPC emits the prompt
+/// response only after this check; doing it at the mode boundary is important
+/// because detached prompt workers cannot retroactively replace a success line
+/// with the single correlated failure that upstream sends.
+fn rpc_prompt_preflight_error(
+    provider: &str,
+    api_key: Option<&str>,
+    has_configured_auth: bool,
+    oauth_capable: bool,
+) -> Option<String> {
+    if api_key.is_some_and(|key| !key.is_empty()) || has_configured_auth {
+        return None;
+    }
+    if oauth_capable {
+        return Some(format!(
+            "Authentication failed for \"{provider}\". Credentials may have expired or network is unavailable. Run '/login {provider}' to re-authenticate."
+        ));
+    }
+    Some(crate::core::auth_guidance::format_no_api_key_found_message(
+        provider,
+    ))
+}
+
 /// Merge the coding-agent runtime's provider settings into a request-specific
 /// simple-stream option set. Compaction supplies request-local values such as
 /// max tokens and a fresh session id; those values must win over the runtime
@@ -340,6 +561,10 @@ pub struct RpcRuntime {
     pub session_path: Option<String>,
     pub session_id: String,
     pub session_name: Option<String>,
+    /// Whether the currently bound session is durable. `--no-session` starts
+    /// false, while an explicit runtime session switch can intentionally bind
+    /// a persistent session just as the upstream runtime does.
+    pub session_persistence: bool,
     pub auto_compaction_enabled: bool,
     pub auto_retry_enabled: bool,
     pub messages: Vec<pi_agent::types::AgentMessage>,
@@ -369,13 +594,16 @@ pub struct RpcRuntime {
     /// exposes the same resource-backed slash command catalog as upstream.
     pub prompt_templates: Vec<crate::core::prompt_templates::PromptTemplate>,
     pub skills: Vec<crate::core::skills::Skill>,
-    /// The live tool set used to construct the next prompt context. `None`
-    /// means the full mode-allowed registry is active; an extension
-    /// `setActiveTools` request changes this to the validated requested set.
+    /// The live active-tool allowlist used to construct the next prompt
+    /// context. It is initialized from CLI/settings policy and replaced when
+    /// an extension `setActiveTools` request is applied.
     active_tool_names: Option<Vec<String>>,
     /// One extension runtime is shared by all prompt contexts for this RPC
     /// session. Prompt tool closures retain the runner while detached.
     pub loaded_extensions: LoadedExtensions,
+    /// Sink installed by the RPC loop. It is retained so a session/reload
+    /// replacement can attach the same output path to the new host broker.
+    ui_request_sink: Option<ExtensionUiRequestSink>,
 }
 
 impl Drop for RpcRuntime {
@@ -473,6 +701,11 @@ struct RpcPromptResult {
 enum RpcPromptTaskMessage {
     Event(String),
     Finished(RpcPromptResult),
+    ExtensionCommandFinished {
+        id: Option<String>,
+        command: String,
+        result: Result<Option<serde_json::Value>, String>,
+    },
 }
 
 struct RpcBashTaskResult {
@@ -492,6 +725,7 @@ enum RpcTaskMessage {
     Prompt(RpcPromptTaskMessage),
     BashUpdate(RpcBashUpdate),
     Bash(RpcBashTaskResult),
+    ExtensionUiRequest(String),
 }
 
 #[cfg(test)]
@@ -625,35 +859,198 @@ fn compaction_retry_callbacks(
     pi_ai::utils::RetryCallbacks {
         on_retry_scheduled: Some(Box::new(
             move |attempt, max_attempts, delay_ms, error_message| {
-                scheduled_events.lock().unwrap().push(serde_json::json!({
-                    "type": "summarization_retry_scheduled",
-                    "attempt": attempt,
-                    "maxAttempts": max_attempts,
-                    "delayMs": delay_ms,
-                    "errorMessage": error_message,
-                }));
+                scheduled_events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(serde_json::json!({
+                        "type": "summarization_retry_scheduled",
+                        "attempt": attempt,
+                        "maxAttempts": max_attempts,
+                        "delayMs": delay_ms,
+                        "errorMessage": error_message,
+                    }));
             },
         )),
         on_retry_attempt_start: Some(Box::new(move || {
-            attempt_events.lock().unwrap().push(serde_json::json!({
-                "type": "summarization_retry_attempt_start",
-                "source": "compaction",
-                "reason": reason,
-            }));
+            attempt_events
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(serde_json::json!({
+                    "type": "summarization_retry_attempt_start",
+                    "source": "compaction",
+                    "reason": reason,
+                }));
         })),
         on_retry_finished: Some(Box::new(move |_success, _attempt, _final_error| {
             finished_events
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|error| error.into_inner())
                 .push(serde_json::json!({"type": "summarization_retry_finished"}));
         })),
     }
 }
 
 fn append_recorded_events(store: &mut Vec<String>, events: &Arc<Mutex<Vec<serde_json::Value>>>) {
-    for event in events.lock().unwrap().drain(..) {
+    for event in events
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .drain(..)
+    {
         store.push(serialize_json_line(&event));
     }
+}
+
+fn emit_rpc_extension_event(
+    runner: &crate::core::extensions::ExtensionRunner,
+    event_type: &str,
+    payload: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    if !runner.has_handlers(event_type) {
+        return None;
+    }
+    match runner.emit(event_type, payload) {
+        Ok(result) => result,
+        Err(errors) => {
+            for error in errors {
+                tracing::warn!(
+                    extension = %error.extension_path,
+                    event = %error.event,
+                    error = %error.error,
+                    "RPC extension lifecycle handler failed"
+                );
+            }
+            None
+        }
+    }
+}
+
+fn rpc_compaction_preparation_value(
+    preparation: &pi_agent::harness::compaction::CompactionPreparation,
+    first_kept_entry_id: Option<&str>,
+) -> serde_json::Value {
+    let file_ops = &preparation.file_ops;
+    serde_json::json!({
+        "firstKeptEntryId": first_kept_entry_id.unwrap_or_default(),
+        "messagesToSummarize": preparation.messages_to_summarize,
+        "turnPrefixMessages": preparation.turn_prefix_messages,
+        "isSplitTurn": preparation.is_split_turn,
+        "tokensBefore": preparation.tokens_before,
+        "previousSummary": preparation.previous_summary,
+        "fileOps": {
+            "read": file_ops.read.iter().cloned().collect::<Vec<_>>(),
+            "written": file_ops.written.iter().cloned().collect::<Vec<_>>(),
+            "edited": file_ops.edited.iter().cloned().collect::<Vec<_>>(),
+        },
+        "settings": {
+            "enabled": preparation.settings.enabled,
+            "reserveTokens": preparation.settings.reserve_tokens,
+            "keepRecentTokens": preparation.settings.keep_recent_tokens,
+        },
+    })
+}
+
+fn rpc_session_before_compact(
+    runner: &crate::core::extensions::ExtensionRunner,
+    preparation: &pi_agent::harness::compaction::CompactionPreparation,
+    entries: &[pi_agent::session::types::Entry],
+    first_kept_entry_id: Option<&str>,
+    custom_instructions: Option<&str>,
+    reason: &str,
+    will_retry: bool,
+) -> Option<serde_json::Value> {
+    let branch_entries = serde_json::to_value(entries).unwrap_or(serde_json::Value::Array(vec![]));
+    let payload = serde_json::json!({
+        "type": "session_before_compact",
+        "preparation": rpc_compaction_preparation_value(preparation, first_kept_entry_id),
+        "branchEntries": branch_entries,
+        "customInstructions": custom_instructions,
+        "reason": reason,
+        "willRetry": will_retry,
+    });
+    emit_rpc_extension_event(runner, "session_before_compact", &payload)
+}
+
+fn rpc_session_compact(
+    runner: &crate::core::extensions::ExtensionRunner,
+    entry: &pi_agent::session::types::Entry,
+    from_extension: bool,
+    reason: &str,
+    will_retry: bool,
+) {
+    let payload = serde_json::json!({
+        "type": "session_compact",
+        "compactionEntry": entry,
+        "fromExtension": from_extension,
+        "reason": reason,
+        "willRetry": will_retry,
+    });
+    let _ = emit_rpc_extension_event(runner, "session_compact", &payload);
+}
+
+fn rpc_session_compact_failed(
+    runner: &crate::core::extensions::ExtensionRunner,
+    reason: &str,
+    aborted: bool,
+    from_extension: bool,
+    will_retry: bool,
+) {
+    let payload = serde_json::json!({
+        "type": "session_compact_failed",
+        "reason": reason,
+        "aborted": aborted,
+        "fromExtension": from_extension,
+        "willRetry": will_retry,
+    });
+    let _ = emit_rpc_extension_event(runner, "session_compact_failed", &payload);
+}
+
+type RpcExtensionCompactionResult = (
+    String,
+    String,
+    u64,
+    Vec<pi_agent::types::AgentMessage>,
+    Option<serde_json::Value>,
+    Option<pi_ai::types::Usage>,
+);
+
+fn rpc_extension_compaction_result(
+    value: Option<&serde_json::Value>,
+    preparation: &pi_agent::harness::compaction::CompactionPreparation,
+    entries: &[pi_agent::session::types::Entry],
+) -> Option<RpcExtensionCompactionResult> {
+    let compaction = value?.get("compaction")?.as_object()?;
+    let summary = compaction.get("summary")?.as_str()?.to_string();
+    let first_kept_entry_id = compaction
+        .get("firstKeptEntryId")
+        .and_then(serde_json::Value::as_str)?
+        .to_string();
+    let tokens_before = compaction
+        .get("tokensBefore")
+        .and_then(serde_json::Value::as_u64)?;
+    let retained_tail = entries
+        .iter()
+        .position(|entry| entry.id() == first_kept_entry_id)
+        .map(|index| {
+            entries[index..]
+                .iter()
+                .filter_map(|entry| entry.as_message().cloned())
+                .collect::<Vec<_>>()
+        })
+        .filter(|messages| !messages.is_empty())
+        .unwrap_or_else(|| preparation.retained_tail.clone());
+    let details = compaction.get("details").cloned();
+    let usage = compaction
+        .get("usage")
+        .filter(|value| !value.is_null())
+        .and_then(|value| serde_json::from_value(value.clone()).ok());
+    Some((
+        summary,
+        first_kept_entry_id,
+        tokens_before,
+        retained_tail,
+        details,
+        usage,
+    ))
 }
 
 fn serialize_rpc_bash_update(id: Option<&str>, delta: &str) -> String {
@@ -683,7 +1080,9 @@ async fn run_rpc_prompt(run: RpcPromptRun, events: UnboundedSender<RpcPromptTask
         capture_persisted_rpc_event(
             &event,
             &mut pending_terminations,
-            &mut persisted_for_loop.lock().unwrap(),
+            &mut persisted_for_loop
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
         );
         if let Some(line) =
             serialize_rpc_prompt_event_with_auth(event, Some(&provider), provider_uses_oauth)
@@ -709,7 +1108,11 @@ async fn run_rpc_prompt(run: RpcPromptRun, events: UnboundedSender<RpcPromptTask
     )
     .await
     .unwrap_or_default();
-    let persisted_messages = std::mem::take(&mut *persisted_messages.lock().unwrap());
+    let persisted_messages = std::mem::take(
+        &mut *persisted_messages
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
+    );
     let _ = events.send(RpcPromptTaskMessage::Finished(RpcPromptResult {
         new_messages,
         persisted_messages,
@@ -730,7 +1133,18 @@ where
 }
 
 impl RpcRuntime {
+    /// Attach the live RPC output path to the current extension host. Startup
+    /// lifecycle callbacks run before this exists, so their dialogs are
+    /// rejected safely and their fire-and-forget requests remain queued until
+    /// the mode enters its stdin/stdout loop.
+    pub fn bind_ui_request_sink(&mut self, sink: ExtensionUiRequestSink) {
+        self.ui_request_sink = Some(sink.clone());
+        self.loaded_extensions.host.set_ui_request_sink(sink);
+        self.loaded_extensions.host.set_ui_enabled(true);
+    }
+
     /// Build a fresh runtime (mirrors the run path's model/session wiring).
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub async fn new(args: &Args, settings: SettingsManager) -> Result<Self, String> {
         let cwd = config::cwd();
         let agent_dir = config::get_agent_dir().display().to_string();
@@ -738,41 +1152,59 @@ impl RpcRuntime {
         let api_key = args
             .api_key
             .clone()
-            .or_else(|| std::env::var(config::ENV_KEY).ok());
+            .and_then(|key| config::nonempty_env_value(Some(key)))
+            .or_else(|| config::nonempty_env_value(std::env::var(config::ENV_KEY).ok()));
         let steering_mode = normalized_queue_mode(settings.get_steering_mode());
         let follow_up_mode = normalized_queue_mode(settings.get_follow_up_mode());
         let auto_compaction_enabled = settings.get_compaction_enabled();
         let auto_retry_enabled = settings.get_retry_enabled();
 
-        let provider = crate::run::resolve_run_provider(args.provider.as_deref(), &settings);
+        let mut provider = crate::run::resolve_run_provider(args.provider.as_deref(), &settings);
         let model_hint = crate::run::resolve_run_model(
             args.model.as_deref(),
             &settings,
             !crate::run::has_explicit_provider(args.provider.as_deref()),
+            Some(&provider),
         );
 
         // Session repo + initial session.
-        let session_root = args
-            .session_dir
-            .clone()
-            .map(|d| config::expand_tilde_path(&d))
-            .unwrap_or_else(|| config::get_session_dir().to_string_lossy().into_owned());
-        std::fs::create_dir_all(&session_root).map_err(|e| format!("create session dir: {e}"))?;
-        crate::core::session_migration::migrate_legacy_sessions_in_root(std::path::Path::new(
-            &session_root,
-        ))
-        .map_err(|e| format!("migrate legacy sessions: {e}"))?;
+        let session_root = crate::run::resolve_session_root(args, Some(&settings));
+        let session_persistence = !args.no_session;
+        let selects_existing =
+            args.continue_session || args.resume || args.session.is_some() || args.fork.is_some();
+        if !session_persistence && selects_existing {
+            return Err(
+                "--continue, --resume, --session, and --fork require session persistence"
+                    .to_string(),
+            );
+        }
+        if session_persistence {
+            std::fs::create_dir_all(&session_root)
+                .map_err(|e| format!("create session dir: {e}"))?;
+            crate::core::session_migration::migrate_legacy_sessions_in_root(std::path::Path::new(
+                &session_root,
+            ))
+            .map_err(|e| format!("migrate legacy sessions: {e}"))?;
+        }
         let mut repo = JsonlSessionRepo::new(pi_agent::fs::StdFileSystem::new(&cwd), &session_root);
         let source_selector = args.fork.as_deref().or(args.session.as_deref());
-        let mut session = if let Some(selector) = source_selector {
-            let selected_path = config::expand_tilde_path(selector);
-            if std::path::Path::new(&selected_path).is_file() {
-                crate::core::session_migration::migrate_legacy_session_file(std::path::Path::new(
-                    &selected_path,
-                ))
-                .map_err(|e| format!("migrate selected session: {e}"))?;
+        let mut session = if !session_persistence {
+            let id = args
+                .session_id
+                .clone()
+                .or_else(|| std::env::var(config::ENV_SESSION_ID).ok())
+                .unwrap_or_else(|| format!("rpc-{}", pi_agent::session::new_id()));
+            let mut metadata = in_memory_metadata(id, None);
+            metadata.cwd = cwd.clone();
+            let storage = Arc::new(Mutex::new(InMemorySessionStorage::new(metadata)));
+            JsonlSession::from_in_memory(storage)
+        } else if let Some(selector) = source_selector {
+            let selected_path = crate::run::resolve_session_selector_path(selector, &cwd);
+            if selected_path.is_file() {
+                crate::core::session_migration::migrate_legacy_session_file(&selected_path)
+                    .map_err(|e| format!("migrate selected session: {e}"))?;
             }
-            let source = crate::run::resolve_session_metadata(&repo, selector).await?;
+            let source = crate::run::resolve_session_metadata(&repo, selector, &cwd).await?;
             if args.fork.is_some() {
                 repo.fork(
                     &source,
@@ -825,13 +1257,17 @@ impl RpcRuntime {
             .map_err(|e| format!("create session: {e}"))?
         };
         if let Some(name) = &args.name {
+            let normalized_name = crate::run::normalize_session_name_value(name);
+            if normalized_name.is_empty() {
+                return Err("--name requires a non-empty value".to_string());
+            }
             session
-                .set_name(Some(name))
+                .set_name(Some(&normalized_name))
                 .await
                 .map_err(|e| format!("set session name: {e}"))?;
         }
         let meta = session.get_metadata().await;
-        let session_path = Some(meta.path.clone());
+        let session_path = session_persistence.then(|| meta.path.clone());
         let session_id = meta.id.clone();
         let session_name = session.get_name().await;
         let initial_thinking_level = settings
@@ -845,7 +1281,7 @@ impl RpcRuntime {
             &cwd,
             &agent_dir,
             "rpc",
-            false,
+            true,
             session_name.clone(),
             initial_thinking_level,
         );
@@ -855,6 +1291,13 @@ impl RpcRuntime {
 
         register_loaded_native_providers(&models, &loaded_extensions)
             .map_err(|error| format!("failed to register RPC native providers: {error}"))?;
+
+        crate::core::model_runtime::register_llama_provider_if_selected(
+            &models,
+            &provider,
+            !args.offline && !config::env_flag(config::ENV_OFFLINE),
+        )
+        .await?;
 
         let faux_core = if provider == "faux" {
             // faux is intentionally not in the builtin registry; register a
@@ -894,12 +1337,43 @@ impl RpcRuntime {
         } else {
             None
         };
+        let (scoped_models, scope_diagnostics) =
+            crate::run::resolve_effective_model_scope(args, &settings, &models.get_models(None));
+        for diagnostic in scope_diagnostics {
+            eprintln!("Warning: {}", diagnostic.message);
+        }
+        let has_explicit_model = args.model.as_deref().is_some_and(|model| !model.is_empty());
+        let initial_scoped_model = if !has_explicit_model && !selects_existing {
+            scoped_models.first().map(|scoped| scoped.model.clone())
+        } else {
+            None
+        };
+        if let Some(scoped_model) = &initial_scoped_model {
+            provider = scoped_model.provider.clone();
+        }
+        // A scoped pattern may select a provider different from the ambient
+        // auth fallback. Re-run the local provider registration after that
+        // choice so provider/model compatibility is checked against the
+        // selected model, not the pre-scope fallback.
+        crate::core::model_runtime::register_llama_provider_if_selected(
+            &models,
+            &provider,
+            !args.offline && !config::env_flag(config::ENV_OFFLINE),
+        )
+        .await?;
         if models.get_provider(&provider).is_none() {
             return Err(format!(
                 "provider {provider:?} is not registered in the model registry"
             ));
         }
-        let model = if provider == "faux" {
+        crate::run::require_authenticated_implicit_model(
+            &models,
+            &provider,
+            model_hint.as_deref(),
+        )?;
+        let model = if let Some(scoped_model) = initial_scoped_model {
+            scoped_model
+        } else if provider == "faux" {
             let core = faux_core.as_ref().expect("faux core registered");
             match model_hint.as_deref() {
                 Some(hint) => core
@@ -919,6 +1393,7 @@ impl RpcRuntime {
                 model_hint.as_deref(),
             )?
         };
+        crate::core::model_runtime::refresh_provider_oauth_if_needed(&models, &provider).await?;
         let thinking_level = configured_thinking_level(&settings, &model);
         let prompt_templates = load_rpc_prompt_templates(
             args,
@@ -938,7 +1413,13 @@ impl RpcRuntime {
             .host
             .set_thinking_level(thinking_level.as_str());
 
-        let system_prompt = args.system_prompt.clone();
+        let system_prompt = Some(crate::run::assemble_run_system_prompt(
+            args,
+            &cwd,
+            std::path::Path::new(&agent_dir),
+            &settings,
+            &loaded_extensions.resources,
+        ));
         let mut runtime = Self {
             cwd,
             agent_dir,
@@ -959,6 +1440,7 @@ impl RpcRuntime {
             session_path,
             session_id,
             session_name,
+            session_persistence,
             auto_compaction_enabled,
             auto_retry_enabled,
             messages: Vec::new(),
@@ -984,7 +1466,14 @@ impl RpcRuntime {
             skills,
             active_tool_names: None,
             loaded_extensions,
+            ui_request_sink: None,
         };
+        let initial_tools = runtime.all_tools();
+        runtime.active_tool_names = Some(rpc_select_active_tool_names(
+            &runtime.extension_args,
+            &runtime.settings,
+            &initial_tools,
+        ));
         runtime.refresh_extension_catalog();
         runtime.loaded_extensions.host.set_model(
             serde_json::to_value(&runtime.model)
@@ -1042,7 +1531,7 @@ impl RpcRuntime {
             .map(|tool| tool.tool.name.clone())
             .collect::<Vec<_>>();
         let active_names = self.active_tool_names.clone().map_or_else(
-            || available_names.clone(),
+            || rpc_select_active_tool_names(&self.extension_args, &self.settings, &all_tools),
             |requested| {
                 requested
                     .into_iter()
@@ -1169,8 +1658,16 @@ impl RpcRuntime {
     fn enqueue_rpc_message(&self, lane: &str, message: &str, images: &[ContentBlock]) {
         let queued = rpc_user_message(&self.expand_rpc_prompt(message), images);
         match lane {
-            "steer" => self.steering_queue.lock().unwrap().enqueue(queued),
-            "follow_up" => self.follow_up_queue.lock().unwrap().enqueue(queued),
+            "steer" => self
+                .steering_queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .enqueue(queued),
+            "follow_up" => self
+                .follow_up_queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .enqueue(queued),
             _ => unreachable!("invalid RPC queue lane: {lane}"),
         }
     }
@@ -1317,8 +1814,18 @@ impl RpcRuntime {
     }
 
     fn push_queue_update(&self, store: &mut Vec<String>) {
-        let steering = Self::queued_texts(&self.steering_queue.lock().unwrap());
-        let follow_up = Self::queued_texts(&self.follow_up_queue.lock().unwrap());
+        let steering = Self::queued_texts(
+            &self
+                .steering_queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        let follow_up = Self::queued_texts(
+            &self
+                .follow_up_queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
         store.push(serialize_json_line(&serde_json::json!({
             "type": "queue_update",
             "steering": steering,
@@ -1387,6 +1894,20 @@ impl RpcRuntime {
             thinking_budgets: thinking_budgets(&self.settings),
             ..Default::default()
         }
+    }
+
+    fn prompt_preflight_error(&self) -> Option<String> {
+        let has_configured_auth = self.models.check_auth(&self.provider).is_some();
+        let oauth_capable = self
+            .models
+            .get_provider(&self.provider)
+            .is_some_and(|provider| provider.auth.oauth.is_some());
+        rpc_prompt_preflight_error(
+            &self.provider,
+            self.api_key.as_deref(),
+            has_configured_auth,
+            oauth_capable,
+        )
     }
 
     fn compaction_settings(&self) -> pi_agent::harness::compaction::CompactionSettings {
@@ -1503,6 +2024,16 @@ impl RpcRuntime {
         }
     }
 
+    /// Apply the shutdown side effects performed by the upstream runtime's
+    /// `session.dispose()`: abort the active agent/retry/batch work and wake
+    /// any extension dialog that can no longer receive input.
+    fn abort_in_flight_work(&self) {
+        self.abort_signal.store(true, Ordering::SeqCst);
+        self.abort_retry_signal.store(true, Ordering::SeqCst);
+        self.abort_all_bash();
+        self.loaded_extensions.host.cancel_ui_requests();
+    }
+
     /// Start standalone RPC bash execution without blocking prompt events or
     /// input processing. The response and session record are emitted when the
     /// task completes, matching upstream's concurrently handled command.
@@ -1595,13 +2126,43 @@ impl RpcRuntime {
     }
 
     fn prepare_prompt_run(&self, message: &str, images: &[ContentBlock]) -> RpcPromptRun {
-        let prompt = rpc_user_message(&self.expand_rpc_prompt(message), images);
-        let prompts = vec![prompt];
+        let expanded_message = self.expand_rpc_prompt(message);
+        let active_tools = self.active_tools_for_turn();
+        let runner = self.loaded_extensions.runner.clone();
+        let system_prompt_options = self
+            .loaded_extensions
+            .host
+            .snapshot()
+            .get("systemPromptOptions")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"cwd": self.cwd}));
+        let hook_images = (!images.is_empty()).then(|| {
+            serde_json::to_value(images).unwrap_or_else(|_| serde_json::Value::Array(Vec::new()))
+        });
+        let before_agent_start = runner.emit_before_agent_start(
+            &expanded_message,
+            hook_images,
+            self.system_prompt.as_deref().unwrap_or_default(),
+            &system_prompt_options,
+        );
+        let system_prompt = before_agent_start
+            .as_ref()
+            .and_then(|result| result.get("systemPrompt"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| self.system_prompt.clone());
+        let mut prompts = before_agent_start
+            .and_then(|result| result.get("messages").cloned())
+            .and_then(|messages| messages.as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(rpc_extension_agent_message)
+            .collect::<Vec<_>>();
+        prompts.push(rpc_user_message(&expanded_message, images));
 
         // Seed the model context with prior history. The current prompt is
         // passed separately in `prompts`, matching the synchronous RPC path.
-        let mut context =
-            AgentContext::new(self.system_prompt.clone(), self.active_tools_for_turn());
+        let mut context = AgentContext::new(system_prompt, active_tools);
         context.messages = self.messages.clone();
 
         // The rich loop owns the queue drain points. Control commands can
@@ -1612,14 +2173,24 @@ impl RpcRuntime {
         let steering_hook: pi_agent::rich_agent::AsyncHook<(), Vec<pi_agent::types::AgentMessage>> =
             Arc::new(move |_| {
                 let queue = steering_queue.clone();
-                Box::pin(async move { queue.lock().unwrap().drain() })
+                Box::pin(async move {
+                    queue
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .drain()
+                })
             });
         let follow_up_hook: pi_agent::rich_agent::AsyncHook<
             (),
             Vec<pi_agent::types::AgentMessage>,
         > = Arc::new(move |_| {
             let queue = follow_up_queue.clone();
-            Box::pin(async move { queue.lock().unwrap().drain() })
+            Box::pin(async move {
+                queue
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .drain()
+            })
         });
         let (settings_retry_enabled, max_retries, base_delay_ms) =
             self.settings.get_retry_settings();
@@ -1635,6 +2206,12 @@ impl RpcRuntime {
             stream_fn: self.make_stream_fn(message),
             signal: Some(self.abort_signal.clone()),
             block_images: self.settings.get_block_images(),
+            before_tool_call: runner
+                .has_handlers("tool_call")
+                .then(|| rpc_before_tool_call_hook(runner.clone())),
+            after_tool_call: runner
+                .has_handlers("tool_result")
+                .then(|| rpc_after_tool_call_hook(runner)),
             get_steering_messages: steering_hook,
             get_follow_up_messages: follow_up_hook,
             retry_policy,
@@ -1685,15 +2262,31 @@ impl RpcRuntime {
                 return None;
             }
         };
-        if let Some(result) = self.execute_extension_command(&message) {
-            match result {
-                Ok(()) => respond(store, success(id.as_deref(), &cmd, None)),
-                Err(error) => fail(store, &id, &cmd, error),
+        if let Some((extension_name, extension_args)) = Self::extension_command_parts(&message) {
+            let mut runner = self.loaded_extensions.runner.as_ref().clone();
+            if runner.get_command(extension_name).is_some() {
+                let (events, receiver) = mpsc::unbounded_channel();
+                let extension_name = extension_name.to_string();
+                let extension_args = extension_args.to_string();
+                let command_id = id.clone();
+                let command_type = cmd.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result =
+                        runner.execute_command_with_ui(&extension_name, &extension_args, true);
+                    let _ = events.send(RpcPromptTaskMessage::ExtensionCommandFinished {
+                        id: command_id,
+                        command: command_type,
+                        result,
+                    });
+                });
+                return Some(receiver);
             }
-            return None;
         }
         {
-            let mut lock = self.run_lock.lock().unwrap();
+            let mut lock = self
+                .run_lock
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             if *lock {
                 fail(
                     store,
@@ -1708,10 +2301,23 @@ impl RpcRuntime {
         self.is_streaming = true;
         self.abort_signal.store(false, Ordering::SeqCst);
         self.abort_retry_signal.store(false, Ordering::SeqCst);
+        if let Some(error) = self.prompt_preflight_error() {
+            self.is_streaming = false;
+            *self
+                .run_lock
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = false;
+            fail(store, &id, &cmd, error);
+            return None;
+        }
+        // Build the prompt context, including the before-agent-start hook,
+        // before acknowledging the command.  This keeps the response a true
+        // preflight acknowledgement rather than a promise made before the
+        // session has accepted the turn.
+        let run = self.prepare_prompt_run(&message, &images);
         respond(store, success(id.as_deref(), &cmd, None));
 
         let (events, receiver) = mpsc::unbounded_channel();
-        let run = self.prepare_prompt_run(&message, &images);
         tokio::spawn(run_rpc_prompt(run, events));
         Some(receiver)
     }
@@ -1739,7 +2345,10 @@ impl RpcRuntime {
 
         self.is_streaming = false;
         {
-            let mut lock = self.run_lock.lock().unwrap();
+            let mut lock = self
+                .run_lock
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             *lock = false;
         }
         let auto_compacted = self.maybe_auto_compact().await.unwrap_or(false);
@@ -1802,27 +2411,140 @@ impl RpcRuntime {
         self.pending_session_events.push(serialize_json_line(
             &serde_json::json!({"type": "compaction_start", "reason": "threshold"}),
         ));
-        let options = self.simple_models();
-        let retry = self.retry_policy();
-        let thinking_level = self.thinking_level.as_str().to_string();
-        let retry_events = Arc::new(Mutex::new(Vec::new()));
-        let retry_callbacks = compaction_retry_callbacks(retry_events.clone(), "threshold");
-        let compact_result = pi_agent::harness::compaction::compact(
+        let runner = self.loaded_extensions.runner.clone();
+        let before = rpc_session_before_compact(
+            runner.as_ref(),
             &preparation,
-            &options,
-            &self.model,
+            &entries,
+            first_kept_entry_id.as_deref(),
             None,
-            None,
-            Some(&thinking_level),
-            Some(&retry),
-            Some(&retry_callbacks),
-        )
-        .await;
-        append_recorded_events(&mut self.pending_session_events, &retry_events);
-        let result = match compact_result {
-            Ok(result) => result,
+            "threshold",
+            false,
+        );
+        if before
+            .as_ref()
+            .and_then(|result| result.get("cancel"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            self.pending_session_events
+                .push(serialize_json_line(&serde_json::json!({
+                    "type": "compaction_end",
+                    "reason": "threshold",
+                    "result": null,
+                    "aborted": true,
+                    "willRetry": false,
+                })));
+            rpc_session_compact_failed(runner.as_ref(), "threshold", true, false, false);
+            return Ok(false);
+        }
+
+        let extension_compaction =
+            rpc_extension_compaction_result(before.as_ref(), &preparation, &entries);
+        let (
+            summary,
+            first_kept_entry_id,
+            tokens_before,
+            retained_tail,
+            details,
+            usage,
+            from_extension,
+        ) = if let Some((
+            summary,
+            first_kept_entry_id,
+            tokens_before,
+            retained_tail,
+            details,
+            usage,
+        )) = extension_compaction
+        {
+            (
+                summary,
+                Some(first_kept_entry_id),
+                tokens_before,
+                retained_tail,
+                details,
+                usage,
+                true,
+            )
+        } else {
+            let options = self.simple_models();
+            let retry = self.retry_policy();
+            let thinking_level = self.thinking_level.as_str().to_string();
+            let retry_events = Arc::new(Mutex::new(Vec::new()));
+            let retry_callbacks = compaction_retry_callbacks(retry_events.clone(), "threshold");
+            let compact_result = pi_agent::harness::compaction::compact(
+                &preparation,
+                &options,
+                &self.model,
+                None,
+                None,
+                Some(&thinking_level),
+                Some(&retry),
+                Some(&retry_callbacks),
+            )
+            .await;
+            append_recorded_events(&mut self.pending_session_events, &retry_events);
+            let result = match compact_result {
+                Ok(result) => result,
+                Err(error) => {
+                    let error_message = format!("Auto-compaction failed: {error}");
+                    self.pending_session_events
+                        .push(serialize_json_line(&serde_json::json!({
+                            "type": "compaction_end",
+                            "reason": "threshold",
+                            "result": null,
+                            "aborted": false,
+                            "willRetry": false,
+                            "errorMessage": error_message,
+                        })));
+                    rpc_session_compact_failed(runner.as_ref(), "threshold", false, false, false);
+                    return Err(format!("auto-compact: {error}"));
+                }
+            };
+            let details = result.details.as_ref().map(|details| {
+                serde_json::json!({
+                    "readFiles": details.read_files,
+                    "modifiedFiles": details.modified_files,
+                })
+            });
+            (
+                result.summary,
+                first_kept_entry_id,
+                result.tokens_before,
+                result.retained_tail,
+                details,
+                result.usage,
+                false,
+            )
+        };
+
+        let summary_msg = pi_agent::agent::user_text_prompt(
+            format!("[Compaction summary]\n{summary}"),
+            pi_ai::types::now_ms(),
+        );
+        let mut replaced = vec![summary_msg];
+        replaced.extend(retained_tail.clone());
+        self.messages = replaced;
+
+        let compaction_entry = match self
+            .session
+            .append_entry(
+                EntryNoStats::Compaction {
+                    id: format!("c-{}", pi_agent::session::new_id()),
+                    summary: summary.clone(),
+                    retained_tail,
+                    tokens_before,
+                    details: details.clone(),
+                    usage: usage.clone(),
+                },
+                "main",
+            )
+            .await
+        {
+            Ok(entry) => entry,
             Err(error) => {
-                let error_message = format!("Auto-compaction failed: {error}");
+                let error_message = format!("Auto-compaction failed: persist: {error}");
                 self.pending_session_events
                     .push(serialize_json_line(&serde_json::json!({
                         "type": "compaction_end",
@@ -1832,56 +2554,27 @@ impl RpcRuntime {
                         "willRetry": false,
                         "errorMessage": error_message,
                     })));
-                return Err(format!("auto-compact: {error}"));
+                rpc_session_compact_failed(
+                    runner.as_ref(),
+                    "threshold",
+                    false,
+                    from_extension,
+                    false,
+                );
+                return Err(format!("auto-compact: persist: {error}"));
             }
         };
-
-        let summary_msg = pi_agent::agent::user_text_prompt(
-            format!("[Compaction summary]\n{}", result.summary),
-            pi_ai::types::now_ms(),
+        rpc_session_compact(
+            runner.as_ref(),
+            &compaction_entry,
+            from_extension,
+            "threshold",
+            false,
         );
-        let mut replaced = vec![summary_msg];
-        replaced.extend(result.retained_tail.clone());
-        self.messages = replaced;
-
-        let usage = result.usage.clone();
-        let details = result.details.as_ref().map(|details| {
-            serde_json::json!({
-                "readFiles": details.read_files,
-                "modifiedFiles": details.modified_files,
-            })
-        });
-        if let Err(error) = self
-            .session
-            .append_entry(
-                EntryNoStats::Compaction {
-                    id: format!("c-{}", pi_agent::session::new_id()),
-                    summary: result.summary.clone(),
-                    retained_tail: result.retained_tail,
-                    tokens_before: result.tokens_before,
-                    details: details.clone(),
-                    usage: usage.clone(),
-                },
-                "main",
-            )
-            .await
-        {
-            let error_message = format!("Auto-compaction failed: persist: {error}");
-            self.pending_session_events
-                .push(serialize_json_line(&serde_json::json!({
-                    "type": "compaction_end",
-                    "reason": "threshold",
-                    "result": null,
-                    "aborted": false,
-                    "willRetry": false,
-                    "errorMessage": error_message,
-                })));
-            return Err(format!("auto-compact: persist: {error}"));
-        }
         let response = serde_json::json!({
-            "summary": result.summary,
+            "summary": summary,
             "firstKeptEntryId": first_kept_entry_id,
-            "tokensBefore": result.tokens_before,
+            "tokensBefore": tokens_before,
             "estimatedTokensAfter": pi_agent::harness::compaction::estimate_context_tokens(&self.messages).tokens,
             "usage": usage,
             "details": details,
@@ -2076,8 +2769,16 @@ impl RpcRuntime {
             session_name: self.session_name.clone(),
             auto_compaction_enabled: self.auto_compaction_enabled,
             message_count: self.messages.len(),
-            pending_message_count: self.steering_queue.lock().unwrap().len()
-                + self.follow_up_queue.lock().unwrap().len(),
+            pending_message_count: self
+                .steering_queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len()
+                + self
+                    .follow_up_queue
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .len(),
         }
     }
 
@@ -2145,7 +2846,7 @@ impl RpcRuntime {
             &self.cwd,
             &self.agent_dir,
             "rpc",
-            false,
+            true,
             self.session_name.clone(),
             self.thinking_level.as_str(),
             reason,
@@ -2156,6 +2857,10 @@ impl RpcRuntime {
             tracing::warn!(path = %error.path, error = %error.error, "failed to load RPC extension");
         }
         self.loaded_extensions = loaded;
+        if let Some(sink) = self.ui_request_sink.clone() {
+            self.loaded_extensions.host.set_ui_request_sink(sink);
+            self.loaded_extensions.host.set_ui_enabled(true);
+        }
         self.loaded_extensions.host.set_model(
             serde_json::to_value(&self.model)
                 .ok()
@@ -2195,7 +2900,7 @@ impl RpcRuntime {
             serde_json::json!({
                 "cancelled": false,
                 "result": "reload-started",
-                "context": {"mode": "rpc", "cwd": self.cwd, "hasUI": false},
+                "context": {"mode": "rpc", "cwd": self.cwd, "hasUI": true},
                 "snapshot": old.host.snapshot(),
             }),
         )?;
@@ -2216,8 +2921,10 @@ impl RpcRuntime {
     ) -> Result<(), String> {
         let old = self.loaded_extensions.clone();
         let flags = old.runner.get_flag_values();
-        let target_session_file = session.get_metadata().await.path;
-        let target_session_id = session.get_metadata().await.id;
+        let target_metadata = session.get_metadata().await;
+        let target_session_file =
+            (!target_metadata.path.is_empty()).then(|| target_metadata.path.clone());
+        let target_session_id = target_metadata.id;
         let target_session_name = session.get_name().await;
         let _ = old.host.dispatch(
             ExtensionHostAction::SetSessionName,
@@ -2232,7 +2939,7 @@ impl RpcRuntime {
                         serde_json::json!({
                             "mode": "rpc",
                             "cwd": self.cwd,
-                            "hasUI": false,
+                            "hasUI": true,
                             "sessionFile": target_session_file,
                             "sessionId": target_session_id,
                         }),
@@ -2243,16 +2950,16 @@ impl RpcRuntime {
         }
         if let Err(errors) = old
             .runner
-            .emit_session_shutdown_with_target(reason, Some(&target_session_file))
+            .emit_session_shutdown_with_target(reason, target_session_file.as_deref())
         {
             return Err(Self::extension_lifecycle_error("session_shutdown", errors));
         }
         old.runner.invalidate(Some("rpc session replacement"));
 
-        let metadata = session.get_metadata().await;
         self.session = session;
-        self.session_path = Some(metadata.path);
-        self.session_id = metadata.id;
+        self.session_path = target_session_file;
+        self.session_id = target_session_id;
+        self.session_persistence = matches!(self.session.kind(), SessionStorageKind::Jsonl(_));
         self.session_name = self.session.get_name().await;
         self.messages = self.load_context_messages().await?;
         self.install_replacement_extensions(reason, previous_session_file.as_deref(), flags)
@@ -2267,17 +2974,26 @@ impl RpcRuntime {
             return Ok(serde_json::json!({"cancelled": true}));
         }
         let previous_session_file = self.session_path.clone();
-        let session = self
-            .repo
-            .create(CreateOptions {
-                id: Some(pi_agent::session::new_id()),
-                cwd: self.cwd.clone(),
-                parent_session_id: parent_session,
-                metadata: None,
-                fork_options: ForkOptions::Tree,
-            })
-            .await
-            .map_err(|error| format!("create session: {error}"))?;
+        let session = if self.session_persistence {
+            self.repo
+                .create(CreateOptions {
+                    id: Some(pi_agent::session::new_id()),
+                    cwd: self.cwd.clone(),
+                    parent_session_id: parent_session,
+                    metadata: None,
+                    fork_options: ForkOptions::Tree,
+                })
+                .await
+                .map_err(|error| format!("create session: {error}"))?
+        } else {
+            let mut metadata = in_memory_metadata(
+                format!("rpc-{}", pi_agent::session::new_id()),
+                parent_session,
+            );
+            metadata.cwd = self.cwd.clone();
+            let storage = Arc::new(Mutex::new(InMemorySessionStorage::new(metadata)));
+            JsonlSession::from_in_memory(storage)
+        };
         let target_session_file = session.get_metadata().await.path;
         let target_session_id = session.get_metadata().await.id;
         self.replace_session_with_extensions(
@@ -2306,6 +3022,12 @@ impl RpcRuntime {
         options: &serde_json::Value,
         request: Option<&PendingHostAction>,
     ) -> Result<serde_json::Value, String> {
+        if self.is_streaming || self.is_compacting {
+            return Err(
+                "Wait for the current operation to finish before navigating the session tree."
+                    .to_string(),
+            );
+        }
         let current_leaf = self
             .session
             .get_leaf_id()
@@ -2317,21 +3039,64 @@ impl RpcRuntime {
         if self.session.get_entry(&target_id).await.is_none() {
             return Err(format!("Entry {target_id} not found"));
         }
-        if options
+
+        let target_entry = self
+            .session
+            .get_entry(&target_id)
+            .await
+            .ok_or_else(|| format!("Entry {target_id} not found"))?;
+        let target_is_user_message = matches!(
+            &target_entry,
+            pi_agent::session::types::Entry::Message {
+                message: pi_agent::types::AgentMessage::Core(Message::User(_)),
+                ..
+            }
+        );
+        // Navigating to a user/custom entry positions the leaf at its parent,
+        // matching SessionManager.navigateTree. The next prompt can then
+        // replace/re-edit that user input instead of creating a child of it.
+        let new_leaf_id = if target_is_user_message {
+            target_entry.parent_id().map(ToOwned::to_owned)
+        } else {
+            Some(target_id.clone())
+        };
+        let summarize = options
             .get("summarize")
             .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Err("navigateTree summarization is not available in RPC mode".to_string());
-        }
+            .unwrap_or(false);
+        let collected = pi_agent::harness::compaction::collect_entries_for_branch_summary(
+            &self.session,
+            current_leaf.as_deref(),
+            &target_id,
+        )
+        .await
+        .map_err(|error| format!("collect branch summary: {error}"))?;
         let preparation = serde_json::json!({
             "targetId": target_id,
             "oldLeafId": current_leaf,
-            "userWantsSummary": false,
+            "commonAncestorId": collected.common_ancestor_id,
+            "entriesToSummarize": collected.entries,
+            "userWantsSummary": summarize,
             "customInstructions": options.get("customInstructions"),
             "replaceInstructions": options.get("replaceInstructions"),
             "label": options.get("label"),
         });
+        let mut custom_instructions = options
+            .get("customInstructions")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let mut replace_instructions = options
+            .get("replaceInstructions")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let mut label = options
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let mut summary_text = None;
+        let mut summary_details = None;
+        let mut summary_usage = None;
+        let mut summary_from_extension = false;
         match self.loaded_extensions.runner.emit(
             "session_before_tree",
             &serde_json::json!({
@@ -2342,7 +3107,32 @@ impl RpcRuntime {
             Ok(Some(result)) if result.get("cancel") == Some(&serde_json::Value::Bool(true)) => {
                 return Ok(serde_json::json!({"cancelled": true}));
             }
-            Ok(_) => {}
+            Ok(Some(result)) => {
+                if let Some(value) = result.get("customInstructions").and_then(|v| v.as_str()) {
+                    custom_instructions = Some(value.to_string());
+                }
+                if let Some(value) = result
+                    .get("replaceInstructions")
+                    .and_then(serde_json::Value::as_bool)
+                {
+                    replace_instructions = value;
+                }
+                if let Some(value) = result.get("label").and_then(|v| v.as_str()) {
+                    label = Some(value.to_string());
+                }
+                if summarize {
+                    if let Some(value) = result.get("summary").and_then(|v| v.as_str()) {
+                        summary_text = Some(value.to_string());
+                        summary_details = result.get("details").cloned();
+                        summary_usage = result
+                            .get("usage")
+                            .cloned()
+                            .and_then(|value| serde_json::from_value(value).ok());
+                        summary_from_extension = true;
+                    }
+                }
+            }
+            Ok(None) => {}
             Err(errors) => {
                 return Err(Self::extension_lifecycle_error(
                     "session_before_tree",
@@ -2350,17 +3140,102 @@ impl RpcRuntime {
                 ));
             }
         }
+
+        if summarize && summary_text.is_none() && !collected.entries.is_empty() {
+            let (reserve_tokens, _) = self.settings.get_branch_summary_settings();
+            let retry = self.retry_policy();
+            let result = pi_agent::harness::compaction::generate_branch_summary(
+                &collected.entries,
+                &self.simple_models(),
+                &self.model,
+                &pi_agent::harness::compaction::GenerateBranchSummaryOptions {
+                    signal: Some(&self.abort_signal),
+                    custom_instructions: custom_instructions.as_deref(),
+                    replace_instructions,
+                    reserve_tokens: Some(reserve_tokens),
+                    retry: Some(&retry),
+                    callbacks: None,
+                },
+            )
+            .await
+            .map_err(|error| format!("navigate tree summarization: {error}"))?;
+            summary_text = Some(result.summary);
+            summary_usage = result.usage;
+            summary_details = Some(serde_json::json!({
+                "readFiles": result.read_files,
+                "modifiedFiles": result.modified_files,
+            }));
+        }
+
         self.session
-            .move_lane("main", Some(&target_id))
+            .move_lane("main", new_leaf_id.as_deref())
             .await
             .map_err(|error| format!("navigate tree: {error}"))?;
+        let summary_entry = if let Some(summary) = summary_text {
+            let entry = self
+                .session
+                .append_entry(
+                    EntryNoStats::BranchSummary {
+                        id: format!("bs-{}", pi_agent::session::new_id()),
+                        from_id: current_leaf.clone().unwrap_or_else(|| "root".to_string()),
+                        summary,
+                        details: summary_details,
+                        usage: summary_usage,
+                    },
+                    "main",
+                )
+                .await
+                .map_err(|error| format!("append branch summary: {error}"))?;
+            if let Some(label) = label.as_deref() {
+                self.session
+                    .set_label(entry.id(), Some(label))
+                    .await
+                    .map_err(|error| format!("label branch summary: {error}"))?;
+            }
+            Some(entry)
+        } else if let Some(label) = label.as_deref() {
+            self.session
+                .set_label(&target_id, Some(label))
+                .await
+                .map_err(|error| format!("label tree target: {error}"))?;
+            None
+        } else {
+            None
+        };
         self.messages = self.load_context_messages().await?;
+        let _ = self.loaded_extensions.runner.emit(
+            "session_tree",
+            &serde_json::json!({
+                "type": "session_tree",
+                "newLeafId": self.session.get_leaf_id().await.ok().flatten(),
+                "oldLeafId": current_leaf,
+                "summaryEntry": summary_entry,
+                "fromExtension": summary_from_extension,
+            }),
+        );
+        self.session
+            .get_leaf_id()
+            .await
+            .map_err(|error| error.to_string())?;
         self.complete_pending_lifecycle(
             request,
             serde_json::json!({
                 "cancelled": false,
                 "result": "tree-navigated",
                 "targetId": target_id,
+                "editorText": if target_is_user_message {
+                    target_entry
+                        .as_message()
+                        .and_then(|message| match message {
+                            pi_agent::types::AgentMessage::Core(Message::User(user)) => {
+                                Some(pi_agent::agent::user_content_text(user))
+                            }
+                            _ => None,
+                        })
+                } else {
+                    None
+                },
+                "summaryEntry": summary_entry,
                 "snapshot": self.loaded_extensions.host.snapshot(),
             }),
         )?;
@@ -2536,7 +3411,10 @@ impl RpcRuntime {
                     return Ok(());
                 }
                 {
-                    let mut lock = self.run_lock.lock().unwrap();
+                    let mut lock = self
+                        .run_lock
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
                     if *lock {
                         match command.str_field("streamingBehavior").as_deref() {
                             Some("steer") => {
@@ -2566,19 +3444,27 @@ impl RpcRuntime {
                     }
                     *lock = true;
                 }
+                if let Some(error) = self.prompt_preflight_error() {
+                    *self
+                        .run_lock
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = false;
+                    fail(store, &id, &cmd, error);
+                    return Ok(());
+                }
                 self.is_streaming = true;
                 self.abort_signal.store(false, Ordering::SeqCst);
                 self.abort_retry_signal.store(false, Ordering::SeqCst);
-                // Preflight success response is emitted first (upstream
-                // preflightResult).
-                respond(store, success(id.as_deref(), &cmd, None));
-
                 let RpcPromptRun {
                     prompts,
                     mut context,
                     config,
                     provider_uses_oauth,
                 } = self.prepare_prompt_run(&message, &images);
+                // Preflight success response is emitted before stream events,
+                // after model/auth and before-agent-start preparation.
+                respond(store, success(id.as_deref(), &cmd, None));
+
                 let provider = config.model.provider.clone();
                 let persisted_messages = Arc::new(Mutex::new(Vec::new()));
                 let persisted_for_loop = persisted_messages.clone();
@@ -2602,7 +3488,9 @@ impl RpcRuntime {
                                 capture_persisted_rpc_event(
                                     &event,
                                     &mut pending_terminations,
-                                    &mut persisted_for_loop.lock().unwrap(),
+                                    &mut persisted_for_loop
+                                        .lock()
+                                        .unwrap_or_else(|error| error.into_inner()),
                                 );
                                 if let Some(line) = serialize_rpc_prompt_event_with_auth(
                                     event,
@@ -2624,7 +3512,11 @@ impl RpcRuntime {
                     store.push(line);
                 }
 
-                let persisted_messages = std::mem::take(&mut *persisted_messages.lock().unwrap());
+                let persisted_messages = std::mem::take(
+                    &mut *persisted_messages
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()),
+                );
                 store.extend(
                     self.settle_prompt_with_persistence(new_messages, persisted_messages)
                         .await,
@@ -2875,7 +3767,10 @@ impl RpcRuntime {
                     return Ok(());
                 }
                 self.steering_mode = mode.clone();
-                self.steering_queue.lock().unwrap().mode = if mode == "all" {
+                self.steering_queue
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .mode = if mode == "all" {
                     QueueMode::All
                 } else {
                     QueueMode::OneAtATime
@@ -2894,7 +3789,10 @@ impl RpcRuntime {
                     return Ok(());
                 }
                 self.follow_up_mode = mode.clone();
-                self.follow_up_queue.lock().unwrap().mode = if mode == "all" {
+                self.follow_up_queue
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .mode = if mode == "all" {
                     QueueMode::All
                 } else {
                     QueueMode::OneAtATime
@@ -2978,102 +3876,207 @@ impl RpcRuntime {
                                         .map(|_| entry.id().to_string())
                                 })
                             });
-                        let options = self.simple_models();
-                        let model = self.model.clone();
-                        let retry = self.retry_policy();
-                        let thinking_level = self.thinking_level.as_str().to_string();
-                        let retry_events = Arc::new(Mutex::new(Vec::new()));
-                        let retry_callbacks =
-                            compaction_retry_callbacks(retry_events.clone(), "manual");
-                        let compact_result = pi_agent::harness::compaction::compact(
+                        let runner = self.loaded_extensions.runner.clone();
+                        let custom_instructions = command.str_field("customInstructions");
+                        let before = rpc_session_before_compact(
+                            runner.as_ref(),
                             &preparation,
-                            &options,
-                            &model,
-                            command.str_field("customInstructions").as_deref(),
-                            None,
-                            Some(&thinking_level),
-                            Some(&retry),
-                            Some(&retry_callbacks),
-                        )
-                        .await;
-                        append_recorded_events(store, &retry_events);
-                        let result = match compact_result {
-                            Ok(r) => r,
-                            Err(e) => {
-                                let msg = format!("compact: {e}");
+                            &entries,
+                            first_kept_entry_id.as_deref(),
+                            custom_instructions.as_deref(),
+                            "manual",
+                            false,
+                        );
+                        if before
+                            .as_ref()
+                            .and_then(|result| result.get("cancel"))
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false)
+                        {
+                            store.push(serialize_json_line(&serde_json::json!({
+                                "type": "compaction_end",
+                                "reason": "manual",
+                                "result": null,
+                                "aborted": true,
+                                "willRetry": false,
+                            })));
+                            rpc_session_compact_failed(
+                                runner.as_ref(),
+                                "manual",
+                                true,
+                                false,
+                                false,
+                            );
+                            fail(store, &id, &cmd, "Compaction cancelled".to_string());
+                            return Ok(());
+                        }
+                        let extension_compaction = rpc_extension_compaction_result(
+                            before.as_ref(),
+                            &preparation,
+                            &entries,
+                        );
+                        let (
+                            summary,
+                            first_kept_entry_id,
+                            tokens_before,
+                            retained_tail,
+                            details,
+                            usage,
+                            from_extension,
+                        ) = if let Some((
+                            summary,
+                            first_kept_entry_id,
+                            tokens_before,
+                            retained_tail,
+                            details,
+                            usage,
+                        )) = extension_compaction
+                        {
+                            (
+                                summary,
+                                first_kept_entry_id,
+                                tokens_before,
+                                retained_tail,
+                                details,
+                                usage,
+                                true,
+                            )
+                        } else {
+                            let options = self.simple_models();
+                            let model = self.model.clone();
+                            let retry = self.retry_policy();
+                            let thinking_level = self.thinking_level.as_str().to_string();
+                            let retry_events = Arc::new(Mutex::new(Vec::new()));
+                            let retry_callbacks =
+                                compaction_retry_callbacks(retry_events.clone(), "manual");
+                            let compact_result = pi_agent::harness::compaction::compact(
+                                &preparation,
+                                &options,
+                                &model,
+                                custom_instructions.as_deref(),
+                                None,
+                                Some(&thinking_level),
+                                Some(&retry),
+                                Some(&retry_callbacks),
+                            )
+                            .await;
+                            append_recorded_events(store, &retry_events);
+                            let result = match compact_result {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    let msg = format!("compact: {e}");
+                                    Self::push_compaction_end(
+                                        store,
+                                        None,
+                                        Some(format!("Compaction failed: {msg}")),
+                                    );
+                                    rpc_session_compact_failed(
+                                        runner.as_ref(),
+                                        "manual",
+                                        false,
+                                        false,
+                                        false,
+                                    );
+                                    fail(store, &id, &cmd, msg);
+                                    return Ok(());
+                                }
+                            };
+                            let details = result.details.as_ref().map(|details| {
+                                serde_json::json!({
+                                    "readFiles": details.read_files,
+                                    "modifiedFiles": details.modified_files,
+                                })
+                            });
+                            let Some(first_kept_entry_id) = first_kept_entry_id else {
                                 Self::push_compaction_end(
                                     store,
                                     None,
-                                    Some(format!("Compaction failed: {msg}")),
+                                    Some(
+                                        "Compaction failed: compact: first kept entry unavailable"
+                                            .to_string(),
+                                    ),
                                 );
-                                fail(store, &id, &cmd, msg);
+                                rpc_session_compact_failed(
+                                    runner.as_ref(),
+                                    "manual",
+                                    false,
+                                    false,
+                                    false,
+                                );
+                                fail(
+                                    store,
+                                    &id,
+                                    &cmd,
+                                    "compact: first kept entry unavailable".to_string(),
+                                );
                                 return Ok(());
-                            }
+                            };
+                            (
+                                result.summary,
+                                first_kept_entry_id,
+                                result.tokens_before,
+                                result.retained_tail,
+                                details,
+                                result.usage,
+                                false,
+                            )
                         };
-                        let Some(first_kept_entry_id) = first_kept_entry_id else {
-                            Self::push_compaction_end(
-                                store,
-                                None,
-                                Some(
-                                    "Compaction failed: compact: first kept entry unavailable"
-                                        .to_string(),
-                                ),
-                            );
-                            fail(
-                                store,
-                                &id,
-                                &cmd,
-                                "compact: first kept entry unavailable".to_string(),
-                            );
-                            return Ok(());
-                        };
-                        let summary = result.summary.clone();
-                        let retained_tail = result.retained_tail.clone();
-                        let details = result.details.as_ref().map(|details| {
-                            serde_json::json!({
-                                "readFiles": details.read_files,
-                                "modifiedFiles": details.modified_files,
-                            })
-                        });
                         self.messages = std::iter::once(pi_agent::agent::user_text_prompt(
                             format!("[Compaction summary]\n{summary}"),
                             pi_ai::types::now_ms(),
                         ))
                         .chain(retained_tail.iter().cloned())
                         .collect();
-                        if let Err(error) = self
+                        let compaction_entry = match self
                             .session
                             .append_entry(
                                 EntryNoStats::Compaction {
                                     id: format!("c-{}", pi_agent::session::new_id()),
                                     summary: summary.clone(),
                                     retained_tail,
-                                    tokens_before: result.tokens_before,
+                                    tokens_before,
                                     details: details.clone(),
-                                    usage: result.usage.clone(),
+                                    usage: usage.clone(),
                                 },
                                 "main",
                             )
                             .await
                         {
-                            let message = format!("compact: persist: {error}");
-                            Self::push_compaction_end(
-                                store,
-                                None,
-                                Some(format!("Compaction failed: {message}")),
-                            );
-                            fail(store, &id, &cmd, message);
-                            return Ok(());
-                        }
+                            Ok(entry) => entry,
+                            Err(error) => {
+                                let message = format!("compact: persist: {error}");
+                                Self::push_compaction_end(
+                                    store,
+                                    None,
+                                    Some(format!("Compaction failed: {message}")),
+                                );
+                                rpc_session_compact_failed(
+                                    runner.as_ref(),
+                                    "manual",
+                                    false,
+                                    from_extension,
+                                    false,
+                                );
+                                fail(store, &id, &cmd, message);
+                                return Ok(());
+                            }
+                        };
+                        rpc_session_compact(
+                            runner.as_ref(),
+                            &compaction_entry,
+                            from_extension,
+                            "manual",
+                            false,
+                        );
                         let estimated_tokens_after =
                             pi_agent::harness::compaction::estimate_context_tokens(&self.messages)
                                 .tokens;
                         let response = serde_json::json!({
                             "summary": summary,
                             "firstKeptEntryId": first_kept_entry_id,
-                            "tokensBefore": result.tokens_before,
+                            "tokensBefore": tokens_before,
                             "estimatedTokensAfter": estimated_tokens_after,
-                            "usage": result.usage,
+                            "usage": usage,
                             "details": details,
                         });
                         Self::push_compaction_end(store, Some(&response), None);
@@ -3562,20 +4565,38 @@ impl RpcRuntime {
             entry_id: Some(entry_id),
             position: Some(position),
         };
-        let session = self
-            .repo
-            .fork(
-                &metadata,
-                CreateOptions {
-                    id: Some(pi_agent::session::new_id()),
-                    cwd: self.cwd.clone(),
-                    parent_session_id: None,
-                    metadata: None,
-                    fork_options,
-                },
-            )
-            .await
-            .map_err(|e| format!("fork failed: {e}"))?;
+        let session = if self.session_persistence {
+            self.repo
+                .fork(
+                    &metadata,
+                    CreateOptions {
+                        id: Some(pi_agent::session::new_id()),
+                        cwd: self.cwd.clone(),
+                        parent_session_id: None,
+                        metadata: None,
+                        fork_options: fork_options.clone(),
+                    },
+                )
+                .await
+                .map_err(|e| format!("fork failed: {e}"))?
+        } else {
+            let mut forked_metadata = in_memory_metadata(
+                format!("rpc-{}", pi_agent::session::new_id()),
+                Some(metadata.id.clone()),
+            );
+            forked_metadata.cwd = self.cwd.clone();
+            let forked_storage = match self.session.kind() {
+                SessionStorageKind::InMemory(storage) => storage
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .fork(forked_metadata, &fork_options)
+                    .map_err(|e| format!("fork failed: {e}"))?,
+                SessionStorageKind::Jsonl(_) => {
+                    return Err("in-memory fork requires an in-memory session".to_string());
+                }
+            };
+            JsonlSession::from_in_memory(Arc::new(Mutex::new(forked_storage)))
+        };
         let target_session_file = session.get_metadata().await.path;
         let target_session_id = session.get_metadata().await.id;
         self.replace_session_with_extensions(
@@ -3609,6 +4630,7 @@ pub async fn run_bash(command: &str, cwd: &str, abort: Arc<AtomicBool>) -> serde
     run_bash_with_updates(command, cwd, abort, None, None).await
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 async fn run_bash_with_updates(
     command: &str,
     cwd: &str,
@@ -3898,6 +4920,13 @@ fn parse_rpc_value(line: &str) -> Result<serde_json::Value, String> {
     serde_json::from_str(line).map_err(|e| format!("Failed to parse command: {e}"))
 }
 
+async fn next_rpc_shutdown_signal(receiver: &mut Option<UnboundedReceiver<i32>>) -> Option<i32> {
+    match receiver.as_mut() {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 fn can_handle_during_prompt(command: &RpcCommand) -> bool {
     matches!(
         command.type_.as_str(),
@@ -3930,6 +4959,18 @@ async fn handle_rpc_prompt_task_message<W: AsyncWrite + Unpin>(
             write_rpc_lines(out, store).await?;
             let abort_responses: Vec<String> = pending_abort_responses.drain(..).collect();
             write_rpc_lines(out, abort_responses).await?;
+            Ok(true)
+        }
+        Some(RpcPromptTaskMessage::ExtensionCommandFinished {
+            id,
+            command,
+            result,
+        }) => {
+            let line = match result {
+                Ok(_) => serialize_json_line(&success(id.as_deref(), &command, None)),
+                Err(error) => serialize_json_line(&failure(id.as_deref(), &command, error)),
+            };
+            write_rpc_lines(out, std::iter::once(line)).await?;
             Ok(true)
         }
         None => Err("RPC prompt task ended without a completion message".to_string()),
@@ -3989,6 +5030,9 @@ async fn handle_rpc_task_message<W: AsyncWrite + Unpin>(
                 ))),
             )
             .await
+        }
+        Some(RpcTaskMessage::ExtensionUiRequest(line)) => {
+            write_rpc_lines(out, std::iter::once(line)).await
         }
         None => Err("RPC task channel ended unexpectedly".to_string()),
     }
@@ -4111,8 +5155,54 @@ async fn dispatch_rpc_line<W: AsyncWrite + Unpin>(
                 .await;
         }
     };
+    if parsed.get("type").and_then(serde_json::Value::as_str) == Some("extension_ui_input") {
+        let id = parsed.get("id").and_then(serde_json::Value::as_str);
+        let data = parsed
+            .get("data")
+            .or_else(|| parsed.get("input"))
+            .and_then(serde_json::Value::as_str);
+        let Some(data) = data else {
+            let response = failure(
+                id,
+                "extension_ui_input",
+                "extension_ui_input requires a string data or input field".to_string(),
+            );
+            return write_rpc_lines(state.out, std::iter::once(serialize_json_line(&response)))
+                .await;
+        };
+        let dispatch = match runtime.loaded_extensions.host.dispatch_terminal_input(data) {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                let response = failure(id, "extension_ui_input", error);
+                return write_rpc_lines(state.out, std::iter::once(serialize_json_line(&response)))
+                    .await;
+            }
+        };
+        let mut response = dispatch.as_value();
+        response["type"] = serde_json::Value::String("extension_ui_input_result".to_string());
+        if let Some(id) = id {
+            response["id"] = serde_json::Value::String(id.to_string());
+        }
+        return write_rpc_lines(state.out, std::iter::once(serialize_json_line(&response))).await;
+    }
     if parsed.get("type").and_then(serde_json::Value::as_str) == Some("extension_ui_response") {
-        return Ok(());
+        let disposition = runtime.loaded_extensions.host.handle_ui_response(&parsed);
+        if disposition == ExtensionUiResponseDisposition::Resolved {
+            return Ok(());
+        }
+        let diagnostics = runtime.loaded_extensions.host.drain_ui_diagnostics();
+        let lines = diagnostics.into_iter().map(|diagnostic| {
+            let mut value = serde_json::json!({
+                "type": "extension_ui_diagnostic",
+                "code": diagnostic.code,
+                "message": diagnostic.message,
+            });
+            if let Some(id) = diagnostic.id {
+                value["id"] = serde_json::Value::String(id);
+            }
+            serialize_json_line(&value)
+        });
+        return write_rpc_lines(state.out, lines).await;
     }
     let command = match RpcCommand::parse(parsed) {
         Ok(command) => command,
@@ -4134,11 +5224,44 @@ pub async fn run_rpc_mode(args: &Args, settings: SettingsManager) -> Result<(), 
     let mut reader = JsonlLineReader::new(stdin);
     let mut out = tokio::io::BufWriter::new(stdout);
     let (task_events, mut task_receiver) = mpsc::unbounded_channel::<RpcTaskMessage>();
+    let ui_task_events = task_events.clone();
+    runtime.bind_ui_request_sink(Arc::new(move |request| {
+        ui_task_events
+            .send(RpcTaskMessage::ExtensionUiRequest(serialize_json_line(
+                &request,
+            )))
+            .map_err(|_| "RPC UI request channel is closed".to_string())
+    }));
     let mut prompt_active = false;
     let mut active_bashes = 0usize;
     let mut pending_commands = VecDeque::new();
     let mut pending_abort_responses = VecDeque::new();
     let mut input_closed = false;
+    let mut shutdown_requested = None::<i32>;
+
+    #[cfg(unix)]
+    let mut shutdown_signal = {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm = signal(SignalKind::terminate())
+            .map_err(|error| format!("install SIGTERM handler: {error}"))?;
+        let mut sighup = signal(SignalKind::hangup())
+            .map_err(|error| format!("install SIGHUP handler: {error}"))?;
+        let (sender, receiver) = mpsc::unbounded_channel::<i32>();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    let _ = sender.send(143);
+                }
+                _ = sighup.recv() => {
+                    let _ = sender.send(129);
+                }
+            }
+        });
+        Some(receiver)
+    };
+    #[cfg(not(unix))]
+    let mut shutdown_signal = None::<UnboundedReceiver<i32>>;
 
     loop {
         if !prompt_active {
@@ -4174,6 +5297,7 @@ pub async fn run_rpc_mode(args: &Args, settings: SettingsManager) -> Result<(), 
 
         if prompt_active || active_bashes > 0 {
             tokio::select! {
+                biased;
                 task = task_receiver.recv() => {
                     handle_rpc_task_message(
                         &mut runtime,
@@ -4197,42 +5321,127 @@ pub async fn run_rpc_mode(args: &Args, settings: SettingsManager) -> Result<(), 
                             };
                             dispatch_rpc_line(&mut runtime, line, &mut state).await?
                         }
-                        None => input_closed = true,
+                        None => {
+                            input_closed = true;
+                            // EOF removes the only possible response source.
+                            // Abort active work and wake a detached extension
+                            // command immediately instead of waiting for a
+                            // provider, shell, or dialog timeout.
+                            runtime.abort_in_flight_work();
+                        },
+                    }
+                }
+                signal = next_rpc_shutdown_signal(&mut shutdown_signal), if shutdown_requested.is_none() => {
+                    if let Some(code) = signal {
+                        shutdown_requested = Some(code);
+                        input_closed = true;
+                        runtime.abort_in_flight_work();
+                        shutdown_signal = None;
                     }
                 }
             }
         } else {
-            match reader
-                .next_line()
-                .await
-                .map_err(|e| format!("stdin read error: {e}"))?
-            {
-                Some(line) => {
-                    let mut state = RpcDispatchState {
-                        out: &mut out,
-                        task_events: &task_events,
-                        prompt_active: &mut prompt_active,
-                        active_bashes: &mut active_bashes,
-                        pending_commands: &mut pending_commands,
-                        pending_abort_responses: &mut pending_abort_responses,
-                    };
-                    dispatch_rpc_line(&mut runtime, line, &mut state).await?
+            // UI actions can be emitted while the mode is idle (including
+            // fire-and-forget lifecycle actions flushed when the sink binds),
+            // so the task channel must remain live even without a prompt or
+            // bash worker.
+            tokio::select! {
+                biased;
+                task = task_receiver.recv() => {
+                    handle_rpc_task_message(
+                        &mut runtime,
+                        task,
+                        &mut out,
+                        &mut prompt_active,
+                        &mut active_bashes,
+                        &mut pending_abort_responses,
+                    ).await?;
                 }
-                None => input_closed = true,
+                line = reader.next_line() => {
+                    match line.map_err(|e| format!("stdin read error: {e}"))? {
+                    Some(line) => {
+                        let mut state = RpcDispatchState {
+                            out: &mut out,
+                            task_events: &task_events,
+                            prompt_active: &mut prompt_active,
+                            active_bashes: &mut active_bashes,
+                            pending_commands: &mut pending_commands,
+                            pending_abort_responses: &mut pending_abort_responses,
+                        };
+                        dispatch_rpc_line(&mut runtime, line, &mut state).await?
+                    }
+                    None => {
+                        input_closed = true;
+                        runtime.abort_in_flight_work();
+                    }
+                    }
+                }
+                signal = next_rpc_shutdown_signal(&mut shutdown_signal), if shutdown_requested.is_none() => {
+                    if let Some(code) = signal {
+                        shutdown_requested = Some(code);
+                        input_closed = true;
+                        runtime.abort_in_flight_work();
+                        shutdown_signal = None;
+                    }
+                }
             }
         }
+    }
+
+    if let Some(code) = shutdown_requested {
+        if code == 129 {
+            out.flush().await.map_err(|error| error.to_string())?;
+        }
+        drop(out);
+        drop(runtime);
+        std::process::exit(code);
     }
     Ok(())
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use crate::core::extensions::ExtensionHostActions;
+    use std::collections::BTreeMap;
 
     use super::*;
 
     async fn runtime_for_test() -> RpcRuntime {
         runtime_for_test_with_settings(SettingsManager::in_memory(Default::default())).await
+    }
+
+    fn next_test_ui_request(
+        host: &crate::core::extensions::ExtensionHostState,
+    ) -> serde_json::Value {
+        for _ in 0..500 {
+            if let Some(request) = host.drain_ui_requests().into_iter().next() {
+                return request;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("RPC test UI request was not emitted");
+    }
+
+    async fn dispatch_test_ui_response(
+        runtime: &mut RpcRuntime,
+        response: serde_json::Value,
+    ) -> Result<(), String> {
+        let (task_events, _task_receiver) = mpsc::unbounded_channel::<RpcTaskMessage>();
+        let mut output = tokio::io::sink();
+        let mut prompt_active = false;
+        let mut active_bashes = 0;
+        let mut pending_commands = VecDeque::new();
+        let mut pending_abort_responses = VecDeque::new();
+        let mut state = RpcDispatchState {
+            out: &mut output,
+            task_events: &task_events,
+            prompt_active: &mut prompt_active,
+            active_bashes: &mut active_bashes,
+            pending_commands: &mut pending_commands,
+            pending_abort_responses: &mut pending_abort_responses,
+        };
+        dispatch_rpc_line(runtime, serialize_json_line(&response), &mut state).await
     }
 
     #[tokio::test]
@@ -4242,7 +5451,10 @@ mod tests {
         let events_for_handler = Arc::clone(&events);
         let handler = Arc::new(
             move |_: &crate::core::extensions::ExtensionContext, event: &serde_json::Value| {
-                events_for_handler.lock().unwrap().push(event.clone());
+                events_for_handler
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event.clone());
                 Ok(Some(serde_json::json!({"cancel": true})))
             },
         ) as crate::core::extensions::HandlerFn;
@@ -4289,7 +5501,7 @@ mod tests {
         assert_eq!(response["success"], true);
         assert_eq!(response["data"]["cancelled"], true);
         assert_eq!(
-            *events.lock().unwrap(),
+            *events.lock().unwrap_or_else(|error| error.into_inner()),
             vec![serde_json::json!({
                 "type": "session_before_fork",
                 "entryId": "missing-entry",
@@ -4316,7 +5528,10 @@ mod tests {
         let events_for_handler = Arc::clone(&events);
         let handler = Arc::new(
             move |_: &crate::core::extensions::ExtensionContext, event: &serde_json::Value| {
-                events_for_handler.lock().unwrap().push(event.clone());
+                events_for_handler
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event.clone());
                 Ok(None)
             },
         ) as crate::core::extensions::HandlerFn;
@@ -4365,7 +5580,7 @@ mod tests {
         assert_eq!(response["success"], true);
         assert_eq!(response["data"]["cancelled"], false);
         let target_session_file = runtime.session_path.clone().unwrap();
-        let events = events.lock().unwrap();
+        let events = events.lock().unwrap_or_else(|error| error.into_inner());
         assert_eq!(events[0]["type"], "session_before_fork");
         assert_eq!(events[0]["position"], "before");
         assert_eq!(events[1]["type"], "session_shutdown");
@@ -4476,6 +5691,26 @@ mod tests {
         assert_eq!(json["assistantMessageEvent"]["type"], "text_delta");
         assert_eq!(json["assistantMessageEvent"]["delta"], "hi");
         assert!(json["assistantMessageEvent"].get("partial").is_none());
+    }
+
+    #[test]
+    fn rpc_prompt_preflight_requires_auth_before_acknowledgement() {
+        let missing_key = rpc_prompt_preflight_error("anthropic", None, false, false)
+            .expect("missing API key must fail preflight");
+        assert!(missing_key.starts_with("No API key found for anthropic."));
+        assert!(missing_key.contains("Use /login"));
+        assert!(
+            rpc_prompt_preflight_error("anthropic", Some("runtime-key"), false, false).is_none()
+        );
+        assert!(rpc_prompt_preflight_error("anthropic", Some(""), false, false).is_some());
+        assert!(rpc_prompt_preflight_error("anthropic", None, true, false).is_none());
+
+        let oauth_missing = rpc_prompt_preflight_error("openai-codex", None, false, true)
+            .expect("missing OAuth credential must fail preflight");
+        assert_eq!(
+            oauth_missing,
+            "Authentication failed for \"openai-codex\". Credentials may have expired or network is unavailable. Run '/login openai-codex' to re-authenticate."
+        );
     }
 
     #[test]
@@ -4632,6 +5867,9 @@ mod tests {
                     result = Some(value);
                     break;
                 }
+                RpcPromptTaskMessage::ExtensionCommandFinished { .. } => {
+                    panic!("prompt worker emitted an extension-command completion")
+                }
             }
         }
         let result = result.expect("detached retry should settle");
@@ -4701,7 +5939,7 @@ mod tests {
             move |_: &crate::core::extensions::ExtensionContext, event: &serde_json::Value| {
                 seen_args_for_handler
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|error| error.into_inner())
                     .push(event["args"].as_str().unwrap_or_default().to_string());
                 Ok(None)
             },
@@ -4800,7 +6038,10 @@ mod tests {
         let response: serde_json::Value = serde_json::from_str(dispatch_store[0].trim()).unwrap();
         assert_eq!(response["command"], "prompt");
         assert_eq!(response["success"], true);
-        assert_eq!(*seen_args.lock().unwrap(), vec!["first second"]);
+        assert_eq!(
+            *seen_args.lock().unwrap_or_else(|error| error.into_inner()),
+            vec!["first second"]
+        );
         assert!(runtime.messages.is_empty());
     }
 
@@ -4844,7 +6085,10 @@ mod tests {
             file_path: "/tmp/summarize.md".to_string(),
         }];
         runtime.is_streaming = true;
-        *runtime.run_lock.lock().unwrap() = true;
+        *runtime
+            .run_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = true;
         let mut store = Vec::new();
         runtime
             .handle_command(
@@ -4863,7 +6107,11 @@ mod tests {
         let response: serde_json::Value = serde_json::from_str(store[1].trim()).unwrap();
         assert_eq!(response["command"], "prompt");
         assert_eq!(response["success"], true);
-        let queued = runtime.follow_up_queue.lock().unwrap().snapshot();
+        let queued = runtime
+            .follow_up_queue
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .snapshot();
         assert_eq!(queued.len(), 1);
         let pi_agent::types::AgentMessage::Core(Message::User(user)) = &queued[0] else {
             panic!("queued prompt was not a user message");
@@ -5100,9 +6348,20 @@ mod tests {
 
         assert_eq!(runtime.steering_mode, "all");
         assert_eq!(runtime.follow_up_mode, "one-at-a-time");
-        assert_eq!(runtime.steering_queue.lock().unwrap().mode, QueueMode::All);
         assert_eq!(
-            runtime.follow_up_queue.lock().unwrap().mode,
+            runtime
+                .steering_queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .mode,
+            QueueMode::All
+        );
+        assert_eq!(
+            runtime
+                .follow_up_queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .mode,
             QueueMode::OneAtATime
         );
 
@@ -5179,9 +6438,20 @@ mod tests {
         assert!(!runtime.settings.get_retry_enabled());
         assert_eq!(runtime.steering_mode, "all");
         assert_eq!(runtime.follow_up_mode, "one-at-a-time");
-        assert_eq!(runtime.steering_queue.lock().unwrap().mode, QueueMode::All);
         assert_eq!(
-            runtime.follow_up_queue.lock().unwrap().mode,
+            runtime
+                .steering_queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .mode,
+            QueueMode::All
+        );
+        assert_eq!(
+            runtime
+                .follow_up_queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .mode,
             QueueMode::OneAtATime
         );
 
@@ -5360,6 +6630,9 @@ mod tests {
                 RpcPromptTaskMessage::Finished(value) => {
                     result = Some(value);
                     break;
+                }
+                RpcPromptTaskMessage::ExtensionCommandFinished { .. } => {
+                    panic!("prompt worker emitted an extension-command completion")
                 }
             }
         }
@@ -5555,7 +6828,10 @@ mod tests {
             )
             .await;
         assert!(!runtime.is_streaming);
-        assert!(!*runtime.run_lock.lock().unwrap());
+        assert!(!*runtime
+            .run_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()));
     }
 
     #[tokio::test]
@@ -5902,13 +7178,447 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(records.len(), 2);
-        for record in records {
+        assert_eq!(records.len(), 3);
+        for record in records.iter().take(2) {
             assert_eq!(record["type"], "response");
             assert_eq!(record["command"], "parse");
             assert_eq!(record["success"], false);
             assert!(record.get("id").is_none());
         }
+        assert_eq!(records[2]["type"], "extension_ui_diagnostic");
+        assert_eq!(records[2]["code"], "unknown_response_id");
+        assert_eq!(records[2]["id"], "ui");
+    }
+
+    #[tokio::test]
+    async fn rpc_dispatch_routes_select_confirm_input_and_editor_responses() {
+        let mut runtime = runtime_for_test().await;
+        let host = runtime.loaded_extensions.host.clone();
+        host.set_ui_enabled(true);
+        let broker = host.ui_broker();
+
+        let select_context =
+            crate::core::extensions::types::ExtensionUiContext::new(broker.clone(), true, true);
+        let select = std::thread::spawn(move || {
+            select_context.select(
+                "Choose",
+                &["one".to_string(), "two".to_string()],
+                Some(std::time::Duration::from_secs(1)),
+            )
+        });
+        let request = next_test_ui_request(&host);
+        assert_eq!(request["method"], "select");
+        dispatch_test_ui_response(
+            &mut runtime,
+            serde_json::json!({
+                "type": "extension_ui_response",
+                "id": request["id"],
+                "value": "two"
+            }),
+        )
+        .await
+        .expect("select response route");
+        assert_eq!(
+            select.join().expect("select worker"),
+            Ok(Some("two".to_string()))
+        );
+
+        let confirm_context =
+            crate::core::extensions::types::ExtensionUiContext::new(broker.clone(), true, true);
+        let confirm = std::thread::spawn(move || {
+            confirm_context.confirm(
+                "Continue",
+                "Continue the operation?",
+                Some(std::time::Duration::from_secs(1)),
+            )
+        });
+        let request = next_test_ui_request(&host);
+        assert_eq!(request["method"], "confirm");
+        dispatch_test_ui_response(
+            &mut runtime,
+            serde_json::json!({
+                "type": "extension_ui_response",
+                "id": request["id"],
+                "result": true
+            }),
+        )
+        .await
+        .expect("confirm response route");
+        assert_eq!(confirm.join().expect("confirm worker"), Ok(true));
+
+        let input_context =
+            crate::core::extensions::types::ExtensionUiContext::new(broker.clone(), true, true);
+        let input = std::thread::spawn(move || {
+            input_context.input(
+                "Name",
+                Some("placeholder"),
+                Some(std::time::Duration::from_secs(1)),
+            )
+        });
+        let request = next_test_ui_request(&host);
+        assert_eq!(request["method"], "input");
+        dispatch_test_ui_response(
+            &mut runtime,
+            serde_json::json!({
+                "type": "extension_ui_response",
+                "id": request["id"],
+                "value": "Ada"
+            }),
+        )
+        .await
+        .expect("input response route");
+        assert_eq!(
+            input.join().expect("input worker"),
+            Ok(Some("Ada".to_string()))
+        );
+
+        let editor_context =
+            crate::core::extensions::types::ExtensionUiContext::new(broker, true, true);
+        let editor = std::thread::spawn(move || editor_context.editor("Edit", Some("prefill")));
+        let request = next_test_ui_request(&host);
+        assert_eq!(request["method"], "editor");
+        dispatch_test_ui_response(
+            &mut runtime,
+            serde_json::json!({
+                "type": "extension_ui_response",
+                "id": request["id"],
+                "result": "edited"
+            }),
+        )
+        .await
+        .expect("editor response route");
+        assert_eq!(
+            editor.join().expect("editor worker"),
+            Ok(Some("edited".to_string()))
+        );
+        assert_eq!(host.snapshot()["editorText"], "edited");
+    }
+
+    #[tokio::test]
+    async fn rpc_dispatch_routes_terminal_input_through_the_live_extension_broker() {
+        use tokio::io::AsyncReadExt;
+
+        let mut runtime = runtime_for_test().await;
+        let host = runtime.loaded_extensions.host.clone();
+        host.set_ui_enabled(true);
+        let context =
+            crate::core::extensions::types::ExtensionUiContext::new(host.ui_broker(), true, false);
+        let _subscription = context
+            .on_terminal_input(Arc::new(|input| {
+                Ok(Some(
+                    crate::core::extensions::types::TerminalInputHandlerResult {
+                        consume: Some(true),
+                        data: Some(format!("{input}-handled")),
+                    },
+                ))
+            }))
+            .expect("terminal input listener registration");
+
+        let (mut writer, mut reader) = tokio::io::duplex(8192);
+        let (task_events, _task_receiver) = mpsc::unbounded_channel();
+        let mut prompt_active = false;
+        let mut active_bashes = 0;
+        let mut pending_commands = VecDeque::new();
+        let mut pending_abort_responses = VecDeque::new();
+        {
+            let mut state = RpcDispatchState {
+                out: &mut writer,
+                task_events: &task_events,
+                prompt_active: &mut prompt_active,
+                active_bashes: &mut active_bashes,
+                pending_commands: &mut pending_commands,
+                pending_abort_responses: &mut pending_abort_responses,
+            };
+            dispatch_rpc_line(
+                &mut runtime,
+                r#"{"type":"extension_ui_input","id":"terminal-1","data":"raw"}"#.to_string(),
+                &mut state,
+            )
+            .await
+            .expect("terminal input dispatch");
+        }
+        drop(writer);
+
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).await.expect("RPC output");
+        let response: serde_json::Value =
+            serde_json::from_str(std::str::from_utf8(&output).unwrap().trim())
+                .expect("terminal input response JSON");
+        assert_eq!(response["type"], "extension_ui_input_result");
+        assert_eq!(response["id"], "terminal-1");
+        assert_eq!(response["data"], "raw-handled");
+        assert_eq!(response["consumed"], true);
+        assert_eq!(response["listenerCount"], 1);
+        assert_eq!(response["errorCount"], 0);
+    }
+
+    #[tokio::test]
+    async fn rpc_extension_command_forwards_real_ui_request_and_routes_response() {
+        let mut runtime = runtime_for_test().await;
+        let shared_runtime = runtime.loaded_extensions.runtime.clone();
+        let extension = crate::core::extensions::loader::load_extension_from_factory(
+            |api| {
+                api.register_command(
+                    "ask",
+                    Some("ask the host".to_string()),
+                    Arc::new(|context, _event| {
+                        let answer = context.ui.input(
+                            "Question",
+                            Some("answer"),
+                            Some(std::time::Duration::from_secs(1)),
+                        )?;
+                        Ok(Some(serde_json::json!({"answer": answer})))
+                    }),
+                )?;
+                Ok(())
+            },
+            &runtime.cwd,
+            shared_runtime.clone(),
+            "<inline:rpc-ui>",
+        )
+        .expect("RPC UI extension factory");
+        let host = Arc::new(crate::core::extensions::ExtensionHostState::new(
+            None, "medium",
+        ));
+        host.set_ui_enabled(true);
+        let mut runner = crate::core::extensions::ExtensionRunner::new(
+            vec![extension],
+            shared_runtime.clone(),
+            runtime.cwd.clone(),
+        );
+        runner.set_ui_context("rpc", true);
+        runner.bind_core_with_actions(host.clone());
+        runtime.loaded_extensions = LoadedExtensions {
+            runner: Arc::new(runner),
+            host,
+            runtime: shared_runtime,
+            errors: Vec::new(),
+            resources: Default::default(),
+        };
+
+        let (task_events, mut task_receiver) = mpsc::unbounded_channel();
+        let ui_task_events = task_events.clone();
+        runtime.bind_ui_request_sink(Arc::new(move |request| {
+            ui_task_events
+                .send(RpcTaskMessage::ExtensionUiRequest(serialize_json_line(
+                    &request,
+                )))
+                .map_err(|_| "RPC task event channel closed".to_string())
+        }));
+        let mut preflight = Vec::new();
+        let mut completion_receiver = runtime
+            .start_prompt_task(
+                RpcCommand::parse(serde_json::json!({
+                    "id": "ask-1",
+                    "type": "prompt",
+                    "message": "/ask from rpc"
+                }))
+                .unwrap(),
+                &mut preflight,
+            )
+            .expect("extension command should start a worker");
+        assert!(preflight.is_empty());
+
+        let request_line = match task_receiver.recv().await.expect("UI task event") {
+            RpcTaskMessage::ExtensionUiRequest(line) => line,
+            RpcTaskMessage::Prompt(_) => panic!("prompt event before UI request"),
+            RpcTaskMessage::BashUpdate(_) | RpcTaskMessage::Bash(_) => {
+                panic!("bash event before UI request")
+            }
+        };
+        let request: serde_json::Value = serde_json::from_str(request_line.trim()).unwrap();
+        assert_eq!(request["type"], "extension_ui_request");
+        assert_eq!(request["method"], "input");
+        assert_eq!(request["title"], "Question");
+
+        let mut output = tokio::io::sink();
+        let mut prompt_active = true;
+        let mut active_bashes = 0;
+        let mut pending_commands = VecDeque::new();
+        let mut pending_abort_responses = VecDeque::new();
+        {
+            let mut dispatch_state = RpcDispatchState {
+                out: &mut output,
+                task_events: &task_events,
+                prompt_active: &mut prompt_active,
+                active_bashes: &mut active_bashes,
+                pending_commands: &mut pending_commands,
+                pending_abort_responses: &mut pending_abort_responses,
+            };
+            dispatch_rpc_line(
+                &mut runtime,
+                serialize_json_line(&serde_json::json!({
+                    "type": "extension_ui_response",
+                    "id": request["id"],
+                    "result": "real answer"
+                })),
+                &mut dispatch_state,
+            )
+            .await
+            .expect("RPC response should resolve the worker");
+        }
+
+        match completion_receiver
+            .recv()
+            .await
+            .expect("extension completion")
+        {
+            RpcPromptTaskMessage::ExtensionCommandFinished {
+                id,
+                command,
+                result: Ok(Some(value)),
+            } => {
+                assert_eq!(id.as_deref(), Some("ask-1"));
+                assert_eq!(command, "prompt");
+                assert_eq!(value, serde_json::json!({"answer": "real answer"}));
+            }
+            RpcPromptTaskMessage::ExtensionCommandFinished { result, .. } => {
+                panic!("unexpected extension command result: {result:?}")
+            }
+            RpcPromptTaskMessage::Event(_) | RpcPromptTaskMessage::Finished(_) => {
+                panic!("extension command emitted a prompt result")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_dispatch_reports_unknown_and_late_ui_responses() {
+        use tokio::io::AsyncReadExt;
+
+        let mut runtime = runtime_for_test().await;
+        let broker = runtime.loaded_extensions.host.ui_broker();
+        broker.set_enabled(true);
+        let context =
+            crate::core::extensions::types::ExtensionUiContext::new(broker.clone(), true, true);
+        let worker = std::thread::spawn(move || {
+            context.input(
+                "Short timeout",
+                None,
+                Some(std::time::Duration::from_millis(10)),
+            )
+        });
+        let request = (0..500)
+            .find_map(|_| {
+                runtime
+                    .loaded_extensions
+                    .host
+                    .drain_ui_requests()
+                    .into_iter()
+                    .next()
+                    .or_else(|| {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        None
+                    })
+            })
+            .expect("timed request");
+        let id = request["id"]
+            .as_str()
+            .expect("timed request id")
+            .to_string();
+        assert_eq!(worker.join().expect("timed UI worker"), Ok(None));
+
+        let (mut writer, mut reader) = tokio::io::duplex(8192);
+        let (task_events, _task_receiver) = mpsc::unbounded_channel();
+        let mut prompt_active = false;
+        let mut active_bashes = 0;
+        let mut pending_commands = VecDeque::new();
+        let mut pending_abort_responses = VecDeque::new();
+        for response in [
+            serde_json::json!({
+                "type": "extension_ui_response",
+                "id": "unknown",
+                "value": "no request"
+            }),
+            serde_json::json!({
+                "type": "extension_ui_response",
+                "id": id,
+                "value": "after timeout"
+            }),
+        ] {
+            let mut state = RpcDispatchState {
+                out: &mut writer,
+                task_events: &task_events,
+                prompt_active: &mut prompt_active,
+                active_bashes: &mut active_bashes,
+                pending_commands: &mut pending_commands,
+                pending_abort_responses: &mut pending_abort_responses,
+            };
+            dispatch_rpc_line(&mut runtime, serialize_json_line(&response), &mut state)
+                .await
+                .expect("diagnostic response dispatch");
+        }
+        drop(writer);
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).await.unwrap();
+        let records: Vec<_> = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record["code"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["unknown_response_id", "late_response"]
+        );
+    }
+
+    #[tokio::test]
+    async fn rpc_task_handler_forwards_extension_ui_requests_while_idle() {
+        use tokio::io::AsyncReadExt;
+
+        let mut runtime = runtime_for_test().await;
+        let (mut writer, mut reader) = tokio::io::duplex(8192);
+        let mut prompt_active = false;
+        let mut active_bashes = 0;
+        let mut pending_abort_responses = VecDeque::new();
+        handle_rpc_task_message(
+            &mut runtime,
+            Some(RpcTaskMessage::ExtensionUiRequest(
+                "{\"type\":\"extension_ui_request\",\"id\":\"idle-1\",\"method\":\"notify\",\"message\":\"hello\"}\n".to_string(),
+            )),
+            &mut writer,
+            &mut prompt_active,
+            &mut active_bashes,
+            &mut pending_abort_responses,
+        )
+        .await
+        .expect("idle UI event forwarding");
+        drop(writer);
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).await.unwrap();
+        let request: serde_json::Value =
+            serde_json::from_str(std::str::from_utf8(&output).unwrap().trim()).unwrap();
+        assert_eq!(request["method"], "notify");
+        assert_eq!(request["id"], "idle-1");
+    }
+
+    #[tokio::test]
+    async fn rpc_extension_reload_rebinds_the_ui_request_sink() {
+        let mut runtime = runtime_for_test().await;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        runtime.bind_ui_request_sink(Arc::new(move |request| {
+            sender
+                .send(request)
+                .map_err(|_| "UI request receiver closed".to_string())
+        }));
+        runtime
+            .install_replacement_extensions("test-reload", None, BTreeMap::new())
+            .expect("reload extension installation");
+
+        runtime
+            .loaded_extensions
+            .host
+            .ui_broker()
+            .notify("after reload", None)
+            .expect("post-reload UI notification");
+        let request = receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("replacement host should use the retained UI sink");
+        assert_eq!(request["type"], "extension_ui_request");
+        assert_eq!(request["method"], "notify");
+        assert_eq!(request["message"], "after reload");
     }
 
     #[tokio::test]

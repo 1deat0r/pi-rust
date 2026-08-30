@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use pi_agent::harness::frontmatter::parse_frontmatter;
 
 use crate::config::CONFIG_DIR_NAME;
-use crate::core::diagnostics::{ResourceDiagnostic, ResourceDiagnosticKind};
+use crate::core::diagnostics::ResourceDiagnostic;
 use crate::core::extensions::types::SourceInfo;
 
 /// A prompt template loaded from a markdown file.
@@ -70,17 +70,26 @@ pub fn substitute_args(content: &str, args: &[String]) -> String {
         // Bracketed forms: `${...}` (inner is after the `{`, before the `}`).
         if let Some(close) = find_brace_close(after) {
             let inner = &after[1..close];
-            let replacement = substitute_bracket(inner, args, &all_args);
-            result.push_str(&replacement);
-            rest = &after[close + 1..];
-            continue;
+            if let Some(replacement) = substitute_bracket(inner, args, &all_args) {
+                result.push_str(&replacement);
+                rest = &after[close + 1..];
+                continue;
+            }
+            // The upstream regular expression only recognizes the documented
+            // `${N:-default}`, `${@:-default}`, and `${@:N[:L]}` forms. Keep
+            // every other `${...}` expression literal.
         }
 
         // Simple form: `$NAME` where NAME is [A-Za-z0-9@]+.
-        let name_len = after
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '@')
-            .count();
+        let name_len = if after.starts_with('@') {
+            1
+        } else if after.starts_with("ARGUMENTS") {
+            "ARGUMENTS".len()
+        } else if after.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+            after.chars().take_while(|c| c.is_ascii_digit()).count()
+        } else {
+            0
+        };
         if name_len == 0 {
             result.push('$');
             rest = after;
@@ -92,7 +101,11 @@ pub fn substitute_args(content: &str, args: &[String]) -> String {
             "--" => return result, // `$--` not handled upstream; bail to literal
             _ => {
                 if let Ok(index) = name.parse::<usize>() {
-                    args.get(index - 1).cloned().unwrap_or_default()
+                    index
+                        .checked_sub(1)
+                        .and_then(|index| args.get(index))
+                        .cloned()
+                        .unwrap_or_default()
                 } else {
                     format!("${name}")
                 }
@@ -114,16 +127,16 @@ fn find_brace_close(s: &str) -> Option<usize> {
     s.char_indices().find(|(_, c)| *c == '}').map(|(i, _)| i)
 }
 
-fn substitute_bracket(inner: &str, args: &[String], all_args: &str) -> String {
+fn substitute_bracket(inner: &str, args: &[String], all_args: &str) -> Option<String> {
     // `${@:-default}` / `${ARGUMENTS:-default}` — all-args with default when empty.
     if let Some(default) = inner
         .strip_prefix("@:-")
         .or_else(|| inner.strip_prefix("ARGUMENTS:-"))
     {
         if all_args.is_empty() {
-            return default.to_string();
+            return Some(default.to_string());
         }
-        return all_args.to_string();
+        return Some(all_args.to_string());
     }
     // `${@:N}` / `${@:N:L}` — bash-style slicing of all args.
     if let Some(slice) = inner.strip_prefix("@:") {
@@ -133,33 +146,43 @@ fn substitute_bracket(inner: &str, args: &[String], all_args: &str) -> String {
     if let Some((target, default)) = inner.split_once(":-") {
         let value = match target {
             "@" | "ARGUMENTS" => all_args.to_string(),
-            other => other
+            other if !other.is_empty() && other.bytes().all(|byte| byte.is_ascii_digit()) => other
                 .parse::<usize>()
                 .ok()
-                .and_then(|idx| args.get(idx - 1))
+                .and_then(|idx| idx.checked_sub(1).and_then(|idx| args.get(idx)))
                 .cloned()
                 .unwrap_or_default(),
+            _ => return None,
         };
         if value.is_empty() {
-            default.to_string()
+            Some(default.to_string())
         } else {
-            value
+            Some(value)
         }
     } else {
-        String::new()
+        None
     }
 }
 
-fn slice_args(slice: &str, args: &[String]) -> String {
+fn slice_args(slice: &str, args: &[String]) -> Option<String> {
     let mut parts = slice.split(':');
-    let raw_start: usize = parts.next().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let raw_start: usize = parts.next()?.parse().ok()?;
     // Convert to 0-indexed; treat 0 (or 1) as 1 per bash convention (args start at 1).
-    let start = raw_start.saturating_sub(1);
-    let length: Option<usize> = parts.next().and_then(|v| v.parse().ok());
-    match length {
-        Some(len) => args.get(start..start + len).unwrap_or_default().join(" "),
-        None => args.get(start..).unwrap_or_default().join(" "),
+    let start = raw_start.saturating_sub(1).min(args.len());
+    let length = match parts.next() {
+        Some(value) => Some(value.parse::<usize>().ok()?),
+        None => None,
+    };
+    if parts.next().is_some() {
+        return None;
     }
+    Some(match length {
+        Some(len) => args
+            .get(start..start.saturating_add(len).min(args.len()))
+            .unwrap_or_default()
+            .join(" "),
+        None => args.get(start..).unwrap_or_default().join(" "),
+    })
 }
 
 fn strip_bom(s: &str) -> &str {
@@ -243,12 +266,17 @@ fn load_templates_from_dir(dir: &Path, scope: &str) -> Vec<PromptTemplate> {
 }
 
 fn resolve_path(path: &str, cwd: &str) -> PathBuf {
-    let p = Path::new(path);
-    if p.is_absolute() {
+    let expanded = crate::config::expand_tilde_path(path.trim());
+    let p = Path::new(&expanded);
+    let joined = if p.is_absolute() {
         p.to_path_buf()
     } else {
         Path::new(cwd).join(p)
-    }
+    };
+    // Upstream `resolvePath` lexically collapses dot segments even when the
+    // target does not exist yet.  Keep explicit template provenance stable
+    // (`sub/../review.md` must be reported as `review.md`).
+    crate::core::settings::resolve_path(&joined.to_string_lossy())
 }
 
 /// Load prompt templates from the global (`<agentDir>/prompts`), project
@@ -261,10 +289,12 @@ pub fn load_prompt_templates(
     no_prompt_templates: bool,
 ) -> (Vec<PromptTemplate>, Vec<ResourceDiagnostic>) {
     let mut templates = Vec::new();
-    let mut diagnostics = Vec::new();
+    let diagnostics = Vec::new();
 
-    let global_dir = Path::new(agent_dir).join("prompts");
-    let project_dir = Path::new(cwd).join(CONFIG_DIR_NAME).join("prompts");
+    let resolved_cwd = crate::core::settings::resolve_path(cwd);
+    let resolved_agent_dir = crate::core::settings::resolve_path(agent_dir);
+    let global_dir = resolved_agent_dir.join("prompts");
+    let project_dir = resolved_cwd.join(CONFIG_DIR_NAME).join("prompts");
 
     if include_defaults && !no_prompt_templates {
         templates.extend(load_templates_from_dir(&global_dir, "user"));
@@ -272,14 +302,11 @@ pub fn load_prompt_templates(
     }
 
     for raw_path in prompt_paths {
-        let resolved = resolve_path(raw_path, cwd);
+        let resolved = resolve_path(raw_path, resolved_cwd.to_string_lossy().as_ref());
         if !resolved.exists() {
-            diagnostics.push(ResourceDiagnostic {
-                kind: ResourceDiagnosticKind::Error,
-                message: "Prompt template path does not exist".to_string(),
-                path: Some(resolved.to_string_lossy().into_owned()),
-                collision: None,
-            });
+            // Upstream silently ignores missing explicit paths. Keep the
+            // diagnostics return for the shared resource-loader API, but do
+            // not turn this non-fatal discovery miss into an error.
             continue;
         }
         if resolved.is_dir() {
@@ -322,6 +349,7 @@ pub fn expand_prompt_template(text: &str, templates: &[PromptTemplate]) -> Strin
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -353,6 +381,24 @@ mod tests {
         assert_eq!(substitute_args("${@:-nope}", &[]), "nope");
         assert_eq!(substitute_args("${@:2}", &args), "two three");
         assert_eq!(substitute_args("${@:2:2}", &args), "two three");
+        assert_eq!(substitute_args("${@:2:99}", &args), "two three");
+    }
+
+    #[test]
+    fn leaves_unsupported_placeholder_forms_literal() {
+        let args: Vec<String> = vec!["one".into(), "two".into()];
+        assert_eq!(
+            substitute_args("${unknown} ${1} ${@:bad} ${@:1:bad}", &args),
+            "${unknown} ${1} ${@:bad} ${@:1:bad}"
+        );
+        assert_eq!(
+            substitute_args("${unknown:-fallback} ${ARG:-fallback}", &args),
+            "${unknown:-fallback} ${ARG:-fallback}"
+        );
+        assert_eq!(
+            substitute_args("$0 $1suffix $ARGUMENTS-suffix", &args),
+            " onesuffix one two-suffix"
+        );
     }
 
     #[test]
@@ -412,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_explicit_prompt_path_is_diagnosed() {
+    fn missing_explicit_prompt_path_is_ignored_like_upstream() {
         let dir = std::env::temp_dir().join(format!("pi-prompt-missing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -423,7 +469,43 @@ mod tests {
             false,
             false,
         );
-        assert!(diag.iter().any(|d| d.kind == ResourceDiagnosticKind::Error));
+        assert!(diag.is_empty(), "unexpected diagnostics: {diag:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_prompt_path_uses_lexically_normalized_provenance() {
+        let dir = std::env::temp_dir().join(format!(
+            "pi-prompt-normalized-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let prompt = dir.join("prompts").join("review.md");
+        std::fs::create_dir_all(prompt.parent().unwrap()).unwrap();
+        std::fs::write(&prompt, "Review\n").unwrap();
+
+        let spelling = dir
+            .join("prompts")
+            .join("nested")
+            .join("..")
+            .join("review.md");
+        let (templates, diagnostics) = load_prompt_templates(
+            &dir.to_string_lossy(),
+            &dir.join("agent").to_string_lossy(),
+            &[spelling.to_string_lossy().into_owned()],
+            false,
+            false,
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+        assert_eq!(templates.len(), 1);
+        assert_eq!(
+            templates[0].file_path,
+            prompt.to_string_lossy().into_owned()
+        );
+        assert!(!templates[0].file_path.contains(".."));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

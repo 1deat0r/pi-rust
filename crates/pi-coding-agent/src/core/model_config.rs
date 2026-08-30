@@ -60,6 +60,7 @@ pub struct ModelCostConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelCostTierConfig {
     pub input_tokens_above: f64,
     pub input: f64,
@@ -145,6 +146,7 @@ pub struct ModelCostOverrideConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelCostTierOverrideConfig {
     pub input_tokens_above: f64,
     pub input: f64,
@@ -265,6 +267,502 @@ pub fn strip_json_comments(input: &str) -> String {
     result
 }
 
+type SchemaError = (String, String);
+
+fn schema_error(
+    errors: &mut Vec<SchemaError>,
+    path: impl Into<String>,
+    message: impl Into<String>,
+) {
+    errors.push((path.into(), message.into()));
+}
+
+fn object_value<'a>(
+    value: &'a Value,
+    path: &str,
+    errors: &mut Vec<SchemaError>,
+) -> Option<&'a serde_json::Map<String, Value>> {
+    match value.as_object() {
+        Some(object) => Some(object),
+        None => {
+            schema_error(errors, path, "Expected an object.");
+            None
+        }
+    }
+}
+
+fn validate_string_field(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    path: &str,
+    required: bool,
+    non_empty: bool,
+    errors: &mut Vec<SchemaError>,
+) {
+    let Some(value) = object.get(key) else {
+        if required {
+            schema_error(
+                errors,
+                format!("{path}.{key}"),
+                "Expected required property.",
+            );
+        }
+        return;
+    };
+    let Some(string) = value.as_str() else {
+        schema_error(errors, format!("{path}.{key}"), "Expected a string.");
+        return;
+    };
+    if non_empty && string.is_empty() {
+        schema_error(
+            errors,
+            format!("{path}.{key}"),
+            "Expected string length greater than or equal to 1.",
+        );
+    }
+}
+
+fn validate_bool_field(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    path: &str,
+    errors: &mut Vec<SchemaError>,
+) {
+    if let Some(value) = object.get(key) {
+        if !value.is_boolean() {
+            schema_error(errors, format!("{path}.{key}"), "Expected a boolean.");
+        }
+    }
+}
+
+fn validate_number_field(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    path: &str,
+    required: bool,
+    errors: &mut Vec<SchemaError>,
+) {
+    let Some(value) = object.get(key) else {
+        if required {
+            schema_error(
+                errors,
+                format!("{path}.{key}"),
+                "Expected required property.",
+            );
+        }
+        return;
+    };
+    if !value.is_number() {
+        schema_error(errors, format!("{path}.{key}"), "Expected a number.");
+    }
+}
+
+fn validate_string_record(value: &Value, path: &str, errors: &mut Vec<SchemaError>) {
+    let Some(object) = object_value(value, path, errors) else {
+        return;
+    };
+    for (key, value) in object {
+        if !value.is_string() {
+            schema_error(errors, format!("{path}.{key}"), "Expected a string.");
+        }
+    }
+}
+
+fn validate_input(value: &Value, path: &str, errors: &mut Vec<SchemaError>) {
+    let Some(values) = value.as_array() else {
+        schema_error(errors, path, "Expected an array.");
+        return;
+    };
+    for (index, value) in values.iter().enumerate() {
+        if !matches!(value.as_str(), Some("text" | "image")) {
+            schema_error(
+                errors,
+                format!("{path}.{index}"),
+                "Expected \"text\" or \"image\".",
+            );
+        }
+    }
+}
+
+fn validate_thinking_level_map(value: &Value, path: &str, errors: &mut Vec<SchemaError>) {
+    let Some(object) = object_value(value, path, errors) else {
+        return;
+    };
+    for (key, value) in object {
+        if !value.is_string() && !value.is_null() {
+            schema_error(
+                errors,
+                format!("{path}.{key}"),
+                "Expected a string or null.",
+            );
+        }
+    }
+}
+
+fn validate_cost(value: &Value, path: &str, override_cost: bool, errors: &mut Vec<SchemaError>) {
+    let Some(object) = object_value(value, path, errors) else {
+        return;
+    };
+    validate_number_field(object, "input", path, !override_cost, errors);
+    validate_number_field(object, "output", path, !override_cost, errors);
+    validate_number_field(object, "cacheRead", path, !override_cost, errors);
+    validate_number_field(object, "cacheWrite", path, !override_cost, errors);
+    let Some(tiers) = object.get("tiers") else {
+        return;
+    };
+    let Some(tiers) = tiers.as_array() else {
+        schema_error(errors, format!("{path}.tiers"), "Expected an array.");
+        return;
+    };
+    for (index, tier) in tiers.iter().enumerate() {
+        let tier_path = format!("{path}.tiers.{index}");
+        let Some(tier) = object_value(tier, &tier_path, errors) else {
+            continue;
+        };
+        validate_number_field(tier, "inputTokensAbove", &tier_path, true, errors);
+        validate_number_field(tier, "input", &tier_path, true, errors);
+        validate_number_field(tier, "output", &tier_path, true, errors);
+        validate_number_field(tier, "cacheRead", &tier_path, true, errors);
+        validate_number_field(tier, "cacheWrite", &tier_path, true, errors);
+    }
+}
+
+fn validate_percentile_object(value: &Value, path: &str, errors: &mut Vec<SchemaError>) {
+    let Some(object) = object_value(value, path, errors) else {
+        return;
+    };
+    for field in ["p50", "p75", "p90", "p99"] {
+        validate_number_field(object, field, path, false, errors);
+    }
+}
+
+fn validate_string_array(value: &Value, path: &str, errors: &mut Vec<SchemaError>) {
+    let Some(values) = value.as_array() else {
+        schema_error(errors, path, "Expected an array.");
+        return;
+    };
+    for (index, value) in values.iter().enumerate() {
+        if !value.is_string() {
+            schema_error(errors, format!("{path}.{index}"), "Expected a string.");
+        }
+    }
+}
+
+fn validate_open_router_routing(value: &Value, path: &str, errors: &mut Vec<SchemaError>) {
+    let Some(object) = object_value(value, path, errors) else {
+        return;
+    };
+    for field in [
+        "allow_fallbacks",
+        "require_parameters",
+        "zdr",
+        "enforce_distillable_text",
+    ] {
+        validate_bool_field(object, field, path, errors);
+    }
+    if let Some(value) = object.get("data_collection") {
+        if !matches!(value.as_str(), Some("deny" | "allow")) {
+            schema_error(
+                errors,
+                format!("{path}.data_collection"),
+                "Expected \"deny\" or \"allow\".",
+            );
+        }
+    }
+    for field in ["order", "only", "ignore", "quantizations"] {
+        if let Some(value) = object.get(field) {
+            validate_string_array(value, &format!("{path}.{field}"), errors);
+        }
+    }
+    if let Some(value) = object.get("sort") {
+        if value.is_string() {
+            // The schema accepts a string sort mode without further fields.
+        } else if let Some(sort) = object_value(value, &format!("{path}.sort"), errors) {
+            validate_string_field(sort, "by", &format!("{path}.sort"), false, false, errors);
+            if let Some(partition) = sort.get("partition") {
+                if !partition.is_string() && !partition.is_null() {
+                    schema_error(
+                        errors,
+                        format!("{path}.sort.partition"),
+                        "Expected a string or null.",
+                    );
+                }
+            }
+        } else {
+            schema_error(
+                errors,
+                format!("{path}.sort"),
+                "Expected a string or object.",
+            );
+        }
+    }
+    if let Some(value) = object.get("max_price") {
+        if let Some(price) = object_value(value, &format!("{path}.max_price"), errors) {
+            for field in ["prompt", "completion", "image", "audio", "request"] {
+                if let Some(value) = price.get(field) {
+                    if !value.is_number() && !value.is_string() {
+                        schema_error(
+                            errors,
+                            format!("{path}.max_price.{field}"),
+                            "Expected a number or string.",
+                        );
+                    }
+                }
+            }
+        }
+    }
+    for field in ["preferred_min_throughput", "preferred_max_latency"] {
+        let Some(value) = object.get(field) else {
+            continue;
+        };
+        if !value.is_number() {
+            validate_percentile_object(value, &format!("{path}.{field}"), errors);
+        }
+    }
+}
+
+fn validate_chat_template_record(value: &Value, path: &str, errors: &mut Vec<SchemaError>) {
+    let Some(object) = object_value(value, path, errors) else {
+        return;
+    };
+    for (key, value) in object {
+        if value.is_string() || value.is_number() || value.is_boolean() || value.is_null() {
+            continue;
+        }
+        let Some(variable) = object_value(value, &format!("{path}.{key}"), errors) else {
+            continue;
+        };
+        match variable.get("$var").and_then(Value::as_str) {
+            Some("thinking.enabled" | "thinking.effort") => {}
+            _ => schema_error(
+                errors,
+                format!("{path}.{key}.$var"),
+                "Expected a supported thinking variable.",
+            ),
+        }
+        validate_bool_field(variable, "omitWhenOff", &format!("{path}.{key}"), errors);
+    }
+}
+
+fn validate_compat(value: &Value, path: &str, errors: &mut Vec<SchemaError>) {
+    let Some(object) = object_value(value, path, errors) else {
+        return;
+    };
+    for field in [
+        "supportsStore",
+        "supportsDeveloperRole",
+        "supportsReasoningEffort",
+        "supportsUsageInStreaming",
+        "requiresToolResultName",
+        "requiresAssistantAfterToolResult",
+        "requiresThinkingAsText",
+        "requiresReasoningContentOnAssistantMessages",
+        "supportsOpenAIGrammarTools",
+        "supportsStrictMode",
+        "sendSessionAffinityHeaders",
+        "supportsLongCacheRetention",
+        "supportsAdditionalTools",
+        "supportsToolSearch",
+        "supportsEagerToolInputStreaming",
+        "supportsCacheControlOnTools",
+        "supportsTemperature",
+        "forceAdaptiveThinking",
+        "allowEmptySignature",
+        "supportsStrictTools",
+        "supportsToolReferences",
+    ] {
+        validate_bool_field(object, field, path, errors);
+    }
+    if let Some(value) = object.get("maxTokensField") {
+        if !matches!(value.as_str(), Some("max_completion_tokens" | "max_tokens")) {
+            schema_error(
+                errors,
+                format!("{path}.maxTokensField"),
+                "Expected a supported token field.",
+            );
+        }
+    }
+    if let Some(value) = object.get("thinkingFormat") {
+        if !matches!(
+            value.as_str(),
+            Some(
+                "openai"
+                    | "openrouter"
+                    | "together"
+                    | "baseten"
+                    | "deepseek"
+                    | "zai"
+                    | "qwen"
+                    | "chat-template"
+                    | "qwen-chat-template"
+                    | "string-thinking"
+                    | "ant-ling"
+            )
+        ) {
+            schema_error(
+                errors,
+                format!("{path}.thinkingFormat"),
+                "Expected a supported thinking format.",
+            );
+        }
+    }
+    for field in ["chatTemplateKwargs", "chatTemplateArgs"] {
+        if let Some(value) = object.get(field) {
+            validate_chat_template_record(value, &format!("{path}.{field}"), errors);
+        }
+    }
+    if let Some(value) = object.get("cacheControlFormat") {
+        if value.as_str() != Some("anthropic") {
+            schema_error(
+                errors,
+                format!("{path}.cacheControlFormat"),
+                "Expected \"anthropic\".",
+            );
+        }
+    }
+    if let Some(value) = object.get("openRouterRouting") {
+        validate_open_router_routing(value, &format!("{path}.openRouterRouting"), errors);
+    }
+    if let Some(value) = object.get("vercelGatewayRouting") {
+        let routing_path = format!("{path}.vercelGatewayRouting");
+        if let Some(routing) = object_value(value, &routing_path, errors) {
+            for field in ["only", "order"] {
+                if let Some(value) = routing.get(field) {
+                    validate_string_array(value, &format!("{routing_path}.{field}"), errors);
+                }
+            }
+        }
+    }
+    if let Some(value) = object.get("deferredToolsMode") {
+        if value.as_str() != Some("kimi") {
+            schema_error(
+                errors,
+                format!("{path}.deferredToolsMode"),
+                "Expected \"kimi\".",
+            );
+        }
+    }
+    if let Some(value) = object.get("sessionAffinityFormat") {
+        if !matches!(
+            value.as_str(),
+            Some("openai" | "openai-nosession" | "openrouter")
+        ) {
+            schema_error(
+                errors,
+                format!("{path}.sessionAffinityFormat"),
+                "Expected a supported session affinity format.",
+            );
+        }
+    }
+}
+
+fn validate_model(value: &Value, path: &str, override_model: bool, errors: &mut Vec<SchemaError>) {
+    let Some(object) = object_value(value, path, errors) else {
+        return;
+    };
+    if !override_model {
+        validate_string_field(object, "id", path, true, true, errors);
+    }
+    for field in ["name", "api", "baseUrl"] {
+        if !override_model || field == "name" {
+            validate_string_field(object, field, path, false, true, errors);
+        }
+    }
+    validate_bool_field(object, "reasoning", path, errors);
+    if let Some(value) = object.get("thinkingLevelMap") {
+        validate_thinking_level_map(value, &format!("{path}.thinkingLevelMap"), errors);
+    }
+    if let Some(value) = object.get("input") {
+        validate_input(value, &format!("{path}.input"), errors);
+    }
+    if let Some(value) = object.get("cost") {
+        validate_cost(value, &format!("{path}.cost"), override_model, errors);
+    }
+    for field in ["contextWindow", "maxTokens"] {
+        validate_number_field(object, field, path, false, errors);
+    }
+    if let Some(value) = object.get("samplingParams") {
+        if !value.is_object() {
+            schema_error(
+                errors,
+                format!("{path}.samplingParams"),
+                "Expected an object.",
+            );
+        }
+    }
+    if let Some(value) = object.get("headers") {
+        validate_string_record(value, &format!("{path}.headers"), errors);
+    }
+    if let Some(value) = object.get("compat") {
+        validate_compat(value, &format!("{path}.compat"), errors);
+    }
+}
+
+fn validate_provider(value: &Value, path: &str, errors: &mut Vec<SchemaError>) {
+    let Some(object) = object_value(value, path, errors) else {
+        return;
+    };
+    for field in ["name", "baseUrl", "apiKey", "api"] {
+        validate_string_field(object, field, path, false, true, errors);
+    }
+    if let Some(value) = object.get("oauth") {
+        if value.as_str() != Some("radius") {
+            schema_error(errors, format!("{path}.oauth"), "Expected \"radius\".");
+        }
+    }
+    if let Some(value) = object.get("headers") {
+        validate_string_record(value, &format!("{path}.headers"), errors);
+    }
+    if let Some(value) = object.get("compat") {
+        validate_compat(value, &format!("{path}.compat"), errors);
+    }
+    validate_bool_field(object, "authHeader", path, errors);
+    if let Some(value) = object.get("models") {
+        let Some(models) = value.as_array() else {
+            schema_error(errors, format!("{path}.models"), "Expected an array.");
+            return;
+        };
+        for (index, model) in models.iter().enumerate() {
+            validate_model(model, &format!("{path}.models.{index}"), false, errors);
+        }
+    }
+    if let Some(value) = object.get("modelOverrides") {
+        let Some(overrides) = object_value(value, &format!("{path}.modelOverrides"), errors) else {
+            return;
+        };
+        for (model_id, override_model) in overrides {
+            validate_model(
+                override_model,
+                &format!("{path}.modelOverrides.{model_id}"),
+                true,
+                errors,
+            );
+        }
+    }
+}
+
+fn validate_models_value(value: &Value) -> Vec<SchemaError> {
+    let mut errors = Vec::new();
+    let Some(root) = object_value(value, "root", &mut errors) else {
+        return errors;
+    };
+    let Some(providers) = root.get("providers") else {
+        schema_error(
+            &mut errors,
+            "providers",
+            "Expected required property \"providers\".",
+        );
+        return errors;
+    };
+    let Some(providers) = object_value(providers, "providers", &mut errors) else {
+        return errors;
+    };
+    for (provider_id, provider) in providers {
+        validate_provider(provider, &format!("providers.{provider_id}"), &mut errors);
+    }
+    errors
+}
+
 // ---------------------------------------------------------------------------
 // ModelConfig
 // ---------------------------------------------------------------------------
@@ -273,6 +771,9 @@ pub fn strip_json_comments(input: &str) -> String {
 #[derive(Debug, Clone, Default)]
 pub struct ModelConfig {
     providers: BTreeMap<String, ModelsJsonProvider>,
+    /// Preserve JSON insertion order for the upstream `Map.keys()` surface;
+    /// the BTreeMap remains the keyed lookup/index.
+    provider_order: Vec<String>,
     error: Option<String>,
 }
 
@@ -284,21 +785,24 @@ impl ModelConfig {
         let Some(models_json_path) = models_json_path else {
             return ModelConfig {
                 providers: BTreeMap::new(),
+                provider_order: Vec::new(),
                 error: None,
             };
         };
-        let path = models_json_path.to_path_buf();
+        let path = crate::core::settings::resolve_path(&models_json_path.to_string_lossy());
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return ModelConfig {
                     providers: BTreeMap::new(),
+                    provider_order: Vec::new(),
                     error: None,
                 }
             }
             Err(e) => {
                 return ModelConfig {
                     providers: BTreeMap::new(),
+                    provider_order: Vec::new(),
                     error: Some(format!(
                         "Failed to load models.json: {e}\n\nFile: {}",
                         path.display()
@@ -313,6 +817,7 @@ impl ModelConfig {
             Err(e) => {
                 return ModelConfig {
                     providers: BTreeMap::new(),
+                    provider_order: Vec::new(),
                     error: Some(format!(
                         "Failed to parse models.json: {e}\n\nFile: {}",
                         path.display()
@@ -331,6 +836,7 @@ impl ModelConfig {
                     .join("\n");
                 ModelConfig {
                     providers: BTreeMap::new(),
+                    provider_order: Vec::new(),
                     error: Some(format!(
                         "Invalid models.json schema:\n{details}\n\nFile: {}",
                         path.display()
@@ -342,64 +848,34 @@ impl ModelConfig {
 
     /// Validate and build a ModelConfig from a parsed JSON value.
     /// Produces a list of `(jsonPath, message)` validation errors.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub fn from_value(value: Value) -> Result<ModelConfig, Vec<(String, String)>> {
-        let mut errors: Vec<(String, String)> = Vec::new();
-        let object = match value.as_object() {
-            Some(object) => object,
-            None => {
-                return Err(vec![(
-                    "root".to_string(),
-                    "Expected an object with \"providers\".".to_string(),
-                )]);
-            }
-        };
-        let Some(providers_value) = object.get("providers") else {
-            return Err(vec![(
-                "providers".to_string(),
-                "Expected required property \"providers\".".to_string(),
-            )]);
-        };
-        let providers_object = match providers_value.as_object() {
-            Some(map) => map,
-            None => {
-                return Err(vec![(
-                    "providers".to_string(),
-                    "Expected an object.".to_string(),
-                )]);
-            }
-        };
-        for (provider_id, provider_value) in providers_object {
-            let path = format!("providers.{provider_id}");
-            if !provider_value.is_object() {
-                errors.push((path, "Expected an object.".to_string()));
-                continue;
-            }
-            if let Some(models) = provider_value.get("models") {
-                if !models.is_array() {
-                    errors.push((format!("{path}.models"), "Expected an array.".to_string()));
-                }
-            }
-            if let Some(overrides) = provider_value.get("modelOverrides") {
-                if !overrides.is_object() {
-                    errors.push((
-                        format!("{path}.modelOverrides"),
-                        "Expected an object.".to_string(),
-                    ));
-                }
-            }
-        }
+        let errors = validate_models_value(&value);
         if !errors.is_empty() {
             return Err(errors);
         }
+        let providers_value = value
+            .as_object()
+            .and_then(|object| object.get("providers"))
+            .expect("models config validation checked providers");
         // Full typed parse. A failure here means a field-level schema error;
         // report the first offending path with serde's message.
         match serde_json::from_value::<BTreeMap<String, ModelsJsonProvider>>(
             providers_value.clone(),
         ) {
-            Ok(map) => Ok(ModelConfig {
-                providers: map,
-                error: None,
-            }),
+            Ok(map) => {
+                let provider_order = providers_value
+                    .as_object()
+                    .expect("models config validation checked providers")
+                    .keys()
+                    .cloned()
+                    .collect();
+                Ok(ModelConfig {
+                    providers: map,
+                    provider_order,
+                    error: None,
+                })
+            }
             Err(e) => {
                 let message = e.to_string();
                 // serde_json errors carry a path like `providers.demo.models[0].id`.
@@ -413,7 +889,7 @@ impl ModelConfig {
     }
 
     pub fn get_provider_ids(&self) -> impl Iterator<Item = &str> {
-        self.providers.keys().map(|s| s.as_str())
+        self.provider_order.iter().map(|s| s.as_str())
     }
 
     pub fn get_error(&self) -> Option<&str> {
@@ -428,6 +904,7 @@ impl ModelConfig {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::fs;
@@ -452,6 +929,21 @@ mod tests {
     fn no_path_is_empty_config() {
         let cfg = ModelConfig::load(None);
         assert!(cfg.get_error().is_none());
+    }
+
+    #[test]
+    fn provider_ids_preserve_models_json_insertion_order() {
+        let cfg = ModelConfig::from_value(serde_json::json!({
+            "providers": {
+                "zeta": { "baseUrl": "https://zeta.example.com", "api": "openai-responses" },
+                "alpha": { "baseUrl": "https://alpha.example.com", "api": "openai-responses" }
+            }
+        }))
+        .expect("valid models.json");
+        assert_eq!(
+            cfg.get_provider_ids().collect::<Vec<_>>(),
+            vec!["zeta", "alpha"]
+        );
     }
 
     #[test]
@@ -485,6 +977,83 @@ mod tests {
         let model = &provider.models.as_ref().unwrap()[0];
         assert_eq!(model.id, "demo-1");
         assert_eq!(model.cost.as_ref().unwrap().input, 0.5);
+    }
+
+    #[test]
+    fn unknown_models_json_fields_are_accepted_and_ignored() {
+        let config = ModelConfig::from_value(serde_json::json!({
+            "x-parity-root-unknown": "ignored",
+            "providers": {
+                "demo": {
+                    "baseUrl": "https://demo.example.com/v1",
+                    "api": "openai-responses",
+                    "x-parity-provider-unknown": {"nested": true},
+                    "models": [{
+                        "id": "demo-1",
+                        "x-parity-model-unknown": [1, 2, 3]
+                    }]
+                }
+            }
+        }))
+        .expect("Type.Object schemas allow additional properties");
+
+        let provider = config.get_provider("demo").expect("demo provider");
+        assert_eq!(provider.api.as_deref(), Some("openai-responses"));
+        assert_eq!(provider.models.as_ref().expect("models")[0].id, "demo-1");
+    }
+
+    #[test]
+    fn cost_tiers_require_both_cache_rates() {
+        let base_error = ModelConfig::from_value(serde_json::json!({
+            "providers": {
+                "demo": {
+                    "models": [{
+                        "id": "demo-1",
+                        "cost": {
+                            "input": 1.0,
+                            "output": 2.0,
+                            "cacheRead": 3.0,
+                            "cacheWrite": 4.0,
+                            "tiers": [{
+                                "inputTokensAbove": 1000,
+                                "input": 5.0,
+                                "output": 6.0
+                            }]
+                        }
+                    }]
+                }
+            }
+        }))
+        .expect_err("model cost tiers require cache rates");
+        assert!(base_error
+            .iter()
+            .any(|(path, _)| path.ends_with("cacheRead")));
+        assert!(base_error
+            .iter()
+            .any(|(path, _)| path.ends_with("cacheWrite")));
+
+        let override_error = ModelConfig::from_value(serde_json::json!({
+            "providers": {
+                "demo": {
+                    "modelOverrides": {
+                        "demo-1": {
+                            "cost": {
+                                "tiers": [{
+                                    "inputTokensAbove": 1000,
+                                    "input": 5.0,
+                                    "output": 6.0,
+                                    "cacheRead": 7.0
+                                }]
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect_err("override cost tiers require cacheWrite");
+        assert!(override_error
+            .iter()
+            .any(|(path, _)| path.ends_with("cacheWrite")));
     }
 
     #[test]

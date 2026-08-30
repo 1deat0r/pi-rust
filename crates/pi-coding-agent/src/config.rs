@@ -24,22 +24,56 @@ pub fn env(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+fn is_truthy_env_value(value: &str) -> bool {
+    value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+}
+
+pub(crate) fn nonempty_env_value(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.is_empty())
+}
+
+fn home_dir_from_values(
+    home: Option<&str>,
+    userprofile: Option<&str>,
+    fallback: Option<PathBuf>,
+) -> Option<PathBuf> {
+    // Node's `os.homedir()` follows the host platform: Unix uses HOME (then
+    // the passwd database), while Windows uses USERPROFILE. Do not let a
+    // Windows-only variable redirect a Unix agent's config/session roots.
+    #[cfg(windows)]
+    let preferred = userprofile
+        .filter(|value| !value.is_empty())
+        .or_else(|| home.filter(|value| !value.is_empty()));
+    #[cfg(not(windows))]
+    let preferred = {
+        let _ = userprofile;
+        home.filter(|value| !value.is_empty())
+    };
+
+    preferred.map(PathBuf::from).or(fallback)
+}
+
+/// Resolve the user's home using the environment precedence used by the
+/// upstream runtime, with the platform resolver as a final fallback.
+pub fn home_dir() -> Option<PathBuf> {
+    let home = env("HOME");
+    let userprofile = env("USERPROFILE");
+    home_dir_from_values(home.as_deref(), userprofile.as_deref(), dirs::home_dir())
+}
+
 pub fn env_flag(name: &str) -> bool {
-    matches!(
-        std::env::var(name).ok().as_deref(),
-        Some("1") | Some("true") | Some("yes") | Some("on")
-    )
+    env(name).is_some_and(|value| is_truthy_env_value(&value))
 }
 
 /// Expands a leading `~` to the home directory (returns the input unchanged
 /// when no home is available).
 pub fn expand_tilde_path(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = home_dir() {
             return home.join(rest).to_string_lossy().into_owned();
         }
     } else if path == "~" {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = home_dir() {
             return home.to_string_lossy().into_owned();
         }
     }
@@ -48,10 +82,10 @@ pub fn expand_tilde_path(path: &str) -> String {
 
 /// `~/.pi/agent` (or `PI_CODING_AGENT_DIR`).
 pub fn get_agent_dir() -> PathBuf {
-    if let Some(dir) = env(ENV_AGENT_DIR) {
+    if let Some(dir) = nonempty_env_value(env(ENV_AGENT_DIR)) {
         return PathBuf::from(expand_tilde_path(&dir));
     }
-    dirs::home_dir()
+    home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(CONFIG_DIR_NAME)
         .join("agent")
@@ -59,7 +93,7 @@ pub fn get_agent_dir() -> PathBuf {
 
 /// `getAgentDir()/sessions` (or `PI_CODING_AGENT_SESSION_DIR`).
 pub fn get_session_dir() -> PathBuf {
-    if let Some(dir) = env(ENV_SESSION_DIR) {
+    if let Some(dir) = nonempty_env_value(env(ENV_SESSION_DIR)) {
         return PathBuf::from(expand_tilde_path(&dir));
     }
     get_agent_dir().join("sessions")
@@ -77,13 +111,17 @@ pub fn get_auth_path() -> PathBuf {
 /// the upstream default `google`.
 pub fn resolve_provider(cli_provider: Option<&str>) -> String {
     cli_provider
+        .filter(|provider| !provider.is_empty())
         .map(|s| s.to_string())
-        .or_else(|| env(ENV_PROVIDER))
+        .or_else(|| nonempty_env_value(env(ENV_PROVIDER)))
         .unwrap_or_else(|| "google".to_string())
 }
 
 pub fn resolve_model(cli_model: Option<&str>) -> Option<String> {
-    cli_model.map(|s| s.to_string()).or_else(|| env(ENV_MODEL))
+    cli_model
+        .filter(|model| !model.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| nonempty_env_value(env(ENV_MODEL)))
 }
 
 pub fn cwd() -> String {
@@ -94,4 +132,63 @@ pub fn cwd() -> String {
 
 pub fn path_exists(path: &str) -> bool {
     Path::new(path).exists()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{home_dir_from_values, is_truthy_env_value, nonempty_env_value};
+
+    #[test]
+    fn env_flag_truthiness_matches_upstream() {
+        for value in ["1", "true", "TRUE", "yes", "YeS"] {
+            assert!(is_truthy_env_value(value), "expected {value:?} to be true");
+        }
+        for value in ["", "0", "false", "on", "ON", "random"] {
+            assert!(
+                !is_truthy_env_value(value),
+                "expected {value:?} to be false"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_path_environment_values_fall_back_to_defaults() {
+        assert_eq!(nonempty_env_value(None), None);
+        assert_eq!(nonempty_env_value(Some(String::new())), None);
+        assert_eq!(
+            nonempty_env_value(Some("/tmp/pi-agent".to_owned())),
+            Some("/tmp/pi-agent".to_owned())
+        );
+    }
+
+    #[test]
+    fn home_environment_uses_host_platform_precedence_then_platform_fallback() {
+        #[cfg(windows)]
+        assert_eq!(
+            home_dir_from_values(Some("C:\\home"), Some("C:\\Users\\pi"), None),
+            Some(PathBuf::from("C:\\Users\\pi"))
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            home_dir_from_values(Some("/home/pi"), Some("C:\\Users\\pi"), None),
+            Some(PathBuf::from("/home/pi"))
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            home_dir_from_values(Some(""), Some("C:\\Users\\pi"), None),
+            Some(PathBuf::from("C:\\Users\\pi"))
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            home_dir_from_values(
+                Some(""),
+                Some("C:\\Users\\pi"),
+                Some(PathBuf::from("/fallback"))
+            ),
+            Some(PathBuf::from("/fallback"))
+        );
+    }
 }

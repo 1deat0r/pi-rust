@@ -8,21 +8,20 @@
 //!   two-space indented source lines, dimmed installed path under each)
 //! - help text and usage/unknown-option/conflicting-option error messages.
 //!
-//! Divergence: `pi update --self` cannot self-update a compiled Rust binary;
-//! the port prints the upstream-style "cannot self-update" instruction.
+//! Distribution boundary: pi-rust does not query the upstream Pi release
+//! service and `pi-rust update --self` cannot replace a compiled Rust binary; the
+//! command prints the repository/rebuild instruction for this distribution.
 
-use crate::config::{self, APP_NAME, CONFIG_DIR_NAME, VERSION};
+use crate::config::{self, APP_NAME, CONFIG_DIR_NAME};
 use crate::core::package_manager::PackageManager;
 use crate::core::remote_catalog_provider::refresh_catalogs;
 use crate::core::settings::SettingsManager;
-use crate::core::version_check::{get_latest_pi_release, is_newer_package_version};
 
-const PACKAGE_NAME: &str = "@earendil-works/pi-coding-agent";
-const SELF_UPDATE_UNAVAILABLE_SUFFIX: &str =
-    "using the package manager, wrapper, or source checkout that provides this installation.";
+const SELF_UPDATE_UNAVAILABLE_MESSAGE: &str =
+    "pi-rust cannot self-update this compiled Rust installation. Update pi-rust from its source repository, then rebuild and reinstall the Rust binary.";
 
-fn self_update_unavailable_instruction(install_spec: &str) -> String {
-    format!("Update {install_spec} {SELF_UPDATE_UNAVAILABLE_SUFFIX}")
+fn self_update_unavailable_instruction() -> &'static str {
+    SELF_UPDATE_UNAVAILABLE_MESSAGE
 }
 
 /// Package command kind (upstream `PackageCommand`).
@@ -41,36 +40,6 @@ pub enum UpdateTarget {
     Self_,
     Extensions { source: Option<String> },
     Models,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SelfUpdatePlan {
-    package_name: String,
-    install_spec: String,
-    version: String,
-    note: Option<String>,
-    should_run: bool,
-}
-
-async fn get_self_update_plan(force: bool) -> Result<SelfUpdatePlan, String> {
-    let latest_release = get_latest_pi_release(VERSION, true)
-        .await
-        .map_err(|error| format!("Could not determine latest {APP_NAME} version: {error}"))?
-        .ok_or_else(|| format!("Could not determine latest {APP_NAME} version."))?;
-    let package_name = latest_release
-        .package_name
-        .unwrap_or_else(|| PACKAGE_NAME.to_string());
-    let install_spec = format!("{package_name}@{}", latest_release.version);
-    let should_run = force
-        || package_name != PACKAGE_NAME
-        || is_newer_package_version(&latest_release.version, VERSION);
-    Ok(SelfUpdatePlan {
-        package_name,
-        install_spec,
-        version: latest_release.version,
-        note: latest_release.note,
-        should_run,
-    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -93,9 +62,7 @@ pub fn get_package_command_usage(command: PackageCommandKind) -> String {
     match command {
         PackageCommandKind::Install => format!("{APP_NAME} install <source> [-l] [--approve|--no-approve]"),
         PackageCommandKind::Remove => format!("{APP_NAME} remove <source> [-l] [--approve|--no-approve]"),
-        PackageCommandKind::Update => format!(
-            "{APP_NAME} update [source|self|pi] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]"
-        ),
+        PackageCommandKind::Update => format!("{APP_NAME} update [source|self|pi] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]"),
         PackageCommandKind::List => format!("{APP_NAME} list [--approve|--no-approve]"),
     }
 }
@@ -293,7 +260,7 @@ pub fn parse_package_command(args: &[String]) -> Option<PackageCommandOptions> {
                 source: Some(source),
             })
         } else if let Some(source) = options.source.clone() {
-            let source_is_self = source == "self" || source == "pi";
+            let source_is_self = source == "self" || source == "pi" || source == "pi-rust";
             if source_is_self {
                 if extensions_flag {
                     options.update_target = Some(UpdateTarget::All);
@@ -375,28 +342,30 @@ fn print_package_command_help(command: PackageCommandKind) {
             println!("Usage:");
             println!("  {}", get_package_command_usage(command));
             println!();
-            println!("Update pi, installed packages, or model catalogs.");
+            println!("Update installed packages or model catalogs.");
             println!();
             println!("Options:");
-            println!("  --self                  Update pi only (default when no target is given)");
+            println!("  --self                  Explain how to update the pi-rust Rust binary");
             println!("  --extensions            Update installed packages only");
             println!("  --models                Refresh model catalogs only");
-            println!("  --all                   Update pi and installed packages");
+            println!(
+                "  --all                   Update installed packages, then explain the pi-rust boundary"
+            );
             println!("  --extension <source>    Update one package only");
             println!("  -a, --approve           Trust project-local files for this command");
             println!("  -na, --no-approve       Ignore project-local files for this command");
             println!(
-                "  --force                 Reinstall pi even if the current version is latest"
+                "  --force                 Accepted for compatibility; pi-rust never self-updates upstream"
             );
             println!();
             println!("Short forms:");
-            println!("  {APP_NAME} update                Update pi only");
-            println!("  {APP_NAME} update --all          Update pi and all extensions");
+            println!("  {APP_NAME} update                Explain how to update the pi-rust binary");
+            println!(
+                "  {APP_NAME} update --all          Update all extensions, then explain the pi-rust boundary"
+            );
             println!("  {APP_NAME} update --models       Refresh model catalogs only");
             println!("  {APP_NAME} update <source>       Update one package");
-            println!(
-                "  {APP_NAME} update pi             Update pi only (self works as alias to pi)"
-            );
+            println!("  {APP_NAME} update pi             Explain how to update the pi-rust binary");
         }
         PackageCommandKind::List => {
             println!("Usage:");
@@ -423,6 +392,7 @@ fn report_settings_errors(settings_manager: &mut SettingsManager, context: &str)
 
 /// Port of `handlePackageCommand(args)` + the error/help branches. Returns
 /// true when the args were a package command (handled).
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 pub async fn handle_package_command(args: &[String]) -> bool {
     let Some(options) = parse_package_command(args) else {
         return false;
@@ -598,7 +568,9 @@ pub async fn handle_package_command(args: &[String]) -> bool {
         PackageCommandKind::Update => {
             let target = options.update_target.clone().unwrap_or(UpdateTarget::Self_);
             if options.show_extensions_skipped_note {
-                println!("Extensions are skipped. Run {APP_NAME} update --extensions to update extensions.");
+                println!(
+                    "Extensions are skipped. Run {APP_NAME} update --extensions to update extensions."
+                );
             }
             let includes_extensions =
                 matches!(target, UpdateTarget::All | UpdateTarget::Extensions { .. });
@@ -623,29 +595,8 @@ pub async fn handle_package_command(args: &[String]) -> bool {
                 }
             }
             if includes_self {
-                let plan = match get_self_update_plan(options.force).await {
-                    Ok(plan) => plan,
-                    Err(error) => {
-                        eprintln!("Error: {error}");
-                        std::process::exit(1);
-                    }
-                };
-                if !plan.should_run {
-                    println!("{APP_NAME} is already up to date (v{})", plan.version);
-                    return true;
-                }
-
-                // The compiled Rust port cannot replace its own executable;
-                // preserve the upstream decision point and report the exact
-                // install target so a package manager/wrapper can finish it.
-                eprintln!("error: {APP_NAME} cannot self-update this installation.");
-                if let Some(note) = plan.note.as_deref().filter(|note| !note.trim().is_empty()) {
-                    eprintln!("Update note: {}", note.trim());
-                }
-                eprintln!(
-                    "{}",
-                    self_update_unavailable_instruction(&plan.install_spec)
-                );
+                eprintln!("error: pi-rust cannot self-update this installation.");
+                eprintln!("{}", self_update_unavailable_instruction());
                 std::process::exit(1);
             }
         }
@@ -672,6 +623,7 @@ pub fn command_name(command: PackageCommandKind) -> &'static str {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -740,6 +692,20 @@ mod tests {
     }
 
     #[test]
+    fn update_usage_uses_the_installed_command_name() {
+        assert_eq!(
+            get_package_command_usage(PackageCommandKind::Update),
+            "pi update [source|self|pi] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]"
+        );
+    }
+
+    #[test]
+    fn update_pi_rust_alias() {
+        let options = parse(&["update", "pi-rust"]);
+        assert_eq!(options.update_target, Some(UpdateTarget::Self_));
+    }
+
+    #[test]
     fn update_models_conflicts_with_source() {
         let options = parse(&["update", "--models", "pkg"]);
         assert!(options.conflicting_options.is_some());
@@ -771,8 +737,8 @@ mod tests {
     #[test]
     fn self_update_fallback_instruction_matches_distribution_contract() {
         assert_eq!(
-            self_update_unavailable_instruction("@earendil-works/pi-coding-agent@0.85.0"),
-            "Update @earendil-works/pi-coding-agent@0.85.0 using the package manager, wrapper, or source checkout that provides this installation."
+            self_update_unavailable_instruction(),
+            "pi-rust cannot self-update this compiled Rust installation. Update pi-rust from its source repository, then rebuild and reinstall the Rust binary."
         );
     }
 

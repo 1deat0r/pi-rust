@@ -37,7 +37,10 @@ impl EventBus {
     pub fn emit(&self, channel: &str, data: impl Any + Send + Sync) {
         let payload = Arc::new(data);
         let snapshot: Vec<Arc<EventHandler>> = {
-            let guard = self.handlers.lock().unwrap();
+            let guard = self
+                .handlers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             guard
                 .get(channel)
                 .map(|list| list.iter().map(|r| r.handler.clone()).collect())
@@ -59,7 +62,10 @@ impl EventBus {
         handler: Box<EventHandler>,
     ) -> Box<dyn Fn() + Send + Sync + '_> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let mut guard = self.handlers.lock().unwrap();
+        let mut guard = self
+            .handlers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         guard
             .entry(channel.to_string())
             .or_default()
@@ -71,7 +77,7 @@ impl EventBus {
         let channel = channel.to_string();
         drop(guard);
         Box::new(move || {
-            let mut guard = handlers.lock().unwrap();
+            let mut guard = handlers.lock().unwrap_or_else(|error| error.into_inner());
             if let Some(list) = guard.get_mut(&channel) {
                 list.retain(|registered| registered.id != id);
             }
@@ -80,19 +86,25 @@ impl EventBus {
 
     /// Remove all listeners on all channels.
     pub fn clear(&self) {
-        self.handlers.lock().unwrap().clear();
+        self.handlers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
     }
 
     /// Number of channels (test helper).
     pub fn channel_count(&self) -> usize {
-        self.handlers.lock().unwrap().len()
+        self.handlers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
     }
 
     /// Number of handlers on a channel (test helper).
     pub fn handler_count(&self, channel: &str) -> usize {
         self.handlers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .get(channel)
             .map(|l| l.len())
             .unwrap_or(0)
@@ -100,6 +112,7 @@ impl EventBus {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -112,12 +125,17 @@ mod tests {
             "x",
             Box::new(move |data| {
                 let value = data.downcast_ref::<u32>().copied().unwrap_or(0);
-                got.lock().unwrap().push(value);
+                got.lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(value);
             }),
         );
         bus.emit("x", 42u32);
         bus.emit("x", 7u32);
-        assert_eq!(*received.lock().unwrap(), vec![42, 7]);
+        assert_eq!(
+            *received.lock().unwrap_or_else(|error| error.into_inner()),
+            vec![42, 7]
+        );
     }
 
     #[test]
@@ -125,11 +143,14 @@ mod tests {
         let bus = EventBus::new();
         let count = Arc::new(Mutex::new(0));
         let c = count.clone();
-        let unsub = bus.on("c", Box::new(move |_| *c.lock().unwrap() += 1));
+        let unsub = bus.on(
+            "c",
+            Box::new(move |_| *c.lock().unwrap_or_else(|error| error.into_inner()) += 1),
+        );
         bus.emit("c", ());
         unsub();
         bus.emit("c", ());
-        assert_eq!(*count.lock().unwrap(), 1);
+        assert_eq!(*count.lock().unwrap_or_else(|error| error.into_inner()), 1);
     }
 
     #[test]
@@ -137,14 +158,20 @@ mod tests {
         let bus = EventBus::new();
         let count = Arc::new(Mutex::new(0));
         let c1 = count.clone();
-        let _unsub = bus.on("m", Box::new(move |_| *c1.lock().unwrap() += 1));
+        let _unsub = bus.on(
+            "m",
+            Box::new(move |_| *c1.lock().unwrap_or_else(|error| error.into_inner()) += 1),
+        );
         let c2 = count.clone();
-        let unsub = bus.on("m", Box::new(move |_| *c2.lock().unwrap() += 1));
+        let unsub = bus.on(
+            "m",
+            Box::new(move |_| *c2.lock().unwrap_or_else(|error| error.into_inner()) += 1),
+        );
         assert_eq!(bus.handler_count("m"), 2);
         unsub();
         assert_eq!(bus.handler_count("m"), 1);
         bus.emit("m", ());
-        assert_eq!(*count.lock().unwrap(), 1);
+        assert_eq!(*count.lock().unwrap_or_else(|error| error.into_inner()), 1);
     }
 
     #[test]
@@ -152,13 +179,19 @@ mod tests {
         let bus = EventBus::new();
         let count = Arc::new(Mutex::new(0));
         let c = count.clone();
-        let _unsub1 = bus.on("a", Box::new(move |_| *c.lock().unwrap() += 1));
+        let _unsub1 = bus.on(
+            "a",
+            Box::new(move |_| *c.lock().unwrap_or_else(|error| error.into_inner()) += 1),
+        );
         let c2 = count.clone();
-        let _unsub2 = bus.on("b", Box::new(move |_| *c2.lock().unwrap() += 1));
+        let _unsub2 = bus.on(
+            "b",
+            Box::new(move |_| *c2.lock().unwrap_or_else(|error| error.into_inner()) += 1),
+        );
         bus.clear();
         bus.emit("a", ());
         bus.emit("b", ());
-        assert_eq!(*count.lock().unwrap(), 0);
+        assert_eq!(*count.lock().unwrap_or_else(|error| error.into_inner()), 0);
         assert_eq!(bus.channel_count(), 0);
     }
 

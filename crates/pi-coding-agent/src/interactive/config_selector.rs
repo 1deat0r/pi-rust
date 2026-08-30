@@ -8,6 +8,12 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use pi_tui::keybindings::get_keybindings;
+use pi_tui::keys::{match_key, TuiKey};
+
+const DEFAULT_MAX_VISIBLE: usize = 18;
+const MIN_MAX_VISIBLE: usize = 5;
+
 /// Origin scope of a resource's `PathMetadata`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceScope {
@@ -379,6 +385,7 @@ pub struct ConfigSelectorComponent {
     project_groups: Vec<ResourceGroup>,
     write_scope: ConfigWriteScope,
     selected: usize,
+    max_visible: usize,
     closed: bool,
     search: pi_tui::components::Input,
     cwd: String,
@@ -430,6 +437,7 @@ impl ConfigSelectorComponent {
                 ConfigWriteScope::Global
             },
             selected: 0,
+            max_visible: DEFAULT_MAX_VISIBLE,
             closed: false,
             search: pi_tui::components::Input::new("Search: "),
             cwd,
@@ -440,6 +448,34 @@ impl ConfigSelectorComponent {
 
     pub fn is_closed(&self) -> bool {
         self.closed
+    }
+
+    /// Current search text, exposed for deterministic integration checks.
+    pub fn search_query(&self) -> &str {
+        self.search.get_value()
+    }
+
+    /// Current write scope as the public upstream spelling.
+    pub fn write_scope(&self) -> &'static str {
+        match self.write_scope {
+            ConfigWriteScope::Global => "global",
+            ConfigWriteScope::Project => "project",
+        }
+    }
+
+    /// Selected resource after applying the current search filter.
+    pub fn selected_resource(&self) -> Option<ResourceItem> {
+        self.selected_item().map(|(_, item)| item)
+    }
+
+    /// Number of selectable resource rows after applying the current search.
+    pub fn selectable_count(&self) -> usize {
+        self.item_locations().len()
+    }
+
+    /// Visible content-row capacity used by scrolling and page navigation.
+    pub fn max_visible(&self) -> usize {
+        self.max_visible
     }
 
     fn groups(&self) -> &[ResourceGroup] {
@@ -471,6 +507,72 @@ impl ConfigSelectorComponent {
         locations
     }
 
+    /// Return the content-line position of every matching item. Group and
+    /// subgroup headings occupy lines too, just as upstream ResourceList's
+    /// flat entries do; page movement therefore follows the rendered layout
+    /// rather than an arbitrary item-count step.
+    fn content_item_line_indices(&self) -> (Vec<usize>, usize) {
+        let mut item_lines = Vec::new();
+        let mut line = 0usize;
+        for group in self.groups() {
+            let has_matching_item = group
+                .subgroups
+                .iter()
+                .flat_map(|subgroup| subgroup.items.iter())
+                .any(|item| self.item_matches(item));
+            if !has_matching_item {
+                continue;
+            }
+            line += 1;
+            for subgroup in &group.subgroups {
+                let has_matching_item = subgroup.items.iter().any(|item| self.item_matches(item));
+                if !has_matching_item {
+                    continue;
+                }
+                line += 1;
+                for item in &subgroup.items {
+                    if self.item_matches(item) {
+                        item_lines.push(line);
+                        line += 1;
+                    }
+                }
+            }
+        }
+        (item_lines, line)
+    }
+
+    fn move_page(&mut self, direction: isize) {
+        let (item_lines, content_len) = self.content_item_line_indices();
+        if item_lines.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        let current_item = self.selected.min(item_lines.len() - 1);
+        let current_line = item_lines[current_item];
+        let max_visible = self.max_visible.max(1);
+        let target = if direction < 0 {
+            current_line.saturating_sub(max_visible)
+        } else {
+            current_line
+                .saturating_add(max_visible)
+                .min(content_len.saturating_sub(1))
+        };
+        let next_item = if direction < 0 {
+            item_lines
+                .iter()
+                .position(|line| *line >= target)
+                .unwrap_or(current_item)
+                .min(current_item)
+        } else {
+            item_lines
+                .iter()
+                .rposition(|line| *line <= target)
+                .unwrap_or(current_item)
+                .max(current_item)
+        };
+        self.selected = next_item;
+    }
+
     fn selected_location(&self) -> Option<(usize, usize, usize)> {
         let locations = self.item_locations();
         locations
@@ -500,7 +602,7 @@ impl ConfigSelectorComponent {
     }
 
     fn is_inherited_global_item(&self, item: &ResourceItem) -> bool {
-        item.metadata.scope == SourceScope::User
+        item.metadata.scope != SourceScope::Project
             || self
                 .global_groups
                 .iter()
@@ -516,7 +618,8 @@ impl ConfigSelectorComponent {
 
         // Global mode edits global resources; project-local entries are only
         // writable after switching to project mode.
-        if self.write_scope == ConfigWriteScope::Global && item.metadata.scope != SourceScope::User
+        if self.write_scope == ConfigWriteScope::Global
+            && item.metadata.scope == SourceScope::Project
         {
             return;
         }
@@ -731,6 +834,7 @@ impl ConfigSelectorComponent {
         }
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn set_package_state(
         &mut self,
         item: &ResourceItem,
@@ -936,9 +1040,13 @@ impl pi_tui::Component for ConfigSelectorComponent {
         }
 
         if content.is_empty() {
-            content.push("  No resources found".to_string());
+            lines.push("  No resources found".to_string());
+            return lines
+                .into_iter()
+                .map(|line| pi_tui::utils::truncate_to_width(&line, width, ""))
+                .collect();
         }
-        let max_visible = 18;
+        let max_visible = self.max_visible.max(1);
         let content_len = content.len();
         let start = selected_line
             .unwrap_or(0)
@@ -962,47 +1070,68 @@ impl pi_tui::Component for ConfigSelectorComponent {
             .collect()
     }
 
-    fn handle_input(&mut self, key: &pi_tui::keys::TuiKey) {
+    fn handle_input(&mut self, key: &TuiKey) {
         let count = self.item_locations().len();
-        match key.base.as_str() {
-            "up" if count > 0 => {
-                self.selected = if self.selected == 0 {
-                    count - 1
-                } else {
-                    self.selected - 1
-                };
+        let keybindings = get_keybindings();
+        if keybindings.matches(key, "tui.select.up") {
+            if count > 0 {
+                self.selected = self.selected.saturating_sub(1);
             }
-            "down" if count > 0 => {
-                self.selected = (self.selected + 1) % count;
+            return;
+        }
+        if keybindings.matches(key, "tui.select.down") {
+            if count > 0 {
+                self.selected = (self.selected + 1).min(count - 1);
             }
-            "pageup" if count > 0 => self.selected = self.selected.saturating_sub(8),
-            "pagedown" if count > 0 => self.selected = (self.selected + 8).min(count - 1),
-            "tab" if !self.project_groups.is_empty() => {
-                self.write_scope = match self.write_scope {
-                    ConfigWriteScope::Global => ConfigWriteScope::Project,
-                    ConfigWriteScope::Project => ConfigWriteScope::Global,
-                };
-                self.selected = self
-                    .selected
-                    .min(self.item_locations().len().saturating_sub(1));
-            }
-            "esc" | "escape" => {
-                self.settings.flush_sync();
-                self.closed = true;
-            }
-            "enter" if !key.ctrl && !key.alt => self.toggle_selected(),
-            " " => self.toggle_selected(),
-            _ if key.ctrl && key.base == "c" => {
-                self.settings.flush_sync();
-                self.closed = true;
-            }
-            _ => {
-                let before = self.search.value.clone();
-                self.search.handle_input(key);
-                if self.search.value != before {
-                    self.selected = 0;
-                }
-            }
+            return;
+        }
+        if keybindings.matches(key, "tui.select.pageUp") {
+            self.move_page(-1);
+            return;
+        }
+        if keybindings.matches(key, "tui.select.pageDown") {
+            self.move_page(1);
+            return;
+        }
+        if keybindings.matches(key, "tui.input.tab") && !self.project_groups.is_empty() {
+            self.write_scope = match self.write_scope {
+                ConfigWriteScope::Global => ConfigWriteScope::Project,
+                ConfigWriteScope::Project => ConfigWriteScope::Global,
+            };
+            // Rebuilding a scope starts at its first selectable resource, as
+            // upstream setWriteScope does, rather than retaining an index
+            // whose meaning belonged to the previous scope.
+            self.selected = 0;
+            return;
+        }
+        if keybindings.matches(key, "tui.select.cancel") || match_key(key, "ctrl+c") {
+            self.settings.flush_sync();
+            self.closed = true;
+            return;
+        }
+        if keybindings.matches(key, "tui.select.confirm")
+            || (key.base == " " && !key.ctrl && !key.shift && !key.alt)
+        {
+            self.toggle_selected();
+            return;
+        }
+
+        let before = self.search.value.clone();
+        self.search.handle_input(key);
+        if self.search.value != before {
+            self.selected = 0;
+        }
+    }
+
+    fn set_focused(&mut self, focused: bool) {
+        self.search.focused = focused;
+    }
+
+    fn set_height(&mut self, height: usize) {
+        if height > 0 {
+            // This component includes title/path/search/blank/footer chrome;
+            // keep at least the same five-row floor as upstream ResourceList.
+            self.max_visible = height.saturating_sub(7).max(MIN_MAX_VISIBLE);
         }
     }
 }
@@ -1286,6 +1415,7 @@ fn package_source(source: &crate::core::settings::PackageSource) -> &str {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use pi_tui::Component;
@@ -1685,7 +1815,7 @@ mod tests {
             vec![
                 "Global Resources",
                 "~/.pi/agent/settings.json",
-                "Search: ",
+                "Search: \u{1b}[7m \u{1b}[27m                                                                                           ",
                 "",
                 "  User (/agent/)",
                 "    Extensions",
@@ -1702,7 +1832,7 @@ mod tests {
             vec![
                 "Project Local Resources",
                 ".pi/settings.json",
-                "Search: ",
+                "Search: \u{1b}[7m \u{1b}[27m                                                                                           ",
                 "",
                 "  User (/agent/) · inherited global",
                 "    Extensions",

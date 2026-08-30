@@ -69,14 +69,17 @@ fn expected_ids() -> BTreeSet<String> {
     ids
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 fn checklist() -> Regex {
     Regex::new(r"^- \[[^\]]*\]").unwrap()
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 fn task_line() -> Regex {
     Regex::new(r"^- \[([ xX])\] (\d+\.|S-\d+)\s+").unwrap()
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 fn parse_tasks(source: &str) -> Result<BTreeMap<String, Task>> {
     let checklist = checklist();
     let task_line = task_line();
@@ -191,6 +194,7 @@ fn add_range(ids: &mut BTreeSet<String>, prefix: &str, start: u32, end: Option<u
     }
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 fn referenced_ids(text: &str) -> Vec<(String, bool)> {
     let numeric = Regex::new(r"#(\d+)(?:[-–](\d+))?").unwrap();
     let supplemental = Regex::new(r"S-(\d+)(?:[-–]S?-(\d+))?").unwrap();
@@ -207,6 +211,7 @@ fn referenced_ids(text: &str) -> Vec<(String, bool)> {
     result
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 fn divergence(row: &CensusRow) -> Option<&'static str> {
     let s027 = Regex::new(r"(?i)\bS-027\b").unwrap();
     if s027.is_match(&row.tag)
@@ -310,7 +315,10 @@ fn workspace_sources(directory: &Path) -> io::Result<Vec<PathBuf>> {
             if kind.is_dir() {
                 if matches!(
                     entry.file_name().to_str(),
-                    Some(".git" | "target" | "upstream_pi")
+                    // Rustdoc emits JavaScript search/index assets under
+                    // `doc/`; these are generated documentation artifacts,
+                    // not executable product source or a runtime boundary.
+                    Some(".git" | "target" | "upstream_pi" | "doc")
                 ) {
                     continue;
                 }
@@ -393,6 +401,7 @@ fn main() -> ExitCode {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

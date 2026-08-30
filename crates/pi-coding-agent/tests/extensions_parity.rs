@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Rust-native extension-loader parity tests.
 //!
 //! Filesystem module execution is intentionally outside the product contract.
@@ -5,8 +7,10 @@
 //! cannot turn a source path into a successful load.
 
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use pi_coding_agent::core::extensions::integration::ExtensionHostState;
 use pi_coding_agent::core::extensions::loader::{
     create_extension_runtime, discover_and_load_extensions, discover_extensions_in_dir,
     load_extension_from_factory, load_extensions, resolve_extension_entries,
@@ -14,8 +18,8 @@ use pi_coding_agent::core::extensions::loader::{
 };
 use pi_coding_agent::core::extensions::runner::ExtensionRunner;
 use pi_coding_agent::core::extensions::types::{
-    Extension, ExtensionContext, ExtensionHostAction, ExtensionHostActions, FlagType, HandlerFn,
-    RegisteredTool, SourceInfo, ToolExecutionRequest,
+    Extension, ExtensionContext, ExtensionHostAction, ExtensionHostActionOutcome,
+    ExtensionHostActions, FlagType, HandlerFn, RegisteredTool, SourceInfo, ToolExecutionRequest,
 };
 use serde_json::{json, Value};
 
@@ -82,6 +86,7 @@ fn rust_factory_registration_and_runner_dispatch_are_native() {
             )?;
             api.register_tool(RegisteredTool {
                 name: "native-tool".to_string(),
+                label: "Native tool".to_string(),
                 description: "Rust-native tool".to_string(),
                 parameters: json!({"type": "object"}),
                 source_info: SourceInfo::synthetic("<inline:parity>", "inline", None),
@@ -91,6 +96,7 @@ fn rust_factory_registration_and_runner_dispatch_are_native() {
                         "params": request.params,
                     }))
                 })),
+                ..Default::default()
             })?;
             api.register_message_renderer(
                 "fixture",
@@ -216,12 +222,19 @@ fn filesystem_paths_are_rejected_without_a_runner_or_silent_success() {
 }
 
 #[test]
-fn automatic_discovery_does_not_select_source_paths() {
+fn automatic_discovery_reports_source_paths_without_executing_them() {
     let root = sandbox("discovery");
     let local = root.join(".pi/extensions");
-    fs::create_dir_all(&local).expect("create local extension directory");
+    let nested = local.join("nested");
+    fs::create_dir_all(&nested).expect("create local extension directories");
+    fs::write(local.join("direct.ts"), "export default () => {}").expect("write source");
+    fs::write(nested.join("index.js"), "export default () => {}").expect("write source");
+    fs::write(local.join("helper.tsx"), "export default () => {}").expect("write ignored source");
 
-    assert!(discover_extensions_in_dir(&local).is_empty());
+    assert_eq!(
+        discover_extensions_in_dir(&local),
+        vec![local.join("direct.ts"), nested.join("index.js")]
+    );
     let result = discover_and_load_extensions(
         &[],
         &root.to_string_lossy(),
@@ -230,7 +243,11 @@ fn automatic_discovery_does_not_select_source_paths() {
         None,
     );
     assert!(result.extensions.is_empty());
-    assert!(result.errors.is_empty());
+    assert_eq!(result.errors.len(), 2);
+    assert!(result
+        .errors
+        .iter()
+        .all(|error| error.error.contains(RUST_NATIVE_ONLY_ERROR)));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -265,6 +282,188 @@ fn host_binding_is_available_for_native_factories() {
         .lock()
         .expect("runtime lock")
         .is_initialized());
+}
+
+#[test]
+fn native_handler_can_call_the_live_extension_context_host_surface() {
+    let runtime = create_extension_runtime();
+    let extension = load_extension_from_factory(
+        |api| {
+            api.register_tool(RegisteredTool {
+                name: "host-surface".to_string(),
+                label: "Host surface".to_string(),
+                description: "host surface fixture".to_string(),
+                parameters: json!({"type": "object"}),
+                source_info: SourceInfo::synthetic("<inline:host-surface>", "inline", None),
+                execute: Some(Arc::new(|request: ToolExecutionRequest| {
+                    let context = &request.context;
+                    context.wait_for_idle()?;
+                    let session_name = context.get_session_name()?;
+                    let model = context.get_model()?;
+                    let scoped_models = context.get_scoped_models()?;
+                    let active_tools = context.get_active_tools()?;
+                    let all_tools = context.get_all_tools()?;
+                    let commands = context.get_commands()?;
+                    let thinking_level = context.get_thinking_level()?;
+                    let is_idle = context.is_idle()?;
+                    let trusted = context.is_project_trusted()?;
+                    let signal = context.signal()?;
+                    let pending_messages = context.has_pending_messages()?;
+                    let usage = context.get_context_usage()?;
+                    let system_prompt = context.get_system_prompt()?;
+                    let system_prompt_options = context.get_system_prompt_options()?;
+                    context.set_session_name(Some("renamed"))?;
+                    context.set_label("entry-1", Some("bookmark"))?;
+                    context.set_thinking_level("high")?;
+                    context.set_active_tools(&["tool-b".to_string()])?;
+                    let send = context.send_message(json!({"customType": "fixture"}), None)?;
+                    let send_user = context.send_user_message(json!("hello"), None)?;
+                    let append = context.append_entry("fixture", Some(json!({"value": 1})))?;
+                    let model_change = context.set_model(json!({"id": "model-b"}))?;
+                    let compact = context.compact(Some(json!({"reserveTokens": 10})))?;
+                    let abort = context.abort()?;
+                    context.tool_update(json!({"text": "partial"}))?;
+                    let signal_after_abort = context.signal()?;
+                    let shutdown = context.shutdown()?;
+                    let lifecycle = context.new_session(None)?;
+                    let _fork = context.fork(Some("entry-1"), None)?;
+                    let _navigate = context.navigate_tree(Some("leaf-1"), None)?;
+                    let _switch = context.switch_session(Some("/fixture/session.jsonl"), None)?;
+                    let _reload = context.reload(None)?;
+                    let session_handle_name = context.session_manager()?.get_session_name()?;
+                    let registry_tool_count = context.model_registry()?.get_all_tools()?.len();
+                    Ok(json!({
+                        "sessionName": session_name,
+                        "model": model,
+                        "scopedModels": scoped_models,
+                        "activeTools": active_tools,
+                        "allTools": all_tools,
+                        "commands": commands,
+                        "thinkingLevel": thinking_level,
+                        "isIdle": is_idle,
+                        "trusted": trusted,
+                        "signal": signal,
+                        "pendingMessages": pending_messages,
+                        "usage": usage,
+                        "systemPrompt": system_prompt,
+                        "systemPromptOptions": system_prompt_options,
+                        "send": matches!(send, ExtensionHostActionOutcome::Completed(Value::Null)),
+                        "sendUser": matches!(send_user, ExtensionHostActionOutcome::Completed(Value::Null)),
+                        "append": matches!(append, ExtensionHostActionOutcome::Completed(Value::Null)),
+                        "modelChangePending": matches!(model_change, ExtensionHostActionOutcome::Pending(_)),
+                        "compactAccepted": matches!(compact, ExtensionHostActionOutcome::Completed(Value::Null)),
+                        "abort": matches!(abort, ExtensionHostActionOutcome::Completed(Value::Null)),
+                        "signalAfterAbort": signal_after_abort,
+                        "shutdownAccepted": matches!(shutdown, ExtensionHostActionOutcome::Completed(Value::Null)),
+                        "lifecyclePending": matches!(lifecycle, ExtensionHostActionOutcome::Pending(_)),
+                        "sessionHandleName": session_handle_name,
+                        "registryToolCount": registry_tool_count,
+                    }))
+                })),
+                ..Default::default()
+            })?;
+            Ok(())
+        },
+        "/fixture/project",
+        Arc::clone(&runtime),
+        "<inline:host-surface>",
+    )
+    .expect("host-surface fixture");
+
+    let host = Arc::new(ExtensionHostState::new(
+        Some("initial".to_string()),
+        "medium",
+    ));
+    host.set_catalog(
+        vec!["tool-a".to_string()],
+        vec![json!({"name": "tool-a"})],
+        vec![json!({"name": "command-a"})],
+    );
+    host.set_model(Some(json!({"id": "model-a"})));
+    host.set_scoped_models(vec![json!({"id": "model-a"})]);
+    host.set_idle(true);
+    host.set_project_trusted(true);
+    host.set_has_pending_messages(true);
+    host.set_context_usage(Some(json!({"tokens": 12})));
+    host.set_system_prompt("system");
+    host.set_system_prompt_options(json!({"cwd": "/fixture/project"}));
+    let signal = Arc::new(AtomicBool::new(false));
+    host.set_signal(Some(signal.clone()));
+
+    let mut runner = ExtensionRunner::new(
+        vec![extension],
+        Arc::clone(&runtime),
+        "/fixture/project".to_string(),
+    );
+    runner.set_ui_context("rpc", true);
+    runner.bind_core_with_actions(host.clone());
+    let result = runner
+        .execute_tool("host-surface", "host-call", json!({}))
+        .expect("host surface tool");
+
+    assert_eq!(result["sessionName"], "initial");
+    assert_eq!(result["model"], json!({"id": "model-a"}));
+    assert_eq!(result["scopedModels"], json!([{"id": "model-a"}]));
+    assert_eq!(result["activeTools"], json!(["tool-a"]));
+    assert_eq!(result["allTools"], json!([{"name": "tool-a"}]));
+    assert_eq!(result["commands"], json!([{"name": "command-a"}]));
+    assert_eq!(result["thinkingLevel"], "medium");
+    assert_eq!(result["isIdle"], true);
+    assert_eq!(result["trusted"], true);
+    assert_eq!(result["signal"], json!({"aborted": false}));
+    assert_eq!(result["pendingMessages"], true);
+    assert_eq!(result["usage"], json!({"tokens": 12}));
+    assert_eq!(result["systemPrompt"], "system");
+    assert_eq!(
+        result["systemPromptOptions"],
+        json!({"cwd": "/fixture/project"})
+    );
+    assert_eq!(result["send"], true);
+    assert_eq!(result["sendUser"], true);
+    assert_eq!(result["append"], true);
+    assert_eq!(result["modelChangePending"], true);
+    assert_eq!(result["compactAccepted"], true);
+    assert_eq!(result["abort"], true);
+    assert_eq!(result["signalAfterAbort"], json!({"aborted": true}));
+    assert_eq!(result["shutdownAccepted"], true);
+    assert_eq!(result["lifecyclePending"], true);
+    assert_eq!(result["sessionHandleName"], "renamed");
+    assert_eq!(result["registryToolCount"], 1);
+    assert!(signal.load(Ordering::Acquire));
+    assert_eq!(host.drain_pending_messages().len(), 2);
+    assert_eq!(host.drain_pending_entries().len(), 1);
+    assert_eq!(host.drain_pending_lifecycle_actions().len(), 5);
+    assert_eq!(host.drain_pending_actions().len(), 3);
+    assert_eq!(
+        host.requested_active_tools(),
+        Some(vec!["tool-b".to_string()])
+    );
+}
+
+#[test]
+fn captured_native_context_rejects_host_calls_after_runtime_invalidation() {
+    let runtime = create_extension_runtime();
+    let host = Arc::new(ExtensionHostState::new(None, "medium"));
+    let mut runner = ExtensionRunner::new(
+        Vec::new(),
+        Arc::clone(&runtime),
+        "/fixture/project".to_string(),
+    );
+    runner.set_ui_context("rpc", true);
+    runner.bind_core_with_actions(host);
+    let context = runner.create_context_with_ui(true);
+    assert!(context.host.is_bound());
+    runner.invalidate(Some("replacement"));
+    assert!(!context.host.is_bound());
+    let error = context
+        .get_session_name()
+        .expect_err("stale native contexts must reject host calls");
+    assert!(error.contains("replacement"));
+    let ui_error = context
+        .ui
+        .notify("stale", None)
+        .expect_err("stale native UI contexts must reject fire-and-forget calls");
+    assert!(ui_error.contains("replacement"));
 }
 
 #[test]

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Real-PTY coverage for every built-in interactive slash command named by
 //! `docs/EXHAUSTIVE-PARITY-INVENTORY.md`.
 //!
@@ -136,6 +138,22 @@ mod unix {
                 assert!(
                     Instant::now() < deadline,
                     "timed out waiting for {needle:?} in {}",
+                    path.display()
+                );
+                thread::sleep(Duration::from_millis(25));
+            }
+        }
+
+        fn wait_for_file_change(&self, path: &Path, previous: &str) -> String {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let content = fs::read_to_string(path).unwrap_or_default();
+                if content != previous {
+                    return content;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for {} to be rewritten",
                     path.display()
                 );
                 thread::sleep(Duration::from_millis(25));
@@ -365,6 +383,13 @@ mod unix {
             capture
         }
 
+        fn command_allowing_existing_output(&self, line: &str, expected: &str) -> String {
+            self.send_line(line);
+            let capture = self.wait_for(|capture| capture.contains(expected));
+            self.settle();
+            capture
+        }
+
         fn dismiss_modal(&self) {
             let before = self.capture();
             self.send_key("Escape");
@@ -491,40 +516,49 @@ mod unix {
     fn all_inventory_slash_commands_run_through_real_pty() {
         let sandbox = Sandbox::new();
         let session = TmuxSession::start(&sandbox);
-        session.wait_for(|capture| capture.contains("(faux/Faux Model)"));
+        session.wait_for(|capture| capture.contains("faux-1"));
         let mut covered = BTreeSet::new();
 
         session.send_line("pty seed prompt");
         session.wait_for(|capture| capture.contains("faux response to: pty seed prompt"));
         session.settle();
 
-        session.command("/settings", "Default thinking level");
+        // The current upstream settings selector opens on the first registry
+        // row (Auto-compact); the default-thinking status is produced by the
+        // separate `/thinking` selector below.
+        session.command("/settings", "Auto-compact");
         covered.insert("/settings");
         session.dismiss_modal();
-        session.command("/settings", "Default thinking level");
+        session.command("/settings", "Auto-compact");
         session.dismiss_modal();
 
-        session.command("/model", "faux/Faux Model");
+        session.command("/model", "faux-1");
         covered.insert("/model");
         session.dismiss_modal();
-        session.command("/model", "faux/Faux Model");
+        session.command("/model", "faux-1");
         session.dismiss_modal();
 
         session.command("/thinking", "off");
         covered.insert("/thinking");
-        session.send_key("Down");
         session.send_key("Enter");
-        session.wait_for(|capture| capture.contains("Thinking: low"));
+        session.wait_for(|capture| capture.contains("Thinking level: off"));
+        session.send_line("/thinking");
+        session.wait_for(|capture| capture.contains("Thinking Level"));
+        session.send_key("C-s");
+        session.wait_for(|capture| capture.contains("Default thinking level: off"));
         session.command("/reload", "reloaded settings");
         covered.insert("/reload");
         sandbox.wait_for_file(
             &sandbox.agent_dir.join("settings.json"),
             "defaultThinkingLevel",
         );
-        session.command("/thinking", "low");
+        session.command("/thinking", "off");
         session.dismiss_modal();
 
-        session.command("/scoped-models", "amazon-bedrock");
+        // This hermetic session configures only the deterministic faux
+        // provider, so the scoped-model checklist must show the actually
+        // available model rather than an unauthenticated built-in provider.
+        session.command("/scoped-models", "faux-1");
         covered.insert("/scoped-models");
         session.send_key("Enter");
         session.wait_for(|capture| capture.contains("Enabled "));
@@ -547,21 +581,23 @@ mod unix {
 
         session.send_line("/fork");
         covered.insert("/fork");
+        session.wait_for(|capture| capture.contains("Search:"));
         session.send_key("Escape");
         session.settle();
         session.send_line("/fork");
+        session.wait_for(|capture| capture.contains("Search:"));
         session.send_key("Enter");
         session.wait_for(|capture| capture.contains("fork session"));
         session.send_key("C-u");
         session.settle();
 
-        session.command(
+        session.command_allowing_existing_output(
             &format!("/export {}", sandbox.html.display()),
             "exported session to",
         );
         covered.insert("/export");
         sandbox.wait_for_file(&sandbox.html, "<html");
-        session.command(
+        session.command_allowing_existing_output(
             &format!("/export {}", sandbox.html.display()),
             "exported session to",
         );
@@ -578,7 +614,7 @@ mod unix {
 
         session.command("/share", "/share skipped");
         covered.insert("/share");
-        session.command("/share", "/share skipped");
+        session.command_allowing_existing_output("/share", "/share skipped");
 
         session.command(
             "/name complete pty session",
@@ -595,19 +631,23 @@ mod unix {
         session.command("/hotkeys", "hotkeys: enter submit");
         covered.insert("/hotkeys");
 
-        session.command("/tree", "session tree:");
+        session.command("/tree", "Session Tree");
         covered.insert("/tree");
+        // A non-empty session opens the real tree selector; close it before
+        // continuing through the remaining slash-command matrix.
+        session.send_key("Escape");
+        session.wait_for(|capture| !capture.contains("Session Tree"));
 
         session.command("/trust allow", "default project trust: allow");
         covered.insert("/trust");
-        session.command("/trust invalid", "usage: /trust <allow|deny|ask>");
+        session.command("/trust invalid", "usage: /trust [allow|deny|ask]");
         session.command("/trust deny", "default project trust: deny");
 
-        session.command("/login faux", "Enter API key for Faux:");
+        session.command("/login faux", "Enter Faux API key");
         covered.insert("/login");
         session.send_key("Escape");
         session.wait_for(|capture| capture.contains("Login cancelled"));
-        session.command("/login faux", "Enter API key for Faux:");
+        session.command("/login faux", "Enter Faux API key");
         session.send_text("pty-test-key");
         session.wait_for(|capture| capture.contains("••••••••••••"));
         session.send_key("Enter");
@@ -640,12 +680,12 @@ mod unix {
         assert!(compact.contains("compact") || compact.contains("compaction"));
         covered.insert("/compact");
 
-        session.command("/reload", "reloaded settings");
+        session.command_allowing_existing_output("/reload", "reloaded settings");
         sandbox.wait_for_file(
             &sandbox.agent_dir.join("settings.json"),
             "defaultProjectTrust",
         );
-        session.command("/reload", "reloaded settings");
+        session.command_allowing_existing_output("/reload", "reloaded settings");
 
         session.send_line("/quit");
         covered.insert("/quit");
@@ -654,10 +694,55 @@ mod unix {
     }
 
     #[test]
+    fn kitty_arrow_release_is_not_double_dispatched_in_real_selector_pty() {
+        let sandbox = Sandbox::new();
+        let session = TmuxSession::start(&sandbox);
+        session.wait_for(|capture| capture.contains("faux-1"));
+
+        // The real faux model intentionally advertises no reasoning levels
+        // beyond `off`. Use the real model selector here so this PTY test has
+        // multiple rows to navigate without changing faux's upstream model
+        // metadata merely to satisfy the fixture.
+        session.send_line("/model");
+        let initial = session.wait_for(|capture| {
+            capture.contains("faux-1") && capture.lines().any(|line| line.contains("→ "))
+        });
+        let selected_row = |capture: &str| {
+            capture
+                .lines()
+                .find(|line| line.contains("→ "))
+                .map(str::trim)
+                .map(str::to_string)
+        };
+        let before = selected_row(&initial).expect("model selector has a selected row");
+
+        // Kitty keyboard protocol reports a press and a release as separate
+        // CSI-u events. The release must not be interpreted as a second Up.
+        session.send_text("\x1b[57419;1u");
+        let after_press =
+            session.wait_for(|capture| selected_row(capture).is_some_and(|row| row != before));
+        let after_press_row = selected_row(&after_press).expect("press selected a model row");
+        session.send_text("\x1b[57419;1:3u");
+        thread::sleep(Duration::from_millis(150));
+        let capture = session.capture();
+        assert!(
+            selected_row(&capture).as_deref() == Some(after_press_row.as_str()),
+            "Kitty release moved the selector a second time:\n{capture}"
+        );
+
+        session.send_key("Escape");
+        session.wait_for(|capture| {
+            !capture.contains("Only showing models from configured providers.")
+        });
+        session.send_line("/quit");
+        assert_terminal_restored(&session, &sandbox);
+    }
+
+    #[test]
     fn slash_errors_cancellation_and_restart_persist_without_mocked_turns() {
         let sandbox = Sandbox::new();
         let session = TmuxSession::start_without_share_dry_run(&sandbox);
-        session.wait_for(|capture| capture.contains("(faux/Faux Model)"));
+        session.wait_for(|capture| capture.contains("faux-1"));
         session.send_line("restart persistence prompt");
         session
             .wait_for(|capture| capture.contains("faux response to: restart persistence prompt"));
@@ -666,9 +751,12 @@ mod unix {
         session.command("/name restart-persisted", "session name: restart-persisted");
         session.command("/trust allow", "default project trust: allow");
         session.command("/thinking", "off");
-        session.send_key("Down");
         session.send_key("Enter");
-        session.wait_for(|capture| capture.contains("Thinking: low"));
+        session.wait_for(|capture| capture.contains("Thinking level: off"));
+        session.send_line("/thinking");
+        session.wait_for(|capture| capture.contains("Thinking Level"));
+        session.send_key("C-s");
+        session.wait_for(|capture| capture.contains("Default thinking level: off"));
         session.command("/reload", "reloaded settings");
         let settings_file = sandbox.wait_for_file(
             &sandbox.agent_dir.join("settings.json"),
@@ -680,8 +768,8 @@ mod unix {
         );
         wait_for_any_session_file(&sandbox, "restart-persisted");
 
-        session.command("/login unknown-provider", "no OAuth login available");
-        session.command("/login faux", "Enter API key for Faux:");
+        session.command("/login unknown-provider", "no login method available");
+        session.command("/login faux", "Enter Faux API key");
         session.send_key("Escape");
         session.wait_for(|capture| capture.contains("Login cancelled"));
 
@@ -691,7 +779,7 @@ mod unix {
             &format!("/export {}", sandbox.bad_output.display()),
             "export failed:",
         );
-        session.command("/trust nope", "usage: /trust <allow|deny|ask>");
+        session.command("/trust nope", "usage: /trust [allow|deny|ask]");
 
         // Exercise the non-dry-run share failure against a PATH that has no
         // gh. This is still a real command in the real process; only the
@@ -707,9 +795,29 @@ mod unix {
         assert_terminal_restored(&session, &sandbox);
 
         // A second real process discovers the persisted name, trust, and
-        // thinking settings from disk.  The exact session is supplied by
-        // --resume so the restart boundary is unambiguous.
+        // thinking settings from disk.  The exact session is selected through
+        // the real startup picker so the restart boundary is unambiguous.
+        let resume_file = sandbox
+            .session_files()
+            .into_iter()
+            .next()
+            .expect("the persisted restart session exists");
+        let resume_id = fs::read_to_string(&resume_file)
+            .ok()
+            .and_then(|content| content.lines().next().map(str::to_owned))
+            .and_then(|header| serde_json::from_str::<serde_json::Value>(&header).ok())
+            .and_then(|header| {
+                header
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .expect("the persisted restart session has a JSONL id");
         let restarted = TmuxSession::start_resuming(&sandbox);
+        restarted.wait_for(|capture| capture.contains("Search:"));
+        let partial_id = resume_id.chars().take(8).collect::<String>();
+        restarted.send_text(&partial_id);
+        restarted.send_key("Enter");
         let startup = restarted.wait_for(|capture| {
             capture.contains("resumed session") && capture.contains("restart-persisted")
         });
@@ -719,18 +827,29 @@ mod unix {
         );
         restarted.send_key("C-d");
         assert_terminal_restored(&restarted, &sandbox);
+
+        // Cancelling the startup picker exits cleanly without creating an
+        // ephemeral replacement session on disk.
+        let files_before_cancel = sandbox.session_files();
+        let cancelled = TmuxSession::start_resuming(&sandbox);
+        cancelled.wait_for(|capture| capture.contains("Search:"));
+        cancelled.send_key("Escape");
+        cancelled.wait_for(|capture| capture.contains("No session selected"));
+        assert_eq!(sandbox.session_files(), files_before_cancel);
+        cancelled.wait_for_cooked_mode();
     }
 
     #[test]
     fn hidden_components_cover_success_repeat_resize_cancellation_errors_and_restore() {
         let sandbox = Sandbox::new();
         let session = TmuxSession::start(&sandbox);
-        session.wait_for(|capture| capture.contains("(faux/Faux Model)"));
+        session.wait_for(|capture| capture.contains("faux-1"));
 
         // /debug writes the same two sections as upstream and is observable
         // through the real agent directory, not a mocked command result.
         let debug_path = sandbox.agent_dir.join("pi-debug.log");
-        let debug_capture = session.command("/debug", "✓ Debug log written");
+        let debug_capture =
+            session.command_allowing_existing_output("/debug", "✓ Debug log written");
         assert!(debug_capture.contains(debug_path.to_string_lossy().as_ref()));
         let debug = sandbox.wait_for_file(&debug_path, "Terminal:");
         let timestamp = debug
@@ -748,7 +867,7 @@ mod unix {
 
         // The animation must remain bounded by the terminal width and height.
         session.resize(38, 12);
-        session.command("/debug", "✓ Debug log written");
+        session.command_allowing_existing_output("/debug", "✓ Debug log written");
         let narrow_debug = sandbox.wait_for_file(&debug_path, "Terminal: 38x12");
         assert!(narrow_debug.contains("Terminal: 38x12"));
 
@@ -760,9 +879,14 @@ mod unix {
         // Repeating the hidden command appends another ordinary component;
         // the debug snapshot proves both instances remain in the scene.
         session.command("/arminsayshi", "ARMIN SAYS HI");
-        session.command("/arminsayshi", "ARMIN SAYS HI");
-        session.command("/debug", "✓ Debug log written");
-        let repeated = sandbox.wait_for_file(&debug_path, "Agent messages (JSONL)");
+        session.command_allowing_existing_output("/arminsayshi", "ARMIN SAYS HI");
+        // `/debug` is intentionally idempotent on screen: the status line and
+        // path are unchanged from the preceding snapshot. Prove this command
+        // ran through its real durable side effect instead of requiring a
+        // different tmux screen image.
+        let previous_debug = fs::read_to_string(&debug_path).unwrap();
+        session.send_line("/debug");
+        let repeated = sandbox.wait_for_file_change(&debug_path, &previous_debug);
         assert!(
             repeated.matches("ARMIN SAYS HI").count() >= 2,
             "repeat did not retain both Armin components: {repeated}"
@@ -780,7 +904,7 @@ mod unix {
 
         // The auth flow owns the terminal reader temporarily and must return
         // it to the interactive loop after cancellation.
-        session.command("/login faux", "Enter API key for Faux:");
+        session.command("/login faux", "Enter Faux API key");
         session.send_key("Escape");
         session.wait_for(|capture| capture.contains("Login cancelled"));
 
@@ -797,7 +921,7 @@ mod unix {
     fn quit_restores_terminal_even_when_repeated_as_a_control_boundary() {
         let sandbox = Sandbox::new();
         let session = TmuxSession::start(&sandbox);
-        session.wait_for(|capture| capture.contains("(faux/Faux Model)"));
+        session.wait_for(|capture| capture.contains("faux-1"));
         session.send_line("/quit");
         assert_terminal_restored(&session, &sandbox);
         // The pane remains alive under tmux's remain-on-exit wrapper; sending

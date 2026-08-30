@@ -59,6 +59,12 @@ arms kept as idiomatic impossible-arm guards. PTY note: kill any stale
 tmux server before selector tests so they inherit fresh provider
 credentials. Workspace matrix 2,805 passed; `conversion_audit all` green.
 No numbered ledger row changed.
+Phase 2.5 checkpoint: **pi-coding-agent** is under the hard gate.
+Crate-wide poison-tolerant locking; 90 invariant-heavy functions carry
+scoped documented allows (auth-storage and settings diagnostics mirror
+upstream unrecoverable conditions; typed conversion is future work).
+Workspace matrix 2,805 passed; `conversion_audit all` green. No numbered
+ledger row changed.
 
 Next: Phase 2 crate conversions in order pi-server → pi-client → pi-ai →
 pi-agent → pi-coding-agent (core, then modes/bins) → pi-tui/pi-telemetry/

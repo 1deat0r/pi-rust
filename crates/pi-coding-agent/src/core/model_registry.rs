@@ -11,6 +11,7 @@
 //! overlay) as the `get_all` surface used by extension-facing code, the
 //! resolver, and `--list-models`.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use pi_ai::model::Model;
@@ -80,21 +81,51 @@ impl ModelRegistry {
     /// All models across providers, after the overlay (upstream `getAll`).
     pub fn get_all(&self) -> Vec<Model> {
         let mut merged = Vec::new();
+        let mut seen = BTreeSet::new();
         for provider in self.models.get_providers() {
+            seen.insert(provider.id.clone());
             merged.extend(self.get_merged_models(&provider.id));
         }
-        merged.sort_by(|a, b| {
-            format!("{}/{}", a.provider, a.id).cmp(&format!("{}/{}", b.provider, b.id))
-        });
+        // models.json may define a provider that is not present in the
+        // built-in/native facade. Keep those catalog entries visible to the
+        // resolver and list surface in config order; dispatch/auth is still
+        // handled by the runtime composition boundary.
+        for provider_id in self.config.get_provider_ids() {
+            if seen.insert(provider_id.to_owned()) {
+                merged.extend(self.get_merged_models(provider_id));
+            }
+        }
         merged
     }
 
-    /// Auth-gated available models (upstream `getAvailable`). A model is
-    /// available when its provider has configured auth.
+    /// Auth-gated available models (upstream `getAvailable`). Preserve the
+    /// provider's filter hook (for example Copilot's account-owned model
+    /// picker) while retaining models.json-only additions for an authenticated
+    /// provider.
     pub fn get_available(&self) -> Vec<Model> {
+        let available_base = self
+            .models
+            .get_available(None)
+            .into_iter()
+            .map(|model| (model.provider, model.id))
+            .collect::<BTreeSet<_>>();
+        let base_ids = self
+            .models
+            .get_models(None)
+            .into_iter()
+            .map(|model| (model.provider, model.id))
+            .collect::<BTreeSet<_>>();
+
         self.get_all()
             .into_iter()
-            .filter(|m| self.models.get_provider(&m.provider).is_some())
+            .filter(|model| {
+                let key = (model.provider.clone(), model.id.clone());
+                if base_ids.contains(&key) {
+                    available_base.contains(&key)
+                } else {
+                    self.models.check_auth(&model.provider).is_some()
+                }
+            })
             .collect()
     }
 
@@ -110,7 +141,7 @@ impl ModelRegistry {
     /// provider is considered configured when it can stream; providers with
     /// no auth are unavailable.
     pub fn has_configured_auth(&self, provider: &str) -> bool {
-        self.models.get_provider(provider).is_some()
+        self.models.check_auth(provider).is_some()
     }
 
     /// Build a `Models` facade whose providers carry the merged catalog
@@ -189,15 +220,21 @@ pub fn builtin_models() -> Models {
     let store = Arc::new(crate::core::models_store::FileModelsStore::new(
         crate::core::models_store::FileModelsStore::default_path(),
     ));
+    let credentials = Arc::new(crate::core::auth_storage::FileCredentialStore::new(
+        crate::config::get_auth_path(),
+    ));
     pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions {
+        credentials: Some(credentials),
         models_store: Some(store),
         ..Default::default()
     })
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use pi_ai::auth::{Credential, CredentialStore, InMemoryCredentialStore, OAuthCredential};
     use serde_json::json;
 
     #[test]
@@ -292,6 +329,100 @@ mod tests {
         registry.unregister_provider("google");
         assert!(registry.get_provider("google").is_none());
     }
+
+    #[test]
+    fn available_models_require_real_provider_auth() {
+        let auth_context = pi_ai::auth::AuthContext {
+            env: Arc::new(|_| None),
+            file_exists: Arc::new(|_| false),
+        };
+        let models = pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions {
+            auth_context: Some(auth_context),
+            ..Default::default()
+        });
+        let registry = ModelRegistry::new(models, ModelConfig::default());
+
+        assert!(registry.get_available().is_empty());
+        assert!(!registry.has_configured_auth("google"));
+        assert!(!registry.has_configured_auth("not-a-provider"));
+    }
+
+    #[test]
+    fn get_all_preserves_runtime_provider_and_catalog_order() {
+        let models =
+            pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
+        let expected = models
+            .get_models(None)
+            .into_iter()
+            .map(|model| (model.provider, model.id))
+            .collect::<Vec<_>>();
+        let registry = ModelRegistry::new(models, ModelConfig::default());
+        let actual = registry
+            .get_all()
+            .into_iter()
+            .map(|model| (model.provider, model.id))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn get_all_includes_models_json_only_provider() {
+        let models = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
+        let config = ModelConfig::from_value(json!({
+            "providers": {
+                "custom-provider": {
+                    "baseUrl": "https://custom.example/v1",
+                    "api": "openai-responses",
+                    "models": [
+                        { "id": "custom-model", "name": "Custom model" }
+                    ]
+                }
+            }
+        }))
+        .unwrap();
+        let registry = ModelRegistry::new(models, config);
+
+        let custom = registry
+            .get_all()
+            .into_iter()
+            .find(|model| model.provider == "custom-provider")
+            .expect("models.json-only provider must be visible in get_all");
+        assert_eq!(custom.id, "custom-model");
+        assert_eq!(custom.base_url, "https://custom.example/v1");
+        assert_eq!(custom.api, "openai-responses");
+    }
+
+    #[test]
+    fn available_models_apply_provider_specific_filtering() {
+        let credentials = Arc::new(InMemoryCredentialStore::new());
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("availableModelIds".to_string(), json!(["gpt-4.1"]));
+        credentials.modify("github-copilot", &|_| {
+            Some(Credential::OAuth(OAuthCredential {
+                refresh: "refresh".to_string(),
+                access: "access".to_string(),
+                expires: u64::MAX,
+                extra: extra.clone(),
+            }))
+        });
+        let models = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions {
+            credentials: Some(credentials),
+            auth_context: Some(pi_ai::auth::AuthContext {
+                env: Arc::new(|_| None),
+                file_exists: Arc::new(|_| false),
+            }),
+            ..Default::default()
+        });
+        models.set_provider(pi_ai::providers::github_copilot_provider());
+        let registry = ModelRegistry::new(models, ModelConfig::default());
+
+        let ids = registry
+            .get_available()
+            .into_iter()
+            .map(|model| model.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["gpt-4.1"]);
+    }
 }
 
 #[cfg(test)]
@@ -300,6 +431,7 @@ mod run_path_merge_tests {
     use serde_json::json;
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn into_models_carries_overlay_into_facade() {
         let models =
             pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
@@ -330,6 +462,7 @@ mod run_path_merge_tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn into_models_preserves_store_and_provider_capabilities() {
         let store = std::sync::Arc::new(pi_ai::models::InMemoryModelsStore::new());
         let store_trait: std::sync::Arc<dyn pi_ai::models::ModelsStore> = store.clone();

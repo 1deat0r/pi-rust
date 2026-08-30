@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! C1 harness/mode contract tests.
 
 use std::fs;
@@ -58,14 +60,26 @@ fn json_mode_emits_complete_lifecycle_and_persists_jsonl() {
         .lines()
         .map(|line| serde_json::from_str(line).expect("JSONL event"))
         .collect();
-    let event_types: Vec<&str> = lines
+    assert_eq!(
+        lines.first().and_then(|event| event["type"].as_str()),
+        Some("session")
+    );
+    assert_eq!(
+        lines.first().and_then(|event| event["version"].as_u64()),
+        Some(3)
+    );
+    let events: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|event| event["type"] != "session")
+        .collect();
+    let event_types: Vec<&str> = events
         .iter()
         .map(|event| event["type"].as_str().expect("event type"))
         .collect();
     assert_eq!(event_types.first(), Some(&"agent_start"));
     assert_eq!(event_types.get(1), Some(&"turn_start"));
-    assert_eq!(event_types.last(), Some(&"agent_end"));
-    let assistant_start = lines
+    assert_eq!(event_types.last(), Some(&"agent_settled"));
+    let assistant_start = events
         .iter()
         .position(|event| {
             event["type"] == "message_start" && event["message"]["role"] == "assistant"
@@ -75,7 +89,7 @@ fn json_mode_emits_complete_lifecycle_and_persists_jsonl() {
         .iter()
         .position(|event_type| *event_type == "message_update")
         .expect("assistant message_update");
-    let assistant_end = lines
+    let assistant_end = events
         .iter()
         .position(|event| event["type"] == "message_end" && event["message"]["role"] == "assistant")
         .expect("assistant message_end");
@@ -96,7 +110,7 @@ fn json_mode_emits_complete_lifecycle_and_persists_jsonl() {
         "agent_end",
     ] {
         assert!(
-            lines.iter().any(|event| event["type"] == event_type),
+            events.iter().any(|event| event["type"] == event_type),
             "missing {event_type}: {}",
             String::from_utf8_lossy(&output.stdout)
         );

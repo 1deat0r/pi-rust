@@ -7,6 +7,7 @@
 //! agent-harness skill loader (`pi-agent::harness::skills`), which loads
 //! skills into the harness resources at a lower layer.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use pi_agent::harness::frontmatter::parse_frontmatter;
@@ -143,8 +144,15 @@ fn load_skills_from_dir_internal(
         names.push(entry.file_name().to_string_lossy().into_owned());
     }
 
-    // A declared skill directory: the first SKILL.md short-circuits.
-    if names.iter().any(|n| n.as_str() == "SKILL.md") {
+    // A declared skill directory: a regular SKILL.md short-circuits. Match
+    // upstream's `Dirent.isFile()` check so malformed entries (for example a
+    // directory named SKILL.md or a broken symlink) do not hide other skills.
+    if names.iter().any(|n| {
+        n == "SKILL.md"
+            && std::fs::metadata(dir.join(n))
+                .map(|metadata| metadata.is_file())
+                .unwrap_or(false)
+    }) {
         let full_path = dir.join("SKILL.md");
         let rel = relative_posix(root_dir, &full_path);
         if !matcher.ignores(&rel) {
@@ -170,9 +178,12 @@ fn load_skills_from_dir_internal(
             continue;
         }
         let full_path = dir.join(&name);
-        let is_dir = std::fs::metadata(&full_path)
-            .map(|m| m.is_dir())
-            .unwrap_or(false);
+        let Ok(metadata) = std::fs::metadata(&full_path) else {
+            // Upstream silently skips entries whose type cannot be resolved,
+            // including broken symlinks.
+            continue;
+        };
+        let is_dir = metadata.is_dir();
         let rel = relative_posix(root_dir, &full_path);
         let ignore_path = if is_dir {
             format!("{rel}/")
@@ -189,7 +200,7 @@ fn load_skills_from_dir_internal(
             diagnostics.append(&mut out.diagnostics);
             continue;
         }
-        if !include_root_files || !name.to_lowercase().ends_with(".md") {
+        if !include_root_files || !name.ends_with(".md") {
             continue;
         }
         let result = load_skill_from_file(&full_path, source);
@@ -233,7 +244,12 @@ fn load_skill_from_file(file_path: &Path, source: &str) -> SkillFileOutcome {
         }
     };
 
-    let Some((frontmatter, _body)) = parse_frontmatter(&raw) else {
+    // The upstream YAML parser strips a UTF-8 BOM before looking for the
+    // opening fence.  `pi-agent`'s shared parser intentionally stays generic
+    // and does not do that normalization, so perform it at this coding-agent
+    // boundary just as the TypeScript resource loader does.
+    let raw = crate::core::settings::strip_bom(&raw);
+    let Some((frontmatter, _body)) = parse_frontmatter(raw) else {
         if is_declared_skill {
             diagnostics.push(ResourceDiagnostic::warning(
                 "failed to parse skill file",
@@ -427,54 +443,87 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
 }
 
 fn resolve_path(path: &str, cwd: &str) -> PathBuf {
-    let p = Path::new(path);
-    if p.is_absolute() {
+    let expanded = crate::config::expand_tilde_path(path.trim());
+    let p = Path::new(&expanded);
+    let joined = if p.is_absolute() {
         p.to_path_buf()
     } else {
         Path::new(cwd).join(p)
-    }
+    };
+    // Match upstream `resolvePath`: lexical `.`/`..` segments are removed
+    // before discovery so resource paths and source metadata cannot retain a
+    // caller's alternate spelling of the same file.
+    crate::core::settings::resolve_path(&joined.to_string_lossy())
 }
 
 /// Load skills from all configured locations (user, project, explicit).
+fn add_loaded_skill(
+    skill: Skill,
+    skill_map: &mut Vec<(String, Skill)>,
+    real_path_set: &mut HashSet<String>,
+    diagnostics: &mut Vec<ResourceDiagnostic>,
+) {
+    let real_path = std::fs::canonicalize(&skill.file_path)
+        .unwrap_or_else(|_| PathBuf::from(&skill.file_path))
+        .to_string_lossy()
+        .into_owned();
+    if real_path_set.contains(&real_path) {
+        return;
+    }
+    if let Some((_, existing)) = skill_map.iter().find(|(n, _)| *n == skill.name) {
+        diagnostics.push(collision_diagnostic(&skill, existing));
+    } else {
+        real_path_set.insert(real_path);
+        skill_map.push((skill.name.clone(), skill));
+    }
+}
+
 pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
-    let agent_skills_dir = Path::new(&options.agent_dir).join("skills");
-    let project_skills_dir = Path::new(&options.cwd).join(CONFIG_DIR_NAME).join("skills");
+    load_skills_with_defaults(options, true)
+}
+
+/// Load only the supplied skill paths, preserving the upstream `--no-skills`
+/// contract: automatic user/project discovery is disabled, but explicit CLI
+/// and extension resource paths remain active.
+pub fn load_skills_without_defaults(options: LoadSkillsOptions) -> LoadSkillsResult {
+    load_skills_with_defaults(options, false)
+}
+
+fn load_skills_with_defaults(
+    options: LoadSkillsOptions,
+    include_defaults: bool,
+) -> LoadSkillsResult {
+    // The upstream loader resolves cwd/agentDir before deriving default
+    // roots; this also keeps relative or `~` paths consistent with explicit
+    // `--skill` inputs.
+    let resolved_cwd = crate::core::settings::resolve_path(&options.cwd);
+    let resolved_agent_dir = crate::core::settings::resolve_path(&options.agent_dir);
+    let agent_skills_dir = resolved_agent_dir.join("skills");
+    let project_skills_dir = resolved_cwd.join(CONFIG_DIR_NAME).join("skills");
 
     let mut skill_map: Vec<(String, Skill)> = Vec::new();
+    let mut real_path_set = HashSet::new();
     let mut all_diagnostics: Vec<ResourceDiagnostic> = Vec::new();
 
-    // Defaults: user + project dirs.
-    let mut add_dir = |dir: &Path,
-                       source: &str,
-                       matcher: &mut IgnoreMatcher,
-                       diagnostics: &mut Vec<ResourceDiagnostic>| {
-        let out = load_skills_from_dir_internal(dir, true, matcher, dir, source);
-        for skill in out.skills {
-            if let Some((_, existing)) = skill_map.iter().find(|(n, _)| *n == skill.name) {
-                diagnostics.push(collision_diagnostic(&skill, existing));
-            } else {
-                skill_map.push((skill.name.clone(), skill));
+    if include_defaults {
+        // Defaults: user + project dirs. Each upstream loadSkillsFromDir call
+        // owns its ignore matcher; sharing one would leak root-relative rules
+        // between scopes.
+        let mut add_dir = |dir: &Path, source: &str, diagnostics: &mut Vec<ResourceDiagnostic>| {
+            let mut matcher = IgnoreMatcher::default();
+            let out = load_skills_from_dir_internal(dir, true, &mut matcher, dir, source);
+            for skill in out.skills {
+                add_loaded_skill(skill, &mut skill_map, &mut real_path_set, diagnostics);
             }
-        }
-        diagnostics.extend(out.diagnostics);
-    };
-    let mut matcher = IgnoreMatcher::default();
-    add_dir(
-        &agent_skills_dir,
-        "user",
-        &mut matcher,
-        &mut all_diagnostics,
-    );
-    add_dir(
-        &project_skills_dir,
-        "project",
-        &mut matcher,
-        &mut all_diagnostics,
-    );
+            diagnostics.extend(out.diagnostics);
+        };
+        add_dir(&agent_skills_dir, "user", &mut all_diagnostics);
+        add_dir(&project_skills_dir, "project", &mut all_diagnostics);
+    }
 
     // Explicit `--skill` paths.
     for raw_path in &options.skill_paths {
-        let resolved = resolve_path(raw_path, &options.cwd);
+        let resolved = resolve_path(raw_path, resolved_cwd.to_string_lossy().as_ref());
         if !resolved.exists() {
             all_diagnostics.push(ResourceDiagnostic::warning(
                 "skill path does not exist",
@@ -493,24 +542,27 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
             }
         };
         if meta.is_dir() {
+            let mut matcher = IgnoreMatcher::default();
             let out =
                 load_skills_from_dir_internal(&resolved, true, &mut matcher, &resolved, "path");
             for skill in out.skills {
-                if let Some((_, existing)) = skill_map.iter().find(|(n, _)| *n == skill.name) {
-                    all_diagnostics.push(collision_diagnostic(&skill, existing));
-                } else {
-                    skill_map.push((skill.name.clone(), skill));
-                }
+                add_loaded_skill(
+                    skill,
+                    &mut skill_map,
+                    &mut real_path_set,
+                    &mut all_diagnostics,
+                );
             }
             all_diagnostics.extend(out.diagnostics);
         } else if meta.is_file() && resolved.to_string_lossy().ends_with(".md") {
             let result = load_skill_from_file(&resolved, "path");
             if let Some(skill) = result.skill {
-                if let Some((_, existing)) = skill_map.iter().find(|(n, _)| *n == skill.name) {
-                    all_diagnostics.push(collision_diagnostic(&skill, existing));
-                } else {
-                    skill_map.push((skill.name.clone(), skill));
-                }
+                add_loaded_skill(
+                    skill,
+                    &mut skill_map,
+                    &mut real_path_set,
+                    &mut all_diagnostics,
+                );
             }
             all_diagnostics.extend(result.diagnostics);
         } else {
@@ -544,6 +596,7 @@ fn collision_diagnostic(loser: &Skill, winner: &Skill) -> ResourceDiagnostic {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -590,6 +643,29 @@ mod tests {
     }
 
     #[test]
+    fn non_file_skill_marker_does_not_hide_other_skills() {
+        let dir = tmpdir("marker-directory");
+        std::fs::create_dir_all(dir.join("SKILL.md/nested")).unwrap();
+        write(
+            &dir.join("SKILL.md/nested/SKILL.md"),
+            "---\nname: nested\ndescription: Nested skill\n---\nBody\n",
+        );
+        write(
+            &dir.join("root.md"),
+            "---\nname: root\ndescription: Root skill\n---\nBody\n",
+        );
+
+        let (skills, diagnostics) = load_skills_from_dir(&dir.to_string_lossy());
+        let names: HashSet<_> = skills.iter().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(names, HashSet::from(["nested", "root"]));
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn loads_root_inline_markdown_with_description() {
         let dir = tmpdir("inline");
         write(
@@ -600,6 +676,22 @@ mod tests {
         let (skills, _) = load_skills_from_dir(&dir.to_string_lossy());
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "tip");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn loads_declared_skill_frontmatter_with_utf8_bom() {
+        let dir = tmpdir("bom");
+        write(
+            &dir.join("bom-skill/SKILL.md"),
+            "\u{feff}---\nname: bom-skill\ndescription: BOM-safe skill\n---\nBody\n",
+        );
+
+        let (skills, diagnostics) = load_skills_from_dir(&dir.to_string_lossy());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "bom-skill");
+        assert_eq!(skills[0].description, "BOM-safe skill");
+        assert!(diagnostics.is_empty(), "unexpected: {diagnostics:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -731,6 +823,32 @@ mod tests {
             skill_paths: vec![dir.join("custom").to_string_lossy().into_owned()],
         });
         assert!(skills.iter().any(|s| s.name == "custom"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_skill_path_uses_lexically_normalized_provenance() {
+        let dir = tmpdir("explicit-normalized");
+        let skill = dir.join("custom").join("SKILL.md");
+        write(&skill, "---\nname: custom\ndescription: C\n---\nC\n");
+        let spelling = dir
+            .join("custom")
+            .join("nested")
+            .join("..")
+            .join("SKILL.md");
+
+        let (skills, diagnostics) = load_skills(LoadSkillsOptions {
+            cwd: dir.to_string_lossy().into_owned(),
+            agent_dir: dir.join("agent").to_string_lossy().into_owned(),
+            skill_paths: vec![spelling.to_string_lossy().into_owned()],
+        });
+        assert_eq!(skills.len(), 1);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+        assert_eq!(skills[0].file_path, skill.to_string_lossy().into_owned());
+        assert!(!skills[0].file_path.contains(".."));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

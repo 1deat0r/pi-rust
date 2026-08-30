@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! SettingsManager oracle tests — ported from the upstream suite
 //! `packages/coding-agent/test/settings-manager.test.ts` (pinned 5cd93f6),
 //! plus seam tests for the Rust facade. Split into slices:

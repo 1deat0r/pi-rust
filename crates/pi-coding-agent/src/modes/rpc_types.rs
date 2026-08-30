@@ -97,8 +97,10 @@ pub struct RpcSessionState {
     pub is_compacting: bool,
     pub steering_mode: String,
     pub follow_up_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_file: Option<String>,
     pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_name: Option<String>,
     pub auto_compaction_enabled: bool,
     pub message_count: usize,
@@ -125,6 +127,7 @@ pub struct RpcCompactionResult {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

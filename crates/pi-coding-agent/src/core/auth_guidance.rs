@@ -4,23 +4,54 @@
 //! (pointing at `/login` and the bundled providers.md / models.md docs). These
 //! formatters shape that text 1:1.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const UNKNOWN_PROVIDER: &str = "unknown";
 
-/// Base directory holding the bundled docs tree. Mirrors upstream `getDocsPath`
-/// resolution: an explicit `PI_PACKAGE_DIR` wins, else the compiled binary's
-/// directory (upstream `isBunBinary → dirname(process.execPath)`).
+fn has_package_docs(path: &Path) -> bool {
+    path.join("README.md").is_file()
+        && path.join("docs/providers.md").is_file()
+        && path.join("docs/models.md").is_file()
+}
+
+/// Base directory holding the bundled docs tree. Mirrors upstream
+/// `getPackageDir`: an explicit `PI_PACKAGE_DIR` wins, then an installed
+/// executable's adjacent package assets are preferred. Cargo places binaries
+/// under `target/{debug,release}`, so source-checkout builds additionally walk
+/// from the compile-time manifest directory and locate the pinned upstream
+/// coding-agent package. This keeps debug/release prompts identical while
+/// ensuring `/login` guidance points at real files.
 fn get_package_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("PI_PACKAGE_DIR") {
         if !dir.is_empty() {
             return PathBuf::from(dir);
         }
     }
+
+    let executable_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+        .filter(|path| has_package_docs(path));
+    if let Some(path) = executable_dir {
+        return path;
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for ancestor in manifest_dir.ancestors() {
+        if has_package_docs(ancestor) {
+            return ancestor.to_path_buf();
+        }
+    }
+
+    let source_checkout_package = manifest_dir.join("../../upstream_pi/packages/coding-agent");
+    if has_package_docs(&source_checkout_package) {
+        return source_checkout_package;
+    }
+
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
+        .unwrap_or_else(|| manifest_dir.to_path_buf())
 }
 
 pub fn get_docs_path() -> PathBuf {
@@ -119,6 +150,7 @@ pub fn rewrite_assistant_error(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

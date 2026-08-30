@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Binary-level coverage for the streaming RPC protocol and durable sessions.
 //!
 //! Set `PI_RUST_TEST_BINARY` to exercise an already-built `pi` binary;
@@ -398,11 +400,6 @@ fn rpc_binary_get_commands_discovers_project_prompt_and_skill() {
     .unwrap();
 
     let mut rpc = sandbox.spawn_rpc();
-    rpc.send(serde_json::json!({
-        "id": "ui-response",
-        "type": "extension_ui_response",
-        "result": {"confirmed": true}
-    }));
     rpc.send(serde_json::json!({
         "id": "commands",
         "type": "get_commands"

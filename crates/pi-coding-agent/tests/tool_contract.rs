@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Malformed-call contract coverage for every built-in coding-agent tool.
 
 use std::sync::Arc;

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Binary-level settings wiring: `pi -p` without `--provider`/`--model` must
 //! resolve defaults from settings.json (global, then project) — public seam:
 //! the spawned `pi` binary's stdout/session output.
@@ -42,15 +44,23 @@ impl Sandbox {
         fs::write(project.join(".pi").join("settings.json"), v.to_string()).unwrap();
     }
 
-    /// Run `pi -p <message>` in `project` with the sandboxed HOME.
-    fn pi(&self, project: &Path, message: &str) -> String {
-        let out = Command::new(env!("CARGO_BIN_EXE_pi"))
+    fn command(&self, project: &Path) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pi"));
+        command
+            .env_clear()
             .current_dir(project)
             .env("HOME", &self.home)
-            .env("PI_CODING_AGENT_SESSION_DIR", &self.sessions)
-            .env_remove("PI_PROVIDER")
-            .env_remove("PI_MODEL")
-            .env_remove("PI_KEY")
+            .env("PI_CODING_AGENT_SESSION_DIR", &self.sessions);
+        if let Some(path) = std::env::var_os("PATH") {
+            command.env("PATH", path);
+        }
+        command
+    }
+
+    /// Run `pi -p <message>` in `project` with the sandboxed HOME.
+    fn pi(&self, project: &Path, message: &str) -> String {
+        let out = self
+            .command(project)
             .args(["-p", message])
             .output()
             .expect("spawn pi");
@@ -99,12 +109,8 @@ fn pi_run_prefers_cli_provider_over_settings_default() {
     let project = sandbox.root.join("project");
     fs::create_dir_all(&project).unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_pi"))
-        .current_dir(&project)
-        .env("HOME", &sandbox.home)
-        .env("PI_CODING_AGENT_SESSION_DIR", &sandbox.sessions)
-        .env_remove("PI_PROVIDER")
-        .env_remove("PI_MODEL")
+    let out = sandbox
+        .command(&project)
         .args(["-p", "--provider", "faux", "cli wins"])
         .output()
         .expect("spawn pi");
@@ -133,13 +139,8 @@ fn pi_run_project_settings_override_global() {
 
     // Project settings are trust-gated (upstream resolveProjectTrusted):
     // --approve loads them so the project default wins.
-    let out = Command::new(env!("CARGO_BIN_EXE_pi"))
-        .current_dir(&project)
-        .env("HOME", &sandbox.home)
-        .env("PI_CODING_AGENT_SESSION_DIR", &sandbox.sessions)
-        .env_remove("PI_PROVIDER")
-        .env_remove("PI_MODEL")
-        .env_remove("PI_KEY")
+    let out = sandbox
+        .command(&project)
         .args(["-p", "--approve", "project wins"])
         .output()
         .expect("spawn pi");

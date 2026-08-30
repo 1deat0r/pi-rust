@@ -1,0 +1,170 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
+//! Real process evidence for CLI-035 context suppression.
+//!
+//! The loopback peer is only a transport fixture: it captures the request
+//! sent by the built `pi` process and returns an OpenAI Responses-shaped SSE
+//! reply. No provider or Codex turn is mocked inside the coding-agent.
+
+use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::Path;
+use std::process::Command;
+use std::sync::mpsc;
+use std::thread;
+
+fn request_body(stream: &mut TcpStream) -> String {
+    let mut raw = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let (header_end, content_length) = loop {
+        let count = stream.read(&mut buffer).expect("read loopback request");
+        assert!(count > 0, "loopback client closed before request headers");
+        raw.extend_from_slice(&buffer[..count]);
+        let Some(header_end) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let header_end = header_end + 4;
+        let headers = String::from_utf8_lossy(&raw[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().expect("valid content length"))
+            })
+            .expect("content-length header");
+        break (header_end, content_length);
+    };
+
+    while raw.len() < header_end + content_length {
+        let count = stream
+            .read(&mut buffer)
+            .expect("read loopback request body");
+        assert!(count > 0, "loopback client closed before request body");
+        raw.extend_from_slice(&buffer[..count]);
+    }
+    String::from_utf8(raw[header_end..header_end + content_length].to_vec())
+        .expect("request body is UTF-8 JSON")
+}
+
+fn response_body() -> &'static str {
+    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"loopback-response\"}}\n\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"loopback-message\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[]}}\n\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"loopback reply\"}\n\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"loopback-message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"loopback reply\",\"annotations\":[]}]}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"loopback-response\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n"
+}
+
+fn system_prompt(request: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(request).expect("valid request JSON");
+    request["input"][0]["content"]
+        .as_str()
+        .expect("first input item contains the system prompt")
+        .to_owned()
+}
+
+fn run_pi(
+    root: &Path,
+    home: &Path,
+    agent_dir: &Path,
+    sessions: &Path,
+    no_context_files: bool,
+) -> std::process::Output {
+    let mut args = vec![
+        "--print",
+        "--provider",
+        "openai",
+        "--model",
+        "gpt-4o",
+        "--api-key",
+        "synthetic-loopback-key",
+        "--no-session",
+        "--no-tools",
+    ];
+    if no_context_files {
+        args.push("--no-context-files");
+    }
+    args.push("context probe");
+
+    Command::new(env!("CARGO_BIN_EXE_pi"))
+        .env_clear()
+        .current_dir(root)
+        .env(
+            "PATH",
+            std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
+        )
+        .env("HOME", home)
+        .env("PI_CODING_AGENT_DIR", agent_dir)
+        .env("PI_CODING_AGENT_SESSION_DIR", sessions)
+        .env("PI_OFFLINE", "1")
+        .env("PI_SKIP_VERSION_CHECK", "1")
+        .args(args)
+        .output()
+        .expect("spawn pi loopback process")
+}
+
+#[test]
+fn no_context_files_changes_the_provider_visible_prompt() {
+    let root =
+        std::env::temp_dir().join(format!("pi-cli-context-loopback-{}", uuid::Uuid::new_v4()));
+    let home = root.join("home");
+    let agent_dir = home.join(".pi").join("agent");
+    let sessions = root.join("sessions");
+    fs::create_dir_all(&agent_dir).expect("create agent dir");
+    fs::create_dir_all(&sessions).expect("create session dir");
+    fs::write(
+        root.join("AGENTS.md"),
+        "CLI035_CONTEXT_MARKER: project-only instruction",
+    )
+    .expect("write context fixture");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback provider");
+    let address = listener.local_addr().expect("loopback provider address");
+    let (requests_tx, requests_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept provider request");
+            requests.push(request_body(&mut stream));
+            let body = response_body();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write provider response");
+        }
+        requests_tx.send(requests).expect("send captured requests");
+    });
+
+    fs::write(
+        agent_dir.join("models.json"),
+        format!(r#"{{"providers":{{"openai":{{"baseUrl":"http://{address}/v1"}}}}}}"#),
+    )
+    .expect("write loopback models config");
+
+    let normal = run_pi(&root, &home, &agent_dir, &sessions, false);
+    assert!(
+        normal.status.success(),
+        "normal stderr: {}",
+        String::from_utf8_lossy(&normal.stderr)
+    );
+    let suppressed = run_pi(&root, &home, &agent_dir, &sessions, true);
+    assert!(
+        suppressed.status.success(),
+        "suppressed stderr: {}",
+        String::from_utf8_lossy(&suppressed.stderr)
+    );
+
+    let requests = requests_rx.recv().expect("captured provider requests");
+    server.join().expect("join loopback provider");
+    assert_eq!(requests.len(), 2);
+    let normal_prompt = system_prompt(&requests[0]);
+    let suppressed_prompt = system_prompt(&requests[1]);
+    assert!(normal_prompt.contains("CLI035_CONTEXT_MARKER"));
+    assert!(!suppressed_prompt.contains("CLI035_CONTEXT_MARKER"));
+    assert!(suppressed_prompt.contains("Current working directory"));
+    assert!(String::from_utf8_lossy(&normal.stdout).contains("loopback reply"));
+    assert!(String::from_utf8_lossy(&suppressed.stdout).contains("loopback reply"));
+
+    fs::remove_dir_all(root).expect("remove loopback fixture");
+}

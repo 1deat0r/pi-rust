@@ -20,7 +20,6 @@
           "followUpMode": "one-at-a-time",
           "sessionFile": "<session-file>",
           "sessionId": "<session-id>",
-          "sessionName": null,
           "autoCompactionEnabled": true,
           "messageCount": 0,
           "pendingMessageCount": 0
@@ -203,7 +202,6 @@
           "followUpMode": "one-at-a-time",
           "sessionFile": "<session-file>",
           "sessionId": "<session-id>",
-          "sessionName": null,
           "autoCompactionEnabled": true,
           "messageCount": 2,
           "pendingMessageCount": 2
@@ -237,8 +235,8 @@
         "result": {
           "summary": "Compaction summary: history retained",
           "firstKeptEntryId": "<entry-id>",
-          "tokensBefore": 18,
-          "estimatedTokensAfter": 18,
+          "tokensBefore": 2926,
+          "estimatedTokensAfter": 2926,
           "usage": {
             "input": 309,
             "output": 9,
@@ -248,8 +246,8 @@
             "cost": {
               "input": 0,
               "output": 0,
-              "cache_read": 0,
-              "cache_write": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
               "total": 0
             }
           },
@@ -269,8 +267,8 @@
         "data": {
           "summary": "Compaction summary: history retained",
           "firstKeptEntryId": "<entry-id>",
-          "tokensBefore": 18,
-          "estimatedTokensAfter": 18,
+          "tokensBefore": 2926,
+          "estimatedTokensAfter": 2926,
           "usage": {
             "input": 309,
             "output": 9,
@@ -280,8 +278,8 @@
             "cost": {
               "input": 0,
               "output": 0,
-              "cache_read": 0,
-              "cache_write": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
               "total": 0
             }
           },
@@ -369,14 +367,14 @@
         "command": "get_available_models",
         "success": true,
         "data": {
-          "modelCount": 1268,
+          "modelCount": 1294,
           "firstModel": {
             "provider": "amazon-bedrock",
             "id": "amazon.nova-2-lite-v1:0"
           },
           "lastModel": {
-            "provider": "zai-coding-cn",
-            "id": "glm-5.3"
+            "provider": "faux",
+            "id": "faux-1"
           }
         }
       }

@@ -172,6 +172,7 @@ pub fn get_usage_cost_breakdown(entries: &[Value]) -> Vec<UsageCostBreakdownEntr
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use pi_ai::types::{Cost, Usage};

@@ -13,8 +13,11 @@ use futures_util::future::join_all;
 use pi_ai::model::Model;
 use pi_ai::models::ModelsStore;
 use pi_ai::models::ModelsStoreEntry;
+use reqwest::header::{HeaderValue, ACCEPT, IF_NONE_MATCH, USER_AGENT};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use crate::core::management_http::{fetch_with_retry, FetchRetryOptions, ManagementRequest};
 
 pub const DEFAULT_CATALOG_BASE_URL: &str = "https://pi.dev";
 pub const REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS: u64 = 4_000;
@@ -81,7 +84,6 @@ pub async fn refresh_catalogs_for_providers(
         return Err("model catalog refresh is unavailable in offline mode".to_string());
     }
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS))
         .build()
         .map_err(|e| format!("create model catalog client: {e}"))?;
     let store =
@@ -202,39 +204,29 @@ async fn send_catalog_request(
     provider_id: &str,
     etag: Option<&str>,
 ) -> Result<reqwest::Response, String> {
-    const RETRYABLE_STATUS_CODES: [reqwest::StatusCode; 7] = [
-        reqwest::StatusCode::REQUEST_TIMEOUT,
-        reqwest::StatusCode::TOO_EARLY,
-        reqwest::StatusCode::TOO_MANY_REQUESTS,
-        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-        reqwest::StatusCode::BAD_GATEWAY,
-        reqwest::StatusCode::SERVICE_UNAVAILABLE,
-        reqwest::StatusCode::GATEWAY_TIMEOUT,
-    ];
-    let mut last_error = None;
-    for attempt in 0..3 {
-        let mut request = client
-            .get(url.clone())
-            .header("accept", "application/json")
-            .header("user-agent", format!("pi/{}", crate::config::VERSION));
-        if let Some(etag) = etag {
-            request = request.header("if-none-match", etag);
-        }
-        match request.send().await {
-            Ok(response) if RETRYABLE_STATUS_CODES.contains(&response.status()) && attempt < 2 => {
-                drop(response);
-            }
-            Ok(response) => return Ok(response),
-            Err(error) if attempt < 2 => {
-                last_error = Some(error.to_string());
-            }
-            Err(error) => return Err(format!("{provider_id}: {error}")),
-        }
+    let mut request = ManagementRequest::get(url);
+    request
+        .headers
+        .insert(ACCEPT, HeaderValue::from_static("application/json"));
+    let user_agent = HeaderValue::from_str(&format!("pi/{}", crate::config::VERSION))
+        .map_err(|error| format!("{provider_id}: invalid user-agent: {error}"))?;
+    request.headers.insert(USER_AGENT, user_agent);
+    if let Some(etag) = etag {
+        let value = HeaderValue::from_str(etag)
+            .map_err(|error| format!("{provider_id}: invalid etag: {error}"))?;
+        request.headers.insert(IF_NONE_MATCH, value);
     }
-    Err(format!(
-        "{provider_id}: {}",
-        last_error.unwrap_or_else(|| "model catalog request failed".to_string())
-    ))
+    fetch_with_retry(
+        client,
+        &request,
+        FetchRetryOptions {
+            attempt_timeout: Some(Duration::from_millis(REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS)),
+            ..Default::default()
+        },
+        None,
+    )
+    .await
+    .map_err(|error| format!("{provider_id}: {error}"))
 }
 
 fn parse_http_date_ms(value: &str) -> Option<u64> {
@@ -437,6 +429,7 @@ pub fn within_refresh_freshness_window(entry: Option<&ModelsStoreEntry>, now_ms:
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use serde_json::json;

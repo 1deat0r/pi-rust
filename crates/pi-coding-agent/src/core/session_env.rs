@@ -23,7 +23,7 @@ pub struct SessionEnvironmentGuard {
     /// from `previous` lets Drop avoid restoring over a value that another
     /// owner installed after this guard was created (important for embedded
     /// callers that host more than one runtime in one process).
-    active: Mutex<BTreeMap<String, String>>,
+    active: Mutex<BTreeMap<String, Option<String>>>,
 }
 
 /// Install the active session/model values for child processes and return a
@@ -46,10 +46,20 @@ pub fn install(
     let mut active = BTreeMap::new();
     for (key, value) in values {
         previous.insert(key.to_string(), std::env::var(key).ok());
-        active.insert(key.to_string(), value.to_string());
+        let value = (!value.is_empty()).then(|| value.to_string());
+        active.insert(key.to_string(), value.clone());
+        // Upstream starts child environments by deleting stale session
+        // metadata, then adds only fields that exist for the active runtime.
+        // Mirror that boundary here so ephemeral sessions do not export
+        // misleading empty PI_SESSION_FILE/model/reasoning values.
         // SAFETY: the guard scopes these process-wide values to the current
         // run and restores them before returning to the embedding process.
-        unsafe { std::env::set_var(key, value) };
+        unsafe {
+            std::env::remove_var(key);
+            if let Some(value) = value {
+                std::env::set_var(key, value);
+            }
+        }
     }
     SessionEnvironmentGuard {
         previous,
@@ -68,7 +78,7 @@ impl Drop for SessionEnvironmentGuard {
             // guard installed its snapshot.  Separate OS processes have
             // naturally isolated environments; this check covers embedded
             // Rust callers and nested guards without changing the public API.
-            if std::env::var(key).ok().as_deref() != active.get(key).map(String::as_str) {
+            if std::env::var(key).ok() != active.get(key).cloned().flatten() {
                 continue;
             }
             match self.previous.get(key).and_then(Clone::clone) {
@@ -90,29 +100,48 @@ impl SessionEnvironmentGuard {
     pub fn set_reasoning_level(&self, level: &str) {
         // SAFETY: the guard remains responsible for restoring the original
         // process value when the owning mode exits.
-        unsafe { std::env::set_var("PI_REASONING_LEVEL", level) };
+        let level = (!level.is_empty()).then(|| level.to_string());
+        unsafe {
+            std::env::remove_var("PI_REASONING_LEVEL");
+            if let Some(value) = &level {
+                std::env::set_var("PI_REASONING_LEVEL", value);
+            }
+        }
         self.active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert("PI_REASONING_LEVEL".to_string(), level.to_string());
+            .insert("PI_REASONING_LEVEL".to_string(), level);
     }
 
     pub fn set_model(&self, provider: &str, model: &str) {
         // SAFETY: see `set_reasoning_level`.
         unsafe {
-            std::env::set_var("PI_PROVIDER", provider);
-            std::env::set_var("PI_MODEL", model);
+            std::env::remove_var("PI_PROVIDER");
+            std::env::remove_var("PI_MODEL");
+            if !provider.is_empty() {
+                std::env::set_var("PI_PROVIDER", provider);
+            }
+            if !model.is_empty() {
+                std::env::set_var("PI_MODEL", model);
+            }
         }
         let mut active = self
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        active.insert("PI_PROVIDER".to_string(), provider.to_string());
-        active.insert("PI_MODEL".to_string(), model.to_string());
+        active.insert(
+            "PI_PROVIDER".to_string(),
+            (!provider.is_empty()).then(|| provider.to_string()),
+        );
+        active.insert(
+            "PI_MODEL".to_string(),
+            (!model.is_empty()).then(|| model.to_string()),
+        );
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -173,6 +202,29 @@ mod tests {
             std::env::var("PI_MODEL").as_deref(),
             Ok("newer-owner-model")
         );
+        for (key, value) in previous {
+            match value {
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+    }
+
+    #[test]
+    fn install_removes_empty_or_stale_child_metadata() {
+        let previous = SESSION_KEYS
+            .into_iter()
+            .map(|key| (key, std::env::var(key).ok()))
+            .collect::<BTreeMap<_, _>>();
+        for key in SESSION_KEYS {
+            // SAFETY: this test restores every touched variable below.
+            unsafe { std::env::set_var(key, "ambient") };
+        }
+        let guard = install("", "", "", "", "");
+        for key in SESSION_KEYS {
+            assert_eq!(std::env::var(key).ok(), None, "{key} should be absent");
+        }
+        drop(guard);
         for (key, value) in previous {
             match value {
                 Some(value) => unsafe { std::env::set_var(key, value) },

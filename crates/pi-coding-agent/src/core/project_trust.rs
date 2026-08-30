@@ -29,17 +29,18 @@ const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES: [&str; 7] = [
 
 /// Canonicalize a path (upstream `canonicalizePath(resolvePath(cwd))`).
 fn normalize_cwd(cwd: &str) -> String {
-    let expanded = crate::config::expand_tilde_path(cwd);
-    std::fs::canonicalize(&expanded)
+    let resolved = crate::core::settings::resolve_path(cwd);
+    std::fs::canonicalize(&resolved)
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| expanded)
+        .unwrap_or_else(|_| resolved.to_string_lossy().into_owned())
 }
 
 /// True when cwd has project-local resources that must be gated by project
 /// trust (upstream `hasTrustRequiringProjectResources`).
 pub fn has_trust_requiring_project_resources(cwd: &str) -> bool {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let user_agents_skills = Path::new(&home).join(".agents").join("skills");
+    let home = crate::config::home_dir().unwrap_or_default();
+    let home = PathBuf::from(normalize_cwd(&home.to_string_lossy()));
+    let user_agents_skills = home.join(".agents").join("skills");
     let mut current = PathBuf::from(normalize_cwd(cwd));
 
     let config_dir = current.join(crate::config::CONFIG_DIR_NAME);
@@ -52,7 +53,9 @@ pub fn has_trust_requiring_project_resources(cwd: &str) -> bool {
 
     loop {
         let agents_skills = current.join(".agents").join("skills");
-        if agents_skills != user_agents_skills && agents_skills.exists() {
+        let normalized_agents_skills =
+            std::fs::canonicalize(&agents_skills).unwrap_or_else(|_| agents_skills.clone());
+        if normalized_agents_skills != user_agents_skills && agents_skills.exists() {
             return true;
         }
         let parent = current.parent();
@@ -105,10 +108,12 @@ impl Drop for TrustFileLock {
 /// decisions are written by more than one process in normal use (for example,
 /// a foreground CLI and an interactive session), so a read/modify/write must
 /// not allow one decision to erase another.
-fn acquire_trust_file_lock(path: &Path) -> TrustFileLock {
+fn try_acquire_trust_file_lock(path: &Path) -> Result<TrustFileLock, String> {
     let lock_path = PathBuf::from(format!("{}.lock", path.display()));
     if let Some(parent) = lock_path.parent() {
-        fs::create_dir_all(parent).expect("create project-trust lock directory");
+        fs::create_dir_all(parent).map_err(|error| {
+            format!("Failed to create trust store directory {parent:?}: {error}")
+        })?;
     }
     for _ in 0..100 {
         match OpenOptions::new()
@@ -116,26 +121,35 @@ fn acquire_trust_file_lock(path: &Path) -> TrustFileLock {
             .create_new(true)
             .open(&lock_path)
         {
-            Ok(_) => return TrustFileLock { path: lock_path },
+            Ok(_) => return Ok(TrustFileLock { path: lock_path }),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                 thread::sleep(Duration::from_millis(10));
             }
-            Err(error) => panic!("acquire project-trust lock {lock_path:?}: {error}"),
+            Err(error) => {
+                return Err(format!(
+                    "Failed to acquire project-trust lock {lock_path:?}: {error}"
+                ));
+            }
         }
     }
-    panic!("timed out acquiring project-trust lock {lock_path:?}");
+    Err(format!(
+        "Timed out acquiring project-trust lock {lock_path:?}"
+    ))
 }
 
-fn with_trust_file_lock<T>(path: &Path, operation: impl FnOnce() -> T) -> T {
-    let _lock = acquire_trust_file_lock(path);
+fn try_with_trust_file_lock<T>(
+    path: &Path,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _lock = try_acquire_trust_file_lock(path)?;
     operation()
 }
 
 impl ProjectTrustStore {
     pub fn new(agent_dir: &str) -> Self {
-        let agent_dir = crate::config::expand_tilde_path(agent_dir);
+        let agent_dir = crate::core::settings::resolve_path(agent_dir);
         Self {
-            trust_path: Path::new(&agent_dir).join("trust.json"),
+            trust_path: agent_dir.join("trust.json"),
         }
     }
 
@@ -148,23 +162,37 @@ impl ProjectTrustStore {
         self.get_entry(cwd).map(|e| e.decision)
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub fn get_entry(&self, cwd: &str) -> Option<ProjectTrustStoreEntry> {
-        with_trust_file_lock(&self.trust_path, || {
-            let data = read_trust_file(&self.trust_path).ok()?;
+        self.try_get_entry(cwd)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Read a trust decision without converting malformed or inaccessible
+    /// storage into a process panic. Interactive callers use this form so a
+    /// failed `/trust` open can return to the editor with a truthful error.
+    pub fn try_get(&self, cwd: &str) -> Result<Option<bool>, String> {
+        self.try_get_entry(cwd)
+            .map(|entry| entry.map(|entry| entry.decision))
+    }
+
+    pub fn try_get_entry(&self, cwd: &str) -> Result<Option<ProjectTrustStoreEntry>, String> {
+        try_with_trust_file_lock(&self.trust_path, || {
+            let data = read_trust_file(&self.trust_path)?;
             let mut current = normalize_cwd(cwd);
             loop {
                 if let Some(Some(decision)) = data.get(&current) {
-                    return Some(ProjectTrustStoreEntry {
+                    return Ok(Some(ProjectTrustStoreEntry {
                         path: current.clone(),
                         decision: *decision,
-                    });
+                    }));
                 }
                 let parent = Path::new(&current)
                     .parent()
                     .map(|p| p.to_string_lossy().into_owned());
                 match parent {
                     Some(parent) if parent != current => current = parent,
-                    _ => return None,
+                    _ => return Ok(None),
                 }
             }
         })
@@ -177,9 +205,18 @@ impl ProjectTrustStore {
         }]);
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub fn set_many(&self, updates: &[ProjectTrustUpdate]) {
-        with_trust_file_lock(&self.trust_path, || {
-            let mut data = read_trust_file(&self.trust_path).unwrap_or_default();
+        self.try_set_many(updates)
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    /// Persist trust updates while returning storage/locking diagnostics to a
+    /// UI caller. The legacy `set_many` wrapper retains its historical panic
+    /// contract for non-interactive callers that cannot surface a Result.
+    pub fn try_set_many(&self, updates: &[ProjectTrustUpdate]) -> Result<(), String> {
+        try_with_trust_file_lock(&self.trust_path, || {
+            let mut data = read_trust_file(&self.trust_path)?;
             for update in updates {
                 let key = normalize_cwd(&update.path);
                 match update.decision {
@@ -191,8 +228,15 @@ impl ProjectTrustStore {
                     }
                 }
             }
-            write_trust_file(&self.trust_path, &data);
-        });
+            write_trust_file(&self.trust_path, &data)
+        })
+    }
+
+    pub fn try_set(&self, cwd: &str, decision: Option<bool>) -> Result<(), String> {
+        self.try_set_many(&[ProjectTrustUpdate {
+            path: cwd.to_string(),
+            decision,
+        }])
     }
 }
 
@@ -272,8 +316,10 @@ pub fn resolve_project_trusted(
     if !has_trust_requiring_project_resources(cwd) {
         return true;
     }
-    if let Some(decision) = trust_store.get(cwd) {
-        return decision;
+    match trust_store.try_get(cwd) {
+        Ok(Some(decision)) => return decision,
+        Ok(None) => {}
+        Err(_) => return false,
     }
     match default_project_trust.unwrap_or("ask") {
         "always" => true,
@@ -313,9 +359,11 @@ fn read_trust_file(path: &Path) -> Result<BTreeMap<String, Option<bool>>, String
     Ok(data)
 }
 
-fn write_trust_file(path: &Path, data: &BTreeMap<String, Option<bool>>) {
+fn write_trust_file(path: &Path, data: &BTreeMap<String, Option<bool>>) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("Failed to create trust store directory {parent:?}: {error}")
+        })?;
     }
     let sorted: BTreeMap<&String, &Option<bool>> = data.iter().collect();
     let obj: serde_json::Map<String, serde_json::Value> = sorted
@@ -326,14 +374,15 @@ fn write_trust_file(path: &Path, data: &BTreeMap<String, Option<bool>>) {
             None => (k.to_string(), serde_json::Value::Null),
         })
         .collect();
-    let content = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap_or_default()
-    );
-    let _ = std::fs::write(path, content);
+    let content = serde_json::to_string_pretty(&serde_json::Value::Object(obj))
+        .map(|content| format!("{content}\n"))
+        .map_err(|error| format!("Failed to encode trust store {path:?}: {error}"))?;
+    std::fs::write(path, content)
+        .map_err(|error| format!("Failed to write trust store {path:?}: {error}"))
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -498,6 +547,82 @@ mod tests {
         let store = ProjectTrustStore::new(&agent);
         assert_eq!(store.get(&first.to_string_lossy()), Some(true));
         assert_eq!(store.get(&second.to_string_lossy()), Some(false));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn try_store_reports_malformed_data_without_panicking() {
+        let root = sandbox("malformed");
+        let store = ProjectTrustStore::new(root.to_str().unwrap());
+        let cwd = root.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(store.trust_path(), "{not-json").unwrap();
+
+        let read_error = store.try_get_entry(cwd.to_str().unwrap()).unwrap_err();
+        assert!(
+            read_error.contains("Failed to read trust store"),
+            "{read_error}"
+        );
+        let write_error = store
+            .try_set(cwd.to_str().unwrap(), Some(true))
+            .unwrap_err();
+        assert!(
+            write_error.contains("Failed to read trust store"),
+            "{write_error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(store.trust_path()).unwrap(),
+            "{not-json"
+        );
+        std::fs::create_dir_all(cwd.join(".pi")).unwrap();
+        std::fs::write(cwd.join(".pi").join("settings.json"), "{}").unwrap();
+        assert!(!resolve_project_trusted(
+            cwd.to_str().unwrap(),
+            &store,
+            None,
+            Some("always")
+        ));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn try_store_reports_directory_trust_path_without_panicking() {
+        let root = sandbox("directory-path");
+        let store = ProjectTrustStore::new(root.to_str().unwrap());
+        let cwd = root.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir(store.trust_path()).unwrap();
+
+        let error = store
+            .try_set(cwd.to_str().unwrap(), Some(true))
+            .unwrap_err();
+        assert!(error.contains("Failed to read trust store"), "{error}");
+        assert!(store.trust_path().is_dir());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trust_store_canonicalizes_symlinked_cwds() {
+        use std::os::unix::fs::symlink;
+
+        let root = sandbox("symlink");
+        let real = root.join("real");
+        let link = root.join("link");
+        std::fs::create_dir_all(&real).unwrap();
+        symlink(&real, &link).unwrap();
+        let store = ProjectTrustStore::new(root.to_str().unwrap());
+
+        store.try_set(link.to_str().unwrap(), Some(true)).unwrap();
+
+        assert_eq!(store.try_get(link.to_str().unwrap()).unwrap(), Some(true));
+        assert_eq!(store.try_get(real.to_str().unwrap()).unwrap(), Some(true));
+        let content = std::fs::read_to_string(store.trust_path()).unwrap();
+        assert!(content.contains(&real.to_string_lossy().to_string()));
+        assert!(!content.contains(&link.to_string_lossy().to_string()));
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

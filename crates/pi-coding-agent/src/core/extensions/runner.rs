@@ -9,9 +9,10 @@ use serde_json::{json, Map, Value};
 
 use crate::core::extensions::types::{
     EntryRenderer, Extension, ExtensionContext, ExtensionError, ExtensionFlag,
-    ExtensionHostActions, ExtensionRuntime, ExtensionShortcut, HandlerFn, MarkdownTransformContext,
-    MarkdownTransformer, MessageRenderer, RegisteredTool, ResolvedCommand, SourceInfo,
-    ToolExecutionRequest,
+    ExtensionHostActions, ExtensionRuntime, ExtensionShortcut, ExtensionUiContext, HandlerFn,
+    MarkdownTransformContext, MarkdownTransformer, MessageRenderer, RegisteredTool,
+    ResolvedCommand, SourceInfo, ToolExecutionRequest, ToolRenderCallRequest, ToolRenderContext,
+    ToolRenderResultOptions, ToolRenderResultRequest, ToolUpdateFn,
 };
 
 pub use crate::core::extensions::types::InputEventResult;
@@ -197,10 +198,37 @@ impl ExtensionRunner {
     }
 
     pub fn create_context(&self) -> ExtensionContext {
+        self.create_context_with_ui(false)
+    }
+
+    /// Construct a callback context. A synchronous callback on the RPC input
+    /// loop must not wait for stdin, while callbacks running in a tool or
+    /// explicitly spawned command worker may use blocking dialogs.
+    pub fn create_context_with_ui(&self, blocking_allowed: bool) -> ExtensionContext {
+        self.create_context_with_ui_for_tool(blocking_allowed, None)
+    }
+
+    fn create_context_with_ui_for_tool(
+        &self,
+        blocking_allowed: bool,
+        tool_call_id: Option<&str>,
+    ) -> ExtensionContext {
+        let (ui, host) = self
+            .runtime
+            .lock()
+            .map(|runtime| {
+                (
+                    runtime.ui_context(self.has_ui, blocking_allowed),
+                    runtime.host_context_for(blocking_allowed, tool_call_id),
+                )
+            })
+            .unwrap_or_else(|_| (ExtensionUiContext::default(), Default::default()));
         ExtensionContext {
             mode: self.mode.clone(),
             cwd: self.cwd.clone(),
             has_ui: self.has_ui,
+            ui,
+            host,
         }
     }
 
@@ -303,16 +331,75 @@ impl ExtensionRunner {
         tool_call_id: &str,
         params: Value,
     ) -> Result<Value, String> {
+        self.execute_tool_internal(tool_name, tool_call_id, params, None, true)
+    }
+
+    /// Execute a live extension tool and forward each native `onUpdate` value
+    /// immediately to the supplied host callback.
+    pub fn execute_tool_with_updates(
+        &self,
+        tool_name: &str,
+        tool_call_id: &str,
+        params: Value,
+        on_update: Option<ToolUpdateFn>,
+    ) -> Result<Value, String> {
+        self.execute_tool_internal(tool_name, tool_call_id, params, on_update, true)
+    }
+
+    /// Execute a tool whose arguments were already prepared by the agent
+    /// adapter. This prevents the same upstream `prepareArguments` callback
+    /// from running twice on the normal AgentTool path.
+    pub(crate) fn execute_tool_prepared_with_updates(
+        &self,
+        tool_name: &str,
+        tool_call_id: &str,
+        params: Value,
+        on_update: Option<ToolUpdateFn>,
+    ) -> Result<Value, String> {
+        self.execute_tool_internal(tool_name, tool_call_id, params, on_update, false)
+    }
+
+    fn execute_tool_internal(
+        &self,
+        tool_name: &str,
+        tool_call_id: &str,
+        params: Value,
+        on_update: Option<ToolUpdateFn>,
+        apply_prepare_arguments: bool,
+    ) -> Result<Value, String> {
         let tool = self
             .get_tool_definition(tool_name)
             .ok_or_else(|| format!("Extension tool not found: {tool_name}"))?;
         let execute = tool
             .execute
             .ok_or_else(|| format!("Extension tool has no execute callback: {tool_name}"))?;
+        let params = if apply_prepare_arguments {
+            if let Some(prepare_arguments) = &tool.prepare_arguments {
+                match catch_unwind(AssertUnwindSafe(|| prepare_arguments(params))) {
+                    Ok(params) => params,
+                    Err(payload) => {
+                        let error = self.handler_error(
+                            &tool.source_info.path,
+                            "tool_prepare_arguments",
+                            format!(
+                                "extension tool argument preparation panicked: {}",
+                                panic_message(payload)
+                            ),
+                        );
+                        return Err(error.error);
+                    }
+                }
+            } else {
+                params
+            }
+        } else {
+            params
+        };
         let request = ToolExecutionRequest {
             tool_call_id: tool_call_id.to_string(),
             params,
-            context: self.create_context(),
+            context: self.create_context_with_ui_for_tool(true, Some(tool_call_id)),
+            on_update,
         };
         match catch_unwind(AssertUnwindSafe(|| execute(request))) {
             Ok(Ok(result)) => Ok(result),
@@ -328,6 +415,88 @@ impl ExtensionRunner {
                 );
                 Err(error.error)
             }
+        }
+    }
+
+    /// Invoke a registered open-JSON `renderCall` callback. The renderer's
+    /// return value is intentionally opaque to this extension layer and can be
+    /// consumed by any mode-specific presentation adapter.
+    pub fn render_tool_call(
+        &self,
+        tool_name: &str,
+        args: Value,
+        theme: Value,
+        context: ToolRenderContext,
+    ) -> Result<Option<Value>, String> {
+        let tool = self
+            .get_tool_definition(tool_name)
+            .ok_or_else(|| format!("Extension tool not found: {tool_name}"))?;
+        let Some(render_call) = tool.render_call else {
+            return Ok(None);
+        };
+        match catch_unwind(AssertUnwindSafe(|| {
+            render_call(ToolRenderCallRequest {
+                args,
+                theme,
+                context,
+            })
+        })) {
+            Ok(Ok(value)) => Ok(Some(value)),
+            Ok(Err(error)) => Err(self
+                .handler_error(&tool.source_info.path, "tool_render_call", error)
+                .error),
+            Err(payload) => Err(self
+                .handler_error(
+                    &tool.source_info.path,
+                    "tool_render_call",
+                    format!(
+                        "extension tool renderCall panicked: {}",
+                        panic_message(payload)
+                    ),
+                )
+                .error),
+        }
+    }
+
+    /// Invoke a registered open-JSON `renderResult` callback. The callback is
+    /// supplied the result, expanded/partial flags, theme, and full render
+    /// context matching the upstream contract.
+    pub fn render_tool_result(
+        &self,
+        tool_name: &str,
+        result: Value,
+        options: ToolRenderResultOptions,
+        theme: Value,
+        context: ToolRenderContext,
+    ) -> Result<Option<Value>, String> {
+        let tool = self
+            .get_tool_definition(tool_name)
+            .ok_or_else(|| format!("Extension tool not found: {tool_name}"))?;
+        let Some(render_result) = tool.render_result else {
+            return Ok(None);
+        };
+        match catch_unwind(AssertUnwindSafe(|| {
+            render_result(ToolRenderResultRequest {
+                result,
+                options,
+                theme,
+                context,
+            })
+        })) {
+            Ok(Ok(value)) => Ok(Some(value)),
+            Ok(Err(error)) => Err(self
+                .handler_error(&tool.source_info.path, "tool_render_result", error)
+                .error),
+            Err(payload) => Err(self
+                .handler_error(
+                    &tool.source_info.path,
+                    "tool_render_result",
+                    format!(
+                        "extension tool renderResult panicked: {}",
+                        panic_message(payload)
+                    ),
+                )
+                .error),
         }
     }
 
@@ -508,6 +677,18 @@ impl ExtensionRunner {
         invocation_name: &str,
         args: &str,
     ) -> Result<Option<Value>, String> {
+        self.execute_command_with_ui(invocation_name, args, false)
+    }
+
+    /// Execute a command from a worker-safe context. This is used by RPC mode
+    /// so a command handler can block on the UI broker while the main loop
+    /// continues reading `extension_ui_response` lines.
+    pub fn execute_command_with_ui(
+        &self,
+        invocation_name: &str,
+        args: &str,
+        blocking_ui_allowed: bool,
+    ) -> Result<Option<Value>, String> {
         let Some(command) = self
             .resolved_commands()
             .into_iter()
@@ -521,7 +702,11 @@ impl ExtensionRunner {
             "invocationName": invocation_name,
             "args": args,
         });
-        match Self::call_handler(&command.handler, &self.create_context(), &payload) {
+        match Self::call_handler(
+            &command.handler,
+            &self.create_context_with_ui(blocking_ui_allowed),
+            &payload,
+        ) {
             Ok(result) => Ok(result),
             Err(error) => {
                 let error =
@@ -1265,17 +1450,21 @@ pub fn synthetic_source_info(path: &str, source: &str, base_dir: Option<String>)
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::core::extensions::types::{ExtensionShortcut, FlagType, RegisteredCommand};
+    use std::time::Duration;
 
     fn tool(name: &str) -> RegisteredTool {
         RegisteredTool {
             name: name.to_string(),
+            label: name.to_string(),
             description: format!("{name} tool"),
             parameters: Value::Object(Default::default()),
             source_info: SourceInfo::synthetic("ext", "local", None),
             execute: None,
+            ..Default::default()
         }
     }
 
@@ -1375,11 +1564,15 @@ mod tests {
         let count = Arc::new(Mutex::new(0));
         let first = {
             let count = Arc::clone(&count);
-            runner.on_error(Arc::new(move |_| *count.lock().unwrap() += 1))
+            runner.on_error(Arc::new(move |_| {
+                *count.lock().unwrap_or_else(|error| error.into_inner()) += 1
+            }))
         };
         let second = {
             let count = Arc::clone(&count);
-            runner.on_error(Arc::new(move |_| *count.lock().unwrap() += 1))
+            runner.on_error(Arc::new(move |_| {
+                *count.lock().unwrap_or_else(|error| error.into_inner()) += 1
+            }))
         };
         first();
         runner.emit_error(ExtensionError {
@@ -1388,7 +1581,66 @@ mod tests {
             error: "one".into(),
         });
         second();
-        assert_eq!(*count.lock().unwrap(), 1);
+        assert_eq!(*count.lock().unwrap_or_else(|error| error.into_inner()), 1);
+    }
+
+    #[test]
+    fn native_command_ui_context_uses_real_broker_and_rejects_sync_waits() {
+        let handler: HandlerFn = Arc::new(|context, _event| {
+            let selected = context.ui.select(
+                "Choose",
+                &["first".to_string(), "second".to_string()],
+                Some(Duration::from_secs(1)),
+            )?;
+            Ok(Some(json!({"selected": selected})))
+        });
+        let mut extension = Extension {
+            path: "ui-extension".into(),
+            ..Default::default()
+        };
+        extension
+            .commands
+            .insert("ask".into(), command("ask", handler));
+        let runtime = Arc::new(Mutex::new(ExtensionRuntime::new()));
+        let host =
+            Arc::new(crate::core::extensions::integration::ExtensionHostState::new(None, "medium"));
+        host.set_ui_enabled(true);
+        let mut runner = ExtensionRunner::new(vec![extension], runtime, "/tmp".into());
+        runner.set_ui_context("rpc", true);
+        runner.bind_core_with_actions(host.clone());
+        let runner = Arc::new(runner);
+
+        let worker_runner = runner.clone();
+        let worker =
+            std::thread::spawn(move || worker_runner.execute_command_with_ui("ask", "", true));
+        let request = (0..500)
+            .find_map(|_| {
+                host.drain_ui_requests().into_iter().next().or_else(|| {
+                    std::thread::sleep(Duration::from_millis(1));
+                    None
+                })
+            })
+            .expect("native command should emit a UI request");
+        assert_eq!(request["method"], "select");
+        let id = request["id"].as_str().expect("request id").to_string();
+        assert_eq!(
+            host.handle_ui_response(&serde_json::json!({
+                "type": "extension_ui_response",
+                "id": id,
+                "value": "second"
+            })),
+            crate::core::extensions::types::ExtensionUiResponseDisposition::Resolved
+        );
+        assert_eq!(
+            worker.join().expect("native command worker"),
+            Ok(Some(json!({"selected": "second"})))
+        );
+
+        let error = runner
+            .execute_command("ask", "")
+            .expect_err("synchronous command dispatch must not wait for stdin");
+        assert!(error.contains(crate::core::extensions::types::BLOCKING_UI_UNAVAILABLE_MESSAGE));
+        assert!(host.drain_ui_requests().is_empty());
     }
 
     #[test]
@@ -1420,7 +1672,10 @@ mod tests {
         let event_handler = {
             let events = Arc::clone(&events);
             Arc::new(move |_: &ExtensionContext, event: &Value| {
-                events.lock().unwrap().push(event.clone());
+                events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event.clone());
                 Ok(None)
             }) as HandlerFn
         };
@@ -1485,7 +1740,7 @@ mod tests {
             resources.skill_resources[0].source_info.base_dir.as_deref(),
             Some("/tmp/project/.pi/extensions")
         );
-        let events = events.lock().unwrap();
+        let events = events.lock().unwrap_or_else(|error| error.into_inner());
         assert_eq!(events[0]["type"], "session_start");
         assert_eq!(events[0]["reason"], "startup");
         assert_eq!(events[1]["type"], "session_shutdown");
@@ -1527,14 +1782,20 @@ mod tests {
         let first = {
             let events = Arc::clone(&events);
             Arc::new(move |_: &ExtensionContext, event: &Value| {
-                events.lock().unwrap().push(event.clone());
+                events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event.clone());
                 Ok(Some(json!({"cancel": true})))
             }) as HandlerFn
         };
         let second = {
             let events = Arc::clone(&events);
             Arc::new(move |_: &ExtensionContext, event: &Value| {
-                events.lock().unwrap().push(event.clone());
+                events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event.clone());
                 Ok(None)
             }) as HandlerFn
         };
@@ -1549,7 +1810,7 @@ mod tests {
         let runner = runner_with(vec![extension]);
         assert!(runner.emit_session_before_fork("entry-1", "at").unwrap());
         assert_eq!(
-            *events.lock().unwrap(),
+            *events.lock().unwrap_or_else(|error| error.into_inner()),
             vec![json!({
                 "type": "session_before_fork",
                 "entryId": "entry-1",

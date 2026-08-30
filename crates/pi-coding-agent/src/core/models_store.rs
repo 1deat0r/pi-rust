@@ -9,9 +9,13 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 
 use pi_ai::model::Model;
 use pi_ai::models::{ModelsStore, ModelsStoreEntry};
@@ -93,7 +97,7 @@ impl ModelsStore for InMemoryCodingAgentModelsStore {
     fn read(&self, provider_id: &str) -> Option<ModelsStoreEntry> {
         self.entries
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .get(provider_id)
             .cloned()
             .map(ModelsStoreEntry::from)
@@ -101,11 +105,14 @@ impl ModelsStore for InMemoryCodingAgentModelsStore {
     fn write(&self, provider_id: &str, entry: &ModelsStoreEntry) {
         self.entries
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .insert(provider_id.to_string(), StoredModelsEntry::from(entry));
     }
     fn delete(&self, provider_id: &str) {
-        self.entries.lock().unwrap().remove(provider_id);
+        self.entries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(provider_id);
     }
 }
 
@@ -113,9 +120,18 @@ impl ModelsStore for InMemoryCodingAgentModelsStore {
 /// a sibling `.lock` file created with `create_new` semantics; the upstream
 /// `FileAuthStorageBackend` uses the same lock-file strategy.
 fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
-    let lock_path = path.with_extension("lock");
+    // `proper-lockfile` (used by upstream FileAuthStorageBackend) places the
+    // lock beside the complete filename, e.g. `models-store.json.lock`.
+    // `with_extension("lock")` would instead produce `models-store.lock`,
+    // allowing a Rust process and the upstream process to enter the same
+    // store concurrently because they use different lock paths.
+    let lock_path = file_lock_path(path);
     let _guard = FileLockGuard::acquire(&lock_path);
     f()
+}
+
+fn file_lock_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.lock", path.display()))
 }
 
 struct FileLockGuard {
@@ -123,9 +139,13 @@ struct FileLockGuard {
 }
 
 impl FileLockGuard {
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn acquire(path: &Path) -> Self {
-        // Retry briefly to mirror the upstream lock-acquire with retry.
-        for _ in 0..200 {
+        // Keep waiting for a live writer rather than overwriting its lock.
+        // A lock older than the stale window is recoverable after a crashed
+        // process, but an active writer must never be displaced.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -136,19 +156,33 @@ impl FileLockGuard {
                         path: path.to_path_buf(),
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = fs::metadata(path)
+                        .and_then(|metadata| metadata.modified())
+                        .and_then(|modified| {
+                            modified
+                                .elapsed()
+                                .map_err(|error| std::io::Error::other(error.to_string()))
+                        })
+                        .is_ok_and(|age| age >= Duration::from_secs(30));
+                    if stale {
+                        let _ = fs::remove_file(path);
+                        continue;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out acquiring model store lock {}",
+                        path.display()
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
                 }
-                Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                Err(error) => {
+                    panic!(
+                        "failed to acquire model store lock {}: {error}",
+                        path.display()
+                    );
                 }
             }
-        }
-        // Fall back to overwriting the lock if it is stale (mirrors the
-        // upstream lock-acquire-with-retry timeout behavior).
-        let _ = fs::write(path, "");
-        Self {
-            path: path.to_path_buf(),
         }
     }
 }
@@ -159,12 +193,26 @@ impl Drop for FileLockGuard {
     }
 }
 
-/// A file mtime in milliseconds (upstream `getFileRevision` uses mtimeMs).
+/// A metadata revision that detects same-millisecond replacements as well as
+/// ordinary mtime changes. The upstream exposes only an mtime string, but the
+/// inode/size components are needed here because atomic rename can preserve a
+/// coarse filesystem timestamp.
 pub fn file_revision(path: &Path) -> Option<u64> {
     let meta = fs::metadata(path).ok()?;
     let mtime = meta.modified().ok()?;
     let duration = mtime.duration_since(UNIX_EPOCH).ok()?;
-    Some(duration.as_millis() as u64)
+    #[cfg(unix)]
+    let inode_revision = meta
+        .ino()
+        .wrapping_mul(131)
+        .wrapping_add(meta.dev().wrapping_mul(521));
+    #[cfg(not(unix))]
+    let inode_revision = 0;
+    Some(
+        (duration.as_nanos() as u64)
+            .wrapping_add(meta.len().wrapping_mul(31))
+            .wrapping_add(inode_revision),
+    )
 }
 
 /// Locked JSON-backed storage for dynamically refreshed provider catalogs
@@ -209,7 +257,7 @@ impl FileModelsStore {
 
     fn read_latest(&self) -> StoredModels {
         let revision = file_revision(&self.path);
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
         if revision.is_some() && revision == cache.revision {
             return cache.data.clone();
         }
@@ -230,17 +278,54 @@ impl FileModelsStore {
             .map(ModelsStoreEntry::from)
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     fn write_locked(&self, f: impl FnOnce(&mut StoredModels)) {
+        // The lock is a sibling of the store file, so the parent must exist
+        // before acquiring it. This matters for first-use catalogs (including
+        // a clean agent directory) where no models-store directory exists yet.
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).unwrap_or_else(|error| {
+                panic!(
+                    "create models store directory {}: {error}",
+                    parent.display()
+                )
+            });
+        }
         with_file_lock(&self.path, || {
             let mut data = self.read_latest();
             f(&mut data);
             let serialized =
                 serde_json::to_string_pretty(&data).unwrap_or_else(|_| "{}".to_string());
-            if let Some(parent) = self.path.parent() {
-                let _ = fs::create_dir_all(parent);
+            let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+            let name = self
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("models-store.json");
+            let temporary = parent.join(format!(".{name}.tmp-{}", uuid::Uuid::new_v4()));
+            let write_result = (|| -> std::io::Result<()> {
+                let mut options = fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                let mut file = options.open(&temporary)?;
+                file.write_all(serialized.as_bytes())?;
+                file.sync_all()?;
+                fs::rename(&temporary, &self.path)?;
+                // Persist the directory entry when the host filesystem
+                // supports opening directories. Failure here does not undo a
+                // valid atomic file replacement.
+                let _ = fs::File::open(parent).and_then(|directory| directory.sync_all());
+                Ok(())
+            })();
+            if let Err(error) = write_result {
+                let _ = fs::remove_file(&temporary);
+                panic!("write models-store.json {}: {error}", self.path.display());
             }
-            fs::write(&self.path, serialized).expect("write models-store.json");
-            let mut cache = self.cache.lock().unwrap();
+            let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
             cache.data = data;
             cache.revision = file_revision(&self.path);
         });
@@ -264,6 +349,7 @@ impl ModelsStore for FileModelsStore {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use pi_ai::model::Model;
@@ -364,6 +450,15 @@ mod tests {
         assert_eq!(
             p.file_name().unwrap().to_string_lossy(),
             "models-store.json"
+        );
+    }
+
+    #[test]
+    fn lock_path_keeps_the_complete_store_filename() {
+        let path = PathBuf::from("/tmp/models-store.json");
+        assert_eq!(
+            file_lock_path(&path),
+            PathBuf::from("/tmp/models-store.json.lock")
         );
     }
 }

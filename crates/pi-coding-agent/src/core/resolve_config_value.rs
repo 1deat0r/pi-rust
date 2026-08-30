@@ -41,6 +41,7 @@ fn append_literal(parts: &mut Vec<TemplatePart>, value: &str) {
     parts.push(TemplatePart::Literal(value.to_string()));
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
 fn parse_config_value_template(config: &str) -> Vec<TemplatePart> {
     let mut parts: Vec<TemplatePart> = Vec::new();
     let bytes = config.as_bytes();
@@ -245,13 +246,18 @@ pub fn resolve_config_value(config: &str, env: Option<&HashMap<String, String>>)
     match parse_config_value_reference(config) {
         ConfigValueReference::Command(command_config) => {
             let cache = command_result_cache();
-            if let Some(value) = cache.lock().unwrap().get(&command_config).cloned() {
+            if let Some(value) = cache
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(&command_config)
+                .cloned()
+            {
                 return value;
             }
             let result = execute_command_uncached(&command_config);
             cache
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|error| error.into_inner())
                 .insert(command_config.clone(), result.clone());
             result
         }
@@ -261,10 +267,14 @@ pub fn resolve_config_value(config: &str, env: Option<&HashMap<String, String>>)
 
 /// Clear the config value command cache. Exported for testing.
 pub fn clear_config_value_cache() {
-    command_result_cache().lock().unwrap().clear();
+    command_result_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

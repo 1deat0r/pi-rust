@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Binary-level tests for project trust (`--approve` / `--no-approve`).
 //!
 //! A trust-requiring project (`.pi/settings.json`) gates project settings
@@ -33,19 +35,18 @@ impl Sandbox {
     }
 
     fn pi(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_pi"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pi"));
+        command
+            .env_clear()
             .current_dir(cwd)
             .env("HOME", &self.home)
             .env("PI_CODING_AGENT_DIR", &self.agent_dir)
             .env("PI_OFFLINE", "1")
-            .env("PI_SKIP_VERSION_CHECK", "1")
-            .env_remove("PI_PROVIDER")
-            .env_remove("PI_MODEL")
-            .env_remove("PI_KEY")
-            .env_remove("PI_SESSION_ID")
-            .args(args)
-            .output()
-            .expect("spawn pi")
+            .env("PI_SKIP_VERSION_CHECK", "1");
+        if let Some(path) = std::env::var_os("PATH") {
+            command.env("PATH", path);
+        }
+        command.args(args).output().expect("spawn pi")
     }
 
     fn stdout(&self, output: &std::process::Output) -> String {
@@ -294,7 +295,7 @@ mod interactive_prompt {
 
         let answered = tmux(&["send-keys", "-t", &session, "y", "Enter"]);
         assert!(answered.status.success(), "trust answer failed");
-        wait_for(&session, "(faux/Faux Model)");
+        wait_for(&session, "faux-1");
 
         let quit = tmux(&["send-keys", "-t", &session, "/quit", "Enter"]);
         assert!(quit.status.success(), "interactive quit failed");
@@ -303,5 +304,67 @@ mod interactive_prompt {
 
         let store = ProjectTrustStore::new(sandbox.agent_dir.to_str().unwrap());
         assert_eq!(store.get(cwd.to_str().unwrap()), Some(true));
+    }
+
+    #[test]
+    fn interactive_trust_selector_saves_parent_and_cancel_preserves_it() {
+        let sandbox = Sandbox::new("interactive-selector");
+        let cwd = trust_requiring_project(&sandbox);
+        let session = format!("pi-trust-selector-{}", uuid::Uuid::new_v4());
+        let created = tmux(&[
+            "new-session",
+            "-d",
+            "-x",
+            "100",
+            "-y",
+            "30",
+            "-c",
+            cwd.to_str().unwrap(),
+            "-s",
+            &session,
+        ]);
+        assert!(created.status.success(), "tmux session creation failed");
+
+        let command = format!(
+            "env HOME={} PI_CODING_AGENT_DIR={} PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 {} --provider faux --model faux-1",
+            shell_quote(sandbox.home.to_str().unwrap()),
+            shell_quote(sandbox.agent_dir.to_str().unwrap()),
+            shell_quote(env!("CARGO_BIN_EXE_pi")),
+        );
+        let launched = tmux(&["send-keys", "-t", &session, &command, "Enter"]);
+        assert!(launched.status.success(), "interactive launch failed");
+        wait_for(&session, "Trust project folder?");
+        let answered = tmux(&["send-keys", "-t", &session, "y", "Enter"]);
+        assert!(answered.status.success(), "trust answer failed");
+        wait_for(&session, "faux-1");
+
+        let opened = tmux(&["send-keys", "-t", &session, "/trust", "Enter"]);
+        assert!(opened.status.success(), "trust selector command failed");
+        wait_for(&session, "Project trust");
+        let selected_parent = tmux(&["send-keys", "-t", &session, "j", "Enter"]);
+        assert!(
+            selected_parent.status.success(),
+            "parent trust selection failed"
+        );
+        wait_for(&session, "Saved trust decision: trusted");
+
+        let store = ProjectTrustStore::new(sandbox.agent_dir.to_str().unwrap());
+        let saved_parent = store.get_entry(cwd.to_str().unwrap()).unwrap();
+        assert!(saved_parent.decision);
+        assert_ne!(saved_parent.path, cwd.to_string_lossy().into_owned());
+
+        let reopened = tmux(&["send-keys", "-t", &session, "/trust", "Enter"]);
+        assert!(reopened.status.success(), "trust selector reopen failed");
+        wait_for(&session, "Project trust");
+        let cancelled = tmux(&["send-keys", "-t", &session, "Escape"]);
+        assert!(cancelled.status.success(), "trust selector cancel failed");
+        thread::sleep(Duration::from_millis(150));
+        let after_cancel = store.get_entry(cwd.to_str().unwrap()).unwrap();
+        assert_eq!(after_cancel, saved_parent);
+
+        let quit = tmux(&["send-keys", "-t", &session, "/quit", "Enter"]);
+        assert!(quit.status.success(), "interactive quit failed");
+        thread::sleep(Duration::from_millis(150));
+        let _ = tmux(&["kill-session", "-t", &session]);
     }
 }

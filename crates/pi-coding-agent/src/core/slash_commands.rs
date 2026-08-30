@@ -179,6 +179,7 @@ pub fn builtin_command_infos(source_info: String) -> Vec<SlashCommandInfo> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::config::APP_NAME;

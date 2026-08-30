@@ -125,6 +125,7 @@ pub fn wrap_registered_tools(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::core::extensions::types::SourceInfo;
@@ -132,10 +133,12 @@ mod tests {
     fn tool(name: &str) -> RegisteredTool {
         RegisteredTool {
             name: name.to_string(),
+            label: name.to_string(),
             description: format!("{name} tool"),
             parameters: serde_json::Value::Object(Default::default()),
             source_info: SourceInfo::synthetic("ext", "local", None),
             execute: None,
+            ..Default::default()
         }
     }
 

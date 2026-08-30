@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Binary-level print-mode parity tests (T3 #42/#43): sequential multi-turn
 //! prompting and terminal error/abort exit semantics, matching upstream
 //! print-mode implementation.
@@ -30,7 +32,12 @@ impl Sandbox {
 
     fn pi(&self, cwd: &Path, args: &[&str]) -> std::process::Output {
         Command::new(env!("CARGO_BIN_EXE_pi"))
+            .env_clear()
             .current_dir(cwd)
+            .env(
+                "PATH",
+                std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
+            )
             .env("HOME", &self.home)
             .env("PI_CODING_AGENT_SESSION_DIR", &self.sessions)
             .env("PI_OFFLINE", "1")
@@ -46,7 +53,12 @@ impl Sandbox {
 
     fn pi_with_stdin(&self, cwd: &Path, args: &[&str], input: &str) -> std::process::Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_pi"))
+            .env_clear()
             .current_dir(cwd)
+            .env(
+                "PATH",
+                std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
+            )
             .env("HOME", &self.home)
             .env("PI_CODING_AGENT_SESSION_DIR", &self.sessions)
             .env("PI_OFFLINE", "1")
@@ -244,8 +256,8 @@ fn terminal_provider_error_exits_nonzero_with_raw_message() {
 }
 
 #[test]
-fn unknown_faux_model_fails_before_a_turn_is_persisted() {
-    let sandbox = Sandbox::new("unknown-model");
+fn custom_faux_model_warns_and_completes_a_real_turn() {
+    let sandbox = Sandbox::new("custom-model");
     let out = sandbox.pi(
         &sandbox.root,
         &[
@@ -257,17 +269,18 @@ fn unknown_faux_model_fails_before_a_turn_is_persisted() {
             "hello",
         ],
     );
-    assert!(!out.status.success(), "expected model-resolution failure");
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
     let stderr = sandbox.stderr(&out);
     assert!(
-        stderr.contains("unknown faux model")
-            || stderr.contains("Unknown faux model")
-            || stderr.contains("missing-model"),
-        "expected deterministic faux model diagnostic, got: {stderr}"
+        stderr.contains(
+            "Model \"missing-model\" not found for provider \"faux\". Using custom model id."
+        ),
+        "expected deterministic custom-model warning, got: {stderr}"
     );
+    assert_eq!(sandbox.stdout(&out), "faux response to: hello\n");
     assert!(
-        walk_jsonl(&sandbox.sessions).is_empty(),
-        "model resolution must fail before creating a durable turn"
+        !walk_jsonl(&sandbox.sessions).is_empty(),
+        "custom provider model must complete and persist a durable turn"
     );
 }
 

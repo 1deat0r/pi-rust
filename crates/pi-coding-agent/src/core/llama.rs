@@ -1409,11 +1409,17 @@ impl LlamaProviderController {
     }
 
     pub fn catalog(&self) -> Vec<LlamaModelInfo> {
-        self.catalog.read().unwrap().clone()
+        self.catalog
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     pub fn models(&self) -> Vec<Model> {
-        self.dynamic_models.read().unwrap().clone()
+        self.dynamic_models
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     pub fn set_catalog(
@@ -1428,8 +1434,14 @@ impl LlamaProviderController {
             .map(|info| model_from_info(server_url, info))
             .collect::<Result<Vec<_>, _>>()?;
         self.provider.set_dynamic_models(models.clone());
-        *self.catalog.write().unwrap() = catalog;
-        *self.dynamic_models.write().unwrap() = models.clone();
+        *self
+            .catalog
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = catalog;
+        *self
+            .dynamic_models
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = models.clone();
         Ok(models)
     }
 
@@ -1538,7 +1550,10 @@ pub fn llama_refresh_function(
                 let published = context
                     .publish(ModelsPublication {
                         update: Some(Arc::new(move || {
-                            *dynamic_models.write().unwrap() = cached_for_update.clone();
+                            *dynamic_models
+                                .write()
+                                .unwrap_or_else(|error| error.into_inner()) =
+                                cached_for_update.clone();
                         })),
                         persist: None,
                     })
@@ -1585,8 +1600,13 @@ pub fn llama_refresh_function(
             let published = context
                 .publish(ModelsPublication {
                     update: Some(Arc::new(move || {
-                        *dynamic_models.write().unwrap() = models_for_update.clone();
-                        *catalog_state.write().unwrap() = catalog_for_update.clone();
+                        *dynamic_models
+                            .write()
+                            .unwrap_or_else(|error| error.into_inner()) = models_for_update.clone();
+                        *catalog_state
+                            .write()
+                            .unwrap_or_else(|error| error.into_inner()) =
+                            catalog_for_update.clone();
                     })),
                     persist: Some(ModelsPersistence::Write(ModelsStoreEntry {
                         models,
@@ -1967,6 +1987,7 @@ fn llama_model_description(info: &LlamaModelInfo) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

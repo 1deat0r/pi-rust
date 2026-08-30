@@ -1910,3 +1910,6 @@ Phase 2.3b introduced the typed PiAiError for the pi-ai auth/OAuth surface;
 ledger rows unchanged.
 
 Phase 2.4 brought pi-agent under the hard lint gate; ledger rows unchanged.
+
+Phase 2.5 brought pi-coding-agent under the hard lint gate; ledger rows
+unchanged.

@@ -30,21 +30,9 @@ fn format_token_count(count: u64) -> String {
     }
 }
 
-/// Simple substring filter standing in for the TUI fuzzy filter
-/// (upstream `fuzzyFilter(models, pattern, (m) => provider + " " + id)`).
-fn filter_models<'a>(
-    models: &'a [pi_ai::model::Model],
-    pattern: &str,
-) -> Vec<&'a pi_ai::model::Model> {
-    let pattern = pattern.to_lowercase();
-    models
-        .iter()
-        .filter(|m| {
-            format!("{} {}", m.provider, m.id)
-                .to_lowercase()
-                .contains(&pattern)
-        })
-        .collect()
+/// Apply the same fuzzy ranking used by the upstream CLI/TUI filter.
+fn filter_models(models: Vec<pi_ai::model::Model>, pattern: &str) -> Vec<pi_ai::model::Model> {
+    pi_tui::fuzzy::fuzzy_filter(models, pattern, |m| format!("{} {}", m.provider, m.id))
 }
 
 /// List available models, optionally filtered by search pattern.
@@ -55,8 +43,8 @@ pub fn list_models(models: &Models, search_pattern: Option<&str>) -> String {
     }
 
     let filtered = match search_pattern {
-        Some(p) if !p.is_empty() => filter_models(&all, p),
-        _ => all.iter().collect(),
+        Some(p) if !p.is_empty() => filter_models(all, p),
+        _ => all,
     };
     if filtered.is_empty() {
         return format!(
@@ -66,7 +54,7 @@ pub fn list_models(models: &Models, search_pattern: Option<&str>) -> String {
     }
 
     // Sort by provider, then by model id (upstream localeCompare).
-    let mut rows: Vec<&pi_ai::model::Model> = filtered;
+    let mut rows: Vec<&pi_ai::model::Model> = filtered.iter().collect();
     rows.sort_by(|a, b| a.provider.cmp(&b.provider).then_with(|| a.id.cmp(&b.id)));
 
     let headers = [
@@ -127,6 +115,7 @@ pub fn list_models(models: &Models, search_pattern: Option<&str>) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use pi_ai::model::{Model, ModelInput};
@@ -174,9 +163,26 @@ mod tests {
             ),
             model("google", "gemini-2.5-flash", 1_000_000, 65_536, true, true),
         ];
-        let f = filter_models(&ms, "gemini");
+        let f = filter_models(ms, "gemini");
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].id, "gemini-2.5-flash");
+    }
+
+    #[test]
+    fn filtering_accepts_non_contiguous_model_queries() {
+        let models = vec![model(
+            "openai",
+            "gpt-5.1-codex-max",
+            400_000,
+            128_000,
+            true,
+            false,
+        )];
+
+        let filtered = filter_models(models, "codexmax");
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "gpt-5.1-codex-max");
     }
 
     #[test]

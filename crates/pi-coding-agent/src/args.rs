@@ -70,8 +70,18 @@ pub struct Args {
     /// --no-approve/-na: ignore project-local files for this run.
     pub no_approve: bool,
     pub unknown_flags: Vec<String>,
+    /// Parsed values for unknown long flags. The raw list above remains for
+    /// compatibility with the auth command and existing callers; this list is
+    /// converted to the upstream Map shape by extension startup validation.
+    pub extension_flag_values: Vec<(String, ExtensionFlagValue)>,
     /// Parse diagnostics, mirroring upstream `Args.diagnostics`.
     pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionFlagValue {
+    Boolean(bool),
+    String(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,16 +125,20 @@ pub enum ParseOutcome {
     Version,
 }
 
-/// Parses argv (excluding argv[0]). Flags with values follow clap-style
-/// `--flag value` or `--flag=value`; `@file` arguments are collected
+/// Parses argv (excluding argv[0]) using the ordered branches from the
+/// upstream `parseArgs` implementation. Values are deliberately consumed
+/// exactly as upstream does: known value flags consume the following token
+/// even when it looks like another flag, while unknown long flags consume only
+/// a following non-flag/non-`@` token. `@file` arguments are collected
 /// separately (expansion happens in main).
-pub fn parse_args(argv: &[String]) -> ParseOutcome {
+/// Parse argv while retaining the complete `Args` value, including options
+/// needed by the help/runtime bootstrap before the final outcome is chosen.
+pub fn parse_args_raw(argv: &[String]) -> Args {
     let mut args = Args::default();
     let mut i = 0;
-    let mut positional_only = false;
     while i < argv.len() {
         let arg = &argv[i];
-        if positional_only || !arg.starts_with('-') || arg == "-" {
+        if !arg.starts_with('-') {
             if let Some(rest) = arg.strip_prefix('@') {
                 args.file_args.push(rest.to_string());
             } else {
@@ -133,81 +147,44 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
             i += 1;
             continue;
         }
-        if arg == "--" {
-            positional_only = true;
-            i += 1;
-            continue;
-        }
 
-        // --flag=value form
-        let (flag, inline_value) = match arg.split_once('=') {
-            Some((f, v)) => (f.to_string(), Some(v.to_string())),
-            None => (arg.clone(), None),
-        };
-
-        // Helpers to fetch a value: inline (`--flag=v`) or the next argv token.
-        // Returns None (and records a diagnostic) when no value follows.
-        let take_value = |args_state: &mut Args,
-                          i: &mut usize,
-                          flag: &str,
-                          inline: Option<String>|
-         -> Option<String> {
-            match inline {
-                Some(v) => Some(v),
-                None => {
-                    *i += 1;
-                    if *i >= argv.len() {
-                        args_state
-                            .diagnostics
-                            .push(Diagnostic::error(format!("{flag} requires a value")));
-                        None
-                    } else {
-                        Some(argv[*i].clone())
-                    }
-                }
-            }
-        };
+        // Exact flag matching is intentional. The pinned oracle does not
+        // treat `--flag=value` as a known option; such spellings fall through
+        // to unknown long-flag handling below.
+        let flag = arg.as_str();
 
         // --use-theme: value must start with '-' in which case it's an error
         // (upstream reports "requires a theme name" for a missing/flag-like value).
         if flag == "--use-theme" {
-            let v = take_value(&mut args, &mut i, "--use-theme", inline_value);
-            match v {
-                Some(v) if !v.starts_with('-') => args.use_theme = Some(v),
-                _ => args
-                    .diagnostics
-                    .push(Diagnostic::error("--use-theme requires a theme name")),
+            match argv.get(i + 1).map(String::as_str) {
+                Some(value) if !value.starts_with('-') => {
+                    args.use_theme = Some(value.to_string());
+                    i += 2;
+                }
+                Some(_) | None => {
+                    args.diagnostics
+                        .push(Diagnostic::error("--use-theme requires a theme name"));
+                    // Do not swallow a flag-like token; it is parsed next.
+                    i += 1;
+                }
             }
-            i += 1;
             continue;
         }
 
-        // --tui-mode: regular | fullscreen. Mirrors upstream args.ts token
-        // handling: a flag-like or missing value reports
-        // "--tui-mode requires ..." without consuming the token; an invalid
-        // non-flag value reports the quoted value and is consumed.
+        // --tui-mode: regular | fullscreen. A flag-like or missing value
+        // reports an error without consuming the token; an invalid non-flag
+        // value reports the quoted value and is consumed.
         if flag == "--tui-mode" {
-            if let Some(inline) = inline_value {
-                if inline == "regular" || inline == "fullscreen" {
-                    args.tui_mode = Some(inline);
-                } else {
-                    args.diagnostics.push(Diagnostic::error(format!(
-                        "Invalid TUI mode \"{inline}\". Valid values: regular, fullscreen"
-                    )));
-                }
-                i += 1;
-                continue;
-            }
             match argv.get(i + 1).map(String::as_str) {
                 Some("regular") | Some("fullscreen") => {
                     args.tui_mode = argv.get(i + 1).cloned();
-                    i += 2; // past --tui-mode and its value
+                    i += 2;
                 }
-                Some(v) if v.starts_with('-') => {
+                Some(value) if value.starts_with('-') => {
                     args.diagnostics.push(Diagnostic::error(
                         "--tui-mode requires regular or fullscreen",
                     ));
-                    i += 1; // do not consume the flag-like token
+                    i += 1;
                 }
                 None => {
                     args.diagnostics.push(Diagnostic::error(
@@ -215,11 +192,11 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
                     ));
                     i += 1;
                 }
-                Some(other) => {
+                Some(value) => {
                     args.diagnostics.push(Diagnostic::error(format!(
-                        "Invalid TUI mode \"{other}\". Valid values: regular, fullscreen"
+                        "Invalid TUI mode \"{value}\". Valid values: regular, fullscreen"
                     )));
-                    i += 2; // consume the invalid value (upstream i++)
+                    i += 2;
                 }
             }
             continue;
@@ -227,19 +204,23 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
 
         // --thinking: validate against the upstream level set (invalid -> warning).
         if flag == "--thinking" {
-            let v = take_value(&mut args, &mut i, "--thinking", inline_value);
-            match v {
-                Some(v) if VALID_THINKING_LEVELS.contains(&v.as_str()) => args.thinking = Some(v),
-                Some(v) => args.diagnostics.push(Diagnostic::warning(format!(
-                    "Invalid thinking level \"{v}\". Valid values: off, minimal, low, medium, high, xhigh, max"
-                ))),
-                None => {}
+            if let Some(value) = argv.get(i + 1).cloned() {
+                if VALID_THINKING_LEVELS.contains(&value.as_str()) {
+                    args.thinking = Some(value);
+                } else {
+                    args.diagnostics.push(Diagnostic::warning(format!(
+                        "Invalid thinking level \"{value}\". Valid values: off, minimal, low, medium, high, xhigh, max"
+                    )));
+                }
+                i += 2;
+            } else {
+                i += 1;
             }
-            i += 1;
             continue;
         }
 
-        // Value-taking flags.
+        // Value-taking flags. Except for --name/-n, a missing value is
+        // silently ignored by the upstream parser.
         let value_flags: [&str; 23] = [
             "--provider",
             "--model",
@@ -265,12 +246,16 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
             "--mode",
             "--export",
         ];
-        if value_flags.contains(&flag.as_str()) {
-            let value = match take_value(&mut args, &mut i, flag.as_str(), inline_value) {
-                Some(v) => v,
-                None => continue,
+        if value_flags.contains(&flag) {
+            let Some(value) = argv.get(i + 1).cloned() else {
+                if flag == "--name" || flag == "-n" {
+                    args.diagnostics
+                        .push(Diagnostic::error("--name requires a value"));
+                }
+                i += 1;
+                continue;
             };
-            match flag.as_str() {
+            match flag {
                 "--provider" => args.provider = Some(value),
                 "--model" => args.model = Some(value),
                 "--api-key" => args.api_key = Some(value),
@@ -279,7 +264,18 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
                 "--session-id" => args.session_id = Some(value),
                 "--fork" => args.fork = Some(value),
                 "--session-dir" => args.session_dir = Some(value),
-                "--name" | "-n" => args.name = Some(value),
+                "--name" | "-n" => {
+                    if value.trim().is_empty() {
+                        // The upstream main validates normalizeSessionName
+                        // immediately after parsing. Emit the same
+                        // process-facing diagnostic here because this Rust
+                        // entry point receives only ParseOutcome.
+                        args.diagnostics
+                            .push(Diagnostic::error("--name requires a non-empty value"));
+                    } else {
+                        args.name = Some(value);
+                    }
+                }
                 "--models" => {
                     args.models = value.split(',').map(|s| s.trim().to_string()).collect();
                 }
@@ -309,40 +305,48 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
                 "--mode" => {
                     if matches!(value.as_str(), "text" | "json" | "rpc") {
                         args.mode = Some(value);
-                    } else {
-                        args.unknown_flags.push(format!("--mode {value}"));
                     }
                 }
                 "--export" => args.export = Some(value),
                 _ => {}
             }
-            i += 1;
+            // Known value flags consume the next token even if it starts with
+            // `-`, matching args.ts.
+            i += 2;
             continue;
         }
 
         // --list-models [search] — optional search pattern not starting with - or @
         if flag == "--list-models" {
-            match inline_value {
-                Some(v) => args.list_models = Some(v),
-                None => {
-                    if i + 1 < argv.len()
-                        && !argv[i + 1].starts_with('-')
-                        && !argv[i + 1].starts_with('@')
-                    {
-                        args.list_models = Some(argv[i + 1].clone());
-                        i += 1;
-                    } else {
-                        args.list_models = Some(String::new());
-                    }
+            if i + 1 < argv.len() && !argv[i + 1].starts_with('-') && !argv[i + 1].starts_with('@')
+            {
+                args.list_models = Some(argv[i + 1].clone());
+                i += 2;
+            } else {
+                args.list_models = Some(String::new());
+                i += 1;
+            }
+            continue;
+        }
+
+        // --print has one intentional positional special case: a following
+        // `---literal` is a message, while ordinary flag-like tokens remain
+        // available for parsing on the next iteration.
+        if flag == "--print" || flag == "-p" {
+            args.print = true;
+            if let Some(next) = argv.get(i + 1) {
+                if !next.starts_with('@') && (!next.starts_with('-') || next.starts_with("---")) {
+                    args.messages.push(next.clone());
+                    i += 2;
+                    continue;
                 }
             }
             i += 1;
             continue;
         }
 
-        // Boolean/short flags
-        match flag.as_str() {
-            "--print" | "-p" => args.print = true,
+        // Boolean/short flags.
+        match flag {
             "--continue" | "-c" => args.continue_session = true,
             "--resume" | "-r" => args.resume = true,
             "--no-session" => args.no_session = true,
@@ -353,19 +357,74 @@ pub fn parse_args(argv: &[String]) -> ParseOutcome {
             "--no-prompt-templates" | "-np" => args.no_prompt_templates = true,
             "--no-themes" => args.no_themes = true,
             "--no-context-files" | "-nc" => args.no_context_files = true,
-            "--approve" | "-a" => args.approve = true,
-            "--no-approve" | "-na" => args.no_approve = true,
+            // The upstream parser stores one optional override, so when both
+            // spellings are present the later argv token wins. Keep the
+            // public boolean fields for compatibility while clearing the
+            // superseded side here.
+            "--approve" | "-a" => {
+                args.approve = true;
+                args.no_approve = false;
+            }
+            "--no-approve" | "-na" => {
+                args.no_approve = true;
+                args.approve = false;
+            }
             "--offline" => args.offline = true,
             "--verbose" => args.verbose = true,
-            "--help" | "-h" => return ParseOutcome::Help,
-            "--version" | "-v" => return ParseOutcome::Version,
-            _ => args.unknown_flags.push(arg.clone()),
+            "--help" | "-h" => args.help = true,
+            "--version" | "-v" => args.version = true,
+            _ if flag.starts_with("--") => {
+                // Unknown long flags are extension-facing. Preserve the raw
+                // spelling for the existing Rust dispatch surface and consume
+                // an optional non-flag/non-`@` value as upstream does.
+                args.unknown_flags.push(arg.clone());
+                // An inline `--flag=value` already has its value. The oracle
+                // does not consume the following positional token in that
+                // case; only a bare unknown long flag may consume one.
+                if !arg.contains('=') {
+                    if let Some(next) = argv.get(i + 1) {
+                        if !next.starts_with('-') && !next.starts_with('@') {
+                            args.extension_flag_values.push((
+                                arg[2..].to_string(),
+                                ExtensionFlagValue::String(next.clone()),
+                            ));
+                            i += 1;
+                        } else {
+                            args.extension_flag_values
+                                .push((arg[2..].to_string(), ExtensionFlagValue::Boolean(true)));
+                        }
+                    } else {
+                        args.extension_flag_values
+                            .push((arg[2..].to_string(), ExtensionFlagValue::Boolean(true)));
+                    }
+                } else if let Some((name, value)) = arg[2..].split_once('=') {
+                    args.extension_flag_values.push((
+                        name.to_string(),
+                        ExtensionFlagValue::String(value.to_string()),
+                    ));
+                }
+            }
+            _ if flag.starts_with('-') => {
+                args.diagnostics
+                    .push(Diagnostic::error(format!("Unknown option: {flag}")));
+            }
+            _ => args.messages.push(arg.clone()),
         }
         i += 1;
     }
-    // --version/-v anywhere wins over running (upstream prints help when both)
+    args
+}
+
+pub fn parse_args(argv: &[String]) -> ParseOutcome {
+    // Upstream retains both switches while parsing, then handles version
+    // before help. This makes `pi --help --version` deterministic regardless
+    // of argument order.
+    let args = parse_args_raw(argv);
     if args.version {
         return ParseOutcome::Version;
+    }
+    if args.help {
+        return ParseOutcome::Help;
     }
     ParseOutcome::Run(args)
 }
@@ -375,6 +434,62 @@ pub fn print_version() {
 }
 
 pub fn print_help() {
+    print!("{}", include_str!("help.txt"));
+}
+
+/// Print the base CLI help plus flags registered by the active native
+/// extension set.  The extension block is formatted byte-for-byte like the
+/// pinned upstream `printHelp(extensionFlags)` implementation; callers that
+/// do not have an extension runtime can use [`print_help`] for the exact base
+/// resource.
+pub fn print_help_with_extension_flags(
+    extension_flags: &[crate::core::extensions::types::ExtensionFlag],
+) {
+    print!("{}", render_help_with_extension_flags(extension_flags));
+}
+
+/// Return the exact help text, including the final newline emitted by the
+/// upstream console logger, with an optional native-extension flag section.
+pub fn render_help_with_extension_flags(
+    extension_flags: &[crate::core::extensions::types::ExtensionFlag],
+) -> String {
+    if extension_flags.is_empty() {
+        return format!("{}\n", include_str!("help.txt"));
+    }
+
+    let mut help = include_str!("help.txt").to_string();
+    let marker =
+        "Extensions can register additional flags (e.g., --plan from plan-mode extension).\n";
+    let Some(marker_end) = help.find(marker).map(|index| index + marker.len()) else {
+        return format!("{help}\n");
+    };
+
+    let mut block = String::from("\nExtension CLI Flags:\n");
+    for flag in extension_flags {
+        let value = matches!(
+            flag.flag_type,
+            crate::core::extensions::types::FlagType::String
+        )
+        .then_some(" <value>")
+        .unwrap_or_default();
+        let description = flag
+            .description
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("Registered by {}", flag.extension_path));
+        block.push_str(&format!("  --{}{value}", flag.name));
+        let padding = 30usize.saturating_sub(format!("  --{}{value}", flag.name).len());
+        block.push_str(&" ".repeat(padding));
+        block.push_str(&description);
+        block.push('\n');
+    }
+    help.insert_str(marker_end, &block);
+    help.push('\n');
+    help
+}
+
+#[allow(dead_code)]
+fn print_help_legacy() {
     println!(
         "{} - AI coding assistant with read, bash, edit, write tools",
         crate::config::APP_NAME
@@ -388,10 +503,14 @@ pub fn print_help() {
     println!();
     println!("Options:");
     println!("  --provider <name>              Provider name (default: google)");
-    println!("  --model <pattern>              Model pattern or ID (supports \"provider/id\" and optional \":<thinking>\")");
+    println!(
+        "  --model <pattern>              Model pattern or ID (supports \"provider/id\" and optional \":<thinking>\")"
+    );
     println!("  --api-key <key>                API key (defaults to env vars)");
     println!("  --system-prompt <text>         System prompt (default: coding assistant prompt)");
-    println!("  --append-system-prompt <text>  Append text or file contents to the system prompt (repeatable)");
+    println!(
+        "  --append-system-prompt <text>  Append text or file contents to the system prompt (repeatable)"
+    );
     println!("  --mode <mode>                  Output mode: text (default), json, or rpc");
     println!("  --print, -p                    Non-interactive mode: process prompt and exit");
     println!("  --continue, -c                 Continue previous session");
@@ -407,7 +526,9 @@ pub fn print_help() {
     println!("  --models <list>                Comma-separated model catalogs to load");
     println!("  --tools, -t <tools>            Comma-separated allowlist of tool names to enable");
     println!("  --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable");
-    println!("  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max");
+    println!(
+        "  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max"
+    );
     println!(
         "  --no-tools, -nt                Disable all tools by default (built-in and extension)"
     );
@@ -415,7 +536,9 @@ pub fn print_help() {
         "  --no-builtin-tools, -nbt       Disable built-in tools but keep extension/custom tools"
     );
     println!("  --extension, -e <path>         Load an extension file (repeatable)");
-    println!("  --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)");
+    println!(
+        "  --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)"
+    );
     println!("  --skill <path>                 Load a skill file or directory (repeatable)");
     println!("  --no-skills, -ns               Disable skills discovery and loading");
     println!(
@@ -430,7 +553,9 @@ pub fn print_help() {
     );
     println!("  --approve, -a                  Trust project-local files for this run");
     println!("  --no-approve, -na              Ignore project-local files for this run");
-    println!("  --offline                      Disable startup network operations (same as PI_OFFLINE=1)");
+    println!(
+        "  --offline                      Disable startup network operations (same as PI_OFFLINE=1)"
+    );
     println!("  --export <file>                Export session file to HTML and exit");
     println!("  --list-models [search]         List available models (with optional fuzzy search)");
     println!("  --tui-mode <mode>              TUI mode: regular or fullscreen");
@@ -442,6 +567,7 @@ pub fn print_help() {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -471,6 +597,16 @@ mod tests {
     fn help_wins() {
         let argv: Vec<String> = vec!["--help".into()];
         assert!(matches!(parse_args(&argv), ParseOutcome::Help));
+    }
+
+    #[test]
+    fn version_wins_over_help_in_either_argument_order() {
+        for argv in [
+            vec!["--help".to_string(), "--version".to_string()],
+            vec!["--version".to_string(), "--help".to_string()],
+        ] {
+            assert!(matches!(parse_args(&argv), ParseOutcome::Version));
+        }
     }
 
     #[test]
@@ -504,8 +640,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_equals_form_and_short_flags() {
-        let args = parse(&["--provider=faux", "-nt", "-xt=bash,rm", "--no-session"]);
+    fn parses_value_forms_and_short_flags() {
+        let args = parse(&[
+            "--provider",
+            "faux",
+            "-nt",
+            "-xt",
+            "bash,rm",
+            "--no-session",
+        ]);
         assert_eq!(args.provider.as_deref(), Some("faux"));
         assert!(args.no_tools);
         assert_eq!(args.exclude_tools.clone().unwrap(), vec!["bash", "rm"]);
@@ -513,10 +656,205 @@ mod tests {
     }
 
     #[test]
-    fn double_dash_stops_flag_parsing() {
-        let args = parse(&["--", "--provider"]);
-        assert_eq!(args.messages, vec!["--provider"]);
+    fn project_trust_override_follows_last_argv_flag() {
+        let approve_last = parse(&["--no-approve", "--approve"]);
+        assert!(approve_last.approve);
+        assert!(!approve_last.no_approve);
+
+        let deny_last = parse(&["--approve", "--no-approve"]);
+        assert!(!deny_last.approve);
+        assert!(deny_last.no_approve);
+    }
+
+    #[test]
+    fn equals_forms_are_unknown_like_the_upstream_parser() {
+        let args = parse(&["--provider=faux", "--mode=rpc", "-xt=bash,rm"]);
         assert!(args.provider.is_none());
+        assert!(args.mode.is_none());
+        assert_eq!(args.unknown_flags, vec!["--provider=faux", "--mode=rpc"]);
+        assert_eq!(
+            args.diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>(),
+            ["Unknown option: -xt=bash,rm"]
+        );
+
+        // Inline values belong to the unknown flag itself; the following
+        // positional token remains a message instead of being swallowed as a
+        // second unknown-flag value.
+        let args = parse(&["--provider=faux", "tail"]);
+        assert!(args.provider.is_none());
+        assert_eq!(args.unknown_flags, vec!["--provider=faux"]);
+        assert_eq!(args.messages, vec!["tail"]);
+    }
+
+    #[test]
+    fn double_dash_is_an_unknown_long_flag_like_the_upstream_parser() {
+        let args = parse(&["--", "--provider"]);
+        assert_eq!(args.unknown_flags, vec!["--"]);
+        assert!(args.provider.is_none());
+    }
+
+    #[test]
+    fn every_value_flag_requires_a_separate_token_for_an_inline_value() {
+        let argv = [
+            "--provider=faux",
+            "--model=faux-1",
+            "--api-key=secret",
+            "--system-prompt=system",
+            "--append-system-prompt=append",
+            "--session=path",
+            "--session-id=id",
+            "--fork=source",
+            "--session-dir=/tmp/sessions",
+            "--name=name",
+            "-n=name",
+            "--tools=read,bash",
+            "-t=read,bash",
+            "--exclude-tools=bash",
+            "-xt=bash",
+            "--models=faux-1",
+            "--extension=extension.ts",
+            "-e=extension.ts",
+            "--skill=skill.md",
+            "--prompt-template=prompt.md",
+            "--theme=theme.json",
+            "--thinking=high",
+            "--mode=json",
+            "--export=export.html",
+            "--use-theme=solarized",
+            "--tui-mode=fullscreen",
+            "--list-models=faux",
+            "--print=true",
+        ];
+        let args = parse(&argv);
+        assert!(args.provider.is_none());
+        assert!(args.model.is_none());
+        assert!(args.api_key.is_none());
+        assert!(args.system_prompt.is_none());
+        assert!(args.append_system_prompt.is_empty());
+        assert!(args.session.is_none());
+        assert!(args.session_id.is_none());
+        assert!(args.fork.is_none());
+        assert!(args.session_dir.is_none());
+        assert!(args.name.is_none());
+        assert!(args.tools.is_none());
+        assert!(args.exclude_tools.is_none());
+        assert!(args.models.is_empty());
+        assert!(args.extensions.is_empty());
+        assert!(args.skills.is_empty());
+        assert!(args.prompt_templates.is_empty());
+        assert!(args.themes.is_empty());
+        assert!(args.thinking.is_none());
+        assert!(args.mode.is_none());
+        assert!(args.export.is_none());
+        assert_eq!(
+            args.unknown_flags,
+            argv.iter()
+                .filter(|arg| arg.starts_with("--") && arg.contains('='))
+                .map(|arg| (*arg).to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            args.diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Unknown option: -n=name",
+                "Unknown option: -t=read,bash",
+                "Unknown option: -xt=bash",
+                "Unknown option: -e=extension.ts"
+            ]
+        );
+    }
+
+    #[test]
+    fn known_value_flags_consume_flag_like_values() {
+        let args = parse(&[
+            "--provider",
+            "--not-a-provider",
+            "--model",
+            "-not-a-model",
+            "--api-key",
+            "@not-a-file",
+            "--system-prompt",
+            "-system",
+            "--append-system-prompt",
+            "--append",
+            "--session",
+            "--session-path",
+            "--session-id",
+            "--id",
+            "--fork",
+            "--source",
+            "--session-dir",
+            "--sessions",
+            "--name",
+            "--name-value",
+            "--tools",
+            "--tool",
+            "--exclude-tools",
+            "--deny",
+            "--models",
+            "--catalog",
+            "--extension",
+            "--extension-path",
+            "--skill",
+            "--skill-path",
+            "--prompt-template",
+            "--template",
+            "--theme",
+            "--theme-path",
+            "--mode",
+            "--invalid-mode",
+            "--export",
+            "--output",
+        ]);
+        assert_eq!(args.provider.as_deref(), Some("--not-a-provider"));
+        assert_eq!(args.model.as_deref(), Some("-not-a-model"));
+        assert_eq!(args.api_key.as_deref(), Some("@not-a-file"));
+        assert_eq!(args.system_prompt.as_deref(), Some("-system"));
+        assert_eq!(args.append_system_prompt, ["--append"]);
+        assert_eq!(args.session.as_deref(), Some("--session-path"));
+        assert_eq!(args.session_id.as_deref(), Some("--id"));
+        assert_eq!(args.fork.as_deref(), Some("--source"));
+        assert_eq!(args.session_dir.as_deref(), Some("--sessions"));
+        assert_eq!(args.name.as_deref(), Some("--name-value"));
+        assert_eq!(
+            args.tools.as_deref(),
+            Some(["--tool".to_string()].as_slice())
+        );
+        assert_eq!(
+            args.exclude_tools.as_deref(),
+            Some(["--deny".to_string()].as_slice())
+        );
+        assert_eq!(args.models, ["--catalog"]);
+        assert_eq!(args.extensions, ["--extension-path"]);
+        assert_eq!(args.skills, ["--skill-path"]);
+        assert_eq!(args.prompt_templates, ["--template"]);
+        assert_eq!(args.themes, ["--theme-path"]);
+        assert_eq!(args.export.as_deref(), Some("--output"));
+        // Invalid --mode is consumed and ignored, with no diagnostic.
+        assert!(args.mode.is_none());
+        assert!(args.unknown_flags.is_empty());
+        assert!(args.diagnostics.is_empty());
+
+        let args = parse(&["-xt", "--deny"]);
+        assert_eq!(
+            args.exclude_tools.as_deref(),
+            Some(["--deny".to_string()].as_slice())
+        );
+        assert!(args.unknown_flags.is_empty());
+        assert!(args.diagnostics.is_empty());
+
+        let args = parse(&["--thinking", "--thinking-level"]);
+        assert!(args.thinking.is_none());
+        assert_eq!(args.diagnostics.len(), 1);
+        assert!(args.diagnostics[0]
+            .message
+            .contains("Invalid thinking level"));
     }
 
     #[test]
@@ -539,7 +877,8 @@ mod tests {
         let args = parse(&["--fork", "abc123"]);
         assert_eq!(args.fork.as_deref(), Some("abc123"));
         let args = parse(&["--fork=/tmp/session.jsonl"]);
-        assert_eq!(args.fork.as_deref(), Some("/tmp/session.jsonl"));
+        assert!(args.fork.is_none());
+        assert_eq!(args.unknown_flags, vec!["--fork=/tmp/session.jsonl"]);
     }
 
     #[test]
@@ -602,6 +941,131 @@ mod tests {
     }
 
     #[test]
+    fn missing_optional_value_is_ignored_except_name() {
+        for flag in [
+            "--provider",
+            "--model",
+            "--api-key",
+            "--system-prompt",
+            "--append-system-prompt",
+            "--session",
+            "--session-id",
+            "--fork",
+            "--session-dir",
+            "--tools",
+            "-t",
+            "--exclude-tools",
+            "-xt",
+            "--models",
+            "--extension",
+            "-e",
+            "--skill",
+            "--prompt-template",
+            "--theme",
+            "--thinking",
+            "--mode",
+            "--export",
+        ] {
+            let args = parse(&[flag]);
+            assert!(
+                args.diagnostics.is_empty(),
+                "{flag} should be silent at EOF"
+            );
+            assert!(args.unknown_flags.is_empty(), "{flag} should be recognized");
+        }
+
+        for flag in ["--name", "-n"] {
+            let args = parse(&[flag]);
+            assert_eq!(
+                args.diagnostics
+                    .iter()
+                    .map(|diagnostic| diagnostic.message.as_str())
+                    .collect::<Vec<_>>(),
+                ["--name requires a value"],
+                "{flag} has the upstream required-value diagnostic"
+            );
+        }
+
+        let args = parse(&["--list-models"]);
+        assert_eq!(args.list_models, Some(String::new()));
+        assert!(args.diagnostics.is_empty());
+
+        let args = parse(&["--print"]);
+        assert!(args.print);
+        assert!(args.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn empty_session_name_has_the_main_process_diagnostic() {
+        for value in ["", "   "] {
+            let args = parse(&["--name", value]);
+            assert!(args.name.is_none());
+            assert_eq!(
+                args.diagnostics
+                    .iter()
+                    .map(|diagnostic| diagnostic.message.as_str())
+                    .collect::<Vec<_>>(),
+                ["--name requires a non-empty value"]
+            );
+        }
+    }
+
+    #[test]
+    fn print_consumes_triple_dash_message_but_not_flags_or_files() {
+        let args = parse(&["--print", "---literal"]);
+        assert!(args.print);
+        assert_eq!(args.messages, vec!["---literal"]);
+
+        let args = parse(&["--print", "--verbose"]);
+        assert!(args.print);
+        assert!(args.verbose);
+        assert!(args.messages.is_empty());
+
+        let args = parse(&["--print", "@prompt.md"]);
+        assert!(args.print);
+        assert_eq!(args.file_args, vec!["prompt.md"]);
+        assert!(args.messages.is_empty());
+    }
+
+    #[test]
+    fn unknown_long_value_is_consumed_and_unknown_short_is_a_diagnostic() {
+        let args = parse(&["--extension-flag", "value", "tail"]);
+        assert_eq!(args.unknown_flags, vec!["--extension-flag"]);
+        assert_eq!(
+            args.extension_flag_values,
+            vec![(
+                "extension-flag".to_string(),
+                ExtensionFlagValue::String("value".to_string())
+            )]
+        );
+        assert_eq!(args.messages, vec!["tail"]);
+
+        let args = parse(&["-x", "tail"]);
+        assert!(args.unknown_flags.is_empty());
+        assert_eq!(args.messages, vec!["tail"]);
+        assert_eq!(
+            args.diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>(),
+            ["Unknown option: -x"]
+        );
+
+        let args = parse(&["--boolean", "--string=value", "--bare"]);
+        assert_eq!(
+            args.extension_flag_values,
+            vec![
+                ("boolean".to_string(), ExtensionFlagValue::Boolean(true)),
+                (
+                    "string".to_string(),
+                    ExtensionFlagValue::String("value".to_string())
+                ),
+                ("bare".to_string(), ExtensionFlagValue::Boolean(true)),
+            ]
+        );
+    }
+
+    #[test]
     fn tui_mode_parsed_and_invalid_value_diag() {
         let args = parse(&["--tui-mode", "fullscreen"]);
         assert_eq!(args.tui_mode.as_deref(), Some("fullscreen"));
@@ -630,10 +1094,83 @@ mod tests {
             .iter()
             .any(|d| d.message == "--tui-mode requires regular or fullscreen"));
     }
+
+    #[test]
+    fn standalone_dash_is_an_unknown_option() {
+        let args = parse(&["-"]);
+        assert!(args.messages.is_empty());
+        assert!(args.unknown_flags.is_empty());
+        assert_eq!(
+            args.diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>(),
+            ["Unknown option: -"]
+        );
+    }
+
+    #[test]
+    fn help_resource_contains_the_complete_pinned_surface() {
+        let help = include_str!("help.txt");
+        for section in [
+            "Commands:",
+            "Options:",
+            "Extensions can register additional flags",
+            "Examples:",
+            "Environment Variables:",
+            "Built-in Tool Names:",
+        ] {
+            assert!(
+                help.contains(section),
+                "help is missing section {section:?}"
+            );
+        }
+        for flag in [
+            "--no-builtin-tools, -nbt",
+            "--no-context-files, -nc",
+            "--list-models [search]",
+            "--tui-mode <mode>",
+        ] {
+            assert!(help.contains(flag), "help is missing flag {flag}");
+        }
+    }
+
+    #[test]
+    fn extension_help_uses_upstream_flag_block_and_final_newline() {
+        use crate::core::extensions::types::{ExtensionFlag, FlagType};
+
+        let flags = vec![
+            ExtensionFlag {
+                name: "plan".to_string(),
+                description: Some("Enable plan mode".to_string()),
+                flag_type: FlagType::Boolean,
+                default: Some(serde_json::Value::Bool(false)),
+                extension_path: "native://plan".to_string(),
+            },
+            ExtensionFlag {
+                name: "profile".to_string(),
+                description: None,
+                flag_type: FlagType::String,
+                default: None,
+                extension_path: "native://profile".to_string(),
+            },
+        ];
+        let rendered = render_help_with_extension_flags(&flags);
+
+        assert!(rendered.contains("\nExtension CLI Flags:\n"));
+        assert!(rendered.contains("  --plan                      Enable plan mode\n"));
+        assert!(rendered.contains("  --profile <value>           Registered by native://profile\n"));
+        assert!(rendered.ends_with("\n\n"));
+        assert_eq!(
+            render_help_with_extension_flags(&[]),
+            format!("{}\n", include_str!("help.txt"))
+        );
+    }
 }
 
 impl ParseOutcome {
     /// Test helper: unpack a Run outcome, panicking otherwise.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
     pub fn expect_run(self) -> Args {
         match self {
             ParseOutcome::Run(args) => args,
@@ -655,11 +1192,13 @@ mod mode_parsing {
     fn rejects_invalid_mode() {
         let args = parse_args(&["--mode".to_string(), "wat".to_string()]).expect_run();
         assert!(args.mode.is_none());
-        assert!(args.unknown_flags.iter().any(|f| f.contains("wat")));
+        assert!(args.unknown_flags.is_empty());
+        assert!(args.diagnostics.is_empty());
     }
     #[test]
     fn mode_equals_form() {
         let args = parse_args(&["--mode=rpc".to_string()]).expect_run();
-        assert_eq!(args.mode.as_deref(), Some("rpc"));
+        assert!(args.mode.is_none());
+        assert_eq!(args.unknown_flags, vec!["--mode=rpc"]);
     }
 }

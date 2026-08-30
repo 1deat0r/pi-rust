@@ -7,6 +7,7 @@
 //! RPC mode, TUI mode, extensions, compaction).
 
 pub mod args;
+pub mod client;
 pub mod commands;
 pub mod config;
 pub mod core;
@@ -15,3 +16,17 @@ pub mod list_models;
 pub mod modes;
 pub mod run;
 pub mod theme;
+
+pub use core::agent_session_runtime::{
+    create_agent_session_runtime, default_runtime_factory, AgentSessionRuntime,
+    BeforeSessionInvalidateCallback, CreateAgentSessionRuntimeFactory,
+    CreateAgentSessionRuntimeOptions, RebindSessionCallback,
+};
+pub use core::agent_session_services::{
+    create_agent_session_from_services, create_agent_session_services, AgentSessionDiagnostic,
+    AgentSessionServices, CreateAgentSessionServicesOptions, DiagnosticLevel, ResourceLoader,
+};
+pub use core::sdk::{
+    create_agent_session, AgentSession, CreateAgentSessionOptions, CreateAgentSessionResult,
+    SessionManager,
+};
