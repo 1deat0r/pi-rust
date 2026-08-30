@@ -2,6 +2,27 @@
 
 Date: 2026-08-30 (Pacific/Auckland)
 
+## Push blocker — 2026-08-30 — Phase 2.3a commit is local-only
+
+The Phase 2.3a commit exists locally as `c611c74` (recreated after the
+first attempt `b48171f` was lost to repository corruption: 39 zero-length
+loose objects appeared when an interrupted push was killed; repair was
+`find .git/objects -type f -empty -delete`, `git reset --soft fb46809`,
+then re-staging the same campaign files from the intact worktree and
+re-committing). `git fsck` reports no reachable breakage; remaining
+`refs/codex/turn-diffs` ref errors are pre-existing and unrelated.
+
+Pushing to `origin/main` currently fails reproducibly with
+`fatal: the remote end hung up unexpectedly` (three attempts, including
+with `http.postBuffer=500MB`), while small reads (`git ls-remote`) succeed
+and `gh auth status` hangs indefinitely. This host's GitHub HTTPS upload
+path is broken; the failure predates and is independent of the campaign
+changes. Local `main` (`c611c74`) is ahead of `origin/main` (`fb46809`) by
+the Phase 2.3a commit only. Per the commit gate protocol the local commit
+is preserved and local/remote parity is NOT claimed until the network
+issue clears; rerun `git push origin main` and verify
+`git rev-parse HEAD == git ls-remote origin refs/heads/main`.
+
 ## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 2.3a (pi-ai under the hard gate)
 
 Fourth campaign checkpoint, direct child of Phase 2.2 (`fb46809`). pi-ai
