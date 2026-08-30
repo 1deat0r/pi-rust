@@ -2,7 +2,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use pi_protocol::{ServerEvent, ServerMessage, ServerSnapshot, SessionMetadata, SessionSnapshot};
+use pi_protocol::{
+    FrameDecoderOptions, ServerEvent, ServerMessage, ServerSnapshot, SessionMetadata,
+    SessionSnapshot,
+};
 
 use crate::connection::ByteConnection;
 
@@ -16,6 +19,7 @@ pub struct ServerSnapshotPublisher {
     models: Arc<Mutex<Vec<pi_protocol::ModelMetadata>>>,
     connections: Arc<Mutex<Vec<Arc<dyn ByteConnection>>>>,
     broadcast_lock: Arc<tokio::sync::Mutex<()>>,
+    frame_options: FrameDecoderOptions,
 }
 
 impl ServerSnapshotPublisher {
@@ -23,6 +27,20 @@ impl ServerSnapshotPublisher {
         server_id: String,
         protocol_version: u64,
         models: Vec<pi_protocol::ModelMetadata>,
+    ) -> Self {
+        Self::new_with_frame_options(
+            server_id,
+            protocol_version,
+            models,
+            FrameDecoderOptions::default(),
+        )
+    }
+
+    pub fn new_with_frame_options(
+        server_id: String,
+        protocol_version: u64,
+        models: Vec<pi_protocol::ModelMetadata>,
+        frame_options: FrameDecoderOptions,
     ) -> Self {
         Self {
             server_id,
@@ -32,6 +50,7 @@ impl ServerSnapshotPublisher {
             models: Arc::new(Mutex::new(models)),
             connections: Arc::new(Mutex::new(Vec::new())),
             broadcast_lock: Arc::new(tokio::sync::Mutex::new(())),
+            frame_options,
         }
     }
 
@@ -39,32 +58,62 @@ impl ServerSnapshotPublisher {
     /// revision. The upstream publisher starts at revision zero and obtains
     /// its initial session list during the hello snapshot.
     pub fn initialize(&self, sessions: Vec<SessionMetadata>) {
-        *self.sessions.lock().unwrap() = sessions;
+        *self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = sessions;
     }
 
     pub fn register_connection(&self, connection: Arc<dyn ByteConnection>) {
-        self.connections.lock().unwrap().push(connection);
+        if connection.closed() {
+            return;
+        }
+        let mut conns = self
+            .connections
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !conns
+            .iter()
+            .any(|candidate| Arc::ptr_eq(candidate, &connection))
+        {
+            conns.push(connection);
+        }
     }
 
     pub fn revoke_connection_for(&self, connection: &Arc<dyn ByteConnection>) {
-        let mut conns = self.connections.lock().unwrap();
+        let mut conns = self
+            .connections
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         conns.retain(|candidate| !Arc::ptr_eq(candidate, connection));
     }
 
     pub fn revoke_connection(&self, id: &str) {
         let _ = id;
-        let mut conns = self.connections.lock().unwrap();
+        let mut conns = self
+            .connections
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         conns.retain(|c| !c.closed());
     }
 
     pub fn current_revision(&self) -> i64 {
-        *self.revision.lock().unwrap()
+        *self
+            .revision
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     /// Refresh cached session metadata and advance the revision.
     pub fn refresh(&self, sessions: Vec<SessionMetadata>) {
-        *self.sessions.lock().unwrap() = sessions;
-        let mut revision = self.revision.lock().unwrap();
+        *self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = sessions;
+        let mut revision = self
+            .revision
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         *revision += 1;
     }
 
@@ -73,8 +122,16 @@ impl ServerSnapshotPublisher {
             server_id: self.server_id.clone(),
             protocol_version: self.protocol_version,
             revision: self.current_revision(),
-            sessions: self.sessions.lock().unwrap().clone(),
-            models: self.models.lock().unwrap().clone(),
+            sessions: self
+                .sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone(),
+            models: self
+                .models
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone(),
         }
     }
 
@@ -83,28 +140,38 @@ impl ServerSnapshotPublisher {
     pub async fn broadcast_session_event(&self, session: SessionSnapshot) {
         let _broadcast_guard = self.broadcast_lock.lock().await;
         let conns = {
-            let conns = self.connections.lock().unwrap().clone();
+            let conns = self
+                .connections
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
             if conns.is_empty() {
                 return;
             }
             let message = ServerMessage::Event {
                 event: ServerEvent::SessionSnapshot { snapshot: session },
             };
-            let Ok(frame) = pi_protocol::encode_server_message(&message, &Default::default())
+            let Ok(frame) = pi_protocol::encode_server_message(&message, &self.frame_options)
             else {
                 return;
             };
             (frame, conns)
         };
         for conn in conns.1 {
-            let _ = conn.send(&conns.0).await;
+            if conn.closed() || conn.send(&conns.0).await.is_err() {
+                self.revoke_connection_for(&conn);
+            }
         }
     }
 
     pub async fn broadcast(&self) {
         let _broadcast_guard = self.broadcast_lock.lock().await;
         let snapshot = {
-            let conns = self.connections.lock().unwrap().clone();
+            let conns = self
+                .connections
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
             if conns.is_empty() {
                 return;
             }
@@ -113,7 +180,7 @@ impl ServerSnapshotPublisher {
                     snapshot: self.get(),
                 },
             };
-            let Ok(frame) = pi_protocol::encode_server_message(&message, &Default::default())
+            let Ok(frame) = pi_protocol::encode_server_message(&message, &self.frame_options)
             else {
                 return;
             };
@@ -122,7 +189,9 @@ impl ServerSnapshotPublisher {
             (frame, conns)
         };
         for conn in snapshot.1 {
-            let _ = conn.send(&snapshot.0).await;
+            if conn.closed() || conn.send(&snapshot.0).await.is_err() {
+                self.revoke_connection_for(&conn);
+            }
         }
     }
 }

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! End-to-end test for the SessionHandle surface (pi-client): create/attach a
 //! session on a live PiServer over a Unix socket, drive prompt/steer/abort/
 //! set_model/set_thinking through the handle, verify snapshot subscription

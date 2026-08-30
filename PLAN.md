@@ -32,6 +32,19 @@ Next: Phase 2 crate conversions in order pi-server → pi-client → pi-ai →
 pi-agent → pi-coding-agent (core, then modes/bins) → pi-tui/pi-telemetry/
 pi-session-backends, each flipping its own gate to full deny.
 
+Phase 2.1 checkpoint: **pi-server** is under the hard gate. Production
+`lock()/read()/write().unwrap()` sites (≈180) became poison-tolerant
+`unwrap_or_else(|error| error.into_inner())`; the 12
+`as_connection_handler().unwrap()` invariants became `let-else` guards;
+`latest_runtime` returns `Option`; two build-invariant panics retain
+documented `#[allow(clippy::panic)]`. Intentional divergence: the shared
+`ByteConnection`/`ByteConnectionHandler` traits still return
+`Result<_, String>`; typing them is deferred to the cross-crate transport
+error unification with pi-client/pi-ai (next phases). Evidence: pi-server
+clippy clean under the gate, 63 crate tests, workspace matrix 2,805 passed,
+strict workspace clippy, fmt/diff checks, `conversion_audit all`
+`100.00% (166/166; 0 open)`. No numbered ledger row changed.
+
 ## Active 2026-08-30 exhaustive behavioral-parity execution tree
 
 The source/conversion ledger's historical `100.00% (166/166)` result is not

@@ -160,3 +160,7 @@ integration target, strict all-target clippy, stable formatting, and scoped
 diff checks. This updates package evidence only: functional/evidence remains
 10/52 and visual/interaction/overall remains 0/52 until the integrated
 behavioral and terminal visual boundaries are individually accepted.
+
+The Rust-idiom campaign checkpoints (pi-evals, pi-server typed errors and
+lint gates) do not touch TUI rows: functional/test-evidence remains 10/52
+and visual/interaction/overall remains 0/52.

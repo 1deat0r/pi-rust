@@ -71,6 +71,7 @@ pub fn internal_server_error(cause: impl Into<String>) -> InternalServerError {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

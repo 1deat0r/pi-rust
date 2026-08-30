@@ -61,10 +61,12 @@ impl<T> Deferred<T> {
             if let Some(value) = receiver.borrow().as_ref().cloned() {
                 return value;
             }
-            receiver
-                .changed()
-                .await
-                .expect("deferred sender remains alive while state is alive");
+            // The sender lives in the same state struct; the loop cannot
+            // outlive it, so a dropped sender is a caller-contract defect.
+            #[allow(clippy::panic)]
+            if receiver.changed().await.is_err() {
+                panic!("deferred sender remains alive while state is alive");
+            }
         }
     }
 
@@ -206,7 +208,7 @@ impl InMemoryService {
     }
 
     fn snapshot_for(&self, session_id: &str) -> Result<SessionSnapshot, PiServerError> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         inner.sessions.get(session_id).cloned().ok_or_else(|| {
             PiServerError::new(
                 pi_protocol::ProtocolErrorCode::NotFound,
@@ -220,7 +222,7 @@ impl InMemoryService {
     /// like the upstream test service: the listener registry is append-only.
     pub fn emit(&self, session_id: &str, event: PiSessionRuntimeEvent) {
         let listeners = {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             inner.listeners.get(session_id).cloned().unwrap_or_default()
         };
         for listener in listeners.into_iter().flatten() {
@@ -232,7 +234,7 @@ impl InMemoryService {
     /// tests to simulate a streaming turn finishing so the manager's
     /// dispose-on-idle logic can be exercised).
     pub fn settle_idle(&self, session_id: &str) -> Result<(), PiServerError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let snap = inner.sessions.get_mut(session_id).ok_or_else(|| {
             PiServerError::new(
                 pi_protocol::ProtocolErrorCode::NotFound,
@@ -250,18 +252,18 @@ impl PiServerService for InMemoryService {
     }
 
     fn list_sessions(&self) -> Result<Vec<SessionMetadata>, PiServerError> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         Ok(inner.sessions.values().map(metadata_of).collect())
     }
     fn list_models(&self) -> Result<Vec<ModelMetadata>, PiServerError> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         Ok(inner.models.clone())
     }
     fn create_session(
         &mut self,
         options: crate::types::CreateSessionOptions,
     ) -> Result<Arc<Mutex<dyn PiSessionRuntime>>, PiServerError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         if inner.sessions.contains_key(&options.id) {
             return Err(PiServerError::new(
                 pi_protocol::ProtocolErrorCode::InvalidRequest,
@@ -298,7 +300,7 @@ impl PiServerService for InMemoryService {
         session_id: String,
     ) -> Result<Arc<Mutex<dyn PiSessionRuntime>>, PiServerError> {
         {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             if !inner.sessions.contains_key(&session_id) {
                 return Err(PiServerError::new(
                     pi_protocol::ProtocolErrorCode::NotFound,
@@ -343,7 +345,11 @@ impl PiSessionRuntime for TestSession {
         self.service.snapshot_for(&self.session_id)
     }
     fn get_phase(&self) -> SessionPhase {
-        let inner = self.service.inner.lock().unwrap();
+        let inner = self
+            .service
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         inner
             .sessions
             .get(&self.session_id)
@@ -417,14 +423,23 @@ impl PiSessionRuntime for TestSession {
         Ok(())
     }
     fn subscribe(&mut self, listener: EventListener) -> Result<Unsubscribe, PiServerError> {
-        let mut inner = self.service.inner.lock().unwrap();
+        let mut inner = self
+            .service
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let listeners = inner.listeners.entry(self.session_id.clone()).or_default();
         listeners.push(Some(listener));
         let index = listeners.len() - 1;
         let listeners = self.service.inner.clone();
         let session_id = self.session_id.clone();
         Ok(Box::new(move || {
-            if let Some(slots) = listeners.lock().unwrap().listeners.get_mut(&session_id) {
+            if let Some(slots) = listeners
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .listeners
+                .get_mut(&session_id)
+            {
                 if let Some(slot) = slots.get_mut(index) {
                     *slot = None;
                 }
@@ -441,7 +456,11 @@ impl PiSessionRuntime for TestSession {
 
 impl TestSession {
     fn update(&self, f: impl FnOnce(&mut SessionSnapshot)) -> Result<(), PiServerError> {
-        let mut inner = self.service.inner.lock().unwrap();
+        let mut inner = self
+            .service
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let snap = inner.sessions.get_mut(&self.session_id).ok_or_else(|| {
             PiServerError::new(
                 pi_protocol::ProtocolErrorCode::NotFound,
@@ -544,23 +563,34 @@ impl TestSessionRuntime {
     }
 
     pub fn disposed(&self) -> Deferred<()> {
-        self.state.lock().unwrap().disposed.clone()
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .disposed
+            .clone()
     }
 
     pub fn dispose_count(&self) -> usize {
         self.state
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .dispose_count
             .load(Ordering::SeqCst)
     }
 
     pub fn steers(&self) -> Vec<PromptInput> {
-        self.state.lock().unwrap().steers.clone()
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .steers
+            .clone()
     }
 
     pub fn set_phase(&self, phase: SessionPhase) {
-        self.stored.lock().unwrap().phase = phase;
+        self.stored
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .phase = phase;
     }
 
     pub fn finish_prompt(&self) -> Result<(), PiServerError> {
@@ -583,7 +613,7 @@ impl TestSessionRuntime {
         let listeners = self
             .state
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .listeners
             .iter()
             .flatten()
@@ -596,7 +626,10 @@ impl TestSessionRuntime {
 
     fn update(&self, update: impl FnOnce(&mut SessionSnapshot)) {
         {
-            let mut snapshot = self.stored.lock().unwrap();
+            let mut snapshot = self
+                .stored
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             update(&mut snapshot);
             snapshot.revision += 1;
             snapshot.updated_at += 1;
@@ -608,7 +641,7 @@ impl TestSessionRuntime {
         let done = self
             .state
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .pending_prompt
             .as_ref()
             .map(|pending| pending.done.clone())
@@ -623,7 +656,11 @@ impl TestSessionRuntime {
     }
 
     fn complete_prompt(&self, input: PromptInput, outcome: TestPromptOutcome) {
-        let snapshot = self.stored.lock().unwrap().clone();
+        let snapshot = self
+            .stored
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         let assistant = pi_protocol::AssistantTranscriptItem {
             id: format!("assistant-{}", snapshot.revision + 1),
             role: "assistant".to_string(),
@@ -658,17 +695,28 @@ impl TestSessionRuntime {
                 .transcript
                 .push(TranscriptItem::Assistant(assistant));
         });
-        self.state.lock().unwrap().pending_prompt = None;
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pending_prompt = None;
     }
 }
 
 impl PiSessionRuntime for TestSessionRuntime {
     fn snapshot(&mut self) -> Result<SessionSnapshot, PiServerError> {
-        Ok(self.stored.lock().unwrap().clone())
+        Ok(self
+            .stored
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone())
     }
 
     fn get_phase(&self) -> SessionPhase {
-        self.stored.lock().unwrap().phase.clone()
+        self.stored
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .phase
+            .clone()
     }
 
     fn prompt(&mut self, input: PromptInput) -> Result<(), PiServerError> {
@@ -678,8 +726,16 @@ impl PiSessionRuntime for TestSessionRuntime {
                 "A prompt is already running",
             ));
         }
-        let revision = self.stored.lock().unwrap().revision + 1;
-        self.state.lock().unwrap().pending_prompt = Some(PendingTestPrompt {
+        let revision = self
+            .stored
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .revision
+            + 1;
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pending_prompt = Some(PendingTestPrompt {
             input: input.clone(),
             done: Deferred::new(),
             wait_taken: false,
@@ -707,10 +763,19 @@ impl PiSessionRuntime for TestSessionRuntime {
                 "There is no active prompt to steer",
             ));
         }
-        self.state.lock().unwrap().steers.push(PromptInput {
-            text: input.text.clone(),
-        });
-        let revision = self.stored.lock().unwrap().revision + 1;
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .steers
+            .push(PromptInput {
+                text: input.text.clone(),
+            });
+        let revision = self
+            .stored
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .revision
+            + 1;
         self.update(|snapshot| {
             snapshot.queued_steer.push(UserTranscriptItem {
                 id: format!("steer-{revision}"),
@@ -752,12 +817,17 @@ impl PiSessionRuntime for TestSessionRuntime {
     }
 
     fn subscribe(&mut self, listener: EventListener) -> Result<Unsubscribe, PiServerError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.listeners.push(Some(listener));
         let index = state.listeners.len() - 1;
         let state = self.state.clone();
         Ok(Box::new(move || {
-            if let Some(slot) = state.lock().unwrap().listeners.get_mut(index) {
+            if let Some(slot) = state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .listeners
+                .get_mut(index)
+            {
                 *slot = None;
             }
         }))
@@ -766,17 +836,21 @@ impl PiSessionRuntime for TestSessionRuntime {
     fn dispose(&mut self) -> Result<(), PiServerError> {
         self.state
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .dispose_count
             .fetch_add(1, Ordering::SeqCst);
         (self.on_dispose)();
-        self.state.lock().unwrap().disposed.resolve(());
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .disposed
+            .resolve(());
         Ok(())
     }
 
     fn take_pending_operation(&mut self) -> Option<RuntimeWait> {
         let pending = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             let pending = state.pending_prompt.as_mut()?;
             if pending.wait_taken {
                 return None;
@@ -847,7 +921,7 @@ impl TestServerService {
         };
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .sessions
             .insert(id, Arc::new(Mutex::new(snapshot)));
     }
@@ -855,46 +929,57 @@ impl TestServerService {
     pub fn seed_with(&self, snapshot: SessionSnapshot) {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .sessions
             .insert(snapshot.id.clone(), Arc::new(Mutex::new(snapshot)));
     }
 
     pub fn last_created_id(&self) -> Option<String> {
-        self.inner.lock().unwrap().last_created_id.clone()
-    }
-
-    pub fn latest_runtime(&self, id: &str) -> TestSessionRuntime {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
+            .last_created_id
+            .clone()
+    }
+
+    pub fn latest_runtime(&self, id: &str) -> Option<TestSessionRuntime> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .runtimes
             .get(id)
             .and_then(|runtimes| runtimes.last())
             .cloned()
-            .unwrap_or_else(|| panic!("No runtime for {id}"))
     }
 
     pub fn runtime_count(&self, id: &str) -> usize {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .runtimes
             .get(id)
             .map_or(0, Vec::len)
     }
 
     pub fn is_locked(&self, id: &str) -> bool {
-        self.inner.lock().unwrap().locked.contains(id)
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .locked
+            .contains(id)
     }
 
     pub fn lock_session(&self, id: &str) {
-        self.inner.lock().unwrap().locked.insert(id.to_string());
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .locked
+            .insert(id.to_string());
     }
 
     fn acquire(&self, id: &str) -> Result<Arc<Mutex<dyn PiSessionRuntime>>, PiServerError> {
         let (stored, inner_ref) = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             let stored = inner.sessions.get(id).cloned().ok_or_else(|| {
                 PiServerError::new(
                     pi_protocol::ProtocolErrorCode::NotFound,
@@ -912,12 +997,16 @@ impl TestServerService {
         };
         let id_owned = id.to_string();
         let on_dispose = Arc::new(move || {
-            inner_ref.lock().unwrap().locked.remove(&id_owned);
+            inner_ref
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .locked
+                .remove(&id_owned);
         });
         let runtime = TestSessionRuntime::new(stored, on_dispose);
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .runtimes
             .entry(id.to_string())
             .or_default()
@@ -937,19 +1026,26 @@ impl PiServerService for TestServerService {
         let sessions = self
             .inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .sessions
             .values()
             .cloned()
             .collect::<Vec<_>>();
         Ok(sessions
             .iter()
-            .map(|snapshot| metadata_of(&snapshot.lock().unwrap()))
+            .map(|snapshot| {
+                metadata_of(&snapshot.lock().unwrap_or_else(|error| error.into_inner()))
+            })
             .collect())
     }
 
     fn list_models(&self) -> Result<Vec<ModelMetadata>, PiServerError> {
-        Ok(self.inner.lock().unwrap().models.clone())
+        Ok(self
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .models
+            .clone())
     }
 
     fn create_session(
@@ -957,7 +1053,7 @@ impl PiServerService for TestServerService {
         options: crate::types::CreateSessionOptions,
     ) -> Result<Arc<Mutex<dyn PiSessionRuntime>>, PiServerError> {
         {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             if inner.sessions.contains_key(&options.id) {
                 return Err(PiServerError::new(
                     pi_protocol::ProtocolErrorCode::SessionLocked,

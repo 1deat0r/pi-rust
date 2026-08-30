@@ -168,7 +168,10 @@ impl LiveSessionManager {
     }
 
     pub fn set_error_reporter(&self, reporter: Arc<dyn Fn(&PiServerError) + Send + Sync>) {
-        *self.error_reporter.lock().unwrap() = Some(reporter);
+        *self
+            .error_reporter
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(reporter);
     }
 
     /// Disconnect a connection: detach it from every live session and dispose
@@ -178,7 +181,7 @@ impl LiveSessionManager {
         conn.session_ids.clear();
         for id in &ids {
             {
-                let mut guard = self.live.lock().unwrap();
+                let mut guard = self.live.lock().unwrap_or_else(|error| error.into_inner());
                 if let Some(live) = guard.get_mut(id) {
                     live.connections.remove(&conn.id);
                     live.progress_sinks.remove(&conn.id);
@@ -211,15 +214,16 @@ impl LiveSessionManager {
                 let runtime = self.acquire(&id, {
                     let id = id.clone();
                     move || {
-                        self.service.lock().unwrap().create_session(
-                            crate::types::CreateSessionOptions {
+                        self.service
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .create_session(crate::types::CreateSessionOptions {
                                 id,
                                 cwd,
                                 name,
                                 model,
                                 thinking_level,
-                            },
-                        )
+                            })
                     }
                 })?;
                 self.attach(conn, &runtime)?;
@@ -231,7 +235,7 @@ impl LiveSessionManager {
                 let runtime = self.acquire(&session_id, || {
                     self.service
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|error| error.into_inner())
                         .open_session(session_id.clone())
                 })?;
                 self.attach(conn, &runtime)?;
@@ -242,7 +246,7 @@ impl LiveSessionManager {
             Command::Detach { session_id } => {
                 if conn.session_ids.remove(&session_id) {
                     {
-                        let mut guard = self.live.lock().unwrap();
+                        let mut guard = self.live.lock().unwrap_or_else(|error| error.into_inner());
                         if let Some(live) = guard.get_mut(&session_id) {
                             live.connections.remove(&conn.id);
                             live.progress_sinks.remove(&conn.id);
@@ -309,21 +313,25 @@ impl LiveSessionManager {
                 let id = uuid::Uuid::new_v4().to_string();
                 let create_id = id.clone();
                 let runtime = self.acquire(&id, move || {
-                    self.service.lock().unwrap().create_session(
-                        crate::types::CreateSessionOptions {
+                    self.service
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .create_session(crate::types::CreateSessionOptions {
                             id: create_id,
                             cwd,
                             name,
                             model,
                             thinking_level,
-                        },
-                    )
+                        })
                 })?;
                 {
-                    let mut connection = conn.lock().unwrap();
+                    let mut connection = conn.lock().unwrap_or_else(|error| error.into_inner());
                     self.attach(&mut connection, &runtime)?;
                 }
-                let view = conn.lock().unwrap().clone();
+                let view = conn
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
                 let mut session = self.broadcast_snapshot(&runtime, &view)?;
                 if !self.create_result_attached() {
                     session.attached = false;
@@ -334,23 +342,26 @@ impl LiveSessionManager {
                 let runtime = self.acquire(&session_id, || {
                     self.service
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|error| error.into_inner())
                         .open_session(session_id.clone())
                 })?;
                 {
-                    let mut connection = conn.lock().unwrap();
+                    let mut connection = conn.lock().unwrap_or_else(|error| error.into_inner());
                     self.attach(&mut connection, &runtime)?;
                 }
-                let view = conn.lock().unwrap().clone();
+                let view = conn
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
                 Ok(CommandResult::Attach {
                     session: self.broadcast_snapshot(&runtime, &view)?,
                 })
             }
             Command::Detach { session_id } => {
-                let mut connection = conn.lock().unwrap();
+                let mut connection = conn.lock().unwrap_or_else(|error| error.into_inner());
                 if connection.session_ids.remove(&session_id) {
                     {
-                        let mut guard = self.live.lock().unwrap();
+                        let mut guard = self.live.lock().unwrap_or_else(|error| error.into_inner());
                         if let Some(live) = guard.get_mut(&session_id) {
                             live.connections.remove(&connection.id);
                             live.progress_sinks.remove(&connection.id);
@@ -408,17 +419,20 @@ impl LiveSessionManager {
     where
         F: FnOnce(&mut dyn PiSessionRuntime) -> Result<(), PiServerError> + Send + 'static,
     {
-        let view = conn.lock().unwrap().clone();
+        let view = conn
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         let runtime = self.require_attached(&view, session_id)?;
         {
-            let mut guard = self.live.lock().unwrap();
+            let mut guard = self.live.lock().unwrap_or_else(|error| error.into_inner());
             if let Some(live) = guard.get_mut(session_id) {
                 live.operation_count += 1;
             }
         }
 
         let (result, pending) = {
-            let mut runtime_guard = runtime.lock().unwrap();
+            let mut runtime_guard = runtime.lock().unwrap_or_else(|error| error.into_inner());
             let result = op(&mut *runtime_guard);
             let pending = if result.is_ok() {
                 runtime_guard.take_pending_operation()
@@ -435,17 +449,23 @@ impl LiveSessionManager {
                 // completion future is awaited. Publish that intermediate
                 // snapshot now so steer/abort callers and wire clients can
                 // observe the same ordering as upstream.
-                let current = conn.lock().unwrap().clone();
+                let current = conn
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
                 self.broadcast_snapshot(&runtime, &current)?;
                 wait.wait().await?;
             }
-            let current = conn.lock().unwrap().clone();
+            let current = conn
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
             self.broadcast_snapshot(&runtime, &current)
         }
         .await;
 
         {
-            let mut guard = self.live.lock().unwrap();
+            let mut guard = self.live.lock().unwrap_or_else(|error| error.into_inner());
             if let Some(live) = guard.get_mut(session_id) {
                 live.operation_count = live.operation_count.saturating_sub(1);
             }
@@ -467,7 +487,7 @@ impl LiveSessionManager {
                 format!("Connection is not attached to session {session_id}"),
             ));
         }
-        let guard = self.live.lock().unwrap();
+        let guard = self.live.lock().unwrap_or_else(|error| error.into_inner());
         let live = guard.get(session_id).ok_or_else(|| {
             PiServerError::new(
                 ProtocolErrorCode::NotFound,
@@ -496,7 +516,7 @@ impl LiveSessionManager {
         F: FnOnce() -> Result<Arc<Mutex<dyn PiSessionRuntime>>, PiServerError>,
     {
         {
-            let guard = self.live.lock().unwrap();
+            let guard = self.live.lock().unwrap_or_else(|error| error.into_inner());
             if let Some(live) = guard.get(id) {
                 if live.terminal {
                     return Err(PiServerError::new(
@@ -515,9 +535,15 @@ impl LiveSessionManager {
         }
         let runtime = acquire_runtime()?;
         {
-            let snap = runtime.lock().unwrap().snapshot()?;
+            let snap = runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .snapshot()?;
             if snap.id != id {
-                let _ = runtime.lock().unwrap().dispose();
+                let _ = runtime
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .dispose();
                 return Err(PiServerError::new(
                     ProtocolErrorCode::InvalidRequest,
                     format!(
@@ -541,7 +567,10 @@ impl LiveSessionManager {
             disposing: false,
             unsubscribe,
         };
-        self.live.lock().unwrap().insert(id.to_string(), live);
+        self.live
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(id.to_string(), live);
         Ok(runtime)
     }
 
@@ -560,14 +589,18 @@ impl LiveSessionManager {
         let listener: EventListener = Arc::new(move |event| {
             manager_handle_event(&live, &snapshots, &service, &error_reporter, &id, event);
         });
-        runtime.lock().unwrap().subscribe(listener).ok()
+        runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .subscribe(listener)
+            .ok()
     }
 
     /// Close the manager: unsubcribe and dispose every live session (upstream
     /// `LiveSessionManager.close`).
     pub fn close(&self) {
         let sessions: Vec<LiveSession> = {
-            let mut guard = self.live.lock().unwrap();
+            let mut guard = self.live.lock().unwrap_or_else(|error| error.into_inner());
             let snapshots: Vec<LiveSession> = guard.drain().map(|(_, s)| s).collect();
             snapshots
         };
@@ -575,7 +608,11 @@ impl LiveSessionManager {
             if let Some(unsub) = live.unsubscribe {
                 unsub();
             }
-            let _ = live.runtime.lock().unwrap().dispose();
+            let _ = live
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .dispose();
         }
     }
 
@@ -593,11 +630,19 @@ impl LiveSessionManager {
             ));
         }
         let id = {
-            let snap = runtime.lock().unwrap().snapshot()?;
+            let snap = runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .snapshot()?;
             snap.id
         };
         conn.session_ids.insert(id.clone());
-        if let Some(live) = self.live.lock().unwrap().get_mut(&id) {
+        if let Some(live) = self
+            .live
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_mut(&id)
+        {
             live.connections.insert(conn.id.clone());
             if let Some(sink) = conn.progress.as_ref() {
                 live.progress_sinks.insert(conn.id.clone(), sink.clone());
@@ -626,19 +671,19 @@ impl LiveSessionManager {
     {
         let runtime = self.require_attached(conn, session_id)?;
         {
-            let mut guard = self.live.lock().unwrap();
+            let mut guard = self.live.lock().unwrap_or_else(|error| error.into_inner());
             if let Some(live) = guard.get_mut(session_id) {
                 live.operation_count += 1;
             }
         }
-        let result = op(&mut *runtime.lock().unwrap());
+        let result = op(&mut *runtime.lock().unwrap_or_else(|error| error.into_inner()));
         let snapshot = if result.is_ok() {
             self.broadcast_snapshot(&runtime, conn).ok()
         } else {
             None
         };
         {
-            let mut guard = self.live.lock().unwrap();
+            let mut guard = self.live.lock().unwrap_or_else(|error| error.into_inner());
             if let Some(live) = guard.get_mut(session_id) {
                 live.operation_count = live.operation_count.saturating_sub(1);
             }
@@ -659,7 +704,7 @@ impl LiveSessionManager {
         &self,
         runtime: &Arc<Mutex<dyn PiSessionRuntime>>,
     ) -> Result<SessionSnapshot, PiServerError> {
-        let mut guard = runtime.lock().unwrap();
+        let mut guard = runtime.lock().unwrap_or_else(|error| error.into_inner());
         let mut snap = guard.snapshot()?;
         let id = snap.id.clone();
         snap.phase = guard.get_phase();
@@ -670,7 +715,10 @@ impl LiveSessionManager {
     }
 
     fn create_result_attached(&self) -> bool {
-        self.service.lock().unwrap().create_result_attached()
+        self.service
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .create_result_attached()
     }
 
     /// Broadcast the session snapshot (updating server metadata revision) and
@@ -685,7 +733,7 @@ impl LiveSessionManager {
         let event_sinks = self
             .live
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .get(&snap.id)
             .map(|live| live.event_sinks.values().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
@@ -715,7 +763,7 @@ impl LiveSessionManager {
             return;
         }
         let should = {
-            let mut guard = self.live.lock().unwrap();
+            let mut guard = self.live.lock().unwrap_or_else(|error| error.into_inner());
             match guard.get_mut(id) {
                 Some(live) => {
                     if !live.ready
@@ -725,7 +773,11 @@ impl LiveSessionManager {
                     {
                         false
                     } else {
-                        let phase = live.runtime.lock().unwrap().get_phase();
+                        let phase = live
+                            .runtime
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .get_phase();
                         if phase != SessionPhase::Idle {
                             false
                         } else {
@@ -738,11 +790,20 @@ impl LiveSessionManager {
             }
         };
         if should {
-            if let Some(mut live) = self.live.lock().unwrap().remove(id) {
+            if let Some(mut live) = self
+                .live
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(id)
+            {
                 if let Some(unsub) = live.unsubscribe.take() {
                     unsub();
                 }
-                let _ = live.runtime.lock().unwrap().dispose();
+                let _ = live
+                    .runtime
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .dispose();
             }
             // Advance server metadata so the disposed session drops out of the
             // live set (upstream `maybeDispose` broadcasts the server snapshot).
@@ -778,7 +839,7 @@ fn maybe_dispose_event(
     id: &str,
 ) {
     let should_dispose = {
-        let mut guard = live.lock().unwrap();
+        let mut guard = live.lock().unwrap_or_else(|error| error.into_inner());
         let Some(sess) = guard.get_mut(id) else {
             return;
         };
@@ -804,7 +865,7 @@ fn maybe_dispose_event(
     // Remove + unsubscribe, then drop the live guard before touching the runtime
     // or recomputing metadata (compute_metadata_event re-locks `live`).
     let runtime = {
-        let mut guard = live.lock().unwrap();
+        let mut guard = live.lock().unwrap_or_else(|error| error.into_inner());
         let Some(mut sess) = guard.remove(id) else {
             return;
         };
@@ -815,7 +876,10 @@ fn maybe_dispose_event(
     };
     // The try_lock above proved the runtime guard is free on this thread, so a
     // blocking lock is safe here (dispose never re-enters a held guard).
-    let _ = runtime.lock().unwrap().dispose();
+    let _ = runtime
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .dispose();
     if let Some(meta) = compute_metadata_event(service, live) {
         snapshots.refresh(meta);
     }
@@ -826,16 +890,22 @@ fn compute_metadata(
     service: &Arc<Mutex<dyn PiServerService>>,
     live: &Arc<Mutex<HashMap<String, LiveSession>>>,
 ) -> Result<Vec<SessionMetadata>, PiServerError> {
-    let stored = service.lock().unwrap().list_sessions()?;
+    let stored = service
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .list_sessions()?;
     let mut live_by_id = HashMap::new();
     {
-        let guard = live.lock().unwrap();
+        let guard = live.lock().unwrap_or_else(|error| error.into_inner());
         for sess in guard.values() {
             if sess.disposing {
                 continue;
             }
             if let Ok(snap) = {
-                let mut rg = sess.runtime.lock().unwrap();
+                let mut rg = sess
+                    .runtime
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
                 let mut s = rg.snapshot()?;
                 s.phase = rg.get_phase();
                 s.locked = true;
@@ -892,7 +962,7 @@ fn manager_handle_event(
         }
         crate::service::PiSessionRuntimeEvent::Progress(progress) => {
             let (sinks, event_sinks): (Vec<ProgressSink>, Vec<EventSink>) = {
-                let guard = live.lock().unwrap();
+                let guard = live.lock().unwrap_or_else(|error| error.into_inner());
                 match guard.get(id) {
                     Some(sess) => (
                         sess.progress_sinks.values().cloned().collect(),
@@ -913,11 +983,15 @@ fn manager_handle_event(
             maybe_dispose_event(live, snapshots, service, id);
         }
         crate::service::PiSessionRuntimeEvent::Error(error) => {
-            if let Some(reporter) = error_reporter.lock().unwrap().clone() {
+            if let Some(reporter) = error_reporter
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+            {
                 reporter(&error);
             }
             let close_sinks = {
-                let mut guard = live.lock().unwrap();
+                let mut guard = live.lock().unwrap_or_else(|error| error.into_inner());
                 let Some(sess) = guard.get_mut(id) else {
                     return;
                 };
@@ -934,7 +1008,7 @@ fn manager_handle_event(
             // Mark terminal + dispose. Disposal runs on a background thread
             // when a still-held runtime guard would otherwise block this stack.
             let defer = {
-                let mut guard = live.lock().unwrap();
+                let mut guard = live.lock().unwrap_or_else(|error| error.into_inner());
                 let mut defer = false;
                 if let Some(sess) = guard.get_mut(id) {
                     if !sess.disposing {
@@ -948,7 +1022,7 @@ fn manager_handle_event(
                 return;
             }
             let removed = {
-                let mut guard = live.lock().unwrap();
+                let mut guard = live.lock().unwrap_or_else(|error| error.into_inner());
                 guard.remove(id).map(|mut sess| {
                     sess.terminal = true;
                     (sess.runtime.clone(), sess.unsubscribe.take())
@@ -968,7 +1042,10 @@ fn manager_handle_event(
                     if let Some(u) = unsub {
                         u();
                     }
-                    let _ = runtime.lock().unwrap().dispose();
+                    let _ = runtime
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .dispose();
                     if let Some(meta) = compute_metadata_event(&service_ref, &live_ref) {
                         snapshots_ref.refresh(meta);
                     }
@@ -977,7 +1054,10 @@ fn manager_handle_event(
                         if let Some(u) = unsub {
                             u();
                         }
-                        let _ = runtime.lock().unwrap().dispose();
+                        let _ = runtime
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .dispose();
                         if let Some(meta) = compute_metadata_event(&service_ref, &live_ref) {
                             snapshots_ref.refresh(meta);
                         }
@@ -1042,6 +1122,7 @@ fn compute_metadata_event(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::service::InMemoryService;
@@ -1195,7 +1276,11 @@ mod tests {
         .unwrap();
         assert!(!conn.session_ids.contains(&id));
         // The session still has c2 attached → not disposed.
-        assert!(m.live.lock().unwrap().contains_key(&id));
+        assert!(m
+            .live
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&id));
 
         // Detach c2 → now idle → disposed.
         m.execute_command(
@@ -1206,7 +1291,10 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !m.live.lock().unwrap().contains_key(&id),
+            !m.live
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains_key(&id),
             "idle session should be disposed"
         );
     }
@@ -1244,7 +1332,11 @@ mod tests {
             panic!("expected Prompt")
         };
         assert_eq!(after.phase, SessionPhase::Turn);
-        assert!(m.live.lock().unwrap().contains_key(&id));
+        assert!(m
+            .live
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&id));
     }
 
     #[test]
@@ -1293,11 +1385,18 @@ mod tests {
             panic!("expected Create")
         };
         let id = session.id;
-        assert!(m.live.lock().unwrap().contains_key(&id));
+        assert!(m
+            .live
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&id));
         m.disconnect(&mut conn);
         assert!(conn.session_ids.is_empty());
         assert!(
-            !m.live.lock().unwrap().contains_key(&id),
+            !m.live
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains_key(&id),
             "idle session disposed on disconnect"
         );
     }
@@ -1363,7 +1462,10 @@ mod tests {
             let received = received.clone();
             move |p: &TranscriptProgress| {
                 if let TranscriptProgress::AssistantDelta { delta, .. } = p {
-                    received.lock().unwrap().push(delta.clone());
+                    received
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(delta.clone());
                 }
             }
         });
@@ -1381,7 +1483,10 @@ mod tests {
             }),
         );
 
-        assert_eq!(*received.lock().unwrap(), vec!["hello".to_string()]);
+        assert_eq!(
+            *received.lock().unwrap_or_else(|error| error.into_inner()),
+            vec!["hello".to_string()]
+        );
     }
 
     #[test]
@@ -1400,7 +1505,11 @@ mod tests {
             }),
         );
         // No panic; sink-less connections are simply skipped.
-        assert!(m.live.lock().unwrap().contains_key(&id));
+        assert!(m
+            .live
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&id));
     }
 
     #[test]
@@ -1408,7 +1517,11 @@ mod tests {
         let (m, service) = manager_with_service();
         let mut conn = ConnectionHandle::new("c1".to_string());
         let id = create_live(&m, &mut conn);
-        assert!(m.live.lock().unwrap().contains_key(&id));
+        assert!(m
+            .live
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&id));
 
         service.emit(
             &id,
@@ -1421,7 +1534,12 @@ mod tests {
         // The terminal-close disposal runs on a background thread; poll briefly.
         let mut dropped = false;
         for _ in 0..100 {
-            if !m.live.lock().unwrap().contains_key(&id) {
+            if !m
+                .live
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains_key(&id)
+            {
                 dropped = true;
                 break;
             }
@@ -1473,10 +1591,17 @@ mod tests {
         let m = manager();
         let mut conn = ConnectionHandle::new("c1".to_string());
         let id = create_live(&m, &mut conn);
-        assert!(m.live.lock().unwrap().contains_key(&id));
+        assert!(m
+            .live
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&id));
         m.close();
         assert!(
-            m.live.lock().unwrap().is_empty(),
+            m.live
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_empty(),
             "close should dispose every live session"
         );
     }
@@ -1502,7 +1627,10 @@ mod tests {
             let a_received = a_received.clone();
             move |p: &TranscriptProgress| {
                 if let TranscriptProgress::AssistantDelta { delta, .. } = p {
-                    a_received.lock().unwrap().push(delta.clone());
+                    a_received
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(delta.clone());
                 }
             }
         }));
@@ -1515,7 +1643,10 @@ mod tests {
             let b_received = b_received.clone();
             move |p: &TranscriptProgress| {
                 if let TranscriptProgress::AssistantDelta { delta, .. } = p {
-                    b_received.lock().unwrap().push(delta.clone());
+                    b_received
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(delta.clone());
                 }
             }
         }));
@@ -1527,9 +1658,15 @@ mod tests {
             &a_id,
             crate::service::PiSessionRuntimeEvent::Progress(progress_delta("alpha")),
         );
-        assert_eq!(*a_received.lock().unwrap(), vec!["alpha".to_string()]);
+        assert_eq!(
+            *a_received.lock().unwrap_or_else(|error| error.into_inner()),
+            vec!["alpha".to_string()]
+        );
         assert!(
-            b_received.lock().unwrap().is_empty(),
+            b_received
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_empty(),
             "cross-session segment leakage"
         );
     }
@@ -1545,7 +1682,10 @@ mod tests {
             let received = received.clone();
             move |p: &TranscriptProgress| {
                 if let TranscriptProgress::AssistantDelta { delta, .. } = p {
-                    received.lock().unwrap().push(delta.clone());
+                    received
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(delta.clone());
                 }
             }
         });
@@ -1557,7 +1697,10 @@ mod tests {
             &id,
             crate::service::PiSessionRuntimeEvent::Progress(progress_delta("pre")),
         );
-        assert_eq!(*received.lock().unwrap(), vec!["pre".to_string()]);
+        assert_eq!(
+            *received.lock().unwrap_or_else(|error| error.into_inner()),
+            vec!["pre".to_string()]
+        );
 
         // Detach: the connection's progress segment is removed.
         m.execute_command(
@@ -1572,7 +1715,7 @@ mod tests {
             crate::service::PiSessionRuntimeEvent::Progress(progress_delta("post")),
         );
         assert_eq!(
-            *received.lock().unwrap(),
+            *received.lock().unwrap_or_else(|error| error.into_inner()),
             vec!["pre".to_string()],
             "post-detach progress leaked"
         );
@@ -1608,13 +1751,20 @@ mod tests {
         )
         .unwrap();
         // Still live: phase is Turn, not idle.
-        assert!(m.live.lock().unwrap().contains_key(&id));
+        assert!(m
+            .live
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&id));
 
         // The turn finishes: the runtime settles to Idle and emits a Snapshot.
         service.settle_idle(&id).unwrap();
         service.emit(&id, crate::service::PiSessionRuntimeEvent::Snapshot);
         assert!(
-            !m.live.lock().unwrap().contains_key(&id),
+            !m.live
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains_key(&id),
             "idle + unattached session should be disposed on snapshot (no leak)"
         );
     }

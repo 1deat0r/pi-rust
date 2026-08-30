@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 #[test]
 fn client_codec_roundtrip() {
     let hello = pi_protocol::ClientMessage::Hello {

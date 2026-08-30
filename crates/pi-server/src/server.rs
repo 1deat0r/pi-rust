@@ -1,7 +1,7 @@
 //! PiServer — port of `packages/server/src/server.ts`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use pi_protocol::{
@@ -27,10 +27,47 @@ pub struct ConnectionHandler {
     state: ConnectionState,
     sessions: Arc<LiveSessionManager>,
     snapshots: Arc<ServerSnapshotPublisher>,
+    connections: ConnectionList,
+    self_ref: Option<Weak<Mutex<ConnectionHandler>>>,
     closing: Arc<AtomicBool>,
     connection_handle: Arc<Mutex<ConnectionHandle>>,
     frame_options: FrameDecoderOptions,
     on_error: Option<ArcErrorObserver>,
+}
+
+struct ConnectionCleanup {
+    connection: Arc<dyn ByteConnection>,
+    sessions: Arc<LiveSessionManager>,
+    snapshots: Arc<ServerSnapshotPublisher>,
+    connection_handle: Arc<Mutex<ConnectionHandle>>,
+    connections: ConnectionList,
+    self_ref: Weak<Mutex<ConnectionHandler>>,
+}
+
+impl ConnectionCleanup {
+    fn disconnect(&self) {
+        let mut handle = self
+            .connection_handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        handle.disconnected = true;
+        handle.closed = true;
+        handle.ready = false;
+        self.sessions.disconnect(&mut handle);
+        self.snapshots.revoke_connection_for(&self.connection);
+        if let Some(handler) = self.self_ref.upgrade() {
+            let handler: Arc<Mutex<dyn ByteConnectionHandler>> = handler;
+            self.connections
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .retain(|candidate| !Arc::ptr_eq(candidate, &handler));
+        }
+    }
+
+    async fn close(self, final_chunk: Option<Vec<u8>>) {
+        let _ = self.connection.close(final_chunk).await;
+        self.disconnect();
+    }
 }
 
 impl ConnectionHandler {
@@ -40,10 +77,10 @@ impl ConnectionHandler {
         }
         let messages = match self.state.decoder.push(chunk) {
             Ok(messages) => messages,
-            Err(_) => {
+            Err(error) => {
                 let _ = self.fail_protocol_sync(ProtocolError {
                     code: ProtocolErrorCode::InvalidRequest,
-                    message: "Invalid protocol message".to_string(),
+                    message: error.to_string(),
                     details: None,
                 });
                 return;
@@ -118,20 +155,32 @@ impl ConnectionHandler {
             encode_server_message(&ServerMessage::HelloError { error }, &self.frame_options).ok();
         self.state.disconnected = true;
         self.state.stage = "closed";
-        let connection = self.state.connection.clone();
-        let sessions = self.sessions.clone();
-        let snapshots = self.snapshots.clone();
-        let connection_handle = self.connection_handle.clone();
+        let cleanup = self.cleanup();
         tokio::spawn(async move {
-            let _ = connection.close(frame).await;
-            let mut handle = connection_handle.lock().unwrap();
-            handle.disconnected = true;
-            handle.closed = true;
-            handle.ready = false;
-            sessions.disconnect(&mut handle);
-            snapshots.revoke_connection_for(&connection);
+            cleanup.close(frame).await;
         });
         Ok(())
+    }
+
+    fn cleanup(&self) -> ConnectionCleanup {
+        ConnectionCleanup {
+            connection: self.state.connection.clone(),
+            sessions: self.sessions.clone(),
+            snapshots: self.snapshots.clone(),
+            connection_handle: self.connection_handle.clone(),
+            connections: self.connections.clone(),
+            self_ref: self.self_ref.clone().unwrap_or_default(),
+        }
+    }
+
+    fn begin_cleanup(&mut self) -> Option<ConnectionCleanup> {
+        if is_terminal_connection(&self.state) {
+            return None;
+        }
+        self.state.stage = "closing";
+        self.state.disconnected = true;
+        self.state.stage = "closed";
+        Some(self.cleanup())
     }
 
     fn report_error(&self, message: impl Into<String>) {
@@ -144,8 +193,10 @@ impl ConnectionHandler {
 /// requests that arrived in the same transport chunk.
 async fn run_handshake(arc: Arc<Mutex<dyn ByteConnectionHandler>>, version: u64) {
     if !is_supported_protocol_version(version) {
-        let mut guard = arc.lock().unwrap();
-        let handler = guard.as_connection_handler().unwrap();
+        let mut guard = arc.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(handler) = guard.as_connection_handler() else {
+            return;
+        };
         let _ = handler.fail_protocol_sync(ProtocolError {
             code: ProtocolErrorCode::Version,
             message: format!("Unsupported protocol version {version}; expected {PROTOCOL_VERSION}"),
@@ -155,8 +206,10 @@ async fn run_handshake(arc: Arc<Mutex<dyn ByteConnectionHandler>>, version: u64)
     }
 
     let (connection, connection_id, snapshot, frame_options, snapshots) = {
-        let mut guard = arc.lock().unwrap();
-        let handler = guard.as_connection_handler().unwrap();
+        let mut guard = arc.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(handler) = guard.as_connection_handler() else {
+            return;
+        };
         (
             handler.state.connection.clone(),
             handler.state.id.clone(),
@@ -173,54 +226,100 @@ async fn run_handshake(arc: Arc<Mutex<dyn ByteConnectionHandler>>, version: u64)
     let frame = match encode_server_message(&message, &frame_options) {
         Ok(frame) => frame,
         Err(error) => {
-            let mut guard = arc.lock().unwrap();
-            let handler = guard.as_connection_handler().unwrap();
-            handler.report_error(error.to_string());
-            let connection = handler.state.connection.clone();
-            tokio::spawn(async move {
-                let _ = connection.close(None).await;
-            });
+            let cleanup = {
+                let mut guard = arc.lock().unwrap_or_else(|error| error.into_inner());
+                let Some(handler) = guard.as_connection_handler() else {
+                    return;
+                };
+                handler.report_error(error.to_string());
+                handler.begin_cleanup()
+            };
+            if let Some(cleanup) = cleanup {
+                cleanup.close(None).await;
+            }
             return;
         }
     };
     if connection.send(&frame).await.is_err() {
-        let mut guard = arc.lock().unwrap();
-        let handler = guard.as_connection_handler().unwrap();
-        handler.report_error("Unix connection closed during handshake");
-        let connection = handler.state.connection.clone();
-        tokio::spawn(async move {
-            let _ = connection.close(None).await;
-        });
+        let cleanup = {
+            let mut guard = arc.lock().unwrap_or_else(|error| error.into_inner());
+            let Some(handler) = guard.as_connection_handler() else {
+                return;
+            };
+            handler.report_error("Unix connection closed during handshake");
+            handler.begin_cleanup()
+        };
+        if let Some(cleanup) = cleanup {
+            cleanup.close(None).await;
+        }
         return;
     }
 
     let (pending, catchup) = {
-        let mut guard = arc.lock().unwrap();
-        let handler = guard.as_connection_handler().unwrap();
+        let mut guard = arc.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(handler) = guard.as_connection_handler() else {
+            return;
+        };
         if handler.state.disconnected || handler.state.stage != "handshaking" {
             return;
         }
         handler.state.handshake_complete = true;
         handler.state.stage = "ready";
-        handler.connection_handle.lock().unwrap().ready = true;
+        handler
+            .connection_handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .ready = true;
         snapshots.register_connection(connection.clone());
         let catchup = if snapshots.current_revision() != snapshot.revision {
-            encode_server_message(
-                &ServerMessage::Event {
-                    event: ServerEvent::ServerSnapshot {
-                        snapshot: snapshots.get(),
+            Some(
+                encode_server_message(
+                    &ServerMessage::Event {
+                        event: ServerEvent::ServerSnapshot {
+                            snapshot: snapshots.get(),
+                        },
                     },
-                },
-                &handler.frame_options,
+                    &handler.frame_options,
+                )
+                .map_err(|error| error.to_string()),
             )
-            .ok()
         } else {
             None
         };
         (std::mem::take(&mut handler.state.pending_requests), catchup)
     };
-    if let Some(frame) = catchup {
-        let _ = connection.send(&frame).await;
+    if let Some(catchup) = catchup {
+        let frame = match catchup {
+            Ok(frame) => frame,
+            Err(error) => {
+                let cleanup = {
+                    let mut guard = arc.lock().unwrap_or_else(|error| error.into_inner());
+                    let Some(handler) = guard.as_connection_handler() else {
+                        return;
+                    };
+                    handler.report_error(error);
+                    handler.begin_cleanup()
+                };
+                if let Some(cleanup) = cleanup {
+                    cleanup.close(None).await;
+                }
+                return;
+            }
+        };
+        if connection.send(&frame).await.is_err() {
+            let cleanup = {
+                let mut guard = arc.lock().unwrap_or_else(|error| error.into_inner());
+                let Some(handler) = guard.as_connection_handler() else {
+                    return;
+                };
+                handler.report_error("Unix connection closed during handshake catch-up");
+                handler.begin_cleanup()
+            };
+            if let Some(cleanup) = cleanup {
+                cleanup.close(None).await;
+            }
+            return;
+        }
     }
     for (id, request) in pending {
         let request_arc = arc.clone();
@@ -234,8 +333,10 @@ async fn run_handshake(arc: Arc<Mutex<dyn ByteConnectionHandler>>, version: u64)
 /// or abort on the same connection.
 async fn run_request(arc: Arc<Mutex<dyn ByteConnectionHandler>>, id: String, request: Command) {
     let (connection, sessions, connection_handle, snapshots, closing, frame_options, on_error) = {
-        let mut guard = arc.lock().unwrap();
-        let handler = guard.as_connection_handler().unwrap();
+        let mut guard = arc.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(handler) = guard.as_connection_handler() else {
+            return;
+        };
         (
             handler.state.connection.clone(),
             handler.sessions.clone(),
@@ -267,7 +368,16 @@ async fn run_request(arc: Arc<Mutex<dyn ByteConnectionHandler>>, id: String, req
         Ok(frame) => frame,
         Err(error) => {
             report_error(&on_error, error.to_string());
-            let _ = connection.close(None).await;
+            let cleanup = {
+                let mut guard = arc.lock().unwrap_or_else(|error| error.into_inner());
+                let Some(handler) = guard.as_connection_handler() else {
+                    return;
+                };
+                handler.begin_cleanup()
+            };
+            if let Some(cleanup) = cleanup {
+                cleanup.close(None).await;
+            }
             return;
         }
     };
@@ -276,7 +386,16 @@ async fn run_request(arc: Arc<Mutex<dyn ByteConnectionHandler>>, id: String, req
             &on_error,
             "Unix connection closed during response".to_string(),
         );
-        let _ = connection.close(None).await;
+        let cleanup = {
+            let mut guard = arc.lock().unwrap_or_else(|error| error.into_inner());
+            let Some(handler) = guard.as_connection_handler() else {
+                return;
+            };
+            handler.begin_cleanup()
+        };
+        if let Some(cleanup) = cleanup {
+            cleanup.close(None).await;
+        }
         return;
     }
     if result.is_ok() && !closing.load(Ordering::SeqCst) {
@@ -295,6 +414,7 @@ pub struct PiServer {
     snapshots: Arc<ServerSnapshotPublisher>,
     listeners: Vec<Box<dyn crate::listener::PiServerListener>>,
     closing: Arc<AtomicBool>,
+    started: bool,
     frame_options: FrameDecoderOptions,
     handshake_timeout_ms: u64,
     on_error: Option<ArcErrorObserver>,
@@ -328,13 +448,17 @@ impl PiServer {
         let id = options
             .server_id
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let frame_options = FrameDecoderOptions {
+            max_frame_length: Some(max_frame_length as usize),
+        };
         let service_box = service;
         let models = service_box.list_models().map_err(|e| e.to_string())?;
         let sessions = service_box.list_sessions().map_err(|e| e.to_string())?;
-        let snapshots = Arc::new(ServerSnapshotPublisher::new(
+        let snapshots = Arc::new(ServerSnapshotPublisher::new_with_frame_options(
             id.clone(),
             PROTOCOL_VERSION,
             models,
+            frame_options.clone(),
         ));
         snapshots.initialize(sessions);
         let service: Arc<Mutex<dyn PiServerService>> = Arc::new(Mutex::new(service_box));
@@ -356,9 +480,8 @@ impl PiServer {
             snapshots,
             listeners: options.listeners,
             closing,
-            frame_options: FrameDecoderOptions {
-                max_frame_length: Some(max_frame_length as usize),
-            },
+            started: false,
+            frame_options,
             handshake_timeout_ms,
             on_error: options.on_error,
         })
@@ -369,13 +492,37 @@ impl PiServer {
     }
 
     pub async fn start(&mut self) -> Result<(), String> {
+        if self.started {
+            return Err("PiServer is already started".to_string());
+        }
         if self.closing.load(Ordering::SeqCst) {
             return Err("PiServer is closing or closed".to_string());
         }
         let accept = self.make_acceptor();
-        for listener in &mut self.listeners {
-            listener.start(accept.clone()).await?;
+        for (started_count, listener) in self.listeners.iter_mut().enumerate() {
+            if let Err(error) = listener.start(accept.clone()).await {
+                for started_listener in self.listeners.iter_mut().take(started_count).rev() {
+                    let _ = started_listener.close().await;
+                }
+                self.closing.store(true, Ordering::SeqCst);
+                self.sessions.mark_closing();
+                let connections = self
+                    .connections
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
+                for connection in connections {
+                    close_handler(connection).await;
+                }
+                self.connections
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clear();
+                self.sessions.close();
+                return Err(error);
+            }
         }
+        self.started = true;
         Ok(())
     }
 
@@ -387,12 +534,19 @@ impl PiServer {
         for listener in &mut self.listeners {
             let _ = listener.close().await;
         }
-        let connections = self.connections.lock().unwrap().clone();
+        let connections = self
+            .connections
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         for connection in connections {
             close_handler(connection).await;
         }
         self.sessions.close();
-        self.connections.lock().unwrap().clear();
+        self.connections
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
         Ok(())
     }
 
@@ -412,19 +566,6 @@ impl PiServer {
             let id = uuid::Uuid::new_v4().to_string();
             let mut connection_handle = ConnectionHandle::new(id.clone());
             connection_handle.ready = false;
-            let event_connection = connection.clone();
-            let event_options = frame_options.clone();
-            let event_sink: EventSink = Arc::new(move |event| {
-                let connection = event_connection.clone();
-                let options = event_options.clone();
-                tokio::spawn(async move {
-                    let message = ServerMessage::Event { event };
-                    if let Ok(frame) = encode_server_message(&message, &options) {
-                        let _ = connection.send(&frame).await;
-                    }
-                });
-            });
-            connection_handle.events = Some(event_sink);
             let close_connection = connection.clone();
             connection_handle.close = Some(Arc::new(move || {
                 let connection = close_connection.clone();
@@ -433,24 +574,86 @@ impl PiServer {
                 });
             }));
             let connection_handle = Arc::new(Mutex::new(connection_handle));
-            let decoder = pi_protocol::ClientMessageDecoder::new(&frame_options)
-                .expect("validated client message decoder options");
+            // frame_options are validated at server construction; decoder
+            // construction failing here is a build defect, so panicking is
+            // the honest invariant.
+            #[allow(clippy::panic)]
+            let decoder =
+                pi_protocol::ClientMessageDecoder::new(&frame_options).unwrap_or_else(|error| {
+                    panic!("validated client message decoder options: {error}")
+                });
             let state = ConnectionState::new(id, connection.clone(), decoder);
             let handler = Arc::new(Mutex::new(ConnectionHandler {
                 state,
                 sessions: sessions.clone(),
                 snapshots: snapshots.clone(),
+                connections: connections.clone(),
+                self_ref: None,
                 closing: closing.clone(),
                 connection_handle,
                 frame_options: frame_options.clone(),
                 on_error: on_error.clone(),
             }));
-            connections.lock().unwrap().push(handler.clone());
+            handler
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .self_ref = Some(Arc::downgrade(&handler));
+            let handler_for_events: Arc<Mutex<dyn ByteConnectionHandler>> = handler.clone();
+            let weak_handler = Arc::downgrade(&handler_for_events);
+            let event_connection = connection.clone();
+            let event_options = frame_options.clone();
+            let event_sink: EventSink = Arc::new(move |event| {
+                let connection = event_connection.clone();
+                let options = event_options.clone();
+                let weak_handler = weak_handler.clone();
+                tokio::spawn(async move {
+                    let message = ServerMessage::Event { event };
+                    let frame = match encode_server_message(&message, &options) {
+                        Ok(frame) => frame,
+                        Err(error) => {
+                            if let Some(handler) = weak_handler.upgrade() {
+                                handler
+                                    .lock()
+                                    .unwrap_or_else(|error| error.into_inner())
+                                    .on_error(error.to_string());
+                            } else {
+                                let _ = connection.close(None).await;
+                            }
+                            return;
+                        }
+                    };
+                    if let Err(error) = connection.send(&frame).await {
+                        if let Some(handler) = weak_handler.upgrade() {
+                            handler
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .on_error(error);
+                        } else {
+                            let _ = connection.close(None).await;
+                        }
+                    }
+                });
+            });
+            handler
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .connection_handle
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .events = Some(event_sink);
+            connections
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(handler.clone());
             let timer_handler = handler.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(handshake_timeout_ms)).await;
-                let mut guard = timer_handler.lock().unwrap();
-                let handler = guard.as_connection_handler().unwrap();
+                let mut guard = timer_handler
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let Some(handler) = guard.as_connection_handler() else {
+                    return;
+                };
                 if handler.state.stage == "awaitingHello" || handler.state.stage == "handshaking" {
                     let _ = handler.fail_protocol_sync(ProtocolError {
                         code: ProtocolErrorCode::InvalidRequest,
@@ -474,17 +677,14 @@ impl ByteConnectionHandler for ConnectionHandler {
     }
 
     fn on_close(&mut self) {
+        if is_terminal_connection(&self.state) {
+            return;
+        }
         let handshake_complete = self.state.handshake_complete;
         self.state.disconnected = true;
         self.state.stage = "closed";
-        {
-            let mut handle = self.connection_handle.lock().unwrap();
-            handle.disconnected = true;
-            handle.closed = true;
-            handle.ready = false;
-            self.sessions.disconnect(&mut handle);
-        }
-        self.snapshots.revoke_connection_for(&self.state.connection);
+        let cleanup = self.cleanup();
+        cleanup.disconnect();
         if !self.closing.load(Ordering::SeqCst) && handshake_complete {
             let snapshots = self.snapshots.clone();
             tokio::spawn(async move {
@@ -495,33 +695,27 @@ impl ByteConnectionHandler for ConnectionHandler {
 
     fn on_error(&mut self, error: String) {
         self.report_error(error);
-        let connection = self.state.connection.clone();
-        tokio::spawn(async move {
-            let _ = connection.close(None).await;
-        });
+        let cleanup = self.begin_cleanup();
+        if let Some(cleanup) = cleanup {
+            tokio::spawn(async move {
+                cleanup.close(None).await;
+            });
+        }
     }
 }
 
 async fn close_handler(handler: Arc<Mutex<dyn ByteConnectionHandler>>) {
-    let (connection, sessions, connection_handle, snapshots) = {
-        let mut guard = handler.lock().unwrap();
-        let handler = guard.as_connection_handler().unwrap();
+    let cleanup = {
+        let mut guard = handler.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(handler) = guard.as_connection_handler() else {
+            return;
+        };
         handler.state.stage = "closing";
         handler.state.disconnected = true;
-        (
-            handler.state.connection.clone(),
-            handler.sessions.clone(),
-            handler.connection_handle.clone(),
-            handler.snapshots.clone(),
-        )
+        handler.state.stage = "closed";
+        handler.cleanup()
     };
-    let _ = connection.close(None).await;
-    let mut handle = connection_handle.lock().unwrap();
-    handle.disconnected = true;
-    handle.closed = true;
-    handle.ready = false;
-    sessions.disconnect(&mut handle);
-    snapshots.revoke_connection_for(&connection);
+    cleanup.close(None).await;
 }
 
 fn report_error(observer: &Option<ArcErrorObserver>, message: String) {
@@ -592,13 +786,19 @@ pub fn run_command_sync(
                 model,
                 thinking_level,
             })?;
-            let snapshot = runtime.lock().unwrap().snapshot()?;
+            let snapshot = runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .snapshot()?;
             refresh_metadata(service, snapshots);
             Ok(CommandResult::Create { session: snapshot })
         }
         Command::Attach { session_id } => {
             let runtime = service.open_session(session_id)?;
-            let snapshot = runtime.lock().unwrap().snapshot()?;
+            let snapshot = runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .snapshot()?;
             Ok(CommandResult::Attach { session: snapshot })
         }
         Command::Detach { session_id } => Ok(CommandResult::Detach { session_id }),
@@ -606,9 +806,12 @@ pub fn run_command_sync(
             let runtime = service.open_session(session_id)?;
             runtime
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|error| error.into_inner())
                 .prompt(crate::types::PromptInput { text })?;
-            let snapshot = runtime.lock().unwrap().snapshot()?;
+            let snapshot = runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .snapshot()?;
             refresh_metadata(service, snapshots);
             Ok(CommandResult::Prompt { session: snapshot })
         }
@@ -616,23 +819,38 @@ pub fn run_command_sync(
             let runtime = service.open_session(session_id)?;
             runtime
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|error| error.into_inner())
                 .steer(crate::types::SteerInput { text })?;
-            let snapshot = runtime.lock().unwrap().snapshot()?;
+            let snapshot = runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .snapshot()?;
             refresh_metadata(service, snapshots);
             Ok(CommandResult::Steer { session: snapshot })
         }
         Command::Abort { session_id } => {
             let runtime = service.open_session(session_id)?;
-            runtime.lock().unwrap().abort()?;
-            let snapshot = runtime.lock().unwrap().snapshot()?;
+            runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .abort()?;
+            let snapshot = runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .snapshot()?;
             refresh_metadata(service, snapshots);
             Ok(CommandResult::Abort { session: snapshot })
         }
         Command::SetModel { session_id, model } => {
             let runtime = service.open_session(session_id)?;
-            runtime.lock().unwrap().set_model(model)?;
-            let snapshot = runtime.lock().unwrap().snapshot()?;
+            runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_model(model)?;
+            let snapshot = runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .snapshot()?;
             Ok(CommandResult::SetModel { session: snapshot })
         }
         Command::SetThinking {
@@ -640,8 +858,14 @@ pub fn run_command_sync(
             thinking_level,
         } => {
             let runtime = service.open_session(session_id)?;
-            runtime.lock().unwrap().set_thinking(thinking_level)?;
-            let snapshot = runtime.lock().unwrap().snapshot()?;
+            runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_thinking(thinking_level)?;
+            let snapshot = runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .snapshot()?;
             Ok(CommandResult::SetThinking { session: snapshot })
         }
     }

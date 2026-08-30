@@ -1890,3 +1890,12 @@ indexed/scored, TUI overall 0/52, non-TUI overall 30/266, and whole-product
 behavioral parity 30/318 (9.43%). The rebuilt release binary exposes both
 providers through `--list-models glm-5.2` with their respective synthetic
 API-key environment variables.
+
+## Rust-idiom campaign note — 2026-08-30
+
+The typed-error campaign (see `PLAN.md`) does not change any ledger row. Its
+checkpoints keep the checker green:
+`Conversion progress: 100.00% (166/166; 0 open)`, 0 audit blockers, 0
+workspace JS/TS source files. Phase 1 converted pi-evals; Phase 2.1 brought
+pi-server under the hard lint gate with poison-tolerant locking and no
+behavioral change (workspace matrix 2,805 tests passed).

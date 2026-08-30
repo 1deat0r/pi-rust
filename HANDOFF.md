@@ -2,6 +2,53 @@
 
 Date: 2026-08-30 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 2.1 (pi-server under the hard gate)
+
+Second campaign checkpoint, committed as the direct child of the Phase 1
+commit `1af159b`. pi-server now opts into
+`[workspace.lints.clippy] unwrap_used/expect_used/panic = "deny"` and is
+clean with `-D warnings`.
+
+Implemented:
+
+- Poison-tolerant locking: every production `Mutex::lock().unwrap()` /
+  `read().unwrap()` / `write().unwrap()` (≈180 sites across `live_session.rs`,
+  `server.rs`, `service.rs`, `listener.rs`, `connection.rs`, `snapshots.rs`)
+  became `unwrap_or_else(|error| error.into_inner())` — no panic on poisoned
+  locks, identical effective semantics.
+- The 12 `as_connection_handler().unwrap()` invariant asserts in the
+  handshake/request/cleanup futures became `let Some(...) = ... else {
+  return; }` guards.
+- Two genuine invariants keep a documented panic with
+  `#[allow(clippy::panic)]` plus a comment: the pre-validated
+  `ClientMessageDecoder` construction and the `Deferred::wait` sender
+  liveness.
+- `TestServerService::latest_runtime` now returns `Option<TestSessionRuntime>`
+  instead of panicking on a missing id; the `server_e2e` test helper trait
+  `LatestRuntimeExpect` preserves the old ergonomics at the test boundary.
+- Intentional sequencing divergence: the `ByteConnection`/
+  `ByteConnectionHandler` trait methods still return `Result<_, String>` —
+  those signatures are shared with pi-client and pi-coding-agent, so typing
+  them lands with the cross-crate transport error unification in the
+  pi-client/pi-ai phases (recorded in `PLAN.md`).
+
+Exact validation:
+
+```text
+cargo clippy -p pi-server --all-targets --offline -- -D warnings   # hard gate active, clean
+cargo test -p pi-server --offline -- --test-threads=1              # 63 passed
+cargo test --workspace --offline --quiet -- --test-threads=2      # exit 0, 2805 passed
+cargo clippy --workspace --all-targets --offline -- -D warnings   # pass
+cargo fmt --all -- --check                                        # pass
+git diff --check                                                  # pass
+cargo run -p pi-coding-agent --offline --bin conversion_audit -- all
+  Conversion progress: 100.00% (166/166; 0 open)
+```
+
+No numbered ledger row changed. Next: Phase 2.2 pi-client (81 production
+unwraps, hand-rolled `PiClientError` to thiserror, then transport error
+unification with pi-server's connection traits).
+
 ## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 1 (typed errors, pi-evals pilot)
 
 User-directed campaign to lean fully into Rust capabilities, error handling

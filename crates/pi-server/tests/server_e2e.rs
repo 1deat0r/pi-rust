@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! End-to-end protocol-link test: PiServer over a Unix socket, driven by
 //! PiClient (hello handshake → list/create/prompt → snapshot events).
 
@@ -18,6 +20,18 @@ use pi_server::service::{
 use pi_server::UnixListener;
 use pi_server::{PiServerError, TestSessionRuntime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// Test-side accessor: `latest_runtime` now returns `Option`; tests expect
+/// the runtime to exist.
+trait LatestRuntimeExpect {
+    fn latest_runtime_expect(&self, id: &str) -> TestSessionRuntime;
+}
+
+impl LatestRuntimeExpect for TestServerService {
+    fn latest_runtime_expect(&self, id: &str) -> TestSessionRuntime {
+        self.latest_runtime(id).expect("runtime exists in test")
+    }
+}
 
 fn test_models() -> Vec<pi_protocol::ModelMetadata> {
     vec![pi_protocol::ModelMetadata {
@@ -576,7 +590,7 @@ async fn testing_runtime_exposes_deferred_prompt_and_abort_controls() {
             thinking_level: None,
         })
         .unwrap();
-    let mut typed = service.latest_runtime("runtime");
+    let mut typed = service.latest_runtime_expect("runtime");
     runtime
         .lock()
         .unwrap()
@@ -936,7 +950,7 @@ async fn detach_is_idempotent_and_disposes_only_after_last_attachment() {
             session_id: "session-1".to_string(),
         })
         .await;
-    let runtime = service.latest_runtime("session-1");
+    let runtime = service.latest_runtime_expect("session-1");
     first
         .request(Command::Detach {
             session_id: "session-1".to_string(),
@@ -1023,7 +1037,7 @@ async fn prompt_queue_rejects_second_prompt_but_allows_steer_and_abort() {
         .await;
     assert!(matches!(steer, ServerMessage::Response { ok: true, .. }));
     assert_eq!(
-        service.latest_runtime("session-1").steers()[0].text,
+        service.latest_runtime_expect("session-1").steers()[0].text,
         "adjust"
     );
     let abort = client
@@ -1107,7 +1121,7 @@ async fn deferred_prompt_survives_disconnect_and_disposes_when_idle() {
         },
     );
     client.next(|m| matches!(m, ServerMessage::Event { event: ServerEvent::SessionSnapshot { snapshot } } if snapshot.phase == pi_protocol::SessionPhase::Turn)).await;
-    let runtime = service.latest_runtime("session-1");
+    let runtime = service.latest_runtime_expect("session-1");
     client.close().await;
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert_eq!(runtime.dispose_count(), 0);
@@ -1163,7 +1177,10 @@ async fn prompt_response_reports_attachment_relative_to_requesting_connection() 
             session_id: "session-1".to_string(),
         })
         .await;
-    service.latest_runtime("session-1").finish_prompt().unwrap();
+    service
+        .latest_runtime_expect("session-1")
+        .finish_prompt()
+        .unwrap();
     assert!(
         matches!(prompt.await.unwrap(), ServerMessage::Response { ok: true, result: Some(CommandResult::Prompt { session }), .. } if !session.attached)
     );
@@ -1191,7 +1208,7 @@ async fn progress_and_snapshot_events_are_scoped_to_attached_clients() {
         })
         .await;
     let baseline = first.messages().len();
-    service.latest_runtime("first").emit_progress(
+    service.latest_runtime_expect("first").emit_progress(
         pi_protocol::TranscriptProgress::AssistantDelta {
             message_id: "assistant-1".to_string(),
             content_index: 0,
@@ -1207,7 +1224,7 @@ async fn progress_and_snapshot_events_are_scoped_to_attached_clients() {
             event: ServerEvent::SessionProgress { .. }
         }
     )));
-    service.latest_runtime("first").emit_snapshot();
+    service.latest_runtime_expect("first").emit_snapshot();
     first.next_from(baseline, |m| matches!(m, ServerMessage::Event { event: ServerEvent::SessionSnapshot { snapshot } } if snapshot.id == "first")).await;
     running.stop(&[first, second]).await;
 }
@@ -1241,7 +1258,7 @@ async fn detach_removes_runtime_subscriptions() {
             session_id: "session-1".to_string(),
         })
         .await;
-    service.latest_runtime("session-1").emit_snapshot();
+    service.latest_runtime_expect("session-1").emit_snapshot();
     tokio::time::sleep(Duration::from_millis(20)).await;
     let after = client
         .messages()
@@ -1271,7 +1288,7 @@ async fn terminal_runtime_error_closes_attached_clients_and_releases_lock() {
             session_id: "terminal".to_string(),
         })
         .await;
-    let runtime = service.latest_runtime("terminal");
+    let runtime = service.latest_runtime_expect("terminal");
     runtime.set_phase(pi_protocol::SessionPhase::Turn);
     runtime.emit_error(PiServerError::new(
         ProtocolErrorCode::SessionLocked,
@@ -1305,7 +1322,7 @@ async fn client_disconnect_disposes_an_idle_runtime() {
             session_id: "session-1".to_string(),
         })
         .await;
-    let runtime = service.latest_runtime("session-1");
+    let runtime = service.latest_runtime_expect("session-1");
     client.close().await;
     runtime.disposed().wait().await;
     assert_eq!(runtime.dispose_count(), 1);
@@ -1418,7 +1435,7 @@ async fn server_close_disposes_runtimes_and_removes_listener_resources() {
             session_id: "first".to_string(),
         })
         .await;
-    let runtime = service.latest_runtime("first");
+    let runtime = service.latest_runtime_expect("first");
     let socket = running.socket.clone();
     running.server.close().await.unwrap();
     client.wait_for_close().await;
@@ -1466,7 +1483,7 @@ async fn terminal_cleanup_is_stable_when_client_and_server_close_race() {
             session_id: "race".to_string(),
         })
         .await;
-    let runtime = service.latest_runtime("race");
+    let runtime = service.latest_runtime_expect("race");
     client.close().await;
     runtime.disposed().wait().await;
     running.stop(&[client]).await;

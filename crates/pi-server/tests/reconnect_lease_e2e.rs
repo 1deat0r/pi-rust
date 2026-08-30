@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Live reconnect and lease-churn coverage for the pi-server/pi-client pair.
 //!
 //! The server and client contracts are deliberately exercised through the

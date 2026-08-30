@@ -330,3 +330,7 @@ vendor quota/error/retry, platform, and complete parity boundaries remain
 open. The rebuilt release binary exposes both providers through
 `--list-models glm-5.2` with their respective synthetic API-key environment
 variables.
+
+The Rust-idiom campaign checkpoints (typed errors, hard lint gates in
+pi-evals and pi-server) do not move any dashboard dimension; all counts above
+are unchanged by that work.
