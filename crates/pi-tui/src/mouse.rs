@@ -179,6 +179,7 @@ pub fn decode_mouse_event(raw: &str) -> Result<Option<MouseEvent>, MouseDecodeEr
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

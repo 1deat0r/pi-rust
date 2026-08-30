@@ -92,17 +92,20 @@ impl CancellableLoader {
         self.signal.aborted()
     }
 
-    /// Cancel once and invoke the callback once.
+    /// Mark cancellation and invoke the callback for each cancel key.
     ///
-    /// The atomic swap happens before taking the callback. This makes repeated
-    /// Escape/Ctrl+C events idempotent and also ensures a callback panic cannot
-    /// cause a later input event to invoke it a second time.
+    /// The abort signal itself remains idempotent, matching JavaScript's
+    /// `AbortController.abort()`, while upstream invokes `onAbort` on every
+    /// matching input event.
+    ///
+    /// The atomic swap happens before invoking the callback. Repeated
+    /// Escape/Ctrl+C events therefore keep the signal idempotent while still
+    /// preserving the upstream callback notification for each event.
     pub fn cancel(&mut self) {
-        if self.signal.aborted.swap(true, Ordering::AcqRel) {
-            return;
+        if !self.signal.aborted.swap(true, Ordering::AcqRel) {
+            self.aborted = true;
         }
-        self.aborted = true;
-        if let Some(mut on_abort) = self.on_abort.take() {
+        if let Some(on_abort) = self.on_abort.as_mut() {
             on_abort();
         }
     }

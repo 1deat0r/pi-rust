@@ -344,3 +344,5 @@ Phase 2.3b (PiAiError) does not move any dashboard dimension.
 Phase 2.4 (pi-agent) does not move any dashboard dimension.
 
 Phase 2.5 (pi-coding-agent gate) does not move any dashboard dimension.
+
+Phase 2.7 (workspace-wide gate) does not move any dashboard dimension.

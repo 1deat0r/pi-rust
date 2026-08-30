@@ -5,7 +5,8 @@
 
 use crate::components::input::Input;
 use crate::fuzzy::fuzzy_filter;
-use crate::keys::TuiKey;
+use crate::keybindings::get_keybindings;
+use crate::keys::{is_key_release, match_key, parse_key, TuiKey};
 use crate::tui::Component;
 use crate::utils::{truncate_to_width, visible_width, wrap_text_with_ansi};
 
@@ -19,8 +20,20 @@ pub type SettingsCancelFn = Box<dyn Fn() + Send + Sync>;
 pub type SettingsSubmenuDoneFn = Box<dyn Fn(Option<String>, Option<String>) + Send + Sync>;
 pub type SettingsSubmenuResult = (Option<String>, Option<String>);
 pub type SettingsSubmenuState = std::sync::Arc<std::sync::Mutex<Option<SettingsSubmenuResult>>>;
+/// A live value update emitted by a submenu while it remains open.
+pub type SettingsSubmenuChangeFn = Box<dyn Fn(String) + Send + Sync>;
+pub type SettingsSubmenuChangesState = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 pub type SubmenuWithDoneFn = Box<
     dyn Fn(&str, SettingsSubmenuDoneFn) -> Option<Box<dyn Component + Send + Sync>> + Send + Sync,
+>;
+pub type SubmenuWithCallbacksFn = Box<
+    dyn Fn(
+            &str,
+            SettingsSubmenuDoneFn,
+            SettingsSubmenuChangeFn,
+        ) -> Option<Box<dyn Component + Send + Sync>>
+        + Send
+        + Sync,
 >;
 
 /// A single setting item.
@@ -36,6 +49,9 @@ pub struct SettingItem {
     /// Callback-aware submenu variant. The second argument receives the
     /// selected value and optional target id when the submenu completes.
     pub submenu_with_done: Option<SubmenuWithDoneFn>,
+    /// Callback-aware submenu variant that can emit live value changes while
+    /// remaining open, matching Pi's warning/settings submenus.
+    pub submenu_with_callbacks: Option<SubmenuWithCallbacksFn>,
     /// Disabled rows remain visible but cannot be selected or activated.
     pub disabled: bool,
 }
@@ -69,6 +85,7 @@ impl SettingItem {
             },
             submenu: None,
             submenu_with_done: None,
+            submenu_with_callbacks: None,
             disabled: false,
         }
     }
@@ -91,6 +108,21 @@ impl SettingItem {
             + 'static,
     ) -> Self {
         self.submenu_with_done = Some(Box::new(submenu));
+        self
+    }
+
+    pub fn with_submenu_callbacks(
+        mut self,
+        submenu: impl Fn(
+                &str,
+                SettingsSubmenuDoneFn,
+                SettingsSubmenuChangeFn,
+            ) -> Option<Box<dyn Component + Send + Sync>>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        self.submenu_with_callbacks = Some(Box::new(submenu));
         self
     }
 }
@@ -133,8 +165,10 @@ pub struct SettingsList {
     submenu_item_index: Option<usize>,
     navigate_after_close: Option<String>,
     submenu_done: Option<SettingsSubmenuState>,
+    submenu_live_changes: Option<SettingsSubmenuChangesState>,
     on_change: Option<SettingsChangeFn>,
     on_cancel: Option<SettingsCancelFn>,
+    focused: bool,
 }
 
 impl std::fmt::Debug for SettingsList {
@@ -197,6 +231,13 @@ impl SettingsList {
         if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
             item.disabled = disabled;
         }
+        let selected_disabled = self
+            .display_index(self.selected_index)
+            .and_then(|index| self.items.get(index))
+            .is_some_and(|item| item.disabled);
+        if selected_disabled {
+            self.selected_index = self.first_enabled_index().unwrap_or(0);
+        }
     }
 
     pub fn select_item(&mut self, id: &str) {
@@ -218,9 +259,14 @@ impl SettingsList {
         if self.search_enabled {
             self.filtered_items
                 .get(self.selected_index)
-                .map(|i| self.items[*i].id.clone())
+                .map(|i| &self.items[*i])
+                .filter(|item| !item.disabled)
+                .map(|item| item.id.clone())
         } else {
-            self.items.get(self.selected_index).map(|i| i.id.clone())
+            self.items
+                .get(self.selected_index)
+                .filter(|item| !item.disabled)
+                .map(|item| item.id.clone())
         }
     }
 
@@ -241,15 +287,22 @@ impl SettingsList {
     }
 
     pub fn close_submenu(&mut self) {
-        self.submenu_component = None;
+        if let Some(mut submenu) = self.submenu_component.take() {
+            submenu.set_focused(false);
+        }
         self.submenu_done = None;
+        self.submenu_live_changes = None;
         if let Some(id) = self.navigate_after_close.take() {
+            self.submenu_item_index = None;
             self.select_item(&id);
             self.activate_item();
-            return;
-        }
-        if let Some(idx) = self.submenu_item_index.take() {
+        } else if let Some(idx) = self.submenu_item_index.take() {
             self.selected_index = idx;
+        }
+        if self.focused && self.submenu_component.is_none() {
+            if let Some(search) = &mut self.search_input {
+                search.set_focused(true);
+            }
         }
     }
 
@@ -265,7 +318,9 @@ impl SettingsList {
 
         if self.items.is_empty() {
             lines.push((self.theme.hint)("  No settings available"));
-            self.add_hint_line(&mut lines, width);
+            if self.search_enabled {
+                self.add_hint_line(&mut lines, width);
+            }
             return lines;
         }
 
@@ -307,7 +362,7 @@ impl SettingsList {
             } else {
                 &self.items[i]
             };
-            let is_selected = i == self.selected_index;
+            let is_selected = i == self.selected_index && !item.disabled;
             let prefix = if is_selected {
                 self.theme.cursor.clone()
             } else {
@@ -320,14 +375,20 @@ impl SettingsList {
                 item.label,
                 " ".repeat(max_label_width.saturating_sub(visible_width(&item.label)))
             );
-            let label_text = (self.theme.label)(&label_padded, is_selected);
+            let label_text = if item.disabled {
+                (self.theme.hint)(&label_padded)
+            } else {
+                (self.theme.label)(&label_padded, is_selected)
+            };
             let separator = "  ";
             let used_width = prefix_width + max_label_width + visible_width(separator);
             let value_max_width = width.saturating_sub(used_width + 2);
-            let value_text = (self.theme.value)(
-                &truncate_to_width(&item.current_value, value_max_width, ""),
-                is_selected,
-            );
+            let value = truncate_to_width(&item.current_value, value_max_width, "");
+            let value_text = if item.disabled {
+                (self.theme.hint)(&value)
+            } else {
+                (self.theme.value)(&value, is_selected)
+            };
             lines.push(truncate_to_width(
                 &format!("{prefix}{label_text}{separator}{value_text}"),
                 width,
@@ -351,10 +412,12 @@ impl SettingsList {
         } else {
             self.items.get(self.selected_index)
         } {
-            if let Some(description) = &selected_item.description {
-                lines.push(String::new());
-                for line in wrap_text_with_ansi(description, width.saturating_sub(4)) {
-                    lines.push((self.theme.description)(&format!("  {line}")));
+            if !selected_item.disabled {
+                if let Some(description) = &selected_item.description {
+                    lines.push(String::new());
+                    for line in wrap_text_with_ansi(description, width.saturating_sub(4)) {
+                        lines.push((self.theme.description)(&format!("  {line}")));
+                    }
                 }
             }
         }
@@ -389,21 +452,64 @@ impl SettingsList {
             return;
         }
 
-        if let Some(submenu_with_done) = &item.submenu_with_done {
+        if let Some(submenu_with_callbacks) = &item.submenu_with_callbacks {
             let result = std::sync::Arc::new(std::sync::Mutex::new(None));
             let result_for_callback = result.clone();
             let done: SettingsSubmenuDoneFn = Box::new(move |selected, navigate_to| {
-                *result_for_callback.lock().unwrap() = Some((selected, navigate_to));
+                *result_for_callback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some((selected, navigate_to));
+            });
+            let live_changes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let live_changes_for_callback = live_changes.clone();
+            let on_change: SettingsSubmenuChangeFn = Box::new(move |value| {
+                live_changes_for_callback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(value);
+            });
+            let component = submenu_with_callbacks(&item.current_value, done, on_change);
+            if let Some(mut component) = component {
+                component.set_focused(self.focused);
+                if let Some(search) = &mut self.search_input {
+                    search.set_focused(false);
+                }
+                self.submenu_item_index = Some(self.selected_index);
+                self.submenu_done = Some(result);
+                self.submenu_live_changes = Some(live_changes);
+                self.submenu_component = Some(component);
+                // A callback-aware submenu may publish its initial live value
+                // while the factory is being constructed. The queue exists
+                // before the factory call, but is attached to the list only
+                // after the component is returned; drain it now so the first
+                // state transition is not lost.
+                self.consume_submenu_live_changes();
+            }
+        } else if let Some(submenu_with_done) = &item.submenu_with_done {
+            let result = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let result_for_callback = result.clone();
+            let done: SettingsSubmenuDoneFn = Box::new(move |selected, navigate_to| {
+                *result_for_callback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some((selected, navigate_to));
             });
             let component = submenu_with_done(&item.current_value, done);
-            if let Some(component) = component {
+            if let Some(mut component) = component {
+                component.set_focused(self.focused);
+                if let Some(search) = &mut self.search_input {
+                    search.set_focused(false);
+                }
                 self.submenu_item_index = Some(self.selected_index);
                 self.submenu_done = Some(result);
                 self.submenu_component = Some(component);
             }
         } else if let Some(submenu) = &item.submenu {
             let component = submenu(&item.current_value, false);
-            if let Some(component) = component {
+            if let Some(mut component) = component {
+                component.set_focused(self.focused);
+                if let Some(search) = &mut self.search_input {
+                    search.set_focused(false);
+                }
                 self.submenu_item_index = Some(self.selected_index);
                 self.submenu_component = Some(component);
             }
@@ -436,7 +542,10 @@ impl SettingsList {
         let Some(state) = &self.submenu_done else {
             return;
         };
-        let result = state.lock().unwrap().take();
+        let result = state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         let Some((selected_value, navigate_to)) = result else {
             return;
         };
@@ -452,6 +561,29 @@ impl SettingsList {
         }
         self.navigate_after_close = navigate_to;
         self.close_submenu();
+    }
+
+    fn consume_submenu_live_changes(&mut self) {
+        let Some(state) = &self.submenu_live_changes else {
+            return;
+        };
+        let values = std::mem::take(&mut *state.lock().unwrap_or_else(|error| error.into_inner()));
+        if values.is_empty() {
+            return;
+        }
+        let Some(display_index) = self.submenu_item_index else {
+            return;
+        };
+        let Some(item_index) = self.display_index(display_index) else {
+            return;
+        };
+        let id = self.items[item_index].id.clone();
+        for value in values {
+            self.update_value(&id, value.clone());
+            if let Some(on_change) = &self.on_change {
+                on_change(&id, &value);
+            }
+        }
     }
 
     fn display_index(&self, index: usize) -> Option<usize> {
@@ -479,27 +611,60 @@ impl SettingsList {
     }
 
     fn move_selection(&mut self, direction: isize) {
+        self.move_selection_steps(direction, 1);
+    }
+
+    fn move_selection_page(&mut self, direction: isize) {
+        self.move_selection_steps(direction, self.max_visible);
+    }
+
+    fn move_selection_steps(&mut self, direction: isize, steps: usize) {
         let display_len = if self.search_enabled {
             self.filtered_items.len()
         } else {
             self.items.len()
         };
-        if display_len == 0 || self.first_enabled_index().is_none() {
+        if display_len == 0 || steps == 0 || self.first_enabled_index().is_none() {
             return;
         }
+
+        let step = direction.signum();
+        if step == 0 {
+            return;
+        }
+
         let mut index = self.selected_index.min(display_len - 1) as isize;
-        for _ in 0..display_len {
-            index = (index + direction).rem_euclid(display_len as isize);
-            if self
-                .display_index(index as usize)
-                .and_then(|item| self.items.get(item))
-                .map(|item| !item.disabled)
-                .unwrap_or(false)
-            {
-                self.selected_index = index as usize;
-                return;
+        for _ in 0..steps {
+            let mut moved = false;
+            for _ in 0..display_len {
+                index = (index + step).rem_euclid(display_len as isize);
+                if self
+                    .display_index(index as usize)
+                    .and_then(|item| self.items.get(item))
+                    .map(|item| !item.disabled)
+                    .unwrap_or(false)
+                {
+                    self.selected_index = index as usize;
+                    moved = true;
+                    break;
+                }
+            }
+            if !moved {
+                break;
             }
         }
+    }
+
+    /// Handle raw terminal input at the same boundary as the upstream
+    /// component. Kitty release reports are notifications, not a second
+    /// activation of the corresponding press; parsed `TuiKey`s cannot retain
+    /// that event-kind bit, so callers that own raw input should use this
+    /// adapter.
+    pub fn handle_raw_input(&mut self, raw: &str) {
+        if is_key_release(raw) {
+            return;
+        }
+        self.handle_input(&parse_key(raw));
     }
 }
 
@@ -513,7 +678,8 @@ fn self_ready_init(
 ) -> SettingsList {
     let search_enabled = options.enable_search;
     let search_input = if search_enabled {
-        Some(Input::new(""))
+        // `Input()` in the upstream component uses its default `> ` prompt.
+        Some(Input::new("> "))
     } else {
         None
     };
@@ -532,8 +698,10 @@ fn self_ready_init(
         submenu_item_index: None,
         navigate_after_close: None,
         submenu_done: None,
+        submenu_live_changes: None,
         on_change,
         on_cancel,
+        focused: false,
     }
 }
 
@@ -554,55 +722,56 @@ impl Component for SettingsList {
             if let Some(sub) = &mut self.submenu_component {
                 sub.handle_input(key);
             }
+            self.consume_submenu_live_changes();
             self.consume_submenu_done();
             return;
         }
 
-        match key.base.as_str() {
-            "up" => {
-                self.move_selection(-1);
+        let bindings = get_keybindings();
+        if bindings.matches(key, "tui.select.up") {
+            self.move_selection(-1);
+            return;
+        }
+        if bindings.matches(key, "tui.select.down") {
+            self.move_selection(1);
+            return;
+        }
+        if bindings.matches(key, "tui.select.pageUp") {
+            self.move_selection_page(-1);
+            return;
+        }
+        if bindings.matches(key, "tui.select.pageDown") {
+            self.move_selection_page(1);
+            return;
+        }
+        if bindings.matches(key, "tui.select.confirm")
+            || (match_key(key, " ")
+                && (!self.search_enabled
+                    || self
+                        .search_input
+                        .as_ref()
+                        .map(|input| input.value.is_empty())
+                        .unwrap_or(true)))
+        {
+            self.activate_item();
+            return;
+        }
+        if bindings.matches(key, "tui.select.cancel") {
+            if let Some(on_cancel) = &self.on_cancel {
+                on_cancel();
             }
-            "down" => {
-                self.move_selection(1);
-            }
-            "enter" => {
-                if key.ctrl {
-                    return;
-                }
-                self.activate_item();
-            }
-            " " if !self.search_enabled
-                || self
-                    .search_input
-                    .as_ref()
-                    .map(|input| input.value.is_empty())
-                    .unwrap_or(true) =>
-            {
-                if !key.ctrl {
-                    self.activate_item();
-                }
-            }
-            "escape" => {
-                if let Some(on_cancel) = &self.on_cancel {
-                    on_cancel();
-                }
-            }
-            _ => {
-                if self.search_enabled {
-                    let mut changed = false;
-                    let mut new_value = String::new();
-                    if let Some(search) = &mut self.search_input {
-                        let before = search.value.clone();
-                        search.handle_input(key);
-                        if search.value != before {
-                            changed = true;
-                            new_value = search.value.clone();
-                        }
-                    }
-                    if changed {
-                        self.apply_filter(&new_value);
-                    }
-                }
+            return;
+        }
+
+        if self.search_enabled {
+            let query = if let Some(search) = &mut self.search_input {
+                search.handle_input(key);
+                Some(search.value.clone())
+            } else {
+                None
+            };
+            if let Some(query) = query {
+                self.apply_filter(&query);
             }
         }
     }
@@ -610,6 +779,308 @@ impl Component for SettingsList {
     fn invalidate(&mut self) {
         if let Some(sub) = &mut self.submenu_component {
             sub.invalidate();
+        } else if let Some(search) = &mut self.search_input {
+            search.invalidate();
         }
+    }
+
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+        if let Some(sub) = &mut self.submenu_component {
+            sub.set_focused(focused);
+        }
+        if let Some(search) = &mut self.search_input {
+            search.set_focused(focused && self.submenu_component.is_none());
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::tui::Component;
+    use crate::utils::{strip_ansi_codes, visible_width};
+    use std::sync::{Arc, Mutex};
+
+    fn navigation_items() -> Vec<SettingItem> {
+        ["one", "two", "three", "four"]
+            .into_iter()
+            .map(|id| SettingItem::new(id, id, id, Vec::new()))
+            .collect()
+    }
+
+    #[test]
+    fn renders_upstream_search_prompt_aligned_values_and_description() {
+        let list = SettingsList::new(
+            vec![
+                SettingItem::new("short", "A", "one", Vec::new())
+                    .with_description("the selected description"),
+                SettingItem::new("wide", "WIDE", "two", Vec::new()),
+            ],
+            10,
+            plain_settings_theme(),
+            SettingsListOptions {
+                enable_search: true,
+            },
+        );
+
+        let lines = list.render(60);
+        assert!(strip_ansi_codes(&lines[0]).starts_with("> "));
+        let first_row = lines
+            .iter()
+            .find(|line| strip_ansi_codes(line).contains("one"))
+            .expect("selected row");
+        let second_row = lines
+            .iter()
+            .find(|line| strip_ansi_codes(line).contains("two"))
+            .expect("second row");
+        let first_clean = strip_ansi_codes(first_row);
+        let second_clean = strip_ansi_codes(second_row);
+        assert_eq!(
+            visible_width(&first_clean[..first_clean.find("one").unwrap()]),
+            visible_width(&second_clean[..second_clean.find("two").unwrap()])
+        );
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("the selected description")));
+        assert!(lines.last().is_some_and(
+            |line| line.contains("Type to search · Enter/Space to change · Esc to cancel")
+        ));
+    }
+
+    #[test]
+    fn empty_non_search_list_only_renders_the_upstream_empty_state() {
+        let list = SettingsList::new(
+            Vec::new(),
+            10,
+            plain_settings_theme(),
+            SettingsListOptions::default(),
+        );
+        assert_eq!(list.render(40), vec!["  No settings available"]);
+    }
+
+    #[test]
+    fn one_arrow_press_moves_one_row_and_wraps_while_pages_move_by_max_visible() {
+        let mut list = SettingsList::new(
+            navigation_items(),
+            2,
+            plain_settings_theme(),
+            SettingsListOptions::default(),
+        );
+
+        assert_eq!(list.selected_id().as_deref(), Some("one"));
+        list.handle_input(&TuiKey::simple("down"));
+        assert_eq!(list.selected_id().as_deref(), Some("two"));
+        list.handle_input(&TuiKey::simple("down"));
+        assert_eq!(list.selected_id().as_deref(), Some("three"));
+        list.handle_input(&TuiKey::simple("up"));
+        assert_eq!(list.selected_id().as_deref(), Some("two"));
+        list.handle_input(&TuiKey::simple("up"));
+        assert_eq!(list.selected_id().as_deref(), Some("one"));
+        list.handle_input(&TuiKey::simple("up"));
+        assert_eq!(list.selected_id().as_deref(), Some("four"));
+
+        list.handle_input(&TuiKey::simple("pagedown"));
+        assert_eq!(list.selected_id().as_deref(), Some("two"));
+        list.handle_input(&TuiKey::simple("pageup"));
+        assert_eq!(list.selected_id().as_deref(), Some("four"));
+    }
+
+    #[test]
+    fn navigation_wins_over_cancel_when_user_bindings_conflict() {
+        use crate::keybindings::{get_keybindings, set_keybindings, KeybindingsConfig};
+
+        let original = get_keybindings();
+        let mut config = KeybindingsConfig::new();
+        config.insert("tui.select.cancel".to_string(), vec!["down".to_string()]);
+        set_keybindings(crate::keybindings::KeybindingsManager::new(
+            crate::keybindings::TUI_KEYBINDINGS,
+            config,
+        ));
+
+        let canceled = Arc::new(Mutex::new(0usize));
+        let canceled_for_callback = canceled.clone();
+        let mut list = SettingsList::new_with_callbacks(
+            navigation_items(),
+            2,
+            plain_settings_theme(),
+            |_, _| {},
+            move || {
+                *canceled_for_callback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) += 1
+            },
+            SettingsListOptions::default(),
+        );
+
+        list.handle_input(&TuiKey::simple("down"));
+        set_keybindings(original);
+
+        assert_eq!(list.selected_id().as_deref(), Some("two"));
+        assert_eq!(
+            *canceled.lock().unwrap_or_else(|error| error.into_inner()),
+            0
+        );
+    }
+
+    #[test]
+    fn raw_kitty_release_does_not_dispatch_a_second_arrow_press() {
+        let mut list = SettingsList::new(
+            navigation_items(),
+            2,
+            plain_settings_theme(),
+            SettingsListOptions::default(),
+        );
+
+        // Kitty's private codepoint 57419 is Up. Flag 3 marks the event as a
+        // release; it decodes to the same TuiKey as the press after filtering.
+        list.handle_raw_input("\x1b[57419;1:3u");
+        assert_eq!(list.selected_id().as_deref(), Some("one"));
+        list.handle_raw_input("\x1b[57419u");
+        assert_eq!(list.selected_id().as_deref(), Some("four"));
+    }
+
+    #[test]
+    fn search_space_and_enter_follow_upstream_transitions() {
+        let changes = Arc::new(Mutex::new(Vec::<String>::new()));
+        let changes_for_callback = changes.clone();
+        let mut list = SettingsList::new_with_callbacks(
+            vec![SettingItem::new(
+                "mode",
+                "TUI mode",
+                "regular",
+                vec!["regular".into(), "fullscreen".into()],
+            )],
+            10,
+            plain_settings_theme(),
+            move |_, value| {
+                changes_for_callback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(value.to_string())
+            },
+            || {},
+            SettingsListOptions {
+                enable_search: true,
+            },
+        );
+
+        list.handle_input(&TuiKey::simple(" "));
+        assert_eq!(
+            changes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            ["fullscreen".to_string()]
+        );
+
+        for character in "TUI mode".chars() {
+            list.handle_input(&TuiKey::simple(character.to_string()));
+        }
+        list.handle_input(&TuiKey::simple(" "));
+        assert_eq!(
+            changes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            ["fullscreen".to_string()]
+        );
+
+        list.handle_input(&TuiKey::simple("return"));
+        assert_eq!(
+            changes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            ["fullscreen".to_string(), "regular".to_string(),]
+        );
+    }
+
+    #[test]
+    fn submenu_escape_is_delegated_and_done_updates_without_parent_cancel() {
+        struct EscapeDoneSubmenu {
+            done: Option<SettingsSubmenuDoneFn>,
+        }
+
+        impl Component for EscapeDoneSubmenu {
+            fn render(&self, _width: usize) -> Vec<String> {
+                vec!["submenu".to_string()]
+            }
+
+            fn handle_input(&mut self, key: &TuiKey) {
+                if match_key(key, "escape") {
+                    if let Some(done) = self.done.take() {
+                        done(Some("selected".to_string()), None);
+                    }
+                }
+            }
+        }
+
+        let changes = Arc::new(Mutex::new(Vec::<String>::new()));
+        let cancels = Arc::new(Mutex::new(0usize));
+        let changes_for_callback = changes.clone();
+        let cancels_for_callback = cancels.clone();
+        let item = SettingItem::new("theme", "Theme", "old", Vec::new())
+            .with_submenu_done(|_, done| Some(Box::new(EscapeDoneSubmenu { done: Some(done) })));
+        let mut list = SettingsList::new_with_callbacks(
+            vec![item],
+            10,
+            plain_settings_theme(),
+            move |_, value| {
+                changes_for_callback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(value.to_string())
+            },
+            move || {
+                *cancels_for_callback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) += 1
+            },
+            SettingsListOptions::default(),
+        );
+
+        list.handle_input(&TuiKey::simple("enter"));
+        assert!(list.is_submenu_open());
+        list.handle_input(&TuiKey::simple("esc"));
+        assert!(!list.is_submenu_open());
+        assert_eq!(list.visible_items()[0].current_value, "selected");
+        assert_eq!(
+            changes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            ["selected".to_string()]
+        );
+        assert_eq!(
+            *cancels.lock().unwrap_or_else(|error| error.into_inner()),
+            0
+        );
+    }
+
+    #[test]
+    fn escape_and_ctrl_c_cancel_the_main_list() {
+        let cancels = Arc::new(Mutex::new(0usize));
+        let cancels_for_callback = cancels.clone();
+        let mut list = SettingsList::new_with_callbacks(
+            navigation_items(),
+            2,
+            plain_settings_theme(),
+            |_, _| {},
+            move || {
+                *cancels_for_callback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) += 1
+            },
+            SettingsListOptions::default(),
+        );
+
+        list.handle_input(&TuiKey::simple("esc"));
+        list.handle_input(&TuiKey::ctrl("c"));
+        assert_eq!(
+            *cancels.lock().unwrap_or_else(|error| error.into_inner()),
+            2
+        );
     }
 }

@@ -20,6 +20,7 @@ pub fn is_native_modifier_pressed(_key: ModifierKey) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

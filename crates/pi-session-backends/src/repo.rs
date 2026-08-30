@@ -142,6 +142,7 @@ impl RepoState {
     }
 
     /// Opens (once) and runs `f` against the shared connection.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub(crate) async fn with_db<T>(
         self: &Arc<Self>,
         f: impl FnOnce(&mut Connection) -> Result<T, SessionError> + Send,
@@ -151,14 +152,22 @@ impl RepoState {
     {
         let mut guard = self.db.lock().await;
         if guard.is_none() {
-            if let Some(error) = self.open_error.lock().unwrap().clone() {
+            if let Some(error) = self
+                .open_error
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+            {
                 return Err(error);
             }
             let opened = self.open_database();
             match opened {
                 Ok(connection) => *guard = Some(connection),
                 Err(error) => {
-                    *self.open_error.lock().unwrap() = Some(error.clone());
+                    *self
+                        .open_error
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = Some(error.clone());
                     return Err(error);
                 }
             }
@@ -200,14 +209,14 @@ impl RepoState {
     pub(crate) fn register_storage(&self, storage: &Arc<SqliteSessionStorage>) {
         self.active_storages
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .push(Arc::clone(storage));
     }
 
     pub(crate) fn unregister_storage(&self, storage: &Arc<SqliteSessionStorage>) {
         self.active_storages
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .retain(|candidate| !Arc::ptr_eq(candidate, storage));
     }
 
@@ -215,7 +224,10 @@ impl RepoState {
         &self,
         session_id: &str,
     ) -> Option<Arc<SqliteSessionStorage>> {
-        let storages = self.active_storages.lock().unwrap();
+        let storages = self
+            .active_storages
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         for storage in storages.iter() {
             if storage.is_for_session(session_id) {
                 return Some(Arc::clone(storage));
@@ -228,7 +240,7 @@ impl RepoState {
         let storages: Vec<Arc<SqliteSessionStorage>> = self
             .active_storages
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .iter()
             .filter(|storage| storage.is_for_session(session_id))
             .cloned()
@@ -668,11 +680,19 @@ impl SqliteSessionStorage {
     }
 
     pub(crate) fn is_for_session(&self, session_id: &str) -> bool {
-        self.metadata.lock().unwrap().id == session_id
+        self.metadata
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .id
+            == session_id
     }
 
     pub(crate) fn session_id(&self) -> String {
-        self.metadata.lock().unwrap().id.clone()
+        self.metadata
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .id
+            .clone()
     }
 
     fn path(&self) -> String {
@@ -684,12 +704,21 @@ impl SqliteSessionStorage {
         if self.closing.swap(true, Ordering::SeqCst) {
             return;
         }
-        if let Some(handle) = self.heartbeat.lock().unwrap().take() {
+        if let Some(handle) = self
+            .heartbeat
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
             handle.abort();
         }
         let repo = self.repo.clone();
         let session_id = self.session_id();
-        let lease = self.lease.lock().unwrap().clone();
+        let lease = self
+            .lease
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         let _ = repo
             .with_db(move |db| {
                 release_writer_lease(db, &session_id, &lease)
@@ -701,7 +730,13 @@ impl SqliteSessionStorage {
     }
 
     fn schedule_heartbeat(self: &Arc<Self>) {
-        if self.closing.load(Ordering::SeqCst) || self.lease_error.lock().unwrap().is_some() {
+        if self.closing.load(Ordering::SeqCst)
+            || self
+                .lease_error
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_some()
+        {
             return;
         }
         let storage = Arc::downgrade(self);
@@ -720,22 +755,39 @@ impl SqliteSessionStorage {
                 }
             }
         });
-        *self.heartbeat.lock().unwrap() = Some(handle);
+        *self
+            .heartbeat
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(handle);
     }
 
     fn is_done(&self) -> bool {
-        self.closing.load(Ordering::SeqCst) || self.lease_error.lock().unwrap().is_some()
+        self.closing.load(Ordering::SeqCst)
+            || self
+                .lease_error
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_some()
     }
 
     async fn heartbeat_once(self: &Arc<Self>) {
         let repo = self.repo.clone();
         let session_id = self.session_id();
-        let lease = self.lease.lock().unwrap().clone();
+        let lease = self
+            .lease
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         let this = Arc::clone(self);
         let ttl = repo.lease_options().ttl_ms as i64;
         let _ = repo
             .with_db(move |db| {
-                if this.closing.load(Ordering::SeqCst) || this.lease_error.lock().unwrap().is_some()
+                if this.closing.load(Ordering::SeqCst)
+                    || this
+                        .lease_error
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .is_some()
                 {
                     return Ok(());
                 }
@@ -743,7 +795,11 @@ impl SqliteSessionStorage {
                 let renewed = renew_writer_lease(db, &session_id, &lease, now, now + ttl)
                     .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
                 if !renewed {
-                    *this.lease_error.lock().unwrap() = Some(lost_writer_error(&session_id));
+                    *this
+                        .lease_error
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) =
+                        Some(lost_writer_error(&session_id));
                 }
                 Ok(())
             })
@@ -768,7 +824,11 @@ impl SqliteSessionStorage {
         }
         let repo = self.repo.clone();
         let session_id = self.session_id();
-        let lease = self.lease.lock().unwrap().clone();
+        let lease = self
+            .lease
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         let this = Arc::clone(self);
         let ttl = repo.lease_options().ttl_ms as i64;
         repo.with_db(move |db| {
@@ -778,18 +838,32 @@ impl SqliteSessionStorage {
                     format!("SQLite session {session_id} is closed"),
                 ));
             }
-            if let Some(error) = this.lease_error.lock().unwrap().clone() {
+            if let Some(error) = this
+                .lease_error
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+            {
                 return Err(error);
             }
             transaction(db, |tx| {
-                if let Some(error) = this.lease_error.lock().unwrap().clone() {
+                if let Some(error) = this
+                    .lease_error
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone()
+                {
                     return Err(error);
                 }
                 let now = now_ms();
                 let renewed = renew_writer_lease(tx, &session_id, &lease, now, now + ttl)
                     .map_err(|error| session_error(SessionErrorKind::Storage, error.to_string()))?;
                 if !renewed {
-                    *this.lease_error.lock().unwrap() = Some(lost_writer_error(&session_id));
+                    *this
+                        .lease_error
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) =
+                        Some(lost_writer_error(&session_id));
                     return Err(lost_writer_error(&session_id));
                 }
                 operation(tx)
@@ -1326,6 +1400,7 @@ impl SqliteSessionStorage {
         .await
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub(crate) async fn set_name(self: &Arc<Self>, name: Option<&str>) -> Result<(), SessionError> {
         let session_id = self.session_id();
         let name = name.map(|s| s.to_string());
@@ -1362,6 +1437,7 @@ impl SqliteSessionStorage {
         .await
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub(crate) async fn set_label(
         self: &Arc<Self>,
         id: &str,
@@ -1566,6 +1642,7 @@ pub struct SqliteSessionRepository {
 }
 
 impl SqliteSessionRepository {
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn new(
         database_path: impl Into<String>,
         lease_options: Option<SqliteWriterLeaseOptions>,
@@ -2043,7 +2120,7 @@ impl SqliteSessionRepository {
         let storages: Vec<Arc<SqliteSessionStorage>> = state
             .active_storages
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .iter()
             .cloned()
             .collect();

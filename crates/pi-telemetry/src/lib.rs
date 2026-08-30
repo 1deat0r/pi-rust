@@ -309,7 +309,7 @@ impl InMemorySpanHandle {
         if self.settled.load(Ordering::SeqCst) {
             return;
         }
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let rec = &mut guard.spans[self.index];
         if rec.settled {
             return;
@@ -323,7 +323,7 @@ impl InMemorySpanHandle {
         if self.settled.load(Ordering::SeqCst) {
             return;
         }
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let rec = &mut guard.spans[self.index];
         if rec.settled {
             return;
@@ -334,7 +334,7 @@ impl InMemorySpanHandle {
         if self.settled.load(Ordering::SeqCst) {
             return;
         }
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let rec = &mut guard.spans[self.index];
         if rec.settled {
             return;
@@ -380,7 +380,7 @@ impl InMemoryChildSpan {
         F: FnOnce(&SpanHandle) -> T,
     {
         let parent_id = {
-            let guard = self.state.lock().unwrap();
+            let guard = self.state.lock().unwrap_or_else(|error| error.into_inner());
             if guard.spans[self.index].settled {
                 let handle = SpanHandle::noop();
                 return callback(&handle);
@@ -396,7 +396,7 @@ impl InMemoryChildSpan {
         Fut: Future<Output = T>,
     {
         let parent_id = {
-            let guard = self.state.lock().unwrap();
+            let guard = self.state.lock().unwrap_or_else(|error| error.into_inner());
             if guard.spans[self.index].settled {
                 None
             } else {
@@ -424,7 +424,7 @@ where
     F: FnOnce(&SpanHandle) -> T,
 {
     // Create the record.
-    let mut guard = state.lock().unwrap();
+    let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
     let id = guard.next_span_id;
     guard.next_span_id += 1;
     let index = guard.spans.len();
@@ -460,11 +460,19 @@ where
     settled.store(true, Ordering::SeqCst);
     match result {
         Ok(result) => {
-            settle_span(&mut state.lock().unwrap(), index, false, None);
+            settle_span(
+                &mut state.lock().unwrap_or_else(|error| error.into_inner()),
+                index,
+                false,
+                None,
+            );
             result
         }
         Err(panic) => {
-            settle_panicked_span(&mut state.lock().unwrap(), index);
+            settle_panicked_span(
+                &mut state.lock().unwrap_or_else(|error| error.into_inner()),
+                index,
+            );
             std::panic::resume_unwind(panic)
         }
     }
@@ -484,7 +492,7 @@ where
     Fut: Future<Output = T>,
 {
     let index = {
-        let mut guard = state.lock().unwrap();
+        let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
         let id = guard.next_span_id;
         guard.next_span_id += 1;
         let index = guard.spans.len();
@@ -518,11 +526,19 @@ where
     settled.store(true, Ordering::SeqCst);
     match result {
         Ok(result) => {
-            settle_span(&mut state.lock().unwrap(), index, false, None);
+            settle_span(
+                &mut state.lock().unwrap_or_else(|error| error.into_inner()),
+                index,
+                false,
+                None,
+            );
             result
         }
         Err(panic) => {
-            settle_panicked_span(&mut state.lock().unwrap(), index);
+            settle_panicked_span(
+                &mut state.lock().unwrap_or_else(|error| error.into_inner()),
+                index,
+            );
             std::panic::resume_unwind(panic)
         }
     }
@@ -566,7 +582,7 @@ impl InMemoryTelemetryContext {
 
     /// Returns detached snapshots in span-start order.
     pub fn get_spans(&self) -> Vec<RecordedTelemetrySpan> {
-        let guard = self.state.lock().unwrap();
+        let guard = self.state.lock().unwrap_or_else(|error| error.into_inner());
         guard
             .spans
             .iter()
@@ -601,6 +617,7 @@ impl TelemetryContext for InMemoryTelemetryContext {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

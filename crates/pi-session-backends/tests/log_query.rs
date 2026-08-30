@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! SQLite log queries — port of `test/log-query.test.ts`.
 
 use pi_agent::session::state::LogOptions;

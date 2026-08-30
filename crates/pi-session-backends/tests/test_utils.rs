@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
 #![allow(dead_code)]
 //! Shared test fixtures — port of upstream `test/test-utils.ts`.
 
@@ -41,6 +42,7 @@ pub fn assistant_message(text: &str) -> AgentMessage {
             stop_reason: Some(StopReason::Stop),
             deferred: None,
             error_message: None,
+            diagnostics: None,
             raw_stop_reason: None,
             end_turn: None,
             timestamp: now_ms(),

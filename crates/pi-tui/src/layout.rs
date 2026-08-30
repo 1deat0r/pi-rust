@@ -157,6 +157,10 @@ pub trait ScrollLayoutState: Send + Sync {
         width
     }
     fn update_layout(&self, content_height: usize, viewport_height: usize);
+    /// Publish the allocated viewport width before paint-time geometry is
+    /// queried. Layout-node rendering does not call the component's ordinary
+    /// `render` method, so width must cross this boundary explicitly.
+    fn set_viewport_width(&self, _width: usize) {}
     fn scrollbar_visible(&self) -> bool {
         false
     }
@@ -166,8 +170,29 @@ pub trait ScrollLayoutState: Send + Sync {
     fn scroll_by(&self, _lines: isize) -> isize {
         0
     }
+    /// Move to an absolute document row. The default keeps custom scroll
+    /// states source-compatible by expressing the move through `scroll_by`.
+    fn scroll_to(&self, position: usize) {
+        let current = self.scroll_top();
+        let delta = if position >= current {
+            position.saturating_sub(current) as isize
+        } else {
+            -(current.saturating_sub(position) as isize)
+        };
+        let _ = self.scroll_by(delta);
+    }
+    /// Move to an absolute document row while optionally keeping follow-end
+    /// disabled. Search uses this to match upstream `scrollTo(...,
+    /// {disableFollow: true})`: revealing a match at the tail must not make
+    /// subsequent transcript growth jump the viewport away from that match.
+    fn scroll_to_with_options(&self, position: usize, _disable_follow: bool) {
+        self.scroll_to(position);
+    }
     fn scroll_to_start(&self) {}
     fn scroll_to_end(&self) {}
+    /// Install the callback used by timer-driven viewport state changes to
+    /// request a repaint from the owning event loop.
+    fn set_request_render_callback(&self, _callback: Option<Arc<dyn Fn() + Send + Sync>>) {}
 }
 
 /// A scroll node containing the child that is laid out as scrollable content.
@@ -397,6 +422,11 @@ pub struct LayoutRect {
 pub struct LayoutBox {
     pub component: SharedComponent,
     pub rect: LayoutRect,
+    /// Signed paint translation retained separately from the public geometry.
+    /// Scroll content frequently needs to move above row zero; saturating a
+    /// `usize` y-coordinate would silently pin it at the top and render the
+    /// wrong transcript rows.
+    pub paint_offset_y: isize,
     pub clip: LayoutRect,
     pub children: Vec<LayoutBox>,
     pub parent: Option<usize>,
@@ -449,7 +479,10 @@ fn render_cached(
     {
         return lines.clone();
     }
-    let lines = component.lock().unwrap().render(width);
+    let lines = component
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .render(width);
     context.render_cache.push((key.0, key.1, lines.clone()));
     lines
 }
@@ -470,12 +503,16 @@ fn intersect(a: LayoutRect, b: LayoutRect) -> LayoutRect {
 }
 
 fn translate_box(box_: &mut LayoutBox, delta_y: isize) {
-    box_.rect.y = box_.rect.y.saturating_add_signed(delta_y);
+    box_.paint_offset_y = box_.paint_offset_y.saturating_add(delta_y);
     for child in &mut box_.children {
         translate_box(child, delta_y);
     }
 }
 
+// The recursive layout routine keeps these coordinates and clipping inputs
+// explicit at every child boundary; bundling them would obscure the retained
+// tree's geometry contract and add a short-lived allocation on each branch.
+#[allow(clippy::too_many_arguments)]
 fn layout_component(
     context: &mut LayoutContext,
     component: SharedComponent,
@@ -484,9 +521,13 @@ fn layout_component(
     width: usize,
     height: Option<usize>,
     clip: LayoutRect,
+    request_render: Option<&Arc<dyn Fn() + Send + Sync>>,
 ) -> LayoutBox {
     let width = width.max(1);
-    let node = component.lock().unwrap().layout_node();
+    let node = component
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .layout_node();
     let Some(node) = node else {
         let lines = render_cached(context, &component, width);
         let allocated_height = height.unwrap_or(lines.len());
@@ -508,6 +549,7 @@ fn layout_component(
         return LayoutBox {
             component,
             rect,
+            paint_offset_y: 0,
             clip: intersect(clip, rect),
             children: Vec::new(),
             parent: None,
@@ -523,22 +565,43 @@ fn layout_component(
         LayoutNode::Scroll(scroll) => {
             let previous_top = scroll.state.scroll_top();
             let content_width = scroll.state.get_content_width(width).max(1);
+            let initial_content_y = y.saturating_sub(previous_top);
             let child = layout_component(
                 context,
                 scroll.component.clone(),
                 x,
-                y.saturating_sub(previous_top),
+                initial_content_y,
                 content_width,
                 None,
-                clip,
+                // Scroll content is laid out in document coordinates. Defer
+                // clipping until paint, after the signed scroll translation,
+                // or rows near the document tail get clipped at their old
+                // unscrolled y-coordinate.
+                LayoutRect {
+                    x: 0,
+                    y: 0,
+                    width: usize::MAX,
+                    height: usize::MAX,
+                },
+                request_render,
             );
             let content_height = child.rect.height;
             let viewport_height = height.unwrap_or(content_height);
+            scroll.state.set_viewport_width(width);
+            scroll
+                .state
+                .set_request_render_callback(request_render.cloned());
             scroll.state.update_layout(content_height, viewport_height);
             let actual_top = scroll.state.scroll_top();
-            translate_box(&mut { child.clone() }, 0); // retain a simple borrow boundary below
             let mut child = child;
-            translate_box(&mut child, previous_top as isize - actual_top as isize);
+            // `LayoutRect.y` is unsigned, so the initial document position is
+            // clamped when the viewport is already scrolled past its origin.
+            // Translate from that clamped position to the desired signed
+            // screen position; using only `previous_top - actual_top` loses
+            // the clamped portion after a resize or appended tail content.
+            let desired_content_y = y as isize - actual_top as isize;
+            let translation = desired_content_y - initial_content_y as isize;
+            translate_box(&mut child, translation);
             if scroll.state.primary() || context.primary_scroll_view.is_none() {
                 context.primary_scroll_view = Some(scroll.state.clone());
             }
@@ -553,6 +616,7 @@ fn layout_component(
             LayoutBox {
                 component,
                 rect,
+                paint_offset_y: 0,
                 clip: child_clip,
                 children: vec![child],
                 parent: None,
@@ -597,6 +661,7 @@ fn layout_component(
                         width,
                         Some(size),
                         parent_clip,
+                        request_render,
                     ));
                     child_y = child_y.saturating_add(size).saturating_add(stack.gap);
                 }
@@ -605,9 +670,11 @@ fn layout_component(
                     .iter()
                     .map(|entry| match entry.basis {
                         LayoutBasis::Cells(value) => value,
-                        LayoutBasis::Auto => visible_width(
-                            &render_cached(context, &entry.component, width).join("\n"),
-                        ),
+                        LayoutBasis::Auto => render_cached(context, &entry.component, width)
+                            .iter()
+                            .map(|line| visible_width(line))
+                            .max()
+                            .unwrap_or(0),
                     })
                     .collect();
                 let sizes = allocate_stack_sizes(&entries, &intrinsic, Some(width), stack.gap);
@@ -651,6 +718,7 @@ fn layout_component(
                             child_width,
                             Some(child_height),
                             parent_clip,
+                            request_render,
                         ));
                     } else {
                         children.push(LayoutBox {
@@ -661,6 +729,7 @@ fn layout_component(
                                 width: 0,
                                 height: child_height,
                             },
+                            paint_offset_y: 0,
                             clip: LayoutRect {
                                 x: child_x,
                                 y: child_y,
@@ -690,6 +759,7 @@ fn layout_component(
             LayoutBox {
                 component,
                 rect,
+                paint_offset_y: 0,
                 clip: intersect(clip, rect),
                 children,
                 parent: None,
@@ -704,16 +774,43 @@ fn layout_component(
 }
 
 fn paint_box(box_: &LayoutBox, screen: &mut [String], width: usize) {
+    paint_box_with_clip(box_, screen, width, None);
+}
+
+fn paint_box_with_clip(
+    box_: &LayoutBox,
+    screen: &mut [String],
+    width: usize,
+    inherited_clip: Option<LayoutRect>,
+) {
+    // A scroll node supplies the viewport clip to its content. Content boxes
+    // are laid out in document coordinates, so their own pre-scroll clips
+    // must not be allowed to discard rows before the signed paint translation
+    // is applied.
+    let translated_clip = LayoutRect {
+        x: box_.clip.x,
+        y: box_.clip.y.saturating_add_signed(box_.paint_offset_y),
+        width: box_.clip.width,
+        height: box_.clip.height,
+    };
+    let clip = inherited_clip
+        .map(|parent| intersect(parent, translated_clip))
+        .unwrap_or(translated_clip);
     if let Some(lines) = &box_.lines {
-        let first = box_.rect.y.max(box_.clip.y);
-        let last = box_
-            .rect
-            .y
-            .saturating_add(box_.rect.height)
-            .min(box_.clip.y.saturating_add(box_.clip.height))
-            .min(screen.len());
+        let paint_y = box_.rect.y as isize + box_.paint_offset_y;
+        let clip_top = clip.y as isize;
+        let clip_bottom = clip.y.saturating_add(clip.height) as isize;
+        let first = paint_y.max(clip_top).max(0) as usize;
+        let last = (paint_y + box_.rect.height as isize)
+            .min(clip_bottom)
+            .min(screen.len() as isize)
+            .max(first as isize) as usize;
         for (row, target) in screen.iter_mut().enumerate().take(last).skip(first) {
-            let source = box_.line_offset + row.saturating_sub(box_.rect.y);
+            let source = box_.line_offset as isize + row as isize - paint_y;
+            if source < 0 {
+                continue;
+            }
+            let source = source as usize;
             let Some(line) = lines.get(source) else {
                 continue;
             };
@@ -725,16 +822,16 @@ fn paint_box(box_: &LayoutBox, screen: &mut [String], width: usize) {
         }
     }
     for child in &box_.children {
-        paint_box(child, screen, width);
+        paint_box_with_clip(child, screen, width, Some(clip));
     }
-    paint_scrollbar(box_, screen, width);
+    paint_scrollbar(box_, screen, width, clip);
 }
 
 fn style_scrollbar_cell(line: &str, column: usize, width: usize, styled: &str) -> String {
     composite_tui_line(line, styled, column, 1, width)
 }
 
-fn paint_scrollbar(box_: &LayoutBox, screen: &mut [String], width: usize) {
+fn paint_scrollbar(box_: &LayoutBox, screen: &mut [String], width: usize, clip: LayoutRect) {
     let Some(geometry) = get_scrollbar_geometry(box_) else {
         return;
     };
@@ -742,11 +839,11 @@ fn paint_scrollbar(box_: &LayoutBox, screen: &mut [String], width: usize) {
         return;
     };
     let styled = state.scrollbar_style("█");
-    for row in geometry.thumb_top..geometry.thumb_top + geometry.thumb_height {
-        if row < box_.clip.y
-            || row >= box_.clip.y.saturating_add(box_.clip.height)
-            || row >= screen.len()
-        {
+    let translated_thumb_top = geometry.thumb_top as isize + box_.paint_offset_y;
+    for row in translated_thumb_top.max(0) as usize
+        ..(translated_thumb_top + geometry.thumb_height as isize).max(0) as usize
+    {
+        if row < clip.y || row >= clip.y.saturating_add(clip.height) || row >= screen.len() {
             continue;
         }
         screen[row] = style_scrollbar_cell(&screen[row], geometry.column, width, &styled);
@@ -755,6 +852,18 @@ fn paint_scrollbar(box_: &LayoutBox, screen: &mut [String], width: usize) {
 
 /// Render a component tree into a clipped viewport and retain its geometry.
 pub fn render_layout_frame(root: SharedComponent, width: usize, height: usize) -> LayoutFrame {
+    render_layout_frame_with_request(root, width, height, None)
+}
+
+/// Render a component tree while wiring scroll nodes to an owner-provided
+/// repaint callback. A callback is optional so callers that drive rendering
+/// synchronously can keep using [`render_layout_frame`].
+pub fn render_layout_frame_with_request(
+    root: SharedComponent,
+    width: usize,
+    height: usize,
+    request_render: Option<Arc<dyn Fn() + Send + Sync>>,
+) -> LayoutFrame {
     let width = width.max(1);
     let height = height.max(1);
     let viewport = LayoutViewport { width, height };
@@ -776,6 +885,7 @@ pub fn render_layout_frame(root: SharedComponent, width: usize, height: usize) -
             width,
             height,
         },
+        request_render.as_ref(),
     );
     let mut lines = vec![String::new(); height];
     paint_box(&root_box, &mut lines, width);
@@ -901,8 +1011,10 @@ pub fn clamp_layout_line(line: &str, width: usize) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::Component;
 
     #[test]
     fn fixed_and_grow_split() {
@@ -936,5 +1048,60 @@ mod tests {
         // grow children get zero when nothing remains.
         let sizes = solve_flex(40, &[LayoutConstraint::Fixed(50)]);
         assert_eq!(sizes, vec![50]);
+    }
+
+    #[test]
+    fn horizontal_auto_basis_uses_the_widest_multiline_row() {
+        struct NaturalLines(Vec<String>);
+
+        impl Component for NaturalLines {
+            fn render(&self, _width: usize) -> Vec<String> {
+                self.0.clone()
+            }
+        }
+
+        struct HorizontalNode {
+            entries: Vec<StackLayoutEntry>,
+        }
+
+        impl Component for HorizontalNode {
+            fn render(&self, _width: usize) -> Vec<String> {
+                Vec::new()
+            }
+
+            fn layout_node(&self) -> Option<LayoutNode> {
+                Some(LayoutNode::Stack(StackLayoutNode {
+                    direction: LayoutDirection::Horizontal,
+                    entries: self.entries.clone(),
+                    gap: 0,
+                    align: LayoutAlign::Stretch,
+                }))
+            }
+        }
+
+        let multiline: SharedComponent = Arc::new(std::sync::Mutex::new(NaturalLines(vec![
+            "short".to_string(),
+            "123456".to_string(),
+        ])));
+        let sibling: SharedComponent =
+            Arc::new(std::sync::Mutex::new(NaturalLines(vec!["b".to_string()])));
+        let root: SharedComponent = Arc::new(std::sync::Mutex::new(HorizontalNode {
+            entries: vec![
+                StackLayoutEntry::new(multiline),
+                StackLayoutEntry::new(sibling),
+            ],
+        }));
+
+        let frame = render_layout_frame(root, 10, 2);
+        assert_eq!(
+            frame
+                .root
+                .children
+                .iter()
+                .map(|child| child.rect.width)
+                .collect::<Vec<_>>(),
+            vec![6, 1]
+        );
+        assert!(frame.lines[0].contains('b'));
     }
 }

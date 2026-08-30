@@ -4,13 +4,30 @@
 //! `fd` binary for fuzzy `@`-attachment search), and per-command argument
 //! completions.
 
+use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::fuzzy::fuzzy_filter;
+use crate::utils::grapheme_boundaries;
 
 const PATH_DELIMITERS: &[char] = &[' ', '\t', '"', '\'', '='];
+
+/// Cursor columns in the Rust editor are byte offsets, while callers may
+/// provide a position from a character-oriented frontend. Never use an
+/// unchecked string slice at a position inside a UTF-8 code point or inside a
+/// displayed grapheme cluster.
+fn clamp_to_char_boundary(text: &str, cursor: usize) -> usize {
+    let mut cursor = cursor.min(text.len());
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    grapheme_boundaries(text)
+        .into_iter()
+        .find_map(|(start, end)| (cursor > start && cursor < end).then_some(start))
+        .unwrap_or(cursor)
+}
 
 fn to_display_path(value: &str) -> String {
     value.replace('\\', "/")
@@ -173,6 +190,57 @@ pub struct SlashCommand {
     pub get_argument_completions: Option<ArgumentCompletionsFn>,
 }
 
+/// A command entry accepted by the upstream combined provider. Extensions may
+/// contribute either a slash command (with optional argument completion) or a
+/// plain autocomplete item that participates in slash-name completion.
+#[derive(Debug)]
+pub enum AutocompleteCommand {
+    Slash(SlashCommand),
+    Item(AutocompleteItem),
+}
+
+impl From<SlashCommand> for AutocompleteCommand {
+    fn from(command: SlashCommand) -> Self {
+        Self::Slash(command)
+    }
+}
+
+impl From<AutocompleteItem> for AutocompleteCommand {
+    fn from(item: AutocompleteItem) -> Self {
+        Self::Item(item)
+    }
+}
+
+impl AutocompleteCommand {
+    fn name(&self) -> &str {
+        match self {
+            Self::Slash(command) => &command.name,
+            Self::Item(item) => &item.value,
+        }
+    }
+
+    fn description(&self) -> Option<&str> {
+        match self {
+            Self::Slash(command) => command.description.as_deref(),
+            Self::Item(item) => item.description.as_deref(),
+        }
+    }
+
+    fn argument_hint(&self) -> Option<&str> {
+        match self {
+            Self::Slash(command) => command.argument_hint.as_deref(),
+            Self::Item(_) => None,
+        }
+    }
+
+    fn argument_completions(&self) -> Option<&ArgumentCompletionsFn> {
+        match self {
+            Self::Slash(command) => command.get_argument_completions.as_ref(),
+            Self::Item(_) => None,
+        }
+    }
+}
+
 impl SlashCommand {
     pub fn new(
         name: impl Into<String>,
@@ -310,6 +378,19 @@ fn walk_directory_with_fd(
         Err(_) => return Vec::new(),
     };
 
+    // Drain stdout concurrently. Without a reader, fd can fill the OS pipe
+    // buffer before it reaches its result limit, leaving the polling loop
+    // waiting forever while the child waits for a reader. The reader also
+    // ensures cancellation can kill and reap a child that is mid-write.
+    let mut stdout_pipe = child.stdout.take();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut stdout = Vec::new();
+        if let Some(mut pipe) = stdout_pipe.take() {
+            let _ = pipe.read_to_end(&mut stdout);
+        }
+        stdout
+    });
+
     // `Command::output` cannot observe cancellation while fd is walking a
     // large tree. Poll the child so a newer autocomplete request can kill the
     // superseded search deterministically.
@@ -317,6 +398,7 @@ fn walk_directory_with_fd(
         if aborted.load(Ordering::SeqCst) {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = stdout_reader.join();
             return Vec::new();
         }
         match child.try_wait() {
@@ -325,18 +407,19 @@ fn walk_directory_with_fd(
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = stdout_reader.join();
                 return Vec::new();
             }
         }
     };
-    let output = match child.wait_with_output() {
-        Ok(output) => output,
+    let stdout = match stdout_reader.join() {
+        Ok(stdout) => stdout,
         Err(_) => return Vec::new(),
     };
     if aborted.load(Ordering::SeqCst) || !status.success() {
         return Vec::new();
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8_lossy(&stdout);
     if stdout.trim().is_empty() {
         return Vec::new();
     }
@@ -366,7 +449,7 @@ fn walk_directory_with_fd(
 
 /// Combined provider for slash commands and file paths.
 pub struct CombinedAutocompleteProvider {
-    commands: Vec<SlashCommand>,
+    commands: Vec<AutocompleteCommand>,
     base_path: String,
     fd_path: Option<String>,
 }
@@ -374,6 +457,23 @@ pub struct CombinedAutocompleteProvider {
 impl CombinedAutocompleteProvider {
     pub fn new(
         commands: Vec<SlashCommand>,
+        base_path: impl Into<String>,
+        fd_path: Option<String>,
+    ) -> Self {
+        Self::new_mixed(
+            commands
+                .into_iter()
+                .map(AutocompleteCommand::from)
+                .collect(),
+            base_path,
+            fd_path,
+        )
+    }
+
+    /// Construct a provider from the upstream-compatible mixed command list.
+    /// `new` remains available for the existing slash-command-only API.
+    pub fn new_mixed(
+        commands: Vec<AutocompleteCommand>,
         base_path: impl Into<String>,
         fd_path: Option<String>,
     ) -> Self {
@@ -747,7 +847,8 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         aborted: &AtomicBool,
     ) -> Option<AutocompleteSuggestions> {
         let current_line = lines.get(cursor_line).cloned().unwrap_or_default();
-        let text_before_cursor = current_line[..cursor_col.min(current_line.len())].to_string();
+        let cursor_col = clamp_to_char_boundary(&current_line, cursor_col);
+        let text_before_cursor = current_line[..cursor_col].to_string();
 
         // @ attachment prefix.
         if let Some(at_prefix) = self.extract_at_prefix(&text_before_cursor) {
@@ -771,8 +872,11 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
                 // Command argument completion.
                 let command_name = text_before_cursor[1..space_index].to_string();
                 let argument_text = text_before_cursor[space_index + 1..].to_string();
-                let command = self.commands.iter().find(|cmd| cmd.name == command_name)?;
-                let f = command.get_argument_completions.as_ref()?;
+                let command = self
+                    .commands
+                    .iter()
+                    .find(|cmd| cmd.name() == command_name)?;
+                let f = command.argument_completions()?;
                 let argument_suggestions = f(&argument_text)?;
                 if argument_suggestions.is_empty() {
                     return None;
@@ -789,17 +893,17 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
                 .commands
                 .iter()
                 .map(|cmd| {
-                    let hint = cmd.argument_hint.clone();
-                    let desc = cmd.description.clone().unwrap_or_default();
+                    let hint = cmd.argument_hint();
+                    let desc = cmd.description().unwrap_or_default();
                     let full_desc = match (&hint, desc.is_empty()) {
                         (Some(h), false) => format!("{h} — {desc}"),
-                        (Some(h), true) => h.clone(),
-                        (None, false) => desc,
+                        (Some(h), true) => (*h).to_string(),
+                        (None, false) => desc.to_string(),
                         (None, true) => String::new(),
                     };
                     AutocompleteItem {
-                        value: cmd.name.clone(),
-                        label: cmd.name.clone(),
+                        value: cmd.name().to_string(),
+                        label: cmd.name().to_string(),
                         description: if full_desc.is_empty() {
                             None
                         } else {
@@ -846,7 +950,7 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
     ) -> CompletionResult {
         let current_line = lines.get(cursor_line).cloned().unwrap_or_default();
         let text = &current_line;
-        let cursor_col = cursor_col.min(text.len());
+        let cursor_col = clamp_to_char_boundary(text, cursor_col);
         // Remove the prefix (measured in chars) from the end of the
         // text-before-cursor region.
         let before_prefix = text[..cursor_col].to_string();
@@ -916,7 +1020,7 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
             };
         }
 
-        let text_before_cursor = text[..cursor_col.min(text.len())].to_string();
+        let text_before_cursor = text[..cursor_col].to_string();
         if text_before_cursor.contains('/') && text_before_cursor.contains(' ') {
             let new_line = format!("{before_prefix_char}{}{adjusted_after_cursor}", item.value);
             let mut new_lines = lines.to_vec();
@@ -960,7 +1064,8 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         cursor_col: usize,
     ) -> bool {
         let current_line = lines.get(cursor_line).cloned().unwrap_or_default();
-        let text_before_cursor = current_line[..cursor_col.min(current_line.len())].to_string();
+        let cursor_col = clamp_to_char_boundary(&current_line, cursor_col);
+        let text_before_cursor = current_line[..cursor_col].to_string();
         let trimmed = text_before_cursor.trim_start();
         if trimmed.starts_with('/') && !trimmed.contains(' ') {
             return false;
@@ -979,6 +1084,7 @@ impl std::fmt::Debug for CombinedAutocompleteProvider {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
@@ -1046,11 +1152,6 @@ mod tests {
     ) -> Option<AutocompleteSuggestions> {
         let lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
         p.get_suggestions(&lines, line, col, force, &AtomicBool::new(false))
-    }
-
-    #[allow(dead_code)] // helper kept for future abort tests
-    fn aborted_flag() -> AtomicBool {
-        AtomicBool::new(false)
     }
 
     mod path_prefix {
@@ -1317,6 +1418,31 @@ mod tests {
         }
 
         #[test]
+        fn mixed_command_items_participate_in_slash_completion() {
+            let p = CombinedAutocompleteProvider::new_mixed(
+                vec![
+                    AutocompleteCommand::from(SlashCommand::new(
+                        "model",
+                        Some("Select a model".into()),
+                        None,
+                    )),
+                    AutocompleteCommand::from(AutocompleteItem {
+                        value: "help".into(),
+                        label: "help".into(),
+                        description: Some("Show help".into()),
+                    }),
+                ],
+                "/tmp",
+                None,
+            );
+            let result = get_suggestions(&p, &["/hel"], 0, 4, false).expect("suggestions");
+            assert_eq!(result.prefix, "/hel");
+            assert_eq!(result.items.len(), 1);
+            assert_eq!(result.items[0].value, "help");
+            assert_eq!(result.items[0].description.as_deref(), Some("Show help"));
+        }
+
+        #[test]
         fn applies_command_completion_with_trailing_space() {
             let p = command_provider();
             let line = "/mod";
@@ -1363,5 +1489,23 @@ mod tests {
             assert!(!p.should_trigger_file_completion(&["/model".to_string()], 0, 6));
             assert!(p.should_trigger_file_completion(&["/model a".to_string()], 0, 8));
         }
+    }
+
+    #[test]
+    fn clamps_frontend_cursor_offsets_inside_utf8_codepoints() {
+        let p = provider("/tmp", Vec::new());
+        let item = AutocompleteItem {
+            value: "replacement".to_string(),
+            label: "replacement".to_string(),
+            description: None,
+        };
+        let result = p.apply_completion(&["é-tail".to_string()], 0, 1, &item, "é");
+        assert_eq!(result.lines, vec!["replacementé-tail"]);
+        assert_eq!(result.cursor_col, "replacement".len());
+
+        // The same defensive boundary applies to trigger checks.  A
+        // character-oriented caller can legally point into the UTF-8 bytes
+        // of a multi-byte grapheme; that must not panic.
+        assert!(p.should_trigger_file_completion(&["é".to_string()], 0, 1));
     }
 }

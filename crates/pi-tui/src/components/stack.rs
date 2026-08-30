@@ -8,11 +8,28 @@ use crate::tui::{Component, SharedComponent};
 /// Vertical stack: children render full-width and stack rows.
 pub struct VStack {
     pub children: Vec<SharedComponent>,
+    layout_entries: Option<Vec<StackLayoutEntry>>,
 }
 
 impl VStack {
     pub fn new(children: Vec<SharedComponent>) -> Self {
-        Self { children }
+        Self {
+            children,
+            layout_entries: None,
+        }
+    }
+
+    /// Construct a vertical stack with the same basis/grow/shrink/minimum
+    /// metadata that upstream Pi supplies to its layout engine.
+    pub fn with_layout_entries(entries: Vec<StackLayoutEntry>) -> Self {
+        let children = entries
+            .iter()
+            .map(|entry| entry.component.clone())
+            .collect();
+        Self {
+            children,
+            layout_entries: Some(entries),
+        }
     }
 }
 
@@ -20,25 +37,34 @@ impl Component for VStack {
     fn render(&self, width: usize) -> Vec<String> {
         let mut out = Vec::new();
         for child in &self.children {
-            out.extend(child.lock().unwrap().render(width));
+            out.extend(
+                child
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .render(width),
+            );
         }
         out
     }
     fn invalidate(&mut self) {
         for child in &self.children {
-            child.lock().unwrap().invalidate();
+            child
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .invalidate();
         }
     }
 
     fn layout_node(&self) -> Option<LayoutNode> {
         Some(LayoutNode::Stack(StackLayoutNode {
             direction: LayoutDirection::Vertical,
-            entries: self
-                .children
-                .iter()
-                .cloned()
-                .map(StackLayoutEntry::new)
-                .collect(),
+            entries: self.layout_entries.clone().unwrap_or_else(|| {
+                self.children
+                    .iter()
+                    .cloned()
+                    .map(StackLayoutEntry::new)
+                    .collect()
+            }),
             gap: 0,
             align: LayoutAlign::Stretch,
         }))
@@ -58,6 +84,7 @@ impl HStack {
 
 impl Component for HStack {
     fn render(&self, width: usize) -> Vec<String> {
+        let width = width.max(1);
         let mut fixed_widths = 0usize;
         let mut grow_count = 0usize;
         for (w, _) in &self.children {
@@ -73,7 +100,14 @@ impl Component for HStack {
         let mut widths: Vec<usize> = Vec::new();
         for (w, child) in &self.children {
             let child_width = if *w > 0.0 { *w as usize } else { per };
-            parts.push(child.lock().unwrap().render(child_width));
+            parts.push(if child_width == 0 {
+                Vec::new()
+            } else {
+                child
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .render(child_width)
+            });
             widths.push(child_width);
         }
         let height = parts.iter().map(|p| p.len()).max().unwrap_or(0);
@@ -114,5 +148,24 @@ impl Component for HStack {
             gap: 0,
             align: LayoutAlign::Stretch,
         }))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::components::Text;
+    use crate::utils::visible_width;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn zero_width_hstack_does_not_render_zero_width_children() {
+        let left: SharedComponent = Arc::new(Mutex::new(Text::new("left", 0, 0, None)));
+        let right: SharedComponent = Arc::new(Mutex::new(Text::new("right", 0, 0, None)));
+        let stack = HStack::new(vec![(0.0, left), (0.0, right)]);
+
+        assert!(stack.render(0).is_empty());
+        assert!(stack.render(1).iter().all(|line| visible_width(line) <= 1));
     }
 }

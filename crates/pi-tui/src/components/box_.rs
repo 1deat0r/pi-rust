@@ -17,7 +17,11 @@ impl Box {
 impl Component for Box {
     fn render(&self, width: usize) -> Vec<String> {
         let inner_width = width.saturating_sub(2);
-        let child_lines = self.child.lock().unwrap().render(inner_width);
+        let child_lines = self
+            .child
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .render(inner_width);
         let mut lines = Vec::new();
         let title = self.title.clone().unwrap_or_default();
         if title.is_empty() {
@@ -36,6 +40,9 @@ impl Component for Box {
         lines
     }
     fn invalidate(&mut self) {
-        self.child.lock().unwrap().invalidate();
+        self.child
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .invalidate();
     }
 }

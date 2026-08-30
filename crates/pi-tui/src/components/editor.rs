@@ -11,22 +11,24 @@
 //! `drain_autocomplete_tick` from its event loop).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::autocomplete::{AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions};
 use crate::components::select_list::{SelectItem, SelectList, SelectListLayoutOptions};
-use crate::keys::{is_key_release, match_key, TuiKey};
+use crate::keybindings::get_keybindings;
+use crate::keys::{is_key_release, matches_raw_key, parse_key, TuiKey};
 use crate::kill_ring::{KillRing, KillRingPushOptions};
 use crate::tui::Component;
 use crate::undo_stack::UndoStack;
-use crate::utils::{slice_with_width, visible_width};
+use crate::utils::{grapheme_boundaries, next_grapheme_boundary, slice_with_width, visible_width};
 use crate::word_navigation::{
     find_word_backward, find_word_forward, segment_text, Segment, WordNavigationOptions,
 };
 
 /// Regex matching paste markers like `[paste #1 +123 lines]`.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn paste_marker_regex() -> regex::Regex {
     regex::Regex::new(r"\[paste #(\d+)( (\+\d+ lines|\d+ chars))?\]").unwrap()
 }
@@ -47,107 +49,224 @@ pub struct TextChunk {
     pub end_index: usize,
 }
 
-/// Whether a char starts a new grapheme (simplified extended grapheme
-/// cluster rules covering combining marks, ZWJ and CRLF).
-fn is_combining_mark(c: char) -> bool {
-    // Unicode combining marks / variation selectors / ZWJ (non-exhaustive,
-    // covers the common ranges used in terminal text).
-    matches!(c as u32,
-        0x0300..=0x036f | 0x0483..=0x0489 | 0x0591..=0x05bd | 0x05bf | 0x05c1..=0x05c2 | 0x05c4..=0x05c5
-        | 0x0610..=0x061a | 0x064b..=0x065f | 0x0670 | 0x06d6..=0x06ed | 0x0711 | 0x0730..=0x074a
-        | 0x07eb..=0x07f3 | 0x0816..=0x082d | 0x0859..=0x085b | 0x08d3..=0x0903 | 0x093a..=0x0957
-        | 0x0962..=0x0963 | 0x0981..=0x0983 | 0x09bc..=0x09d7 | 0x0a01..=0x0a03 | 0x0a3c
-        | 0x0a3e..=0x0a51 | 0x0a70..=0x0a75 | 0x0abc..=0x0acd | 0x0ae2..=0x0ae3 | 0x0b01..=0x0b57
-        | 0x0b62..=0x0b63 | 0x0b82 | 0x0bbe..=0x0bcd | 0x0c00..=0x0c04 | 0x0c3e..=0x0c4d
-        | 0x0c55..=0x0c56 | 0x0c62..=0x0c63 | 0x0c81..=0x0c83 | 0x0cbc | 0x0cbe..=0x0ccd
-        | 0x0cd5..=0x0cd6 | 0x0ce2..=0x0ce3 | 0x0d00..=0x0d03 | 0x0d3b..=0x0d57 | 0x0d62..=0x0d63
-        | 0x0d82..=0x0d83 | 0x0dca | 0x0dcf..=0x0ddf | 0x0df2..=0x0df3 | 0x0e31 | 0x0e34..=0x0e3a
-        | 0x0e47..=0x0e4e | 0x0eb1 | 0x0eb4..=0x0ebc | 0x0ec8..=0x0ecd | 0x0f18..=0x0f19 | 0x0f35
-        | 0x0f37 | 0x0f39 | 0x0f3e..=0x0f3f | 0x0f71..=0x0f97 | 0x0f99..=0x0fbc | 0x0fc6
-        | 0x102b..=0x103e | 0x1056..=0x1060 | 0x1062..=0x1074 | 0x1082..=0x108d | 0x108f
-        | 0x109a..=0x109d | 0x135d..=0x135f | 0x1712..=0x1714 | 0x1732..=0x1734 | 0x1752..=0x1753
-        | 0x1772..=0x1773 | 0x17b4..=0x17d3 | 0x17dd | 0x180b..=0x180d | 0x1885..=0x1886 | 0x18a9
-        | 0x1920..=0x193b | 0x1a17..=0x1a1b | 0x1a55..=0x1a7c | 0x1a7f | 0x1ab0..=0x1aff
-        | 0x1b00..=0x1b04 | 0x1b34..=0x1b73 | 0x1b80..=0x1bad | 0x1be6..=0x1bf3 | 0x1c24..=0x1c37
-        | 0x1cd0..=0x1ce8 | 0x1ced | 0x1cf2..=0x1cf4 | 0x1cf8..=0x1cf9 | 0x1dc0..=0x1dff
-        | 0x200c | 0x20d0..=0x20f0 | 0x2cef..=0x2cf1 | 0x2d7f | 0x2de0..=0x2dff | 0x302a..=0x302f
-        | 0x3099..=0x309a | 0xa66f..=0xa672 | 0xa674..=0xa67d | 0xa69e..=0xa69f | 0xa6f0..=0xa6f1
-        | 0xa802 | 0xa806 | 0xa80b | 0xa823..=0xa827 | 0xa880..=0xa881 | 0xa8b4..=0xa8c5
-        | 0xa8e0..=0xa8f1 | 0xa926..=0xa92d | 0xa947..=0xa953 | 0xa980..=0xa983 | 0xa9b3..=0xa9c0
-        | 0xa9e5 | 0xaa29..=0xaa36 | 0xaa43 | 0xaa4c..=0xaa4d | 0xaa7b..=0xaa7d | 0xaab0
-        | 0xaab2..=0xaab4 | 0xaab7..=0xaab8 | 0xaabe..=0xaabf | 0xaac1 | 0xaaeb..=0xaaef
-        | 0xaaf5..=0xaaf6 | 0xabe3..=0xabea | 0xabec..=0xabed | 0xfb1e | 0xfe00..=0xfe0f
-        | 0xfe20..=0xfe2f | 0x101fd | 0x102e0 | 0x10376..=0x1037a | 0x10a01..=0x10a0f
-        | 0x11000..=0x11002 | 0x11038..=0x11046 | 0x1107f..=0x11082 | 0x110b0..=0x110ba
-        | 0x11100..=0x11102 | 0x11127..=0x11134 | 0x11173 | 0x11180..=0x11182 | 0x111b3..=0x111c0
-        | 0x111ca..=0x111cc | 0x1122c..=0x11237 | 0x1123e | 0x112df..=0x112ea | 0x11300..=0x11303
-        | 0x1133b..=0x11344 | 0x11347..=0x1134d | 0x11357 | 0x11362..=0x11363 | 0x11366..=0x1136c
-        | 0x11370..=0x11374 | 0x11435..=0x11446 | 0x114b0..=0x114c3 | 0x115af..=0x115c0 | 0x115dc..=0x115dd
-        | 0x11630..=0x11640 | 0x116ab..=0x116b7 | 0x1171d..=0x1172b | 0x1182c..=0x1183a
-        | 0x119d1..=0x119e0 | 0x119e4 | 0x11a01..=0x11a0a | 0x11a33..=0x11a3e | 0x11a47
-        | 0x11a51..=0x11a5b | 0x11a8a..=0x11a99 | 0x11c2f..=0x11c3f | 0x11c92..=0x11cb6
-        | 0x11d31..=0x11d45 | 0x11d47 | 0x11d8a..=0x11d97 | 0x11ef3..=0x11ef6 | 0x16af0..=0x16af4
-        | 0x16b30..=0x16b36 | 0x16f51..=0x16f7e | 0x16f8f..=0x16f92 | 0x1bc9d..=0x1bc9e
-        | 0x1d165..=0x1d172 | 0x1d17b..=0x1d182 | 0x1d185..=0x1d18b | 0x1d1aa..=0x1d1ad
-        | 0x1d242..=0x1d244 | 0x1da00..=0x1da36 | 0x1da3b..=0x1da6c | 0x1da75 | 0x1da84
-        | 0x1da9b..=0x1da9f | 0x1daa1..=0x1daaf | 0x1e000..=0x1e02a | 0x1e8d0..=0x1e8d6
-        | 0x1e944..=0x1e94a | 0xe0100..=0xe01ef)
-}
-
-fn is_grapheme_start(prev: Option<char>, next: Option<char>, c: char) -> bool {
-    if let Some(_prev) = prev {
-        if is_combining_mark(c) {
-            return false;
-        }
-    }
-    if prev == Some('\u{200d}') {
-        return false; // ZWJ joins sequences
-    }
-    if c == '\u{200d}' {
-        return false;
-    }
-    let _ = next;
-    true
-}
-
 /// Segment text into grapheme-like units (each with index/byte width).
 fn grapheme_segments(text: &str) -> Vec<Segment> {
-    let mut segments: Vec<Segment> = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0usize;
-    while i < chars.len() {
-        let start = i;
-        i += 1;
-        while i < chars.len()
-            && !is_grapheme_start(
-                Some(chars[i - 1]),
-                Some(chars.get(i + 1).copied().unwrap_or(' ')),
-                chars[i],
-            )
-        {
-            i += 1;
-        }
-        let seg: String = chars[start..i].iter().collect();
-        let byte = text
-            .char_indices()
-            .nth(start)
-            .map(|(b, _)| b)
-            .unwrap_or(text.len());
-        segments.push(Segment {
-            segment: seg,
-            index: byte,
+    grapheme_boundaries(text)
+        .into_iter()
+        .map(|(start, end)| Segment {
+            segment: text[start..end].to_string(),
+            index: start,
             is_word_like: true,
+        })
+        .collect()
+}
+
+/// Preserve word-navigation semantics without allowing the word segmenter to
+/// split a combining or emoji grapheme into separate cursor units.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
+fn grapheme_safe_word_segments(text: &str) -> Vec<Segment> {
+    let graphemes = grapheme_boundaries(text);
+    let mut merged: Vec<Segment> = Vec::new();
+    for segment in segment_text(text) {
+        let starts_at_boundary = segment.index == 0
+            || graphemes
+                .iter()
+                .any(|(start, end)| *start == segment.index || *end == segment.index);
+        if !starts_at_boundary {
+            if let Some(previous) = merged.last_mut() {
+                previous.segment.push_str(&segment.segment);
+                previous.is_word_like &= segment.is_word_like;
+                continue;
+            }
+        }
+        merged.push(segment);
+    }
+
+    // Match the pinned editor tests' `Intl.Segmenter` behavior: adjacent CJK
+    // script characters form dictionary-sized word-like units, but ideographic punctuation
+    // and unrelated graphemes remain separate segments.  The Rust fallback
+    // segmenter emits one CJK scalar at a time and can attach non-ASCII
+    // punctuation to a neighboring word, so repair those boundaries first.
+    let mut punctuation_safe = Vec::with_capacity(merged.len());
+    for segment in merged {
+        if !segment.is_word_like || !segment.segment.chars().any(is_nonword_unicode_punctuation) {
+            punctuation_safe.push(segment);
+            continue;
+        }
+
+        let mut word = String::new();
+        let mut word_start = segment.index;
+        let mut punctuation = String::new();
+        let mut punctuation_start = segment.index;
+        for (offset, character) in segment.segment.char_indices() {
+            if is_nonword_unicode_punctuation(character) {
+                if !word.is_empty() {
+                    punctuation_safe.push(Segment {
+                        segment: std::mem::take(&mut word),
+                        index: word_start,
+                        is_word_like: true,
+                    });
+                }
+                if punctuation.is_empty() {
+                    punctuation_start = segment.index + offset;
+                }
+                punctuation.push(character);
+            } else {
+                if !punctuation.is_empty() {
+                    punctuation_safe.push(Segment {
+                        segment: std::mem::take(&mut punctuation),
+                        index: punctuation_start,
+                        is_word_like: false,
+                    });
+                }
+                if word.is_empty() {
+                    word_start = segment.index + offset;
+                }
+                word.push(character);
+            }
+        }
+        if !word.is_empty() {
+            punctuation_safe.push(Segment {
+                segment: word,
+                index: word_start,
+                is_word_like: true,
+            });
+        }
+        if !punctuation.is_empty() {
+            punctuation_safe.push(Segment {
+                segment: punctuation,
+                index: punctuation_start,
+                is_word_like: false,
+            });
+        }
+    }
+
+    let mut cjk_runs: Vec<Segment> = Vec::with_capacity(punctuation_safe.len());
+    for segment in punctuation_safe {
+        let joins_previous = cjk_runs.last().is_some_and(|previous| {
+            previous.is_word_like
+                && segment.is_word_like
+                && is_cjk_word_segment(&previous.segment)
+                && is_cjk_word_segment(&segment.segment)
+                && grapheme_boundaries(&previous.segment).len() < 2
         });
+        if joins_previous {
+            let previous = cjk_runs.last_mut().expect("checked above");
+            previous.segment.push_str(&segment.segment);
+        } else {
+            cjk_runs.push(segment);
+        }
     }
-    if segments.is_empty() {
-        return segments;
+    cjk_runs
+}
+
+fn is_nonword_unicode_punctuation(character: char) -> bool {
+    matches!(
+        character,
+        '\u{3001}'..='\u{303f}'
+            | '\u{ff01}'..='\u{ff0f}'
+            | '\u{ff1a}'..='\u{ff20}'
+            | '\u{ff3b}'..='\u{ff40}'
+            | '\u{ff5b}'..='\u{ff65}'
+    )
+}
+
+fn is_cjk_word_segment(segment: &str) -> bool {
+    let graphemes = grapheme_boundaries(segment);
+    !graphemes.is_empty()
+        && graphemes.iter().all(|(start, end)| {
+            segment[*start..*end]
+                .chars()
+                .next()
+                .is_some_and(|character| {
+                    crate::word_navigation::is_cjk_char(character)
+                        // U+3000..U+303F contains ideographic punctuation;
+                        // it is not part of the CJK word run for this UI.
+                        && !('\u{3000}'..='\u{303f}').contains(&character)
+                })
+        })
+}
+
+/// Clamp an offset to a UTF-8 character boundary without ever indexing the
+/// string at an invalid byte position.
+fn floor_char_boundary(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
     }
-    // CRLF handling: attach '\n' to a preceding '\r' grapheme.
-    segments
+    offset
+}
+
+/// Clamp an editor cursor to the start of the grapheme containing it.  The
+/// public autocomplete contract supplies byte offsets, so this remains a
+/// necessary defensive boundary even though the built-in movement paths are
+/// already grapheme-aware.
+fn floor_grapheme_boundary(text: &str, offset: usize) -> usize {
+    let offset = floor_char_boundary(text, offset);
+    grapheme_segments(text)
+        .into_iter()
+        .find_map(|segment| {
+            (offset > segment.index && offset < segment.index + segment.segment.len())
+                .then_some(segment.index)
+        })
+        .unwrap_or(offset)
+}
+
+/// Convert a terminal-cell column within a byte-bounded line segment back to
+/// a valid UTF-8 offset.  If a requested column lands in the middle of a wide
+/// grapheme, the cursor snaps to that grapheme's start rather than splitting
+/// it and panicking during the next render.
+fn byte_offset_for_visual_column(text: &str, start: usize, columns: usize) -> usize {
+    let start = floor_char_boundary(text, start);
+    let suffix = &text[start..];
+    let mut consumed = 0usize;
+    for segment in grapheme_segments(suffix) {
+        let width = visible_width(&segment.segment);
+        if consumed.saturating_add(width) > columns {
+            return start + segment.index;
+        }
+        consumed = consumed.saturating_add(width);
+        if consumed == columns {
+            return start + segment.index + segment.segment.len();
+        }
+    }
+    text.len()
+}
+
+/// Return the terminal-cell column between two valid byte offsets.
+fn visual_column_between(text: &str, start: usize, end: usize) -> usize {
+    let start = floor_char_boundary(text, start);
+    let end = floor_char_boundary(text, end.max(start));
+    visible_width(&text[start..end])
+}
+
+/// Validate the optional segmentation supplied to `word_wrap_line`.  The
+/// function is public and its segment type is public, so callers can provide
+/// stale or character-indexed offsets. Falling back to local segmentation is
+/// safer than allowing those offsets to reach a string slice.
+fn valid_wrap_segments(line: &str, segments: &[Segment]) -> bool {
+    let mut offset = 0usize;
+    for segment in segments {
+        if segment.index != offset || !line.is_char_boundary(segment.index) {
+            return false;
+        }
+        let Some(end) = offset.checked_add(segment.segment.len()) else {
+            return false;
+        };
+        if end > line.len()
+            || !line.is_char_boundary(end)
+            || line.get(offset..end) != Some(segment.segment.as_str())
+        {
+            return false;
+        }
+        offset = end;
+    }
+    offset == line.len()
 }
 
 /// Segment with paste-marker awareness: markers whose ID exists in
 /// `valid_ids` are merged into single atomic segments.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn segment_with_markers(
     text: &str,
     base: &[Segment],
@@ -217,8 +336,8 @@ pub fn word_wrap_line(
     }
 
     let segments: Vec<Segment> = match pre_segmented {
-        Some(s) => s.to_vec(),
-        None => grapheme_segments(line),
+        Some(s) if valid_wrap_segments(line, s) => s.to_vec(),
+        _ => grapheme_segments(line),
     };
 
     let mut chunks: Vec<TextChunk> = Vec::new();
@@ -394,8 +513,8 @@ fn create_scroll_border(direction: &str, hidden_line_count: usize, width: usize)
     if indicator_w <= available_width {
         return format!("{}{}", indicator, "─".repeat(available_width - indicator_w));
     }
-    let ellipsis = "...";
-    let indicator_width = available_width.saturating_sub(3);
+    let ellipsis = slice_with_width("...", available_width);
+    let indicator_width = available_width.saturating_sub(visible_width(&ellipsis));
     let sliced = slice_with_width(&indicator, indicator_width);
     format!("{sliced}{ellipsis}")
 }
@@ -419,7 +538,7 @@ pub struct Editor {
     state: EditorState,
     pub focused: bool,
     padding_x: usize,
-    last_width: usize,
+    last_width: AtomicUsize,
     scroll_offset: std::sync::atomic::AtomicUsize,
     pub border_color: Arc<dyn Fn(&str) -> String + Send + Sync>,
     terminal_rows: usize,
@@ -482,7 +601,7 @@ impl Editor {
             state: EditorState::empty(),
             focused: false,
             padding_x,
-            last_width: 80,
+            last_width: AtomicUsize::new(80),
             scroll_offset: std::sync::atomic::AtomicUsize::new(0),
             border_color,
             terminal_rows,
@@ -541,7 +660,7 @@ impl Editor {
 
     fn segment(&self, text: &str, mode: &str) -> Vec<Segment> {
         let base = if mode == "word" {
-            segment_text(text)
+            grapheme_safe_word_segments(text)
         } else {
             grapheme_segments(text)
         };
@@ -569,12 +688,12 @@ impl Editor {
     }
 
     fn is_on_first_visual_line(&self) -> bool {
-        let visual = self.build_visual_line_map(self.last_width);
+        let visual = self.build_visual_line_map(self.last_width.load(Ordering::Relaxed));
         self.find_current_visual_line(&visual) == 0
     }
 
     fn is_on_last_visual_line(&self) -> bool {
-        let visual = self.build_visual_line_map(self.last_width);
+        let visual = self.build_visual_line_map(self.last_width.load(Ordering::Relaxed));
         self.find_current_visual_line(&visual) == visual.len() - 1
     }
 
@@ -648,6 +767,23 @@ impl Editor {
         self.state.lines.join("\n")
     }
 
+    /// Check whether the editor contains no user text without allocating the
+    /// complete multiline draft. Interactive mode uses this on every control
+    /// key boundary, so keeping the query scalar avoids cloning a long draft
+    /// while preserving `get_text` for callers that need the value.
+    pub fn is_empty(&self) -> bool {
+        self.state.lines.len() == 1 && self.state.lines[0].is_empty()
+    }
+
+    /// Check the first non-whitespace character without materializing the
+    /// complete draft. This is used for the `!` bash composer border state.
+    pub fn starts_with_non_whitespace(&self, character: char) -> bool {
+        self.state
+            .lines
+            .first()
+            .is_some_and(|line| line.trim_start().starts_with(character))
+    }
+
     pub fn get_lines(&self) -> Vec<String> {
         self.state.lines.clone()
     }
@@ -656,6 +792,7 @@ impl Editor {
         (self.state.cursor_line, self.state.cursor_col)
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn expand_paste_markers(&self, text: &str) -> String {
         let mut ids: Vec<usize> = self.pastes.keys().copied().collect();
         ids.sort_by(|a, b| b.cmp(a)); // replace larger ids first to avoid clobbering
@@ -711,15 +848,14 @@ impl Editor {
         let normalized = self.normalize_text(text);
         let inserted_lines: Vec<&str> = normalized.split('\n').collect();
         let current_line = self.state.lines[self.state.cursor_line].clone();
-        let before_cursor =
-            current_line[..self.state.cursor_col.min(current_line.len())].to_string();
-        let after_cursor =
-            current_line[self.state.cursor_col.min(current_line.len())..].to_string();
+        let cursor_col = floor_grapheme_boundary(&current_line, self.state.cursor_col);
+        let before_cursor = current_line[..cursor_col].to_string();
+        let after_cursor = current_line[cursor_col..].to_string();
 
         if inserted_lines.len() == 1 {
             self.state.lines[self.state.cursor_line] =
                 format!("{before_cursor}{normalized}{after_cursor}");
-            self.set_cursor_col(self.state.cursor_col + normalized.len());
+            self.set_cursor_col(cursor_col + normalized.len());
         } else {
             let mut new_lines: Vec<String> = Vec::new();
             new_lines.extend(self.state.lines[..self.state.cursor_line].iter().cloned());
@@ -758,6 +894,7 @@ impl Editor {
             1,
             content_width.saturating_sub(if padding_x > 0 { 0 } else { 1 }),
         );
+        self.last_width.store(layout_width, Ordering::Relaxed);
 
         let horizontal = (self.border_color)("─");
         let layout_lines = self.layout_text(layout_width);
@@ -966,6 +1103,58 @@ impl Editor {
 impl Editor {
     // ------------------------------------------------------------------ input
 
+    /// Apply a burst of printable terminal input without requiring callers to
+    /// redraw once for every byte.  The terminal backend intentionally keeps
+    /// control/escape sequences separate, so this method only needs to split
+    /// the printable text into grapheme-like units before feeding the normal
+    /// key path.  Keeping the single-key path authoritative preserves all
+    /// autocomplete, history, undo, paste, and cursor semantics.
+    pub fn handle_input_burst(&mut self, data: &str) {
+        self.drain_autocomplete_tick();
+        let segments = grapheme_segments(data);
+        if data.contains('\x1b') {
+            // Escape-prefixed input may be a complete terminal sequence
+            // (including a bracketed-paste marker). Splitting it into
+            // graphemes would destroy the protocol framing, so keep the
+            // normal raw-key path authoritative for these bursts.
+            self.handle_input(data);
+            return;
+        }
+        if segments.len() <= 1 {
+            if let Some(segment) = segments.first() {
+                if segment
+                    .segment
+                    .chars()
+                    .all(|character| !character.is_control())
+                {
+                    self.insert_character(&segment.segment);
+                    return;
+                }
+            }
+            self.handle_input(data);
+            return;
+        }
+        for segment in segments {
+            if segment
+                .segment
+                .chars()
+                .all(|character| !character.is_control())
+            {
+                // `handle_input` intentionally treats a multi-byte string as
+                // a key sequence. A printable grapheme burst is already
+                // classified, so call the insertion primitive directly and
+                // retain the complete cluster (including ZWJ/combining
+                // marks).
+                self.insert_character(&segment.segment);
+            } else {
+                // Newline and other non-escape controls still have key
+                // semantics when a caller supplies a mixed burst such as
+                // `"before\nafter"`.
+                self.handle_input(&segment.segment);
+            }
+        }
+    }
+
     pub fn handle_input(&mut self, data: &str) {
         // Keyboard map for common raw sequences is handled by the terminal
         // backend (key string); here data is a key string such as "a",
@@ -976,14 +1165,9 @@ impl Editor {
         // as well; this keeps the debounce deterministic without spawning an
         // unmanaged timer thread.
         self.drain_autocomplete_tick();
-
-        // Kitty flag-2 release events are notifications, not text or editor
-        // commands. Keep repeats as ordinary key input. This check must run
-        // before paste handling so a pasted MAC address cannot be mistaken
-        // for an event suffix (the key helper deliberately guards markers).
-        if is_key_release(data) {
-            return;
-        }
+        let bindings = get_keybindings();
+        let parsed_key = parse_key(data);
+        let matches_binding = |id: &'static str| bindings.matches_raw(data, id);
 
         // Character jump mode.
         if self.jump_mode.is_some() {
@@ -1000,57 +1184,60 @@ impl Editor {
             }
         }
 
-        // Bracketed paste start.
-        let mut data_mut = data.to_string();
-        if data.contains("\x1b[200~") {
-            self.is_in_paste = true;
-            self.paste_buffer.clear();
-            data_mut = data.replace("\x1b[200~", "");
+        // Bracketed paste can share a raw read with ordinary text before or
+        // after the markers. Keep the protocol framing intact and feed each
+        // completed paste atomically, including when the end marker arrives
+        // in a later read.
+        if self.is_in_paste || data.contains("\x1b[200~") {
+            self.handle_paste_stream(data);
+            return;
         }
 
-        if self.is_in_paste {
-            self.paste_buffer.push_str(&data_mut);
-            if let Some(end_index) = self.paste_buffer.find("\x1b[201~") {
-                let paste_content = self.paste_buffer[..end_index].to_string();
-                if !paste_content.is_empty() {
-                    self.handle_paste(&paste_content);
-                }
-                self.is_in_paste = false;
-                let remaining = self.paste_buffer[end_index + 6..].to_string();
-                self.paste_buffer.clear();
-                if !remaining.is_empty() {
-                    self.handle_input(&remaining);
-                }
-                return;
-            }
+        // Kitty flag-2 release events are notifications, not text or editor
+        // commands. Keep repeats as ordinary key input. This runs after paste
+        // buffering so a chunk containing only printable text cannot bypass a
+        // bracketed paste that started in an earlier read.
+        if is_key_release(data) {
+            return;
+        }
+
+        // The upstream editor accepts coalesced printable terminal input at
+        // this boundary. Keep named key strings on the command path, while
+        // forwarding a safe printable batch through the grapheme-aware burst
+        // path so no character is lost when a caller does not pre-classify
+        // terminal input.
+        if is_printable_input_batch(data, &parsed_key)
+            || is_coalesced_controlled_input(data, &parsed_key)
+        {
+            self.handle_input_burst(data);
             return;
         }
 
         // Ctrl+C -> copy (handled by the parent loop). Editor ignores.
-        if matches_key(data, "ctrl+c") {
+        if matches_binding("tui.input.copy") {
             return;
         }
 
         // Undo.
-        if matches_key(data, "ctrl+-") {
+        if matches_binding("tui.editor.undo") {
             self.undo();
             return;
         }
 
         // Autocomplete mode.
         if self.autocomplete_state.is_some() && self.autocomplete_list.is_some() {
-            if matches_key(data, "escape") || matches_key(data, "ctrl+c") {
+            if matches_binding("tui.select.cancel") {
                 self.cancel_autocomplete();
                 return;
             }
-            if matches_key(data, "up") || matches_key(data, "down") {
+            if matches_binding("tui.select.up") || matches_binding("tui.select.down") {
                 let key = TuiKey::parse_simple(data);
                 if let Some(list) = &mut self.autocomplete_list {
                     list.handle_input(&key);
                 }
                 return;
             }
-            if matches_key(data, "tab") {
+            if matches_binding("tui.input.tab") {
                 let selected = self
                     .autocomplete_list
                     .as_ref()
@@ -1063,7 +1250,7 @@ impl Editor {
                 }
                 return;
             }
-            if matches_key(data, "enter") {
+            if matches_binding("tui.select.confirm") {
                 let selected = self
                     .autocomplete_list
                     .as_ref()
@@ -1090,86 +1277,102 @@ impl Editor {
         }
 
         // Tab triggers completion.
-        if matches_key(data, "tab") && self.autocomplete_state.is_none() {
+        if matches_binding("tui.input.tab") && self.autocomplete_state.is_none() {
             self.handle_tab_completion();
             return;
         }
 
         // Deletion actions.
-        if matches_key(data, "ctrl+k") {
+        if matches_binding("tui.editor.deleteToLineEnd") {
             self.delete_to_end_of_line();
             return;
         }
-        if matches_key(data, "ctrl+u") {
+        if matches_binding("tui.editor.deleteToLineStart") {
             self.delete_to_start_of_line();
             return;
         }
-        if matches_key(data, "ctrl+w") || matches_key(data, "alt+backspace") {
+        if matches_binding("tui.editor.deleteWordBackward") {
             self.delete_word_backwards();
             return;
         }
-        if matches_key(data, "alt+d") || matches_key(data, "alt+delete") {
+        if matches_binding("tui.editor.deleteWordForward") {
             self.delete_word_forward();
             return;
         }
-        if matches_key(data, "backspace") || matches_key(data, "shift+backspace") {
+        if matches_binding("tui.editor.deleteCharBackward") || matches_key(data, "shift+backspace")
+        {
             self.handle_backspace();
             return;
         }
-        if matches_key(data, "delete")
-            || matches_key(data, "ctrl+d")
-            || matches_key(data, "shift+delete")
-        {
+        if matches_binding("tui.editor.deleteCharForward") || matches_key(data, "shift+delete") {
             self.handle_forward_delete();
             return;
         }
 
         // Kill ring.
-        if matches_key(data, "ctrl+y") {
+        if matches_binding("tui.editor.yank") {
             self.yank();
             return;
         }
-        if matches_key(data, "alt+y") {
+        if matches_binding("tui.editor.yankPop") {
             self.yank_pop();
             return;
         }
 
+        // Dedicated history actions always browse entries instead of moving
+        // the cursor. These are intentionally unbound by default, but the
+        // upstream editor supports assigning them independently from the
+        // arrow-key cursor actions (for example Ctrl+P/Ctrl+N).
+        if matches_binding("tui.editor.historyPrevious") {
+            self.cancel_autocomplete();
+            self.navigate_history(-1);
+            return;
+        }
+        if matches_binding("tui.editor.historyNext") {
+            self.cancel_autocomplete();
+            self.navigate_history(1);
+            return;
+        }
+
         // Line start/end.
-        if matches_key(data, "home")
-            || matches_key(data, "ctrl+home")
-            || matches_key(data, "ctrl+a")
-        {
+        if matches_binding("tui.editor.cursorLineStart") {
             self.move_to_line_start();
             return;
         }
-        if matches_key(data, "end") || matches_key(data, "ctrl+end") || matches_key(data, "ctrl+e")
-        {
+        if matches_binding("tui.editor.cursorLineEnd") {
             self.move_to_line_end();
             return;
         }
-        if matches_key(data, "alt+left")
-            || matches_key(data, "ctrl+left")
-            || matches_key(data, "alt+b")
-        {
+        if matches_binding("tui.editor.cursorWordLeft") {
             self.move_word_backwards();
             return;
         }
-        if matches_key(data, "alt+right")
-            || matches_key(data, "ctrl+right")
-            || matches_key(data, "alt+f")
-        {
+        if matches_binding("tui.editor.cursorWordRight") {
             self.move_word_forwards();
             return;
         }
 
         // New line.
-        if matches_key(data, "shift+enter") || matches_key(data, "ctrl+j") {
+        // Keep the legacy terminal encodings accepted by upstream Pi. In
+        // particular, a raw LF is Shift+Enter on terminals that do not emit
+        // a distinct modified sequence; it must not fall through to submit.
+        let legacy_newline = data == "\n"
+            || (data.starts_with('\n') && data.len() > 1)
+            || data == "\x1b\r"
+            || data == "\x1b[13;2~"
+            || (data.len() > 1 && data.contains('\x1b') && data.contains('\r'));
+        if matches_binding("tui.input.newLine") || legacy_newline {
+            if self.should_submit_on_backslash_enter(data, &bindings) {
+                self.handle_backspace();
+                self.submit_value();
+                return;
+            }
             self.add_new_line();
             return;
         }
 
         // Submit.
-        if matches_key(data, "enter") {
+        if matches_binding("tui.input.submit") {
             if self.disable_submit {
                 return;
             }
@@ -1179,13 +1382,8 @@ impl Editor {
                 .get(self.state.cursor_line)
                 .cloned()
                 .unwrap_or_default();
-            if self.state.cursor_col > 0
-                && current_line
-                    .chars()
-                    .nth(self.state.cursor_col.saturating_sub(1))
-                    .map(|c| c == '\\')
-                    .unwrap_or(false)
-            {
+            let cursor_col = floor_grapheme_boundary(&current_line, self.state.cursor_col);
+            if cursor_col > 0 && current_line[..cursor_col].ends_with('\\') {
                 self.handle_backspace();
                 self.add_new_line();
                 return;
@@ -1195,7 +1393,7 @@ impl Editor {
         }
 
         // Arrow keys with history support.
-        if matches_key(data, "up") {
+        if matches_binding("tui.editor.cursorUp") {
             if self.is_on_first_visual_line()
                 && (self.is_editor_empty() || self.history_index > -1 || self.state.cursor_col == 0)
             {
@@ -1207,7 +1405,7 @@ impl Editor {
             }
             return;
         }
-        if matches_key(data, "down") {
+        if matches_binding("tui.editor.cursorDown") {
             if self.history_index > -1 && self.is_on_last_visual_line() {
                 self.navigate_history(1);
             } else if self.is_on_last_visual_line() {
@@ -1217,31 +1415,31 @@ impl Editor {
             }
             return;
         }
-        if matches_key(data, "right") {
+        if matches_binding("tui.editor.cursorRight") {
             self.move_cursor(0, 1);
             return;
         }
-        if matches_key(data, "left") {
+        if matches_binding("tui.editor.cursorLeft") {
             self.move_cursor(0, -1);
             return;
         }
 
         // Page up/down.
-        if matches_key(data, "pageup") || matches_key(data, "ctrl+pageup") {
+        if matches_binding("tui.editor.pageUp") {
             self.page_scroll(-1);
             return;
         }
-        if matches_key(data, "pagedown") || matches_key(data, "ctrl+pagedown") {
+        if matches_binding("tui.editor.pageDown") {
             self.page_scroll(1);
             return;
         }
 
         // Character jump mode triggers.
-        if matches_key(data, "ctrl+]") {
+        if matches_binding("tui.editor.jumpForward") {
             self.jump_mode = Some("forward");
             return;
         }
-        if matches_key(data, "ctrl+alt+]") {
+        if matches_binding("tui.editor.jumpBackward") {
             self.jump_mode = Some("backward");
             return;
         }
@@ -1264,7 +1462,74 @@ impl Editor {
         }
     }
 
+    fn handle_paste_stream(&mut self, data: &str) {
+        const START: &str = "\x1b[200~";
+        const END: &str = "\x1b[201~";
+        let mut pending = data.to_string();
+
+        loop {
+            if !self.is_in_paste {
+                let Some(start) = pending.find(START) else {
+                    if !pending.is_empty() {
+                        self.handle_input(&pending);
+                    }
+                    return;
+                };
+
+                if start > 0 {
+                    let prefix = pending[..start].to_string();
+                    self.handle_input(&prefix);
+                }
+                self.is_in_paste = true;
+                self.paste_buffer.clear();
+                pending = pending[start + START.len()..].to_string();
+            }
+
+            // Search the accumulated paste buffer, not only the latest read.
+            // Terminal input can split the six-byte end marker between reads
+            // (for example `ESC[20` followed by `1~`).
+            self.paste_buffer.push_str(&pending);
+            let Some(end) = self.paste_buffer.find(END) else {
+                return;
+            };
+
+            let remaining = self.paste_buffer[end + END.len()..].to_string();
+            self.paste_buffer.truncate(end);
+            let paste_content = std::mem::take(&mut self.paste_buffer);
+            if !paste_content.is_empty() {
+                self.handle_paste(&paste_content);
+            }
+            self.is_in_paste = false;
+            pending = remaining;
+            if pending.is_empty() {
+                return;
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ editing
+
+    fn should_submit_on_backslash_enter(
+        &self,
+        data: &str,
+        bindings: &crate::keybindings::KeybindingsManager,
+    ) -> bool {
+        if self.disable_submit || !bindings.matches_raw(data, "enter") {
+            return false;
+        }
+        let has_shift_enter = bindings
+            .get_keys("tui.input.submit")
+            .iter()
+            .any(|key| key == "shift+enter" || key == "shift+return");
+        if !has_shift_enter {
+            return false;
+        }
+        let Some(line) = self.state.lines.get(self.state.cursor_line) else {
+            return false;
+        };
+        let cursor = floor_grapheme_boundary(line, self.state.cursor_col);
+        cursor > 0 && line[..cursor].ends_with('\\')
+    }
 
     fn insert_character(&mut self, char: &str) {
         self.exit_history_browsing();
@@ -1285,16 +1550,17 @@ impl Editor {
             .get_mut(self.state.cursor_line)
             .cloned()
             .unwrap_or_default();
-        let before = line[..self.state.cursor_col.min(line.len())].to_string();
-        let after = line[self.state.cursor_col.min(line.len())..].to_string();
+        let cursor_col = floor_grapheme_boundary(&line, self.state.cursor_col);
+        let before = line[..cursor_col].to_string();
+        let after = line[cursor_col..].to_string();
         self.state.lines[self.state.cursor_line] = format!("{before}{char}{after}");
-        self.set_cursor_col(self.state.cursor_col + char.len());
+        self.set_cursor_col(cursor_col + char.len());
 
         // Autocomplete triggers.
         if self.autocomplete_state.is_none() {
             let current_line = self.state.lines[self.state.cursor_line].clone();
-            let text_before_cursor =
-                current_line[..self.state.cursor_col.min(current_line.len())].to_string();
+            let cursor_col = floor_grapheme_boundary(&current_line, self.state.cursor_col);
+            let text_before_cursor = current_line[..cursor_col].to_string();
             if char == "/" && self.is_at_start_of_message() {
                 self.try_trigger_autocomplete(false);
             } else if self
@@ -1329,6 +1595,7 @@ impl Editor {
         }
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn autocomplete_trigger_pattern(&self, text_before_cursor: &str) -> bool {
         // (?:^|[\s])[@#%][^\s]*$  — symbols at token boundaries.
         let last_delim = text_before_cursor
@@ -1374,9 +1641,10 @@ impl Editor {
                 .cloned()
                 .unwrap_or_default();
             let char_before = if self.state.cursor_col > 0 {
-                current_line
+                let cursor_col = floor_grapheme_boundary(&current_line, self.state.cursor_col);
+                current_line[..cursor_col]
                     .chars()
-                    .nth(self.state.cursor_col.saturating_sub(1))
+                    .next_back()
                     .unwrap_or_default()
             } else {
                 ' '
@@ -1443,6 +1711,7 @@ impl Editor {
         self.submit_pending.take()
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn handle_backspace(&mut self) {
         self.cancel_autocomplete_request();
         self.exit_history_browsing();
@@ -1457,12 +1726,19 @@ impl Editor {
             let graphemes = self.segment(&before_cursor, "grapheme");
             let last_grapheme = graphemes.last().cloned();
             let grapheme_len = last_grapheme.as_ref().map(|g| g.segment.len()).unwrap_or(1);
+            let mut removed_paste_marker = false;
 
             // Paste-marker handling: backspace removes the marker + registry.
             if let Some(g) = &last_grapheme {
                 if is_paste_marker(&g.segment) {
                     if let Some(cap) = paste_marker_regex().captures(&g.segment) {
                         let target_id: usize = cap.get(1).unwrap().as_str().parse().unwrap_or(0);
+                        let marker_start = g.index.min(line.len());
+                        let marker_end =
+                            marker_start.saturating_add(g.segment.len()).min(line.len());
+                        let before_marker = line[..marker_start].to_string();
+                        let after_marker = line[marker_end..].to_string();
+
                         self.pastes.remove(&target_id);
                         self.paste_counter = self.paste_counter.saturating_sub(1);
                         // Renumber higher ids down by one.
@@ -1478,12 +1754,15 @@ impl Editor {
                                 self.pastes.insert(id - 1, content);
                             }
                         }
-                        // Renumber markers in text.
-                        let mut renumbered: Vec<String> = Vec::new();
-                        for line in &self.state.lines {
-                            let re = paste_marker_regex();
-                            let updated = re
-                                .replace_all(line, |caps: &regex::Captures| {
+
+                        // Remove exactly the atomic marker before renumbering
+                        // the remaining text. Renumbering first can change a
+                        // marker's byte length (for example #10 -> #9), so
+                        // reusing the old cursor/length would delete part of
+                        // the text that followed the marker.
+                        let renumber = |text: &str| {
+                            paste_marker_regex()
+                                .replace_all(text, |caps: &regex::Captures| {
                                     let x: usize =
                                         caps.get(1).unwrap().as_str().parse().unwrap_or(0);
                                     if x <= target_id {
@@ -1492,21 +1771,38 @@ impl Editor {
                                     let suffix = caps.get(2).map(|m| m.as_str()).unwrap_or("");
                                     format!("[paste #{}{suffix}]", x - 1)
                                 })
-                                .to_string();
-                            renumbered.push(updated);
+                                .to_string()
+                        };
+                        let mut renumbered: Vec<String> =
+                            Vec::with_capacity(self.state.lines.len());
+                        for (line_index, current) in self.state.lines.iter().enumerate() {
+                            if line_index == self.state.cursor_line {
+                                renumbered.push(format!(
+                                    "{}{}",
+                                    renumber(&before_marker),
+                                    renumber(&after_marker)
+                                ));
+                            } else {
+                                renumbered.push(renumber(current));
+                            }
                         }
+                        let new_cursor = renumber(&before_marker).len();
                         self.state.lines = renumbered;
+                        self.set_cursor_col(new_cursor);
+                        removed_paste_marker = true;
                     }
                 }
             }
 
-            line = self.state.lines[self.state.cursor_line].clone();
-            let cursor_col = self.state.cursor_col;
-            let before =
-                line[..cursor_col.saturating_sub(grapheme_len).min(line.len())].to_string();
-            let after = line[cursor_col.min(line.len())..].to_string();
-            self.state.lines[self.state.cursor_line] = format!("{before}{after}");
-            self.set_cursor_col(self.state.cursor_col.saturating_sub(grapheme_len));
+            if !removed_paste_marker {
+                line = self.state.lines[self.state.cursor_line].clone();
+                let cursor_col = self.state.cursor_col;
+                let before =
+                    line[..cursor_col.saturating_sub(grapheme_len).min(line.len())].to_string();
+                let after = line[cursor_col.min(line.len())..].to_string();
+                self.state.lines[self.state.cursor_line] = format!("{before}{after}");
+                self.set_cursor_col(self.state.cursor_col.saturating_sub(grapheme_len));
+            }
         } else if self.state.cursor_line > 0 {
             self.push_undo_snapshot();
             let current_line = self.state.lines[self.state.cursor_line].clone();
@@ -1533,9 +1829,25 @@ impl Editor {
     }
 
     fn set_cursor_col(&mut self, col: usize) {
-        self.state.cursor_col = col;
+        let normalized = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .map(|line| floor_grapheme_boundary(line, col))
+            .unwrap_or(0);
+        self.state.cursor_col = normalized;
         self.preferred_visual_col = None;
         self.snapped_from_cursor_col = None;
+    }
+
+    fn set_cursor_col_grapheme(&mut self, col: usize) {
+        let normalized = self
+            .state
+            .lines
+            .get(self.state.cursor_line)
+            .map(|line| floor_grapheme_boundary(line, col))
+            .unwrap_or(0);
+        self.set_cursor_col(normalized);
     }
 }
 
@@ -1847,25 +2159,28 @@ impl Editor {
         current_visual_line: usize,
         target_visual_line: usize,
     ) {
-        let Some(&(tgt_line, tgt_start, tgt_len)) = visual_lines.get(target_visual_line) else {
+        let Some(&(tgt_line, tgt_start, tgt_end)) = visual_lines.get(target_visual_line) else {
             return;
         };
-        let (cur_line, cur_start, _cur_len) = visual_lines[current_visual_line];
+        let (cur_line, cur_start, cur_end) = visual_lines[current_visual_line];
+        let source_text = self.state.lines.get(cur_line).cloned().unwrap_or_default();
 
         let current_visual_col = match self.snapped_from_cursor_col {
             Some(snapped) => {
                 let vl_index = self.find_visual_line_at(visual_lines, cur_line, snapped);
-                snapped.saturating_sub(visual_lines[vl_index].1)
+                let snapped_start = visual_lines[vl_index].1;
+                visual_column_between(&source_text, snapped_start, snapped)
             }
-            None => self.state.cursor_col.saturating_sub(cur_start),
+            None => visual_column_between(&source_text, cur_start, self.state.cursor_col),
         };
 
         let is_last_source = current_visual_line == visual_lines.len() - 1
             || visual_lines[current_visual_line + 1].0 != cur_line;
+        let source_width = visual_column_between(&source_text, cur_start, cur_end);
         let source_max = if is_last_source {
-            _cur_len
+            source_width
         } else {
-            _cur_len.saturating_sub(1)
+            source_width.saturating_sub(1)
         };
         let is_last_target = target_visual_line == visual_lines.len() - 1
             || visual_lines
@@ -1873,19 +2188,20 @@ impl Editor {
                 .map(|v| v.0)
                 .unwrap_or(tgt_line + 1)
                 != tgt_line;
+        let logical_line = self.state.lines.get(tgt_line).cloned().unwrap_or_default();
+        let target_width = visual_column_between(&logical_line, tgt_start, tgt_end);
         let target_max = if is_last_target {
-            tgt_len
+            target_width
         } else {
-            tgt_len.saturating_sub(1)
+            target_width.saturating_sub(1)
         };
 
         let move_to_col =
             self.compute_vertical_move_column(current_visual_col, source_max, target_max);
 
         self.state.cursor_line = tgt_line;
-        let target_col = tgt_start + move_to_col;
-        let logical_line = self.state.lines.get(tgt_line).cloned().unwrap_or_default();
-        self.state.cursor_col = target_col.min(logical_line.len());
+        let target_col = byte_offset_for_visual_column(&logical_line, tgt_start, move_to_col);
+        self.set_cursor_col(target_col.min(tgt_end));
 
         // Snap to atomic segment boundary (paste markers).
         let segments = self.segment(&logical_line, "grapheme");
@@ -1913,8 +2229,9 @@ impl Editor {
                         return;
                     }
                 }
-                self.snapped_from_cursor_col = Some(self.state.cursor_col);
-                self.state.cursor_col = seg.index;
+                let snapped = self.state.cursor_col;
+                self.set_cursor_col(seg.index);
+                self.snapped_from_cursor_col = Some(snapped);
                 return;
             }
         }
@@ -1952,7 +2269,7 @@ impl Editor {
     fn move_cursor(&mut self, delta_line: isize, delta_col: isize) {
         self.cancel_autocomplete_request();
         self.last_action = None;
-        let visual_lines = self.build_visual_line_map(self.last_width);
+        let visual_lines = self.build_visual_line_map(self.last_width.load(Ordering::Relaxed));
         let current_visual_line = self.find_current_visual_line(&visual_lines);
 
         if delta_line != 0 {
@@ -2019,7 +2336,7 @@ impl Editor {
     fn page_scroll(&mut self, direction: isize) {
         self.last_action = None;
         let page_size = std::cmp::max(5, self.terminal_rows * 3 / 10);
-        let visual_lines = self.build_visual_line_map(self.last_width);
+        let visual_lines = self.build_visual_line_map(self.last_width.load(Ordering::Relaxed));
         let current = self.find_current_visual_line(&visual_lines);
         let target = (current as isize + direction * page_size as isize)
             .clamp(0, visual_lines.len().saturating_sub(1) as isize) as usize;
@@ -2246,16 +2563,17 @@ impl Editor {
             let is_current = line_idx as usize == self.state.cursor_line;
             let found = if is_forward {
                 let search_from = if is_current {
-                    self.state.cursor_col + 1
+                    next_grapheme_boundary(
+                        line,
+                        floor_grapheme_boundary(line, self.state.cursor_col),
+                    )
                 } else {
                     0
                 };
-                line[search_from.min(line.len())..]
-                    .find(ch)
-                    .map(|i| search_from.min(line.len()) + i)
+                line[search_from..].find(ch).map(|i| search_from + i)
             } else {
                 let search_from = if is_current {
-                    self.state.cursor_col.saturating_sub(1).min(line.len())
+                    floor_grapheme_boundary(line, self.state.cursor_col)
                 } else {
                     line.len()
                 };
@@ -2527,9 +2845,15 @@ impl Editor {
             item,
             prefix,
         );
-        self.state.lines = result.lines;
-        self.state.cursor_line = result.cursor_line;
-        self.set_cursor_col(result.cursor_col);
+        self.state.lines = if result.lines.is_empty() {
+            vec![String::new()]
+        } else {
+            result.lines
+        };
+        self.state.cursor_line = result
+            .cursor_line
+            .min(self.state.lines.len().saturating_sub(1));
+        self.set_cursor_col_grapheme(result.cursor_col);
         self.cancel_autocomplete();
     }
 
@@ -2592,6 +2916,7 @@ impl Editor {
 
     /// Execute a due natural autocomplete request. The interactive event loop
     /// can call this once per frame; it returns whether a request was run.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn drain_autocomplete_tick(&mut self) -> bool {
         let Some(pending) = self.autocomplete_pending.as_ref() else {
             return false;
@@ -2638,8 +2963,7 @@ impl Editor {
 
 /// True when `data` matches a key-string pattern (terminal-normalized surface).
 fn matches_key(data: &str, pattern: &str) -> bool {
-    let key = TuiKey::parse_simple(data);
-    match_key(&key, pattern)
+    matches_raw_key(data, pattern)
 }
 
 fn matches_jump_cancel(data: &str) -> bool {
@@ -2670,7 +2994,64 @@ fn decode_printable(data: &str) -> Option<String> {
     None
 }
 
+fn is_printable_input_batch(data: &str, key: &TuiKey) -> bool {
+    data.chars().count() > 1
+        && !data.contains('\x1b')
+        && data.chars().all(|character| !character.is_control())
+        && !key.ctrl
+        && !key.alt
+        && !key.shift
+        && !matches!(
+            data,
+            "enter"
+                | "return"
+                | "esc"
+                | "escape"
+                | "backspace"
+                | "delete"
+                | "tab"
+                | "shift+tab"
+                | "up"
+                | "down"
+                | "left"
+                | "right"
+                | "home"
+                | "end"
+                | "pageup"
+                | "pagedown"
+                | "pageUp"
+                | "pageDown"
+                | "f1"
+                | "f2"
+                | "f3"
+                | "f4"
+                | "f5"
+                | "f6"
+                | "f7"
+                | "f8"
+                | "f9"
+                | "f10"
+                | "f11"
+                | "f12"
+        )
+}
+
+/// Recognize a raw read that contains ordinary text plus control bytes. The
+/// terminal buffer normally emits these as separate events, but callers that
+/// provide a larger read must retain the control semantics (for example the
+/// newline in `"before\nafter"`) instead of inserting the first scalar only.
+fn is_coalesced_controlled_input(data: &str, key: &TuiKey) -> bool {
+    data.chars().count() > 1
+        && !data.contains('\x1b')
+        && data.chars().any(char::is_control)
+        && !key.ctrl
+        && !key.alt
+        && !key.shift
+        && !key.super_key
+}
+
 /// Decode CSI-u Ctrl+<letter> sequences inside bracketed paste back to bytes.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn decode_paste_control_bytes(text: &str) -> String {
     let re = regex::Regex::new(r"\x1b\[(\d+);5u").unwrap();
     re.replace_all(text, |caps: &regex::Captures| {
@@ -2706,6 +3087,10 @@ impl Component for Editor {
 
     fn invalidate(&mut self) {
         // No cached state to invalidate.
+    }
+
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
     }
 }
 

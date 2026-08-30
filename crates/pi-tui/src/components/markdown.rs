@@ -192,8 +192,10 @@ fn count_indent(line: &str) -> usize {
 }
 
 /// Parse a markdown document into a token stream.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 pub fn parse_markdown(source: &str) -> Vec<Block> {
-    let lines: Vec<&str> = source.split('\n').collect();
+    let normalized_source = source.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized_source.split('\n').collect();
     let mut tokens: Vec<Block> = Vec::new();
     let mut i = 0usize;
     while i < lines.len() {
@@ -278,7 +280,15 @@ pub fn parse_markdown(source: &str) -> Vec<Block> {
                     quote_lines.push(t.trim_start_matches('>').trim_start().to_string());
                     i += 1;
                 } else if l.trim().is_empty() {
-                    quote_lines.push(String::new());
+                    // An unmarked blank ends the blockquote. Leave it for the
+                    // outer lexer so the normal block spacing token is kept.
+                    break;
+                } else if is_lazy_blockquote_continuation(&lines, i) {
+                    // CommonMark permits a paragraph continuation inside a
+                    // blockquote without repeating `>`. Keep that text in
+                    // the quote so the renderer preserves its line and
+                    // styling instead of leaking it into the outer document.
+                    quote_lines.push(l.to_string());
                     i += 1;
                 } else {
                     break;
@@ -393,8 +403,14 @@ fn atx_heading(line: &str) -> Option<(usize, String)> {
     if level > 6 {
         return None;
     }
+    if trimmed[level..]
+        .chars()
+        .next()
+        .is_some_and(|character| !character.is_whitespace())
+    {
+        return None;
+    }
     let rest = trimmed[level..].trim();
-    // requiring whitespace after # for valid heading
     if rest.is_empty() {
         // `#` alone is still a heading of empty text in marked.
         return Some((level, String::new()));
@@ -408,6 +424,17 @@ fn atx_heading(line: &str) -> Option<(usize, String)> {
     Some((level, rest))
 }
 
+fn is_lazy_blockquote_continuation(lines: &[&str], index: usize) -> bool {
+    let line = lines[index];
+    !line.trim().is_empty()
+        && code_fence_open(line).is_none()
+        && atx_heading(line).is_none()
+        && !is_hr(line)
+        && list_marker(line).is_none()
+        && !looks_like_table(&lines[index..])
+}
+
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn is_hr(line: &str) -> bool {
     let t = line.trim();
     let chars = t.chars().next();
@@ -421,82 +448,81 @@ fn is_hr(line: &str) -> bool {
 }
 
 fn try_parse_display_latex(lines: &[&str]) -> Option<(Block, usize)> {
-    let first = lines.first()?.trim();
+    let first_line = *lines.first()?;
+    let indent = count_indent(first_line);
+    if indent > 3 {
+        return None;
+    }
+    let first = &first_line[indent..];
 
-    if first.starts_with("$$") {
-        if first.len() >= 4 && first.ends_with("$$") {
-            let body = first[2..first.len() - 2].to_string();
+    for (opening, closing, always_pending) in [("$$", "$$", false), ("\\[", "\\]", true)] {
+        let Some(after_opening) = first.strip_prefix(opening) else {
+            continue;
+        };
+        let initial_body = after_opening.trim_start_matches([' ', '\t']);
+        let mut body_lines = vec![initial_body];
+
+        if let Some(close) = find_display_closing(initial_body, closing) {
+            let body = initial_body[..close].trim();
+            if !body.is_empty() {
+                return Some((
+                    Block::LatexBlock {
+                        text: body.to_string(),
+                        raw: first_line.to_string(),
+                        pending: false,
+                    },
+                    1,
+                ));
+            }
+        }
+
+        for (index, line) in lines.iter().enumerate().skip(1) {
+            if let Some(close) = find_display_closing(line, closing) {
+                body_lines.push(&line[..close]);
+                let body = body_lines.join("\n");
+                if !body.trim().is_empty() {
+                    return Some((
+                        Block::LatexBlock {
+                            text: body.trim().to_string(),
+                            raw: lines[..=index].join("\n"),
+                            pending: false,
+                        },
+                        index + 1,
+                    ));
+                }
+                break;
+            }
+            body_lines.push(*line);
+        }
+
+        let body = body_lines.join("\n");
+        if always_pending || looks_like_pending_math(&body) {
             return Some((
                 Block::LatexBlock {
                     text: body,
-                    raw: first.to_string(),
-                    pending: false,
+                    raw: lines.join("\n"),
+                    pending: true,
                 },
-                1,
+                lines.len(),
             ));
         }
-        let mut body_lines = Vec::new();
-        for (index, line) in lines.iter().enumerate().skip(1) {
-            if line.trim() == "$$" {
-                return Some((
-                    Block::LatexBlock {
-                        text: body_lines.join("\n"),
-                        raw: lines[..=index].join("\n"),
-                        pending: false,
-                    },
-                    index + 1,
-                ));
-            }
-            body_lines.push(*line);
-        }
-        return Some((
-            Block::LatexBlock {
-                text: body_lines.join("\n"),
-                raw: lines.join("\n"),
-                pending: true,
-            },
-            lines.len(),
-        ));
     }
 
-    if let Some(stripped) = first.strip_prefix("\\[") {
-        if let Some(close) = stripped.find("\\]") {
-            return Some((
-                Block::LatexBlock {
-                    text: stripped[..close].to_string(),
-                    raw: first.to_string(),
-                    pending: false,
-                },
-                1,
-            ));
-        }
-        let mut body_lines = Vec::new();
-        for (index, line) in lines.iter().enumerate().skip(1) {
-            if let Some(close) = line.find("\\]") {
-                if close > 0 {
-                    body_lines.push(&line[..close]);
-                }
-                return Some((
-                    Block::LatexBlock {
-                        text: body_lines.join("\n"),
-                        raw: lines[..=index].join("\n"),
-                        pending: false,
-                    },
-                    index + 1,
-                ));
-            }
-            body_lines.push(*line);
-        }
-        return Some((
-            Block::LatexBlock {
-                text: body_lines.join("\n"),
-                raw: lines.join("\n"),
-                pending: true,
-            },
-            lines.len(),
-        ));
-    }
+    None
+}
 
+fn find_display_closing(line: &str, closing: &str) -> Option<usize> {
+    let mut search_from = 0;
+    while let Some(relative) = line[search_from..].find(closing) {
+        let index = search_from + relative;
+        if line[index + closing.len()..]
+            .chars()
+            .all(|character| matches!(character, ' ' | '\t'))
+        {
+            return Some(index);
+        }
+        search_from = index + closing.len();
+    }
     None
 }
 
@@ -504,19 +530,55 @@ fn looks_like_table(lines: &[&str]) -> bool {
     if lines.len() < 2 {
         return false;
     }
-    if !lines[0].trim().starts_with('|') {
+    let Some(header) = table_cells(lines[0]) else {
         return false;
-    }
-    let sep = lines[1].trim();
-    if !sep.starts_with('|') {
+    };
+    let Some(separator) = parse_table_separator(lines[1]) else {
         return false;
+    };
+    header.len() == separator.len()
+}
+
+/// Split a Markdown table row while accepting the optional outer pipes from
+/// CommonMark/marked. Escaped pipes remain part of their cell, matching
+/// marked's `splitCells`; a pipe-free line is one cell, which is required for
+/// valid single-column tables such as `Header` / `:---`.
+fn table_cells(line: &str) -> Option<Vec<String>> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
     }
-    let cells: Vec<&str> = sep.trim_matches('|').split('|').map(|s| s.trim()).collect();
-    !cells.is_empty()
-        && cells.iter().all(|c| {
-            let c = c.trim_matches(':');
-            !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':')
-        })
+
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut backslashes = 0usize;
+    for character in trimmed.chars() {
+        if character == '|' && backslashes.is_multiple_of(2) {
+            cells.push(std::mem::take(&mut current));
+            backslashes = 0;
+            continue;
+        }
+        current.push(character);
+        if character == '\\' {
+            backslashes += 1;
+        } else {
+            backslashes = 0;
+        }
+    }
+    cells.push(current);
+
+    if cells.first().is_some_and(|cell| cell.trim().is_empty()) {
+        cells.remove(0);
+    }
+    if cells.last().is_some_and(|cell| cell.trim().is_empty()) {
+        cells.pop();
+    }
+    Some(
+        cells
+            .into_iter()
+            .map(|cell| cell.trim().replace(r"\|", "|"))
+            .collect(),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -673,14 +735,18 @@ fn try_parse_list(lines: &[&str]) -> Option<ParsedList> {
         let mut task = false;
         let mut checked = false;
         let content_str = item_lines.first().cloned().unwrap_or_default();
-        if let Some(rest) = content_str.strip_prefix("[ ] ") {
+        let task_content = content_str
+            .strip_prefix("[ ] ")
+            .map(|rest| (false, rest))
+            .or_else(|| {
+                content_str
+                    .strip_prefix("[x] ")
+                    .or_else(|| content_str.strip_prefix("[X] "))
+                    .map(|rest| (true, rest))
+            });
+        if let Some((is_checked, rest)) = task_content {
             task = true;
-            if let Some(first_tok) = item_tokens.first_mut() {
-                *first_tok = Block::Paragraph(parse_inlines(rest));
-            }
-        } else if let Some(rest) = content_str.strip_prefix("[x] ") {
-            task = true;
-            checked = true;
+            checked = is_checked;
             if let Some(first_tok) = item_tokens.first_mut() {
                 *first_tok = Block::Paragraph(parse_inlines(rest));
             }
@@ -707,16 +773,23 @@ fn try_parse_list(lines: &[&str]) -> Option<ParsedList> {
 }
 
 fn parse_table_separator(line: &str) -> Option<Vec<Option<&str>>> {
-    let t = line.trim();
-    if !t.starts_with('|') {
+    // Marked's table tokenizer requires a table delimiter (`|` or `:`) in
+    // the separator. This keeps an ordinary `---` line from becoming a
+    // one-column table while still accepting `Header` / `:---`.
+    if !line.chars().any(|character| matches!(character, '|' | ':')) {
         return None;
     }
-    let inner = t.trim_start_matches('|').trim_end_matches('|');
-    let cells: Vec<&str> = inner.split('|').map(|s| s.trim()).collect();
+    let cells = table_cells(line)?;
+    if cells.is_empty() {
+        return None;
+    }
     let mut aligns = Vec::new();
     for c in cells {
         let c = c.trim();
-        if c.is_empty() || !c.chars().all(|ch| ch == '-' || ch == ':') {
+        if c.is_empty()
+            || !c.chars().all(|ch| ch == '-' || ch == ':')
+            || !c.chars().any(|ch| ch == '-')
+        {
             return None;
         }
         aligns.push(None);
@@ -728,19 +801,13 @@ fn try_parse_table(lines: &[&str]) -> Option<(TableBlock, usize)> {
     if lines.len() < 2 {
         return None;
     }
-    // Header row must contain a '|'.
     let header_raw = lines[0];
-    if !header_raw.trim().starts_with('|') {
-        return None;
-    }
+    let header_cells = table_cells(header_raw)?;
     let sep = parse_table_separator(lines[1])?;
     let ncols = sep.len();
-    let header: Vec<Vec<Inline>> = header_raw
-        .trim()
-        .trim_start_matches('|')
-        .trim_end_matches('|')
-        .split('|')
-        .map(|cell| parse_inlines(cell.trim()))
+    let header: Vec<Vec<Inline>> = header_cells
+        .iter()
+        .map(|cell| parse_inlines(cell))
         .collect();
     if header.len() != ncols {
         return None;
@@ -749,16 +816,20 @@ fn try_parse_table(lines: &[&str]) -> Option<(TableBlock, usize)> {
     let mut consumed = 2usize;
     while consumed < lines.len() {
         let l = lines[consumed];
-        if l.trim().is_empty() || !l.trim().starts_with('|') {
+        if l.trim().is_empty()
+            || code_fence_open(l).is_some()
+            || atx_heading(l).is_some()
+            || is_hr(l)
+            || l.trim_start().starts_with('>')
+            || list_marker(l).is_some()
+            || try_parse_display_latex(&lines[consumed..]).is_some()
+        {
             break;
         }
-        let cells: Vec<Vec<Inline>> = l
-            .trim()
-            .trim_start_matches('|')
-            .trim_end_matches('|')
-            .split('|')
-            .map(|cell| parse_inlines(cell.trim()))
-            .collect();
+        let Some(row_cells) = table_cells(l) else {
+            break;
+        };
+        let cells: Vec<Vec<Inline>> = row_cells.iter().map(|cell| parse_inlines(cell)).collect();
         let mut cells = cells;
         cells.resize_with(ncols, Vec::new);
         cells.truncate(ncols);
@@ -777,6 +848,7 @@ fn parse_inlines(source: &str) -> Vec<Inline> {
     parse_inline_range(source, 0, source.len())
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn parse_inline_range(source: &str, start: usize, end: usize) -> Vec<Inline> {
     let mut tokens: Vec<Inline> = Vec::new();
     let mut text_buf = String::new();
@@ -796,6 +868,12 @@ fn parse_inline_range(source: &str, start: usize, end: usize) -> Vec<Inline> {
         if c == '\\' && rest.len() > 1 {
             let next = rest.chars().nth(1).unwrap();
             let is_math_delimiter = matches!(next, '(' | '[');
+            if next == '\n' {
+                flush(&mut tokens, &mut text_buf);
+                tokens.push(Inline::Br);
+                i += 1 + next.len_utf8();
+                continue;
+            }
             if next.is_ascii_punctuation() && !is_math_delimiter {
                 // Preserve the backslash when configured.
                 flush(&mut tokens, &mut text_buf);
@@ -928,9 +1006,23 @@ fn parse_inline_range(source: &str, start: usize, end: usize) -> Vec<Inline> {
 
         // Hard break: backslash-newline or two trailing spaces (block level).
         if c == '\n' {
-            // A single newline inside a paragraph is a soft break -> space.
-            flush(&mut tokens, &mut text_buf);
-            tokens.push(Inline::Text(" ".to_string()));
+            // Marked preserves a hard break when the source line ends in two
+            // spaces. Tool output uses this form because it is rendered by
+            // the upstream TUI's plain Text component and must retain one
+            // terminal row per output line. A normal paragraph newline is a
+            // soft break and remains a space.
+            let hard_break = text_buf.ends_with("  ");
+            if hard_break {
+                text_buf.truncate(text_buf.len().saturating_sub(2));
+                flush(&mut tokens, &mut text_buf);
+                tokens.push(Inline::Br);
+            } else {
+                flush(&mut tokens, &mut text_buf);
+                // The upstream renderer keeps a paragraph's source newline
+                // and turns it into a physical terminal row later. A soft
+                // Markdown break is not a literal space in the TUI output.
+                tokens.push(Inline::Text("\n".to_string()));
+            }
             i += 1;
             continue;
         }
@@ -943,16 +1035,14 @@ fn parse_inline_range(source: &str, start: usize, end: usize) -> Vec<Inline> {
 }
 
 fn find_matching_inline_marker(s: &str, marker: &str) -> Option<usize> {
-    let mut idx = 0usize;
-    while idx + marker.len() <= s.len() {
-        if &s[idx..idx + marker.len()] == marker {
-            return Some(idx);
-        }
-        idx += 1;
-    }
-    None
+    // `str::find` only returns a match at a UTF-8 boundary. The previous
+    // byte-by-byte scan could advance into the middle of a multibyte
+    // character (for example the first byte of an emoji) and then panic when
+    // slicing `s[idx..idx + marker.len()]`.
+    s.find(marker)
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn find_del_end(s: &str) -> Option<usize> {
     let bytes = s.as_bytes();
     let mut i = 0usize;
@@ -973,52 +1063,53 @@ fn find_del_end(s: &str) -> Option<usize> {
 }
 
 fn try_inline_latex(s: &str) -> Option<(String, String, bool, usize)> {
-    if s.starts_with("$$") || (s.starts_with('$') && s.len() > 1 && s[1..].starts_with(' ')) {
+    let (opening, closing) = if s.starts_with("$$") {
+        ("$$", "$$")
+    } else if s.starts_with('$') && !(s.len() > 1 && s[1..].starts_with(' ')) {
+        ("$", "$")
+    } else {
         return None;
-    }
-    let opening = 1usize;
-    let mut idx = opening;
-    let mut escaped = false;
-    while idx < s.len() {
-        let c = s[idx..].chars().next().unwrap();
-        if c == '\\' {
-            escaped = !escaped;
-            idx += 1;
-            continue;
-        }
-        if c == '$' && !escaped {
-            let body = &s[opening..idx];
-            let raw = &s[..idx + 1];
-            if !body.is_empty() && !body.contains('\n') {
-                // Heuristic guards from upstream: currency/identifiers.
-                if body.ends_with(' ') || body.starts_with(' ') {
-                    return None;
-                }
-                if idx + 1 < s.len()
-                    && s[idx + 1..]
-                        .chars()
-                        .next()
-                        .map(|c| c.is_ascii_digit())
-                        .unwrap_or(false)
-                {
-                    return None;
-                }
-                if is_identifier_like(body) && idx + 1 < s.len() {
-                    let nxt = s[idx + 1..].chars().next().unwrap();
-                    if nxt.is_ascii_alphanumeric() || nxt == '_' {
-                        return None;
-                    }
-                }
-                return Some((body.to_string(), raw.to_string(), false, idx + 1));
-            }
+    };
+
+    let body_start = opening.len();
+    if let Some(close_rel) = find_unescaped_marker(&s[body_start..], closing) {
+        let close = body_start + close_rel;
+        let body = &s[body_start..close];
+        if body.is_empty() || body.contains('\n') {
             return None;
         }
-        escaped = false;
-        idx += c.len_utf8();
+
+        // Upstream only applies the currency/identifier heuristics to single
+        // dollar delimiters. Backticks are deliberately excluded: otherwise
+        // prose such as `$x`y$` loses its literal delimiters while streaming.
+        if opening == "$"
+            && (body.ends_with(' ')
+                || body.starts_with(' ')
+                || s[close + closing.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_ascii_digit())
+                || (is_identifier_like(body)
+                    && s[close + closing.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|character| {
+                            character.is_ascii_alphanumeric() || character == '_'
+                        }))
+                || body.contains('`'))
+        {
+            return None;
+        }
+
+        let consumed = close + closing.len();
+        return Some((body.to_string(), s[..consumed].to_string(), false, consumed));
     }
-    // Pending (unclosed) math.
-    let body = &s[opening..];
-    if looks_like_pending_math(body) {
+
+    // Pending (unclosed) math. A backslash delimiter is always meaningful;
+    // dollar math must contain a math signal to avoid swallowing shell
+    // variables and ordinary currency text.
+    let body = &s[body_start..];
+    if opening.starts_with('\\') || looks_like_pending_math(body) {
         return Some((body.to_string(), s.to_string(), true, s.len()));
     }
     None
@@ -1026,7 +1117,7 @@ fn try_inline_latex(s: &str) -> Option<(String, String, bool, usize)> {
 
 fn try_inline_latex_brace(s: &str) -> Option<(String, String, bool, usize)> {
     let close_marker = if s.starts_with("\\(") { "\\)" } else { "\\]" };
-    if let Some(rel) = s[2..].find(close_marker) {
+    if let Some(rel) = find_unescaped_marker(&s[2..], close_marker) {
         let body = &s[2..2 + rel];
         if body.is_empty() || body.contains('\n') {
             return None;
@@ -1035,6 +1126,29 @@ fn try_inline_latex_brace(s: &str) -> Option<(String, String, bool, usize)> {
         return Some((body.to_string(), raw.to_string(), false, 2 + rel + 2));
     }
     Some((s[2..].to_string(), s.to_string(), true, s.len()))
+}
+
+/// Find a delimiter that is not escaped by an odd run of backslashes.
+///
+/// Marked's LaTeX extension ignores escaped closing delimiters. The delimiter
+/// and its escape prefix are ASCII, so counting bytes here is safe while the
+/// returned offset remains a UTF-8 boundary from `str::find`.
+fn find_unescaped_marker(source: &str, marker: &str) -> Option<usize> {
+    let mut search_from = 0;
+    while let Some(relative) = source[search_from..].find(marker) {
+        let index = search_from + relative;
+        let mut backslashes = 0;
+        let mut cursor = index;
+        while cursor > 0 && source.as_bytes()[cursor - 1] == b'\\' {
+            backslashes += 1;
+            cursor -= 1;
+        }
+        if backslashes % 2 == 0 {
+            return Some(index);
+        }
+        search_from = index + marker.len();
+    }
+    None
 }
 
 fn is_identifier_like(s: &str) -> bool {
@@ -1096,6 +1210,7 @@ fn looks_like_pending_math(s: &str) -> bool {
     })
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn try_inline_link(s: &str) -> Option<(String, String, usize)> {
     // find unescaped ']', then '(' ... ')'
     let mut i = 1usize;
@@ -1487,10 +1602,10 @@ impl Markdown {
         &self,
         token: &Block,
         width: usize,
-        _next_token_type: Option<&str>,
-        _context: Option<&InlineStyleContext>,
+        next_token_type: Option<&str>,
+        context: Option<&InlineStyleContext>,
     ) -> Vec<String> {
-        let context = _context.cloned().unwrap_or(InlineStyleContext {
+        let context = context.cloned().unwrap_or(InlineStyleContext {
             style_prefix: self.style_prefix(),
         });
         let mut lines: Vec<String> = Vec::new();
@@ -1533,6 +1648,9 @@ impl Markdown {
                 for line in rendered.split('\n') {
                     lines.push(self.apply_default_style(line));
                 }
+                if next_token_type.is_some_and(|kind| kind != "space") {
+                    lines.push(String::new());
+                }
             }
             Block::Code { lang, text, raw } => {
                 let indent = self
@@ -1554,13 +1672,16 @@ impl Markdown {
                     }
                 }
                 lines.push((self.theme.code_block_border)("```"));
+                if next_token_type.is_some_and(|kind| kind != "space") {
+                    lines.push(String::new());
+                }
                 let _ = raw;
             }
             Block::List(list) => {
                 lines.extend(self.render_list(list, 0, width, &context));
             }
             Block::Table(table) => {
-                lines.extend(self.render_table(table, width, &context));
+                lines.extend(self.render_table(table, width, next_token_type, &context));
             }
             Block::Blockquote(inner_tokens) => {
                 let quote_style: Box<dyn Fn(&str) -> String> =
@@ -1600,9 +1721,15 @@ impl Markdown {
                         lines.push(format!("{}{wrapped}", (self.theme.quote_border)("│ ")));
                     }
                 }
+                if next_token_type.is_some_and(|kind| kind != "space") {
+                    lines.push(String::new());
+                }
             }
             Block::Hr => {
                 lines.push((self.theme.hr)(&"─".repeat(std::cmp::min(width, 80))));
+                if next_token_type.is_some_and(|kind| kind != "space") {
+                    lines.push(String::new());
+                }
             }
             Block::Html(raw) => {
                 lines.push(self.apply_default_style(raw.trim()));
@@ -1732,6 +1859,7 @@ impl Markdown {
         &self,
         token: &TableBlock,
         available_width: usize,
+        next_token_type: Option<&str>,
         context: &InlineStyleContext,
     ) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
@@ -1745,6 +1873,9 @@ impl Markdown {
         if available_for_cells < num_cols {
             let fallback = wrap_text_with_ansi(&token.raw, available_width);
             lines.extend(fallback);
+            if next_token_type.is_some_and(|kind| kind != "space") {
+                lines.push(String::new());
+            }
             return lines;
         }
 
@@ -1938,7 +2069,9 @@ impl Markdown {
                 .join("─┴─")
         ));
 
-        let _ = available_for_cells;
+        if next_token_type.is_some_and(|kind| kind != "space") {
+            lines.push(String::new());
+        }
         lines
     }
 }
@@ -1963,9 +2096,20 @@ fn block_type_name(block: &Block) -> &'static str {
 impl Component for Markdown {
     fn render(&self, width: usize) -> Vec<String> {
         {
-            let cached_text = self.cached_text.lock().unwrap().clone();
-            let cached_width = *self.cached_width.lock().unwrap();
-            let cached_lines = self.cached_lines.lock().unwrap().clone();
+            let cached_text = self
+                .cached_text
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            let cached_width = *self
+                .cached_width
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let cached_lines = self
+                .cached_lines
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
             if let (Some(t), Some(w), Some(lines)) = (cached_text, cached_width, cached_lines) {
                 if t == self.text && w == width {
                     return lines;
@@ -1973,16 +2117,34 @@ impl Component for Markdown {
             }
         }
         let result = self.render_document(width);
-        *self.cached_text.lock().unwrap() = Some(self.text.clone());
-        *self.cached_width.lock().unwrap() = Some(width);
-        *self.cached_lines.lock().unwrap() = Some(result.clone());
+        *self
+            .cached_text
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(self.text.clone());
+        *self
+            .cached_width
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(width);
+        *self
+            .cached_lines
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(result.clone());
         result
     }
 
     fn invalidate(&mut self) {
-        *self.cached_text.lock().unwrap() = None;
-        *self.cached_width.lock().unwrap() = None;
-        *self.cached_lines.lock().unwrap() = None;
+        *self
+            .cached_text
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+        *self
+            .cached_width
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+        *self
+            .cached_lines
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
     }
 }
 

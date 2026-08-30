@@ -20,3 +20,6 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 [dev-dependencies]
 async-trait = "0.1"
 tokio = { workspace = true, features = ["full", "macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

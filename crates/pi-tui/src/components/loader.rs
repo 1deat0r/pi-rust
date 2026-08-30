@@ -212,6 +212,7 @@ impl AnimationController {
         }
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn stop(&self) {
         let sender = self
             .stop_sender
@@ -238,6 +239,7 @@ impl AnimationController {
         }
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn start(&self, state: &Arc<Mutex<LoaderState>>) {
         self.stop();
 
@@ -257,6 +259,7 @@ impl AnimationController {
     }
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn animation_worker(
     weak_state: Weak<Mutex<LoaderState>>,
     receiver: Receiver<()>,
@@ -334,6 +337,7 @@ impl Loader {
     }
 
     /// Return the current message without styling.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn message(&self) -> String {
         self.state
             .lock()
@@ -344,6 +348,7 @@ impl Loader {
 
     /// Replace the message and request a repaint, matching upstream
     /// setMessage.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn set_message(&mut self, message: impl Into<String>) {
         self.state
             .lock()
@@ -357,6 +362,7 @@ impl Loader {
     /// None restores themed/default frames. Some preserves the exact
     /// upstream custom-indicator semantics, including empty and one-frame
     /// arrays and verbatim frame rendering.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn set_indicator(&mut self, indicator: Option<LoaderIndicatorOptions>) {
         // Stop first so a timer tick cannot interleave with the configuration
         // update. Upstream is single-threaded; this ordering is the safe Rust
@@ -386,6 +392,7 @@ impl Loader {
     }
 
     /// Install or replace the thread-safe repaint signal.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn set_request_render_callback(&mut self, callback: Option<RequestRenderFn>) {
         self.state
             .lock()
@@ -403,6 +410,7 @@ impl Loader {
     }
 
     /// Return a copy of the configured frames.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn frames(&self) -> Vec<String> {
         self.state
             .lock()
@@ -412,6 +420,7 @@ impl Loader {
     }
 
     /// Return the normalized animation interval.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn interval(&self) -> Duration {
         self.state
             .lock()
@@ -420,6 +429,7 @@ impl Loader {
     }
 
     /// Return the current zero-based frame index.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn current_frame(&self) -> usize {
         self.state
             .lock()
@@ -428,6 +438,7 @@ impl Loader {
     }
 
     /// Whether an interval worker is currently installed.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn is_running(&self) -> bool {
         self.animation
             .worker
@@ -441,6 +452,7 @@ impl Loader {
     /// This deterministic seam is useful to event loops that own their own
     /// timer and to tests. It intentionally does not depend on wall-clock
     /// sleeps. The normal interval worker calls the same state transition.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn advance_frame(&self) {
         let request_render = {
             let mut state = self.state.lock().expect("loader state mutex poisoned");
@@ -458,6 +470,7 @@ impl Loader {
         }
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn refresh_display(&self) {
         let request_render = {
             let mut state = self.state.lock().expect("loader state mutex poisoned");
@@ -471,6 +484,7 @@ impl Loader {
         }
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn restart_animation(&self) {
         let animated = self
             .state
@@ -533,6 +547,7 @@ impl Drop for Loader {
 }
 
 impl Component for Loader {
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn render(&self, width: usize) -> Vec<String> {
         let display = self
             .state

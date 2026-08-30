@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 use std::sync::{Arc, Mutex};
 
 use pi_tui::components::{HStack, ScrollView, Text, VStack};
@@ -99,6 +101,8 @@ fn scroll_node_updates_shared_layout_state_and_handles_nested_lookup() {
         .expect("primary scroll state");
     assert_eq!(state.scroll_top(), 8);
     assert!(state.is_following_end());
+    assert!(frame.lines.iter().any(|line| line.contains("line 12")));
+    assert!(!frame.lines.iter().any(|line| line.trim_end() == "line 1"));
     assert_eq!(
         pi_tui::get_scroll_view_box(&frame, &state),
         Some(frame.root.children[0].rect)

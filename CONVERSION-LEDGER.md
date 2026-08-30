@@ -1913,3 +1913,6 @@ Phase 2.4 brought pi-agent under the hard lint gate; ledger rows unchanged.
 
 Phase 2.5 brought pi-coding-agent under the hard lint gate; ledger rows
 unchanged.
+
+Phase 2.7 completed the hard-gate rollout: every workspace crate now enforces
+the panic-path lint gate; ledger rows unchanged.

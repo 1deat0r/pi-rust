@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test module
 //! Latex renderer tests — ported from `packages/tui/test/latex.test.ts` \
 //! (extracted defineCases table).
 
@@ -133,4 +134,130 @@ fn display_mode_stacks_fractions_and_limits() {
 fn unsupported_syntax_returns_none() {
     assert!(render_latex("\\unknowncmd", false).is_none());
     assert!(render_latex("\\frac{1", false).is_none());
+}
+
+#[test]
+fn keeps_unicode_offsets_byte_safe_in_text_and_groups() {
+    assert_eq!(render_latex("α + β", false).as_deref(), Some("α + β"));
+    assert_eq!(render_latex(r"\text{π}", false).as_deref(), Some("π"));
+    assert_eq!(render_latex(r"\frac{π}{2}", false).as_deref(), Some("π/2"));
+    assert_eq!(render_latex("α\u{2003}β", false).as_deref(), Some("α β"));
+}
+
+#[test]
+fn malformed_unicode_groups_fail_without_boundary_panics() {
+    assert!(render_latex(r"\text{π", false).is_none());
+    assert!(render_latex(r"\frac{π", false).is_none());
+}
+
+#[test]
+fn cleans_unicode_matrix_layout_markers_after_rendering() {
+    assert_eq!(
+        render_latex(r"\begin{pmatrix}α&β\\γ&δ\end{pmatrix}", false).as_deref(),
+        Some("⎛ α │ β ⎞\n⎝ γ │ δ ⎠")
+    );
+}
+
+#[test]
+fn matches_upstream_case_condition_casing_and_word_boundaries() {
+    assert_eq!(
+        render_latex(
+            r"\begin{cases}a & IF x=0 \\ b & otherwise.\end{cases}",
+            false,
+        )
+        .as_deref(),
+        Some("⎧ a IF x = 0\n⎩ b otherwise.")
+    );
+}
+
+#[test]
+fn only_applies_limits_when_adjacent_to_an_operator() {
+    assert_eq!(
+        render_latex(r"\sum x\limits_{n}", true).as_deref(),
+        Some("∑ xₙ")
+    );
+}
+
+#[test]
+fn normalizes_whitespace_around_script_operators() {
+    assert_eq!(render_latex(r"x_{i = 0}", false).as_deref(), Some("xᵢ₌₀"));
+}
+
+#[test]
+fn attaches_periods_only_to_terminal_matrix_layout_markers() {
+    let mut nodes = Vec::new();
+    {
+        let mut parser =
+            super::LatexParser::new(r"\begin{pmatrix}a\\b\end{pmatrix}.", &mut nodes, false);
+        parser.render().expect("matrix should render");
+    }
+    assert!(matches!(
+        nodes.first(),
+        Some(super::LayoutNode::Matrix { lines, .. })
+            if lines.last().is_some_and(|line| line.ends_with('.'))
+    ));
+
+    let mut nodes = Vec::new();
+    {
+        let mut parser =
+            super::LatexParser::new(r"\begin{pmatrix}a\\b\end{pmatrix} x.", &mut nodes, false);
+        parser.render().expect("matrix should render");
+    }
+    assert!(matches!(
+        nodes.first(),
+        Some(super::LayoutNode::Matrix { lines, .. })
+            if lines.last().is_some_and(|line| !line.ends_with('.'))
+    ));
+}
+
+#[test]
+fn matches_upstream_extended_latex_oracles() {
+    let cases = [
+        (
+            r"\sum_{i=0}^n \alpha_i + \int_0^\infty e^{-x^2}\,dx = \sqrt{\pi}",
+            "∑ᵢ₌₀ⁿ αᵢ + ∫₀^∞ e^(-x²) dx = √π",
+        ),
+        (
+            r"\binom{n}{k}+\vec{x}+\hat{y}+\overline{AB}",
+            "(n choose k)+x⃗+ŷ+overline(AB)",
+        ),
+        (r"A\not\subseteq B,\quad x\not\in X", "A ⊈ B, x ∉ X"),
+        (
+            r"\sqrt[2]{x}+\sqrt[3]{x}+\sqrt[4]{x}+\sqrt[n]{x}+\sqrt[k]{x+1}",
+            "√x+∛x+∜x+ⁿ√x+ᵏ√(x+1)",
+        ),
+        (
+            r"\begin{equation}\begin{split}a&=b\\&=c\end{split}\end{equation}",
+            "a = b\n= c",
+        ),
+        (
+            r"\begin{cases}a & x<0 \\ b & \text{if }x=0 \\ c & \text{otherwise}\end{cases}",
+            "⎧ a if x < 0\n⎨ b if x = 0\n⎩ c otherwise",
+        ),
+        (
+            r"\begin{pmatrix}1&200\\3000&4\end{pmatrix}",
+            "⎛ 1    │ 200 ⎞\n⎝ 3000 │ 4   ⎠",
+        ),
+    ];
+    for (source, expected) in cases {
+        assert_eq!(
+            render_latex(source, false).as_deref(),
+            Some(expected),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn malformed_latex_inputs_remain_total_and_rejected() {
+    for source in [
+        r"\frac{1}{x",
+        r"x}",
+        r"\begin{matrix}1 & 2",
+        "x\\",
+        "\\text{π",
+        "\\sqrt[α",
+    ] {
+        assert!(render_latex(source, false).is_none(), "{source:?}");
+    }
 }

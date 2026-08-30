@@ -39,7 +39,11 @@ pub mod components {
     pub mod stack;
     pub mod text;
     pub mod truncated_text;
-    pub use alt_screen::{AltScreenFlashContainer, AltScreenSearchComponent};
+    pub use alt_screen::{
+        extract_selection, find_alt_screen_search_matches, snap_selection_column,
+        AltScreenFlashContainer, AltScreenSearchComponent, SearchMatch, SearchSegment,
+        SelectionPoint, SelectionRange,
+    };
     pub use box_::Box as BoxComponent;
     pub use cancellable_loader::CancellableLoader;
     pub use editor::{Editor, EditorOptions, EditorTheme};
@@ -58,15 +62,16 @@ pub mod components {
 pub mod controller;
 
 pub use autocomplete::{
-    AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, CombinedAutocompleteProvider,
-    CompletionResult, SlashCommand,
+    AutocompleteCommand, AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions,
+    CombinedAutocompleteProvider, CompletionResult, SlashCommand,
 };
 pub use controller::{
     InputListenerHandle, TuiAltScreen, TuiMainScreen, TuiMainScreenRenderState, TuiMode,
     TuiStopOptions,
 };
 pub use keybindings::{
-    KeybindingDefinition, KeybindingsConfig, KeybindingsManager, TUI_KEYBINDINGS,
+    get_keybindings, set_keybindings, KeybindingDefinition, KeybindingsConfig, KeybindingsManager,
+    TUI_KEYBINDINGS,
 };
 pub use keys::{match_key, parse_key, TuiKey};
 pub use latex::render_latex;
@@ -98,6 +103,7 @@ pub use utils::{
 };
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     #[test]
     fn tui_lib_loads() {}

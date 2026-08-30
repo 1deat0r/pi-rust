@@ -4,6 +4,7 @@
 //! constructed with the default definitions plus user overrides.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Mutex, OnceLock};
 
 use crate::keys::{match_key, TuiKey};
 
@@ -14,7 +15,7 @@ pub type Keybinding = &'static str;
 pub type KeyId = &'static str;
 
 /// Default keybinding definitions, mirroring upstream `TUI_KEYBINDINGS`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct KeybindingDefinition {
     pub id: Keybinding,
     pub default_keys: &'static [KeyId],
@@ -22,8 +23,158 @@ pub struct KeybindingDefinition {
 }
 
 macro_rules! kb {
-    ($id:expr, [$($k:expr),*]) => {
-        KeybindingDefinition { id: $id, default_keys: &[$($k),*], description: None }
+    ($id:tt, [$($k:expr),*]) => {
+        KeybindingDefinition {
+            id: $id,
+            default_keys: &[$($k),*],
+            description: keybinding_description!($id),
+        }
+    };
+}
+
+/// Descriptions are part of the public upstream definition and are consumed
+/// by settings/help surfaces even when a binding has no default key.
+macro_rules! keybinding_description {
+    ("tui.editor.cursorUp") => {
+        Some("Move cursor up")
+    };
+    ("tui.editor.cursorDown") => {
+        Some("Move cursor down")
+    };
+    ("tui.editor.historyPrevious") => {
+        Some("Select previous prompt history entry")
+    };
+    ("tui.editor.historyNext") => {
+        Some("Select next prompt history entry")
+    };
+    ("tui.editor.cursorLeft") => {
+        Some("Move cursor left")
+    };
+    ("tui.editor.cursorRight") => {
+        Some("Move cursor right")
+    };
+    ("tui.editor.cursorWordLeft") => {
+        Some("Move cursor word left")
+    };
+    ("tui.editor.cursorWordRight") => {
+        Some("Move cursor word right")
+    };
+    ("tui.editor.cursorLineStart") => {
+        Some("Move to line start")
+    };
+    ("tui.editor.cursorLineEnd") => {
+        Some("Move to line end")
+    };
+    ("tui.editor.jumpForward") => {
+        Some("Jump forward to character")
+    };
+    ("tui.editor.jumpBackward") => {
+        Some("Jump backward to character")
+    };
+    ("tui.editor.pageUp") => {
+        Some("Page up")
+    };
+    ("tui.editor.pageDown") => {
+        Some("Page down")
+    };
+    ("tui.editor.deleteCharBackward") => {
+        Some("Delete character backward")
+    };
+    ("tui.editor.deleteCharForward") => {
+        Some("Delete character forward")
+    };
+    ("tui.editor.deleteWordBackward") => {
+        Some("Delete word backward")
+    };
+    ("tui.editor.deleteWordForward") => {
+        Some("Delete word forward")
+    };
+    ("tui.editor.deleteToLineStart") => {
+        Some("Delete to line start")
+    };
+    ("tui.editor.deleteToLineEnd") => {
+        Some("Delete to line end")
+    };
+    ("tui.editor.yank") => {
+        Some("Yank")
+    };
+    ("tui.editor.yankPop") => {
+        Some("Yank pop")
+    };
+    ("tui.editor.undo") => {
+        Some("Undo")
+    };
+    ("tui.input.newLine") => {
+        Some("Insert newline")
+    };
+    ("tui.input.submit") => {
+        Some("Submit input")
+    };
+    ("tui.input.tab") => {
+        Some("Tab / autocomplete")
+    };
+    ("tui.input.copy") => {
+        Some("Copy selection")
+    };
+    ("tui.select.up") => {
+        Some("Move selection up")
+    };
+    ("tui.select.down") => {
+        Some("Move selection down")
+    };
+    ("tui.select.pageUp") => {
+        Some("Selection page up")
+    };
+    ("tui.select.pageDown") => {
+        Some("Selection page down")
+    };
+    ("tui.select.confirm") => {
+        Some("Confirm selection")
+    };
+    ("tui.select.cancel") => {
+        Some("Cancel selection")
+    };
+    ("tui.altScreen.pageUp") => {
+        Some("Scroll viewport up one page")
+    };
+    ("tui.altScreen.pageDown") => {
+        Some("Scroll viewport down one page")
+    };
+    ("tui.altScreen.halfPageUp") => {
+        Some("Scroll viewport up half a page")
+    };
+    ("tui.altScreen.halfPageDown") => {
+        Some("Scroll viewport down half a page")
+    };
+    ("tui.altScreen.lineUp") => {
+        Some("Scroll viewport up one line")
+    };
+    ("tui.altScreen.lineDown") => {
+        Some("Scroll viewport down one line")
+    };
+    ("tui.altScreen.previousPrompt") => {
+        Some("Jump to previous semantic prompt")
+    };
+    ("tui.altScreen.nextPrompt") => {
+        Some("Jump to next semantic prompt")
+    };
+    ("tui.altScreen.search") => {
+        Some("Search the primary scroll view")
+    };
+    ("tui.altScreen.searchNext") => {
+        Some("Select the next search match")
+    };
+    ("tui.altScreen.searchPrevious") => {
+        Some("Select the previous search match")
+    };
+    ("tui.altScreen.searchClose") => {
+        Some("Close transcript search")
+    };
+    ("tui.altScreen.top") => {
+        Some("Scroll viewport to top")
+    };
+    ("tui.altScreen.bottom") => {
+        Some("Scroll viewport to bottom")
     };
 }
 
@@ -51,8 +202,8 @@ pub const TUI_KEYBINDINGS: &[KeybindingDefinition] = &[
     kb!("tui.editor.cursorLineEnd", ["end", "ctrl+end", "ctrl+e"]),
     kb!("tui.editor.jumpForward", ["ctrl+]"]),
     kb!("tui.editor.jumpBackward", ["ctrl+alt+]"]),
-    kb!("tui.editor.pageUp", ["pageup", "ctrl+pageup"]),
-    kb!("tui.editor.pageDown", ["pagedown", "ctrl+pagedown"]),
+    kb!("tui.editor.pageUp", ["pageUp", "ctrl+pageUp"]),
+    kb!("tui.editor.pageDown", ["pageDown", "ctrl+pageDown"]),
     kb!("tui.editor.deleteCharBackward", ["backspace"]),
     kb!("tui.editor.deleteCharForward", ["delete", "ctrl+d"]),
     kb!("tui.editor.deleteWordBackward", ["ctrl+w", "alt+backspace"]),
@@ -68,12 +219,12 @@ pub const TUI_KEYBINDINGS: &[KeybindingDefinition] = &[
     kb!("tui.input.copy", ["ctrl+c"]),
     kb!("tui.select.up", ["up"]),
     kb!("tui.select.down", ["down"]),
-    kb!("tui.select.pageUp", ["pageup"]),
-    kb!("tui.select.pageDown", ["pagedown"]),
+    kb!("tui.select.pageUp", ["pageUp"]),
+    kb!("tui.select.pageDown", ["pageDown"]),
     kb!("tui.select.confirm", ["enter"]),
     kb!("tui.select.cancel", ["escape", "ctrl+c"]),
-    kb!("tui.altScreen.pageUp", ["pageup"]),
-    kb!("tui.altScreen.pageDown", ["pagedown"]),
+    kb!("tui.altScreen.pageUp", ["pageUp"]),
+    kb!("tui.altScreen.pageDown", ["pageDown"]),
     kb!("tui.altScreen.halfPageUp", []),
     kb!("tui.altScreen.halfPageDown", []),
     kb!("tui.altScreen.lineUp", []),
@@ -113,6 +264,7 @@ fn normalize_keys(keys: &[String]) -> Vec<String> {
 }
 
 /// Registry managing default definitions plus user overrides.
+#[derive(Clone)]
 pub struct KeybindingsManager {
     definitions: Vec<KeybindingDefinition>,
     user_bindings: KeybindingsConfig,
@@ -189,6 +341,41 @@ impl KeybindingsManager {
         false
     }
 
+    /// Return every action bound to `key`, in definition order.
+    ///
+    /// Binding conflicts are intentionally not resolved by eviction. Callers
+    /// that have a priority order (for example an active search overlay) can
+    /// therefore inspect all claims and choose the first applicable action.
+    pub fn matching_bindings(&self, key: &TuiKey) -> Vec<String> {
+        self.definitions
+            .iter()
+            .filter(|definition| self.matches(key, definition.id))
+            .map(|definition| definition.id.to_string())
+            .collect()
+    }
+
+    /// Dispatch the first registered action matching `key`.
+    ///
+    /// The callback returns `true` when it consumed the action. If it returns
+    /// `false`, dispatch continues to the next matching action, which makes
+    /// conflict handling explicit and deterministic for callers.
+    pub fn dispatch<F>(&self, key: &TuiKey, mut handler: F) -> Option<String>
+    where
+        F: FnMut(&str) -> bool,
+    {
+        self.matching_bindings(key)
+            .into_iter()
+            .find(|action| handler(action.as_str()))
+    }
+
+    /// Match a raw terminal sequence using the same parser as the controller.
+    pub fn matches_raw(&self, raw: &str, binding: Keybinding) -> bool {
+        self.keys_by_id.get(binding).is_some_and(|keys| {
+            keys.iter()
+                .any(|pattern| crate::keys::matches_raw_key(raw, pattern))
+        })
+    }
+
     pub fn get_keys(&self, binding: Keybinding) -> Vec<String> {
         self.keys_by_id.get(binding).cloned().unwrap_or_default()
     }
@@ -214,16 +401,35 @@ impl KeybindingsManager {
         let mut resolved = KeybindingsConfig::new();
         for definition in &self.definitions {
             if let Some(keys) = self.keys_by_id.get(definition.id) {
-                if !keys.is_empty() {
-                    resolved.insert(definition.id.to_string(), keys.clone());
-                }
+                resolved.insert(definition.id.to_string(), keys.clone());
             }
         }
         resolved
     }
 }
 
+static GLOBAL_KEYBINDINGS: OnceLock<Mutex<KeybindingsManager>> = OnceLock::new();
+
+/// Replace the process-wide registry used by components and controllers.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
+pub fn set_keybindings(manager: KeybindingsManager) {
+    let registry = GLOBAL_KEYBINDINGS
+        .get_or_init(|| Mutex::new(KeybindingsManager::with_defaults(BTreeMap::new())));
+    *registry.lock().expect("global keybindings mutex poisoned") = manager;
+}
+
+/// Clone the process-wide registry used by built-in components.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
+pub fn get_keybindings() -> KeybindingsManager {
+    GLOBAL_KEYBINDINGS
+        .get_or_init(|| Mutex::new(KeybindingsManager::with_defaults(BTreeMap::new())))
+        .lock()
+        .expect("global keybindings mutex poisoned")
+        .clone()
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::keys::TuiKey;
@@ -257,12 +463,23 @@ mod tests {
         );
         assert_eq!(
             kb.get_keys("tui.editor.pageUp"),
-            vec!["pageup", "ctrl+pageup"]
+            vec!["pageUp", "ctrl+pageUp"]
         );
         assert_eq!(
             kb.get_keys("tui.editor.pageDown"),
-            vec!["pagedown", "ctrl+pagedown"]
+            vec!["pageDown", "ctrl+pageDown"]
         );
+    }
+
+    #[test]
+    fn preserves_upstream_page_key_spelling_without_changing_matching() {
+        let kb = manager();
+        assert_eq!(
+            kb.get_resolved_bindings().get("tui.editor.pageUp").cloned(),
+            Some(vec!["pageUp".to_string(), "ctrl+pageUp".to_string()])
+        );
+        assert!(kb.matches(&TuiKey::simple("pageup"), "tui.editor.pageUp"));
+        assert!(kb.matches(&TuiKey::ctrl("pageup"), "tui.editor.pageUp"));
     }
 
     #[test]
@@ -273,10 +490,28 @@ mod tests {
     }
 
     #[test]
+    fn default_definitions_keep_upstream_help_descriptions() {
+        let kb = manager();
+        assert_eq!(
+            kb.get_definition("tui.editor.cursorWordLeft")
+                .and_then(|definition| definition.description),
+            Some("Move cursor word left")
+        );
+        assert_eq!(
+            kb.get_definition("tui.altScreen.searchClose")
+                .and_then(|definition| definition.description),
+            Some("Close transcript search")
+        );
+        assert!(TUI_KEYBINDINGS
+            .iter()
+            .all(|definition| definition.description.is_some()));
+    }
+
+    #[test]
     fn binds_unmodified_alt_screen_shortcuts() {
         let kb = manager();
-        assert_eq!(kb.get_keys("tui.altScreen.pageUp"), vec!["pageup"]);
-        assert_eq!(kb.get_keys("tui.altScreen.pageDown"), vec!["pagedown"]);
+        assert_eq!(kb.get_keys("tui.altScreen.pageUp"), vec!["pageUp"]);
+        assert_eq!(kb.get_keys("tui.altScreen.pageDown"), vec!["pageDown"]);
         assert!(kb.get_keys("tui.altScreen.halfPageUp").is_empty());
         assert!(kb.get_keys("tui.altScreen.halfPageDown").is_empty());
         assert!(kb.get_keys("tui.altScreen.lineUp").is_empty());

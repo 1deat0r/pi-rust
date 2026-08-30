@@ -154,6 +154,7 @@ fn next_char_boundary(text: &str, cursor: usize) -> usize {
 }
 
 /// Find the cursor position after moving one word backward.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 pub fn find_word_backward(text: &str, cursor: usize, options: &WordNavigationOptions) -> usize {
     if cursor == 0 {
         return 0;
@@ -318,6 +319,7 @@ pub fn find_word_forward(text: &str, cursor: usize, options: &WordNavigationOpti
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

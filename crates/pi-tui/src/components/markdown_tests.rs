@@ -1,4 +1,7 @@
-use crate::components::markdown::{plain_markdown_theme, Markdown, MarkdownOptions};
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test module
+use crate::components::markdown::{
+    parse_markdown, plain_markdown_theme, Block, Markdown, MarkdownOptions,
+};
 use crate::terminal_image::{reset_capabilities_cache, set_capabilities, TerminalCapabilities};
 use crate::tui::Component;
 use std::sync::Arc;
@@ -47,6 +50,26 @@ fn renders_simple_nested_list() {
     assert!(lines.iter().any(|l| l.contains("    - Nested 1.1")));
     assert!(lines.iter().any(|l| l.contains("    - Nested 1.2")));
     assert!(lines.iter().any(|l| l.contains("- Item 2")));
+}
+
+#[test]
+fn preserves_lazy_blockquote_continuations_and_line_endings() {
+    assert_eq!(md(">Foo\nbar", 80), vec!["│ Foo", "│ bar"]);
+    assert_eq!(md(">Foo\n\nbar", 80), vec!["│ Foo", "", "bar"]);
+    assert_eq!(md("first\r\nsecond", 80), vec!["first", "second"]);
+}
+
+#[test]
+fn does_not_treat_hash_prefix_without_space_as_a_heading() {
+    assert_eq!(md("#hashtag", 80), vec!["#hashtag"]);
+}
+
+#[test]
+fn parses_unicode_without_slicing_inside_a_character() {
+    let lines = md("MATRIX_UNICODE_日本語_🙂", 80);
+    let rendered = lines.join("\n");
+    assert!(rendered.contains("日本語"));
+    assert!(rendered.contains("🙂"));
 }
 
 #[test]
@@ -127,6 +150,11 @@ fn renders_blank_lines_between_loose_list_items() {
 fn renders_task_list_markers() {
     let lines = md("- [ ] beep\n- [x] boop", 80);
     assert_eq!(lines, vec!["- [ ] beep", "- [x] boop"]);
+}
+
+#[test]
+fn normalizes_uppercase_checked_task_markers() {
+    assert_eq!(md("- [X] done", 80), vec!["- [x] done"]);
 }
 
 #[test]
@@ -248,6 +276,66 @@ fn wraps_table_cells_when_table_exceeds_available_width() {
 }
 
 #[test]
+fn parses_tables_without_outer_pipes() {
+    let lines = md("Name | Age\n--- | ---\nAlice | 30", 80);
+    assert!(lines.iter().any(|line| line.contains("Name")));
+    assert!(lines.iter().any(|line| line.contains("Alice")));
+    assert!(lines.iter().any(|line| line.contains('│')));
+}
+
+#[test]
+fn keeps_escaped_pipes_inside_table_cells() {
+    let lines = md("| Expr | Value |\n| --- | --- |\n| a \\| b | x |", 80);
+    assert!(lines.iter().any(|line| line.contains("a | b")));
+    assert!(!lines.iter().any(|line| line.contains("a \\")));
+}
+
+#[test]
+fn preserves_backticks_inside_single_dollar_math() {
+    let source = "literal $x`y$";
+    assert_eq!(md(source, 80), vec![source]);
+}
+
+#[test]
+fn renders_inline_double_dollar_math() {
+    assert_eq!(md("before $$x^2$$ after", 80), vec!["before x² after"]);
+}
+
+#[test]
+fn inserts_upstream_spacing_between_adjacent_block_tokens() {
+    assert_eq!(
+        md("```text\ncode\n```\n# title", 80),
+        vec!["```text", "  code", "```", "", "title"]
+    );
+    assert_eq!(
+        md("| A |\n|---|\n| 1 |\n# title", 80),
+        vec!["┌───┐", "│ A │", "├───┤", "│ 1 │", "└───┘", "", "title"]
+    );
+}
+
+#[test]
+fn parses_marked_single_column_tables_without_outer_pipes() {
+    let lines = md("Header\n:---\nValue", 80);
+    assert!(lines.iter().any(|line| line.contains("Header")));
+    assert!(lines.iter().any(|line| line.contains("Value")));
+    assert!(lines.iter().any(|line| line.contains('│')));
+}
+
+#[test]
+fn does_not_stall_or_create_a_table_for_mismatched_columns() {
+    let tokens = parse_markdown("A | B\n--- | --- | ---\nnot a table");
+    assert!(tokens.iter().all(|token| !matches!(token, Block::Table(_))));
+}
+
+#[test]
+fn rejects_marked_table_separators_without_hyphens() {
+    for source in ["Header\n:\nValue", "Header\n---\nValue"] {
+        let tokens = parse_markdown(source);
+        assert!(tokens.iter().all(|token| !matches!(token, Block::Table(_))));
+    }
+}
+
+#[test]
 fn renders_heading_with_trailing_spacing() {
     let lines = md("# Hello", 80);
     assert_eq!(lines[0], "Hello");
@@ -260,7 +348,10 @@ fn caches_transformed_markdown_by_source_and_width() {
     let calls2 = calls.clone();
     let options = MarkdownOptions {
         transform: Some(Box::new(move |source: &str, w: usize| {
-            calls2.lock().unwrap().push((source.to_string(), w));
+            calls2
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push((source.to_string(), w));
             format!("{source} {w}")
         })),
         ..Default::default()
@@ -275,7 +366,7 @@ fn caches_transformed_markdown_by_source_and_width() {
     m.render(60);
     m.invalidate();
     m.render(60);
-    let calls = calls.lock().unwrap();
+    let calls = calls.lock().unwrap_or_else(|error| error.into_inner());
     let total = calls.len();
     assert_eq!(total, 4);
 }
@@ -325,6 +416,35 @@ fn stabilizes_streaming_fences_and_display_math_shapes() {
         vec!["Before", "", "x²", "", "after"]
     );
     assert_eq!(md("\\[\nx^2", 80), vec!["\\[", "x^2"]);
+}
+
+#[test]
+fn follows_marked_display_math_body_and_closing_line_shapes() {
+    assert_eq!(md("$$ x^2 $$", 80), vec!["x²"]);
+    assert_eq!(md("$$x^2\nx+1 $$", 80), vec!["x² x+1"]);
+    assert_eq!(
+        md("Before\n\n$$\nx^2 $$\n\nafter", 80),
+        vec!["Before", "", "x²", "", "after"]
+    );
+}
+
+#[test]
+fn renders_backslash_hard_breaks_as_real_line_breaks() {
+    assert_eq!(md("first\\\nsecond", 80), vec!["first", "second"]);
+}
+
+#[test]
+fn ignores_escaped_backslash_latex_closers_while_scanning() {
+    let tokens = crate::components::markdown::parse_markdown(r"Map \(a \\) b\)");
+    let crate::components::markdown::Block::Paragraph(tokens) = &tokens[0] else {
+        panic!("expected a paragraph");
+    };
+    assert!(matches!(
+        tokens.as_slice(),
+        [crate::components::markdown::Inline::Text(prefix),
+            crate::components::markdown::Inline::Latex { text, pending: false, .. }]
+            if prefix == "Map " && text == r"a \\) b"
+    ));
 }
 
 #[test]

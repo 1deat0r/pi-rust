@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! SQLite branch cache — port of `test/branch-cache.test.ts`.
 
 use pi_agent::session::state::{EntryOrder, EntryQuery, ForkPosition};

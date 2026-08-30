@@ -102,6 +102,34 @@ suites included); strict workspace clippy; fmt/diff checks;
 `conversion_audit all` `Conversion progress: 100.00% (166/166; 0 open)`.
 No numbered ledger row changed.
 
+## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 2.7 (workspace fully gated)
+
+Eighth campaign checkpoint, direct child of Phase 2.5. The last three
+crates — pi-tui, pi-telemetry, pi-session-backends — opt into
+`[workspace.lints.clippy] unwrap_used/expect_used/panic = "deny"` and are
+clean with `-D warnings`. **Every crate in the workspace now enforces the
+hard panic-path gate.**
+
+Implemented:
+
+- pi-tui: poison-tolerant locking (controller, tui, terminal_image,
+  markdown, editor components); 60 invariant-heavy render/input functions
+  across 15 files carry scoped documented allows (index-math and
+  cell-buffer invariants in the render loop).
+- pi-telemetry: poison-tolerant locking; scoped allows on tracer internals.
+- pi-session-backends: poison-tolerant locking in repo.rs; scoped allows
+  on repository invariants.
+- Test modules/files across all three crates carry scoped allows only.
+
+Exact validation: complete workspace matrix exit 0, 2,805 passed; strict
+workspace clippy; fmt/diff checks; `conversion_audit all`
+`Conversion progress: 100.00% (166/166; 0 open)`. No numbered ledger row
+changed.
+
+Next: Phase 2.6 typed errors for pi-coding-agent's contained core modules,
+and Phase 3 (converting invariant allows to real error returns where
+practical, `let _ =` swallow cleanup).
+
 ## Push blocker — 2026-08-30 — five campaign commits are local-only
 
 The Phase 2.3a commit exists locally as `c611c74` (recreated after the

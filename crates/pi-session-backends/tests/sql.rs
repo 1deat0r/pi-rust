@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! SQL composition helper — port of `test/sql.test.ts`.
 
 use pi_session_backends::sql::{join_sql_fragments, SqlQuery};

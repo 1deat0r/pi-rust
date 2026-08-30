@@ -13,6 +13,13 @@
 
 const ESC: &str = "\x1b";
 
+/// Maximum time the upstream Pi buffer waits for a non-ESC sequence
+/// fragment before flushing it as input.
+pub const DEFAULT_SEQUENCE_TIMEOUT_MS: u64 = 50;
+/// Maximum time the upstream Pi buffer waits after a lone ESC. This is
+/// overridden by the terminal backend for high-latency SSH sessions.
+pub const DEFAULT_ESCAPE_TIMEOUT_MS: u64 = 10;
+
 const BRACKETED_PASTE_START: &str = "\x1b[200~";
 const BRACKETED_PASTE_END: &str = "\x1b[201~";
 
@@ -83,7 +90,7 @@ fn is_complete_sequence(data: &str) -> SequenceStatus {
 
 /// CSI sequences end with a byte in 0x40-0x7E.
 fn is_complete_csi_sequence(data: &str) -> SequenceStatus {
-    if !data.starts_with(&format!("{ESC}[")) {
+    if !data.starts_with("\x1b[") {
         return SequenceStatus::Complete;
     }
     if data.len() < 3 {
@@ -96,7 +103,13 @@ fn is_complete_csi_sequence(data: &str) -> SequenceStatus {
     if (0x40..=0x7e).contains(&last_code) {
         // Special handling for SGR mouse sequences: ESC[<B;X;Ym / ESC[<B;X;YM
         if let Some(mouse) = payload.strip_prefix('<') {
-            let without_last = &mouse[..mouse.len() - 1]; // drop 'M'/'m'
+            // Only M/m terminate an SGR mouse report. Other CSI final bytes
+            // such as A must remain buffered, matching upstream's strict
+            // mouse grammar instead of being dispatched as a mouse event.
+            let Some(without_last) = mouse.strip_suffix('M').or_else(|| mouse.strip_suffix('m'))
+            else {
+                return SequenceStatus::Incomplete;
+            };
             let parts: Vec<&str> = without_last.split(';').collect();
             if parts.len() == 3
                 && parts
@@ -115,10 +128,10 @@ fn is_complete_csi_sequence(data: &str) -> SequenceStatus {
 
 /// OSC sequences end with ST (ESC \) or BEL.
 fn is_complete_osc_sequence(data: &str) -> SequenceStatus {
-    if !data.starts_with(&format!("{ESC}]")) {
+    if !data.starts_with("\x1b]") {
         return SequenceStatus::Complete;
     }
-    if data.ends_with(&format!("{ESC}\\")) || data.ends_with('\x07') {
+    if data.ends_with("\x1b\\") || data.ends_with('\x07') {
         SequenceStatus::Complete
     } else {
         SequenceStatus::Incomplete
@@ -127,10 +140,10 @@ fn is_complete_osc_sequence(data: &str) -> SequenceStatus {
 
 /// DCS sequences end with ST (ESC \).
 fn is_complete_dcs_sequence(data: &str) -> SequenceStatus {
-    if !data.starts_with(&format!("{ESC}P")) {
+    if !data.starts_with("\x1bP") {
         return SequenceStatus::Complete;
     }
-    if data.ends_with(&format!("{ESC}\\")) {
+    if data.ends_with("\x1b\\") {
         SequenceStatus::Complete
     } else {
         SequenceStatus::Incomplete
@@ -139,10 +152,10 @@ fn is_complete_dcs_sequence(data: &str) -> SequenceStatus {
 
 /// APC sequences end with ST (ESC \).
 fn is_complete_apc_sequence(data: &str) -> SequenceStatus {
-    if !data.starts_with(&format!("{ESC}_")) {
+    if !data.starts_with("\x1b_") {
         return SequenceStatus::Complete;
     }
-    if data.ends_with(&format!("{ESC}\\")) {
+    if data.ends_with("\x1b\\") {
         SequenceStatus::Complete
     } else {
         SequenceStatus::Incomplete
@@ -200,13 +213,8 @@ fn extract_complete_sequences(buffer: &str) -> (Vec<String>, String) {
         }
 
         let remaining_str = std::str::from_utf8(remaining).unwrap_or("");
-        let escaped_pos = remaining_str
-            .char_indices()
-            .next()
-            .map(|(i, _)| i)
-            .unwrap_or(0);
         // We are at an ESC; walk forward looking for a complete sequence.
-        let mut seq_end = escaped_pos + 1;
+        let mut seq_end = 1;
         let mut found = false;
         while seq_end <= remaining_str.len() {
             // candidate must end at a char boundary
@@ -275,22 +283,22 @@ impl StdinBuffer {
     pub fn process(&mut self, data: &str) -> Vec<String> {
         let mut emitted: Vec<String> = Vec::new();
 
-        let str_data =
-            if data.is_ascii() && data.len() == 1 && data.bytes().next().unwrap_or(0) > 127 {
-                // High-byte conversion: single byte > 127 -> ESC + (byte - 128).
-                let byte = data.bytes().next().unwrap() - 128;
-                let c = char::from(byte);
-                format!("\x1b{c}")
-            } else {
-                data.to_string()
-            };
-
-        if str_data.is_empty() && self.buffer.is_empty() {
+        let high_byte = data.len() == 1 && data.as_bytes()[0] > 127;
+        if data.is_empty() && self.buffer.is_empty() {
             emitted.push(String::new());
             return emitted;
         }
 
-        self.buffer.push_str(&str_data);
+        if high_byte {
+            // High-byte conversion: single byte > 127 -> ESC + (byte - 128).
+            let byte = data.as_bytes()[0] - 128;
+            self.buffer.push('\x1b');
+            self.buffer.push(char::from(byte));
+        } else {
+            // Keep the common one-keystroke path allocation-free. The old
+            // implementation cloned every input fragment before appending it.
+            self.buffer.push_str(data);
+        }
 
         if self.paste_mode {
             self.paste_buffer.push_str(&self.buffer);
@@ -319,15 +327,14 @@ impl StdinBuffer {
             if start_index > 0 {
                 let before_paste = &self.buffer[..start_index];
                 let (seqs, _) = extract_complete_sequences(before_paste);
-                for seq in &seqs {
-                    emitted.push(seq.clone());
-                }
+                emitted.extend(seqs);
             }
             self.pending_kitty_printable_codepoint = None;
-            self.buffer = self.buffer[start_index + BRACKETED_PASTE_START.len()..].to_string();
-            self.paste_mode = true;
-            self.paste_buffer = self.buffer.clone();
+            self.paste_buffer = self
+                .buffer
+                .split_off(start_index + BRACKETED_PASTE_START.len());
             self.buffer.clear();
+            self.paste_mode = true;
 
             let (content, remaining) = Self::consume_paste_end(&self.paste_buffer);
             if let Some(content) = content {
@@ -402,12 +409,26 @@ impl StdinBuffer {
         self.pending_kitty_printable_codepoint = None;
     }
 
+    /// Release all buffered input.  The event-loop implementation has no
+    /// timer handle to cancel here; its timeout owner calls [`flush`] first,
+    /// while this method preserves the upstream `destroy()` lifecycle API.
+    pub fn destroy(&mut self) {
+        self.clear();
+    }
+
     pub fn get_buffer(&self) -> &str {
         &self.buffer
+    }
+
+    /// Whether the pending bytes are exactly a lone Escape key. Pi gives this
+    /// case a shorter timeout so Alt/meta input stays responsive.
+    pub fn is_lone_escape_pending(&self) -> bool {
+        self.buffer == ESC
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -455,6 +476,16 @@ mod tests {
         assert_eq!(buffer.get_buffer(), "\x1b[<35");
         assert_eq!(buffer.process(";20;5m"), vec!["\x1b[<35;20;5m"]);
         assert_eq!(buffer.get_buffer(), "");
+    }
+
+    #[test]
+    fn keeps_non_mouse_csi_final_bytes_buffered() {
+        let mut buffer = StdinBuffer::new();
+        let malformed = "\x1b[<35;20;5A";
+
+        assert!(buffer.process(malformed).is_empty());
+        assert_eq!(buffer.get_buffer(), malformed);
+        assert_eq!(buffer.flush(), vec![malformed]);
     }
 
     #[test]
@@ -599,5 +630,76 @@ mod tests {
             buffer.process("ab\x1b[200~pasted\x1b[201~cd"),
             vec!["a", "b", "\x1b[200~pasted\x1b[201~", "c", "d"]
         );
+    }
+
+    #[test]
+    fn handles_old_style_mouse_sequences_and_buffers_their_three_payload_bytes() {
+        let mut buffer = StdinBuffer::new();
+        assert_eq!(buffer.process("\x1b[M abc"), vec!["\x1b[M ab", "c"]);
+
+        let mut buffer = StdinBuffer::new();
+        assert!(buffer.process("\x1b[M").is_empty());
+        assert_eq!(buffer.get_buffer(), "\x1b[M");
+        assert!(buffer.process(" a").is_empty());
+        assert_eq!(buffer.get_buffer(), "\x1b[M a");
+        assert_eq!(buffer.process("b"), vec!["\x1b[M ab"]);
+    }
+
+    #[test]
+    fn handles_empty_and_very_long_input_without_losing_boundaries() {
+        let mut buffer = StdinBuffer::new();
+        assert_eq!(buffer.process(""), vec![""]);
+
+        let long_sequence = format!("\x1b[{}H", "1;".repeat(50));
+        assert_eq!(buffer.process(&long_sequence), vec![long_sequence]);
+    }
+
+    #[test]
+    fn deduplicates_kitty_printable_echoes_including_fragmented_input() {
+        let mut buffer = StdinBuffer::new();
+        assert_eq!(buffer.process("\x1b[224uà"), vec!["\x1b[224u"]);
+
+        let mut buffer = StdinBuffer::new();
+        assert_eq!(buffer.process("\x1b[64u"), vec!["\x1b[64u"]);
+        assert!(buffer.process("@").is_empty());
+
+        let mut buffer = StdinBuffer::new();
+        assert_eq!(buffer.process("\x1b[97ub"), vec!["\x1b[97u", "b"]);
+
+        let mut buffer = StdinBuffer::new();
+        assert_eq!(buffer.process("\x1b[64;3u@"), vec!["\x1b[64;3u", "@"]);
+    }
+
+    #[test]
+    fn buffers_and_releases_osc_dcs_and_apc_until_string_terminators() {
+        for (prefix, payload, suffix) in [
+            ("\x1b]", "0;title", "\x1b\\"),
+            ("\x1bP", ">|version", "\x1b\\"),
+            ("\x1b_", "Gpayload", "\x1b\\"),
+        ] {
+            let mut buffer = StdinBuffer::new();
+            assert!(buffer.process(&format!("{prefix}{payload}")).is_empty());
+            assert_eq!(
+                buffer.process(suffix),
+                vec![format!("{prefix}{payload}{suffix}")]
+            );
+        }
+
+        let mut buffer = StdinBuffer::new();
+        assert_eq!(buffer.process("\x1b]0;title\x07"), vec!["\x1b]0;title\x07"]);
+    }
+
+    #[test]
+    fn clear_and_destroy_drop_paste_and_escape_state_without_emitting() {
+        let mut buffer = StdinBuffer::new();
+        assert!(buffer.process("\x1b[200~partial").is_empty());
+        buffer.clear();
+        assert_eq!(buffer.get_buffer(), "");
+        assert_eq!(buffer.process("a"), vec!["a"]);
+
+        assert!(buffer.process("\x1b[<35").is_empty());
+        buffer.destroy();
+        assert_eq!(buffer.get_buffer(), "");
+        assert!(buffer.flush().is_empty());
     }
 }

@@ -15,7 +15,6 @@ const NAMED_OPERATOR_START: &str = "\u{f0004}";
 const NAMED_OPERATOR_END: &str = "\u{f0005}";
 const LAYOUT_MARKER_START: &str = "\u{f0000}";
 const LAYOUT_MARKER_END: &str = "\u{f0001}";
-const TRAILING_LAYOUT_MARKER: &str = "\u{f0000}0\u{f0001}$";
 const PROTECTED_SPACE: &str = "\u{f0002}";
 const NEGATIVE_SPACE: &str = "\u{0}";
 
@@ -55,27 +54,20 @@ fn format_script(value: &str, kind: ScriptKind) -> String {
     };
     // value.replace(/\s*([=+-])\s*/g, "$1")
     let mut normalized = String::new();
+    let mut skip_whitespace = false;
     for c in value.chars() {
-        if c == '=' || c == '+' || c == '-' {
-            if normalized.ends_with(' ') {
+        if matches!(c, '=' | '+' | '-') {
+            while normalized.chars().last().is_some_and(char::is_whitespace) {
                 normalized.pop();
             }
             normalized.push(c);
+            skip_whitespace = true;
+        } else if c.is_whitespace() && skip_whitespace {
+            continue;
         } else {
-            if c.is_whitespace() {
-                // squeeze whitespace runs around operators; otherwise drop
-                if normalized.ends_with(' ') {
-                    continue;
-                }
-                normalized.push(' ');
-            } else {
-                normalized.push(c);
-            }
+            normalized.push(c);
+            skip_whitespace = false;
         }
-    }
-    // trailing whitespace
-    while normalized.ends_with(' ') {
-        normalized.pop();
     }
     let unicode = replace_characters(&normalized, replacements);
     if let Some(u) = unicode {
@@ -423,12 +415,13 @@ impl<'a> LatexParser<'a> {
 
     fn parse_sequence(&mut self, end_character: Option<char>) -> String {
         let mut result = String::new();
-        let chars: Vec<char> = self.source.chars().collect();
-        while self.position < chars.len() {
-            let character = chars[self.position];
+        while self.position < self.source.len() {
+            let Some(character) = self.source[self.position..].chars().next() else {
+                break;
+            };
             if let Some(end) = end_character {
                 if character == end {
-                    self.position += 1;
+                    self.position += character.len_utf8();
                     return result;
                 }
             }
@@ -439,7 +432,7 @@ impl<'a> LatexParser<'a> {
             }
 
             if character == '{' {
-                self.position += 1;
+                self.position += character.len_utf8();
                 result.push_str(&self.parse_sequence(Some('}')));
                 continue;
             }
@@ -460,7 +453,7 @@ impl<'a> LatexParser<'a> {
             }
 
             if character == '^' || character == '_' {
-                self.position += 1;
+                self.position += character.len_utf8();
                 while result.ends_with(' ') {
                     result.pop();
                 }
@@ -493,45 +486,50 @@ impl<'a> LatexParser<'a> {
                     result.pop();
                 }
                 result.push_str(&format!(" {} ", character));
-                self.position += 1;
+                self.position += character.len_utf8();
                 continue;
             }
 
             if character == '&' {
-                self.position += 1;
+                self.position += character.len_utf8();
                 continue;
             }
 
             if character == '~' {
-                self.position += 1;
+                self.position += character.len_utf8();
                 result.push(' ');
                 continue;
             }
 
             if character == '.' {
                 // Trailing layout marker handling (matrix '.' mutation).
-                if let Some(rel) = result.rfind(TRAILING_LAYOUT_MARKER) {
-                    let marker_start = rel;
-                    let digits_end =
-                        result[marker_start + LAYOUT_MARKER_START.len()..].find(LAYOUT_MARKER_END);
-                    let node_idx: usize = result[marker_start + LAYOUT_MARKER_START.len()..]
-                        [..(digits_end.unwrap_or(0))]
-                        .parse()
-                        .unwrap_or(usize::MAX);
-                    if let Some(LayoutNode::Matrix { lines, .. }) =
-                        self.layout_nodes.get_mut(node_idx)
-                    {
-                        if let Some(last_line) = lines.last_mut() {
-                            last_line.push(character);
-                            self.position += 1;
-                            continue;
+                if result.ends_with(LAYOUT_MARKER_END) {
+                    if let Some(marker_start) = result.rfind(LAYOUT_MARKER_START) {
+                        let digits_start = marker_start + LAYOUT_MARKER_START.len();
+                        if let Some(digits_end_rel) = result[digits_start..].find(LAYOUT_MARKER_END)
+                        {
+                            let digits_end = digits_start + digits_end_rel;
+                            if digits_end + LAYOUT_MARKER_END.len() == result.len() {
+                                let node_idx: usize = result[digits_start..digits_end]
+                                    .parse()
+                                    .unwrap_or(usize::MAX);
+                                if let Some(LayoutNode::Matrix { lines, .. }) =
+                                    self.layout_nodes.get_mut(node_idx)
+                                {
+                                    if let Some(last_line) = lines.last_mut() {
+                                        last_line.push(character);
+                                        self.position += character.len_utf8();
+                                        continue;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
 
             result.push(character);
-            self.position += 1;
+            self.position += character.len_utf8();
         }
 
         if end_character.is_some() {
@@ -541,18 +539,19 @@ impl<'a> LatexParser<'a> {
     }
 
     fn parse_whitespace(&mut self) -> String {
-        while self.position < self.source.len()
-            && self.source[self.position..]
-                .chars()
-                .next()
-                .map(|c| c.is_whitespace())
-                .unwrap_or(false)
-        {
-            self.position += 1;
+        while self.position < self.source.len() {
+            let Some(character) = self.source[self.position..].chars().next() else {
+                break;
+            };
+            if !character.is_whitespace() {
+                break;
+            }
+            self.position += character.len_utf8();
         }
         " ".to_string()
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn parse_command(&mut self) -> String {
         self.position += 1; // skip '\\'
         if self.position >= self.source.len() {
@@ -560,11 +559,13 @@ impl<'a> LatexParser<'a> {
             return String::new();
         }
 
-        let chars: Vec<char> = self.source.chars().collect();
-        let first = chars[self.position];
+        let first = self.source[self.position..].chars().next().unwrap();
         if first == '\n' || first == '\r' {
-            self.position += 1;
-            if first == '\r' && self.position < chars.len() && chars[self.position] == '\n' {
+            self.position += first.len_utf8();
+            if first == '\r'
+                && self.position < self.source.len()
+                && self.source[self.position..].starts_with('\n')
+            {
                 self.position += 1;
             }
             return " ".to_string();
@@ -572,13 +573,17 @@ impl<'a> LatexParser<'a> {
         let command;
         if is_ascii_letter(first) {
             let start = self.position;
-            while self.position < chars.len() && is_ascii_letter(chars[self.position]) {
-                self.position += 1;
+            while self.position < self.source.len() {
+                let next = self.source[self.position..].chars().next().unwrap();
+                if !is_ascii_letter(next) {
+                    break;
+                }
+                self.position += next.len_utf8();
             }
             command = self.source[start..self.position].to_string();
         } else {
             command = first.to_string();
-            self.position += 1;
+            self.position += first.len_utf8();
         }
 
         if command == "\\" {
@@ -600,7 +605,7 @@ impl<'a> LatexParser<'a> {
             return "‖".to_string();
         }
         if command == "not" {
-            let value = self.parse_required_argument(true).trim().to_string();
+            let value = self.parse_required_argument(false).trim().to_string();
             if let Some(negated) = table_lookup(latex_tables::NEGATED_SYMBOLS, &value) {
                 return format!(" {negated} ");
             }
@@ -770,8 +775,7 @@ impl<'a> LatexParser<'a> {
             check_pos += 1;
         }
         let rest = &self.source[check_pos..];
-        if let Some(rel) = rest.find('\\') {
-            let after = &rest[rel + 1..];
+        if let Some(after) = rest.strip_prefix('\\') {
             if after.starts_with("limits")
                 && !after[6..]
                     .chars()
@@ -780,7 +784,7 @@ impl<'a> LatexParser<'a> {
                     .unwrap_or(false)
             {
                 use_display_limits = true;
-                self.position = check_pos + rel + 1 + 6;
+                self.position = check_pos + 1 + 6;
             } else if after.starts_with("nolimits")
                 && !after[8..]
                     .chars()
@@ -789,7 +793,7 @@ impl<'a> LatexParser<'a> {
                     .unwrap_or(false)
             {
                 use_display_limits = false;
-                self.position = check_pos + rel + 1 + 8;
+                self.position = check_pos + 1 + 8;
             }
         }
 
@@ -866,15 +870,16 @@ impl<'a> LatexParser<'a> {
         value
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn parse_required_argument_value(&mut self) -> String {
-        while self.position < self.source.len()
-            && self.source[self.position..]
-                .chars()
-                .next()
-                .map(|c| c.is_whitespace())
-                .unwrap_or(false)
-        {
-            self.position += 1;
+        while self.position < self.source.len() {
+            let Some(character) = self.source[self.position..].chars().next() else {
+                break;
+            };
+            if !character.is_whitespace() {
+                break;
+            }
+            self.position += character.len_utf8();
         }
         if self.position >= self.source.len() {
             self.supported = false;
@@ -882,7 +887,7 @@ impl<'a> LatexParser<'a> {
         }
         let ch = self.source[self.position..].chars().next().unwrap();
         if ch == '{' {
-            self.position += 1;
+            self.position += ch.len_utf8();
             return self.parse_sequence(Some('}'));
         }
         if ch == '\\' {
@@ -915,15 +920,16 @@ impl<'a> LatexParser<'a> {
         Some(self.render_nested(&value, true))
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn read_raw_group(&mut self) -> Option<String> {
-        while self.position < self.source.len()
-            && self.source[self.position..]
-                .chars()
-                .next()
-                .map(|c| c == ' ' || c == '\t')
-                .unwrap_or(false)
-        {
-            self.position += 1;
+        while self.position < self.source.len() {
+            let Some(character) = self.source[self.position..].chars().next() else {
+                break;
+            };
+            if !matches!(character, ' ' | '\t') {
+                break;
+            }
+            self.position += character.len_utf8();
         }
         if !self.source[self.position..].starts_with('{') {
             self.supported = false;
@@ -932,11 +938,14 @@ impl<'a> LatexParser<'a> {
         self.position += 1;
         let start = self.position;
         let mut depth = 1usize;
-        let chars: Vec<char> = self.source.chars().collect();
-        while self.position < chars.len() {
-            let c = chars[self.position];
+        while self.position < self.source.len() {
+            let c = self.source[self.position..].chars().next().unwrap();
             if c == '\\' {
-                self.position += 2;
+                self.position += c.len_utf8();
+                if self.position < self.source.len() {
+                    let escaped = self.source[self.position..].chars().next().unwrap();
+                    self.position += escaped.len_utf8();
+                }
                 continue;
             }
             if c == '{' {
@@ -946,11 +955,11 @@ impl<'a> LatexParser<'a> {
                 depth -= 1;
                 if depth == 0 {
                     let value = self.source[start..self.position].to_string();
-                    self.position += 1;
+                    self.position += c.len_utf8();
                     return Some(value);
                 }
             }
-            self.position += 1;
+            self.position += c.len_utf8();
         }
         self.supported = false;
         None
@@ -1081,10 +1090,9 @@ impl<'a> LatexParser<'a> {
                     .chars()
                     .take_while(|c| c.is_alphanumeric() || *c == '_')
                     .collect::<String>();
-                let is_condition_word = matches!(
-                    first_word.as_str(),
-                    "if" | "when" | "for" | "otherwise" | "If" | "When" | "For" | "Otherwise"
-                );
+                let is_condition_word = ["if", "when", "for", "otherwise"]
+                    .iter()
+                    .any(|word| first_word.eq_ignore_ascii_case(word));
                 let condition_prefix = if is_condition_word { " " } else { " if " };
                 out.push(format!(
                     "{delimiter} {value}{}{condition}",
@@ -1210,6 +1218,7 @@ impl<'a> LatexParser<'a> {
         format!("{LAYOUT_MARKER_START}{index}{LAYOUT_MARKER_END}")
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn render_nested(&mut self, source: &str, stack_fractions: bool) -> String {
         let mut nested =
             LatexParser::new(source, self.layout_nodes, self.display && stack_fractions);

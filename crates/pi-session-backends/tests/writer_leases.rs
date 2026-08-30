@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! SQLite session writer leases — port of `test/writer-leases.test.ts`.
 
 use pi_session_backends::repo::SqliteSessionRepository;

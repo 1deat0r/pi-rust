@@ -1,13 +1,32 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test module
 use crate::autocomplete::{
     AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, CombinedAutocompleteProvider,
     CompletionResult, SlashCommand,
 };
 use crate::components::editor::{plain_editor_theme, Editor, EditorOptions};
+use crate::tui::Component;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 fn editor(rows: usize) -> Editor {
     Editor::new(rows, plain_editor_theme(), EditorOptions::default())
+}
+
+#[test]
+fn long_absolute_path_renders_without_hanging() {
+    let mut e = editor(24);
+    let path = "/import /tmp/pi-interactive-slash-07a23281-6aab-400f-9830-3f244c974aa5/home/.pi/agent/sessions/--tmp-pi-interactive-slash-07a23281-6aab-400f-9830-3f244c974aa5-project--/2026-08-25T22-02-08-499Z_seed-session.jsonl";
+    e.set_text(path);
+    let rendered = e.render(100);
+    assert!(!rendered.is_empty());
+    assert!(e.get_text().ends_with("_seed-session.jsonl"));
+}
+
+#[test]
+fn printable_input_burst_preserves_text_and_unicode_graphemes() {
+    let mut e = editor(24);
+    e.handle_input_burst("/import café 👩‍💻");
+    assert_eq!(e.get_text(), "/import café 👩‍💻");
 }
 
 struct CountingAutocompleteProvider {
@@ -276,6 +295,31 @@ fn cursor_movement_within_line() {
     e.handle_input("end");
     e.handle_input("Z");
     assert_eq!(e.get_text(), "YhelXloZ");
+}
+
+#[test]
+fn coalesced_input_preserves_control_boundaries() {
+    let mut e = editor(24);
+    e.handle_input("before\nafter");
+    assert_eq!(
+        e.get_lines(),
+        vec!["before".to_string(), "after".to_string()]
+    );
+    assert_eq!(e.get_cursor(), (1, "after".len()));
+}
+
+#[test]
+fn character_jump_skips_whole_unicode_graphemes() {
+    let mut e = editor(24);
+    e.set_text("😀x😀");
+    e.handle_input("home");
+    e.handle_input("ctrl+]");
+    e.handle_input("😀");
+    assert_eq!(e.get_cursor(), (0, "😀x".len()));
+
+    e.handle_input("ctrl+alt+]");
+    e.handle_input("😀");
+    assert_eq!(e.get_cursor(), (0, 0));
 }
 
 #[test]

@@ -128,6 +128,7 @@ pub fn entry_payload(entry: &Entry) -> serde_json::Value {
 /// Serializes an entry payload to the JSON string stored in `entries.payload`.
 /// The payload mirrors the entry minus `type/id/seq/parentId/timestamp`; the
 /// entry `type` is stored in its own column.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 pub fn serialize_payload(entry: &Entry) -> String {
     serde_json::to_string(&entry_payload(entry)).expect("entry payload serializes")
 }

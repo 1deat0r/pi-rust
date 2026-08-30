@@ -186,6 +186,7 @@ impl SqliteSession {
         self.storage.append_record(record).await
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub async fn get_entry(&self, id: &str) -> Option<Entry> {
         self.storage.get_entry(id).await.expect("sqlite entry read")
     }
@@ -319,10 +320,12 @@ impl SqliteSession {
     // Stats / facts
     // ---------------------------------------------------------------------
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub async fn get_stats(&self) -> SessionStats {
         self.storage.get_stats().await.expect("sqlite stats read")
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub async fn get_name(&self) -> Option<String> {
         self.storage.get_name().await.expect("sqlite name read")
     }
@@ -331,6 +334,7 @@ impl SqliteSession {
         self.storage.set_name(name).await
     }
 
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub async fn get_label(&self, id: &str) -> Option<String> {
         self.storage.get_label(id).await.expect("sqlite label read")
     }

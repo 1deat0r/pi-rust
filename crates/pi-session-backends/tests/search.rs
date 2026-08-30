@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! SQLite FTS5 session search — port of `test/search.test.ts`.
 
 use futures_util::StreamExt;

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! SQLite fact queries — port of `test/facts-query.test.ts`.
 
 use pi_session_backends::migrations::apply_migrations;

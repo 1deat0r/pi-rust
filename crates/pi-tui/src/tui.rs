@@ -7,7 +7,10 @@ use std::sync::{Arc, Mutex};
 use crate::keys::TuiKey;
 use crate::layout::LayoutNode;
 use crate::mouse::MouseEvent;
-use crate::terminal::{TerminalBackend, BEGIN_SYNC_UPDATE, CLEAR_SCREEN_HOME, END_SYNC_UPDATE};
+use crate::terminal::{
+    TerminalBackend, BEGIN_SYNC_UPDATE, CLEAR_SCREEN_HOME, END_SYNC_UPDATE, HIDE_CURSOR,
+    SHOW_CURSOR,
+};
 use crate::utils::{
     extract_segments, normalize_terminal_output, slice_by_column_strict, slice_with_width_info,
     visible_width,
@@ -86,25 +89,39 @@ impl Component for Container {
     fn render(&self, width: usize) -> Vec<String> {
         self.children
             .iter()
-            .flat_map(|child| child.lock().unwrap().render(width))
+            .flat_map(|child| {
+                child
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .render(width)
+            })
             .collect()
     }
 
     fn invalidate(&mut self) {
         for child in &self.children {
-            child.lock().unwrap().invalidate();
+            child
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .invalidate();
         }
     }
 
     fn set_focused(&mut self, focused: bool) {
         for child in &self.children {
-            child.lock().unwrap().set_focused(focused);
+            child
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_focused(focused);
         }
     }
 
     fn set_height(&mut self, height: usize) {
         for child in &self.children {
-            child.lock().unwrap().set_height(height);
+            child
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_height(height);
         }
     }
 
@@ -182,7 +199,7 @@ impl From<usize> for OverlayMargin {
 }
 
 /// Positioning and sizing options for an overlay.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct OverlayOptions {
     pub width: Option<SizeValue>,
     pub min_width: Option<usize>,
@@ -194,6 +211,35 @@ pub struct OverlayOptions {
     pub col: Option<SizeValue>,
     pub margin: OverlayMargin,
     pub non_capturing: bool,
+    /// Optional terminal-size predicate. An overlay can remain mounted while
+    /// being omitted from the composed frame when the current terminal size
+    /// does not satisfy this predicate, matching upstream `visible`.
+    ///
+    /// A function pointer keeps `OverlayOptions` cloneable and comparable,
+    /// while still accepting ordinary non-capturing Rust closures at call
+    /// sites. Capturing visibility policies can be represented by the owner
+    /// deciding whether to mount or hide the overlay.
+    pub visible: Option<fn(term_width: usize, term_height: usize) -> bool>,
+}
+
+impl PartialEq for OverlayOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.min_width == other.min_width
+            && self.max_height == other.max_height
+            && self.anchor == other.anchor
+            && self.offset_x == other.offset_x
+            && self.offset_y == other.offset_y
+            && self.row == other.row
+            && self.col == other.col
+            && self.margin == other.margin
+            && self.non_capturing == other.non_capturing
+            && match (self.visible, other.visible) {
+                (None, None) => true,
+                (Some(left), Some(right)) => std::ptr::fn_addr_eq(left, right),
+                _ => false,
+            }
+    }
 }
 
 impl Default for OverlayOptions {
@@ -209,6 +255,7 @@ impl Default for OverlayOptions {
             col: None,
             margin: OverlayMargin::default(),
             non_capturing: false,
+            visible: None,
         }
     }
 }
@@ -384,6 +431,7 @@ impl OverlayHandle {
 }
 
 struct OverlayEntry {
+    id: usize,
     component: SharedComponent,
     options: OverlayOptions,
     hidden: bool,
@@ -395,6 +443,8 @@ pub struct OverlayManager {
     entries: Vec<OverlayEntry>,
     focused: Option<usize>,
     next_id: usize,
+    next_focus_order: usize,
+    terminal_size: Option<(usize, usize)>,
 }
 
 impl OverlayManager {
@@ -403,7 +453,40 @@ impl OverlayManager {
             entries: Vec::new(),
             focused: None,
             next_id: 0,
+            next_focus_order: 0,
+            terminal_size: None,
         }
+    }
+
+    fn is_entry_visible(&self, entry: &OverlayEntry) -> bool {
+        if entry.hidden {
+            return false;
+        }
+        entry.options.visible.is_none_or(|visible| {
+            self.terminal_size
+                .is_none_or(|(width, height)| visible(width, height))
+        })
+    }
+
+    fn sync_focus_visibility(&mut self) {
+        let focused_is_visible = self.focused.and_then(|focused| {
+            self.entries
+                .iter()
+                .find(|entry| entry.id == focused)
+                .map(|entry| self.is_entry_visible(entry))
+        });
+        if focused_is_visible != Some(false) {
+            return;
+        }
+        self.focused = self.topmost_capturing_visible().map(|entry| entry.id);
+        self.apply_focus();
+    }
+
+    /// Record the terminal dimensions used by rendering so visibility also
+    /// governs focus and input capture, matching upstream `isOverlayVisible`.
+    pub fn set_terminal_size(&mut self, width: usize, height: usize) {
+        self.terminal_size = Some((width, height));
+        self.sync_focus_visibility();
     }
 
     pub fn show_overlay(
@@ -413,12 +496,15 @@ impl OverlayManager {
     ) -> OverlayHandle {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
+        let focus_order = self.next_focus_order;
+        self.next_focus_order = self.next_focus_order.saturating_add(1);
         let captures = !options.non_capturing;
         self.entries.push(OverlayEntry {
+            id,
             component,
             options,
             hidden: false,
-            focus_order: id,
+            focus_order,
         });
         let handle = OverlayHandle { id };
         if captures {
@@ -428,9 +514,7 @@ impl OverlayManager {
     }
 
     fn index_of(&self, handle: OverlayHandle) -> Option<usize> {
-        self.entries
-            .iter()
-            .position(|entry| entry.focus_order == handle.id)
+        self.entries.iter().position(|entry| entry.id == handle.id)
     }
 
     pub fn hide(&mut self, handle: OverlayHandle) -> bool {
@@ -438,11 +522,18 @@ impl OverlayManager {
             return false;
         };
         let was_focused = self.focused == Some(handle.id);
-        self.entries.remove(index);
+        let removed = self.entries.remove(index);
         if was_focused {
-            self.focused = self
-                .topmost_capturing_visible()
-                .map(|entry| entry.focus_order);
+            // The removed component is no longer visited by `apply_focus`, so
+            // clear its focus before restoring focus to the remaining stack.
+            // This mirrors upstream's setFocus transition and matters when a
+            // caller retains the component for reuse after hiding it.
+            removed
+                .component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_focused(false);
+            self.focused = self.topmost_capturing_visible().map(|entry| entry.id);
             self.apply_focus();
         }
         true
@@ -452,12 +543,18 @@ impl OverlayManager {
         let Some(index) = self.index_of(handle) else {
             return false;
         };
+        if self.entries[index].hidden == hidden {
+            return true;
+        }
         self.entries[index].hidden = hidden;
         if hidden && self.focused == Some(handle.id) {
-            self.focused = self
-                .topmost_capturing_visible()
-                .map(|entry| entry.focus_order);
+            self.focused = self.topmost_capturing_visible().map(|entry| entry.id);
             self.apply_focus();
+        } else if !hidden && !self.entries[index].options.non_capturing {
+            // Upstream restores focus when a capturing overlay becomes
+            // visible again, so keyboard input does not remain stranded on
+            // the previously hidden stack.
+            let _ = self.focus(handle);
         }
         true
     }
@@ -472,9 +569,12 @@ impl OverlayManager {
         let Some(index) = self.index_of(handle) else {
             return false;
         };
-        if self.entries[index].hidden {
+        if !self.is_entry_visible(&self.entries[index]) {
             return false;
         }
+        let focus_order = self.next_focus_order;
+        self.next_focus_order = self.next_focus_order.saturating_add(1);
+        self.entries[index].focus_order = focus_order;
         self.focused = Some(handle.id);
         self.apply_focus();
         true
@@ -488,10 +588,12 @@ impl OverlayManager {
             .entries
             .iter()
             .filter(|entry| {
-                !entry.hidden && !entry.options.non_capturing && entry.focus_order != handle.id
+                self.is_entry_visible(entry)
+                    && !entry.options.non_capturing
+                    && entry.id != handle.id
             })
             .max_by_key(|entry| entry.focus_order)
-            .map(|entry| entry.focus_order);
+            .map(|entry| entry.id);
         self.apply_focus();
         true
     }
@@ -501,42 +603,75 @@ impl OverlayManager {
     }
 
     pub fn has_visible_overlay(&self) -> bool {
-        self.entries.iter().any(|entry| !entry.hidden)
+        self.entries
+            .iter()
+            .any(|entry| self.is_entry_visible(entry))
     }
 
     pub fn focused_component(&self) -> Option<SharedComponent> {
         let id = self.focused?;
         self.entries
             .iter()
-            .find(|entry| entry.focus_order == id)
+            .find(|entry| entry.id == id && self.is_entry_visible(entry))
             .map(|entry| entry.component.clone())
     }
 
     pub fn dispatch(&mut self, key: &TuiKey) {
+        self.sync_focus_visibility();
         if let Some(component) = self.focused_component() {
-            component.lock().unwrap().handle_input(key);
+            component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .handle_input(key);
         }
     }
 
     pub fn dispatch_mouse(&mut self, event: &MouseEvent) {
+        self.sync_focus_visibility();
         if let Some(component) = self.focused_component() {
-            component.lock().unwrap().handle_mouse(event);
+            component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .handle_mouse(event);
+        }
+    }
+
+    /// Invalidate every mounted overlay so a capability/theme transition is
+    /// reflected the next time the overlay is rendered.
+    pub fn invalidate(&mut self) {
+        for entry in &self.entries {
+            entry
+                .component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .invalidate();
         }
     }
 
     /// Composite visible overlays in stack order into a screen-sized frame.
     pub fn composite(
-        &self,
+        &mut self,
         lines: &[String],
         term_width: usize,
         term_height: usize,
     ) -> Vec<String> {
+        self.set_terminal_size(term_width, term_height);
         let mut result = lines.to_vec();
         let mut rendered = Vec::new();
         let mut minimum_lines = result.len();
-        for entry in self.entries.iter().filter(|entry| !entry.hidden) {
+        let mut visible_entries: Vec<&OverlayEntry> = self
+            .entries
+            .iter()
+            .filter(|entry| self.is_entry_visible(entry))
+            .collect();
+        visible_entries.sort_by_key(|entry| entry.focus_order);
+        for entry in visible_entries {
             let preliminary = resolve_overlay_layout(&entry.options, 0, term_width, term_height);
-            let mut overlay_lines = entry.component.lock().unwrap().render(preliminary.width);
+            let mut overlay_lines = entry
+                .component
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .render(preliminary.width);
             if let Some(max_height) = preliminary.max_height {
                 overlay_lines.truncate(max_height);
             }
@@ -572,7 +707,7 @@ impl OverlayManager {
     fn topmost_capturing_visible(&self) -> Option<&OverlayEntry> {
         self.entries
             .iter()
-            .filter(|entry| !entry.hidden && !entry.options.non_capturing)
+            .filter(|entry| self.is_entry_visible(entry) && !entry.options.non_capturing)
             .max_by_key(|entry| entry.focus_order)
     }
 
@@ -581,8 +716,8 @@ impl OverlayManager {
             entry
                 .component
                 .lock()
-                .unwrap()
-                .set_focused(self.focused == Some(entry.focus_order));
+                .unwrap_or_else(|error| error.into_inner())
+                .set_focused(self.focused == Some(entry.id));
         }
     }
 }
@@ -597,6 +732,7 @@ impl Default for OverlayManager {
 pub struct Scene {
     pub children: Vec<SharedComponent>,
     pub grow_index: Option<usize>,
+    layout_entries: Option<Vec<crate::layout::StackLayoutEntry>>,
 }
 
 impl Scene {
@@ -604,6 +740,21 @@ impl Scene {
         Self {
             children,
             grow_index,
+            layout_entries: None,
+        }
+    }
+
+    /// Construct a scene with explicit stack constraints. This is used by
+    /// the interactive fullscreen root, whose transcript and dock have
+    /// different shrink/minimum semantics from the legacy scene helper.
+    pub fn with_layout_entries(
+        children: Vec<SharedComponent>,
+        entries: Vec<crate::layout::StackLayoutEntry>,
+    ) -> Self {
+        Self {
+            children,
+            grow_index: None,
+            layout_entries: Some(entries),
         }
     }
     fn render(self: &Scene, width: usize, height: usize) -> Vec<String> {
@@ -614,7 +765,11 @@ impl Scene {
             .enumerate()
             .filter(|(index, _)| Some(*index) != grow_index)
             .map(|(_, child)| {
-                let lines = child.lock().unwrap().render(width).len();
+                let lines = child
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .render(width)
+                    .len();
                 lines
             })
             .sum::<usize>();
@@ -622,12 +777,15 @@ impl Scene {
             let allocated = height.saturating_sub(fixed_height);
             self.children[index]
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|error| error.into_inner())
                 .set_height(allocated.max(1));
         }
         let mut lines: Vec<String> = Vec::new();
         for child in &self.children {
-            let child_lines = child.lock().unwrap().render(width);
+            let child_lines = child
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .render(width);
             lines.extend(child_lines);
         }
         if lines.is_empty() {
@@ -640,6 +798,91 @@ impl Scene {
         lines.truncate(height);
         lines
     }
+
+    /// Render the main-screen/scrollback projection.  Pi's regular renderer
+    /// mounts the document and dock as ordinary sequential children; the
+    /// terminal itself scrolls when their combined output exceeds the
+    /// viewport.  The retained stack constraints are reserved for the
+    /// alternate-screen layout path.
+    fn render_regular(self: &Scene, width: usize, height: usize) -> Vec<String> {
+        if self.layout_entries.is_none() {
+            return self.render(width, height);
+        }
+
+        let mut lines: Vec<String> = self
+            .children
+            .iter()
+            .flat_map(|child| {
+                child
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .render(width)
+            })
+            .collect();
+        if lines.is_empty() {
+            lines.push(" ".repeat(width));
+        }
+        if lines.len() > height.max(1) {
+            lines.split_off(lines.len() - height.max(1))
+        } else {
+            lines.resize(height.max(1), " ".repeat(width));
+            lines
+        }
+    }
+}
+
+/// Let a scene participate in the retained layout/controller path as well as
+/// the legacy height-aware [`Tree`] renderer.  The first grow child is given
+/// an explicit zero basis, grow/shrink weight, and minimum size so fixed dock
+/// components keep their intrinsic heights while the transcript receives the
+/// remaining viewport, matching the height calculation in [`Scene::render`].
+impl Component for Scene {
+    fn render(&self, width: usize) -> Vec<String> {
+        self.children
+            .iter()
+            .flat_map(|child| {
+                child
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .render(width)
+            })
+            .collect()
+    }
+
+    fn layout_node(&self) -> Option<LayoutNode> {
+        Some(LayoutNode::Stack(crate::layout::StackLayoutNode {
+            direction: crate::layout::LayoutDirection::Vertical,
+            entries: self.layout_entries.clone().unwrap_or_else(|| {
+                self.children
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(index, component)| {
+                        let mut entry = crate::layout::StackLayoutEntry::new(component);
+                        if Some(index) == self.grow_index {
+                            entry = entry
+                                .with_basis(crate::layout::LayoutBasis::Cells(0))
+                                .with_grow(1)
+                                .with_shrink(1)
+                                .with_min_size(1);
+                        }
+                        entry
+                    })
+                    .collect()
+            }),
+            gap: 0,
+            align: crate::layout::LayoutAlign::Stretch,
+        }))
+    }
+
+    fn invalidate(&mut self) {
+        for child in &self.children {
+            child
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .invalidate();
+        }
+    }
 }
 
 /// The tree renderer: diffs consecutive frames and writes the minimal
@@ -647,11 +890,14 @@ impl Scene {
 pub struct Tree {
     terminal: Arc<Mutex<TerminalBackend>>,
     last_lines: Vec<String>,
+    last_cursor_position: Option<(usize, usize)>,
     last_screen_epoch: Option<u64>,
     last_width: Option<usize>,
     last_height: Option<usize>,
     force_full_redraw: bool,
     focused: Option<SharedComponent>,
+    show_hardware_cursor: bool,
+    clear_on_shrink: bool,
 }
 
 impl Tree {
@@ -659,11 +905,14 @@ impl Tree {
         Self {
             terminal,
             last_lines: Vec::new(),
+            last_cursor_position: None,
             last_screen_epoch: None,
             last_width: None,
             last_height: None,
             force_full_redraw: true,
             focused: None,
+            show_hardware_cursor: std::env::var("PI_HARDWARE_CURSOR").ok().as_deref() == Some("1"),
+            clear_on_shrink: std::env::var("PI_CLEAR_ON_SHRINK").ok().as_deref() == Some("1"),
         }
     }
 
@@ -675,19 +924,23 @@ impl Tree {
     /// Query the cell dimensions used by image components. This is a no-op
     /// for terminals without Kitty/iTerm2 image support.
     pub fn query_cell_size(&mut self) -> bool {
-        self.terminal.lock().unwrap().query_cell_size()
+        self.terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .query_cell_size()
     }
 
     /// Feed a terminal response to the cell-size parser. A successful update
     /// invalidates the previous frame so image components recompute their
     /// row/column allocation on the next render.
     pub fn consume_cell_size_response(&mut self, data: &str) -> bool {
+        let updates_dimensions = crate::terminal_image::parse_cell_size_response(data).is_some();
         let consumed = self
             .terminal
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .consume_cell_size_response(data);
-        if consumed {
+        if consumed && updates_dimensions {
             self.force_full_redraw = true;
         }
         consumed
@@ -701,23 +954,61 @@ impl Tree {
         self.force_full_redraw = true;
     }
 
+    pub fn get_show_hardware_cursor(&self) -> bool {
+        self.show_hardware_cursor
+    }
+
+    pub fn set_show_hardware_cursor(&mut self, enabled: bool) {
+        if self.show_hardware_cursor == enabled {
+            return;
+        }
+        self.show_hardware_cursor = enabled;
+        if !enabled {
+            self.terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .hide_cursor();
+        }
+        self.force_full_redraw = true;
+    }
+
+    pub fn get_clear_on_shrink(&self) -> bool {
+        self.clear_on_shrink
+    }
+
+    pub fn set_clear_on_shrink(&mut self, enabled: bool) {
+        self.clear_on_shrink = enabled;
+    }
+
     pub fn leave_alt_screen(&mut self) {
-        let mut term = self.terminal.lock().unwrap();
+        let mut term = self
+            .terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let _ = term.leave_raw();
     }
 
     pub fn focus(&mut self, component: SharedComponent) {
         if let Some(previous) = &self.focused {
-            previous.lock().unwrap().set_focused(false);
+            previous
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_focused(false);
         }
-        component.lock().unwrap().set_focused(true);
+        component
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .set_focused(true);
         self.focused = Some(component);
     }
 
     /// Render the scene, diffing against the previous frame.
     pub fn render(&mut self, scene: Option<&Arc<Mutex<Scene>>>) {
         let (width, height, screen_epoch) = {
-            let term = self.terminal.lock().unwrap();
+            let term = self
+                .terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             (term.width(), term.height(), term.screen_epoch())
         };
         if self.last_screen_epoch != Some(screen_epoch)
@@ -729,8 +1020,14 @@ impl Tree {
         }
         let mut rendered_lines: Vec<String> = match scene {
             Some(scene) => {
-                let guard = scene.lock().unwrap();
-                guard.render(width, height)
+                // Regular Pi renders its mounted children sequentially into
+                // scrollback.  `Scene::render_regular` keeps the retained
+                // fullscreen layout out of this path while projecting the
+                // currently visible tail into the terminal viewport.
+                scene
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .render_regular(width, height)
             }
             None => vec![" ".repeat(width); height],
         }
@@ -739,11 +1036,25 @@ impl Tree {
         let cursor_position = extract_cursor_position(&mut rendered_lines, height);
         let lines: Vec<String> = rendered_lines
             .into_iter()
-            .map(|line| normalize_terminal_output(&line))
+            .map(|line| {
+                let line = normalize_terminal_output(&line);
+                if crate::terminal_image::is_image_line(&line) {
+                    line
+                } else {
+                    format!("{line}{SEGMENT_RESET}")
+                }
+            })
             .collect();
         let force_full_redraw = self.force_full_redraw;
+        if !force_full_redraw
+            && self.last_lines == lines
+            && self.last_cursor_position == cursor_position
+        {
+            return;
+        }
         self.diff_render(&lines, force_full_redraw, cursor_position);
         self.last_lines = lines;
+        self.last_cursor_position = cursor_position;
         self.last_width = Some(width);
         self.last_height = Some(height);
         self.force_full_redraw = false;
@@ -756,51 +1067,65 @@ impl Tree {
         cursor_position: Option<(usize, usize)>,
     ) {
         let term = self.terminal.clone();
-        let mut t = term.lock().unwrap();
+        let mut t = term.lock().unwrap_or_else(|error| error.into_inner());
         // Match the upstream renderer's synchronized-output transaction so a
         // multi-line frame is presented atomically by terminals and tmux.
-        t.write_raw(BEGIN_SYNC_UPDATE);
+        let mut output = String::new();
+        output.push_str(BEGIN_SYNC_UPDATE);
         let common = self.last_lines.len().min(lines.len());
         // A resize, screen transition or explicit invalidation means the
         // terminal may no longer contain the previous frame. Clear before
         // replaying every line so stale rows cannot survive a shrink.
         if force_full_redraw {
-            t.write_raw(CLEAR_SCREEN_HOME);
+            output.push_str(CLEAR_SCREEN_HOME);
         } else {
-            t.write_raw("\x1b[H");
+            output.push_str("\x1b[H");
         }
+        let term_width = t.width();
         for (i, line) in lines.iter().enumerate() {
             let same = !force_full_redraw && i < common && self.last_lines[i] == *line;
             if same {
                 continue;
             }
             if i > 0 {
-                t.write_raw(&format!("\x1b[{};1H", i + 1));
+                output.push_str(&format!("\x1b[{};1H", i + 1));
             }
-            let term_width = t.width();
-            t.write_raw(&format!(
+            output.push_str(&format!(
                 "\x1b[2K{}",
                 truncate_for_terminal(line, term_width)
             ));
         }
-        // Clear remaining old lines if the frame shrank.
-        if lines.len() < self.last_lines.len() {
+        // Clear remaining old lines only when requested. Keeping stale rows is
+        // intentional when clear-on-shrink is disabled, matching Pi's
+        // regular renderer's reduced-redraw mode.
+        if self.clear_on_shrink && lines.len() < self.last_lines.len() {
             for i in lines.len()..self.last_lines.len() {
-                t.write_raw(&format!("\x1b[{};1H\x1b[2K", i + 1));
+                output.push_str(&format!("\x1b[{};1H\x1b[2K", i + 1));
             }
         }
-        t.write_raw(&format!("\x1b[{};1H", lines.len().max(1)));
+        output.push_str(&format!("\x1b[{};1H", lines.len().max(1)));
         if let Some((row, col)) = cursor_position {
-            t.write_raw(&format!("\x1b[{};{}H", row + 1, col + 1));
+            output.push_str(&format!("\x1b[{};{}H", row + 1, col + 1));
+            output.push_str(if self.show_hardware_cursor {
+                SHOW_CURSOR
+            } else {
+                HIDE_CURSOR
+            });
+        } else {
+            output.push_str(HIDE_CURSOR);
         }
-        t.write_raw(END_SYNC_UPDATE);
+        output.push_str(END_SYNC_UPDATE);
+        // One terminal write/flush per frame avoids a flush syscall for every
+        // changed row. This matters most while the composer is being edited,
+        // where each key normally invalidates only the bottom few lines.
+        t.write_raw(&output);
         let _ = &mut self.focused;
     }
 
     /// Dispatch terminal input to the focused component.
     pub fn dispatch(&mut self, key: &TuiKey) {
         if let Some(focused) = &self.focused {
-            let mut guard = focused.lock().unwrap();
+            let mut guard = focused.lock().unwrap_or_else(|error| error.into_inner());
             guard.handle_input(key);
         }
     }
@@ -808,7 +1133,10 @@ impl Tree {
     /// Dispatch a typed mouse event to the focused component.
     pub fn dispatch_mouse(&mut self, event: &MouseEvent) {
         if let Some(focused) = &self.focused {
-            focused.lock().unwrap().handle_mouse(event);
+            focused
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .handle_mouse(event);
         }
     }
 }
@@ -843,6 +1171,7 @@ fn truncate_for_terminal(line: &str, width: usize) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::components::text::Text;
@@ -930,6 +1259,99 @@ mod tests {
     }
 
     #[test]
+    fn overlay_visibility_predicate_filters_composition_by_terminal_size() {
+        fn visible_only_on_wide_terminal(width: usize, _height: usize) -> bool {
+            width >= 10
+        }
+
+        let mut manager = OverlayManager::new();
+        manager.show_overlay(
+            shared_lines(&["overlay"]),
+            OverlayOptions {
+                visible: Some(visible_only_on_wide_terminal),
+                ..OverlayOptions::default()
+            },
+        );
+
+        let narrow = manager.composite(&["base".to_string()], 8, 1);
+        assert!(!narrow.iter().any(|line| line.contains("overlay")));
+
+        let wide = manager.composite(&["base".to_string()], 10, 1);
+        assert!(wide.iter().any(|line| line.contains("overlay")));
+    }
+
+    #[test]
+    fn invisible_overlay_releases_focus_and_input_capture_after_resize() {
+        fn visible_only_on_wide_terminal(width: usize, _height: usize) -> bool {
+            width >= 10
+        }
+
+        let mut manager = OverlayManager::new();
+        let overlay = Arc::new(Mutex::new(TestLines {
+            lines: vec!["overlay".to_string()],
+            focused: false,
+        }));
+        let handle = manager.show_overlay(
+            overlay.clone() as SharedComponent,
+            OverlayOptions {
+                visible: Some(visible_only_on_wide_terminal),
+                ..OverlayOptions::default()
+            },
+        );
+        assert!(manager.is_focused(handle));
+
+        let narrow = manager.composite(&["base".to_string()], 8, 1);
+        assert!(!narrow.iter().any(|line| line.contains("overlay")));
+        assert!(!manager.is_focused(handle));
+        assert!(!manager.has_visible_overlay());
+        assert!(!manager.focus(handle));
+        assert!(
+            !overlay
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .focused
+        );
+
+        let wide = manager.composite(&["base".to_string()], 10, 1);
+        assert!(wide.iter().any(|line| line.contains("overlay")));
+        assert!(manager.has_visible_overlay());
+        assert!(manager.focus(handle));
+        assert!(
+            overlay
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .focused
+        );
+    }
+
+    #[test]
+    fn unfocus_does_not_restore_to_overlay_hidden_by_terminal_size() {
+        fn visible_only_on_wide_terminal(width: usize, _height: usize) -> bool {
+            width >= 20
+        }
+
+        let mut manager = OverlayManager::new();
+        manager.set_terminal_size(20, 1);
+        let lower = shared_lines(&["lower"]);
+        let lower_handle = manager.show_overlay(
+            lower,
+            OverlayOptions {
+                visible: Some(visible_only_on_wide_terminal),
+                ..OverlayOptions::default()
+            },
+        );
+        let top = shared_lines(&["top"]);
+        let top_handle = manager.show_overlay(top, OverlayOptions::default());
+        assert!(manager.is_focused(top_handle));
+
+        manager.set_terminal_size(10, 1);
+        assert!(!manager.is_focused(lower_handle));
+        assert!(manager.unfocus(top_handle));
+        assert!(!manager.is_focused(lower_handle));
+        assert!(manager.focused_component().is_none());
+    }
+
+    #[test]
     fn overlay_manager_captures_focus_and_hides_cleanly() {
         let mut manager = OverlayManager::new();
         let first = shared_lines(&["first"]);
@@ -957,38 +1379,206 @@ mod tests {
     }
 
     #[test]
+    fn showing_hidden_capturing_overlay_restores_focus() {
+        let mut manager = OverlayManager::new();
+        let overlay = Arc::new(Mutex::new(TestLines {
+            lines: vec!["overlay".to_string()],
+            focused: false,
+        }));
+        let overlay_component: SharedComponent = overlay.clone();
+        let handle = manager.show_overlay(overlay_component, OverlayOptions::default());
+        assert!(manager.is_focused(handle));
+        assert!(
+            overlay
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .focused
+        );
+
+        assert!(manager.set_hidden(handle, true));
+        assert!(!manager.is_focused(handle));
+        assert!(
+            !overlay
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .focused
+        );
+
+        assert!(manager.set_hidden(handle, false));
+        assert!(manager.is_focused(handle));
+        assert!(
+            overlay
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .focused
+        );
+
+        let top = Arc::new(Mutex::new(TestLines {
+            lines: vec!["top".to_string()],
+            focused: false,
+        }));
+        let top_component: SharedComponent = top.clone();
+        let top_handle = manager.show_overlay(top_component, OverlayOptions::default());
+        assert!(manager.is_focused(top_handle));
+        assert!(manager.set_hidden(handle, false));
+        assert!(manager.is_focused(top_handle));
+        assert!(!manager.is_focused(handle));
+    }
+
+    #[test]
+    fn hiding_overlay_clears_focus_and_restores_stack_focus() {
+        let mut manager = OverlayManager::new();
+        let base = Arc::new(Mutex::new(TestLines {
+            lines: vec!["base".to_string()],
+            focused: false,
+        }));
+        let base_handle = manager.show_overlay(base.clone(), OverlayOptions::default());
+        let top = Arc::new(Mutex::new(TestLines {
+            lines: vec!["top".to_string()],
+            focused: false,
+        }));
+        let top_handle = manager.show_overlay(top.clone(), OverlayOptions::default());
+
+        assert!(!manager.is_focused(base_handle));
+        assert!(manager.is_focused(top_handle));
+        assert!(
+            !base
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .focused
+        );
+        assert!(
+            top.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .focused
+        );
+
+        assert!(manager.hide(top_handle));
+        assert!(
+            !top.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .focused
+        );
+        assert!(manager.is_focused(base_handle));
+        assert!(
+            base.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .focused
+        );
+
+        assert!(manager.hide(base_handle));
+        assert!(
+            !base
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .focused
+        );
+    }
+
+    #[test]
+    fn refocusing_overlay_raises_visual_stack_order() {
+        let mut manager = OverlayManager::new();
+        let options = OverlayOptions {
+            width: Some(SizeValue::Cells(6)),
+            row: Some(SizeValue::Cells(0)),
+            col: Some(SizeValue::Cells(0)),
+            ..OverlayOptions::default()
+        };
+        let lower = shared_lines(&["lower"]);
+        let upper = shared_lines(&["upper"]);
+        let lower_handle = manager.show_overlay(lower, options.clone());
+        let _upper_handle = manager.show_overlay(upper, options);
+
+        assert!(manager.focus(lower_handle));
+        let frame = manager.composite(&["........".to_string()], 8, 1);
+        assert!(frame[0].contains("lower"));
+        assert!(!frame[0].contains("upper"));
+    }
+
+    #[test]
     fn tree_forces_full_redraw_on_first_frame_and_resize() {
         let terminal = Arc::new(Mutex::new(TerminalBackend::new_with_size(8, 2)));
-        terminal.lock().unwrap().begin_output_capture();
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
         let mut tree = Tree::new(terminal.clone());
         let child = shared_lines(&["12345678", "abcdefgh"]);
         let scene = Arc::new(Mutex::new(Scene::new(vec![child], None)));
 
         tree.render(Some(&scene));
-        let first = String::from_utf8(terminal.lock().unwrap().take_output_capture()).unwrap();
+        let first = String::from_utf8(
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_output_capture(),
+        )
+        .unwrap();
         assert!(first.contains(CLEAR_SCREEN_HOME));
         assert!(first.contains("12345678"));
         assert!(first.contains("abcdefgh"));
 
-        terminal.lock().unwrap().begin_output_capture();
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
         tree.render(Some(&scene));
-        let unchanged = String::from_utf8(terminal.lock().unwrap().take_output_capture()).unwrap();
+        let unchanged = String::from_utf8(
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_output_capture(),
+        )
+        .unwrap();
         assert!(!unchanged.contains("12345678"));
         assert!(!unchanged.contains("abcdefgh"));
 
-        terminal.lock().unwrap().set_size(4, 1);
-        terminal.lock().unwrap().begin_output_capture();
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .set_size(4, 1);
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
         tree.render(Some(&scene));
-        let resized = String::from_utf8(terminal.lock().unwrap().take_output_capture()).unwrap();
+        let resized = String::from_utf8(
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_output_capture(),
+        )
+        .unwrap();
         assert!(resized.contains(CLEAR_SCREEN_HOME));
         assert!(resized.contains("1234"));
         assert!(!resized.contains("abcdefgh"));
     }
 
     #[test]
+    fn tree_consumes_zero_cell_size_responses_without_invalidating() {
+        let original = crate::terminal_image::get_cell_dimensions();
+        crate::terminal_image::set_cell_dimensions(11, 22);
+        let terminal = Arc::new(Mutex::new(TerminalBackend::new_with_size(8, 2)));
+        let mut tree = Tree::new(terminal);
+        tree.force_full_redraw = false;
+
+        assert!(tree.consume_cell_size_response("\x1b[6;0;9t"));
+        assert!(!tree.force_full_redraw);
+        assert_eq!(crate::terminal_image::get_cell_dimensions(), (11, 22));
+
+        assert!(tree.consume_cell_size_response("\x1b[6;18;9t"));
+        assert!(tree.force_full_redraw);
+        assert_eq!(crate::terminal_image::get_cell_dimensions(), (9, 18));
+        crate::terminal_image::set_cell_dimensions(original.0, original.1);
+    }
+
+    #[test]
     fn tree_extracts_cursor_marker_and_restores_hardware_cursor_column() {
         let terminal = Arc::new(Mutex::new(TerminalBackend::new_with_size(8, 2)));
-        terminal.lock().unwrap().begin_output_capture();
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
         let mut tree = Tree::new(terminal.clone());
         let child: SharedComponent = Arc::new(Mutex::new(TestLines {
             lines: vec![format!("abc{CURSOR_MARKER}def")],
@@ -997,9 +1587,190 @@ mod tests {
         let scene = Arc::new(Mutex::new(Scene::new(vec![child], None)));
 
         tree.render(Some(&scene));
-        let output = String::from_utf8(terminal.lock().unwrap().take_output_capture()).unwrap();
+        let output = String::from_utf8(
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_output_capture(),
+        )
+        .unwrap();
         assert!(!output.contains(CURSOR_MARKER));
         assert!(output.contains("abcdef"));
         assert!(output.contains("\x1b[1;4H"));
+    }
+
+    #[test]
+    fn tree_hardware_cursor_toggle_controls_visibility_and_is_queryable() {
+        let terminal = Arc::new(Mutex::new(TerminalBackend::new_with_size(8, 2)));
+        let mut tree = Tree::new(terminal.clone());
+        let child: SharedComponent = Arc::new(Mutex::new(TestLines {
+            lines: vec![format!("abc{CURSOR_MARKER}def")],
+            focused: false,
+        }));
+        let scene = Arc::new(Mutex::new(Scene::new(vec![child], None)));
+
+        tree.set_show_hardware_cursor(true);
+        assert!(tree.get_show_hardware_cursor());
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
+        tree.render(Some(&scene));
+        let shown = String::from_utf8(
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_output_capture(),
+        )
+        .unwrap();
+        assert!(shown.contains(SHOW_CURSOR));
+
+        tree.set_show_hardware_cursor(false);
+        assert!(!tree.get_show_hardware_cursor());
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
+        tree.render(Some(&scene));
+        let hidden = String::from_utf8(
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_output_capture(),
+        )
+        .unwrap();
+        assert!(hidden.contains(HIDE_CURSOR));
+        assert!(!hidden.contains(SHOW_CURSOR));
+    }
+
+    #[test]
+    fn tree_clear_on_shrink_toggle_controls_stale_row_clearing() {
+        let terminal = Arc::new(Mutex::new(TerminalBackend::new_with_size(8, 2)));
+        let mut tree = Tree::new(terminal.clone());
+        tree.force_full_redraw = false;
+        tree.last_lines = vec!["long row".to_string(), "stale row".to_string()];
+
+        tree.set_clear_on_shrink(false);
+        assert!(!tree.get_clear_on_shrink());
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
+        tree.diff_render(&["short".to_string()], false, None);
+        let preserved = String::from_utf8(
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_output_capture(),
+        )
+        .unwrap();
+        assert!(!preserved.contains("\x1b[2;1H\x1b[2K"));
+
+        tree.set_clear_on_shrink(true);
+        assert!(tree.get_clear_on_shrink());
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
+        tree.diff_render(&["short".to_string()], false, None);
+        let cleared = String::from_utf8(
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_output_capture(),
+        )
+        .unwrap();
+        assert!(cleared.contains("\x1b[2;1H\x1b[2K"));
+    }
+
+    #[test]
+    fn tree_skips_terminal_write_for_an_unchanged_frame() {
+        let terminal = Arc::new(Mutex::new(TerminalBackend::new_with_size(8, 2)));
+        let mut tree = Tree::new(terminal.clone());
+        let child = shared_lines(&["same"]);
+        let scene = Arc::new(Mutex::new(Scene::new(vec![child], None)));
+
+        tree.render(Some(&scene));
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
+        tree.render(Some(&scene));
+
+        assert!(terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take_output_capture()
+            .is_empty());
+    }
+
+    #[test]
+    fn tree_resets_terminal_style_after_each_non_image_row() {
+        let terminal = Arc::new(Mutex::new(TerminalBackend::new_with_size(20, 2)));
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
+        let mut tree = Tree::new(terminal.clone());
+        let child = shared_lines(&["\x1b[3mItalic", "Plain"]);
+        let scene = Arc::new(Mutex::new(Scene::new(vec![child], None)));
+
+        tree.render(Some(&scene));
+
+        let output = String::from_utf8(
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_output_capture(),
+        )
+        .unwrap();
+        assert!(output.contains(&format!("\x1b[3mItalic{SEGMENT_RESET}")));
+        assert!(output.contains(&format!("Plain{SEGMENT_RESET}")));
+    }
+
+    #[test]
+    fn regular_tree_keeps_tail_dock_visible_when_document_is_taller_than_viewport() {
+        let terminal = Arc::new(Mutex::new(TerminalBackend::new_with_size(20, 6)));
+        terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin_output_capture();
+        let mut tree = Tree::new(terminal.clone());
+        let document = shared_lines(&[
+            "document 1",
+            "document 2",
+            "document 3",
+            "document 4",
+            "document 5",
+            "document 6",
+            "document 7",
+            "document 8",
+        ]);
+        let dock = shared_lines(&["composer", "footer"]);
+        let scene = Arc::new(Mutex::new(Scene::with_layout_entries(
+            vec![document.clone(), dock.clone()],
+            vec![
+                crate::layout::StackLayoutEntry::new(document)
+                    .with_basis(crate::layout::LayoutBasis::Cells(0))
+                    .with_grow(1)
+                    .with_shrink(1)
+                    .with_min_size(1),
+                crate::layout::StackLayoutEntry::new(dock)
+                    .with_shrink(1)
+                    .with_min_size(2),
+            ],
+        )));
+
+        tree.render(Some(&scene));
+        let output = String::from_utf8(
+            terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_output_capture(),
+        )
+        .unwrap();
+        assert!(output.contains("document 8"));
+        assert!(output.contains("composer"));
+        assert!(output.contains("footer"));
     }
 }

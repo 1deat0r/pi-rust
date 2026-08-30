@@ -65,6 +65,11 @@ scoped documented allows (auth-storage and settings diagnostics mirror
 upstream unrecoverable conditions; typed conversion is future work).
 Workspace matrix 2,805 passed; `conversion_audit all` green. No numbered
 ledger row changed.
+Phase 2.7 checkpoint: the last three crates — pi-tui, pi-telemetry,
+pi-session-backends — are under the hard gate. **The entire workspace now
+enforces the panic-path gate.** pi-tui render-loop invariants carry scoped
+documented allows. Workspace matrix 2,805 passed; `conversion_audit all`
+green. No numbered ledger row changed.
 
 Next: Phase 2 crate conversions in order pi-server → pi-client → pi-ai →
 pi-agent → pi-coding-agent (core, then modes/bins) → pi-tui/pi-telemetry/

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 use std::sync::{Arc, Mutex};
 
 use pi_tui::components::Text;
@@ -72,7 +74,12 @@ fn controller_resize_rerenders_and_stop_is_safe_before_and_after_start() {
     tui.stop(TuiStopOptions::default()).unwrap();
     tui.render_now(true);
     terminal.lock().unwrap().set_size(4, 2);
+    terminal.lock().unwrap().begin_output_capture();
     tui.dispatch_event(pi_tui::TerminalEvent::Resize(4, 2));
+    assert_eq!(tui.full_redraws(), 1);
+    assert!(tui.is_render_requested());
+    assert!(terminal.lock().unwrap().take_output_capture().is_empty());
+    tui.render_now(false);
     assert_eq!(tui.full_redraws(), 2);
     tui.stop(TuiStopOptions {
         preserve_screen: true,

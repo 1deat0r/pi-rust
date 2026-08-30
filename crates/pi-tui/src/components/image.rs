@@ -5,8 +5,8 @@
 //! terminal has no image support.
 
 use crate::terminal_image::{
-    encode_iterm2, encode_kitty, get_capabilities, get_cell_dimensions, get_image_dimensions,
-    image_fallback, ImageProtocol,
+    allocate_image_id, get_capabilities, get_cell_dimensions, get_image_dimensions, image_fallback,
+    render_image, ImageDimensions, ImageProtocol, ImageRenderOptions,
 };
 use crate::tui::Component;
 use crate::utils::truncate_to_width;
@@ -48,6 +48,7 @@ pub struct Image {
     image_id: std::sync::Mutex<Option<u32>>,
     cached_lines: std::sync::Mutex<Option<Vec<String>>>,
     cached_width: std::sync::Mutex<Option<usize>>,
+    cached_cell_dimensions: std::sync::Mutex<Option<(u32, u32)>>,
 }
 
 impl std::fmt::Debug for Image {
@@ -89,12 +90,25 @@ impl Image {
             image_id: std::sync::Mutex::new(configured_id),
             cached_lines: std::sync::Mutex::new(None),
             cached_width: std::sync::Mutex::new(None),
+            cached_cell_dimensions: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Override the decoded dimensions when the caller already has trusted
+    /// metadata, matching upstream `Image`'s optional constructor dimensions.
+    /// This is useful for formats whose bytes were already decoded elsewhere
+    /// and keeps terminal cell placement deterministic without reparsing them.
+    pub fn with_dimensions(mut self, dimensions: ImageDimensions) -> Self {
+        self.dimensions = (dimensions.width_px, dimensions.height_px);
+        self
     }
 
     /// The Kitty image ID used by this image (if any).
     pub fn get_image_id(&self) -> Option<u32> {
-        *self.image_id.lock().unwrap()
+        *self
+            .image_id
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     fn render_image(&self, width: usize) -> Vec<String> {
@@ -108,49 +122,81 @@ impl Image {
         let cell = get_cell_dimensions();
         let default_max_height =
             std::cmp::max(1, (max_width * cell.0 as usize).div_ceil(cell.1 as usize));
-        let max_height = self.options.max_height_cells.unwrap_or(default_max_height);
+        let max_height = self
+            .options
+            .max_height_cells
+            .unwrap_or(default_max_height)
+            .max(1);
 
         let caps = get_capabilities();
         let mut lines: Vec<String> = Vec::new();
 
         if let Some(protocol) = caps.images {
-            let mut effective_id = *self.image_id.lock().unwrap();
-            let (image_w, image_h) = self.dimensions;
-            // Scale to fit cell bounds preserving aspect ratio.
-            let width_scale = (max_width as f64 * cell.0 as f64) / image_w as f64;
-            let height_scale = (max_height as f64 * cell.1 as f64) / image_h as f64;
-            let scale = width_scale.min(height_scale);
-            let columns = ((image_w as f64 * scale) / cell.0 as f64)
-                .ceil()
-                .max(1.0)
-                .min(max_width as f64) as usize;
-            let rows = ((image_h as f64 * scale) / cell.1 as f64)
-                .ceil()
-                .max(1.0)
-                .min(max_height as f64) as usize;
+            let mut effective_id = *self
+                .image_id
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if protocol == ImageProtocol::Kitty && effective_id.is_none() {
+                effective_id = Some(allocate_image_id());
+                *self
+                    .image_id
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = effective_id;
+            }
+            let result = render_image(
+                &self.base64_data,
+                ImageDimensions {
+                    width_px: self.dimensions.0,
+                    height_px: self.dimensions.1,
+                },
+                ImageRenderOptions {
+                    max_width_cells: Some(max_width),
+                    max_height_cells: Some(max_height),
+                    image_id: effective_id,
+                    move_cursor: Some(false),
+                    ..Default::default()
+                },
+            );
 
-            if protocol == ImageProtocol::Kitty {
-                if effective_id.is_none() {
-                    effective_id = Some(allocate_image_id());
-                    *self.image_id.lock().unwrap() = effective_id;
+            if let Some(result) = result {
+                if result.image_id.is_some() {
+                    *self
+                        .image_id
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = result.image_id;
                 }
-                let sequence = encode_kitty(&self.base64_data, columns, rows, effective_id, false);
-                lines.push(sequence);
-                for _ in 0..rows.saturating_sub(1) {
-                    lines.push(String::new());
+                if protocol == ImageProtocol::Kitty {
+                    // C=1 prevents Kitty from moving the cursor. Return the
+                    // occupied rows so the TUI accounts for the image height.
+                    lines.push(result.sequence);
+                    for _ in 0..result.rows.saturating_sub(1) {
+                        lines.push(String::new());
+                    }
+                } else {
+                    // iTerm2 draws on the last occupied row; move up before
+                    // drawing so cursor accounting stays inside the region.
+                    for _ in 0..result.rows.saturating_sub(1) {
+                        lines.push(String::new());
+                    }
+                    let row_offset = result.rows.saturating_sub(1);
+                    let move_up = if row_offset > 0 {
+                        format!("\x1b[{row_offset}A")
+                    } else {
+                        String::new()
+                    };
+                    lines.push(format!("{move_up}{}", result.sequence));
                 }
             } else {
-                let sequence = encode_iterm2(&self.base64_data, columns, true);
-                for _ in 0..rows.saturating_sub(1) {
-                    lines.push(String::new());
-                }
-                let row_offset = rows.saturating_sub(1);
-                let move_up = if row_offset > 0 {
-                    format!("\x1b[{row_offset}A")
-                } else {
-                    String::new()
-                };
-                lines.push(format!("{move_up}{sequence}"));
+                let fallback = image_fallback(
+                    &self.mime_type,
+                    Some(self.dimensions),
+                    self.options.filename.as_deref(),
+                );
+                lines.push(truncate_to_width(
+                    &(self.theme.fallback_color)(&fallback),
+                    width,
+                    "",
+                ));
             }
         } else {
             let fallback = image_fallback(
@@ -169,39 +215,95 @@ impl Image {
     }
 }
 
-// Random image id in [1, 0xffffffff].
-fn allocate_image_id() -> u32 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    ((secs ^ (nanos as u64)) as u32).max(1)
-}
-
 impl Component for Image {
     fn render(&self, width: usize) -> Vec<String> {
         {
-            let cached = self.cached_lines.lock().unwrap().clone();
-            let w = *self.cached_width.lock().unwrap();
-            if let (Some(lines), Some(w)) = (cached, w) {
-                if w == width {
+            let cached = self
+                .cached_lines
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            let w = *self
+                .cached_width
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let cell_dimensions = *self
+                .cached_cell_dimensions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let (Some(lines), Some(w), Some(cached_cell_dimensions)) =
+                (cached, w, cell_dimensions)
+            {
+                if w == width
+                    && cached_cell_dimensions == crate::terminal_image::get_cell_dimensions()
+                {
                     return lines;
                 }
             }
         }
         let lines = self.render_image(width);
-        *self.cached_lines.lock().unwrap() = Some(lines.clone());
-        *self.cached_width.lock().unwrap() = Some(width);
+        *self
+            .cached_lines
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(lines.clone());
+        *self
+            .cached_width
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(width);
+        *self
+            .cached_cell_dimensions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            Some(crate::terminal_image::get_cell_dimensions());
         lines
     }
 
     fn invalidate(&mut self) {
-        *self.cached_lines.lock().unwrap() = None;
-        *self.cached_width.lock().unwrap() = None;
+        *self
+            .cached_lines
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+        *self
+            .cached_width
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+        *self
+            .cached_cell_dimensions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::terminal_image::{get_capabilities, set_capabilities, TerminalCapabilities};
+
+    #[test]
+    fn explicit_dimensions_override_fallback_metadata() {
+        let previous = get_capabilities();
+        set_capabilities(TerminalCapabilities {
+            images: None,
+            true_color: false,
+            hyperlinks: false,
+        });
+
+        let image = Image::new(
+            "not-real-base64",
+            "image/png",
+            ImageTheme {
+                fallback_color: Box::new(str::to_owned),
+            },
+            ImageOptions::default(),
+        )
+        .with_dimensions(ImageDimensions {
+            width_px: 3,
+            height_px: 4,
+        });
+
+        let rendered = image.render(80);
+        assert!(rendered[0].contains("3x4"));
+        set_capabilities(previous);
     }
 }

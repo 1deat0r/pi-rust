@@ -186,6 +186,7 @@ impl SqlQuery {
     /// Executes a parameterless DDL/PRAGMA statement.
     ///
     /// Mirrors `SqlQuery.exec`: exec queries cannot have parameters.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn exec(&self, db: &Connection) -> rusqlite::Result<()> {
         if !self.params.is_empty() {
             panic!("SQLite exec queries cannot have parameters");
@@ -258,6 +259,7 @@ pub fn ident(name: &str) -> SqlQuery {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use rusqlite::Connection;

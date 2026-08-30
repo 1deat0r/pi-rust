@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! SQLite session repository — port of `test/repository.test.ts`.
 
 use pi_agent::session::types::{NewRecord, SessionErrorKind};
@@ -684,6 +686,7 @@ async fn accounts_for_assistant_compaction_and_branch_summary_usage() {
         stop_reason: Some(pi_ai::types::StopReason::Stop),
         deferred: None,
         error_message: None,
+        diagnostics: None,
         raw_stop_reason: None,
         end_turn: None,
         timestamp: test_utils::now_ms(),

@@ -3,6 +3,8 @@
 //! A vertical list of items (value/label/description) with a highlighted
 //! selection, description column layout, and scroll indicators.
 
+use crate::fuzzy::fuzzy_filter;
+use crate::keybindings::get_keybindings;
 use crate::keys::TuiKey;
 use crate::tui::Component;
 use crate::utils::{truncate_to_width, visible_width};
@@ -16,9 +18,26 @@ const MIN_DESCRIPTION_WIDTH: usize = 10;
 
 pub type SelectItemCallback = Box<dyn Fn(&SelectItem) + Send + Sync>;
 pub type SelectCancelCallback = Box<dyn Fn() + Send + Sync>;
+pub type SelectTruncatePrimaryCallback =
+    Box<dyn Fn(&str, usize, usize, &SelectItem, bool) -> String + Send + Sync>;
 
 fn normalize_to_single_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    // Match the upstream `/[\r\n]+/g` semantics: a run of CR/LF characters
+    // becomes one separator, while all other whitespace is preserved.
+    let mut normalized = String::with_capacity(text.len());
+    let mut in_line_break = false;
+    for ch in text.chars() {
+        if matches!(ch, '\r' | '\n') {
+            if !in_line_break {
+                normalized.push(' ');
+                in_line_break = true;
+            }
+        } else {
+            normalized.push(ch);
+            in_line_break = false;
+        }
+    }
+    normalized.trim().to_string()
 }
 
 fn clamp(value: usize, min: usize, max: usize) -> usize {
@@ -90,6 +109,7 @@ pub struct SelectList {
     on_select: Option<SelectItemCallback>,
     on_cancel: Option<SelectCancelCallback>,
     on_selection_change: Option<SelectItemCallback>,
+    truncate_primary_callback: Option<SelectTruncatePrimaryCallback>,
 }
 
 impl SelectList {
@@ -109,6 +129,7 @@ impl SelectList {
             on_select: None,
             on_cancel: None,
             on_selection_change: None,
+            truncate_primary_callback: None,
         }
     }
 
@@ -133,6 +154,30 @@ impl SelectList {
             .cloned()
             .collect();
         self.selected_index = 0;
+    }
+
+    /// Apply the broader fuzzy search used by Rust callers that opt into it.
+    /// The upstream SelectList API itself intentionally remains prefix-only.
+    pub fn set_fuzzy_filter(&mut self, filter: &str) {
+        self.filtered_items = fuzzy_filter(self.items.clone(), filter, |item| {
+            format!(
+                "{} {} {}",
+                item.value,
+                item.label,
+                item.description.as_deref().unwrap_or_default()
+            )
+        });
+        self.selected_index = 0;
+    }
+
+    /// Supply the upstream `truncatePrimary` hook without changing the
+    /// legacy layout-options struct used by existing Rust callers.
+    pub fn with_truncate_primary(
+        mut self,
+        callback: impl Fn(&str, usize, usize, &SelectItem, bool) -> String + Send + Sync + 'static,
+    ) -> Self {
+        self.truncate_primary_callback = Some(Box::new(callback));
+        self
     }
 
     pub fn set_selected_index(&mut self, index: usize) {
@@ -194,9 +239,20 @@ impl SelectList {
         }
     }
 
-    fn truncate_primary(&self, item: &SelectItem, max_width: usize) -> String {
+    fn truncate_primary(
+        &self,
+        item: &SelectItem,
+        max_width: usize,
+        column_width: usize,
+        is_selected: bool,
+    ) -> String {
         let display_value = Self::get_display_value(item);
-        truncate_to_width(&display_value, max_width, "")
+        let candidate = self
+            .truncate_primary_callback
+            .as_ref()
+            .map(|callback| callback(&display_value, max_width, column_width, item, is_selected))
+            .unwrap_or(display_value);
+        truncate_to_width(&candidate, max_width, "")
     }
 
     fn render_item(
@@ -207,8 +263,12 @@ impl SelectList {
         description_single_line: Option<&str>,
         primary_column_width: usize,
     ) -> String {
-        let prefix = if is_selected { "→ " } else { "  " };
-        let prefix_width = visible_width(prefix);
+        let prefix = if is_selected {
+            (self.theme.selected_prefix)("→ ")
+        } else {
+            "  ".to_string()
+        };
+        let prefix_width = visible_width(&prefix);
 
         if let Some(description) = description_single_line {
             if width > 40 {
@@ -220,7 +280,12 @@ impl SelectList {
                     1,
                     effective_primary_column_width.saturating_sub(PRIMARY_COLUMN_GAP),
                 );
-                let truncated_value = self.truncate_primary(item, max_primary_width);
+                let truncated_value = self.truncate_primary(
+                    item,
+                    max_primary_width,
+                    effective_primary_column_width,
+                    is_selected,
+                );
                 let truncated_value_width = visible_width(&truncated_value);
                 let spacing = " ".repeat(std::cmp::max(
                     1,
@@ -243,7 +308,7 @@ impl SelectList {
         }
 
         let max_width = width.saturating_sub(prefix_width + 2);
-        let truncated_value = self.truncate_primary(item, max_width);
+        let truncated_value = self.truncate_primary(item, max_width, max_width, is_selected);
         if is_selected {
             (self.theme.selected_text)(&format!("{prefix}{truncated_value}"))
         } else {
@@ -302,42 +367,37 @@ impl Component for SelectList {
     }
 
     fn handle_input(&mut self, key: &TuiKey) {
-        match key.base.as_str() {
-            "up" => {
-                let len = self.filtered_items.len();
-                if len > 0 {
-                    self.selected_index = if self.selected_index == 0 {
-                        len - 1
-                    } else {
-                        self.selected_index - 1
-                    };
-                    self.notify_selection_change();
+        let bindings = get_keybindings();
+        if bindings.matches(key, "tui.select.up") {
+            let len = self.filtered_items.len();
+            if len > 0 {
+                self.selected_index = if self.selected_index == 0 {
+                    len - 1
+                } else {
+                    self.selected_index - 1
+                };
+                self.notify_selection_change();
+            }
+        } else if bindings.matches(key, "tui.select.down") {
+            let len = self.filtered_items.len();
+            if len > 0 {
+                self.selected_index = if self.selected_index == len - 1 {
+                    0
+                } else {
+                    self.selected_index + 1
+                };
+                self.notify_selection_change();
+            }
+        } else if bindings.matches(key, "tui.select.confirm") {
+            if let Some(item) = self.get_selected_item() {
+                if let Some(on_select) = &self.on_select {
+                    on_select(item);
                 }
             }
-            "down" => {
-                let len = self.filtered_items.len();
-                if len > 0 {
-                    self.selected_index = if self.selected_index == len - 1 {
-                        0
-                    } else {
-                        self.selected_index + 1
-                    };
-                    self.notify_selection_change();
-                }
+        } else if bindings.matches(key, "tui.select.cancel") {
+            if let Some(on_cancel) = &self.on_cancel {
+                on_cancel();
             }
-            "enter" if !key.ctrl => {
-                if let Some(item) = self.get_selected_item() {
-                    if let Some(on_select) = &self.on_select {
-                        on_select(item);
-                    }
-                }
-            }
-            "escape" | "ctrl+c" => {
-                if let Some(on_cancel) = &self.on_cancel {
-                    on_cancel();
-                }
-            }
-            _ => {}
         }
     }
 }
@@ -353,6 +413,7 @@ impl SelectList {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -384,6 +445,59 @@ mod tests {
         assert!(!rendered.is_empty());
         assert!(!rendered[0].contains('\n'));
         assert!(rendered[0].contains("Line one Line two Line three"));
+    }
+
+    #[test]
+    fn description_normalization_preserves_non_newline_whitespace() {
+        assert_eq!(
+            normalize_to_single_line("  Line  one\r\nLine\n  two  "),
+            "Line  one Line   two"
+        );
+    }
+
+    #[test]
+    fn custom_primary_truncation_receives_selection_context() {
+        let items = vec![
+            item("first-command", Some("first description")),
+            item("second-command", Some("second description")),
+        ];
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let list = SelectList::new(items, 5, plain_theme(), SelectListLayoutOptions::default())
+            .with_truncate_primary(move |text, max_width, column_width, item, selected| {
+                seen_for_callback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push((
+                        text.to_string(),
+                        max_width,
+                        column_width,
+                        item.value.clone(),
+                        selected,
+                    ));
+                text.to_string()
+            });
+        let _ = list.render(80);
+        let calls = seen.lock().unwrap_or_else(|error| error.into_inner());
+        assert!(!calls.is_empty());
+        assert!(calls.iter().any(|call| call.4));
+        assert!(calls.iter().any(|call| call.1 != call.2));
+    }
+
+    #[test]
+    fn selected_prefix_theme_is_applied_without_changing_layout_width() {
+        let theme = SelectListTheme {
+            selected_prefix: Box::new(|prefix| format!("<{prefix}>")),
+            ..plain_theme()
+        };
+        let list = SelectList::new(
+            vec![item("command", None)],
+            5,
+            theme,
+            SelectListLayoutOptions::default(),
+        );
+        let rendered = list.render(30);
+        assert!(rendered[0].starts_with("<→ >command"));
     }
 
     #[test]
@@ -447,6 +561,51 @@ mod tests {
     }
 
     #[test]
+    fn navigation_wins_over_cancel_when_user_bindings_conflict() {
+        use crate::keybindings::{get_keybindings, set_keybindings, KeybindingsConfig};
+        use std::sync::{Arc, Mutex};
+
+        let original = get_keybindings();
+        let mut config = KeybindingsConfig::new();
+        config.insert("tui.select.cancel".to_string(), vec!["up".to_string()]);
+        set_keybindings(crate::keybindings::KeybindingsManager::new(
+            crate::keybindings::TUI_KEYBINDINGS,
+            config,
+        ));
+
+        let canceled = Arc::new(Mutex::new(0usize));
+        let canceled_for_callback = canceled.clone();
+        let mut list = SelectList::new(
+            vec![
+                item("first", None),
+                item("second", None),
+                item("third", None),
+            ],
+            5,
+            plain_theme(),
+            SelectListLayoutOptions::default(),
+        )
+        .with_callbacks(
+            |_| {},
+            move || {
+                *canceled_for_callback
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) += 1
+            },
+            |_| {},
+        );
+
+        list.handle_input(&TuiKey::simple("up"));
+        set_keybindings(original);
+
+        assert_eq!(list.selected_index(), 2);
+        assert_eq!(
+            *canceled.lock().unwrap_or_else(|error| error.into_inner()),
+            0
+        );
+    }
+
+    #[test]
     fn renders_scroll_indicator() {
         let items: Vec<SelectItem> = (0..3)
             .map(|i| SelectItem::new(format!("item-{i}"), format!("item-{i}"), None))
@@ -455,5 +614,48 @@ mod tests {
         list.set_selected_index(2);
         let rendered = list.render(80);
         assert!(strip_ansi_codes(&rendered.last().unwrap().to_string()).contains("3/3"));
+    }
+
+    #[test]
+    fn filter_is_fuzzy_and_searches_label_and_description_when_requested() {
+        let items = vec![
+            SelectItem::new(
+                "openai-codex/gpt-5.5",
+                "GPT-5.5",
+                Some("Codex OAuth".to_owned()),
+            ),
+            SelectItem::new(
+                "anthropic/claude-sonnet",
+                "Claude Sonnet",
+                Some("Anthropic".to_owned()),
+            ),
+        ];
+        let mut list = SelectList::new(items, 5, plain_theme(), SelectListLayoutOptions::default());
+        list.set_fuzzy_filter("oauth");
+        assert_eq!(
+            list.get_selected_item().map(|item| item.value.as_str()),
+            Some("openai-codex/gpt-5.5")
+        );
+        let rendered = list.render(80);
+        assert!(!rendered.is_empty());
+        assert!(rendered[0].contains("GPT-5.5"));
+    }
+
+    #[test]
+    fn filter_matches_only_case_insensitive_value_prefixes() {
+        let items = vec![
+            SelectItem::new("/alpha", "Alpha label", Some("first".to_owned())),
+            SelectItem::new("/alphabet", "Alphabet label", Some("second".to_owned())),
+            SelectItem::new("/beta", "Beta label", Some("alpha description".to_owned())),
+        ];
+        let mut list = SelectList::new(items, 5, plain_theme(), SelectListLayoutOptions::default());
+
+        list.set_filter("/ALP");
+        assert_eq!(
+            list.get_selected_item().map(|item| item.value.as_str()),
+            Some("/alpha")
+        );
+        list.set_filter("lpha");
+        assert!(list.get_selected_item().is_none());
     }
 }

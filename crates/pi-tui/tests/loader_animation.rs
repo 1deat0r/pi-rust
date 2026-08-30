@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -184,7 +186,9 @@ fn cancellable_loader_contracts() {
     assert!(signal.is_aborted());
     assert!(loader.is_aborted());
     assert!(loader.aborted);
-    assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+    // The AbortSignal is idempotent, but upstream invokes onAbort for every
+    // matching cancel input.
+    assert_eq!(callback_count.load(Ordering::SeqCst), 2);
 
     loader.set_message("cancelled");
     assert_eq!(loader.text(), "cancelled");

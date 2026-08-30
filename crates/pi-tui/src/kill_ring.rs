@@ -48,6 +48,7 @@ impl KillRing {
     }
 
     /// Move last entry to front (for yank-pop cycling).
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn rotate(&mut self) {
         if self.ring.len() > 1 {
             let last = self.ring.pop().unwrap();
@@ -65,6 +66,7 @@ impl KillRing {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
