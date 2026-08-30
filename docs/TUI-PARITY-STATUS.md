@@ -181,3 +181,6 @@ build-health boundary, not behavioral evidence.
 Phase 2.6 (AuthStorageError) likewise does not touch TUI rows.
 
 Phase 3 campaign closure does not touch TUI rows.
+
+Protocol-layer checkpoint (2026-08-30): the pi-protocol parity wave landed
+alongside this register; TUI row status is unchanged by that work.

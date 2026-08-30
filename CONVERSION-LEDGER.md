@@ -1923,3 +1923,7 @@ surface; ledger rows unchanged.
 Phase 3 closed the campaign: settings/models_store panics documented as
 deliberate persistence-path handling; let _ = triage found no hidden
 swallows; ledger rows unchanged.
+
+Protocol-layer checkpoint (2026-08-30): the cbor/codec/framing/schemas
+parity wave lands with its synchronized registers; source ledger unchanged
+at `Conversion progress: 100.00% (166/166; 0 open)`.

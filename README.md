@@ -764,4 +764,7 @@ code carries scoped `#[allow]`s only.
 Campaign closed 2026-08-30: the `let _ =` swallow triage found no hidden
 error handling, and the settings/models_store persistence panics are
 deliberate upstream-mirroring behavior behind documented allows.
-See `PLAN.md` for the Rust-idiom campaign status.
+See `PLAN.md` for the Rust-idiom campaign status. The pi-protocol layer
+(cbor/codec/framing/schemas) and the exhaustive parity registers carry the
+behavioral-parity campaign checkpoints; see `docs/EXHAUSTIVE-PARITY-INVENTORY.md`
+and `docs/NON-TUI-PARITY-STATUS.md`.

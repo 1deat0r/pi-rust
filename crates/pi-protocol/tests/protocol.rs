@@ -62,6 +62,16 @@ fn rejects_invalid_handshakes() {
 }
 
 #[test]
+fn invalid_messages_keep_upstream_validation_error_text() {
+    let error = parse_client_message(&serde_json::json!({
+        "type": "hello",
+        "version": "not-a-number",
+    }))
+    .unwrap_err();
+    assert_eq!(error.0, "Invalid client protocol message");
+}
+
+#[test]
 fn does_not_parse_json_strings_as_wire_messages() {
     let s = serde_json::json!(serde_json::to_string(&client_hello()).unwrap());
     assert!(parse_client_message(&s).is_err());
@@ -247,4 +257,76 @@ fn model_metadata_validation() {
         .unwrap()
         .insert("supportedThinkingLevels".into(), serde_json::json!([]));
     assert!(ModelMetadata::parse(&bad).is_err());
+}
+
+#[test]
+fn transcript_items_decode_by_their_wire_role_even_when_content_is_empty() {
+    let assistant = TranscriptItem::Assistant(AssistantTranscriptItem {
+        id: "assistant-1".into(),
+        role: "assistant".into(),
+        content: vec![],
+        model: ModelRef {
+            provider: "faux".into(),
+            id: "faux-1".into(),
+        },
+        response_model: None,
+        usage: None,
+        timestamp: 1,
+        status: AssistantStatus::Complete,
+        stop_reason: Some(AssistantStopReason::Stop),
+        error_message: None,
+    });
+    let tool = TranscriptItem::Tool(ToolTranscriptItem {
+        id: "tool-1".into(),
+        role: "tool".into(),
+        tool_call_id: "call-1".into(),
+        tool_name: "echo".into(),
+        input: serde_json::json!({}),
+        content: vec![],
+        details: None,
+        usage: None,
+        timestamp: 2,
+        status: ToolStatus::Complete,
+        is_error: false,
+    });
+    let message = ServerMessage::Event {
+        event: ServerEvent::SessionSnapshot {
+            snapshot: SessionSnapshot {
+                id: "session-1".into(),
+                name: None,
+                cwd: "/tmp".into(),
+                created_at: 1,
+                updated_at: 2,
+                phase: SessionPhase::Idle,
+                model: ModelRef {
+                    provider: "faux".into(),
+                    id: "faux-1".into(),
+                },
+                thinking_level: ThinkingLevel::Off,
+                attached: true,
+                locked: false,
+                revision: 2,
+                transcript: vec![assistant, tool],
+                queued_steer: vec![],
+                queued_steer_count: 0,
+            },
+        },
+    };
+    let frame = encode_server_message(&message, &FrameDecoderOptions::default()).unwrap();
+    let mut decoder = ServerMessageDecoder::new(&FrameDecoderOptions::default()).unwrap();
+    let decoded = decoder.push(&frame).unwrap();
+    let ServerMessage::Event {
+        event: ServerEvent::SessionSnapshot { snapshot },
+    } = &decoded[0]
+    else {
+        panic!("expected session snapshot event");
+    };
+    assert!(matches!(
+        snapshot.transcript.first(),
+        Some(TranscriptItem::Assistant(item)) if item.role == "assistant"
+    ));
+    assert!(matches!(
+        snapshot.transcript.get(1),
+        Some(TranscriptItem::Tool(item)) if item.role == "tool"
+    ));
 }

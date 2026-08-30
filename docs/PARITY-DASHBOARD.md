@@ -350,3 +350,6 @@ Phase 2.7 (workspace-wide gate) does not move any dashboard dimension.
 Phase 2.6 (AuthStorageError) does not move any dashboard dimension.
 
 Phase 3 campaign closure does not move any dashboard dimension.
+
+Protocol-layer checkpoint (2026-08-30): the pi-protocol parity wave landed
+alongside the dashboard; all dimensions above are unchanged by that work.

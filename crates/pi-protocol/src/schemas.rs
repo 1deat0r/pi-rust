@@ -124,7 +124,9 @@ impl ModelRef {
 pub struct ModelCost {
     pub input: f64,
     pub output: f64,
+    #[serde(rename = "cacheRead")]
     pub cache_read: f64,
+    #[serde(rename = "cacheWrite")]
     pub cache_write: f64,
 }
 
@@ -158,9 +160,12 @@ pub struct ModelMetadata {
     pub api: String,
     pub reasoning: bool,
     pub input: Vec<ModelInput>,
+    #[serde(rename = "contextWindow")]
     pub context_window: i64,
+    #[serde(rename = "maxTokens")]
     pub max_tokens: i64,
     pub cost: ModelCost,
+    #[serde(rename = "supportedThinkingLevels")]
     pub supported_thinking_levels: Vec<ThinkingLevel>,
     pub authenticated: bool,
 }
@@ -509,14 +514,17 @@ pub struct AssistantTranscriptItem {
     pub content: Vec<AssistantContent>,
     pub model: ModelRef,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "responseModel")]
     pub response_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
     pub timestamp: i64,
     pub status: AssistantStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "stopReason")]
     pub stop_reason: Option<AssistantStopReason>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "errorMessage")]
     pub error_message: Option<String>,
 }
 
@@ -525,6 +533,7 @@ pub struct AssistantTranscriptItem {
 pub enum AssistantStopReason {
     Stop,
     Length,
+    #[serde(rename = "toolUse")]
     ToolUse,
     Error,
     Aborted,
@@ -561,9 +570,9 @@ pub struct ToolTranscriptItem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TranscriptItem {
-    User(UserTranscriptItem),
     Assistant(AssistantTranscriptItem),
     Tool(ToolTranscriptItem),
+    User(UserTranscriptItem),
 }
 
 // ---------------------------------------------------------------------------
@@ -577,7 +586,9 @@ pub enum TranscriptProgress {
         item: TranscriptItem,
     },
     AssistantDelta {
+        #[serde(rename = "messageId")]
         message_id: String,
+        #[serde(rename = "contentIndex")]
         content_index: i64,
         kind: TranscriptDeltaKind,
         delta: String,
@@ -618,12 +629,16 @@ pub enum TranscriptItemFinished {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionMetadata {
     pub id: String,
+    #[serde(rename = "createdAt")]
     pub created_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "updatedAt")]
     pub updated_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "parentSessionId")]
     pub parent_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "sessionName")]
     pub session_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
@@ -635,22 +650,29 @@ pub struct SessionSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub cwd: String,
+    #[serde(rename = "createdAt")]
     pub created_at: i64,
+    #[serde(rename = "updatedAt")]
     pub updated_at: i64,
     pub phase: SessionPhase,
     pub model: ModelRef,
+    #[serde(rename = "thinkingLevel")]
     pub thinking_level: ThinkingLevel,
     pub attached: bool,
     pub locked: bool,
     pub revision: i64,
     pub transcript: Vec<TranscriptItem>,
+    #[serde(rename = "queuedSteer")]
     pub queued_steer: Vec<UserTranscriptItem>,
+    #[serde(rename = "queuedSteerCount")]
     pub queued_steer_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServerSnapshot {
+    #[serde(rename = "serverId")]
     pub server_id: String,
+    #[serde(rename = "protocolVersion")]
     pub protocol_version: u64,
     pub revision: i64,
     pub sessions: Vec<SessionMetadata>,
@@ -693,31 +715,40 @@ pub enum Command {
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<ModelRef>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "thinkingLevel")]
         thinking_level: Option<ThinkingLevel>,
     },
     Attach {
+        #[serde(rename = "sessionId")]
         session_id: String,
     },
     Detach {
+        #[serde(rename = "sessionId")]
         session_id: String,
     },
     Prompt {
+        #[serde(rename = "sessionId")]
         session_id: String,
         text: String,
     },
     Steer {
+        #[serde(rename = "sessionId")]
         session_id: String,
         text: String,
     },
     Abort {
+        #[serde(rename = "sessionId")]
         session_id: String,
     },
     SetModel {
+        #[serde(rename = "sessionId")]
         session_id: String,
         model: ModelRef,
     },
     SetThinking {
+        #[serde(rename = "sessionId")]
         session_id: String,
+        #[serde(rename = "thinkingLevel")]
         thinking_level: ThinkingLevel,
     },
 }
@@ -725,15 +756,34 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandResult {
-    List { sessions: Vec<SessionMetadata> },
-    Create { session: SessionSnapshot },
-    Attach { session: SessionSnapshot },
-    Detach { session_id: String },
-    Prompt { session: SessionSnapshot },
-    Steer { session: SessionSnapshot },
-    Abort { session: SessionSnapshot },
-    SetModel { session: SessionSnapshot },
-    SetThinking { session: SessionSnapshot },
+    List {
+        sessions: Vec<SessionMetadata>,
+    },
+    Create {
+        session: SessionSnapshot,
+    },
+    Attach {
+        session: SessionSnapshot,
+    },
+    Detach {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    },
+    Prompt {
+        session: SessionSnapshot,
+    },
+    Steer {
+        session: SessionSnapshot,
+    },
+    Abort {
+        session: SessionSnapshot,
+    },
+    SetModel {
+        session: SessionSnapshot,
+    },
+    SetThinking {
+        session: SessionSnapshot,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -757,10 +807,12 @@ pub enum ServerEvent {
         snapshot: SessionSnapshot,
     },
     SessionProgress {
+        #[serde(rename = "sessionId")]
         session_id: String,
         progress: TranscriptProgress,
     },
     SessionRemoved {
+        #[serde(rename = "sessionId")]
         session_id: String,
     },
 }
@@ -770,6 +822,7 @@ pub enum ServerEvent {
 pub enum ServerMessage {
     Hello {
         version: u64,
+        #[serde(rename = "connectionId")]
         connection_id: String,
         snapshot: ServerSnapshot,
     },
@@ -793,4 +846,574 @@ pub enum ServerMessage {
 
 pub fn is_supported_protocol_version(version: u64) -> bool {
     version == PROTOCOL_VERSION
+}
+
+// ---------------------------------------------------------------------------
+// Wire validation
+// ---------------------------------------------------------------------------
+
+fn require_bool(value: &JsonValue, field: &str) -> VResult<bool> {
+    match value {
+        JsonValue::Bool(value) => Ok(*value),
+        _ => Err(format!("{field} must be a boolean")),
+    }
+}
+
+fn require_exact_string(value: &JsonValue, field: &str, expected: &str) -> VResult<()> {
+    let actual = require_string(value, field, 0)?;
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!("{field} must be {expected:?}"))
+    }
+}
+
+fn require_u64(value: &JsonValue, field: &str, minimum: u64) -> VResult<u64> {
+    match value {
+        JsonValue::Number(number) => {
+            if let Some(value) = number.as_u64() {
+                if value >= minimum {
+                    Ok(value)
+                } else {
+                    Err(format!("{field} must be >= {minimum}"))
+                }
+            } else {
+                Err(format!("{field} must be an integer"))
+            }
+        }
+        _ => Err(format!("{field} must be an integer")),
+    }
+}
+
+fn optional_string(
+    map: &serde_json::Map<String, JsonValue>,
+    field: &str,
+    min_length: usize,
+) -> VResult<()> {
+    if let Some(value) = map.get(field) {
+        require_string(value, field, min_length)?;
+    }
+    Ok(())
+}
+
+fn validate_user_transcript_item(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    strict_object(map, &["id", "role", "content", "timestamp"])?;
+    require_string(get(map, "id")?, "id", 1)?;
+    require_exact_string(get(map, "role")?, "role", "user")?;
+    let content = match get(map, "content")? {
+        JsonValue::Array(content) => content,
+        _ => return Err("content must be an array".to_string()),
+    };
+    for item in content {
+        validate_user_content(item)?;
+    }
+    require_integer(get(map, "timestamp")?, "timestamp", 0)?;
+    Ok(())
+}
+
+fn validate_user_content(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    match require_string(get(map, "type")?, "type", 1)?.as_str() {
+        "text" => {
+            parse_text_content(value)?;
+            Ok(())
+        }
+        "image" => {
+            parse_image_content(value)?;
+            Ok(())
+        }
+        _ => Err("unknown user content type".to_string()),
+    }
+}
+
+fn validate_assistant_transcript_item(value: &JsonValue) -> VResult<String> {
+    let map = require_object(value)?;
+    let status = require_string(get(map, "status")?, "status", 1)?;
+    let allowed = match status.as_str() {
+        "streaming" => &[
+            "id",
+            "role",
+            "content",
+            "model",
+            "responseModel",
+            "usage",
+            "timestamp",
+            "status",
+        ][..],
+        "complete" => &[
+            "id",
+            "role",
+            "content",
+            "model",
+            "responseModel",
+            "usage",
+            "timestamp",
+            "status",
+            "stopReason",
+        ][..],
+        "error" | "aborted" => &[
+            "id",
+            "role",
+            "content",
+            "model",
+            "responseModel",
+            "usage",
+            "timestamp",
+            "status",
+            "stopReason",
+            "errorMessage",
+        ][..],
+        _ => return Err("unknown assistant status".to_string()),
+    };
+    strict_object(map, allowed)?;
+    require_string(get(map, "id")?, "id", 1)?;
+    require_exact_string(get(map, "role")?, "role", "assistant")?;
+    let content = match get(map, "content")? {
+        JsonValue::Array(content) => content,
+        _ => return Err("content must be an array".to_string()),
+    };
+    for item in content {
+        validate_assistant_content(item)?;
+    }
+    ModelRef::parse(get(map, "model")?)?;
+    optional_string(map, "responseModel", 1)?;
+    if let Some(usage) = map.get("usage") {
+        Usage::parse(usage)?;
+    }
+    require_integer(get(map, "timestamp")?, "timestamp", 0)?;
+
+    match status.as_str() {
+        "streaming" => {}
+        "complete" => match require_string(get(map, "stopReason")?, "stopReason", 1)?.as_str() {
+            "stop" | "length" | "toolUse" => {}
+            _ => return Err("invalid complete assistant stopReason".to_string()),
+        },
+        "error" => {
+            require_exact_string(get(map, "stopReason")?, "stopReason", "error")?;
+            optional_string(map, "errorMessage", 1)?;
+        }
+        "aborted" => {
+            require_exact_string(get(map, "stopReason")?, "stopReason", "aborted")?;
+            optional_string(map, "errorMessage", 0)?;
+        }
+        _ => unreachable!("assistant status was checked above"),
+    }
+    Ok(status)
+}
+
+fn validate_assistant_content(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    match require_string(get(map, "type")?, "type", 1)?.as_str() {
+        "text" => {
+            parse_text_content(value)?;
+            Ok(())
+        }
+        "thinking" => {
+            parse_thinking_content(value)?;
+            Ok(())
+        }
+        "toolCall" => {
+            parse_tool_call_content(value)?;
+            Ok(())
+        }
+        _ => Err("unknown assistant content type".to_string()),
+    }
+}
+
+fn validate_tool_transcript_item(value: &JsonValue) -> VResult<String> {
+    let map = require_object(value)?;
+    strict_object(
+        map,
+        &[
+            "id",
+            "role",
+            "toolCallId",
+            "toolName",
+            "input",
+            "content",
+            "details",
+            "usage",
+            "timestamp",
+            "status",
+            "isError",
+        ],
+    )?;
+    require_string(get(map, "id")?, "id", 1)?;
+    require_exact_string(get(map, "role")?, "role", "tool")?;
+    require_string(get(map, "toolCallId")?, "toolCallId", 1)?;
+    require_string(get(map, "toolName")?, "toolName", 1)?;
+    let content = match get(map, "content")? {
+        JsonValue::Array(content) => content,
+        _ => return Err("content must be an array".to_string()),
+    };
+    for item in content {
+        let item_map = require_object(item)?;
+        match require_string(get(item_map, "type")?, "type", 1)?.as_str() {
+            "text" | "image" => {
+                parse_tool_content(item)?;
+            }
+            _ => return Err("unknown tool content type".to_string()),
+        }
+    }
+    if let Some(usage) = map.get("usage") {
+        Usage::parse(usage)?;
+    }
+    require_integer(get(map, "timestamp")?, "timestamp", 0)?;
+    let status = require_string(get(map, "status")?, "status", 1)?;
+    let is_error = require_bool(get(map, "isError")?, "isError")?;
+    match status.as_str() {
+        "running" | "complete" if !is_error => {}
+        "error" if is_error => {}
+        "running" | "complete" => {
+            return Err("running and complete tool items must have isError false".to_string())
+        }
+        "error" => return Err("error tool items must have isError true".to_string()),
+        _ => return Err("unknown tool status".to_string()),
+    }
+    Ok(status)
+}
+
+fn validate_transcript_item(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    match require_string(get(map, "role")?, "role", 1)?.as_str() {
+        "user" => validate_user_transcript_item(value),
+        "assistant" => validate_assistant_transcript_item(value).map(|_| ()),
+        "tool" => validate_tool_transcript_item(value).map(|_| ()),
+        _ => Err("unknown transcript role".to_string()),
+    }
+}
+
+fn validate_transcript_progress(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    let kind = require_string(get(map, "type")?, "type", 1)?;
+    match kind.as_str() {
+        "item_started" => {
+            strict_object(map, &["type", "item"])?;
+            validate_transcript_item(get(map, "item")?)?;
+        }
+        "assistant_delta" => {
+            strict_object(map, &["type", "messageId", "contentIndex", "kind", "delta"])?;
+            require_string(get(map, "messageId")?, "messageId", 1)?;
+            require_integer(get(map, "contentIndex")?, "contentIndex", 0)?;
+            match require_string(get(map, "kind")?, "kind", 1)?.as_str() {
+                "text" | "thinking" | "toolCall" => {}
+                _ => return Err("unknown assistant delta kind".to_string()),
+            }
+            require_string(get(map, "delta")?, "delta", 0)?;
+        }
+        "item_updated" => {
+            strict_object(map, &["type", "item"])?;
+            let item = get(map, "item")?;
+            let item_map = require_object(item)?;
+            match require_string(get(item_map, "role")?, "role", 1)?.as_str() {
+                "assistant" => {
+                    validate_assistant_transcript_item(item)?;
+                }
+                "tool" => {
+                    validate_tool_transcript_item(item)?;
+                }
+                _ => return Err("item_updated only accepts assistant or tool items".to_string()),
+            }
+        }
+        "item_finished" => {
+            strict_object(map, &["type", "item"])?;
+            let item = get(map, "item")?;
+            let item_map = require_object(item)?;
+            let role = require_string(get(item_map, "role")?, "role", 1)?;
+            match role.as_str() {
+                "assistant" => match validate_assistant_transcript_item(item)?.as_str() {
+                    "complete" | "error" | "aborted" => {}
+                    _ => return Err("item_finished requires a finished assistant item".to_string()),
+                },
+                "tool" => match validate_tool_transcript_item(item)?.as_str() {
+                    "complete" | "error" => {}
+                    _ => return Err("item_finished requires a finished tool item".to_string()),
+                },
+                _ => return Err("item_finished only accepts assistant or tool items".to_string()),
+            }
+        }
+        _ => return Err("unknown transcript progress type".to_string()),
+    }
+    Ok(())
+}
+
+fn validate_session_metadata(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    strict_object(
+        map,
+        &[
+            "id",
+            "createdAt",
+            "updatedAt",
+            "parentSessionId",
+            "sessionName",
+            "cwd",
+        ],
+    )?;
+    require_string(get(map, "id")?, "id", 1)?;
+    require_integer(get(map, "createdAt")?, "createdAt", 0)?;
+    if let Some(value) = map.get("updatedAt") {
+        require_integer(value, "updatedAt", 0)?;
+    }
+    optional_string(map, "parentSessionId", 1)?;
+    optional_string(map, "sessionName", 0)?;
+    optional_string(map, "cwd", 1)?;
+    Ok(())
+}
+
+fn validate_session_snapshot(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    strict_object(
+        map,
+        &[
+            "id",
+            "name",
+            "cwd",
+            "createdAt",
+            "updatedAt",
+            "phase",
+            "model",
+            "thinkingLevel",
+            "attached",
+            "locked",
+            "revision",
+            "transcript",
+            "queuedSteer",
+            "queuedSteerCount",
+        ],
+    )?;
+    require_string(get(map, "id")?, "id", 1)?;
+    optional_string(map, "name", 0)?;
+    require_string(get(map, "cwd")?, "cwd", 1)?;
+    require_integer(get(map, "createdAt")?, "createdAt", 0)?;
+    require_integer(get(map, "updatedAt")?, "updatedAt", 0)?;
+    parse_session_phase(get(map, "phase")?)?;
+    ModelRef::parse(get(map, "model")?)?;
+    parse_thinking_level(get(map, "thinkingLevel")?)?;
+    require_bool(get(map, "attached")?, "attached")?;
+    require_bool(get(map, "locked")?, "locked")?;
+    require_integer(get(map, "revision")?, "revision", 0)?;
+    let transcript = match get(map, "transcript")? {
+        JsonValue::Array(transcript) => transcript,
+        _ => return Err("transcript must be an array".to_string()),
+    };
+    for item in transcript {
+        validate_transcript_item(item)?;
+    }
+    let queued_steer = match get(map, "queuedSteer")? {
+        JsonValue::Array(items) => items,
+        _ => return Err("queuedSteer must be an array".to_string()),
+    };
+    for item in queued_steer {
+        validate_user_transcript_item(item)?;
+    }
+    require_integer(get(map, "queuedSteerCount")?, "queuedSteerCount", 0)?;
+    Ok(())
+}
+
+fn validate_server_snapshot(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    strict_object(
+        map,
+        &[
+            "serverId",
+            "protocolVersion",
+            "revision",
+            "sessions",
+            "models",
+        ],
+    )?;
+    require_string(get(map, "serverId")?, "serverId", 1)?;
+    require_u64(
+        get(map, "protocolVersion")?,
+        "protocolVersion",
+        PROTOCOL_VERSION,
+    )?;
+    if get(map, "protocolVersion")? != &JsonValue::from(PROTOCOL_VERSION) {
+        return Err("protocolVersion must be 1".to_string());
+    }
+    require_integer(get(map, "revision")?, "revision", 0)?;
+    let sessions = match get(map, "sessions")? {
+        JsonValue::Array(sessions) => sessions,
+        _ => return Err("sessions must be an array".to_string()),
+    };
+    for session in sessions {
+        validate_session_metadata(session)?;
+    }
+    let models = match get(map, "models")? {
+        JsonValue::Array(models) => models,
+        _ => return Err("models must be an array".to_string()),
+    };
+    for model in models {
+        ModelMetadata::parse(model)?;
+    }
+    Ok(())
+}
+
+fn validate_protocol_error(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    strict_object(map, &["code", "message", "details"])?;
+    match require_string(get(map, "code")?, "code", 1)?.as_str() {
+        "version" | "busy" | "session_locked" | "not_found" | "invalid_request"
+        | "not_implemented" | "internal_error" => {}
+        _ => return Err("unknown protocol error code".to_string()),
+    }
+    require_string(get(map, "message")?, "message", 0)?;
+    Ok(())
+}
+
+fn validate_command(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    let command = require_string(get(map, "command")?, "command", 1)?;
+    match command.as_str() {
+        "list" => strict_object(map, &["command"]),
+        "create" => {
+            strict_object(map, &["command", "cwd", "name", "model", "thinkingLevel"])?;
+            optional_string(map, "cwd", 1)?;
+            optional_string(map, "name", 0)?;
+            if let Some(model) = map.get("model") {
+                ModelRef::parse(model)?;
+            }
+            if let Some(thinking) = map.get("thinkingLevel") {
+                parse_thinking_level(thinking)?;
+            }
+            Ok(())
+        }
+        "attach" | "detach" | "abort" => {
+            strict_object(map, &["command", "sessionId"])?;
+            require_string(get(map, "sessionId")?, "sessionId", 1)?;
+            Ok(())
+        }
+        "prompt" | "steer" => {
+            strict_object(map, &["command", "sessionId", "text"])?;
+            require_string(get(map, "sessionId")?, "sessionId", 1)?;
+            require_string(get(map, "text")?, "text", 0)?;
+            Ok(())
+        }
+        "set_model" => {
+            strict_object(map, &["command", "sessionId", "model"])?;
+            require_string(get(map, "sessionId")?, "sessionId", 1)?;
+            ModelRef::parse(get(map, "model")?)?;
+            Ok(())
+        }
+        "set_thinking" => {
+            strict_object(map, &["command", "sessionId", "thinkingLevel"])?;
+            require_string(get(map, "sessionId")?, "sessionId", 1)?;
+            parse_thinking_level(get(map, "thinkingLevel")?)?;
+            Ok(())
+        }
+        _ => Err("unknown command".to_string()),
+    }
+}
+
+fn validate_command_result(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    let command = require_string(get(map, "command")?, "command", 1)?;
+    match command.as_str() {
+        "list" => {
+            strict_object(map, &["command", "sessions"])?;
+            let sessions = match get(map, "sessions")? {
+                JsonValue::Array(sessions) => sessions,
+                _ => return Err("sessions must be an array".to_string()),
+            };
+            for session in sessions {
+                validate_session_metadata(session)?;
+            }
+            Ok(())
+        }
+        "detach" => {
+            strict_object(map, &["command", "sessionId"])?;
+            require_string(get(map, "sessionId")?, "sessionId", 1)?;
+            Ok(())
+        }
+        "create" | "attach" | "prompt" | "steer" | "abort" | "set_model" | "set_thinking" => {
+            strict_object(map, &["command", "session"])?;
+            validate_session_snapshot(get(map, "session")?)
+        }
+        _ => Err("unknown command result".to_string()),
+    }
+}
+
+fn validate_server_event(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    let event = require_string(get(map, "type")?, "type", 1)?;
+    match event.as_str() {
+        "server_snapshot" => {
+            strict_object(map, &["type", "snapshot"])?;
+            validate_server_snapshot(get(map, "snapshot")?)?;
+        }
+        "session_snapshot" => {
+            strict_object(map, &["type", "snapshot"])?;
+            validate_session_snapshot(get(map, "snapshot")?)?;
+        }
+        "session_progress" => {
+            strict_object(map, &["type", "sessionId", "progress"])?;
+            require_string(get(map, "sessionId")?, "sessionId", 1)?;
+            validate_transcript_progress(get(map, "progress")?)?;
+        }
+        "session_removed" => {
+            strict_object(map, &["type", "sessionId"])?;
+            require_string(get(map, "sessionId")?, "sessionId", 1)?;
+        }
+        _ => return Err("unknown server event".to_string()),
+    }
+    Ok(())
+}
+
+/// Validates a JSON representation against the pinned upstream client schema.
+pub fn validate_client_message(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    let message_type = require_string(get(map, "type")?, "type", 1)?;
+    match message_type.as_str() {
+        "hello" => {
+            strict_object(map, &["type", "version"])?;
+            require_integer(get(map, "version")?, "version", 0)?;
+        }
+        "request" => {
+            strict_object(map, &["type", "id", "request"])?;
+            require_string(get(map, "id")?, "id", 1)?;
+            validate_command(get(map, "request")?)?;
+        }
+        _ => return Err("unknown client message type".to_string()),
+    }
+    Ok(())
+}
+
+/// Validates a JSON representation against the pinned upstream server schema.
+pub fn validate_server_message(value: &JsonValue) -> VResult<()> {
+    let map = require_object(value)?;
+    let message_type = require_string(get(map, "type")?, "type", 1)?;
+    match message_type.as_str() {
+        "hello" => {
+            strict_object(map, &["type", "version", "connectionId", "snapshot"])?;
+            if require_u64(get(map, "version")?, "version", PROTOCOL_VERSION)? != PROTOCOL_VERSION {
+                return Err("version must be 1".to_string());
+            }
+            require_string(get(map, "connectionId")?, "connectionId", 1)?;
+            validate_server_snapshot(get(map, "snapshot")?)?;
+        }
+        "hello_error" => {
+            strict_object(map, &["type", "error"])?;
+            validate_protocol_error(get(map, "error")?)?;
+        }
+        "response" => {
+            let ok = require_bool(get(map, "ok")?, "ok")?;
+            if ok {
+                strict_object(map, &["type", "id", "ok", "result"])?;
+                require_string(get(map, "id")?, "id", 1)?;
+                validate_command_result(get(map, "result")?)?;
+            } else {
+                strict_object(map, &["type", "id", "ok", "error"])?;
+                require_string(get(map, "id")?, "id", 1)?;
+                validate_protocol_error(get(map, "error")?)?;
+            }
+        }
+        "event" => {
+            strict_object(map, &["type", "event"])?;
+            validate_server_event(get(map, "event")?)?;
+        }
+        _ => return Err("unknown server message type".to_string()),
+    }
+    Ok(())
 }

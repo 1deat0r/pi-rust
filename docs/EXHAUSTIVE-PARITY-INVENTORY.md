@@ -1,6 +1,8 @@
 # Pi-rust exhaustive behavioral-parity inventory
 
-Status: audit opened 2026-08-26 (Pacific/Auckland)
+Status: audit opened 2026-08-26 (Pacific/Auckland); current census: 318
+capability IDs, 1,310 pinned-upstream source/test artifacts, and 484 Rust
+source artifacts.
 
 This is the acceptance index for the product a user runs as `pi`. The
 conversion ledger answers a different question—whether the Rust source/export
@@ -29,12 +31,77 @@ one happy-path fixture passes, or because the conversion audit reports 100%.
 Every item requires success, failure, cancellation, malformed-input, and
 repeat/restart coverage where that state exists.
 
+## Current measured checkpoint — 2026-08-29
+
+The executable census and installed-command boundary are green:
+`target/release/parity_audit inventory` reports
+`PARITY_INVENTORY_OK ids=318 upstream_files=1310 rust_files=484`, and
+`target/release/parity_audit installed` reports
+`PARITY_INSTALLED_RUST_OK command=pi-rust release_version=pi 0.84.2
+official_pi_version=0.84.3`. The `pi-rust` command points to the Rust release
+binary while official `pi` remains separate for side-by-side use. The complete
+debug and release workspace suites and strict workspace clippy pass. The release `interactive_auth_pty` target passes
+5/5, including real-TUI OAuth browser/manual cancellation, loopback callback
+exchange and persistence, device-code exchange, logout, and llama.cpp API-key
+validation. A current real OpenAI Codex OAuth credential also completed two
+sequential print turns and two sequential interactive PTY turns.
+
+The Rust distribution boundary is explicit: interactive startup performs no
+upstream Pi release lookup and cannot emit the old `Update available: pi ...`
+banner. A permanent release PTY test supplies a loopback release endpoint,
+proves it receives no request, and verifies the notice is absent. `pi update
+--extensions` and `pi update --models` remain package/catalog operations;
+`pi-rust update` and `pi-rust update --self` give the repository/rebuild
+instruction instead of querying or replacing an upstream Pi installation.
+
+The current release checkpoint also passes the complete offline workspace
+all-targets matrix, strict workspace clippy, optimized release build,
+installed `pi-rust` version/help and regular-mode launch, real auth/settings/
+composer/first-run PTYs, CLI-044/047 signal and strict-policy probes, and the
+CLI-005..011 argument/prompt/file matrix. These gates strengthen the scoped
+rows but do not close their remaining live-provider, platform, or manual visual
+boundaries.
+
+The active root remains open: these results do not mark all 318 rows complete.
+Per-row implementation review, negative/restart/cancellation evidence, every
+credentialed-provider live boundary, and the final clean-room/manual visual
+review are still required. The TUI section contains 52 rows; functional PTY
+coverage is broad, but visual parity has not yet received a complete manual
+side-by-side review against Pi and therefore has no honest percentage. The
+source-ledger result
+`Conversion progress: 100.00% (166/166; 0 open)` is intentionally not used as
+the behavioral completion percentage.
+
+The 52 TUI rows have a separate machine-validated register in
+[`TUI-PARITY-STATUS.md`](TUI-PARITY-STATUS.md). Its current dimensions are:
+
+TUI functional implementation: 19.23% (10/52)
+TUI test/evidence parity: 19.23% (10/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+
+The synchronized multi-dimension dashboard, including inventory census,
+scoring coverage, and root-gate closure, is
+[`PARITY-DASHBOARD.md`](PARITY-DASHBOARD.md). The dashboard explicitly keeps
+coverage percentages separate from behavioral completion and records the
+Rust-only distribution boundary as 100.00% (generated Rustdoc JavaScript is
+excluded from the executable source census).
+
+The 266 non-TUI rows have a separate conservative normalized register in
+[`NON-TUI-PARITY-STATUS.md`](NON-TUI-PARITY-STATUS.md). The Rust-native
+`parity_audit register` command validates its complete ID/capability/domain
+join against this inventory and the pinned upstream revision. Current normalized
+metrics are implementation 49 PASS/194 PARTIAL/23 OPEN, deterministic evidence
+36 PASS/207 PARTIAL/23 OPEN, runtime boundary 37 PASS/154 PARTIAL/75 OPEN, and
+overall 30/266; register coverage must not be confused with behavioral
+completion.
+
 ## A. Product launch, process, and CLI contract
 
 | ID | Capability that must work | Required acceptance |
 |---|---|---|
 | CLI-001 | `pi` executable name and exit status conventions | Debug and release binaries launch, return `--version`, and use stable non-zero errors. |
-| CLI-002 | `--help`, `-h`, `--version`, `-v` | Exact help/version output, stdout/stderr cleanliness, and no startup network are verified. |
+| CLI-002 | `--help`, `-h`, `--version`, `-v` | Exact help/version output, stdout/stderr cleanliness, and no upstream release-check request are verified; optional install telemetry is a separate gated capability. |
 | CLI-003 | default interactive mode | No args enters the correct TUI, selects the configured/default provider/model, and restores the terminal on exit. |
 | CLI-004 | positional messages | One, multiple, empty, Unicode, whitespace, and leading-dash messages are parsed as upstream. |
 | CLI-005 | `@file` message expansion | UTF-8, empty, multiline, missing, unreadable, binary, relative, absolute, and repeated files behave correctly. |
@@ -77,6 +144,9 @@ repeat/restart coverage where that state exists.
 | CLI-042 | unknown short flags | Exact diagnostic and no accidental prompt submission. |
 | CLI-043 | missing option values | Every value-taking flag reports the correct error without panic or hang. |
 | CLI-044 | signal/process behavior | SIGINT, SIGTERM, EOF, broken pipe, child failure, and terminal cleanup. |
+| CLI-045 | experimental `server` / `client` commands | `PI_EXPERIMENTAL` gating, Unix address parsing, help, startup, shutdown, and actionable failures. |
+| CLI-046 | first-run setup wizard | Official-distribution gate, theme preview, analytics choice, confirm/cancel, persistence, and restart suppression. |
+| CLI-047 | experimental strict-mode policy | The experimental feature gate changes only the intended sampling/tool policy and never enables hidden commands accidentally. |
 
 ## B. Environment, paths, settings, and resources
 
@@ -97,6 +167,7 @@ repeat/restart coverage where that state exists.
 | ENV-013 | proxy variables | HTTP/HTTPS proxy resolution, explicit dispatcher override, auth, and failure. |
 | ENV-014 | `HOME`, `USERPROFILE`, XDG roots | Platform path resolution and missing-home fallback. |
 | ENV-015 | `EDITOR` / `VISUAL` | External editor precedence, launch, input, cancellation, and failure. |
+| ENV-016 | local provider environment (`LLAMA_BASE_URL`, provider-specific endpoints) | Scoped environment precedence, normalization, redaction, and restart behavior. |
 | CFG-001 | global `settings.json` | Read, write, defaults, unknown-key retention, malformed JSON, permissions, and atomicity. |
 | CFG-002 | project `.pi/settings.json` | Project-over-global merge, cwd changes, malformed file, and trust boundary. |
 | CFG-003 | settings merge schema | Every nested setting: compaction, branch summary, retry, terminal, image, markdown, warning, model/provider/key, system prompt, keybindings, tools, resource paths, and extension blocks. |
@@ -108,6 +179,8 @@ repeat/restart coverage where that state exists.
 | RES-004 | native Rust extension boundary | Factories for command, hook, renderer, tool, flag, provider, editor, and UI resources. |
 | RES-005 | unsupported JS/TS sources | Deterministic rejection/ignore path with no runtime or Node/Bun dependency. |
 | RES-006 | package resource roots | Installed package, local package, symlink, and missing package behavior. |
+| RES-007 | filesystem watcher lifecycle | Initial missing path, change/remove events, asynchronous errors, retry, idempotent stop, and no detached panic. |
+| RES-008 | source provenance | Path/source/scope/origin/base-directory metadata survives discovery, reload, and export. |
 
 ## C. Authentication, models, and provider runtime
 
@@ -125,6 +198,8 @@ repeat/restart coverage where that state exists.
 | AUTH-010 | OAuth refresh | Near-expiry refresh, refresh failure, missing account, malformed JWT, concurrent refresh, and retry once semantics. |
 | AUTH-011 | `/logout` | No credentials, selector, provider ID/name, credential type, cancel, deletion, runtime availability update, and restart. |
 | AUTH-012 | auth failures | Unauthorized, expired, malformed, network, rate-limit, provider-specific errors and actionable `/login` guidance. |
+| AUTH-013 | runtime credentials | In-memory API-key overrides, clear/remove semantics, persistent-store isolation, and subsequent-turn visibility. |
+| AUTH-014 | local-server authentication | Llama/local endpoint credential prompting, optional key handling, endpoint validation, and live connectivity check. |
 | MODEL-001 | bundled catalog | Every bundled provider/model has valid API, URL, context, costs, modalities, reasoning, and dates. |
 | MODEL-002 | models.json overlay | Add/modify/delete/unknown-field retention, base URL/headers/auth overrides, hot reload, and invalid config. |
 | MODEL-003 | runtime model registry | File-backed auth/models stores are live sources; changes affect subsequent turns without restart. |
@@ -134,6 +209,7 @@ repeat/restart coverage where that state exists.
 | MODEL-007 | retries | Retry enablement, max retries, backoff, provider setting, retryable status/body, and abort during wait. |
 | MODEL-008 | cache affinity/retention | Request flags, cache key, cache read/write usage, retention opt-out, and session affinity. |
 | MODEL-009 | cross-provider handoff | Message transformation, unsupported blocks, tool-call IDs, images, thinking, and errors. |
+| MODEL-010 | dynamic local-provider catalogs | Restore cached models, refresh from a live local server, filter unavailable states, publish atomically, and abort. |
 
 Provider rows are independently required, not covered by a generic “provider
 matrix” claim:
@@ -199,6 +275,7 @@ for one adaptor cannot hide a missing provider registration or credential path:
 | PROV-037 | `xiaomi-token-plan-sgp`: regional token-plan auth, payload, stream, and errors. |
 | PROV-038 | `zai`: OpenAI-compatible auth, reasoning/tool payload, stream, and errors. |
 | PROV-039 | `zai-coding-cn`: regional coding auth, reasoning/tool payload, stream, and errors. |
+| PROV-040 | `llama.cpp`: local server URL/auth, model catalog, OpenAI-compatible stream, load/unload, and failures. |
 
 ## D. AI transport and message semantics
 
@@ -217,6 +294,8 @@ for one adaptor cannot hide a missing provider registration or credential path:
 | AI-011 | error contract | preserve HTTP/body/provider details, classify retryability, redact secrets, and expose actionable user text. |
 | AI-012 | abort/timeout | abort before request, during request, during stream, during retry/backoff, and after terminal event. |
 | AI-013 | token/context estimates | exact totals, overflow detection, reserve/compaction threshold, and unknown-token fallback. |
+| AI-014 | image normalization/resizing | MIME normalization, conversion, EXIF orientation, dimensions, encoded-size limits, quality fallback, and omission diagnostics. |
+| AI-015 | management HTTP transport | Idempotent request retry, retryable statuses, per-attempt timeout, overall timeout, caller cancellation, and body disposal. |
 
 ## E. Agent loop, harness, and built-in tools
 
@@ -234,6 +313,9 @@ for one adaptor cannot hide a missing provider registration or credential path:
 | AGENT-010 | prompt templates | Discovery, interpolation, arguments, malformed template, and selection. |
 | AGENT-011 | memory | Read/write/search/compaction behavior, missing files, and persistence. |
 | AGENT-012 | telemetry | Span/event/counter lifecycle, no-op mode, panic/error settlement, and no leaked secrets. |
+| AGENT-013 | public stream hooks/options | Per-turn options, payload/response hooks, session/reasoning/API-key propagation, abort, and callback failure isolation. |
+| AGENT-014 | output guard/backpressure | TUI stdout ownership, serialized raw writes, transient pipe errors, flush/wait, and terminal restoration. |
+| AGENT-015 | session services/runtime | SDK construction, lifecycle operations, runtime replacement, per-turn settings, persistence, and shutdown. |
 | TOOL-001 | `read` | File, directory, range, binary, missing, permission, truncation, Unicode, and output format. |
 | TOOL-002 | `write` | New/overwrite/atomicity, parent creation, permissions, Unicode, error, and mutation queue. |
 | TOOL-003 | `edit` | Exact replacement, multiple matches, no match, ambiguity, diff, Unicode, and conflict. |
@@ -270,6 +352,7 @@ for one adaptor cannot hide a missing provider registration or credential path:
 | SES-016 | session stats/usage | Input/output/cache/reasoning/total tokens, costs, provider/model, and footer. |
 | SES-017 | HTML export | Content, thinking, tools, images, skills, whitespace, XSS, Unicode, and missing assets. |
 | SES-018 | JSONL export | Byte-valid JSONL, session metadata, and round-trip import. |
+| SES-019 | remote session/transcript | Attach/detach, snapshots, progress reduction, ordering, reconnect, ownership, and disposal. |
 
 ## G. Interactive TUI and terminal behavior
 
@@ -314,6 +397,19 @@ for one adaptor cannot hide a missing provider registration or credential path:
 | TUI-037 | hidden `/arminsayshi` command | **VERIFIED — live/unit:** Rust renders the pinned XBM-derived component with bounded time-based scanline animation and width-safe output; it owns no worker/task, so quit drops it cleanly. The real PTY covers repeat and terminal restoration, and unit coverage spans widths 1–64. |
 | TUI-038 | hidden `/dementedelves` command | **VERIFIED — live/unit:** Rust renders the Earendil announcement with upstream text/link, optional-asset-safe fallback, bounded borders, and width-safe clipping. The real PTY exercises it after resize and quit restoration. |
 | TUI-039 | OpenCode/Kimi easter egg (Daxnuts) | **VERIFIED — live/unit:** the exact 6,144-character upstream 32x32 RGB payload is embedded in Rust, rendered as truecolor half-blocks, guarded by non-empty-image and real-ESC tests, and triggered only for provider `opencode` plus a case-insensitive `kimi-k2.5` model id. The real PTY exercises the matching model path. |
+| TUI-040 | application keybinding/action registry | Default/custom binding resolution, conflicts, action dispatch, extension precedence, and unknown-key safety. |
+| TUI-041 | suspend/resume | Ctrl-Z terminal handoff, SIGCONT redraw, active-operation safety, and terminal restoration. |
+| TUI-042 | selection/search/scrollback | Search focus, selection geometry, viewport movement, auto-hide timing, resize, and return to the editor. |
+| TUI-043 | native image/clipboard backends | Wayland/X11/OSC52/Termux fallback ordering, image clipboard conversion, and capability errors. |
+| TUI-044 | Mermaid rendering | Supported diagrams render, unsupported syntax remains truthful source text, and cancellation/failure does not corrupt the TUI. |
+| TUI-045 | loader animation and cancellation | Default/custom indicator frames, exact interval, redraw invalidation, stop/dispose, Escape cancellation, abort state, and final-frame behavior. |
+| TUI-046 | interactive render scheduler | 16 ms maximum redraw latency, missed-tick handling, stream/tool event coalescing, resize invalidation, and no duplicate frames. |
+| TUI-047 | transient animated surfaces | Flash expiry, scrollbar activity expiry, selection auto-scroll cadence, pending status lifecycle, and redraw cleanup. |
+| TUI-048 | terminal progress keepalive | Progress start/clear OSC bytes, repeated keepalive while active, idle output interaction, and shutdown cleanup. |
+| TUI-049 | hidden animated components | Armin/Daxnuts/Earendil frame timing, width safety, deterministic cleanup, and no detached worker/task after replacement or quit. |
+| TUI-050 | loader/status animation integration | Countdown, retry, compaction, extension progress, pending text, and spinner state survive redraws and stop at operation boundaries. |
+| TUI-051 | Pi-style tool execution display | Live tool start/update/end events render readable compact call/result blocks with status, previews, errors, images, preserved literal punctuation/line breaks, and no raw JSON or Markdown reinterpretation in normal TUI output. |
+| TUI-052 | concurrent Pi process coexistence | Multiple Rust instances keep terminal, session, auth, model, and migration state isolated; official Pi coexistence is tested separately when a runnable official checkout is available. |
 
 Complete built-in interactive command set (each must be exercised). The first
 23 entries are the pinned upstream command surface; `/theme`, `/clear`, and
@@ -398,6 +494,50 @@ strict clippy still reports unrelated diagnostics outside this interactive
 scope; the scoped clippy run passes when those existing diagnostics are
 explicitly allowed.
 
+### Interactive animation and tool-display checkpoint — 2026-08-26
+
+The following newly separated rows are implemented and have focused evidence,
+but remain `AUDIT` until the root re-runs the full matrix and the manual visual
+review. The loader/cancellable-loader integration tests pass with the exact
+default frame interval, custom frames, redraw callback, cancellation, and
+cleanup markers. The terminal progress test captures repeated OSC 9;4 active
+notifications followed by the clear notification. The interactive loop owns a
+16 ms redraw interval and retains one loader instance across frames.
+
+The normal interactive transcript now consumes the real
+`RichAgentEvent::ToolExecutionStart/Update/End` lifecycle. Built-in calls use
+Pi-style compact summaries (`$ command`, `read path:range`, `write path`,
+`edit path`, `grep/find/ls` arguments), show running/success/error state, and
+collapse previews according to the interactive setting. Raw JSON remains
+available only through explicit diagnostic/detail rendering. Focused renderer,
+live lifecycle, and real release PTY evidence all pass; the release PTY
+observed the running `read` block, settled `read` block, requested file path,
+and exact live response with no JSON envelope.
+
+The concurrent-process gate passes two real compiled Rust release/debug
+instances with isolated HOME/config/session roots and a shared-root migration
+race. A separate real tmux PTY check also ran official Pi 0.84.3 and release
+pi-rust concurrently with isolated state at 100x30 and 80x24; both stayed
+alive and exited cleanly. The concurrent-process row is therefore PASS for functional and
+test/evidence dimensions; terminal visual comparison remains open.
+
+### Current transcript/composer and distribution contract — 2026-08-26
+
+The current first-party agent-TUI comparison establishes the target interaction
+contract: a persistent transcript holds committed cells while a mutable live
+tail renders streaming assistant/tool state; queued input and task status stay
+above a persistent composer; the composer retains drafts while auxiliary views
+are open; and normal tool blocks show compact status/output while detailed raw
+context remains an explicit transcript/detail view. pi-rust's compact live tool
+renderer and literal-output escaping are covered by focused tests and a real
+release Codex PTY turn. Full manual visual comparison against runnable official
+Pi remains an open gate.
+
+The old upstream release banner is not part of this contract. pi-rust is
+updated from its own source repository and rebuild/install workflow, recorded
+in `README.md`; package and model catalog refreshes remain explicitly scoped
+to their own `pi update` targets.
+
 ## H. Text, JSON, RPC, server, client, and protocol surfaces
 
 | ID | Capability that must work | Required acceptance |
@@ -426,6 +566,9 @@ explicitly allowed.
 | SERVER-003 | session manager | Exclusivity, snapshots, updates, queues, close, and concurrent clients. |
 | CLIENT-001 | connect/reconnect | Timeout, late response suppression, listeners, state sync, and disposal. |
 | CLIENT-002 | requests/sessions | All typed operations, correlation, malformed response, and server error. |
+| CLIENT-003 | remote-session/transcript API | Typed attach, snapshots, progress, lifecycle commands, reconnect reduction, and disposal. |
+| MODE-004 | experimental server/client process lifecycle | Real Unix server/client handshake, list, prompt, steer, abort, auth, pending work, and clean signal shutdown. |
+| SERVER-004 | listener authorization | Token/file credentials are checked before protocol use, unauthorized clients are rejected, and authorized clients retain normal lifecycle semantics. |
 | BACKEND-001 | SQLite/session backend | Schema, migrations, CRUD, index/search, locking, concurrent access, and corruption. |
 
 ## I. Extensions, package/update, evaluation, and distribution
@@ -443,16 +586,19 @@ explicitly allowed.
 | EXT-009 | extension context actions | Native handlers can read model/session/trust/queue/signal state and invoke abort, shutdown, messaging, labels, tools, model/thinking, compaction, and session actions with correct lifecycle/stale-context behavior. |
 | EXT-010 | extension UI context completeness | Terminal input listeners, custom overlays, header/footer, hidden-thinking label, autocomplete/editor factories, theme access/switching, and tool-expansion state. |
 | EXT-011 | extension tool contract | Label/prompt metadata, prepare-arguments, constrained sampling, sequential/parallel execution, update callbacks, render-call/result state, abort, and details. |
+| EXT-012 | native llama extension | Server discovery, search/details, model load/unload/download, progress, cancellation, and interactive selection. |
 | PKG-001 | install/remove/list | Native package source resolution, paths, settings update, rollback, and errors. |
 | PKG-002 | git/SSH package source | URL parsing, auth boundary, revision, network failure, and cleanup. |
-| PKG-003 | update/version | Changelog, version check, offline, current/new version, and safe failure. |
+| PKG-003 | update/version | Changelog, package/model update targets, Rust-repository update guidance, offline behavior, and safe failure; no upstream Pi release lookup or update banner. |
 | PKG-004 | unsupported JS/npm/Bun boundary | Deterministic Rust-only guidance and no execution. |
+| PKG-005 | management HTTP retry boundary | Catalog/download callers use bounded idempotent retries without retrying semantic agent operations; Rust self-update performs no release-service request. |
 | EVAL-001 | harness execution | Input/session capture, deterministic scores, diagnostics, and failures. |
 | EVAL-002 | usage summary | Session JSONL accounting, cost/tokens, table, and malformed session. |
 | DIST-001 | release build | Reproducible optimized binary, no JS/TS source/runtime, and clean package boundary. |
 | DIST-002 | installed command | PATH launcher/install points to Rust binary, `pi --version`, help, and interactive launch. |
 | DIST-003 | clean environment | Fresh HOME/config/session roots, no existing auth/settings, and first-run behavior. |
 | DIST-004 | upgrade/rollback | Existing sessions/settings/auth survive version replacement and failed update. |
+| DIST-005 | official first-run boundary | A clean HOME only launches setup under the documented official/experimental/default-directory conditions; all other distributions start normally. |
 
 ## J. Cross-cutting quality and adversarial cases
 

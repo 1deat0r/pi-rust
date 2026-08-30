@@ -7,13 +7,22 @@ use crate::framing::{
     assert_complete_frame, encode_frame, FrameDecoder, FrameDecoderOptions,
     DEFAULT_MAX_FRAME_LENGTH,
 };
-use crate::schemas::{ClientMessage, ServerMessage};
+use crate::schemas::{
+    validate_client_message, validate_server_message, ClientMessage, ServerMessage,
+};
 
 fn bounded_error_message(error: &str) -> String {
     if error.len() <= 500 {
         error.to_string()
     } else {
-        format!("{}...", &error[..497])
+        // Keep the diagnostic bounded without slicing through a UTF-8 code
+        // point. The upstream string slice is character-safe; Rust's byte
+        // indexing needs this explicit boundary adjustment.
+        let mut end = 497;
+        while !error.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &error[..end])
     }
 }
 
@@ -21,6 +30,8 @@ fn bounded_error_message(error: &str) -> String {
 pub fn parse_client_message(
     value: &serde_json::Value,
 ) -> Result<ClientMessage, ProtocolValidationError> {
+    validate_client_message(value)
+        .map_err(|_| ProtocolValidationError::new("Invalid client protocol message"))?;
     serde_json::from_value(value.clone())
         .map_err(|_| ProtocolValidationError::new("Invalid client protocol message"))
 }
@@ -29,6 +40,8 @@ pub fn parse_client_message(
 pub fn parse_server_message(
     value: &serde_json::Value,
 ) -> Result<ServerMessage, ProtocolValidationError> {
+    validate_server_message(value)
+        .map_err(|_| ProtocolValidationError::new("Invalid server protocol message"))?;
     serde_json::from_value(value.clone())
         .map_err(|_| ProtocolValidationError::new("Invalid server protocol message"))
 }
@@ -255,4 +268,18 @@ fn value_to_json(value: Value) -> Result<serde_json::Value, CborError> {
         }
         Value::Undefined => return Err(CborError::new("undefined is not valid JSON".to_string())),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded_error_message;
+
+    #[test]
+    fn bounds_unicode_diagnostics_without_splitting_utf8() {
+        let message = "界".repeat(200);
+        let bounded = bounded_error_message(&message);
+        assert!(bounded.ends_with("..."));
+        assert!(bounded.len() <= 500);
+        assert!(std::str::from_utf8(bounded.as_bytes()).is_ok());
+    }
 }

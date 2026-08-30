@@ -183,6 +183,19 @@ workspace matrix exit 0, 2,805 passed; strict workspace clippy; fmt/diff
 checks; `conversion_audit all` `Conversion progress: 100.00% (166/166; 0
 open)`. No numbered ledger row changed.
 
+## Checkpoint — 2026-08-30 — pi-protocol parity wave landed
+
+The behavioral-parity session's pi-protocol layer (cbor decoder/encoder/
+options, codec, framing, schemas) and its expanded protocol tests are
+committed, together with the synchronized registers (`GATES.md`,
+`docs/EXHAUSTIVE-PARITY-INVENTORY.md`, new
+`docs/NON-TUI-PARITY-STATUS.md`), the pre-commit hook update, and the
+repository description. pi-protocol: 26 tests pass, strict clippy clean;
+the complete workspace matrix passes 2,805 tests. This clears the last
+uncommitted parity-wave code from the worktree; only local artifacts
+(`.zcode/`, `rust_out`, `doc/`, the preserved untracked `AGENTS.md`)
+remain untracked.
+
 ## RESOLVED — push blocker — 2026-08-30 — six campaign commits pushed
 
 ROOT CAUSE (confirmed): the pushes did not fail because of the network —

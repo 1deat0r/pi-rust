@@ -224,7 +224,7 @@ const MIN_SAFE_INTEGER_F64: f64 = -9_007_199_254_740_991.0;
 
 /// Encodes the protocol's strict, definite-length RFC 8949 subset.
 pub fn encode_cbor(value: &Value, options: &CborOptions) -> Result<Vec<u8>, CborError> {
-    let resolved = resolve_options(options);
+    let resolved = resolve_options(options)?;
     let mut writer = CborWriter::new(resolved.max_byte_length);
     encode_value(&mut writer, value, &resolved, 0)?;
     Ok(writer.buffer)

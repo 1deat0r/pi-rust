@@ -164,7 +164,9 @@ impl FrameDecoder {
             DecoderState::Failed => {
                 return Err(FrameError::new("Frame decoder has failed".to_string()))
             }
-            DecoderState::Ended => return Ok(()),
+            DecoderState::Ended => {
+                return Err(FrameError::new("Frame decoder has ended".to_string()))
+            }
             DecoderState::Open => {}
         }
         if self.header_length != 0
@@ -173,7 +175,7 @@ impl FrameDecoder {
         {
             self.state = DecoderState::Failed;
             return Err(FrameError::new(
-                "Frame decoder ended with a partial frame".to_string(),
+                "Truncated frame at end of stream".to_string(),
             ));
         }
         self.state = DecoderState::Ended;
@@ -247,6 +249,13 @@ mod tests {
         let mut decoder = FrameDecoder::new(&FrameDecoderOptions::default()).unwrap();
         decoder.push(&frame[..6]).unwrap();
         let err = decoder.end().unwrap_err();
-        assert!(err.0.contains("end"));
+        assert_eq!(err.0, "Truncated frame at end of stream");
+    }
+
+    #[test]
+    fn ending_an_ended_decoder_is_an_error() {
+        let mut decoder = FrameDecoder::new(&FrameDecoderOptions::default()).unwrap();
+        decoder.end().unwrap();
+        assert_eq!(decoder.end().unwrap_err().0, "Frame decoder has ended");
     }
 }

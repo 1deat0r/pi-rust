@@ -2753,3 +2753,6 @@ matrices pass 441 pi-ai library tests plus all integration targets and 818
 pi-coding-agent library tests plus all integration targets; checks and strict
 clippy pass. No parity percentage is promoted without the row-specific live,
 process, platform, and visual/interaction boundaries.
+
+Protocol-layer checkpoint (2026-08-30): the cbor/codec/framing/schemas
+parity wave lands with expanded protocol tests and synchronized registers.

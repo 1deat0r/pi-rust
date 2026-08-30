@@ -22,8 +22,15 @@ while IFS= read -r path; do
   esac
 done <<< "$staged_files"
 
+# The TUI register is an acceptance source, not ordinary documentation. Any
+# change to it must carry the synchronized project checkpoint documents too.
+if grep -Fxq "docs/TUI-PARITY-STATUS.md" <<< "$staged_files"; then
+  requires_docs=1
+fi
+
 if [[ "$requires_docs" -eq 1 ]]; then
-  required_docs=(README.md PLAN.md CONVERSION-LEDGER.md HANDOFF.md)
+  required_docs=(README.md PLAN.md CONVERSION-LEDGER.md HANDOFF.md docs/TUI-PARITY-STATUS.md)
+  required_docs+=(docs/PARITY-DASHBOARD.md)
   for doc in "${required_docs[@]}"; do
     if ! grep -Fxq "$doc" <<< "$staged_files"; then
       echo "pre-commit: implementation changes require staged $doc" >&2
@@ -44,6 +51,42 @@ if [[ "$requires_docs" -eq 1 ]]; then
     fi
   done
 fi
+
+# Recompute all four TUI dimensions from the 52-row register. The hook does
+# not turn partial work into PASS; it rejects a checkpoint whose durable docs
+# still advertise an older measurement.
+tui_output="$(/home/mustbearnold/.cargo/bin/cargo run -p pi-coding-agent --offline --quiet --bin parity_audit -- tui)"
+tui_metrics="$(sed -n '/^TUI /p' <<< "$tui_output")"
+if [[ -z "$tui_metrics" ]]; then
+  echo "pre-commit: unable to parse TUI parity metrics" >&2
+  exit 1
+fi
+for doc in README.md PLAN.md HANDOFF.md docs/TUI-PARITY-STATUS.md; do
+  while IFS= read -r metric; do
+    if ! grep -Fxq "$metric" "$doc"; then
+      echo "pre-commit: $doc does not contain current TUI metric: $metric" >&2
+      exit 1
+    fi
+  done <<< "$tui_metrics"
+done
+
+# Recompute the complete progress dashboard, including the source-ledger
+# percentage, inventory/scoring coverage, root-gate closure, TUI dimensions,
+# and normalized non-TUI status dimensions.
+dashboard_output="$(/home/mustbearnold/.cargo/bin/cargo run -p pi-coding-agent --offline --quiet --bin parity_audit -- dashboard)"
+dashboard_metrics="$(sed -n '/^Source\/conversion ledger:/,/^Whole-product behavioral parity:/p' <<< "$dashboard_output")"
+if [[ -z "$dashboard_metrics" ]]; then
+  echo "pre-commit: unable to parse parity dashboard metrics" >&2
+  exit 1
+fi
+for doc in README.md PLAN.md HANDOFF.md CONVERSION-LEDGER.md docs/TUI-PARITY-STATUS.md docs/PARITY-DASHBOARD.md; do
+  while IFS= read -r metric; do
+    if ! grep -Fxq "$metric" "$doc"; then
+      echo "pre-commit: $doc does not contain current dashboard metric: $metric" >&2
+      exit 1
+    fi
+  done <<< "$dashboard_metrics"
+done
 
 git diff --cached --check
 

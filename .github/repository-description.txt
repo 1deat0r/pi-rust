@@ -1,1 +1,1 @@
-1:1 Rust port of Pi coding agent v0.84.2: CLI/session routing, harness lanes, ConfigSelector, PTY audits, project-trust, deferred responses, image retry/cancellation, strict verification, compaction, auth, JSONL/RPC, providers, tools, TUI, and terminal lifecycle safety.
+Rust-native Pi coding agent v0.84.2 with a 100% Rust runtime, real PTY and loopback-provider verification, Pi-style TUI parity tracking, and built-in Qwen Token Plan support. Behavioral parity is tracked conservatively in the 318-row acceptance register.

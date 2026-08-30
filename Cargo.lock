@@ -977,6 +977,9 @@ dependencies = [
  "indexmap",
  "pi-agent",
  "pi-ai",
+ "pi-client",
+ "pi-protocol",
+ "pi-server",
  "pi-tui",
  "regex",
  "reqwest",
@@ -998,6 +1001,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "thiserror 2.0.20",
  "uuid",
 ]
 

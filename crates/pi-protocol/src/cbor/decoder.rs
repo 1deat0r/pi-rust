@@ -206,7 +206,7 @@ const MIN_SAFE_I64_F64: f64 = -9_007_199_254_740_991.0;
 
 /// Decodes exactly one item from the protocol's strict RFC 8949 subset.
 pub fn decode_cbor(bytes: &[u8], options: &CborOptions) -> Result<Value, CborError> {
-    let resolved = resolve_options(options);
+    let resolved = resolve_options(options)?;
     if bytes.len() > resolved.max_byte_length {
         return Err(CborError::new(format!(
             "CBOR byte length exceeds configured limit of {}",
