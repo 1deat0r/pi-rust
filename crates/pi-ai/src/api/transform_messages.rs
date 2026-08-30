@@ -94,6 +94,28 @@ fn replace_tool_result_images(r: ToolResultMessage, placeholder: &str) -> ToolRe
     }
 }
 
+fn insert_synthetic_tool_results(
+    result: &mut Vec<Message>,
+    pending_tool_calls: &mut Vec<(String, String)>,
+    existing_tool_result_ids: &mut std::collections::HashSet<String>,
+) {
+    if pending_tool_calls.is_empty() {
+        return;
+    }
+
+    for (tool_call_id, tool_name) in pending_tool_calls.drain(..) {
+        if !existing_tool_result_ids.contains(&tool_call_id) {
+            result.push(Message::ToolResult(ToolResultMessage::text(
+                tool_call_id,
+                tool_name,
+                "No result provided",
+                true,
+            )));
+        }
+    }
+    existing_tool_result_ids.clear();
+}
+
 /// Normalize tool call ID for cross-provider compatibility.
 ///
 /// `normalize_tool_call_id` is called only for cross-model tool calls when
@@ -213,6 +235,7 @@ where
                     model: m,
                     response_model,
                     response_id,
+                    diagnostics,
                     usage,
                     stop_reason,
                     deferred,
@@ -229,6 +252,7 @@ where
                     model: rmodel,
                     response_model: rrm,
                     response_id: rrid,
+                    diagnostics: rdiagnostics,
                     usage: rusage,
                     stop_reason: rstop,
                     deferred: rdeferred,
@@ -243,6 +267,7 @@ where
                 *rmodel = m.clone();
                 *rrm = response_model.clone();
                 *rrid = response_id.clone();
+                *rdiagnostics = diagnostics.clone();
                 *rusage = usage.clone();
                 *rstop = *stop_reason;
                 *rdeferred = deferred.clone();
@@ -255,10 +280,64 @@ where
             }
         }
     }
-    transformed
+    // Complete the replay pass just like upstream `transformMessages`: an
+    // interrupted tool-call turn must have a result for every unresolved call,
+    // while errored/aborted assistant messages are not replayable turns.
+    let mut result = Vec::with_capacity(transformed.len());
+    let mut pending_tool_calls = Vec::new();
+    let mut existing_tool_result_ids = std::collections::HashSet::new();
+
+    for msg in transformed {
+        match msg {
+            Message::Assistant(assistant) => {
+                insert_synthetic_tool_results(
+                    &mut result,
+                    &mut pending_tool_calls,
+                    &mut existing_tool_result_ids,
+                );
+                if matches!(
+                    assistant.stop_reason(),
+                    Some(crate::types::StopReason::Error | crate::types::StopReason::Aborted)
+                ) {
+                    continue;
+                }
+                pending_tool_calls = assistant
+                    .content()
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::ToolCall { id, name, .. } => Some((id.clone(), name.clone())),
+                        _ => None,
+                    })
+                    .collect();
+                if !pending_tool_calls.is_empty() {
+                    existing_tool_result_ids.clear();
+                }
+                result.push(Message::Assistant(assistant));
+            }
+            Message::ToolResult(tool_result) => {
+                existing_tool_result_ids.insert(tool_result.tool_call_id().to_string());
+                result.push(Message::ToolResult(tool_result));
+            }
+            Message::User(user) => {
+                insert_synthetic_tool_results(
+                    &mut result,
+                    &mut pending_tool_calls,
+                    &mut existing_tool_result_ids,
+                );
+                result.push(Message::User(user));
+            }
+        }
+    }
+    insert_synthetic_tool_results(
+        &mut result,
+        &mut pending_tool_calls,
+        &mut existing_tool_result_ids,
+    );
+    result
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::model::{Model, ModelInput};
@@ -396,6 +475,42 @@ mod tests {
             }
             _ => panic!("expected tool result"),
         }
+    }
+
+    #[test]
+    fn replay_inserts_only_missing_tool_results_and_drops_failed_turns() {
+        let model = model_with(true);
+        let assistant = assistant_msg(vec![
+            ContentBlock::tool_call("call-1", "lookup", serde_json::json!({})),
+            ContentBlock::tool_call("call-2", "read", serde_json::json!({})),
+        ]);
+        let mut failed = assistant_msg(vec![ContentBlock::text("partial")]);
+        failed.set_stop_reason(crate::types::StopReason::Error);
+
+        let out = transform_messages(
+            &[
+                Message::Assistant(assistant),
+                Message::ToolResult(ToolResultMessage::text("call-1", "lookup", "found", false)),
+                Message::Assistant(failed),
+            ],
+            &model,
+            None::<&fn(&str, &Model, &AssistantMessage) -> String>,
+        );
+
+        assert_eq!(out.len(), 3);
+        assert!(matches!(&out[0], Message::Assistant(_)));
+        assert!(matches!(
+            &out[1],
+            Message::ToolResult(result) if result.tool_call_id() == "call-1" && !result.is_error()
+        ));
+        assert!(matches!(
+            &out[2],
+            Message::ToolResult(result)
+                if result.tool_call_id() == "call-2"
+                    && result.tool_name() == "read"
+                    && result.is_error()
+                    && matches!(result.content().first(), Some(ContentBlock::Text { text, .. }) if text == "No result provided")
+        ));
     }
 
     #[test]

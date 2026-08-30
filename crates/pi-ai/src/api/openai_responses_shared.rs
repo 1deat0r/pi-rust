@@ -1,20 +1,19 @@
 //! Shared utilities for the OpenAI Responses API family — port of
 //! `packages/ai/src/api/openai-responses-shared.ts`.
 //!
-//! Message/tool conversion and the SSE stream processor. Deferred-tools
-//! (additional-tools / tool-search placement) remain documented as a separate
-//! gap; strict JSON-schema and OpenAI grammar custom tools are handled here for
-//! all Responses-family adaptors.
+//! Message/tool conversion and the SSE stream processor. This includes the
+//! Responses deferred-tool placements (additional-tools / tool-search), strict
+//! JSON-schema, and OpenAI grammar custom tools for all Responses adaptors.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Value};
 
 use crate::model::{calculate_cost, Model};
 use crate::partial_json::parse_streaming_json;
 use crate::types::{
-    AssistantMessage, AssistantMessageEvent, ContentBlock, Context, Message, StopReason, Usage,
-    UserContent, UserContentBody,
+    AssistantMessage, AssistantMessageEvent, ContentBlock, Context, Message, StopReason, Tool,
+    ToolResultMessage, Usage, UserContent, UserContentBody,
 };
 
 use super::constrained_sampling::{
@@ -113,6 +112,14 @@ fn convert_tool_result_output(model: &Model, content: &[ContentBlock]) -> Value 
 pub struct ConvertResponsesMessagesOptions {
     pub include_system_prompt: bool,
     pub grammar_tool_input_properties: BTreeMap<String, String>,
+    /// Tool definitions that are loaded by a prior tool result instead of
+    /// being sent in the initial `tools` array.
+    pub deferred_tools: Option<BTreeMap<String, Tool>>,
+    pub deferred_tools_mode: Option<String>,
+    /// Codex's converter passes `strict: null` as its default, whereas the
+    /// public OpenAI adaptor defaults an unspecified value to `false`.
+    pub deferred_tools_strict_null: bool,
+    pub tool_options: Option<ConvertResponsesToolsOptions>,
 }
 
 impl Default for ConvertResponsesMessagesOptions {
@@ -120,8 +127,73 @@ impl Default for ConvertResponsesMessagesOptions {
         Self {
             include_system_prompt: true,
             grammar_tool_input_properties: BTreeMap::new(),
+            deferred_tools: None,
+            deferred_tools_mode: None,
+            deferred_tools_strict_null: false,
+            tool_options: None,
         }
     }
+}
+
+/// Split the current tool catalog like upstream `splitDeferredTools`.
+///
+/// Tool order is preserved while duplicate names use the last definition.
+/// Only names introduced by a tool result and not already used by an
+/// assistant tool call are deferred.
+pub fn split_deferred_tools(
+    context: &Context,
+    enabled: bool,
+) -> (Vec<Tool>, BTreeMap<String, Tool>) {
+    let mut unique_tools = Vec::new();
+    let mut positions = BTreeMap::new();
+    for tool in &context.tools {
+        if let Some(index) = positions.get(&tool.name).copied() {
+            unique_tools[index] = tool.clone();
+        } else {
+            positions.insert(tool.name.clone(), unique_tools.len());
+            unique_tools.push(tool.clone());
+        }
+    }
+    if !enabled {
+        return (unique_tools, BTreeMap::new());
+    }
+
+    let mut used_names = BTreeSet::new();
+    let mut deferred_names = BTreeSet::new();
+    for message in &context.messages {
+        match message {
+            Message::Assistant(assistant) => {
+                for block in assistant.content() {
+                    if let ContentBlock::ToolCall { name, .. } = block {
+                        used_names.insert(name.clone());
+                    }
+                }
+            }
+            Message::ToolResult(ToolResultMessage::ToolResult {
+                added_tool_names: Some(names),
+                ..
+            }) => {
+                for name in names {
+                    if !used_names.contains(name) {
+                        deferred_names.insert(name.clone());
+                    }
+                }
+            }
+            Message::ToolResult(_) => {}
+            Message::User(_) => {}
+        }
+    }
+
+    let mut immediate = Vec::new();
+    let mut deferred = BTreeMap::new();
+    for tool in unique_tools {
+        if deferred_names.contains(&tool.name) {
+            deferred.insert(tool.name.clone(), tool);
+        } else {
+            immediate.push(tool);
+        }
+    }
+    (immediate, deferred)
 }
 
 fn normalize_id_part(part: &str) -> String {
@@ -197,6 +269,7 @@ pub fn convert_responses_messages_checked(
         };
 
     let transformed = transform_messages(&context.messages, model, Some(&normalize_tool_call_id));
+    let mut loaded_deferred_tools = BTreeSet::new();
 
     // System prompt: developer role for reasoning models unless compat opts out.
     if options.include_system_prompt {
@@ -336,9 +409,16 @@ pub fn convert_responses_messages_checked(
                                     "input": input,
                                 });
                                 if omit_item_id {
-                                    item.as_object_mut().unwrap().remove("id");
+                                    if let Some(object) = item.as_object_mut() {
+                                        object.remove("id");
+                                    }
                                 }
-                                if is_same_model {
+                                let can_replay_namespace = is_same_model
+                                    || options
+                                        .deferred_tools
+                                        .as_ref()
+                                        .is_some_and(|tools| tools.contains_key(name));
+                                if can_replay_namespace {
                                     if let Some(ns) = namespace {
                                         item["namespace"] = json!(ns);
                                     }
@@ -353,9 +433,16 @@ pub fn convert_responses_messages_checked(
                                     "arguments": serde_json::to_string(arguments).unwrap_or_else(|_| "{}".into()),
                                 });
                                 if omit_item_id {
-                                    item.as_object_mut().unwrap().remove("id");
+                                    if let Some(object) = item.as_object_mut() {
+                                        object.remove("id");
+                                    }
                                 }
-                                if is_same_model {
+                                let can_replay_namespace = is_same_model
+                                    || options
+                                        .deferred_tools
+                                        .as_ref()
+                                        .is_some_and(|tools| tools.contains_key(name));
+                                if can_replay_namespace {
                                     if let Some(ns) = namespace {
                                         item["namespace"] = json!(ns);
                                     }
@@ -391,6 +478,80 @@ pub fn convert_responses_messages_checked(
                     "call_id": call_id,
                     "output": output,
                 }));
+
+                let added_tool_names: Vec<String> = match &result {
+                    ToolResultMessage::ToolResult {
+                        added_tool_names, ..
+                    } => added_tool_names.clone().unwrap_or_default(),
+                };
+                if let Some(deferred_tools) = options.deferred_tools.as_ref() {
+                    let newly_loaded: Vec<Tool> = added_tool_names
+                        .iter()
+                        .filter_map(|name| {
+                            if loaded_deferred_tools.contains(name) {
+                                None
+                            } else {
+                                deferred_tools.get(name).cloned().inspect(|_| {
+                                    loaded_deferred_tools.insert(name.clone());
+                                })
+                            }
+                        })
+                        .collect();
+                    if !newly_loaded.is_empty() {
+                        let tool_options = options.tool_options.clone().unwrap_or_default();
+                        match options.deferred_tools_mode.as_deref() {
+                            Some("additional-tools") => {
+                                let tools = convert_responses_tools_inner(
+                                    &newly_loaded,
+                                    &tool_options,
+                                    false,
+                                    options.deferred_tools_strict_null,
+                                )?;
+                                messages.push(json!({
+                                    "type": "additional_tools",
+                                    "role": "developer",
+                                    "tools": tools,
+                                }));
+                            }
+                            Some("tool-search") => {
+                                let names: Vec<&str> =
+                                    newly_loaded.iter().map(|tool| tool.name.as_str()).collect();
+                                let search_call_id = format!(
+                                    "pi_tool_load_{}",
+                                    short_hash(&format!(
+                                        "{}:{}",
+                                        result.tool_call_id(),
+                                        names.join(",")
+                                    ))
+                                );
+                                messages.push(json!({
+                                    "type": "tool_search_call",
+                                    "call_id": search_call_id,
+                                    "execution": "client",
+                                    "status": "completed",
+                                    "arguments": {
+                                        "query": names.join(" "),
+                                        "limit": names.len(),
+                                    },
+                                }));
+                                let tools = convert_responses_tools_inner(
+                                    &newly_loaded,
+                                    &tool_options,
+                                    true,
+                                    options.deferred_tools_strict_null,
+                                )?;
+                                messages.push(json!({
+                                    "type": "tool_search_output",
+                                    "call_id": search_call_id,
+                                    "execution": "client",
+                                    "status": "completed",
+                                    "tools": tools,
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
         msg_index += 1;
@@ -402,6 +563,7 @@ pub fn convert_responses_messages_checked(
 // Tool conversion
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct ConvertResponsesToolsOptions {
     pub strict: Option<bool>,
     pub supports_strict_mode: bool,
@@ -425,13 +587,26 @@ pub fn convert_responses_tools(
     tools: &[crate::types::Tool],
     options: &ConvertResponsesToolsOptions,
 ) -> Result<Vec<Value>, String> {
-    let default_strict = options.strict.unwrap_or(false);
+    convert_responses_tools_inner(tools, options, false, false)
+}
+
+fn convert_responses_tools_inner(
+    tools: &[crate::types::Tool],
+    options: &ConvertResponsesToolsOptions,
+    defer_loading: bool,
+    strict_null_default: bool,
+) -> Result<Vec<Value>, String> {
+    let default_strict: Option<bool> = match options.strict {
+        Some(strict) => Some(strict),
+        None if strict_null_default => None,
+        None => Some(false),
+    };
     let mut result: Vec<Value> = Vec::new();
     for tool in tools {
         if let Some(grammar) =
             resolve_grammar_constrained_sampling(tool, options.supports_openai_grammar_tools)?
         {
-            result.push(json!({
+            let mut custom_tool = json!({
                 "type": "custom",
                 "name": tool.name,
                 "description": tool.description,
@@ -440,20 +615,27 @@ pub fn convert_responses_tools(
                     "syntax": grammar.format,
                     "definition": grammar.definition,
                 },
-            }));
+            });
+            if defer_loading {
+                custom_tool["defer_loading"] = json!(true);
+            }
+            result.push(custom_tool);
             continue;
         }
 
         let constrained = resolve_json_schema_strict_sampling(tool, options.supports_strict_mode)?;
-        let strict = constrained.unwrap_or(default_strict);
+        let strict = constrained.or(default_strict);
         let mut function_tool = json!({
             "type": "function",
             "name": tool.name,
             "description": tool.description,
-            "parameters": get_json_schema_tool_parameters(tool, Some(strict))?,
+            "parameters": get_json_schema_tool_parameters(tool, strict)?,
         });
         if options.supports_strict_mode {
-            function_tool["strict"] = json!(strict);
+            function_tool["strict"] = strict.map(Value::Bool).unwrap_or(Value::Null);
+        }
+        if defer_loading {
+            function_tool["defer_loading"] = json!(true);
         }
         result.push(function_tool);
     }
@@ -486,6 +668,160 @@ pub struct ProcessResponsesOptions {
     pub grammar_tool_input_properties: BTreeMap<String, String>,
 }
 
+/// Materialize an output item when a provider sends its final `done` event
+/// without the preceding `output_item.added` event. The upstream processor
+/// uses the same get-or-create path for both event shapes.
+fn add_response_output_item(
+    output_index: usize,
+    item: &Value,
+    output: &mut AssistantMessage,
+    output_slots: &mut std::collections::HashMap<usize, ResponsesSlot>,
+    push: &mut dyn FnMut(AssistantMessageEvent),
+    options: &ProcessResponsesOptions,
+) {
+    let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match item_type {
+        "reasoning" => {
+            output.content_mut().push(ContentBlock::thinking(""));
+            let content_index = output.content_len().saturating_sub(1);
+            output_slots.insert(output_index, ResponsesSlot::Thinking { content_index });
+            push(AssistantMessageEvent::ThinkingStart {
+                content_index,
+                partial: output.clone(),
+            });
+        }
+        "message" => {
+            if item.get("phase").and_then(|p| p.as_str()) == Some("final_answer") {
+                output.set_stop_reason(StopReason::Stop);
+            }
+            output.content_mut().push(ContentBlock::text(""));
+            let content_index = output.content_len().saturating_sub(1);
+            output_slots.insert(output_index, ResponsesSlot::Text { content_index });
+            push(AssistantMessageEvent::TextStart {
+                content_index,
+                partial: output.clone(),
+            });
+        }
+        "function_call" => {
+            let name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let call_id = item
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let id = item
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let arguments = item
+                .get("arguments")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            output.content_mut().push(ContentBlock::ToolCall {
+                id: format!("{call_id}|{id}"),
+                name,
+                arguments: json!({}),
+                thought_signature: None,
+                namespace: item
+                    .get("namespace")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string()),
+            });
+            let content_index = output.content_len().saturating_sub(1);
+            output_slots.insert(
+                output_index,
+                ResponsesSlot::ToolCall {
+                    content_index,
+                    partial_json: arguments,
+                    custom_input_property: None,
+                    grammar_buffer: None,
+                },
+            );
+            push(AssistantMessageEvent::ToolCallStart {
+                content_index,
+                partial: output.clone(),
+            });
+        }
+        "custom_tool_call" => {
+            let name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let call_id = item
+                .get("call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let id = item
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let input_property = options
+                .grammar_tool_input_properties
+                .get(&name)
+                .cloned()
+                .unwrap_or_else(|| "input".to_string());
+            let input = item
+                .get("input")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            output.content_mut().push(ContentBlock::ToolCall {
+                id: format!("{call_id}|{id}"),
+                name,
+                arguments: json!({ input_property.clone(): input }),
+                thought_signature: None,
+                namespace: item
+                    .get("namespace")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string()),
+            });
+            let content_index = output.content_len().saturating_sub(1);
+            output_slots.insert(
+                output_index,
+                ResponsesSlot::ToolCall {
+                    content_index,
+                    partial_json: input,
+                    custom_input_property: Some(input_property),
+                    grammar_buffer: Some(GrammarToolInputJsonBuffer::default()),
+                },
+            );
+            push(AssistantMessageEvent::ToolCallStart {
+                content_index,
+                partial: output.clone(),
+            });
+        }
+        _ => {}
+    }
+}
+
+/// Mutable state for processing a Responses stream incrementally.
+///
+/// The JavaScript implementation consumes an async generator and emits each
+/// event as soon as it arrives.  Keeping the slot maps outside the batch
+/// helper lets HTTP/WebSocket adaptors preserve that behavior while retaining
+/// the existing fixture-friendly batch API.
+#[derive(Default)]
+pub struct ProcessResponsesStreamState {
+    saw_terminal_response_event: bool,
+    output_slots: std::collections::HashMap<usize, ResponsesSlot>,
+    reasoning_signatures_by_id: std::collections::HashMap<String, ContentBlock>,
+}
+
+impl ProcessResponsesStreamState {
+    pub fn saw_terminal_response_event(&self) -> bool {
+        self.saw_terminal_response_event
+    }
+}
+
 /// Multiplexed stream processor (port of `processResponsesStream`).
 pub fn process_responses_stream(
     events: &[crate::sse::SseEvent],
@@ -494,10 +830,29 @@ pub fn process_responses_stream(
     model: &Model,
     options: &ProcessResponsesOptions,
 ) -> Result<(), String> {
-    let mut saw_terminal_response_event = false;
-    let mut output_slots: std::collections::HashMap<usize, ResponsesSlot> = Default::default();
-    let mut reasoning_signatures_by_id: std::collections::HashMap<String, ContentBlock> =
-        Default::default();
+    let mut state = ProcessResponsesStreamState::default();
+    process_responses_stream_chunk(&mut state, events, output, push, model, options)?;
+    if !state.saw_terminal_response_event {
+        return Err("OpenAI Responses stream ended before a terminal response event".to_string());
+    }
+    Ok(())
+}
+
+/// Process one or more already-framed Responses events without requiring a
+/// terminal event.  State is retained between calls so callers can emit
+/// deltas immediately and stop reading as soon as the provider sends its
+/// terminal event.
+pub fn process_responses_stream_chunk(
+    state: &mut ProcessResponsesStreamState,
+    events: &[crate::sse::SseEvent],
+    output: &mut AssistantMessage,
+    push: &mut dyn FnMut(AssistantMessageEvent),
+    model: &Model,
+    options: &ProcessResponsesOptions,
+) -> Result<(), String> {
+    let mut saw_terminal_response_event = state.saw_terminal_response_event;
+    let mut output_slots = std::mem::take(&mut state.output_slots);
+    let mut reasoning_signatures_by_id = std::mem::take(&mut state.reasoning_signatures_by_id);
 
     let apply_message_phase_stop_reason = |item: &Value, output: &mut AssistantMessage| {
         if item.get("type").and_then(|t| t.as_str()) == Some("message")
@@ -877,6 +1232,16 @@ pub fn process_responses_stream(
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as usize;
                 let item = parsed.get("item").cloned().unwrap_or(json!({}));
+                if !output_slots.contains_key(&output_index) {
+                    add_response_output_item(
+                        output_index,
+                        &item,
+                        output,
+                        &mut output_slots,
+                        push,
+                        options,
+                    );
+                }
                 apply_message_phase_stop_reason(&item, output);
                 let item_type = item
                     .get("type")
@@ -1255,9 +1620,9 @@ pub fn process_responses_stream(
         }
     }
 
-    if !saw_terminal_response_event {
-        return Err("OpenAI Responses stream ended before a terminal response event".to_string());
-    }
+    state.saw_terminal_response_event = saw_terminal_response_event;
+    state.output_slots = output_slots;
+    state.reasoning_signatures_by_id = reasoning_signatures_by_id;
     Ok(())
 }
 
@@ -1292,6 +1657,7 @@ pub fn apply_service_tier_pricing(
     }
 }
 
+#[allow(clippy::panic)] // invariant: stop reason mapping is total over the enum
 fn map_stop_reason(status: &str, incomplete_reason: Option<&str>) -> (StopReason, Option<String>) {
     if status.is_empty() {
         return (StopReason::Stop, None);
@@ -1318,6 +1684,7 @@ fn map_stop_reason(status: &str, incomplete_reason: Option<&str>) -> (StopReason
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::model::{Model, ModelInput};
@@ -1359,6 +1726,49 @@ mod tests {
         assert_eq!(out[0]["type"], "function");
         assert_eq!(out[0]["strict"], true);
         assert_eq!(out[0]["parameters"]["additionalProperties"], false);
+    }
+
+    #[test]
+    fn deferred_tool_search_replay_emits_loaded_definitions() {
+        let m = model("gpt-5");
+        let tool = json_tool(
+            "deferred",
+            "loaded later",
+            &json!({"type":"object","properties":{}}),
+        );
+        let mut result = ToolResultMessage::text("load_1", "loader", "loaded", false);
+        let ToolResultMessage::ToolResult {
+            added_tool_names, ..
+        } = &mut result;
+        *added_tool_names = Some(vec!["deferred".to_string()]);
+        let ctx = Context {
+            messages: vec![Message::ToolResult(result)],
+            tools: vec![tool],
+            ..Default::default()
+        };
+        let (immediate, deferred) = split_deferred_tools(&ctx, true);
+        assert!(immediate.is_empty());
+        assert!(deferred.contains_key("deferred"));
+        let out = convert_responses_messages(
+            &m,
+            &ctx,
+            &["openai"],
+            &ConvertResponsesMessagesOptions {
+                deferred_tools: Some(deferred),
+                deferred_tools_mode: Some("tool-search".to_string()),
+                tool_options: Some(ConvertResponsesToolsOptions::default()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(out[0]["type"], "function_call_output");
+        assert_eq!(out[1]["type"], "tool_search_call");
+        assert_eq!(out[1]["arguments"]["query"], "deferred");
+        assert_eq!(out[1]["arguments"]["limit"], 1);
+        assert_eq!(out[2]["type"], "tool_search_output");
+        assert_eq!(out[2]["tools"][0]["name"], "deferred");
+        assert_eq!(out[2]["tools"][0]["defer_loading"], true);
+        assert_eq!(out[2]["tools"][0]["strict"], false);
     }
 
     #[test]
@@ -1618,6 +2028,40 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
             .iter()
             .any(|e| !matches!(e, AssistantMessageEvent::Done { .. })));
         // Message phase stop from final_answer item.
+    }
+
+    #[test]
+    fn output_item_done_without_added_materializes_text() {
+        let m = model("gpt-5");
+        let mut output = AssistantMessage::new();
+        output.set_api_provider_model("openai-responses", "openai", "gpt-5");
+        output.set_stop_reason(StopReason::Pending);
+        let events = vec![
+            sse(
+                r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"done-only"}]}}"#,
+            ),
+            sse(r#"{"type":"response.completed","response":{"id":"resp_1","status":"completed"}}"#),
+        ];
+        let mut pushes = Vec::new();
+        process_responses_stream(
+            &events,
+            &mut output,
+            &mut |event| pushes.push(event),
+            &m,
+            &ProcessResponsesOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(output.content().len(), 1);
+        assert!(matches!(
+            &output.content()[0],
+            ContentBlock::Text { text, .. } if text == "done-only"
+        ));
+        assert!(pushes
+            .iter()
+            .any(|event| matches!(event, AssistantMessageEvent::TextStart { .. })));
+        assert!(pushes
+            .iter()
+            .any(|event| matches!(event, AssistantMessageEvent::TextEnd { .. })));
     }
 
     #[test]

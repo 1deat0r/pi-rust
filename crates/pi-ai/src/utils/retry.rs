@@ -67,6 +67,7 @@ async fn sleep(ms: u64, signal: Option<&Arc<AtomicBool>>) -> Result<(), RetrySle
     }
 }
 
+#[allow(clippy::expect_used)] // invariant: static retry pattern literals compile
 fn build_pattern(patterns: &[&str]) -> Regex {
     regex::RegexBuilder::new(&format!("({})", patterns.join("|")))
         .case_insensitive(true)
@@ -177,6 +178,7 @@ pub fn is_retryable_assistant_error(message: &AssistantMessage) -> bool {
 ///
 /// When `policy` is `None` or disabled, the first response is returned
 /// unchanged.
+#[allow(clippy::expect_used)] // invariant: retry scheduled only after a first failure
 pub async fn retry_assistant_call<F, Fut>(
     mut produce: F,
     policy: Option<&RetryPolicy>,
@@ -237,7 +239,11 @@ where
                 attempt,
                 max_attempts,
                 delay_ms,
-                last_retry.as_ref().unwrap().1.clone(),
+                last_retry
+                    .as_ref()
+                    .expect("retry scheduled only after a first failure")
+                    .1
+                    .clone(),
             );
         }
 
@@ -279,6 +285,7 @@ fn emit_finished(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::sync::atomic::Ordering;
 
@@ -468,7 +475,9 @@ mod tests {
             })),
             on_retry_finished: Some(Box::new(|ok, attempt, final_error| {
                 finished.fetch_add(1, Ordering::SeqCst);
-                *finished_args.lock().unwrap() =
+                *finished_args
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) =
                     Some((ok, attempt, final_error.map(|s| s.to_string())));
             })),
             ..Default::default()
@@ -486,7 +495,11 @@ mod tests {
         assert_eq!(res.stop_reason(), Some(StopReason::Error));
         assert_eq!(calls, 4); // 1 initial + 3 retries
         assert_eq!(scheduled.load(Ordering::SeqCst), 3);
-        let args = finished_args.lock().unwrap().clone().unwrap();
+        let args = finished_args
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+            .unwrap();
         assert_eq!(args, (false, 3, Some("terminated".to_string())));
         assert_eq!(finished.load(Ordering::SeqCst), 1);
     }
@@ -497,7 +510,9 @@ mod tests {
         let finished_args = std::sync::Mutex::new(None);
         let cb = RetryCallbacks {
             on_retry_finished: Some(Box::new(|ok, attempt, _| {
-                *finished_args.lock().unwrap() = Some((ok, attempt));
+                *finished_args
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some((ok, attempt));
             })),
             ..Default::default()
         };
@@ -520,7 +535,12 @@ mod tests {
         .await;
         assert_eq!(res.content(), &[crate::providers::faux_text("recovered")]);
         assert_eq!(calls, 3);
-        assert_eq!(*finished_args.lock().unwrap(), Some((true, 2)));
+        assert_eq!(
+            *finished_args
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            Some((true, 2))
+        );
     }
 
     #[tokio::test]
@@ -529,7 +549,9 @@ mod tests {
         let finished_args = std::sync::Mutex::new(None);
         let cb = RetryCallbacks {
             on_retry_finished: Some(Box::new(|ok, attempt, _| {
-                *finished_args.lock().unwrap() = Some((ok, attempt));
+                *finished_args
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some((ok, attempt));
             })),
             ..Default::default()
         };
@@ -552,7 +574,12 @@ mod tests {
         .await;
         assert_eq!(res.stop_reason(), Some(StopReason::Aborted));
         assert_eq!(calls, 2);
-        assert_eq!(*finished_args.lock().unwrap(), Some((false, 1)));
+        assert_eq!(
+            *finished_args
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            Some((false, 1))
+        );
     }
 
     #[tokio::test]
@@ -593,10 +620,16 @@ mod tests {
         let mut calls = 0;
         let cb = RetryCallbacks {
             on_retry_scheduled: Some(Box::new(|attempt, _, _, _| {
-                events.lock().unwrap().push(format!("retry:{attempt}"));
+                events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(format!("retry:{attempt}"));
             })),
             on_retry_attempt_start: Some(Box::new(|| {
-                events.lock().unwrap().push("attempt-start".to_string());
+                events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push("attempt-start".to_string());
             })),
             ..Default::default()
         };
@@ -604,7 +637,10 @@ mod tests {
             || {
                 calls += 1;
                 let n = calls;
-                events.lock().unwrap().push(format!("produce:{}", n - 1));
+                events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(format!("produce:{}", n - 1));
                 async move {
                     if n < 3 {
                         err_msg("terminated")
@@ -620,7 +656,10 @@ mod tests {
         .await;
         assert_eq!(res.content(), &[crate::providers::faux_text("recovered")]);
         assert_eq!(
-            events.lock().unwrap().as_slice(),
+            events
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
             &[
                 "produce:0".to_string(),
                 "retry:1".to_string(),
@@ -641,7 +680,9 @@ mod tests {
         let finished_args_cb = finished_args.clone();
         let cb = RetryCallbacks {
             on_retry_finished: Some(Box::new(move |ok, attempt, final_error| {
-                *finished_args_cb.lock().unwrap() =
+                *finished_args_cb
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) =
                     Some((ok, attempt, final_error.map(|s| s.to_string())));
             })),
             ..Default::default()
@@ -673,7 +714,9 @@ mod tests {
         assert_eq!(res.error_message(), None);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(
-            *finished_args.lock().unwrap(),
+            *finished_args
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
             Some((false, 1, Some("terminated".to_string())))
         );
         let _ = task.await;

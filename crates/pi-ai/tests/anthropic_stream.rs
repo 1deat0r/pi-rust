@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Anthropic Messages API adaptor tests driven by synthetic SSE fixtures.
 //! The event-assembly path (`process_anthropic_events`) is provider-pure, so
 //! these cover the same code as a live HTTP stream minus the transport glue.

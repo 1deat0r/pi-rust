@@ -12,7 +12,32 @@ use std::sync::{
 };
 
 use crate::images::{ImagesModel, ImagesOptions};
-use crate::types::{AssistantImages, ContentBlock, ImagesContext, ImagesStopReason, Usage};
+use crate::types::{
+    AssistantImages, ContentBlock, ImagesContext, ImagesStopReason, ProviderHeaders, Usage,
+};
+
+fn merged_request_headers(
+    model_headers: Option<&std::collections::BTreeMap<String, String>>,
+    option_headers: Option<&ProviderHeaders>,
+) -> Vec<(String, String)> {
+    let mut headers = model_headers
+        .into_iter()
+        .flat_map(|headers| {
+            headers
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+        })
+        .collect::<Vec<_>>();
+    if let Some(option_headers) = option_headers {
+        for (name, value) in option_headers {
+            headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
+            if let Some(value) = value {
+                headers.push((name.clone(), value.clone()));
+            }
+        }
+    }
+    headers
+}
 
 fn sanitize_surrogates(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -148,7 +173,22 @@ pub async fn generate_images(
         return output;
     }
 
-    let params = build_params(&model, &context);
+    let chat_model = model.as_chat_model();
+    let params = match crate::api::openai_completions::apply_payload_hook(
+        build_params(&model, &context),
+        &chat_model,
+        options.on_payload.as_ref(),
+        options.abort_signal.clone(),
+    )
+    .await
+    {
+        Ok(params) => params,
+        Err(_) => {
+            output.stop_reason = ImagesStopReason::Aborted;
+            output.error_message = Some("Request aborted".to_string());
+            return output;
+        }
+    };
     let url = format!("{}/chat/completions", model.base_url.trim_end_matches('/'));
 
     // Rebuild the request per attempt (RequestBuilder is not Clone, and
@@ -159,17 +199,10 @@ pub async fn generate_images(
             .header("content-type", "application/json")
             .bearer_auth(&api_key)
             .json(&params);
-        if let Some(headers) = &model.headers {
-            for (k, v) in headers {
-                request = request.header(k.as_str(), v.as_str());
-            }
-        }
-        if let Some(headers) = &options.headers {
-            for (name, value) in headers {
-                if let Some(value) = value {
-                    request = request.header(name.as_str(), value.as_str());
-                }
-            }
+        for (name, value) in
+            merged_request_headers(model.headers.as_ref(), options.headers.as_ref())
+        {
+            request = request.header(name, value);
         }
         if let Some(timeout) = options.timeout_ms {
             request = request.timeout(std::time::Duration::from_millis(timeout));
@@ -585,10 +618,14 @@ async fn sleep_retry(delay_ms: u64, options: &ImagesOptions) -> bool {
 fn parse_data_uri(uri: &str) -> Option<(String, String)> {
     let rest = uri.strip_prefix("data:")?;
     let (mime, data) = rest.split_once(";base64,")?;
+    if mime.is_empty() || data.is_empty() {
+        return None;
+    }
     Some((mime.to_string(), data.to_string()))
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::images::catalog_images;
@@ -694,6 +731,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn apply_response_ignores_malformed_empty_data_images() {
+        let mut out = AssistantImages {
+            api: "openrouter-images".to_string(),
+            provider: "openrouter".to_string(),
+            model: "m".to_string(),
+            output: vec![],
+            response_id: None,
+            usage: None,
+            stop_reason: ImagesStopReason::Stop,
+            error_message: None,
+            timestamp: 1,
+        };
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "images": [
+                        { "image_url": "data:;base64,ZmFrZQ==" },
+                        { "image_url": "data:image/png;base64," },
+                        { "image_url": "https://example.test/image.png" }
+                    ]
+                }
+            }]
+        });
+
+        apply_response(&mut out, &model("fake", &["image"]), &response);
+
+        assert!(out.output.is_empty());
+    }
+
     #[tokio::test]
     async fn no_api_key_returns_error_images() {
         let m = model("black-forest-labs/flux.2-pro", &["image"]);
@@ -712,12 +779,94 @@ mod tests {
             .unwrap_or("")
             .contains("No API key for provider: openrouter"));
     }
+
+    #[tokio::test]
+    async fn payload_hook_replaces_image_request_before_transport() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let (header_end, content_length) = loop {
+                let mut chunk = [0u8; 4096];
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0, "client closed before sending request");
+                request.extend_from_slice(&chunk[..count]);
+                let Some(separator) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..separator]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .expect("request content length");
+                if request.len() >= separator + 4 + content_length {
+                    break (separator, content_length);
+                }
+            };
+            let body_start = header_end + 4;
+            let body: Value =
+                serde_json::from_slice(&request[body_start..body_start + content_length]).unwrap();
+            let response_body = r#"{"id":"fixture","choices":[{"message":{"content":"ok"}}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            body
+        });
+
+        let mut model = model("black-forest-labs/flux.2-pro", &["text"]);
+        model.base_url = format!("http://{address}");
+        let hook: crate::types::OnPayloadFn = Arc::new(|mut payload, _model| {
+            Box::pin(async move {
+                payload["fixture_marker"] = json!("payload-hook");
+                Some(payload)
+            })
+        });
+        let output = generate_images(
+            &model,
+            &ImagesContext {
+                input: vec![ContentBlock::text("draw a cat")],
+            },
+            &ImagesOptions {
+                api_key: Some("test-key".to_string()),
+                on_payload: Some(hook),
+                ..Default::default()
+            },
+            reqwest::Client::new(),
+        )
+        .await;
+        assert!(output.error_message.is_none(), "{:?}", output.error_message);
+        assert_eq!(server.await.unwrap()["fixture_marker"], "payload-hook");
+    }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod retry_tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn null_option_header_suppresses_model_header() {
+        let model_headers = BTreeMap::from([("X-Model-Header".to_string(), "secret".to_string())]);
+        let option_headers = BTreeMap::from([("x-model-header".to_string(), None)]);
+
+        let merged = merged_request_headers(Some(&model_headers), Some(&option_headers));
+
+        assert!(!merged
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("x-model-header")));
+    }
 
     #[test]
     fn retryable_status_classification() {

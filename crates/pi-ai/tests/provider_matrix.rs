@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Offline provider/API matrix evidence for the catalog-backed adapters.
 //!
 //! Each text variant is exercised through the public API adapter against a
@@ -21,7 +23,8 @@ use pi_ai::model::Model;
 use pi_ai::providers::all::builtin_providers;
 use pi_ai::types::{
     AssistantMessage, ContentBlock, Context, ImagesContext, ImagesStopReason, Message,
-    ProviderRequestOptions, SimpleStreamOptions, StopReason, StreamOptions, Usage, UserContent,
+    ProviderRequestOptions, SimpleStreamOptions, StopReason, StreamOptions, ThinkingLevel, Usage,
+    UserContent,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -111,6 +114,7 @@ struct NoApiControl {
 #[derive(Debug, Clone)]
 struct CapturedRequest {
     path: String,
+    headers: BTreeMap<String, String>,
     body: Vec<u8>,
 }
 
@@ -407,6 +411,14 @@ async fn spawn_mock_server(
             }
         };
         let headers_text = String::from_utf8_lossy(&request[..header_end]).into_owned();
+        let request_headers: BTreeMap<_, _> = headers_text
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            })
+            .collect();
         let content_length = headers_text
             .lines()
             .find_map(|line| {
@@ -431,6 +443,7 @@ async fn spawn_mock_server(
             .to_string();
         *captured_server.lock().expect("capture lock") = Some(CapturedRequest {
             path,
+            headers: request_headers,
             body: request[header_end..header_end + content_length].to_vec(),
         });
 
@@ -458,6 +471,56 @@ async fn spawn_mock_server(
             .expect("write matrix fixture body");
     });
     (format!("http://{address}"), captured, server)
+}
+
+#[cfg(target_os = "linux")]
+#[link(name = "zstd")]
+unsafe extern "C" {
+    fn ZSTD_getFrameContentSize(src: *const u8, src_size: usize) -> u64;
+    fn ZSTD_decompress(
+        dst: *mut u8,
+        dst_capacity: usize,
+        src: *const u8,
+        compressed_size: usize,
+    ) -> usize;
+    fn ZSTD_isError(code: usize) -> u32;
+}
+
+fn request_json(request: &CapturedRequest) -> Vec<u8> {
+    if request.headers.get("content-encoding").map(String::as_str) != Some("zstd") {
+        return request.body.clone();
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        const CONTENT_SIZE_ERROR: u64 = u64::MAX;
+        const CONTENT_SIZE_UNKNOWN: u64 = u64::MAX - 1;
+        let size = unsafe { ZSTD_getFrameContentSize(request.body.as_ptr(), request.body.len()) };
+        assert!(
+            size != CONTENT_SIZE_ERROR && size != CONTENT_SIZE_UNKNOWN,
+            "Codex zstd request must declare its content size"
+        );
+        let mut decoded = vec![0_u8; size as usize];
+        let written = unsafe {
+            ZSTD_decompress(
+                decoded.as_mut_ptr(),
+                decoded.len(),
+                request.body.as_ptr(),
+                request.body.len(),
+            )
+        };
+        assert_eq!(
+            unsafe { ZSTD_isError(written) },
+            0,
+            "Codex zstd decode failed"
+        );
+        decoded.truncate(written);
+        decoded
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        panic!("Codex zstd request decoding is unavailable on this target");
+    }
 }
 
 async fn run_text_case(
@@ -511,10 +574,11 @@ fn assert_request(
         request.path,
         fixture.path_fragment
     );
-    let body: Value = serde_json::from_slice(&request.body).unwrap_or_else(|error| {
+    let body_bytes = request_json(request);
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap_or_else(|error| {
         panic!(
             "{}/{} request body is not JSON: {error}; body={:?}",
-            variant.provider, variant.api, request.body
+            variant.provider, variant.api, body_bytes
         )
     });
     if let Some(field) = &fixture.model_field {
@@ -741,6 +805,212 @@ async fn provider_api_matrix_proves_request_stream_usage_and_error() {
         .await;
         assert_request(variant, &fixture, model, &request);
         assert_error(variant, &fixture, &message);
+    }
+}
+
+#[tokio::test]
+async fn qwen_token_plan_registrations_round_trip_selected_catalog_models() {
+    let fixture = load_api_fixture("openai-completions.json");
+    let cases = [
+        ("qwen-token-plan", "qwen3.7-max"),
+        ("qwen-token-plan-cn", "qwen3.7-max"),
+        ("qwen-token-plan-individual", "qwen3.8-max"),
+    ];
+
+    for (provider_id, model_id) in cases {
+        let provider = builtin_providers()
+            .into_iter()
+            .find(|provider| provider.id == provider_id)
+            .unwrap_or_else(|| panic!("missing provider {provider_id}"));
+        let model = provider
+            .models
+            .iter()
+            .find(|model| model.id == model_id)
+            .unwrap_or_else(|| panic!("missing {provider_id}/{model_id}"));
+
+        let (request, message) = run_text_case(
+            "openai-completions",
+            model,
+            "qwen-test-key",
+            200,
+            fixture_body(&fixture),
+            &fixture.success.content_type,
+        )
+        .await;
+        let request_body: Value =
+            serde_json::from_slice(&request_json(&request)).expect("Qwen request JSON");
+        // `run_text_case` replaces the catalog base URL with a loopback
+        // origin, so the OpenAI-compatible adaptor contributes only the
+        // endpoint suffix here. The catalog's `/compatible-mode/v1` prefix
+        // is separately asserted by the provider registration tests.
+        assert_eq!(request.path, "/chat/completions");
+        assert_eq!(
+            request.headers.get("authorization").map(String::as_str),
+            Some("Bearer qwen-test-key")
+        );
+        assert_eq!(request_body["model"], model_id);
+        assert_eq!(request_body["stream"], true);
+        assert_eq!(
+            request.headers.get("content-type").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(message.stop_reason(), Some(StopReason::Stop));
+        assert_eq!(
+            message
+                .content()
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>(),
+            fixture.success.text
+        );
+        let usage = message.usage().expect("Qwen response usage");
+        assert_eq!(usage.input, fixture.success.usage.input);
+        assert_eq!(usage.output, fixture.success.usage.output);
+        assert_eq!(usage.total_tokens, fixture.success.usage.total_tokens);
+        assert_eq!(usage.cost, Default::default());
+
+        let (request, message) = run_text_case(
+            "openai-completions",
+            model,
+            "qwen-test-key",
+            fixture.error.status,
+            serde_json::to_vec(&fixture.error.body).expect("error fixture serializes"),
+            &fixture.error.content_type,
+        )
+        .await;
+        assert_eq!(request.path, "/chat/completions");
+        assert_eq!(message.stop_reason(), Some(StopReason::Error));
+        assert!(message
+            .error_message()
+            .unwrap_or("")
+            .contains(&fixture.error.contains));
+    }
+}
+
+#[tokio::test]
+async fn qwen_token_plan_malformed_and_http_errors_are_terminal_and_redacted() {
+    let cases = [
+        ("qwen-token-plan", "qwen3.7-max"),
+        ("qwen-token-plan-cn", "qwen3.7-max"),
+        ("qwen-token-plan-individual", "qwen3.8-max"),
+    ];
+    for (provider_id, model_id) in cases {
+        let provider = builtin_providers()
+            .into_iter()
+            .find(|provider| provider.id == provider_id)
+            .unwrap_or_else(|| panic!("missing provider {provider_id}"));
+        let model = provider
+            .models
+            .iter()
+            .find(|model| model.id == model_id)
+            .unwrap_or_else(|| panic!("missing {provider_id}/{model_id}"));
+        let secret = "qwen-fixture-secret";
+
+        let (request, malformed) = run_text_case(
+            "openai-completions",
+            model,
+            secret,
+            200,
+            b"data: {malformed-qwen-fixture}\n\n".to_vec(),
+            "text/event-stream",
+        )
+        .await;
+        assert_eq!(request.path, "/chat/completions");
+        assert_eq!(malformed.stop_reason(), Some(StopReason::Error));
+        assert!(malformed
+            .error_message()
+            .unwrap_or("")
+            .contains("without finish_reason"));
+        assert!(!malformed.error_message().unwrap_or("").contains(secret));
+
+        let (request, http_error) = run_text_case(
+            "openai-completions",
+            model,
+            secret,
+            502,
+            br#"{"error":{"message":"qwen fixture upstream failure"}}"#.to_vec(),
+            "application/json",
+        )
+        .await;
+        assert_eq!(request.path, "/chat/completions");
+        assert_eq!(http_error.stop_reason(), Some(StopReason::Error));
+        assert!(http_error
+            .error_message()
+            .unwrap_or("")
+            .contains("qwen fixture upstream failure"));
+        assert!(!http_error.error_message().unwrap_or("").contains(secret));
+    }
+}
+
+#[tokio::test]
+async fn qwen_token_plan_stream_simple_preserves_xhigh_wire_shape() {
+    let fixture = load_api_fixture("openai-completions.json");
+    for (provider_id, model_id) in [
+        ("qwen-token-plan", "qwen3.8-max"),
+        ("qwen-token-plan-cn", "qwen3.8-max"),
+        ("qwen-token-plan-individual", "qwen3.8-max"),
+    ] {
+        let provider = builtin_providers()
+            .into_iter()
+            .find(|provider| provider.id == provider_id)
+            .unwrap_or_else(|| panic!("missing provider {provider_id}"));
+        let model = provider
+            .models
+            .iter()
+            .find(|model| model.id == model_id)
+            .unwrap_or_else(|| panic!("missing {provider_id}/{model_id}"))
+            .clone();
+        let (base_url, captured, server) = spawn_mock_server(
+            200,
+            &fixture.success.content_type,
+            fixture_body(&fixture),
+            Vec::new(),
+        )
+        .await;
+        let options = SimpleStreamOptions {
+            base: StreamOptions {
+                base: ProviderRequestOptions {
+                    api_key: Some("qwen-simple-key".to_string()),
+                    max_retries: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            reasoning: Some(ThinkingLevel::Xhigh),
+            ..Default::default()
+        };
+        let (_, message) = openai_completions::stream_simple(
+            &model,
+            &context(),
+            reqwest::Client::new(),
+            &base_url,
+            Some("qwen-simple-key"),
+            &options,
+        )
+        .collect()
+        .await;
+        server
+            .await
+            .expect("Qwen stream_simple fixture server task");
+        let request = captured
+            .lock()
+            .expect("capture lock")
+            .take()
+            .expect("Qwen stream_simple fixture captured request");
+        let body: Value = serde_json::from_slice(&request.body).expect("Qwen request JSON");
+        assert_eq!(request.path, "/chat/completions", "{provider_id}");
+        assert_eq!(body["enable_thinking"], true, "{provider_id}");
+        assert_eq!(body["reasoning_effort"], "xhigh", "{provider_id}");
+        assert!(body.get("thinking").is_none(), "{provider_id}");
+        assert_eq!(
+            message.stop_reason(),
+            Some(StopReason::Stop),
+            "{provider_id}: {:?}",
+            message.error_message()
+        );
     }
 }
 

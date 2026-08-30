@@ -38,10 +38,26 @@ impl SseParser {
 
     fn drain(&mut self) -> Vec<SseEvent> {
         let mut events = Vec::new();
-        while let Some(newline) = self.buffer.iter().position(|&b| b == b'\n') {
-            let line_bytes: Vec<u8> = self.buffer.drain(..=newline).collect();
-            let line = line_bytes.strip_suffix(b"\n").unwrap_or(&line_bytes);
-            let line = line.strip_suffix(b"\r").unwrap_or(line);
+        while let Some(line_end) = self
+            .buffer
+            .iter()
+            .position(|&byte| byte == b'\n' || byte == b'\r')
+        {
+            let terminator = self.buffer[line_end];
+            // A CR at the end of a transport chunk may be the first half of
+            // CRLF. Defer it until the next chunk so a split line ending
+            // cannot be mistaken for a blank-line event boundary.
+            if terminator == b'\r' && line_end + 1 == self.buffer.len() {
+                break;
+            }
+            let consume_through =
+                if terminator == b'\r' && self.buffer.get(line_end + 1).copied() == Some(b'\n') {
+                    line_end + 2
+                } else {
+                    line_end + 1
+                };
+            let line_bytes: Vec<u8> = self.buffer.drain(..consume_through).collect();
+            let line = &line_bytes[..line_end];
             // The line is byte-complete; decode it. Incomplete multibyte
             // sequences cannot occur here because a line ends at a '\n' byte
             // and a char spanning the boundary would leave its trailing bytes
@@ -61,40 +77,45 @@ impl SseParser {
             }
         } else if line.starts_with(':') {
             // SSE comments are ignored (but terminate nothing)
-        } else if let Some(field) = line.strip_prefix("data:") {
-            let value = field.strip_prefix(' ').unwrap_or(field).to_string();
-            match self.pending.last_mut() {
-                Some(e) => {
-                    if !e.data.is_empty() {
-                        e.data.push('\n');
+        } else {
+            // The SSE grammar treats a field without a colon as a field with
+            // an empty value. This matters for `data` lines in malformed but
+            // recoverable provider streams and matches the upstream decoder.
+            let (field, value) = line
+                .split_once(':')
+                .map(|(field, value)| (field, value.strip_prefix(' ').unwrap_or(value)))
+                .unwrap_or((line, ""));
+            match field {
+                "data" => match self.pending.last_mut() {
+                    Some(e) => {
+                        if !e.data.is_empty() {
+                            e.data.push('\n');
+                        }
+                        e.data.push_str(value);
                     }
-                    e.data.push_str(&value);
-                }
-                None => self.pending.push(SseEvent {
-                    data: value,
-                    event: None,
-                    id: None,
-                }),
-            }
-        } else if let Some(field) = line.strip_prefix("event:") {
-            let value = field.strip_prefix(' ').unwrap_or(field).to_string();
-            match self.pending.last_mut() {
-                Some(e) => e.event = Some(value),
-                None => self.pending.push(SseEvent {
-                    data: String::new(),
-                    event: Some(value),
-                    id: None,
-                }),
-            }
-        } else if let Some(field) = line.strip_prefix("id:") {
-            let value = field.strip_prefix(' ').unwrap_or(field).to_string();
-            match self.pending.last_mut() {
-                Some(e) => e.id = Some(value),
-                None => self.pending.push(SseEvent {
-                    data: String::new(),
-                    event: None,
-                    id: Some(value),
-                }),
+                    None => self.pending.push(SseEvent {
+                        data: value.to_string(),
+                        event: None,
+                        id: None,
+                    }),
+                },
+                "event" => match self.pending.last_mut() {
+                    Some(e) => e.event = Some(value.to_string()),
+                    None => self.pending.push(SseEvent {
+                        data: String::new(),
+                        event: Some(value.to_string()),
+                        id: None,
+                    }),
+                },
+                "id" => match self.pending.last_mut() {
+                    Some(e) => e.id = Some(value.to_string()),
+                    None => self.pending.push(SseEvent {
+                        data: String::new(),
+                        event: None,
+                        id: Some(value.to_string()),
+                    }),
+                },
+                _ => {}
             }
         }
         // "retry:" lines and unknown fields are ignored.
@@ -114,7 +135,14 @@ impl SseParser {
     pub fn finish(mut self) -> Vec<SseEvent> {
         let mut events = Vec::new();
         if !self.buffer.is_empty() {
-            let remaining = std::mem::take(&mut self.buffer);
+            let mut remaining = std::mem::take(&mut self.buffer);
+            // `drain` intentionally holds a trailing CR until another chunk
+            // disambiguates CRLF. At EOF it is a complete line terminator,
+            // so process the line before returning pending event fields.
+            let trailing_cr = remaining.last() == Some(&b'\r');
+            if trailing_cr {
+                remaining.pop();
+            }
             let line = String::from_utf8(remaining.clone())
                 .unwrap_or_else(|_| String::from_utf8_lossy(&remaining).into_owned());
             if !line.trim().is_empty() {
@@ -137,6 +165,7 @@ impl SseParser {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -207,6 +236,42 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].data, "héllo");
         assert_eq!(events[1].data, "世界");
+    }
+
+    #[test]
+    fn accepts_all_sse_line_endings_and_split_crlf() {
+        let mut parser = SseParser::new();
+        let mut events = parser.push_bytes(b"event: message\rdata: one\r\n\r");
+        events.extend(parser.push_bytes(b"\ndata: two\n\n"));
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event.as_deref(), Some("message"));
+        assert_eq!(events[0].data, "one");
+        assert_eq!(events[1].data, "two");
+    }
+
+    #[test]
+    fn split_crlf_does_not_end_a_multiline_event() {
+        let mut parser = SseParser::new();
+        let mut events = parser.push_bytes(b"data: one\r");
+        assert!(events.is_empty());
+        events.extend(parser.push_bytes(b"\ndata: two\n\n"));
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "one\ntwo");
+    }
+
+    #[test]
+    fn accepts_bare_data_field_as_an_empty_data_line() {
+        let events = SseParser::parse_text("data\n\n");
+        assert_eq!(
+            events,
+            vec![SseEvent {
+                data: String::new(),
+                event: None,
+                id: None,
+            }]
+        );
     }
 
     #[test]

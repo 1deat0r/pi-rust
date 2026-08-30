@@ -21,6 +21,9 @@ use crate::types::{
 use super::constrained_sampling::{
     get_json_schema_tool_parameters, resolve_json_schema_strict_sampling,
 };
+use super::openai_completions::{
+    abortable, apply_payload_hook, error_reason, signal_aborted, terminal_error_message,
+};
 use super::transform_messages::transform_messages;
 
 pub const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
@@ -272,7 +275,7 @@ fn convert_content_blocks(content: &[ContentBlock]) -> Value {
             .join("\n"));
     }
 
-    json!(content
+    let mut blocks: Vec<Value> = content
         .iter()
         .filter_map(|block| match block {
             ContentBlock::Text { text, .. } => Some(json!({"type": "text", "text": text})),
@@ -284,7 +287,14 @@ fn convert_content_blocks(content: &[ContentBlock]) -> Value {
             })),
             _ => None,
         })
-        .collect::<Vec<_>>())
+        .collect();
+    if !blocks
+        .iter()
+        .any(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+    {
+        blocks.insert(0, json!({"type": "text", "text": "(see attached image)"}));
+    }
+    json!(blocks)
 }
 
 fn convert_tool_result(
@@ -818,7 +828,7 @@ fn build_params_for_request(
                     params["thinking"] = json!({"type": "disabled"});
                 }
             }
-            _ => {
+            Some(true) => {
                 let display = options
                     .thinking_display
                     .unwrap_or(AnthropicThinkingDisplay::Summarized);
@@ -830,11 +840,17 @@ fn build_params_for_request(
                 } else {
                     params["thinking"] = json!({
                         "type": "enabled",
-                        "budget_tokens": options.thinking_budget_tokens.unwrap_or(1024),
+                        // Upstream uses `thinkingBudgetTokens || 1024`, so an
+                        // explicit zero takes the same default path as None.
+                        "budget_tokens": match options.thinking_budget_tokens {
+                            Some(0) | None => 1024,
+                            Some(budget) => budget,
+                        },
                         "display": display.as_str(),
                     });
                 }
             }
+            None => {}
         }
     }
 
@@ -1119,7 +1135,7 @@ fn process_anthropic_events_with_options(
         if event_type == "error" {
             return Err(event.data.clone());
         }
-        let data: Value = match serde_json::from_str(&event.data) {
+        let data: Value = match parse_anthropic_event_data(&event.data) {
             Ok(value) => value,
             Err(error) => {
                 let known = matches!(
@@ -1383,8 +1399,7 @@ fn process_anthropic_events_with_options(
                             if acc.kind == BlockKind::ToolCall {
                                 acc.partial_json.push_str(partial);
                                 let parsed =
-                                    crate::partial_json::parse_partial_json(&acc.partial_json)
-                                        .unwrap_or(Value::Null);
+                                    crate::partial_json::parse_streaming_json(&acc.partial_json);
                                 if let Some(ContentBlock::ToolCall { arguments, .. }) =
                                     output.content_mut().get_mut(ci)
                                 {
@@ -1447,6 +1462,15 @@ fn process_anthropic_events_with_options(
                                 });
                             }
                             BlockKind::ToolCall => {
+                                if !acc.partial_json.trim().is_empty() {
+                                    if let Some(ContentBlock::ToolCall { arguments, .. }) =
+                                        output.content_mut().get_mut(ci)
+                                    {
+                                        *arguments = crate::partial_json::parse_streaming_json(
+                                            &acc.partial_json,
+                                        );
+                                    }
+                                }
                                 let final_block =
                                     output.content().get(ci).cloned().unwrap_or_else(|| {
                                         ContentBlock::tool_call("", "", Value::Null)
@@ -1546,6 +1570,24 @@ fn process_anthropic_events_with_options(
     Ok(output)
 }
 
+/// Parse a known Anthropic event with the same repair-first fallback as the
+/// upstream adapter. Providers occasionally emit raw control characters or
+/// invalid backslash escapes inside streamed tool JSON; rejecting the outer
+/// event loses the tool call even though the payload is recoverable.
+fn parse_anthropic_event_data(data: &str) -> Result<Value, serde_json::Error> {
+    match serde_json::from_str(data) {
+        Ok(value) => Ok(value),
+        Err(original) => {
+            let repaired = crate::partial_json::repair_json(data);
+            if repaired == data {
+                Err(original)
+            } else {
+                serde_json::from_str(&repaired)
+            }
+        }
+    }
+}
+
 /// Streams a request against the Anthropic Messages API. Errors (transport,
 /// non-2xx, malformed events) are encoded as terminal `error` events.
 pub fn stream(
@@ -1569,17 +1611,25 @@ pub fn stream(
 
     let handle = tokio::spawn(async move {
         let mut pusher = crate::event_stream::StreamSinkAdapter::new(sender);
+        if signal_aborted(options.base.abort_signal.as_ref()) {
+            let message = terminal_error_message(&model, "Request was aborted", true);
+            pusher.push(AssistantMessageEvent::Error {
+                reason: ErrorReason::Aborted,
+                error_message: message.clone(),
+            });
+            pusher.end(Some(message));
+            return;
+        }
         let (api_key, bearer_auth) =
             resolve_request_auth(&model, &options, explicit_api_key.as_deref());
         if api_key.is_none()
             && !has_auth_header(options.base.base.headers.as_ref())
             && !has_model_auth_header(&model)
         {
-            let mut message = new_output(&model);
-            message.set_stop_reason(StopReason::Error);
-            set_error_message(
-                &mut message,
+            let message = terminal_error_message(
+                &model,
                 format!("No API key for provider: {}", model.provider),
+                false,
             );
             pusher.push(AssistantMessageEvent::Error {
                 reason: ErrorReason::Error,
@@ -1592,11 +1642,28 @@ pub fn stream(
         let params = match build_params_for_request(&model, &context, is_oauth, &options) {
             Ok(params) => params,
             Err(error) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                set_error_message(&mut message, error);
+                let message = terminal_error_message(&model, error, false);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+        };
+        let params = match apply_payload_hook(
+            params,
+            &model,
+            options.base.on_payload.as_ref(),
+            options.base.abort_signal.clone(),
+        )
+        .await
+        {
+            Ok(params) => params,
+            Err(_) => {
+                let message = terminal_error_message(&model, "Request was aborted", true);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Aborted,
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -1611,14 +1678,22 @@ pub fn stream(
         for (name, value) in headers {
             request = request.header(name, value);
         }
-        let response = match request.send().await {
-            Ok(response) => response,
-            Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                set_error_message(&mut message, format!("Request failed: {err}"));
+        let response = match abortable(request.send(), options.base.abort_signal.clone()).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                let message =
+                    terminal_error_message(&model, format!("Request failed: {err}"), false);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+            Err(_) => {
+                let message = terminal_error_message(&model, "Request was aborted", true);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Aborted,
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -1641,12 +1716,11 @@ pub fn stream(
         if let Some(on_response) = &options.base.on_response {
             on_response(&provider_response, &model);
         }
-        let response = match response.bytes().await {
-            Ok(body) => body,
-            Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                set_error_message(&mut message, format!("Request body failed: {err}"));
+        let response = match abortable(response.bytes(), options.base.abort_signal.clone()).await {
+            Ok(Ok(body)) => body,
+            Ok(Err(err)) => {
+                let message =
+                    terminal_error_message(&model, format!("Request body failed: {err}"), false);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -1654,7 +1728,25 @@ pub fn stream(
                 pusher.end(Some(message));
                 return;
             }
+            Err(_) => {
+                let message = terminal_error_message(&model, "Request was aborted", true);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Aborted,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
         };
+        if signal_aborted(options.base.abort_signal.as_ref()) {
+            let message = terminal_error_message(&model, "Request was aborted", true);
+            pusher.push(AssistantMessageEvent::Error {
+                reason: ErrorReason::Aborted,
+                error_message: message.clone(),
+            });
+            pusher.end(Some(message));
+            return;
+        }
         if !status.is_success() {
             let body_text = String::from_utf8_lossy(&response).to_string();
             let detail = extract_anthropic_error(&body_text);
@@ -1671,12 +1763,11 @@ pub fn stream(
             pusher.end(Some(message));
             return;
         }
-        let body_text = String::from_utf8_lossy(&response).to_string();
-        let events = SseParser::parse_text(&body_text);
-
         pusher.push(AssistantMessageEvent::Start {
             partial: new_output(&model),
         });
+        let body_text = String::from_utf8_lossy(&response).to_string();
+        let events = SseParser::parse_text(&body_text);
         let assembled = process_anthropic_events_with_options(
             &model,
             &events,
@@ -1686,6 +1777,15 @@ pub fn stream(
         );
         match assembled {
             Ok(message) => {
+                if signal_aborted(options.base.abort_signal.as_ref()) {
+                    let message = terminal_error_message(&model, "Request was aborted", true);
+                    pusher.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Aborted,
+                        error_message: message.clone(),
+                    });
+                    pusher.end(Some(message));
+                    return;
+                }
                 let reason = match message.stop_reason().unwrap_or(StopReason::Stop) {
                     StopReason::Stop => DoneReason::Stop,
                     StopReason::Length => DoneReason::Length,
@@ -1700,11 +1800,18 @@ pub fn stream(
                 pusher.end(Some(message));
             }
             Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                set_error_message(&mut message, err);
+                let aborted = signal_aborted(options.base.abort_signal.as_ref());
+                let message = terminal_error_message(
+                    &model,
+                    if aborted {
+                        "Request was aborted".to_string()
+                    } else {
+                        err
+                    },
+                    aborted,
+                );
                 pusher.push(AssistantMessageEvent::Error {
-                    reason: ErrorReason::Error,
+                    reason: error_reason(aborted),
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));

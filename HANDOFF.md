@@ -2,6 +2,62 @@
 
 Date: 2026-08-30 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 2.3a (pi-ai under the hard gate)
+
+Fourth campaign checkpoint, direct child of Phase 2.2 (`fb46809`). pi-ai
+opts into `[workspace.lints.clippy] unwrap_used/expect_used/panic = "deny"`
+and is clean with `-D warnings`.
+
+Implemented:
+
+- Poison-tolerant locking across the crate (models registry, event stream,
+  faux/all/radius providers, auth, OAuth, transport headers): every
+  production `.lock()/.read()/.write().unwrap()` became
+  `unwrap_or_else(|error| error.into_inner())`.
+- All literal `Regex::new(...).unwrap()` predicates became `LazyLock`
+  statics (bedrock host/ARN/data-retention, Gemini model classifiers,
+  Vertex API-version checks); the Codex rate-limit/retry/usage-limit
+  `RegexBuilder` chains keep their compile-time invariants behind
+  documented `#[allow(clippy::panic)]`.
+- Bedrock eventstream decoding now uses `be_u16/32`/`be_i16/32/64` helpers
+  with one documented length-checked invariant instead of 13 inline
+  `try_into().unwrap()`s; one `unreachable!()`-adjacent unwrap path was
+  removed.
+- Option/Result restructures at checked invariants: Google `functionCall`
+  guard, `tool_choice` if-let, runtime API-key override if-let, OAuth
+  device-code `let`-else/`ok_or_else`, OpenAI Responses `as_object_mut`
+  if-let, completions `ensure_text_block`/`ensure_thinking_block` early
+  returns, Mistral strict-schema if-lets.
+- Genuinely infallible invariants keep `expect` under scoped, commented
+  `#[allow]`s: vendored model-catalog parsing, OS RNG fills, single-thread
+  runtime build, JSON serialization of `&str`/`json!` literals, static
+  pattern compilation, faux fresh-stream channel.
+- Test modules and `tests/*.rs` carry scoped `#[allow]`s only.
+
+Environment note (not a code change): the Kitty-selector PTY regression
+requires at least two configured providers so the model selector has
+multiple rows. It passes when `QWEN_TOKEN_PLAN_API_KEY` (exported by the
+user's interactive `~/.bashrc`) is present in the test environment; run the
+PTY suites from an interactive shell or with that variable exported. With
+it set, the complete workspace matrix passes.
+
+Exact validation (with `QWEN_TOKEN_PLAN_API_KEY` exported):
+
+```text
+cargo clippy -p pi-ai --all-targets --offline -- -D warnings   # hard gate active, clean
+cargo test -p pi-ai --offline -- --test-threads=1              # 25 targets, all ok
+cargo test --workspace --offline --quiet -- --test-threads=2   # exit 0, 2805 passed
+cargo clippy --workspace --all-targets --offline -- -D warnings # pass
+cargo fmt --all -- --check                                     # pass
+git diff --check                                               # pass
+cargo run -p pi-coding-agent --offline --bin conversion_audit -- all
+  Conversion progress: 100.00% (166/166; 0 open)
+```
+
+No numbered ledger row changed. Next: Phase 2.3b — typed `PiAiError`
+surface replacing 170 `Result<_, String>` sites, then the cross-crate
+transport error unification with pi-server's connection traits.
+
 ## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 2.2 (pi-client under the hard gate)
 
 Third campaign checkpoint, direct child of Phase 2.1 (`a75f420`). pi-client

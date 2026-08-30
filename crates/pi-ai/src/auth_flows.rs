@@ -11,8 +11,10 @@
 //! The polling loop itself lives in `crate::oauth` (device-code.ts + pkce.ts
 //! port); this module layers the provider-specific endpoints on top.
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
+use std::{future::Future, pin::Pin};
 
 use crate::auth::{AuthEvent, AuthInteraction, ModelAuth, OAuthAuth, OAuthCredential};
 use crate::oauth::{poll_oauth_device_code_flow, DeviceCodePollOptions, DeviceCodePollResult};
@@ -27,53 +29,319 @@ pub struct DeviceCodeResponse {
     pub expires_in: u64,
 }
 
-/// POST a form body and parse the JSON response (upstream `fetchJson`).
-async fn post_form_json(
+const AUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const AUTH_CALLBACK_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn wait_for_abort(signal: &AtomicBool) {
+    while !signal.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_optional_abort(signal: Option<Arc<AtomicBool>>) {
+    match signal {
+        Some(signal) => wait_for_abort(signal.as_ref()).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+fn safe_http_error(operation: &str, phase: &str, error: &reqwest::Error) -> String {
+    // reqwest's Display implementation may include the complete request URL.
+    // OAuth endpoints can be supplied by a caller, so never return that text
+    // across the auth boundary where it could contain URL credentials or
+    // query material. The surrounding flow already preserves the stable
+    // network/timeout taxonomy.
+    if error.is_timeout() {
+        format!("{operation} {phase} timed out")
+    } else {
+        format!("{operation} {phase} failed")
+    }
+}
+
+async fn request_with_optional_abort(
+    request: reqwest::RequestBuilder,
+    signal: Option<&AtomicBool>,
+    operation: &str,
+) -> Result<reqwest::Response, String> {
+    if signal.is_some_and(|signal| signal.load(Ordering::SeqCst)) {
+        return Err("Login cancelled".to_string());
+    }
+    let request = request.send();
+    tokio::pin!(request);
+    let timeout = tokio::time::sleep(AUTH_HTTP_TIMEOUT);
+    tokio::pin!(timeout);
+    match signal {
+        Some(signal) => {
+            let abort = wait_for_abort(signal);
+            tokio::pin!(abort);
+            tokio::select! {
+                response = &mut request => response.map_err(|error| safe_http_error(operation, "request", &error)),
+                _ = &mut abort => Err("Login cancelled".to_string()),
+                _ = &mut timeout => Err(format!("{operation} request timed out")),
+            }
+        }
+        None => tokio::select! {
+            response = &mut request => response.map_err(|error| safe_http_error(operation, "request", &error)),
+            _ = &mut timeout => Err(format!("{operation} request timed out")),
+        },
+    }
+}
+
+async fn response_text_with_optional_abort(
+    response: reqwest::Response,
+    signal: Option<&AtomicBool>,
+    operation: &str,
+) -> Result<String, String> {
+    let response = response.text();
+    tokio::pin!(response);
+    let timeout = tokio::time::sleep(AUTH_HTTP_TIMEOUT);
+    tokio::pin!(timeout);
+    match signal {
+        Some(signal) => {
+            let abort = wait_for_abort(signal);
+            tokio::pin!(abort);
+            tokio::select! {
+                text = &mut response => text.map_err(|error| safe_http_error(operation, "response read", &error)),
+                _ = &mut abort => Err("Login cancelled".to_string()),
+                _ = &mut timeout => Err(format!("{operation} response read timed out")),
+            }
+        }
+        None => tokio::select! {
+            text = &mut response => text.map_err(|error| safe_http_error(operation, "response read", &error)),
+            _ = &mut timeout => Err(format!("{operation} response read timed out")),
+        },
+    }
+}
+
+/// Read one callback request while observing both the bounded browser wait and
+/// the flow cancellation flag. A browser can connect and then stop sending
+/// bytes; a plain `timeout(read(...))` would keep the OAuth flow alive until
+/// the full read timeout even after the user cancelled the login.
+async fn read_callback_request(
+    socket: &mut tokio::net::TcpStream,
+    buffer: &mut [u8],
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<usize, String> {
+    use tokio::io::AsyncReadExt;
+
+    let read_headers = async {
+        let mut total = 0usize;
+        loop {
+            if total == buffer.len() {
+                return Ok(total);
+            }
+            let read = socket.read(&mut buffer[total..]).await;
+            let read = read.map_err(|error| format!("callback read: {error}"))?;
+            if read == 0 {
+                return Ok(total);
+            }
+            total += read;
+            if buffer[..total]
+                .windows(4)
+                .any(|window| window == b"\r\n\r\n")
+            {
+                return Ok(total);
+            }
+        }
+    };
+    tokio::pin!(read_headers);
+    let timeout = tokio::time::sleep(AUTH_CALLBACK_READ_TIMEOUT);
+    tokio::pin!(timeout);
+    match cancel {
+        Some(cancel) => {
+            let abort = wait_for_abort(cancel);
+            tokio::pin!(abort);
+            tokio::select! {
+                result = &mut read_headers => result,
+                _ = &mut abort => Err("Login cancelled".to_string()),
+                _ = &mut timeout => Err("callback read timed out".to_string()),
+            }
+        }
+        None => tokio::select! {
+            result = &mut read_headers => result,
+            _ = &mut timeout => Err("callback read timed out".to_string()),
+        },
+    }
+}
+
+async fn write_callback_response(
+    socket: &mut tokio::net::TcpStream,
+    status: u16,
+    html: &str,
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    let status_text = match status {
+        200 => "OK",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        502 => "Bad Gateway",
+        _ => "Bad Request",
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
+        html.len()
+    );
+    socket
+        .write_all(response.as_bytes())
+        .await
+        .map_err(|error| format!("callback response failed: {error}"))?;
+    let _ = socket.shutdown().await;
+    Ok(())
+}
+
+fn redact_secrets(detail: &str, secrets: &[&str]) -> String {
+    let mut detail = detail.to_string();
+    for secret in secrets {
+        if !secret.is_empty() {
+            detail = detail.replace(secret, "<redacted>");
+        }
+    }
+    if detail.chars().count() > 512 {
+        let end = detail
+            .char_indices()
+            .nth(512)
+            .map(|(index, _)| index)
+            .unwrap_or(detail.len());
+        detail.truncate(end);
+        detail.push('…');
+    }
+    detail
+}
+
+fn json_error_detail(body: &str, secrets: &[&str]) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let object = value.as_object()?;
+    let detail = if object.len() == 1
+        && object
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+    {
+        serde_json::to_string(object).ok()?
+    } else {
+        ["error_description", "message", "error", "code"]
+            .into_iter()
+            .find_map(|field| object.get(field).and_then(serde_json::Value::as_str))
+            .or_else(|| {
+                object
+                    .get("error")
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|error| error.get("message"))
+                    .and_then(serde_json::Value::as_str)
+            })?
+            .to_string()
+    };
+    Some(redact_secrets(&detail, secrets))
+}
+
+fn http_error(status: reqwest::StatusCode, body: &str, secrets: &[&str]) -> String {
+    match json_error_detail(body, secrets) {
+        Some(detail) => format!("{status}: {detail}"),
+        None => status.to_string(),
+    }
+}
+
+async fn post_form_response(
     client: &reqwest::Client,
     url: &str,
     form: &[(&str, &str)],
     headers: &[(&str, &str)],
-) -> Result<serde_json::Value, String> {
-    let mut req = client.post(url).form(form);
-    for (k, v) in headers {
-        req = req.header(*k, *v);
+    signal: Option<&AtomicBool>,
+    operation: &str,
+) -> Result<(reqwest::StatusCode, String), String> {
+    let mut request = client.post(url).form(form);
+    for (key, value) in headers {
+        request = request.header(*key, *value);
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("request failed: {e}"))?;
-    let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| format!("read response: {e}"))?;
+    let response = request_with_optional_abort(request, signal, operation).await?;
+    let status = response.status();
+    let text = response_text_with_optional_abort(response, signal, operation).await?;
+    Ok((status, text))
+}
+
+fn json_string_values<'a>(value: &'a serde_json::Value, values: &mut Vec<&'a str>) {
+    match value {
+        serde_json::Value::String(value) => values.push(value),
+        serde_json::Value::Array(values_array) => {
+            for value in values_array {
+                json_string_values(value, values);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            for value in object.values() {
+                json_string_values(value, values);
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn post_json_text_with_signal(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    signal: Option<&AtomicBool>,
+    operation: &str,
+) -> Result<String, String> {
+    let request = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(body);
+    let secrets = {
+        let mut values = Vec::new();
+        json_string_values(body, &mut values);
+        values
+    };
+    let response = request_with_optional_abort(request, signal, operation).await?;
+    let status = response.status();
+    let text = response_text_with_optional_abort(response, signal, operation).await?;
     if !status.is_success() {
-        return Err(format!("{status}: {text}"));
+        return Err(format!(
+            "{operation} failed: {}",
+            http_error(status, &text, &secrets)
+        ));
+    }
+    Ok(text)
+}
+
+async fn post_form_json_with_signal(
+    client: &reqwest::Client,
+    url: &str,
+    form: &[(&str, &str)],
+    headers: &[(&str, &str)],
+    signal: Option<&AtomicBool>,
+) -> Result<serde_json::Value, String> {
+    let secrets = form
+        .iter()
+        .map(|(_, value)| *value)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let (status, text) =
+        post_form_response(client, url, form, headers, signal, "OAuth form").await?;
+    if !status.is_success() {
+        return Err(http_error(status, &text, &secrets));
     }
     serde_json::from_str(&text).map_err(|e| format!("invalid JSON response: {e}"))
 }
 
-/// GET a URL with headers and parse the JSON response.
-async fn get_json(
+async fn get_json_with_signal(
     client: &reqwest::Client,
     url: &str,
     headers: &[(&str, &str)],
+    signal: Option<&AtomicBool>,
+    secrets: &[&str],
 ) -> Result<serde_json::Value, String> {
     let mut req = client.get(url);
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("request failed: {e}"))?;
+    let resp = request_with_optional_abort(req, signal, "OAuth GET").await?;
     let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| format!("read response: {e}"))?;
+    let text = response_text_with_optional_abort(resp, signal, "OAuth GET").await?;
     if !status.is_success() {
-        return Err(format!("{status}: {text}"));
+        return Err(http_error(status, &text, secrets));
     }
     serde_json::from_str(&text).map_err(|e| format!("invalid JSON response: {e}"))
 }
@@ -86,33 +354,65 @@ pub async fn start_device_flow(
     form: &[(&str, &str)],
     headers: &[(&str, &str)],
 ) -> Result<DeviceCodeResponse, String> {
-    let data = post_form_json(client, device_code_url, form, headers).await?;
+    start_device_flow_with_signal(client, device_code_url, form, headers, None).await
+}
+
+async fn start_device_flow_with_signal(
+    client: &reqwest::Client,
+    device_code_url: &str,
+    form: &[(&str, &str)],
+    headers: &[(&str, &str)],
+    signal: Option<&AtomicBool>,
+) -> Result<DeviceCodeResponse, String> {
+    let data = post_form_json_with_signal(client, device_code_url, form, headers, signal).await?;
     let device_code = data
         .get("device_code")
         .and_then(|v| v.as_str())
+        .filter(|value| !value.is_empty())
         .ok_or_else(|| "Invalid device code response fields".to_string())?
         .to_string();
     let user_code = data
         .get("user_code")
         .and_then(|v| v.as_str())
+        .filter(|value| !value.is_empty())
         .ok_or_else(|| "Invalid device code response fields".to_string())?
         .to_string();
     let verification_uri = data
         .get("verification_uri")
         .and_then(|v| v.as_str())
+        .filter(|value| !value.is_empty())
         .ok_or_else(|| "Invalid device code response fields".to_string())?
         .to_string();
     let expires_in = data
         .get("expires_in")
-        .and_then(|v| v.as_u64())
+        .and_then(|value| {
+            value.as_u64().or_else(|| {
+                value
+                    .as_f64()
+                    .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+                    .map(|seconds| seconds.floor() as u64)
+            })
+        })
         .ok_or_else(|| "Invalid device code response fields".to_string())?;
-    let interval = data.get("interval").and_then(|v| v.as_f64());
+    let interval = match data.get("interval") {
+        Some(value) => Some(
+            value
+                .as_f64()
+                .filter(|seconds| seconds.is_finite())
+                .ok_or_else(|| "Invalid device code response fields".to_string())?,
+        ),
+        None => None,
+    };
 
     // The verification URI is opened in the user's browser; force it to be a
     // real http(s) URL so `open` cannot be pointed at an executable.
     let parsed = url::Url::parse(&verification_uri)
         .map_err(|_| "Untrusted verification_uri in device code response".to_string())?;
-    if parsed.scheme() != "https" && parsed.scheme() != "http" {
+    if (parsed.scheme() != "https" && parsed.scheme() != "http")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
         return Err("Untrusted verification_uri in device code response".to_string());
     }
 
@@ -148,12 +448,14 @@ pub async fn poll_for_access_token(
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         let device_code = device.device_code.clone();
+        let signal = signal.cloned();
         move || {
             let client = client.clone();
             let token_url = token_url.clone();
             let form = form.clone();
             let headers = headers.clone();
             let device_code = device_code.clone();
+            let signal = signal.clone();
             Box::pin(async move {
                 let mut body = form.clone();
                 body.push(("device_code".to_string(), device_code));
@@ -161,7 +463,12 @@ pub async fn poll_for_access_token(
                     "grant_type".to_string(),
                     "urn:ietf:params:oauth:grant-type:device_code".to_string(),
                 ));
-                let data = match post_form_json(
+                let request_secrets = body
+                    .iter()
+                    .map(|(_, value)| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>();
+                let (status, text) = match post_form_response(
                     &client,
                     &token_url,
                     &body
@@ -172,13 +479,39 @@ pub async fn poll_for_access_token(
                         .iter()
                         .map(|(k, v)| (k.as_str(), v.as_str()))
                         .collect::<Vec<_>>(),
+                    signal.as_deref(),
+                    "OAuth device token",
                 )
                 .await
                 {
-                    Ok(d) => d,
+                    Ok(response) => response,
                     Err(e) => return DeviceCodePollResult::Failed { message: e },
                 };
+                let data = match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(data) => data,
+                    Err(_) => {
+                        return DeviceCodePollResult::Failed {
+                            message: if status.is_success() {
+                                "Invalid device token response".to_string()
+                            } else {
+                                format!("Device token request failed ({status})")
+                            },
+                        }
+                    }
+                };
+                if !status.is_success()
+                    && data.get("error").and_then(|value| value.as_str()).is_none()
+                {
+                    return DeviceCodePollResult::Failed {
+                        message: http_error(status, &text, &request_secrets),
+                    };
+                }
                 if let Some(token) = data.get("access_token").and_then(|v| v.as_str()) {
+                    if !status.is_success() || token.is_empty() {
+                        return DeviceCodePollResult::Failed {
+                            message: format!("Device token request failed ({status})"),
+                        };
+                    }
                     return DeviceCodePollResult::Complete(token.to_string());
                 }
                 if let Some(error) = data.get("error").and_then(|v| v.as_str()) {
@@ -195,6 +528,8 @@ pub async fn poll_for_access_token(
                                 .get("error_description")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
+                            let error = redact_secrets(error, &request_secrets);
+                            let description = redact_secrets(description, &request_secrets);
                             let suffix = if description.is_empty() {
                                 String::new()
                             } else {
@@ -289,12 +624,24 @@ async fn copilot_token_exchange(
     client: &reqwest::Client,
     refresh_token: &str,
     enterprise_domain: Option<&str>,
+    signal: &AtomicBool,
 ) -> Result<OAuthCredential, String> {
     let domain = enterprise_domain.unwrap_or("github.com");
     let (_, _, copilot_token_url) = copilot_urls(domain);
-    let data = get_json(client, &copilot_token_url, &COPILOT_HEADERS)
-        .await
-        .map_err(|e| format!("copilot token request failed: {e}"))?;
+    let mut headers = COPILOT_HEADERS.to_vec();
+    headers.push(("Authorization", ""));
+    let authorization = format!("Bearer {refresh_token}");
+    headers.retain(|(key, _)| *key != "Authorization");
+    headers.push(("Authorization", authorization.as_str()));
+    let data = get_json_with_signal(
+        client,
+        &copilot_token_url,
+        &headers,
+        Some(signal),
+        &[refresh_token],
+    )
+    .await
+    .map_err(|e| format!("copilot token request failed: {e}"))?;
     let token = data
         .get("token")
         .and_then(|v| v.as_str())
@@ -359,9 +706,15 @@ impl OAuthAuth for GitHubCopilotOAuth {
             .clone()
             .unwrap_or_else(|| "github.com".to_string());
         let (device_code_url, access_token_url, _) = copilot_urls(&domain);
+        let signal = interaction
+            .signal()
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        if signal.load(Ordering::SeqCst) {
+            return Err("Login cancelled".to_string());
+        }
 
         let client = reqwest::Client::new();
-        let device = start_device_flow(
+        let device = start_device_flow_with_signal(
             &client,
             &device_code_url,
             &[("client_id", COPILOT_CLIENT_ID), ("scope", "read:user")],
@@ -370,6 +723,7 @@ impl OAuthAuth for GitHubCopilotOAuth {
                 ("Content-Type", "application/x-www-form-urlencoded"),
                 ("User-Agent", "GitHubCopilotChat/0.35.0"),
             ],
+            Some(&signal),
         )
         .await?;
 
@@ -390,17 +744,23 @@ impl OAuthAuth for GitHubCopilotOAuth {
                 ("User-Agent", "GitHubCopilotChat/0.35.0"),
             ],
             &device,
-            None,
+            Some(&signal),
         )
         .await?;
 
-        copilot_token_exchange(&client, &github_access_token, enterprise_domain.as_deref()).await
+        copilot_token_exchange(
+            &client,
+            &github_access_token,
+            enterprise_domain.as_deref(),
+            &signal,
+        )
+        .await
     }
 
     async fn refresh(
         &self,
         credential: &OAuthCredential,
-        _signal: &AtomicBool,
+        signal: &AtomicBool,
     ) -> Result<OAuthCredential, String> {
         let enterprise_domain = credential
             .extra
@@ -408,7 +768,13 @@ impl OAuthAuth for GitHubCopilotOAuth {
             .and_then(|v| v.as_str())
             .and_then(normalize_domain);
         let client = reqwest::Client::new();
-        copilot_token_exchange(&client, &credential.refresh, enterprise_domain.as_deref()).await
+        copilot_token_exchange(
+            &client,
+            &credential.refresh,
+            enterprise_domain.as_deref(),
+            signal,
+        )
+        .await
     }
 
     fn to_auth(&self, credential: &OAuthCredential) -> Option<ModelAuth> {
@@ -429,6 +795,308 @@ impl OAuthAuth for GitHubCopilotOAuth {
 }
 
 // ---------------------------------------------------------------------------
+// xAI (device code)
+// ---------------------------------------------------------------------------
+
+const XAI_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
+const XAI_SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
+const XAI_DEVICE_CODE_URL: &str = "https://auth.x.ai/oauth2/device/code";
+const XAI_TOKEN_URL: &str = "https://auth.x.ai/oauth2/token";
+const XAI_REFRESH_SKEW_MS: u64 = 5 * 60 * 1000;
+const XAI_DEFAULT_TOKEN_LIFETIME_SECONDS: u64 = 3600;
+
+#[derive(Debug, Clone)]
+struct XaiDeviceCode {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: Option<String>,
+    interval: Option<f64>,
+    expires_in: u64,
+}
+
+fn xai_required_string(body: &serde_json::Value, field: &str) -> Result<String, String> {
+    body.get(field)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("Invalid xAI OAuth response field: {field}"))
+}
+
+fn xai_positive_number(body: &serde_json::Value, field: &str) -> Result<u64, String> {
+    let valid = body
+        .get(field)
+        .and_then(|value| value.as_f64())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| value.floor() as u64)
+        .filter(|value| *value > 0);
+    valid.ok_or_else(|| format!("Invalid xAI OAuth response field: {field}"))
+}
+
+fn xai_validate_verification_uri(raw: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(raw)
+        .map_err(|_| "Untrusted verification URI in xAI OAuth response".to_string())?;
+    if parsed.scheme() != "https" {
+        return Err("Untrusted verification URI in xAI OAuth response".to_string());
+    }
+    Ok(parsed.to_string())
+}
+
+fn xai_parse_device_code(body: &serde_json::Value) -> Result<XaiDeviceCode, String> {
+    let verification_uri =
+        xai_validate_verification_uri(&xai_required_string(body, "verification_uri")?)?;
+    let verification_uri_complete = body
+        .get("verification_uri_complete")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(xai_validate_verification_uri)
+        .transpose()?;
+    let interval = body
+        .get("interval")
+        .and_then(|value| value.as_f64())
+        .filter(|value| value.is_finite() && *value > 0.0);
+    Ok(XaiDeviceCode {
+        device_code: xai_required_string(body, "device_code")?,
+        user_code: xai_required_string(body, "user_code")?,
+        verification_uri,
+        verification_uri_complete,
+        interval,
+        expires_in: xai_positive_number(body, "expires_in")?,
+    })
+}
+
+fn xai_request_failure(
+    action: &str,
+    status: reqwest::StatusCode,
+    body: &serde_json::Value,
+) -> String {
+    let error = body.get("error").and_then(|value| value.as_str());
+    let description = body
+        .get("error_description")
+        .and_then(|value| value.as_str());
+    let detail = [error, description]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(": ");
+    if detail.is_empty() {
+        format!("xAI OAuth {action} failed (HTTP {status})")
+    } else {
+        format!("xAI OAuth {action} failed (HTTP {status}): {detail}")
+    }
+}
+
+async fn xai_post_form(
+    client: &reqwest::Client,
+    url: &str,
+    form: &[(&str, &str)],
+    signal: &AtomicBool,
+    action: &str,
+) -> Result<(reqwest::StatusCode, serde_json::Value), String> {
+    let headers = [
+        ("Accept", "application/json"),
+        ("Content-Type", "application/x-www-form-urlencoded"),
+    ];
+    let (status, text) =
+        post_form_response(client, url, form, &headers, Some(signal), "xAI OAuth").await?;
+    let body: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| format!("xAI OAuth returned invalid JSON (HTTP {})", status.as_u16()))?;
+    if !body.is_object() {
+        return Err(format!(
+            "xAI OAuth returned invalid JSON (HTTP {})",
+            status.as_u16()
+        ));
+    }
+    if !status.is_success() && action == "device authorization" {
+        return Err(xai_request_failure(action, status, &body));
+    }
+    Ok((status, body))
+}
+
+async fn xai_start_device_flow(
+    client: &reqwest::Client,
+    signal: &AtomicBool,
+) -> Result<XaiDeviceCode, String> {
+    let (_, body) = xai_post_form(
+        client,
+        XAI_DEVICE_CODE_URL,
+        &[
+            ("client_id", XAI_CLIENT_ID),
+            ("scope", XAI_SCOPE),
+            ("referrer", "pi"),
+        ],
+        signal,
+        "device authorization",
+    )
+    .await?;
+    xai_parse_device_code(&body)
+}
+
+fn xai_credentials_from_token_response(
+    body: &serde_json::Value,
+    previous_refresh: Option<&str>,
+) -> Result<OAuthCredential, String> {
+    let access = xai_required_string(body, "access_token")?;
+    let refresh = match body.get("refresh_token") {
+        None => match previous_refresh.filter(|value| !value.is_empty()) {
+            Some(value) => value.to_string(),
+            None => xai_required_string(body, "refresh_token")?,
+        },
+        Some(_) => xai_required_string(body, "refresh_token")?,
+    };
+    let lifetime = match body.get("expires_in") {
+        None => XAI_DEFAULT_TOKEN_LIFETIME_SECONDS,
+        Some(_) => xai_positive_number(body, "expires_in")?,
+    };
+    Ok(OAuthCredential {
+        access,
+        refresh,
+        expires: crate::types::now_ms()
+            .saturating_add(lifetime.saturating_mul(1000))
+            .saturating_sub(XAI_REFRESH_SKEW_MS),
+        extra: Default::default(),
+    })
+}
+
+async fn xai_poll_for_credentials(
+    client: &reqwest::Client,
+    device: &XaiDeviceCode,
+    signal: Arc<AtomicBool>,
+) -> Result<OAuthCredential, String> {
+    let client = client.clone();
+    let device_code = device.device_code.clone();
+    let poll_signal = signal.clone();
+    let mut options = DeviceCodePollOptions::new(Box::new(move || {
+        let client = client.clone();
+        let device_code = device_code.clone();
+        let signal = poll_signal.clone();
+        Box::pin(async move {
+            let result = xai_post_form(
+                &client,
+                XAI_TOKEN_URL,
+                &[
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                    ("client_id", XAI_CLIENT_ID),
+                    ("device_code", device_code.as_str()),
+                ],
+                signal.as_ref(),
+                "device token polling",
+            )
+            .await;
+            let (status, body) = match result {
+                Ok(result) => result,
+                Err(message) => return DeviceCodePollResult::Failed { message },
+            };
+            if status.is_success() {
+                return match xai_credentials_from_token_response(&body, None) {
+                    Ok(credential) => DeviceCodePollResult::Complete(credential),
+                    Err(message) => DeviceCodePollResult::Failed { message },
+                };
+            }
+            match body.get("error").and_then(|value| value.as_str()) {
+                Some("authorization_pending") => DeviceCodePollResult::Pending,
+                Some("slow_down") => DeviceCodePollResult::SlowDown {
+                    interval_seconds: body.get("interval").and_then(|value| value.as_f64()),
+                },
+                Some("access_denied") | Some("authorization_denied") => {
+                    DeviceCodePollResult::Failed {
+                        message: "xAI device authorization was denied".to_string(),
+                    }
+                }
+                Some("expired_token") => DeviceCodePollResult::Failed {
+                    message: "xAI device code expired".to_string(),
+                },
+                _ => DeviceCodePollResult::Failed {
+                    message: xai_request_failure("device token polling", status, &body),
+                },
+            }
+        })
+    }));
+    options.interval_seconds = device.interval;
+    options.expires_in_seconds = Some(device.expires_in);
+    options.wait_before_first_poll = true;
+    options.signal = Some(signal);
+    poll_oauth_device_code_flow(&mut options).await
+}
+
+/// xAI OAuth subscription flow (upstream `xaiOAuth`).
+pub struct XaiOAuth;
+
+impl XaiOAuth {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self)
+    }
+}
+
+#[async_trait::async_trait]
+impl OAuthAuth for XaiOAuth {
+    fn name(&self) -> &str {
+        "xAI (Grok/X subscription)"
+    }
+
+    fn is_subscription(&self) -> bool {
+        true
+    }
+
+    fn login_label(&self) -> Option<&str> {
+        Some("Sign in with SuperGrok or X Premium")
+    }
+
+    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
+        let signal = interaction
+            .signal()
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        if signal.load(Ordering::SeqCst) {
+            return Err("Login cancelled".to_string());
+        }
+        let client = reqwest::Client::new();
+        let device = xai_start_device_flow(&client, signal.as_ref()).await?;
+        interaction.notify(&AuthEvent::DeviceCode {
+            user_code: device.user_code.clone(),
+            verification_uri: device
+                .verification_uri_complete
+                .clone()
+                .unwrap_or_else(|| device.verification_uri.clone()),
+            interval_seconds: device.interval,
+            expires_in_seconds: Some(device.expires_in),
+        });
+        xai_poll_for_credentials(&client, &device, signal).await
+    }
+
+    async fn refresh(
+        &self,
+        credential: &OAuthCredential,
+        signal: &AtomicBool,
+    ) -> Result<OAuthCredential, String> {
+        let client = reqwest::Client::new();
+        let (status, body) = xai_post_form(
+            &client,
+            XAI_TOKEN_URL,
+            &[
+                ("grant_type", "refresh_token"),
+                ("client_id", XAI_CLIENT_ID),
+                ("refresh_token", credential.refresh.as_str()),
+            ],
+            signal,
+            "token refresh",
+        )
+        .await?;
+        if !status.is_success() {
+            return Err(xai_request_failure("token refresh", status, &body));
+        }
+        xai_credentials_from_token_response(&body, Some(&credential.refresh))
+    }
+
+    fn to_auth(&self, credential: &OAuthCredential) -> Option<ModelAuth> {
+        Some(ModelAuth {
+            api_key: Some(credential.access.clone()),
+            headers: None,
+            base_url: None,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // OpenRouter (callback server + PKCE)
 // ---------------------------------------------------------------------------
 
@@ -439,25 +1107,42 @@ const OPENROUTER_LOGIN_TIMEOUT_MS: u64 = 5 * 60 * 1000;
 /// One-shot loopback HTTP server that captures the OAuth callback code.
 struct CallbackServer {
     listener: tokio::net::TcpListener,
+    callback_path: String,
+    claimed: Arc<AtomicBool>,
 }
 
 impl CallbackServer {
     /// Bind on 127.0.0.1 (ephemeral port unless `port` is Some) and return
     /// the server plus its callback URL.
     async fn start_on(callback_path: String, port: Option<u16>) -> Result<(Self, String), String> {
-        let addr = match port {
-            Some(p) => format!("127.0.0.1:{p}"),
-            None => "127.0.0.1:0".to_string(),
-        };
-        let listener = tokio::net::TcpListener::bind(addr)
+        if !callback_path.starts_with('/') || callback_path.contains(['?', '#']) {
+            return Err("Invalid OAuth callback path".to_string());
+        }
+        let callback_host = std::env::var("PI_OAUTH_CALLBACK_HOST")
+            .ok()
+            .filter(|host| !host.trim().is_empty())
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let listener = tokio::net::TcpListener::bind((callback_host.as_str(), port.unwrap_or(0)))
             .await
             .map_err(|e| format!("bind callback server: {e}"))?;
         let port = listener
             .local_addr()
             .map_err(|e| format!("callback addr: {e}"))?
             .port();
-        let url = format!("http://127.0.0.1:{port}{callback_path}");
-        Ok((Self { listener }, url))
+        let display_host = if callback_host.contains(':') {
+            format!("[{callback_host}]")
+        } else {
+            callback_host
+        };
+        let url = format!("http://{display_host}:{port}{callback_path}");
+        Ok((
+            Self {
+                listener,
+                callback_path,
+                claimed: Arc::new(AtomicBool::new(false)),
+            },
+            url,
+        ))
     }
 
     /// Bind an ephemeral port on 127.0.0.1 and return the server plus its
@@ -468,64 +1153,232 @@ impl CallbackServer {
 
     /// Accept one connection, parse the GET query, and reply with `html`.
     /// Returns the query string of the request.
+    #[cfg(test)]
     async fn wait_for_callback(&self, html: &str) -> Result<String, String> {
-        let (mut socket, _) = self
-            .listener
-            .accept()
+        self.wait_for_callback_with_cancel(html, None, None, None)
             .await
-            .map_err(|e| format!("callback accept: {e}"))?;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let mut buf = [0u8; 8192];
-        let n = socket
-            .read(&mut buf)
-            .await
-            .map_err(|e| format!("callback read: {e}"))?;
-        let request = String::from_utf8_lossy(&buf[..n]).to_string();
-        let request_line = request.lines().next().unwrap_or("").to_string();
-        let path = request_line
-            .split_whitespace()
-            .nth(1)
-            .unwrap_or("/")
-            .to_string();
-        let query = path.split('?').nth(1).unwrap_or("").to_string();
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            html.len(),
-            html
-        );
-        let _ = socket.write_all(response.as_bytes()).await;
-        let _ = socket.shutdown().await;
-        Ok(query)
+    }
+
+    async fn wait_for_callback_with_cancel(
+        &self,
+        html: &str,
+        cancel: Option<Arc<AtomicBool>>,
+        timeout: Option<Duration>,
+        expected_state: Option<&str>,
+    ) -> Result<String, String> {
+        self.wait_for_callback_with_cancel_and_error_policy(
+            html,
+            cancel,
+            timeout,
+            expected_state,
+            true,
+        )
+        .await
+    }
+
+    async fn wait_for_callback_allowing_errors(
+        &self,
+        html: &str,
+        cancel: Option<Arc<AtomicBool>>,
+        timeout: Option<Duration>,
+        expected_state: Option<&str>,
+    ) -> Result<String, String> {
+        self.wait_for_callback_with_cancel_and_error_policy(
+            html,
+            cancel,
+            timeout,
+            expected_state,
+            false,
+        )
+        .await
+    }
+
+    async fn wait_for_callback_with_cancel_and_error_policy(
+        &self,
+        html: &str,
+        cancel: Option<Arc<AtomicBool>>,
+        timeout: Option<Duration>,
+        expected_state: Option<&str>,
+        terminate_on_error: bool,
+    ) -> Result<String, String> {
+        let wait = async {
+            loop {
+                if cancel
+                    .as_ref()
+                    .is_some_and(|signal| signal.load(Ordering::SeqCst))
+                {
+                    return Err("Login cancelled".to_string());
+                }
+                let accepted = self.listener.accept();
+                tokio::pin!(accepted);
+                let (mut socket, _) = match cancel.as_ref() {
+                    Some(cancel) => {
+                        let abort = wait_for_abort(cancel);
+                        tokio::pin!(abort);
+                        tokio::select! {
+                            accepted = &mut accepted => accepted,
+                            _ = &mut abort => return Err("Login cancelled".to_string()),
+                        }
+                    }
+                    None => accepted.await,
+                }
+                .map_err(|error| format!("callback accept: {error}"))?;
+                let mut buf = [0u8; 8192];
+                let read = read_callback_request(&mut socket, &mut buf, cancel.as_ref()).await?;
+                let request = String::from_utf8_lossy(&buf[..read]);
+                let mut request_line = request.lines().next().unwrap_or("").split_whitespace();
+                let method = request_line.next().unwrap_or("");
+                let target = request_line.next().unwrap_or("");
+                let parsed = url::Url::parse(&format!("http://localhost{target}"));
+                let Ok(parsed) = parsed else {
+                    write_callback_response(
+                        &mut socket,
+                        400,
+                        "<!doctype html><html><body><h1>Invalid OAuth callback request.</h1></body></html>",
+                    )
+                    .await?;
+                    continue;
+                };
+                if method != "GET" {
+                    write_callback_response(
+                        &mut socket,
+                        405,
+                        "<!doctype html><html><body><h1>OAuth callback method not allowed.</h1></body></html>",
+                    )
+                    .await?;
+                    continue;
+                }
+                if parsed.path() != self.callback_path {
+                    write_callback_response(
+                        &mut socket,
+                        404,
+                        "<!doctype html><html><body><h1>OAuth callback route not found.</h1></body></html>",
+                    )
+                    .await?;
+                    continue;
+                }
+                let has_code = parsed
+                    .query_pairs()
+                    .any(|(key, value)| key == "code" && !value.is_empty());
+                let has_error = parsed
+                    .query_pairs()
+                    .any(|(key, value)| key == "error" && !value.is_empty());
+                if !has_code && !has_error {
+                    write_callback_response(
+                        &mut socket,
+                        400,
+                        "<!doctype html><html><body><h1>OAuth callback did not contain a result.</h1></body></html>",
+                    )
+                    .await?;
+                    continue;
+                }
+                if let Some(expected_state) = expected_state {
+                    let received_state = parsed
+                        .query_pairs()
+                        .find(|(key, _)| key == "state")
+                        .map(|(_, value)| value.into_owned());
+                    if received_state.as_deref() != Some(expected_state) {
+                        write_callback_response(
+                            &mut socket,
+                            400,
+                            "<!doctype html><html><body><h1>OAuth callback state mismatch.</h1></body></html>",
+                        )
+                        .await?;
+                        continue;
+                    }
+                }
+                if has_error {
+                    write_callback_response(
+                        &mut socket,
+                        400,
+                        "<!doctype html><html><body><h1>OAuth authorization failed.</h1></body></html>",
+                    )
+                    .await?;
+                    if terminate_on_error {
+                        return Err("OAuth authorization failed".to_string());
+                    }
+                    continue;
+                }
+                if self.claimed.swap(true, Ordering::SeqCst) {
+                    write_callback_response(
+                        &mut socket,
+                        409,
+                        "<!doctype html><html><body><h1>This OAuth callback has already been used.</h1></body></html>",
+                    )
+                    .await?;
+                    continue;
+                }
+                write_callback_response(&mut socket, 200, html).await?;
+                return Ok(parsed.query().unwrap_or("").to_string());
+            }
+        };
+        match timeout {
+            Some(timeout) => tokio::time::timeout(timeout, wait)
+                .await
+                .map_err(|_| "OAuth callback timed out".to_string())?,
+            None => wait.await,
+        }
     }
 }
 
-/// Parse `code` out of a pasted URL / query string / raw code (upstream
-/// `parseAuthorizationInput`).
-fn parse_authorization_code(input: &str) -> Option<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuthorizationInput {
+    code: Option<String>,
+    state: Option<String>,
+}
+
+/// Parse a pasted URL, query string, `code#state`, or raw authorization code
+/// (upstream `parseAuthorizationInput`).
+fn parse_authorization_input(input: &str) -> AuthorizationInput {
     let value = input.trim();
     if value.is_empty() {
-        return None;
+        return AuthorizationInput {
+            code: None,
+            state: None,
+        };
     }
     if let Ok(url) = url::Url::parse(value) {
-        let pairs: Vec<(String, String)> = url
-            .query_pairs()
-            .map(|(k, v)| (k.into_owned(), v.into_owned()))
-            .collect();
-        return pairs
-            .iter()
-            .find(|(k, _)| k == "code")
-            .map(|(_, v)| v.clone());
+        return AuthorizationInput {
+            code: url
+                .query_pairs()
+                .find(|(key, value)| key == "code" && !value.is_empty())
+                .map(|(_, value)| value.into_owned()),
+            state: url
+                .query_pairs()
+                .find(|(key, value)| key == "state" && !value.is_empty())
+                .map(|(_, value)| value.into_owned()),
+        };
+    }
+    if let Some((code, state)) = value.split_once('#') {
+        return AuthorizationInput {
+            code: (!code.is_empty()).then(|| code.to_string()),
+            state: (!state.is_empty()).then(|| state.to_string()),
+        };
     }
     if value.contains("code=") {
-        let pairs: Vec<(String, String)> = url::form_urlencoded::parse(value.as_bytes())
-            .map(|(k, v)| (k.into_owned(), v.into_owned()))
-            .collect();
-        return pairs
-            .iter()
-            .find(|(k, _)| k == "code")
-            .map(|(_, v)| v.clone());
+        let pairs: Vec<(String, String)> =
+            url::form_urlencoded::parse(value.trim_start_matches(['?', '&']).as_bytes())
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect();
+        return AuthorizationInput {
+            code: pairs
+                .iter()
+                .find(|(key, value)| key == "code" && !value.is_empty())
+                .map(|(_, value)| value.clone()),
+            state: pairs
+                .iter()
+                .find(|(key, value)| key == "state" && !value.is_empty())
+                .map(|(_, value)| value.clone()),
+        };
     }
-    Some(value.to_string())
+    AuthorizationInput {
+        code: Some(value.to_string()),
+        state: None,
+    }
+}
+
+fn parse_authorization_code(input: &str) -> Option<String> {
+    parse_authorization_input(input).code
 }
 
 /// Exchange the authorization code for a permanent OpenRouter API key
@@ -534,35 +1387,33 @@ async fn openrouter_exchange_code(
     client: &reqwest::Client,
     code: &str,
     verifier: &str,
+    signal: &AtomicBool,
 ) -> Result<OAuthCredential, String> {
-    let resp = client
-        .post(OPENROUTER_TOKEN_URL)
-        .header("accept", "application/json")
-        .header("content-type", "application/json")
-        .json(&serde_json::json!({
-            "code": code,
-            "code_verifier": verifier,
-            "code_challenge_method": "S256",
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("OpenRouter key exchange failed: {e}"))?;
-    let status = resp.status();
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("OpenRouter key exchange returned invalid JSON: {e}"))?;
-    if !status.is_success() {
-        let detail = body
-            .get("error_description")
-            .or_else(|| body.get("message"))
-            .or_else(|| body.get("error"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        return Err(format!(
-            "OpenRouter OAuth key exchange failed (HTTP {status}){detail}"
-        ));
-    }
+    openrouter_exchange_code_at(client, OPENROUTER_TOKEN_URL, code, verifier, signal).await
+}
+
+async fn openrouter_exchange_code_at(
+    client: &reqwest::Client,
+    token_url: &str,
+    code: &str,
+    verifier: &str,
+    signal: &AtomicBool,
+) -> Result<OAuthCredential, String> {
+    let body = serde_json::json!({
+        "code": code,
+        "code_verifier": verifier,
+        "code_challenge_method": "S256",
+    });
+    let text = post_json_text_with_signal(
+        client,
+        token_url,
+        &body,
+        Some(signal),
+        "OpenRouter OAuth key exchange",
+    )
+    .await?;
+    let body: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| "OpenRouter OAuth key exchange returned invalid JSON".to_string())?;
     let key = body
         .get("key")
         .and_then(|v| v.as_str())
@@ -605,6 +1456,13 @@ impl OAuthAuth for OpenRouterOAuth {
         let (verifier, challenge) = crate::oauth::generate_pkce();
         let callback_path = format!("/oauth/callback/{}", uuid::Uuid::new_v4());
         let (server, callback_url) = CallbackServer::start(callback_path).await?;
+        let external_cancel = interaction.signal();
+        if external_cancel
+            .as_ref()
+            .is_some_and(|signal| signal.load(Ordering::SeqCst))
+        {
+            return Err("Login cancelled".to_string());
+        }
 
         let authorize_url = format!(
             "{OPENROUTER_AUTHORIZE_URL}?callback_url={}&code_challenge={}&code_challenge_method=S256",
@@ -622,36 +1480,67 @@ impl OAuthAuth for OpenRouterOAuth {
             ),
         });
 
-        // Race the callback server against a manual paste prompt.
+        // Race the callback server against a manual paste prompt. The async
+        // interaction path is required for a real UI; the compatibility path
+        // remains useful for scripted/headless prompts that return immediately.
         let client = reqwest::Client::new();
+        let callback_cancel = Arc::new(AtomicBool::new(false));
         let callback_future = async {
-            let query = tokio::time::timeout(
-                std::time::Duration::from_millis(OPENROUTER_LOGIN_TIMEOUT_MS),
-                server.wait_for_callback("<!DOCTYPE html><html><body><h1>Signed in to OpenRouter. You may now close this page.</h1></body></html>"),
-            )
-            .await
-            .map_err(|_| "OpenRouter OAuth login timed out".to_string())??;
+            let query = server
+                .wait_for_callback_with_cancel(
+                    "<!DOCTYPE html><html><body><h1>Signed in to OpenRouter. You may now close this page.</h1></body></html>",
+                    Some(callback_cancel.clone()),
+                    Some(Duration::from_millis(OPENROUTER_LOGIN_TIMEOUT_MS)),
+                    None,
+                )
+                .await
+                .map_err(|error| {
+                    if error == "OAuth callback timed out" {
+                        "OpenRouter OAuth login timed out".to_string()
+                    } else {
+                        error
+                    }
+                })?;
             parse_authorization_code(&query)
                 .ok_or_else(|| "OpenRouter returned no authorization code".to_string())
         };
 
-        let manual_future = async {
-            let input = interaction.prompt(&crate::auth::AuthPrompt::ManualCode {
-                message: "Complete sign-in in your browser, or paste the authorization code / redirect URL here:".to_string(),
-                placeholder: Some(callback_url.clone()),
-            })?;
-            parse_authorization_code(&input).ok_or_else(|| "Missing authorization code".to_string())
+        let manual_abort = Arc::new(AtomicBool::new(false));
+        let manual_prompt = crate::auth::AuthPrompt::ManualCode {
+            message: "Complete sign-in in your browser, or paste the authorization code / redirect URL here:".to_string(),
+            placeholder: Some(callback_url.clone()),
         };
+        let mut manual_future: Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>> =
+            if interaction.supports_async_prompt() {
+                Box::pin(interaction.prompt_async_with_abort(&manual_prompt, manual_abort.clone()))
+            } else {
+                Box::pin(async { interaction.prompt(&manual_prompt) })
+            };
+        let mut callback_future = Box::pin(callback_future);
+        let external_cancel_future = wait_for_optional_abort(external_cancel.clone());
+        tokio::pin!(external_cancel_future);
 
         let code = tokio::select! {
-            result = callback_future => result?,
-            result = manual_future => result?,
+            result = &mut callback_future => {
+                manual_abort.store(true, Ordering::SeqCst);
+                result?
+            },
+            result = &mut manual_future => {
+                callback_cancel.store(true, Ordering::SeqCst);
+                result?
+            },
+            _ = &mut external_cancel_future => {
+                callback_cancel.store(true, Ordering::SeqCst);
+                manual_abort.store(true, Ordering::SeqCst);
+                return Err("Login cancelled".to_string());
+            }
         };
 
         interaction.notify(&AuthEvent::Progress {
             message: "Exchanging authorization code for an API key...".to_string(),
         });
-        openrouter_exchange_code(&client, &code, &verifier).await
+        let signal = external_cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        openrouter_exchange_code(&client, &code, &verifier, signal.as_ref()).await
     }
 
     async fn refresh(
@@ -685,33 +1574,6 @@ const ANTHROPIC_REDIRECT_URI: &str = "http://localhost:53692/callback";
 const ANTHROPIC_SCOPES: &str =
     "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 
-/// POST a JSON body and return the response text (upstream `postJson`).
-async fn post_json_text(
-    client: &reqwest::Client,
-    url: &str,
-    body: &serde_json::Value,
-) -> Result<String, String> {
-    let resp = client
-        .post(url)
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json")
-        .json(body)
-        .send()
-        .await
-        .map_err(|e| format!("HTTP request failed: {e}"))?;
-    let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| format!("read response: {e}"))?;
-    if !status.is_success() {
-        return Err(format!(
-            "HTTP request failed. status={status}; url={url}; body={text}"
-        ));
-    }
-    Ok(text)
-}
-
 /// Exchange the authorization code for tokens (upstream
 /// `exchangeAuthorizationCode`).
 async fn anthropic_exchange_code(
@@ -719,25 +1581,56 @@ async fn anthropic_exchange_code(
     code: &str,
     state: &str,
     verifier: &str,
+    signal: &AtomicBool,
+) -> Result<OAuthCredential, String> {
+    anthropic_exchange_code_at(
+        client,
+        ANTHROPIC_TOKEN_URL,
+        ANTHROPIC_REDIRECT_URI,
+        code,
+        state,
+        verifier,
+        signal,
+    )
+    .await
+}
+
+async fn anthropic_exchange_code_at(
+    client: &reqwest::Client,
+    token_url: &str,
+    redirect_uri: &str,
+    code: &str,
+    state: &str,
+    verifier: &str,
+    signal: &AtomicBool,
 ) -> Result<OAuthCredential, String> {
     let body = serde_json::json!({
         "grant_type": "authorization_code",
         "client_id": ANTHROPIC_CLIENT_ID,
         "code": code,
         "state": state,
-        "redirect_uri": ANTHROPIC_REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "code_verifier": verifier,
     });
-    let text = post_json_text(client, ANTHROPIC_TOKEN_URL, &body).await?;
+    let text = post_json_text_with_signal(
+        client,
+        token_url,
+        &body,
+        Some(signal),
+        "Anthropic OAuth token exchange",
+    )
+    .await?;
     let data: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("Token exchange returned invalid JSON: {e}"))?;
     let access = data
         .get("access_token")
         .and_then(|v| v.as_str())
+        .filter(|value| !value.is_empty())
         .ok_or("missing access_token")?;
     let refresh = data
         .get("refresh_token")
         .and_then(|v| v.as_str())
+        .filter(|value| !value.is_empty())
         .ok_or("missing refresh_token")?;
     let expires_in = data
         .get("expires_in")
@@ -747,7 +1640,9 @@ async fn anthropic_exchange_code(
     Ok(OAuthCredential {
         refresh: refresh.to_string(),
         access: access.to_string(),
-        expires: now_ms + expires_in * 1000 - 5 * 60 * 1000,
+        expires: now_ms
+            .saturating_add(expires_in.saturating_mul(1000))
+            .saturating_sub(5 * 60 * 1000),
         extra: Default::default(),
     })
 }
@@ -756,22 +1651,32 @@ async fn anthropic_exchange_code(
 async fn anthropic_refresh_token(
     client: &reqwest::Client,
     refresh_token: &str,
+    signal: &AtomicBool,
 ) -> Result<OAuthCredential, String> {
     let body = serde_json::json!({
         "grant_type": "refresh_token",
         "client_id": ANTHROPIC_CLIENT_ID,
         "refresh_token": refresh_token,
     });
-    let text = post_json_text(client, ANTHROPIC_TOKEN_URL, &body).await?;
+    let text = post_json_text_with_signal(
+        client,
+        ANTHROPIC_TOKEN_URL,
+        &body,
+        Some(signal),
+        "Anthropic OAuth token refresh",
+    )
+    .await?;
     let data: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("Token refresh returned invalid JSON: {e}"))?;
     let access = data
         .get("access_token")
         .and_then(|v| v.as_str())
+        .filter(|value| !value.is_empty())
         .ok_or("missing access_token")?;
     let refresh = data
         .get("refresh_token")
         .and_then(|v| v.as_str())
+        .filter(|value| !value.is_empty())
         .ok_or("missing refresh_token")?;
     let expires_in = data
         .get("expires_in")
@@ -781,7 +1686,9 @@ async fn anthropic_refresh_token(
     Ok(OAuthCredential {
         refresh: refresh.to_string(),
         access: access.to_string(),
-        expires: now_ms + expires_in * 1000 - 5 * 60 * 1000,
+        expires: now_ms
+            .saturating_add(expires_in.saturating_mul(1000))
+            .saturating_sub(5 * 60 * 1000),
         extra: Default::default(),
     })
 }
@@ -816,6 +1723,13 @@ impl OAuthAuth for AnthropicOAuth {
             Some(ANTHROPIC_CALLBACK_PORT),
         )
         .await?;
+        let external_cancel = interaction.signal();
+        if external_cancel
+            .as_ref()
+            .is_some_and(|signal| signal.load(Ordering::SeqCst))
+        {
+            return Err("Login cancelled".to_string());
+        }
 
         let auth_params = format!(
             "code=true&client_id={}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
@@ -835,42 +1749,63 @@ impl OAuthAuth for AnthropicOAuth {
             ),
         });
 
-        // Race the callback server against a manual paste prompt.
+        // Race the callback server against a manual paste prompt. The
+        // callback server validates the expected PKCE state before claiming
+        // the one-shot result, so an unsolicited callback cannot consume the
+        // real login attempt.
         let client = reqwest::Client::new();
+        let callback_cancel = Arc::new(AtomicBool::new(false));
         let callback_future = async {
             let query = server
-                .wait_for_callback("<!DOCTYPE html><html><body><h1>Anthropic authentication completed. You can close this window.</h1></body></html>")
+                .wait_for_callback_allowing_errors(
+                    "<!DOCTYPE html><html><body><h1>Anthropic authentication completed. You can close this window.</h1></body></html>",
+                    Some(callback_cancel.clone()),
+                    Some(Duration::from_millis(5 * 60 * 1000)),
+                    Some(&verifier),
+                )
                 .await?;
-            let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
-                .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                .collect();
-            let code = pairs
-                .iter()
-                .find(|(k, _)| k == "code")
-                .map(|(_, v)| v.clone());
-            let state = pairs
-                .iter()
-                .find(|(k, _)| k == "state")
-                .map(|(_, v)| v.clone());
-            match (code, state) {
+            let parsed = parse_authorization_input(&query);
+            match (parsed.code, parsed.state) {
                 (Some(code), Some(state)) => Ok((code, state)),
                 _ => Err("Missing code or state parameter".to_string()),
             }
         };
 
-        let manual_future = async {
-            let input = interaction.prompt(&crate::auth::AuthPrompt::ManualCode {
-                message: "Complete login in your browser, or paste the authorization code / redirect URL here:".to_string(),
-                placeholder: Some(ANTHROPIC_REDIRECT_URI.to_string()),
-            })?;
-            let parsed = parse_authorization_code(&input)
-                .ok_or_else(|| "Missing authorization code".to_string())?;
-            Ok::<(String, String), String>((parsed, verifier.clone()))
+        let manual_abort = Arc::new(AtomicBool::new(false));
+        let manual_prompt = crate::auth::AuthPrompt::ManualCode {
+            message: "Complete login in your browser, or paste the authorization code / redirect URL here:".to_string(),
+            placeholder: Some(ANTHROPIC_REDIRECT_URI.to_string()),
         };
+        let mut manual_future: Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>> =
+            if interaction.supports_async_prompt() {
+                Box::pin(interaction.prompt_async_with_abort(&manual_prompt, manual_abort.clone()))
+            } else {
+                Box::pin(async { interaction.prompt(&manual_prompt) })
+            };
+        let mut callback_future = Box::pin(callback_future);
+        let external_cancel_future = wait_for_optional_abort(external_cancel.clone());
+        tokio::pin!(external_cancel_future);
 
         let (code, state) = tokio::select! {
-            result = callback_future => result?,
-            result = manual_future => result?,
+            result = &mut callback_future => {
+                manual_abort.store(true, Ordering::SeqCst);
+                result?
+            },
+            result = &mut manual_future => {
+                callback_cancel.store(true, Ordering::SeqCst);
+                let input = result?;
+                let parsed = parse_authorization_input(&input);
+                if parsed.state.as_deref().is_some_and(|state| state != verifier) {
+                    return Err("OAuth state mismatch".to_string());
+                }
+                let code = parsed.code.ok_or_else(|| "Missing authorization code".to_string())?;
+                (code, parsed.state.unwrap_or_else(|| verifier.clone()))
+            },
+            _ = &mut external_cancel_future => {
+                callback_cancel.store(true, Ordering::SeqCst);
+                manual_abort.store(true, Ordering::SeqCst);
+                return Err("Login cancelled".to_string());
+            }
         };
         if state != verifier {
             return Err("OAuth state mismatch".to_string());
@@ -879,16 +1814,17 @@ impl OAuthAuth for AnthropicOAuth {
         interaction.notify(&AuthEvent::Progress {
             message: "Exchanging authorization code for tokens...".to_string(),
         });
-        anthropic_exchange_code(&client, &code, &state, &verifier).await
+        let signal = external_cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        anthropic_exchange_code(&client, &code, &state, &verifier, signal.as_ref()).await
     }
 
     async fn refresh(
         &self,
         credential: &OAuthCredential,
-        _signal: &AtomicBool,
+        signal: &AtomicBool,
     ) -> Result<OAuthCredential, String> {
         let client = reqwest::Client::new();
-        anthropic_refresh_token(&client, &credential.refresh).await
+        anthropic_refresh_token(&client, &credential.refresh, signal).await
     }
 
     fn to_auth(&self, credential: &OAuthCredential) -> Option<ModelAuth> {
@@ -901,6 +1837,7 @@ impl OAuthAuth for AnthropicOAuth {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::auth::{AuthPrompt, AuthSelectOption};
@@ -923,8 +1860,14 @@ mod tests {
 
     impl AuthInteraction for ScriptedInteraction {
         fn prompt(&self, prompt: &AuthPrompt) -> Result<String, String> {
-            self.prompts.lock().unwrap().push(prompt.clone());
-            let mut answers = self.answers.lock().unwrap();
+            self.prompts
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(prompt.clone());
+            let mut answers = self
+                .answers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             if answers.is_empty() {
                 Err("no scripted answer".to_string())
             } else {
@@ -932,7 +1875,10 @@ mod tests {
             }
         }
         fn notify(&self, event: &AuthEvent) {
-            self.events.lock().unwrap().push(event.clone());
+            self.events
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(event.clone());
         }
     }
 
@@ -997,7 +1943,10 @@ mod tests {
         // path must win via the select. We can't easily run the full login
         // here (it would block on the callback accept), so verify the prompt
         // shape and event emission through the pieces we can reach.
-        let prompts = interaction.prompts.lock().unwrap();
+        let prompts = interaction
+            .prompts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         assert!(prompts.is_empty());
         drop(prompts);
         // parse_authorization_code is exercised above; the flow itself is
@@ -1014,8 +1963,57 @@ mod tests {
         };
         assert_eq!(opt.id, "a");
     }
+
+    #[test]
+    fn xai_oauth_metadata_matches_upstream_subscription_flow() {
+        let oauth = XaiOAuth::new();
+        assert_eq!(oauth.name(), "xAI (Grok/X subscription)");
+        assert!(oauth.is_subscription());
+        assert_eq!(
+            oauth.login_label(),
+            Some("Sign in with SuperGrok or X Premium")
+        );
+    }
+
+    #[test]
+    fn xai_device_code_validation_requires_https_and_normalizes_zero_interval() {
+        let body = serde_json::json!({
+            "device_code": "device-code",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://accounts.x.ai/oauth2/device",
+            "verification_uri_complete": "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234",
+            "interval": 0,
+            "expires_in": 900
+        });
+        let device = xai_parse_device_code(&body).expect("valid xAI device response");
+        assert_eq!(device.interval, None);
+        assert_eq!(
+            device.verification_uri_complete.as_deref(),
+            Some("https://accounts.x.ai/oauth2/device?user_code=ABCD-1234")
+        );
+
+        let mut untrusted = body;
+        untrusted["verification_uri"] = serde_json::json!("http://accounts.x.ai/device");
+        assert_eq!(
+            xai_parse_device_code(&untrusted).unwrap_err(),
+            "Untrusted verification URI in xAI OAuth response"
+        );
+    }
+
+    #[test]
+    fn xai_refresh_response_keeps_previous_refresh_token() {
+        let body = serde_json::json!({
+            "access_token": "new-access",
+            "expires_in": 3600
+        });
+        let credential = xai_credentials_from_token_response(&body, Some("old-refresh"))
+            .expect("refresh response without rotation");
+        assert_eq!(credential.access, "new-access");
+        assert_eq!(credential.refresh, "old-refresh");
+    }
 }
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod device_flow_tests {
     use super::*;
 
@@ -1198,6 +2196,7 @@ mod device_flow_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod callback_server_tests {
     use super::*;
 
@@ -1226,6 +2225,98 @@ mod callback_server_tests {
     }
 
     #[tokio::test]
+    async fn callback_server_rejects_wrong_state_then_accepts_expected_state() {
+        let (server, url) = CallbackServer::start("/oauth/callback/state".to_string())
+            .await
+            .unwrap();
+        let wait = tokio::spawn(async move {
+            server
+                .wait_for_callback_with_cancel(
+                    "ok",
+                    None,
+                    Some(Duration::from_secs(2)),
+                    Some("expected-state"),
+                )
+                .await
+        });
+        let client = reqwest::Client::new();
+        let wrong = client
+            .get(format!("{url}?code=wrong&state=wrong-state"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), reqwest::StatusCode::BAD_REQUEST);
+        let correct = client
+            .get(format!("{url}?code=right&state=expected-state"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(correct.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            wait.await.unwrap().unwrap(),
+            "code=right&state=expected-state"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_server_can_keep_waiting_after_authorization_error() {
+        let (server, url) = CallbackServer::start("/oauth/callback/retry".to_string())
+            .await
+            .unwrap();
+        let wait = tokio::spawn(async move {
+            server
+                .wait_for_callback_allowing_errors(
+                    "ok",
+                    None,
+                    Some(Duration::from_secs(2)),
+                    Some("expected-state"),
+                )
+                .await
+        });
+        let client = reqwest::Client::new();
+        let denied = client
+            .get(format!(
+                "{url}?error=access_denied&error_description=not%20approved&state=expected-state"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let valid = client
+            .get(format!("{url}?code=recovered&state=expected-state"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(valid.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            wait.await.unwrap().unwrap(),
+            "code=recovered&state=expected-state"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_server_cancellation_is_deterministic_without_a_request() {
+        let (server, _url) = CallbackServer::start("/oauth/callback/cancel".to_string())
+            .await
+            .unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_for_wait = cancel.clone();
+        let wait = tokio::spawn(async move {
+            server
+                .wait_for_callback_with_cancel("ok", Some(cancel_for_wait), None, None)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        cancel.store(true, Ordering::SeqCst);
+        let result = tokio::time::timeout(Duration::from_secs(1), wait)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.unwrap_err(), "Login cancelled");
+    }
+
+    #[tokio::test]
     async fn anthropic_exchange_code_parses_tokens() {
         // Mock the token endpoint.
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -1246,23 +2337,21 @@ mod callback_server_tests {
             let _ = socket.write_all(response.as_bytes()).await;
             let _ = socket.shutdown().await;
         });
-        // Point the exchange at the mock by swapping the constant via a small
-        // local reimplementation: exercise the parsing path directly.
         let client = reqwest::Client::new();
-        let body = serde_json::json!({
-            "grant_type": "authorization_code",
-            "client_id": ANTHROPIC_CLIENT_ID,
-            "code": "code-1",
-            "state": "state-1",
-            "redirect_uri": ANTHROPIC_REDIRECT_URI,
-            "code_verifier": "verifier-1",
-        });
-        let text = post_json_text(&client, &format!("http://127.0.0.1:{port}/token"), &body)
-            .await
-            .unwrap();
-        let data: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(data["access_token"], "acc-1");
-        assert_eq!(data["refresh_token"], "ref-1");
-        assert_eq!(data["expires_in"], 3600);
+        let signal = AtomicBool::new(false);
+        let credential = anthropic_exchange_code_at(
+            &client,
+            &format!("http://127.0.0.1:{port}/token"),
+            ANTHROPIC_REDIRECT_URI,
+            "code-1",
+            "state-1",
+            "verifier-1",
+            &signal,
+        )
+        .await
+        .unwrap();
+        assert_eq!(credential.access, "acc-1");
+        assert_eq!(credential.refresh, "ref-1");
+        assert!(credential.expires > crate::types::now_ms());
     }
 }

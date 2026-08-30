@@ -364,6 +364,32 @@ impl ApiKeyAuth for CloudflareAuth {
         "Cloudflare API key"
     }
 
+    fn login(
+        &self,
+        interaction: &dyn crate::auth::AuthInteraction,
+    ) -> Result<ApiKeyCredential, String> {
+        let key = interaction.prompt(&crate::auth::AuthPrompt::Secret {
+            message: "Enter Cloudflare API key".to_string(),
+            placeholder: None,
+        })?;
+        let account_id = interaction.prompt(&crate::auth::AuthPrompt::Text {
+            message: "Enter Cloudflare account ID".to_string(),
+            placeholder: None,
+        })?;
+        let mut env = ProviderEnv::from([(CLOUDFLARE_ACCOUNT_ID.to_string(), account_id)]);
+        if self.kind == CloudflareAuthKind::AiGateway {
+            let gateway_id = interaction.prompt(&crate::auth::AuthPrompt::Text {
+                message: "Enter Cloudflare AI Gateway ID".to_string(),
+                placeholder: None,
+            })?;
+            env.insert(CLOUDFLARE_GATEWAY_ID.to_string(), gateway_id);
+        }
+        Ok(ApiKeyCredential {
+            key: Some(key),
+            env: Some(env),
+        })
+    }
+
     fn check(&self, ctx: &AuthContext, credential: Option<&ApiKeyCredential>) -> Option<AuthCheck> {
         self.resolved(ctx, credential)
             .map(|(_, _, source)| AuthCheck {
@@ -474,6 +500,7 @@ pub fn cloudflare_streams(inner: ProviderStreams) -> ProviderStreams {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::event_stream::AssistantMessageEventStream;
@@ -524,7 +551,7 @@ mod tests {
                   -> AssistantMessageEventStream {
                 captured_for_stream
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|error| error.into_inner())
                     .push(model.base_url.clone());
                 AssistantMessageEventStream::new()
             },
@@ -536,7 +563,7 @@ mod tests {
                   -> AssistantMessageEventStream {
                 captured_for_simple
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|error| error.into_inner())
                     .push(model.base_url.clone());
                 AssistantMessageEventStream::new()
             },
@@ -564,7 +591,10 @@ mod tests {
         let _ = stream(&model, &ctx, Some(&options));
         let simple = wrapped.stream_simple.clone();
         let _ = simple(&model, &ctx, None);
-        let got = captured.lock().unwrap().clone();
+        let got = captured
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         assert_eq!(got.len(), 2);
         // stream: env present -> placeholders materialize.
         assert_eq!(

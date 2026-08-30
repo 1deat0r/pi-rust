@@ -1,13 +1,9 @@
 //! Unified multi-provider LLM API — port of `@earendil-works/pi-ai`.
 //!
-//! Current port coverage (see TODO.md):
-//! - `types.rs`: core message/content/model/stream types (data contract).
-//! - `event_stream.rs`: `AssistantMessageEventStream` push stream.
-//! - `partial_json.rs`: tolerant incremental JSON parser (streaming tool args).
-//! - `sse.rs`: Server-Sent Events parser.
-//! - `model.rs`: Model/ModelCost, cost accounting, thinking-level helpers.
-//! - `providers/faux.rs`: scripted test provider with upstream usage-estimation
-//!   and delta-streaming semantics.
+//! The crate includes the core message/content/model/stream contract, event
+//! streams, incremental JSON and SSE parsers, model/catalog/auth stores,
+//! OAuth, retry/proxy helpers, all bundled provider adaptors, the native
+//! Radius protocol, and the deterministic faux provider used only by tests.
 
 pub mod api;
 pub mod auth;

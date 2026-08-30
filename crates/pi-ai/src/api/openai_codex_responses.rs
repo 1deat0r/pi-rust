@@ -15,21 +15,18 @@
 //!   forces SSE). Session-scoped WebSocket caching, idle/max-age eviction,
 //!   cached-context delta requests, and missing-continuation recovery are
 //!   implemented with the upstream session/account keying semantics.
-//! - zstd request-body compression is not implemented; bodies are sent
-//!   uncompressed (the upstream helper already returns null in runtimes
-//!   without `node:zlib`).
-//! - `options.signal` is not part of the ported `StreamOptions`, so
-//!   user-initiated aborts cannot be plumbed through `stream`; the header
-//!   timeout (`options.base.timeoutMs`) still bounds the initial fetch, and
-//!   the SSE body is read incrementally until a terminal event arrives (or
-//!   the body ends), mirroring upstream cancellation after
-//!   `response.completed`.
-//! - The upstream `onPayload` hook is not part of the ported `StreamOptions`
-//!   surface; payload mutation hooks are unavailable.
+//! - SSE request bodies use zstd compression when the native zstd runtime is
+//!   available, with the same uncompressed fallback as upstream browser
+//!   builds.
+//! - `options.signal` is represented by the Rust runtime's cooperative
+//!   `Arc<AtomicBool>` signal. It cancels connection, request, retry, and body
+//!   reads and produces the upstream `aborted` terminal result.
+//! - `onPayload` is an asynchronous Rust callback with the same replace-or-
+//!   preserve semantics as the upstream hook and runs before transport choice.
 
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{atomic::Ordering, Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -56,6 +53,7 @@ const JWT_CLAIM_PATH: &str = "https://api.openai.com/auth";
 const DEFAULT_MAX_RETRIES: u32 = 0;
 const BASE_DELAY_MS: u64 = 1000;
 const DEFAULT_MAX_RETRY_DELAY_MS: u64 = 60_000;
+const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 15_000;
 const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH: usize = 64;
 const CODEX_TOOL_CALL_PROVIDERS: [&str; 3] = ["openai", "openai-codex", "opencode"];
 const SESSION_WEBSOCKET_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
@@ -69,6 +67,8 @@ const CODEX_RESPONSE_STATUSES: [&str; 6] = [
     "queued",
     "in_progress",
 ];
+
+const REQUEST_ABORTED: &str = "Request was aborted";
 
 type CodexWsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -93,6 +93,40 @@ type WebSocketSessionCache =
 
 static WEBSOCKET_SESSION_CACHE: LazyLock<Mutex<WebSocketSessionCache>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The upstream keeps a session-level circuit breaker after a WebSocket
+/// transport failure. Without this state, every subsequent request in a
+/// degraded session would repeat the failed WS handshake before using SSE.
+/// Keep only the timestamp: session ids are not credentials and the entry is
+/// naturally bounded by the WebSocket session lifetime.
+static WEBSOCKET_SSE_FALLBACK_SESSIONS: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn is_websocket_sse_fallback_active(session_id: Option<&str>) -> bool {
+    let Some(session_id) = session_id else {
+        return false;
+    };
+    let mut sessions = WEBSOCKET_SSE_FALLBACK_SESSIONS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    match sessions.get(session_id).copied() {
+        Some(recorded_at) if recorded_at.elapsed() < SESSION_WEBSOCKET_MAX_AGE => true,
+        Some(_) => {
+            sessions.remove(session_id);
+            false
+        }
+        None => false,
+    }
+}
+
+fn record_websocket_sse_fallback(session_id: Option<&str>) {
+    if let Some(session_id) = session_id {
+        WEBSOCKET_SSE_FALLBACK_SESSIONS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(session_id.to_string(), Instant::now());
+    }
+}
 
 /// Provider-specific options for the Codex Responses API (upstream
 /// `OpenAICodexResponsesOptions`, reduced to the fields the ported
@@ -177,8 +211,11 @@ fn extract_account_id(token: &str) -> Result<String, String> {
         return Err("Failed to extract accountId from token".to_string());
     }
     use base64::Engine;
-    let payload = base64::engine::general_purpose::STANDARD
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(parts[1])
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(parts[1]))
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(parts[1]))
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(parts[1]))
         .map_err(|_| "Failed to extract accountId from token".to_string());
     let payload = payload?;
     let parsed: Value = serde_json::from_slice(&payload)
@@ -300,6 +337,28 @@ fn build_request_body(
         .and_then(|c| c.get("supportsOpenAIGrammarTools"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let deferred_tools_mode = if compat
+        .and_then(|c| c.get("supportsAdditionalTools"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        Some("additional-tools".to_string())
+    } else if compat
+        .and_then(|c| c.get("supportsToolSearch"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        Some("tool-search".to_string())
+    } else {
+        None
+    };
+    let (immediate_tools, deferred_tools) =
+        split_deferred_tools(context, deferred_tools_mode.is_some());
+    let tool_options = ConvertResponsesToolsOptions {
+        strict: None,
+        supports_strict_mode,
+        supports_openai_grammar_tools,
+    };
 
     let grammar_properties =
         create_grammar_tool_input_properties(&context.tools, supports_openai_grammar_tools)?;
@@ -310,14 +369,23 @@ fn build_request_body(
         &ConvertResponsesMessagesOptions {
             include_system_prompt: false,
             grammar_tool_input_properties: grammar_properties,
+            deferred_tools: (!deferred_tools.is_empty()).then_some(deferred_tools),
+            deferred_tools_mode,
+            deferred_tools_strict_null: true,
+            tool_options: Some(tool_options),
         },
     )?;
 
+    let instructions = context
+        .system_prompt
+        .as_deref()
+        .filter(|prompt| !prompt.is_empty())
+        .unwrap_or("You are a helpful assistant.");
     let mut body = json!({
         "model": model.id,
         "store": false,
         "stream": true,
-        "instructions": context.system_prompt.clone().unwrap_or_else(|| "You are a helpful assistant.".to_string()),
+        "instructions": instructions,
         "input": messages,
         "text": { "verbosity": options.text_verbosity.clone().unwrap_or_else(|| "low".to_string()) },
         "include": ["reasoning.encrypted_content"],
@@ -333,9 +401,9 @@ fn build_request_body(
     if let Some(service_tier) = &options.service_tier {
         body["service_tier"] = json!(service_tier);
     }
-    if !context.tools.is_empty() {
+    if !immediate_tools.is_empty() {
         body["tools"] = json!(convert_codex_tools(
-            &context.tools,
+            &immediate_tools,
             supports_strict_mode,
             supports_openai_grammar_tools
         )?);
@@ -387,21 +455,23 @@ fn create_codex_grammar_properties(
 // Retry helpers
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::panic)] // compile-time literal regex; failure is a build defect
 fn is_terminal_rate_limit_error(error_text: &str) -> bool {
     regex::RegexBuilder::new(
         r"GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|out of budget|quota exceeded|billing",
     )
     .case_insensitive(true)
     .build()
-    .expect("terminal rate-limit regex must compile")
+    .unwrap_or_else(|error| panic!("terminal rate-limit regex must compile: {error}"))
     .is_match(error_text)
 }
 
+#[allow(clippy::panic)] // compile-time literal regex; failure is a build defect
 fn is_retryable_error(status: u16, error_text: &str) -> bool {
     if status == 429 && is_terminal_rate_limit_error(error_text) {
         return false;
     }
-    if status == 429 || (500..=504).contains(&status) {
+    if matches!(status, 429 | 500 | 502 | 503 | 504) {
         return true;
     }
     regex::RegexBuilder::new(
@@ -409,13 +479,13 @@ fn is_retryable_error(status: u16, error_text: &str) -> bool {
     )
     .case_insensitive(true)
     .build()
-    .expect("retryable regex must compile")
+    .unwrap_or_else(|error| panic!("retryable regex must compile: {error}"))
     .is_match(error_text)
 }
 
 /// Read retry-after guidance from response headers (upstream
-/// `getRetryAfterDelayMs`). HTTP-date `Retry-After` values are not parsed
-/// (documented divergence); the numeric forms are.
+/// `getRetryAfterDelayMs`). Supports millisecond, seconds, and standard
+/// HTTP-date forms.
 fn get_retry_after_delay_ms(headers: &BTreeMap<String, String>) -> Option<u64> {
     if let Some(retry_after_ms) = headers.get("retry-after-ms") {
         if let Ok(millis) = retry_after_ms.parse::<f64>() {
@@ -430,7 +500,66 @@ fn get_retry_after_delay_ms(headers: &BTreeMap<String, String>) -> Option<u64> {
             return Some((seconds.max(0.0) * 1000.0) as u64);
         }
     }
-    None
+    parse_http_date_delay_ms(retry_after)
+}
+
+fn parse_http_date_delay_ms(value: &str) -> Option<u64> {
+    let mut fields = value.split_whitespace();
+    let _weekday = fields.next()?;
+    let day = fields.next()?.parse::<i64>().ok()?;
+    let month = match fields.next()? {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    };
+    let year = fields.next()?.parse::<i64>().ok()?;
+    let mut time = fields.next()?.split(':');
+    let hour = time.next()?.parse::<i64>().ok()?;
+    let minute = time.next()?.parse::<i64>().ok()?;
+    let second = time.next()?.parse::<i64>().ok()?;
+    if time.next().is_some() || fields.next()? != "GMT" {
+        return None;
+    }
+    if !(1..=31).contains(&day)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=60).contains(&second)
+        || !(1..=12).contains(&month)
+    {
+        return None;
+    }
+
+    // Proleptic Gregorian calendar, days relative to 1970-01-01. This is
+    // the same calendar used by Date.parse for RFC 7231 HTTP-date values.
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = if adjusted_year >= 0 {
+        adjusted_year / 400
+    } else {
+        (adjusted_year - 399) / 400
+    };
+    let year_of_era = adjusted_year - era * 400;
+    let month_prime = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    let target_ms = days
+        .checked_mul(86_400_000)?
+        .checked_add((hour * 3_600 + minute * 60 + second) * 1_000)?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i128;
+    Some((i128::from(target_ms) - now_ms).max(0) as u64)
 }
 
 fn retry_delay_exceeded_message(delay_ms: u64, max_retry_delay_ms: u64) -> String {
@@ -465,8 +594,134 @@ fn format_transport_error(error: &reqwest::Error) -> String {
     text
 }
 
-async fn sleep_ms(ms: u64) {
-    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+fn is_aborted_signal(signal: Option<&crate::types::AbortSignal>) -> bool {
+    signal.is_some_and(|signal| signal.load(Ordering::SeqCst))
+}
+
+async fn wait_for_abort(signal: crate::types::AbortSignal) {
+    while !signal.load(Ordering::SeqCst) {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+async fn execute_codex_request(
+    client: &reqwest::Client,
+    request: reqwest::Request,
+    timeout_ms: Option<u64>,
+) -> Result<reqwest::Response, String> {
+    let execute = client.execute(request);
+    match timeout_ms.filter(|timeout| *timeout > 0) {
+        Some(timeout) => {
+            match tokio::time::timeout(Duration::from_millis(timeout), execute).await {
+                Ok(result) => result.map_err(|error| format_transport_error(&error)),
+                Err(_) => Err(format!(
+                    "Codex SSE response headers timed out after {timeout}ms"
+                )),
+            }
+        }
+        None => execute
+            .await
+            .map_err(|error| format_transport_error(&error)),
+    }
+}
+
+async fn read_codex_response_text(
+    response: reqwest::Response,
+    signal: Option<crate::types::AbortSignal>,
+) -> Result<String, String> {
+    if let Some(signal) = signal {
+        if signal.load(Ordering::SeqCst) {
+            return Err(REQUEST_ABORTED.to_string());
+        }
+        tokio::select! {
+            result = response.text() => result.map_err(|error| format_transport_error(&error)),
+            _ = wait_for_abort(signal) => Err(REQUEST_ABORTED.to_string()),
+        }
+    } else {
+        response
+            .text()
+            .await
+            .map_err(|error| format_transport_error(&error))
+    }
+}
+
+async fn sleep_ms(ms: u64, signal: Option<crate::types::AbortSignal>) -> Result<(), String> {
+    if is_aborted_signal(signal.as_ref()) {
+        return Err(REQUEST_ABORTED.to_string());
+    }
+    if let Some(signal) = signal {
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(ms)) => {
+                if signal.load(Ordering::SeqCst) {
+                    Err(REQUEST_ABORTED.to_string())
+                } else {
+                    Ok(())
+                }
+            }
+            _ = wait_for_abort(signal.clone()) => Err(REQUEST_ABORTED.to_string()),
+        }
+    } else {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+        Ok(())
+    }
+}
+
+async fn apply_payload_hook(
+    body: Value,
+    model: &Model,
+    hook: Option<&crate::types::OnPayloadFn>,
+) -> Value {
+    let Some(hook) = hook else { return body };
+    hook(body.clone(), model.clone()).await.unwrap_or(body)
+}
+
+// The pinned upstream uses node:zlib's zstdCompressSync when that native
+// runtime is present. The shipped Linux binary has the same native zstd
+// facility available through libzstd; keep the call isolated so targets that
+// do not provide it retain the upstream uncompressed fallback.
+#[cfg(target_os = "linux")]
+#[link(name = "zstd")]
+unsafe extern "C" {
+    fn ZSTD_compressBound(src_size: usize) -> usize;
+    fn ZSTD_compress(
+        dst: *mut u8,
+        dst_capacity: usize,
+        src: *const u8,
+        src_size: usize,
+        compression_level: i32,
+    ) -> usize;
+    fn ZSTD_isError(code: usize) -> u32;
+}
+
+#[cfg(target_os = "linux")]
+fn compress_request_body_zstd(body_json: &[u8]) -> Option<Vec<u8>> {
+    const REQUEST_COMPRESSION_ZSTD_LEVEL: i32 = 3;
+    // SAFETY: the libzstd functions only read the immutable source slice and
+    // write at most the capacity returned by ZSTD_compressBound.
+    unsafe {
+        let bound = ZSTD_compressBound(body_json.len());
+        if bound == 0 {
+            return None;
+        }
+        let mut compressed = vec![0_u8; bound];
+        let written = ZSTD_compress(
+            compressed.as_mut_ptr(),
+            compressed.len(),
+            body_json.as_ptr(),
+            body_json.len(),
+            REQUEST_COMPRESSION_ZSTD_LEVEL,
+        );
+        if ZSTD_isError(written) != 0 {
+            return None;
+        }
+        compressed.truncate(written);
+        Some(compressed)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn compress_request_body_zstd(_body_json: &[u8]) -> Option<Vec<u8>> {
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +730,7 @@ async fn sleep_ms(ms: u64) {
 
 /// Parse a Codex error response into `(message, friendlyMessage)` (upstream
 /// `parseErrorResponse`).
+#[allow(clippy::panic)] // compile-time literal regex; failure is a build defect
 fn parse_error_response(raw: &str, status: u16, status_text: &str) -> (String, Option<String>) {
     let mut message = if raw.is_empty() {
         if status_text.is_empty() {
@@ -501,7 +757,7 @@ fn parse_error_response(raw: &str, status: u16, status_text: &str) -> (String, O
             )
             .case_insensitive(true)
             .build()
-            .expect("usage-limit regex must compile")
+            .unwrap_or_else(|error| panic!("usage-limit regex must compile: {error}"))
             .is_match(&code);
             if usage_limit || status == 429 {
                 let plan = err
@@ -615,8 +871,10 @@ fn map_codex_events(
                 let error = response.get("error").cloned().unwrap_or(Value::Null);
                 let code = error.get("code").and_then(|v| v.as_str());
                 let message = error.get("message").and_then(|v| v.as_str());
-                let _ = code;
-                return Err(message.unwrap_or("Codex response failed").to_string());
+                return Err(message
+                    .or(code)
+                    .unwrap_or("Codex response failed")
+                    .to_string());
             }
             "response.done" | "response.completed" | "response.incomplete" => {
                 if let Some(end_turn) = parsed
@@ -664,48 +922,87 @@ fn map_codex_events(
 // SSE reading
 // ---------------------------------------------------------------------------
 
-/// Read the Codex SSE body event-by-event until a terminal event arrives
-/// (upstream `parseSSE` consumed by `mapCodexEvents`; the reader stops exactly
-/// when `response.completed`/`response.incomplete`/`response.done` appears, so
-/// a backend that keeps the body open after the terminal event still
-/// completes the stream).
-async fn read_codex_sse_events(response: reqwest::Response) -> Result<Vec<SseEvent>, String> {
+fn process_codex_event(
+    state: &mut ProcessResponsesStreamState,
+    event: &SseEvent,
+    output: &mut AssistantMessage,
+    push: &mut (dyn FnMut(AssistantMessageEvent) + Send),
+    model: &Model,
+    options: &ProcessResponsesOptions,
+    request_service_tier: Option<&str>,
+) -> Result<(), String> {
+    if event.data.trim().is_empty() || event.data.trim() == "[DONE]" {
+        return Ok(());
+    }
+    let normalized = map_codex_events(std::slice::from_ref(event), output, request_service_tier)?;
+    process_responses_stream_chunk(state, &normalized, output, push, model, options)
+}
+
+/// Consume a Codex SSE response incrementally.  The upstream parser is an
+/// async generator: each framed event is mapped and emitted before the next
+/// network chunk is read, and the reader is abandoned at the terminal event.
+async fn process_codex_sse_stream(
+    response: reqwest::Response,
+    output: &mut AssistantMessage,
+    push: &mut (dyn FnMut(AssistantMessageEvent) + Send),
+    model: &Model,
+    options: &ProcessResponsesOptions,
+    request_service_tier: Option<&str>,
+    signal: Option<crate::types::AbortSignal>,
+) -> Result<(), String> {
     let mut parser = SseParser::new();
-    let mut events = Vec::new();
+    let mut state = ProcessResponsesStreamState::default();
     let mut stream = response.bytes_stream();
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Codex SSE read failed: {e}"))?;
-        for event in parser.push_bytes(&chunk) {
-            if event.data.trim().is_empty() || event.data.trim() == "[DONE]" {
-                continue;
+    loop {
+        if is_aborted_signal(signal.as_ref()) {
+            return Err(REQUEST_ABORTED.to_string());
+        }
+        let next_chunk = if let Some(signal) = signal.clone() {
+            tokio::select! {
+                chunk = stream.next() => chunk,
+                _ = wait_for_abort(signal) => return Err(REQUEST_ABORTED.to_string()),
             }
-            let parsed: Value = serde_json::from_str(&event.data)
-                .map_err(|e| format!("Invalid Codex SSE JSON: {e}"))?;
-            // Terminal/error events end the read exactly where upstream's
-            // generator stops being consumed (mapCodexEvents returns after
-            // response.completed and throws for error/response.failed).
-            let is_terminal = parsed
-                .get("type")
-                .and_then(|v| v.as_str())
-                .is_some_and(|t| {
-                    matches!(
-                        t,
-                        "response.completed"
-                            | "response.incomplete"
-                            | "response.done"
-                            | "response.failed"
-                            | "error"
-                    )
-                });
-            events.push(event);
-            if is_terminal {
-                return Ok(events);
+        } else {
+            stream.next().await
+        };
+        let Some(chunk) = next_chunk else { break };
+        let chunk = chunk.map_err(|error| format!("Codex SSE read failed: {error}"))?;
+        for event in parser.push_bytes(&chunk) {
+            process_codex_event(
+                &mut state,
+                &event,
+                output,
+                push,
+                model,
+                options,
+                request_service_tier,
+            )?;
+            if state.saw_terminal_response_event() {
+                return Ok(());
             }
         }
     }
-    events.extend(parser.finish());
-    Ok(events)
+
+    for event in parser.finish() {
+        process_codex_event(
+            &mut state,
+            &event,
+            output,
+            push,
+            model,
+            options,
+            request_service_tier,
+        )?;
+        if state.saw_terminal_response_event() {
+            return Ok(());
+        }
+    }
+    if state.saw_terminal_response_event() {
+        Ok(())
+    } else {
+        Err("OpenAI Responses stream ended before a terminal response event".to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -724,6 +1021,25 @@ fn new_output(model: &Model) -> AssistantMessage {
 fn set_output_error_message(output: &mut AssistantMessage, message: String) {
     let AssistantMessage::Assistant { error_message, .. } = output;
     *error_message = Some(message);
+}
+
+fn redact_codex_error(detail: &str, secrets: &[&str]) -> String {
+    let mut detail = detail.to_string();
+    for secret in secrets {
+        if !secret.is_empty() {
+            detail = detail.replace(secret, "<redacted>");
+        }
+    }
+    if detail.chars().count() > 512 {
+        let end = detail
+            .char_indices()
+            .nth(512)
+            .map(|(index, _)| index)
+            .unwrap_or(detail.len());
+        detail.truncate(end);
+        detail.push('…');
+    }
+    detail
 }
 
 fn request_body_without_input(body: &Value) -> Value {
@@ -817,6 +1133,41 @@ async fn connect_codex_websocket(
     Ok(ws)
 }
 
+async fn next_codex_websocket_message(
+    ws: &mut CodexWsStream,
+    signal: Option<crate::types::AbortSignal>,
+    idle_timeout_ms: Option<u64>,
+) -> Result<
+    Option<Result<tokio_tungstenite::tungstenite::Message, tokio_tungstenite::tungstenite::Error>>,
+    String,
+> {
+    let idle = idle_timeout_ms.filter(|timeout| *timeout > 0);
+    match (signal, idle) {
+        (Some(signal), Some(timeout)) => {
+            tokio::select! {
+                message = ws.next() => Ok(message),
+                _ = wait_for_abort(signal) => Err(REQUEST_ABORTED.to_string()),
+                _ = tokio::time::sleep(Duration::from_millis(timeout)) => {
+                    Err(format!("WebSocket idle timeout after {timeout}ms"))
+                }
+            }
+        }
+        (Some(signal), None) => {
+            tokio::select! {
+                message = ws.next() => Ok(message),
+                _ = wait_for_abort(signal) => Err(REQUEST_ABORTED.to_string()),
+            }
+        }
+        (None, Some(timeout)) => {
+            match tokio::time::timeout(Duration::from_millis(timeout), ws.next()).await {
+                Ok(message) => Ok(message),
+                Err(_) => Err(format!("WebSocket idle timeout after {timeout}ms")),
+            }
+        }
+        (None, None) => Ok(ws.next().await),
+    }
+}
+
 struct AcquiredWebSocket {
     socket: Arc<tokio::sync::Mutex<CodexWsStream>>,
     entry: Option<Arc<Mutex<CachedWebSocketConnection>>>,
@@ -842,10 +1193,12 @@ async fn acquire_websocket(
     let mut busy_cached_entry = false;
     let mut expired_entry = None;
     {
-        let mut cache = WEBSOCKET_SESSION_CACHE.lock().unwrap();
+        let mut cache = WEBSOCKET_SESSION_CACHE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if let Some(accounts) = cache.get_mut(session_id) {
             if let Some(entry) = accounts.get(account_id).cloned() {
-                let mut guard = entry.lock().unwrap();
+                let mut guard = entry.lock().unwrap_or_else(|error| error.into_inner());
                 if !guard.busy && websocket_session_expired(guard.created_at, Instant::now()) {
                     drop(guard);
                     accounts.remove(account_id);
@@ -864,11 +1217,19 @@ async fn acquire_websocket(
         }
     }
     if let Some(entry) = expired_entry {
-        let socket = entry.lock().unwrap().socket.clone();
+        let socket = entry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .socket
+            .clone();
         close_websocket(&socket).await;
     }
     if let Some(entry) = cached_entry {
-        let socket = entry.lock().unwrap().socket.clone();
+        let socket = entry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .socket
+            .clone();
         return Ok(AcquiredWebSocket {
             socket,
             entry: Some(entry),
@@ -892,7 +1253,9 @@ async fn acquire_websocket(
         idle_generation: 0,
     }));
     let inserted = {
-        let mut cache = WEBSOCKET_SESSION_CACHE.lock().unwrap();
+        let mut cache = WEBSOCKET_SESSION_CACHE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let accounts = cache.entry(session_id.to_string()).or_default();
         if accounts.contains_key(account_id) {
             false
@@ -930,10 +1293,16 @@ fn release_websocket(
     let Some(session_id) = session_id.map(str::to_string) else {
         return;
     };
-    let socket = entry.lock().unwrap().socket.clone();
+    let socket = entry
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .socket
+        .clone();
     if !keep {
         let removed = {
-            let mut cache = WEBSOCKET_SESSION_CACHE.lock().unwrap();
+            let mut cache = WEBSOCKET_SESSION_CACHE
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let mut removed = false;
             if let Some(accounts) = cache.get_mut(&session_id) {
                 if accounts
@@ -955,7 +1324,7 @@ fn release_websocket(
         return;
     }
     let idle_generation = {
-        let mut guard = entry.lock().unwrap();
+        let mut guard = entry.lock().unwrap_or_else(|error| error.into_inner());
         guard.busy = false;
         guard.idle_generation = guard.idle_generation.wrapping_add(1);
         guard.idle_generation
@@ -965,14 +1334,18 @@ fn release_websocket(
     tokio::spawn(async move {
         tokio::time::sleep(SESSION_WEBSOCKET_CACHE_TTL).await;
         let remove = {
-            let mut cache = WEBSOCKET_SESSION_CACHE.lock().unwrap();
+            let mut cache = WEBSOCKET_SESSION_CACHE
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let mut remove = false;
             if let Some(accounts) = cache.get_mut(&session_id) {
                 if accounts
                     .get(&account_id)
                     .is_some_and(|current| Arc::ptr_eq(current, &entry_for_timer))
                 {
-                    let guard = entry_for_timer.lock().unwrap();
+                    let guard = entry_for_timer
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
                     remove = should_evict_idle_websocket(
                         guard.busy,
                         guard.idle_generation,
@@ -998,15 +1371,23 @@ fn release_websocket(
 // Main stream functions
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
+struct WebSocketStreamState {
+    started: bool,
+    non_transport_error: bool,
+}
+
 /// WebSocket transport (upstream `processWebSocketStream`): connect, send
 /// `{ type: "response.create", ...body }`, read JSON frames until a terminal
 /// event, and feed them through the shared responses processing. Returns the
 /// final assistant message.
-async fn run_stream_ws(
+async fn run_stream_ws_with_state(
     model: &Model,
     context: &Context,
     api_key: &str,
     options: &OpenAICodexResponsesOptions,
+    body: &Value,
+    state: &mut WebSocketStreamState,
     push: &mut (dyn FnMut(AssistantMessageEvent) + Send),
 ) -> Result<AssistantMessage, String> {
     let mut output = new_output(model);
@@ -1018,7 +1399,6 @@ async fn run_stream_ws(
         } else {
             clamp_openai_prompt_cache_key(options.base.session_id.as_deref())
         };
-    let body = build_request_body(model, context, options, cache_session_id.as_deref())?;
     let grammar_tool_input_properties = create_codex_grammar_properties(model, context)?;
     let request_id = cache_session_id
         .clone()
@@ -1043,24 +1423,44 @@ async fn run_stream_ws(
     headers.insert("session-id".to_string(), request_id.clone());
 
     let url = resolve_codex_websocket_url(Some(&model.base_url));
-    let connect_timeout_ms = options.base.base.timeout_ms;
+    let connect_timeout_ms = options
+        .base
+        .websocket_connect_timeout_ms
+        .unwrap_or(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
 
     let acquire_session_id = cache_session_id.as_deref();
     let connect = acquire_websocket(&url, &headers, acquire_session_id, &account_id);
 
-    let acquired = match connect_timeout_ms.filter(|t| *t > 0) {
-        Some(timeout) => {
-            match tokio::time::timeout(std::time::Duration::from_millis(timeout), connect).await {
-                Ok(res) => res?,
-                Err(_) => {
-                    return Err(format!(
-                        "Codex WebSocket connect timed out after {timeout}ms"
-                    ))
+    let acquired_result = if connect_timeout_ms > 0 {
+        {
+            let timeout = connect_timeout_ms;
+            let connect = tokio::time::timeout(Duration::from_millis(timeout), connect);
+            if let Some(signal) = options.base.abort_signal.clone() {
+                tokio::select! {
+                    result = connect => match result {
+                        Ok(result) => result,
+                        Err(_) => Err(format!("WebSocket connect timed out after {timeout}ms")),
+                    },
+                    _ = wait_for_abort(signal) => Err(REQUEST_ABORTED.to_string()),
+                }
+            } else {
+                match connect.await {
+                    Ok(result) => result,
+                    Err(_) => Err(format!("WebSocket connect timed out after {timeout}ms")),
                 }
             }
         }
-        None => connect.await?,
+    } else {
+        if let Some(signal) = options.base.abort_signal.clone() {
+            tokio::select! {
+                result = connect => result,
+                _ = wait_for_abort(signal) => Err(REQUEST_ABORTED.to_string()),
+            }
+        } else {
+            connect.await
+        }
     };
+    let acquired = acquired_result?;
 
     let use_cached_context = matches!(
         transport,
@@ -1068,7 +1468,10 @@ async fn run_stream_ws(
     );
     let request_body = if use_cached_context {
         if let Some(entry) = &acquired.entry {
-            build_cached_websocket_request_body(&mut entry.lock().unwrap(), &body)
+            build_cached_websocket_request_body(
+                &mut entry.lock().unwrap_or_else(|error| error.into_inner()),
+                body,
+            )
         } else {
             body.clone()
         }
@@ -1087,12 +1490,20 @@ async fn run_stream_ws(
     }
     use futures_util::SinkExt as _;
     let mut ws = acquired.socket.lock().await;
-    if let Err(e) = ws
-        .send(tokio_tungstenite::tungstenite::Message::Text(
+    let send_result = if let Some(signal) = options.base.abort_signal.clone() {
+        tokio::select! {
+            result = ws.send(tokio_tungstenite::tungstenite::Message::Text(frame.to_string())) => result,
+            _ = wait_for_abort(signal) => Err(tokio_tungstenite::tungstenite::Error::Io(
+                std::io::Error::new(std::io::ErrorKind::Interrupted, REQUEST_ABORTED),
+            )),
+        }
+    } else {
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(
             frame.to_string(),
         ))
         .await
-    {
+    };
+    if let Err(e) = send_result {
         drop(ws);
         close_uncached_websocket(&acquired).await;
         release_websocket(
@@ -1104,14 +1515,25 @@ async fn run_stream_ws(
         return Err(format!("WebSocket send failed: {e}"));
     }
 
-    // Read frames until a terminal event.
-    use futures_util::StreamExt as _;
-    let mut events: Vec<Value> = Vec::new();
+    // Read and process frames until a terminal event. The upstream WebSocket
+    // adapter is an async generator: deltas must reach the caller before the
+    // provider sends the terminal response, rather than being buffered until
+    // the socket has finished.
     let mut saw_completion = false;
+    let mut stream_state = ProcessResponsesStreamState::default();
+    let proc_options = ProcessResponsesOptions {
+        service_tier: options.service_tier.clone(),
+        grammar_tool_input_properties: grammar_tool_input_properties.clone(),
+    };
     loop {
-        let message = match ws.next().await {
-            Some(Ok(message)) => message,
-            Some(Err(error)) => {
+        let message = match next_codex_websocket_message(
+            &mut ws,
+            options.base.abort_signal.clone(),
+            options.base.base.timeout_ms,
+        )
+        .await
+        {
+            Err(error) => {
                 drop(ws);
                 close_uncached_websocket(&acquired).await;
                 release_websocket(
@@ -1120,19 +1542,33 @@ async fn run_stream_ws(
                     acquired.entry.clone(),
                     false,
                 );
-                return Err(format!("WebSocket read failed: {error}"));
+                return Err(error);
             }
-            None => {
-                drop(ws);
-                close_uncached_websocket(&acquired).await;
-                release_websocket(
-                    acquire_session_id,
-                    &account_id,
-                    acquired.entry.clone(),
-                    false,
-                );
-                return Err("WebSocket closed before a terminal event".to_string());
-            }
+            Ok(message) => match message {
+                Some(Ok(message)) => message,
+                Some(Err(error)) => {
+                    drop(ws);
+                    close_uncached_websocket(&acquired).await;
+                    release_websocket(
+                        acquire_session_id,
+                        &account_id,
+                        acquired.entry.clone(),
+                        false,
+                    );
+                    return Err(format!("WebSocket read failed: {error}"));
+                }
+                None => {
+                    drop(ws);
+                    close_uncached_websocket(&acquired).await;
+                    release_websocket(
+                        acquire_session_id,
+                        &account_id,
+                        acquired.entry.clone(),
+                        false,
+                    );
+                    return Err("WebSocket closed before a terminal event".to_string());
+                }
+            },
         };
         let text = match message {
             tokio_tungstenite::tungstenite::Message::Text(t) => t.to_string(),
@@ -1158,6 +1594,7 @@ async fn run_stream_ws(
         let parsed: Value = match serde_json::from_str(&text) {
             Ok(parsed) => parsed,
             Err(error) => {
+                state.non_transport_error = true;
                 drop(ws);
                 close_uncached_websocket(&acquired).await;
                 release_websocket(
@@ -1180,36 +1617,24 @@ async fn run_stream_ws(
         ) {
             saw_completion = true;
         }
-        events.push(parsed);
-        if matches!(
-            event_type.as_str(),
-            "response.completed"
-                | "response.incomplete"
-                | "response.done"
-                | "response.failed"
-                | "error"
-        ) {
-            break;
-        }
-    }
 
-    // Convert JSON frames to SseEvent for the shared mapper.
-    let sse_events: Vec<crate::sse::SseEvent> = events
-        .iter()
-        .map(|v| crate::sse::SseEvent {
-            data: v.to_string(),
+        let event = SseEvent {
+            data: parsed.to_string(),
             event: None,
             id: None,
-        })
-        .collect();
-
-    push(AssistantMessageEvent::Start {
-        partial: new_output(model),
-    });
-    let normalized =
-        match map_codex_events(&sse_events, &mut output, options.service_tier.as_deref()) {
+        };
+        let normalized = match map_codex_events(
+            std::slice::from_ref(&event),
+            &mut output,
+            options.service_tier.as_deref(),
+        ) {
             Ok(normalized) => normalized,
             Err(error) => {
+                // Codex event failures are provider/protocol failures, not
+                // transport failures. Preserve that distinction so
+                // `transport=auto` does not issue a duplicate SSE request
+                // after a WebSocket response has already begun failing.
+                state.non_transport_error = true;
                 drop(ws);
                 close_uncached_websocket(&acquired).await;
                 release_websocket(
@@ -1221,22 +1646,36 @@ async fn run_stream_ws(
                 return Err(error);
             }
         };
-    let proc_options = ProcessResponsesOptions {
-        service_tier: options.service_tier.clone(),
-        grammar_tool_input_properties: grammar_tool_input_properties.clone(),
-    };
-    if let Err(error) =
-        process_responses_stream(&normalized, &mut output, push, model, &proc_options)
-    {
-        drop(ws);
-        close_uncached_websocket(&acquired).await;
-        release_websocket(
-            acquire_session_id,
-            &account_id,
-            acquired.entry.clone(),
-            false,
-        );
-        return Err(error.to_string());
+        if !normalized.is_empty() {
+            if !state.started {
+                state.started = true;
+                push(AssistantMessageEvent::Start {
+                    partial: new_output(model),
+                });
+            }
+            if let Err(error) = process_responses_stream_chunk(
+                &mut stream_state,
+                &normalized,
+                &mut output,
+                push,
+                model,
+                &proc_options,
+            ) {
+                drop(ws);
+                close_uncached_websocket(&acquired).await;
+                release_websocket(
+                    acquire_session_id,
+                    &account_id,
+                    acquired.entry.clone(),
+                    false,
+                );
+                state.non_transport_error = true;
+                return Err(error);
+            }
+        }
+        if stream_state.saw_terminal_response_event() {
+            break;
+        }
     }
 
     // assertSuccessfulOutput: pending / error / aborted are stream failures.
@@ -1286,6 +1725,7 @@ async fn run_stream_ws(
                     &ConvertResponsesMessagesOptions {
                         include_system_prompt: false,
                         grammar_tool_input_properties,
+                        ..Default::default()
                     },
                 ) {
                     Ok(items) => items,
@@ -1307,7 +1747,10 @@ async fn run_stream_ws(
                     )
                 })
                 .collect();
-                entry.lock().unwrap().continuation = Some(CachedWebSocketContinuationState {
+                entry
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .continuation = Some(CachedWebSocketContinuationState {
                     last_request_body: body.clone(),
                     last_response_id: response_id.to_string(),
                     last_response_items: response_items,
@@ -1317,6 +1760,21 @@ async fn run_stream_ws(
     }
     release_websocket(acquire_session_id, &account_id, acquired.entry, true);
     Ok(output)
+}
+
+/// Compatibility wrapper used by focused unit tests that do not need to
+/// inspect whether a WebSocket had already emitted response events.
+#[cfg(test)]
+async fn run_stream_ws(
+    model: &Model,
+    context: &Context,
+    api_key: &str,
+    options: &OpenAICodexResponsesOptions,
+    body: &Value,
+    push: &mut (dyn FnMut(AssistantMessageEvent) + Send),
+) -> Result<AssistantMessage, String> {
+    let mut state = WebSocketStreamState::default();
+    run_stream_ws_with_state(model, context, api_key, options, body, &mut state, push).await
 }
 
 async fn run_stream(
@@ -1339,6 +1797,10 @@ async fn run_stream(
             clamp_openai_prompt_cache_key(options.base.session_id.as_deref())
         };
     let body = build_request_body(model, context, options, cache_session_id.as_deref())?;
+    let body = apply_payload_hook(body, model, options.base.on_payload.as_ref()).await;
+    if is_aborted_signal(options.base.abort_signal.as_ref()) {
+        return Err(REQUEST_ABORTED.to_string());
+    }
     let headers = build_codex_headers(
         model.headers.as_ref(),
         options.base.base.headers.as_ref(),
@@ -1352,11 +1814,24 @@ async fn run_stream(
     // WebSocket transport first (upstream `transport: "auto"` tries WS before
     // falling back to SSE). "sse" forces the SSE path.
     let transport = effective_transport(options);
-    if transport != "sse" {
+    let websocket_disabled_for_session =
+        transport != "sse" && is_websocket_sse_fallback_active(cache_session_id.as_deref());
+    if transport != "sse" && !websocket_disabled_for_session {
         let mut retried_missing_continuation = false;
         let mut retried_connection_limit = false;
         loop {
-            match run_stream_ws(model, context, api_key, options, push).await {
+            let mut websocket_state = WebSocketStreamState::default();
+            match run_stream_ws_with_state(
+                model,
+                context,
+                api_key,
+                options,
+                &body,
+                &mut websocket_state,
+                push,
+            )
+            .await
+            {
                 Ok(output) => return Ok(output),
                 Err(ws_error) => {
                     if is_previous_response_not_found_error(&ws_error)
@@ -1364,6 +1839,11 @@ async fn run_stream(
                     {
                         retried_missing_continuation = true;
                         continue;
+                    }
+                    if is_aborted_signal(options.base.abort_signal.as_ref())
+                        || ws_error == REQUEST_ABORTED
+                    {
+                        return Err(REQUEST_ABORTED.to_string());
                     }
                     // Connection-limit errors retry once on a fresh socket;
                     // other transport failures fall back to SSE.
@@ -1373,9 +1853,23 @@ async fn run_stream(
                         retried_connection_limit = true;
                         continue;
                     }
-                    if transport == crate::types::TRANSPORT_WEBSOCKET {
+                    // Once Codex has emitted a response event, falling back
+                    // to SSE would duplicate the request and can produce two
+                    // assistant messages. Event/protocol failures are also
+                    // terminal even if they happen before the first event.
+                    // The one exception is a connection-limit response,
+                    // which is a pre-stream transport admission failure and
+                    // may fall back after its single retry.
+                    if websocket_state.started
+                        || (websocket_state.non_transport_error
+                            && !ws_error.contains("websocket_connection_limit_reached"))
+                    {
+                        if websocket_state.started && !websocket_state.non_transport_error {
+                            record_websocket_sse_fallback(cache_session_id.as_deref());
+                        }
                         return Err(ws_error);
                     }
+                    record_websocket_sse_fallback(cache_session_id.as_deref());
                     break;
                 }
             }
@@ -1396,7 +1890,14 @@ async fn run_stream(
         }
         builder = builder.headers(header_map);
     }
-    builder = builder.json(&body);
+    let body_json = serde_json::to_vec(&body)
+        .map_err(|error| format!("Failed to serialize Codex request: {error}"))?;
+    builder = match compress_request_body_zstd(&body_json) {
+        Some(compressed) => builder
+            .header(reqwest::header::CONTENT_ENCODING, "zstd")
+            .body(compressed),
+        None => builder.body(body_json),
+    };
     let request = builder
         .build()
         .map_err(|e| format!("Failed to build Codex request: {e}"))?;
@@ -1412,22 +1913,13 @@ async fn run_stream(
             break;
         };
         // The header timeout bounds only the initial fetch (response headers).
-        let send_result = match http_timeout_ms.filter(|t| *t > 0) {
-            Some(timeout) => match tokio::time::timeout(
-                std::time::Duration::from_millis(timeout),
-                client.execute(req),
-            )
-            .await
-            {
-                Ok(res) => res,
-                Err(_) => {
-                    last_error = Some(format!(
-                        "Codex SSE response headers timed out after {timeout}ms"
-                    ));
-                    break;
-                }
-            },
-            None => client.execute(req).await,
+        let send_result = if let Some(signal) = options.base.abort_signal.clone() {
+            tokio::select! {
+                result = execute_codex_request(&client, req, http_timeout_ms) => result,
+                _ = wait_for_abort(signal) => Err(REQUEST_ABORTED.to_string()),
+            }
+        } else {
+            execute_codex_request(&client, req, http_timeout_ms).await
         };
 
         match send_result {
@@ -1454,13 +1946,23 @@ async fn run_stream(
                     response = Some(res);
                     break;
                 }
-                let error_text = res.text().await.unwrap_or_default();
+                let error_text =
+                    match read_codex_response_text(res, options.base.abort_signal.clone()).await {
+                        Ok(text) => text,
+                        Err(error) => {
+                            last_error = Some(error);
+                            break;
+                        }
+                    };
                 if attempt < max_retries && is_retryable_error(status.as_u16(), &error_text) {
                     let delay = match get_retry_after_delay_ms(&provider_headers) {
                         Some(delay) => validate_retry_delay_ms(delay, &options.base)?,
                         None => BASE_DELAY_MS * 2u64.pow(attempt),
                     };
-                    sleep_ms(delay).await;
+                    if let Err(error) = sleep_ms(delay, options.base.abort_signal.clone()).await {
+                        last_error = Some(error);
+                        break;
+                    }
                     attempt += 1;
                     continue;
                 }
@@ -1471,11 +1973,14 @@ async fn run_stream(
                 break;
             }
             Err(err) => {
-                let text = format_transport_error(&err);
+                let text = err;
                 last_error = Some(text.clone());
                 if attempt < max_retries && !text.contains("usage limit") {
                     let delay = BASE_DELAY_MS * 2u64.pow(attempt);
-                    sleep_ms(delay).await;
+                    if let Err(error) = sleep_ms(delay, options.base.abort_signal.clone()).await {
+                        last_error = Some(error);
+                        break;
+                    }
                     attempt += 1;
                     continue;
                 }
@@ -1490,14 +1995,20 @@ async fn run_stream(
     push(AssistantMessageEvent::Start {
         partial: new_output(model),
     });
-    let events = read_codex_sse_events(response).await?;
-    let normalized = map_codex_events(&events, &mut output, options.service_tier.as_deref())?;
     let proc_options = ProcessResponsesOptions {
         service_tier: options.service_tier.clone(),
         grammar_tool_input_properties: create_codex_grammar_properties(model, context)?,
     };
-    process_responses_stream(&normalized, &mut output, push, model, &proc_options)
-        .map_err(|e| e.to_string())?;
+    process_codex_sse_stream(
+        response,
+        &mut output,
+        push,
+        model,
+        &proc_options,
+        options.service_tier.as_deref(),
+        options.base.abort_signal.clone(),
+    )
+    .await?;
 
     // assertSuccessfulOutput: pending / error / aborted are stream failures.
     if output.stop_reason() == Some(StopReason::Pending) {
@@ -1564,10 +2075,23 @@ pub fn stream(
             }
             Err(error_message) => {
                 let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                set_output_error_message(&mut message, error_message);
+                let aborted = is_aborted_signal(options.base.abort_signal.as_ref())
+                    || error_message == REQUEST_ABORTED;
+                message.set_stop_reason(if aborted {
+                    StopReason::Aborted
+                } else {
+                    StopReason::Error
+                });
+                set_output_error_message(
+                    &mut message,
+                    redact_codex_error(&error_message, &[api_key.as_str()]),
+                );
                 pusher.push(AssistantMessageEvent::Error {
-                    reason: ErrorReason::Error,
+                    reason: if aborted {
+                        ErrorReason::Aborted
+                    } else {
+                        ErrorReason::Error
+                    },
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -1612,6 +2136,7 @@ pub fn stream_simple(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::types::{ContentBlock, Message, UserContent};
@@ -1788,6 +2313,23 @@ mod tests {
         assert_eq!(input[0]["role"], "user");
         assert!(!body.as_object().unwrap().contains_key("prompt_cache_key"));
         assert!(!body.as_object().unwrap().contains_key("reasoning"));
+    }
+
+    #[test]
+    fn empty_system_prompt_uses_codex_default() {
+        let model = codex_model("gpt-5.5");
+        let mut context = codex_ctx();
+        context.system_prompt = Some(String::new());
+
+        let body = build_request_body(
+            &model,
+            &context,
+            &OpenAICodexResponsesOptions::default(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(body["instructions"], "You are a helpful assistant.");
     }
 
     #[test]
@@ -2040,6 +2582,20 @@ mod tests {
     }
 
     #[test]
+    fn response_failed_code_only_preserves_retryable_code() {
+        let model = codex_model("gpt-5.5");
+        let events = parse_sse(
+            r#"data: {"type":"response.failed","response":{"error":{"code":"previous_response_not_found"}}}
+
+"#,
+        );
+        let mut output = new_output(&model);
+        let err = map_codex_events(&events, &mut output, None).unwrap_err();
+        assert_eq!(err, "previous_response_not_found");
+        assert!(is_previous_response_not_found_error(&err));
+    }
+
+    #[test]
     fn normalizes_unknown_statuses_away() {
         let model = codex_model("gpt-5.5");
         let events = parse_sse(
@@ -2202,7 +2758,10 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
     fn retryable_classification() {
         assert!(is_retryable_error(429, "rate limited, try later"));
         assert!(is_retryable_error(500, ""));
+        assert!(is_retryable_error(502, ""));
         assert!(is_retryable_error(503, ""));
+        assert!(is_retryable_error(504, ""));
+        assert!(!is_retryable_error(501, ""));
         assert!(is_retryable_error(200, "upstream connect error"));
         assert!(!is_retryable_error(429, "GoUsageLimitError: quota"));
         assert!(!is_retryable_error(429, "insufficient_quota for plan"));
@@ -2238,6 +2797,8 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
             "retry-after".to_string(),
             "Wed, 21 Oct 2030 07:28:00 GMT".to_string(),
         );
+        assert!(get_retry_after_delay_ms(&headers).is_some());
+        headers.insert("retry-after".to_string(), "not a date".to_string());
         assert_eq!(get_retry_after_delay_ms(&headers), None);
         assert_eq!(get_retry_after_delay_ms(&BTreeMap::new()), None);
     }
@@ -2294,6 +2855,48 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
             err.contains("Failed to extract accountId from token"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn preaborted_stream_reports_aborted_terminal_reason() {
+        use std::sync::atomic::AtomicBool;
+
+        let model = codex_model("gpt-5.5");
+        let signal = Arc::new(AtomicBool::new(true));
+        let options = OpenAICodexResponsesOptions {
+            base: StreamOptions {
+                abort_signal: Some(signal),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let token = mock_token("acct-aborted");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (events, message) = rt.block_on(async {
+            let stream = stream(
+                &model,
+                &Context::default(),
+                reqwest::Client::new(),
+                Some(&token),
+                &options,
+            );
+            tokio::time::timeout(Duration::from_secs(1), stream.collect())
+                .await
+                .expect("timed out waiting for aborted stream")
+        });
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AssistantMessageEvent::Error {
+                reason: ErrorReason::Aborted,
+                error_message,
+            } if error_message.stop_reason() == Some(StopReason::Aborted)
+        )));
+        assert_eq!(message.stop_reason(), Some(StopReason::Aborted));
+        assert_eq!(message.error_message(), Some("Request was aborted"));
     }
 
     #[test]
@@ -2374,6 +2977,43 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
         format!("ws://127.0.0.1:{port}/backend-api/codex/responses")
     }
 
+    async fn mock_codex_incremental_ws_server() -> (String, tokio::sync::oneshot::Sender<()>) {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            use futures_util::{SinkExt as _, StreamExt as _};
+            let (stream, _) = listener.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut sink, mut read) = ws.split();
+            let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) = read.next().await
+            else {
+                return;
+            };
+            assert!(text.contains("\"type\":\"response.create\""), "got: {text}");
+
+            let events = ws_codex_events("completed");
+            for event in events.iter().take(3) {
+                sink.send(tokio_tungstenite::tungstenite::Message::Text(event.clone()))
+                    .await
+                    .unwrap();
+            }
+            let _ = release_receiver.await;
+            for event in events.iter().skip(3) {
+                sink.send(tokio_tungstenite::tungstenite::Message::Text(event.clone()))
+                    .await
+                    .unwrap();
+            }
+            let _ = sink.close().await;
+        });
+        (
+            format!("ws://127.0.0.1:{port}/backend-api/codex/responses"),
+            release_sender,
+        )
+    }
+
     fn ws_cached_events(response_id: &str, message_id: &str, text: &str) -> Vec<String> {
         vec![
             format!(r#"{{"type":"response.created","response":{{"id":"{response_id}"}}}}"#),
@@ -2413,7 +3053,7 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
                 };
                 requests_for_server
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|error| error.into_inner())
                     .push(serde_json::from_str(&text).unwrap());
                 let response_id = format!("resp_{index}");
                 let message_id = format!("msg_{index}");
@@ -2457,7 +3097,7 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
                     };
                     first_requests
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|error| error.into_inner())
                         .push((1, serde_json::from_str(&text).unwrap()));
                     if request_index == 0 {
                         for event in ws_cached_events("resp_1", "msg_1", "Hello") {
@@ -2488,7 +3128,7 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
             };
             requests_for_server
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|error| error.into_inner())
                 .push((2, serde_json::from_str(&text).unwrap()));
             for event in ws_cached_events("resp_2", "msg_2", "Recovered") {
                 sink.send(tokio_tungstenite::tungstenite::Message::Text(event))
@@ -2517,7 +3157,10 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
             else {
                 return;
             };
-            requests.lock().unwrap().push(connection_id);
+            requests
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(connection_id);
             for event in ws_cached_events(response_id, message_id, text) {
                 sink.send(tokio_tungstenite::tungstenite::Message::Text(event))
                     .await
@@ -2590,8 +3233,10 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
             transport: Some("websocket".to_string()),
             ..Default::default()
         };
+        let context = codex_ctx();
+        let body = build_request_body(&model, &context, &options, None).expect("ws body");
         let mut events: Vec<AssistantMessageEvent> = Vec::new();
-        let output = run_stream_ws(&model, &codex_ctx(), &token, &options, &mut |e| {
+        let output = run_stream_ws(&model, &context, &token, &options, &body, &mut |e| {
             events.push(e)
         })
         .await
@@ -2610,6 +3255,61 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
             .any(|e| matches!(e, AssistantMessageEvent::Start { .. })));
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn websocket_transport_emits_delta_before_terminal_frame() {
+        let (base, release) = mock_codex_incremental_ws_server().await;
+        let mut model = codex_model("gpt-5.4-codex");
+        model.base_url = base
+            .replace("ws://", "http://")
+            .replace("/codex/responses", "");
+        let token = mock_token("acct-incremental");
+        let options = OpenAICodexResponsesOptions {
+            transport: Some("websocket".to_string()),
+            ..Default::default()
+        };
+        let context = codex_ctx();
+        let body = build_request_body(&model, &context, &options, None).expect("ws body");
+        let observed = Arc::new(Mutex::new(Vec::<AssistantMessageEvent>::new()));
+        let observed_for_task = observed.clone();
+        let task = tokio::spawn(async move {
+            run_stream_ws(&model, &context, &token, &options, &body, &mut |event| {
+                observed_for_task
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event)
+            })
+            .await
+        });
+
+        let emitted_before_terminal = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if observed.lock().unwrap_or_else(|error| error.into_inner()).iter().any(|event| {
+                    matches!(event, AssistantMessageEvent::TextDelta { delta, .. } if delta == "Hello")
+                }) {
+                    break true;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or(false);
+        let _ = release.send(());
+        let output = task.await.unwrap().expect("incremental ws stream");
+
+        assert!(emitted_before_terminal);
+        assert_eq!(
+            output
+                .content()
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>(),
+            "Hello"
+        );
+    }
+
     #[tokio::test]
     async fn websocket_transport_handles_incomplete() {
         let base = mock_codex_ws_server(ws_codex_events("incomplete")).await;
@@ -2622,8 +3322,10 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
             transport: Some("websocket".to_string()),
             ..Default::default()
         };
+        let context = codex_ctx();
+        let body = build_request_body(&model, &context, &options, None).expect("ws body");
         let mut events: Vec<AssistantMessageEvent> = Vec::new();
-        let output = run_stream_ws(&model, &codex_ctx(), &token, &options, &mut |e| {
+        let output = run_stream_ws(&model, &context, &token, &options, &body, &mut |e| {
             events.push(e)
         })
         .await
@@ -2661,9 +3363,23 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
             ..Default::default()
         };
         let first_context = codex_ctx();
+        let first_body = build_request_body(
+            &model,
+            &first_context,
+            &options,
+            options.base.session_id.as_deref(),
+        )
+        .expect("first cached body");
         let first = tokio::time::timeout(
             Duration::from_secs(3),
-            run_stream_ws(&model, &first_context, &token, &options, &mut |_| {}),
+            run_stream_ws(
+                &model,
+                &first_context,
+                &token,
+                &options,
+                &first_body,
+                &mut |_| {},
+            ),
         )
         .await
         .expect("first cached request timed out")
@@ -2673,15 +3389,32 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
         second_context
             .messages
             .push(Message::User(UserContent::string("continue", 2)));
+        let second_body = build_request_body(
+            &model,
+            &second_context,
+            &options,
+            options.base.session_id.as_deref(),
+        )
+        .expect("second cached body");
         tokio::time::timeout(
             Duration::from_secs(3),
-            run_stream_ws(&model, &second_context, &token, &options, &mut |_| {}),
+            run_stream_ws(
+                &model,
+                &second_context,
+                &token,
+                &options,
+                &second_body,
+                &mut |_| {},
+            ),
         )
         .await
         .expect("second cached request timed out")
         .expect("second cached request failed");
 
-        let requests = requests.lock().unwrap().clone();
+        let requests = requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0]["prompt_cache_key"], session_id);
         assert_eq!(requests[0]["store"], false);
@@ -2750,7 +3483,10 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
         .expect("recovery request failed");
         assert_eq!(recovered.response_id(), Some("resp_2"));
 
-        let requests = requests.lock().unwrap().clone();
+        let requests = requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].0, 1);
         assert_eq!(requests[1].0, 1);
@@ -2781,35 +3517,65 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
             ..Default::default()
         };
         let context = codex_ctx();
+        let first_options = options();
+        let body = build_request_body(
+            &model,
+            &context,
+            &first_options,
+            first_options.base.session_id.as_deref(),
+        )
+        .expect("first account body");
         run_stream_ws(
             &model,
             &context,
             &mock_token("account-a"),
-            &options(),
+            &first_options,
+            &body,
             &mut |_| {},
         )
         .await
         .expect("first account request");
+        let second_options = options();
+        let body = build_request_body(
+            &model,
+            &context,
+            &second_options,
+            second_options.base.session_id.as_deref(),
+        )
+        .expect("second account body");
         run_stream_ws(
             &model,
             &context,
             &mock_token("account-b"),
-            &options(),
+            &second_options,
+            &body,
             &mut |_| {},
         )
         .await
         .expect("second account request");
+        let third_options = options();
+        let body = build_request_body(
+            &model,
+            &context,
+            &third_options,
+            third_options.base.session_id.as_deref(),
+        )
+        .expect("third account body");
         run_stream_ws(
             &model,
             &context,
             &mock_token("account-a"),
-            &options(),
+            &third_options,
+            &body,
             &mut |_| {},
         )
         .await
         .expect("reused first account request");
 
-        assert_eq!(*requests.lock().unwrap(), vec![1, 2, 1]);
+        assert_eq!(
+            *requests.lock().unwrap_or_else(|error| error.into_inner()),
+            vec![1, 2, 1]
+        );
     }
 
     #[tokio::test]

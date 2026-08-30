@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Transport-level tests for the mistral-conversations and
 //! openai-codex-responses adaptors, driven by a local TCP HTTP server.
 //!
@@ -22,7 +24,7 @@ struct CapturedRequest {
     method: String,
     path: String,
     headers: BTreeMap<String, String>,
-    body: String,
+    body: Vec<u8>,
 }
 
 /// A tiny local HTTP/1.1 server that captures each request and answers with a
@@ -85,14 +87,15 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> CapturedRequest {
             headers.insert(name, value);
         }
     }
-    let mut body = String::from_utf8_lossy(&raw[header_end..]).to_string();
+    let mut body = raw[header_end..].to_vec();
     while body.len() < content_length {
         let n = socket.read(&mut buf).await.expect("read body");
         if n == 0 {
             break;
         }
-        body.push_str(&String::from_utf8_lossy(&buf[..n]));
+        body.extend_from_slice(&buf[..n]);
     }
+    body.truncate(content_length.min(body.len()));
     CapturedRequest {
         method,
         path,
@@ -126,6 +129,56 @@ fn text_of(message: &pi_ai::types::AssistantMessage) -> String {
             _ => None,
         })
         .collect()
+}
+
+#[cfg(target_os = "linux")]
+#[link(name = "zstd")]
+unsafe extern "C" {
+    fn ZSTD_getFrameContentSize(src: *const u8, src_size: usize) -> u64;
+    fn ZSTD_decompress(
+        dst: *mut u8,
+        dst_capacity: usize,
+        src: *const u8,
+        compressed_size: usize,
+    ) -> usize;
+    fn ZSTD_isError(code: usize) -> u32;
+}
+
+fn codex_request_json(req: &CapturedRequest) -> Vec<u8> {
+    if req.headers.get("content-encoding").map(String::as_str) != Some("zstd") {
+        return req.body.clone();
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        const CONTENT_SIZE_ERROR: u64 = u64::MAX;
+        const CONTENT_SIZE_UNKNOWN: u64 = u64::MAX - 1;
+        let size = unsafe { ZSTD_getFrameContentSize(req.body.as_ptr(), req.body.len()) };
+        assert!(
+            size != CONTENT_SIZE_ERROR && size != CONTENT_SIZE_UNKNOWN,
+            "Codex zstd request must declare its content size"
+        );
+        let mut decoded = vec![0_u8; size as usize];
+        let written = unsafe {
+            ZSTD_decompress(
+                decoded.as_mut_ptr(),
+                decoded.len(),
+                req.body.as_ptr(),
+                req.body.len(),
+            )
+        };
+        assert_eq!(
+            unsafe { ZSTD_isError(written) },
+            0,
+            "Codex zstd decode failed"
+        );
+        decoded.truncate(written);
+        decoded
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        panic!("Codex zstd request decoding is unavailable on this target");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +271,7 @@ fn mistral_full_transport_roundtrip() {
         assert_eq!(req.headers.get("x-custom").unwrap(), "value");
         assert!(req.headers.get("user-agent").unwrap().starts_with("pi ("));
 
-        let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
         assert_eq!(body["model"], "mistral-large-latest");
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_tokens"], 123);
@@ -443,9 +496,11 @@ fn codex_sse_transport_roundtrip() {
             req.headers.get("x-client-request-id").unwrap(),
             "test-session-123"
         );
-        assert!(!req.headers.contains_key("content-encoding"));
+        if let Some(encoding) = req.headers.get("content-encoding") {
+            assert_eq!(encoding, "zstd");
+        }
 
-        let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&codex_request_json(&req)).unwrap();
         assert_eq!(body["model"], "gpt-5.5");
         assert_eq!(body["stream"], true);
         assert_eq!(body["store"], false);

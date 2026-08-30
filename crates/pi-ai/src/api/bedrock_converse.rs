@@ -20,22 +20,19 @@
 //! sources such as SSO- or process-backed profiles and EC2 metadata remain
 //! unavailable to this hand-rolled signer.
 //!
-//! Error diagnostics (`bedrock_response_failure` on the assistant message)
-//! are not attached because the ported `AssistantMessage` type has no
-//! `diagnostics` field; error message prefixes and metadata that matter for
-//! retry classification are preserved verbatim.
-
 use base64::Engine as _;
+use futures_util::StreamExt as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use crate::event_stream::{AssistantMessageEventStream, StreamSink};
 use crate::model::{calculate_cost, Model};
 use crate::types::{
-    AssistantMessage, AssistantMessageEvent, CacheRetention, ContentBlock, Context, DoneReason,
-    ErrorReason, Message, SimpleStreamOptions, StopReason, StreamOptions, Tool, ToolChoice,
-    ToolResultMessage, Usage, UserContent, UserContentBody,
+    AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent, CacheRetention,
+    ContentBlock, Context, DoneReason, ErrorReason, Message, SimpleStreamOptions, StopReason,
+    StreamOptions, Tool, ToolChoice, ToolResultMessage, Usage, UserContent, UserContentBody,
 };
 
 use super::constrained_sampling::{
@@ -68,6 +65,8 @@ pub struct BedrockOptions {
     pub base: StreamOptions,
     pub region: Option<String>,
     pub profile: Option<String>,
+    /// Explicit bearer-token auth (upstream `options.bearerToken`).
+    pub bearer_token: Option<String>,
     pub tool_choice: Option<Value>,
     pub reasoning: Option<String>,
     pub thinking_budgets: Option<crate::types::ThinkingBudgets>,
@@ -75,6 +74,72 @@ pub struct BedrockOptions {
     pub thinking_display: Option<String>,
     pub request_metadata: Option<BTreeMap<String, String>>,
     pub max_tokens: Option<u64>,
+}
+
+#[derive(Debug)]
+struct BedrockRunError {
+    message: String,
+    status: Option<u16>,
+    error_code: Option<String>,
+    request_id: Option<String>,
+    aborted: bool,
+}
+
+impl From<String> for BedrockRunError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            status: None,
+            error_code: None,
+            request_id: None,
+            aborted: false,
+        }
+    }
+}
+
+impl BedrockRunError {
+    fn aborted() -> Self {
+        Self {
+            message: "Request was aborted".to_string(),
+            status: None,
+            error_code: None,
+            request_id: None,
+            aborted: true,
+        }
+    }
+
+    fn with_request_id(mut self, request_id: Option<&str>) -> Self {
+        if self.request_id.is_none() {
+            self.request_id = request_id.map(str::to_string);
+        }
+        self
+    }
+}
+
+const MAX_BEDROCK_DIAGNOSTIC_VALUE_CHARS: usize = 200;
+
+/// Keep provider metadata useful without allowing arbitrary response content
+/// into structured diagnostics. Request ids and error codes are identifiers,
+/// not user-facing error bodies.
+fn normalize_diagnostic_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > MAX_BEDROCK_DIAGNOSTIC_VALUE_CHARS
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._:/-#".contains(character))
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn normalize_error_code(value: &str) -> Option<String> {
+    // AWS may encode the modeled name as `namespace#ValidationException` or
+    // append details after a colon in x-amzn-errortype.
+    let value = value.rsplit('#').next().unwrap_or(value);
+    let value = value.split(':').next().unwrap_or(value);
+    normalize_diagnostic_value(value)
 }
 
 fn new_output(model: &Model) -> AssistantMessage {
@@ -104,6 +169,7 @@ pub fn get_configured_bedrock_region(options: &BedrockOptions) -> Option<String>
     options
         .region
         .clone()
+        .filter(|region| !region.is_empty())
         .or_else(|| get_provider_env_value("AWS_REGION", options.base.base.env.as_ref()))
         .or_else(|| get_provider_env_value("AWS_DEFAULT_REGION", options.base.base.env.as_ref()))
 }
@@ -117,10 +183,13 @@ pub fn get_standard_bedrock_endpoint_region(base_url: &str) -> Option<String> {
         .split('/')
         .next()?
         .to_lowercase();
-    let re =
+    static HOST_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
         regex::Regex::new(r"^bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?$")
-            .unwrap();
-    re.captures(&host).map(|c| c[1].to_string())
+            .unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
+    HOST_RE.captures(&host).map(|c| c[1].to_string())
 }
 
 /// `shouldUseExplicitBedrockEndpoint`: custom endpoints always pinned;
@@ -285,8 +354,13 @@ pub fn aws_profile_region(
 /// ARN-embedded region extraction for inference profile ids (upstream
 /// `arnRegionMatch`).
 pub fn arn_region(model_id: &str) -> Option<String> {
-    let re = regex::Regex::new(r"^arn:aws(?:-[a-z0-9-]+)?:bedrock:([a-z0-9-]+):").unwrap();
-    re.captures(model_id).map(|c| c[1].to_string())
+    static ARN_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
+        regex::Regex::new(r"^arn:aws(?:-[a-z0-9-]+)?:bedrock:([a-z0-9-]+):")
+            .unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
+    ARN_RE.captures(model_id).map(|c| c[1].to_string())
 }
 
 /// GovCloud target detection (upstream `isGovCloudBedrockTarget`).
@@ -325,11 +399,15 @@ pub fn resolve_config(
     api_key: Option<&str>,
 ) -> Result<BedrockResolvedConfig, String> {
     let env = options.base.base.env.as_ref();
-    let options_profile = options.profile.clone().or_else(|| {
-        env.and_then(|e| e.get("AWS_PROFILE"))
-            .cloned()
-            .filter(|v| !v.is_empty())
-    });
+    let options_profile = options
+        .profile
+        .clone()
+        .filter(|profile| !profile.is_empty())
+        .or_else(|| {
+            env.and_then(|e| e.get("AWS_PROFILE"))
+                .cloned()
+                .filter(|v| !v.is_empty())
+        });
     // Upstream distinguishes a scoped profile (`options.env.AWS_PROFILE`) from
     // an ambient process profile when deciding whether the SDK should pin the
     // catalog endpoint. Preserve that distinction for the manual signer.
@@ -380,11 +458,18 @@ pub fn resolve_config(
         None
     } else {
         options
-            .base
-            .base
-            .api_key
+            .bearer_token
             .clone()
-            .or_else(|| api_key.map(|s| s.to_string()))
+            .filter(|token| !token.is_empty())
+            .or_else(|| {
+                options
+                    .base
+                    .base
+                    .api_key
+                    .clone()
+                    .filter(|token| !token.is_empty())
+            })
+            .or_else(|| api_key.filter(|key| !key.is_empty()).map(str::to_string))
             .or_else(|| bearer_env.clone())
     };
 
@@ -833,6 +918,38 @@ fn create_image_block(mime_type: &str, data: &str) -> Option<Value> {
         _ => return None,
     };
     Some(json!({ "image": { "source": { "bytes": data }, "format": format } }))
+}
+
+/// Validate image blocks before conversion. The upstream Bedrock adaptor
+/// throws on an unsupported MIME type instead of silently dropping that
+/// block; models without image input are transformed to text before this
+/// validation boundary and therefore retain their existing fallback.
+fn validate_bedrock_image_types(context: &Context, model: &Model) -> Result<(), String> {
+    if !model.input.contains(&crate::model::ModelInput::Image) {
+        return Ok(());
+    }
+    for message in &context.messages {
+        let blocks: &[ContentBlock] = match message {
+            Message::User(UserContent::RoleUser {
+                content: UserContentBody::Blocks(blocks),
+                ..
+            }) => blocks,
+            Message::ToolResult(tool_result) => tool_result.content(),
+            Message::Assistant(_)
+            | Message::User(UserContent::RoleUser {
+                content: UserContentBody::String(_),
+                ..
+            }) => continue,
+        };
+        for block in blocks {
+            if let ContentBlock::Image { mime_type, .. } = block {
+                if create_image_block(mime_type, "").is_none() {
+                    return Err(format!("Unknown image type: {mime_type}"));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Drop empty object keys recursively (upstream `sanitizeBedrockDocument`).
@@ -1367,6 +1484,7 @@ pub fn build_command_input(
     context: &Context,
     options: &BedrockOptions,
 ) -> Result<Value, String> {
+    validate_bedrock_image_types(context, model)?;
     let env = options.base.base.env.as_ref();
     let cache_retention = resolve_cache_retention(options.base.cache_retention.as_ref(), env);
     let inference_max_tokens = options.max_tokens.or(options.base.max_tokens).or_else(|| {
@@ -1439,26 +1557,26 @@ pub fn decode_eventstream_frames(bytes: &[u8]) -> Result<Vec<EventStreamFrame>, 
         if bytes[offset..offset + 4] != [0x00, 0xC0, 0xDE, 0x00] {
             return Err("Invalid eventstream magic".to_string());
         }
-        let total_length =
-            u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
-        let headers_length =
-            u32::from_be_bytes(bytes[offset + 8..offset + 12].try_into().unwrap()) as usize;
-        let prelude_crc = u32::from_be_bytes(bytes[offset + 12..offset + 16].try_into().unwrap());
+        let total_length = be_u32(&bytes[offset + 4..offset + 8]) as usize;
+        let headers_length = be_u32(&bytes[offset + 8..offset + 12]) as usize;
+        if total_length < 20 {
+            return Err(format!("Invalid eventstream frame length {total_length}"));
+        }
+        if headers_length > total_length - 20 {
+            return Err("Eventstream headers exceed frame payload".to_string());
+        }
+        let prelude_crc = be_u32(&bytes[offset + 12..offset + 16]);
         let expected_crc = crc32_ieee(&bytes[offset..offset + 12]);
         if prelude_crc != expected_crc {
             return Err("Eventstream prelude CRC mismatch".to_string());
         }
-        if total_length < 16 || offset + total_length > bytes.len() {
+        if total_length > bytes.len() - offset {
             return Err(format!(
                 "Eventstream frame length {total_length} exceeds buffer"
             ));
         }
         let message_crc_offset = offset + total_length - 4;
-        let message_crc = u32::from_be_bytes(
-            bytes[message_crc_offset..message_crc_offset + 4]
-                .try_into()
-                .unwrap(),
-        );
+        let message_crc = be_u32(&bytes[message_crc_offset..message_crc_offset + 4]);
         let expected_message_crc = crc32_ieee(&bytes[offset..message_crc_offset]);
         if message_crc != expected_message_crc {
             return Err("Eventstream message CRC mismatch".to_string());
@@ -1493,6 +1611,79 @@ pub fn decode_eventstream_frames(bytes: &[u8]) -> Result<Vec<EventStreamFrame>, 
         return Err("Trailing bytes after eventstream frames".to_string());
     }
     Ok(frames)
+}
+
+/// Incremental decoder used by the live request path. The public decoder above
+/// remains useful for complete fixtures; this adapter prevents a successful
+/// response from being buffered until every event has arrived and gives the
+/// abort signal a boundary between body chunks.
+#[derive(Default)]
+struct EventStreamDecoder {
+    buffer: Vec<u8>,
+}
+
+// Invariant: every slice passed to these readers was length-checked by the
+// frame prelude/header validation immediately above the call site.
+#[allow(clippy::unwrap_used)]
+fn be_u16(bytes: &[u8]) -> u16 {
+    u16::from_be_bytes(bytes.try_into().unwrap())
+}
+#[allow(clippy::unwrap_used)]
+fn be_u32(bytes: &[u8]) -> u32 {
+    u32::from_be_bytes(bytes.try_into().unwrap())
+}
+#[allow(clippy::unwrap_used)]
+fn be_i16(bytes: &[u8]) -> i16 {
+    i16::from_be_bytes(bytes.try_into().unwrap())
+}
+#[allow(clippy::unwrap_used)]
+fn be_i32(bytes: &[u8]) -> i32 {
+    i32::from_be_bytes(bytes.try_into().unwrap())
+}
+#[allow(clippy::unwrap_used)]
+fn be_i64(bytes: &[u8]) -> i64 {
+    i64::from_be_bytes(bytes.try_into().unwrap())
+}
+
+impl EventStreamDecoder {
+    fn push(&mut self, chunk: &[u8]) -> Result<Vec<EventStreamFrame>, String> {
+        self.buffer.extend_from_slice(chunk);
+        let mut frames = Vec::new();
+
+        loop {
+            if self.buffer.len() >= 4 && self.buffer[..4] != [0x00, 0xC0, 0xDE, 0x00] {
+                return Err("Invalid eventstream magic".to_string());
+            }
+            if self.buffer.len() < 16 {
+                break;
+            }
+
+            let total_length = be_u32(&self.buffer[4..8]) as usize;
+            let headers_length = be_u32(&self.buffer[8..12]) as usize;
+            if total_length < 20 {
+                return Err(format!("Invalid eventstream frame length {total_length}"));
+            }
+            if headers_length > total_length - 20 {
+                return Err("Eventstream headers exceed frame payload".to_string());
+            }
+            if self.buffer.len() < total_length {
+                break;
+            }
+
+            let frame_bytes: Vec<u8> = self.buffer.drain(..total_length).collect();
+            frames.extend(decode_eventstream_frames(&frame_bytes)?);
+        }
+
+        Ok(frames)
+    }
+
+    fn finish(self) -> Result<(), String> {
+        if self.buffer.is_empty() {
+            Ok(())
+        } else {
+            Err("Trailing bytes after eventstream frames".to_string())
+        }
+    }
 }
 
 fn parse_event_headers(bytes: &[u8]) -> Result<BTreeMap<String, String>, String> {
@@ -1539,7 +1730,7 @@ fn parse_event_headers(bytes: &[u8]) -> Result<BTreeMap<String, String>, String>
                 if i + 2 > bytes.len() {
                     return Err("Truncated short header".to_string());
                 }
-                let v = i16::from_be_bytes(bytes[i..i + 2].try_into().unwrap()).to_string();
+                let v = be_i16(&bytes[i..i + 2]).to_string();
                 i += 2;
                 v
             }
@@ -1548,7 +1739,7 @@ fn parse_event_headers(bytes: &[u8]) -> Result<BTreeMap<String, String>, String>
                 if i + 4 > bytes.len() {
                     return Err("Truncated int header".to_string());
                 }
-                let v = i32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()).to_string();
+                let v = be_i32(&bytes[i..i + 4]).to_string();
                 i += 4;
                 v
             }
@@ -1557,7 +1748,7 @@ fn parse_event_headers(bytes: &[u8]) -> Result<BTreeMap<String, String>, String>
                 if i + 8 > bytes.len() {
                     return Err("Truncated long header".to_string());
                 }
-                let v = i64::from_be_bytes(bytes[i..i + 8].try_into().unwrap()).to_string();
+                let v = be_i64(&bytes[i..i + 8]).to_string();
                 i += 8;
                 v
             }
@@ -1566,7 +1757,7 @@ fn parse_event_headers(bytes: &[u8]) -> Result<BTreeMap<String, String>, String>
                 if i + 2 > bytes.len() {
                     return Err("Truncated byte array length".to_string());
                 }
-                let len = u16::from_be_bytes(bytes[i..i + 2].try_into().unwrap()) as usize;
+                let len = be_u16(&bytes[i..i + 2]) as usize;
                 i += 2;
                 if i + len > bytes.len() {
                     return Err("Truncated byte array value".to_string());
@@ -1584,7 +1775,7 @@ fn parse_event_headers(bytes: &[u8]) -> Result<BTreeMap<String, String>, String>
                 if i + 8 > bytes.len() {
                     return Err("Truncated timestamp header".to_string());
                 }
-                let v = i64::from_be_bytes(bytes[i..i + 8].try_into().unwrap()).to_string();
+                let v = be_i64(&bytes[i..i + 8]).to_string();
                 i += 8;
                 v
             }
@@ -1698,18 +1889,30 @@ fn block_to_content(block: &Block) -> ContentBlock {
     }
 }
 
+/// Keep partial assistant messages in lockstep with streamed blocks. The
+/// upstream adaptor mutates its output message before every emitted delta;
+/// the finalizer remains responsible for redacted-chunk signature assembly.
+fn sync_output_content(state: &mut BedrockStreamState) {
+    state
+        .output
+        .set_content(state.blocks.iter().map(block_to_content).collect());
+}
+
 fn process_stream_event(
     model: &Model,
     event: &Value,
     state: &mut BedrockStreamState,
     push: &mut dyn FnMut(AssistantMessageEvent),
-) -> Result<(), String> {
+) -> Result<(), BedrockRunError> {
     if let Some(start) = event.get("messageStart") {
         if start.get("role").and_then(|v| v.as_str()) != Some("assistant") {
             return Err(
-                "Unexpected assistant message start but got user message start instead".to_string(),
+                "Unexpected assistant message start but got user message start instead"
+                    .to_string()
+                    .into(),
             );
         }
+        sync_output_content(state);
         push(AssistantMessageEvent::Start {
             partial: state.output.clone(),
         });
@@ -1735,6 +1938,7 @@ fn process_stream_event(
             );
             let content_index = state.blocks.len();
             state.blocks.push(block);
+            sync_output_content(state);
             push(AssistantMessageEvent::ToolCallStart {
                 content_index,
                 partial: state.output.clone(),
@@ -1776,12 +1980,14 @@ fn process_stream_event(
         let kind = state.blocks[block_index].kind.clone();
         if let Some(text) = delta.and_then(|d| d.get("text")).and_then(|v| v.as_str()) {
             if created {
+                sync_output_content(state);
                 push(AssistantMessageEvent::TextStart {
                     content_index: block_index,
                     partial: state.output.clone(),
                 });
             }
             state.blocks[block_index].text.push_str(text);
+            sync_output_content(state);
             push(AssistantMessageEvent::TextDelta {
                 content_index: block_index,
                 delta: text.to_string(),
@@ -1797,6 +2003,7 @@ fn process_stream_event(
                 state.blocks[block_index].arguments = crate::partial_json::parse_streaming_json(
                     &state.blocks[block_index].partial_json,
                 );
+                sync_output_content(state);
                 push(AssistantMessageEvent::ToolCallDelta {
                     content_index: block_index,
                     delta: input.to_string(),
@@ -1810,6 +2017,7 @@ fn process_stream_event(
             if let Some(text) = reasoning.get("text").and_then(|v| v.as_str()) {
                 if !text.is_empty() {
                     state.blocks[block_index].thinking.push_str(text);
+                    sync_output_content(state);
                     push(AssistantMessageEvent::ThinkingDelta {
                         content_index: block_index,
                         delta: text.to_string(),
@@ -1839,6 +2047,7 @@ fn process_stream_event(
                     state.blocks[block_index]
                         .thinking
                         .push_str(REDACTED_THINKING_PLACEHOLDER);
+                    sync_output_content(state);
                     push(AssistantMessageEvent::ThinkingDelta {
                         content_index: block_index,
                         delta: REDACTED_THINKING_PLACEHOLDER.to_string(),
@@ -1860,6 +2069,7 @@ fn process_stream_event(
         let block = state.blocks[block_index].clone();
         match block.kind {
             BlockKind::Text => {
+                sync_output_content(state);
                 push(AssistantMessageEvent::TextEnd {
                     content_index: block_index,
                     content: block.text.clone(),
@@ -1873,6 +2083,7 @@ fn process_stream_event(
                 }
                 finalized.redacted_chunks.clear();
                 state.blocks[block_index] = finalized;
+                sync_output_content(state);
                 push(AssistantMessageEvent::ThinkingEnd {
                     content_index: block_index,
                     content: block.thinking.clone(),
@@ -1886,6 +2097,7 @@ fn process_stream_event(
                     b.partial_json.clear();
                     b.clone()
                 };
+                sync_output_content(state);
                 push(AssistantMessageEvent::ToolCallEnd {
                     content_index: block_index,
                     tool_call: block_to_content(&finalized),
@@ -1927,7 +2139,13 @@ fn process_stream_event(
             "ServiceUnavailableException"
         };
         let message = exception_message(event, name);
-        return Err(format!("{}: {message}", bedrock_error_prefix(name)));
+        return Err(BedrockRunError {
+            message: format!("{}: {message}", bedrock_error_prefix(name)),
+            status: None,
+            error_code: normalize_error_code(name),
+            request_id: None,
+            aborted: false,
+        });
     }
     Ok(())
 }
@@ -1954,8 +2172,17 @@ fn redacted_bytes(value: &Value) -> Vec<Vec<u8>> {
 }
 
 fn exception_message(event: &Value, name: &str) -> String {
+    let event_key = match name {
+        "InternalServerException" => "internalServerException",
+        "ModelStreamErrorException" => "modelStreamErrorException",
+        "ValidationException" => "validationException",
+        "ThrottlingException" => "throttlingException",
+        "ServiceUnavailableException" => "serviceUnavailableException",
+        _ => name,
+    };
     event
-        .get(name)
+        .get(event_key)
+        .or_else(|| event.get(name))
         .and_then(|v| v.get("message"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -2104,10 +2331,37 @@ pub fn stream(
             }
             Err(err) => {
                 let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                set_error_message(&mut message, err);
+                let reason = if err.aborted {
+                    StopReason::Aborted
+                } else {
+                    StopReason::Error
+                };
+                message.set_stop_reason(reason);
+                set_error_message(&mut message, err.message.clone());
+                if !err.aborted {
+                    let mut details = BTreeMap::new();
+                    if let Some(status) = err.status {
+                        details.insert("status".to_string(), json!(status));
+                    }
+                    if let Some(error_code) = err.error_code {
+                        details.insert("errorCode".to_string(), json!(error_code));
+                    }
+                    if let Some(request_id) = err.request_id {
+                        details.insert("requestId".to_string(), json!(request_id));
+                    }
+                    if !details.is_empty() {
+                        let mut diagnostic =
+                            AssistantMessageDiagnostic::new("bedrock_response_failure");
+                        diagnostic.details = Some(details);
+                        message.append_diagnostic(diagnostic);
+                    }
+                }
                 pusher.push(AssistantMessageEvent::Error {
-                    reason: ErrorReason::Error,
+                    reason: if err.aborted {
+                        ErrorReason::Aborted
+                    } else {
+                        ErrorReason::Error
+                    },
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -2117,6 +2371,30 @@ pub fn stream(
     stream
 }
 
+fn response_header_value(headers: &BTreeMap<String, String>, names: &[&str]) -> Option<String> {
+    headers
+        .iter()
+        .find(|(name, _)| {
+            names
+                .iter()
+                .any(|expected| name.eq_ignore_ascii_case(expected))
+        })
+        .and_then(|(_, value)| normalize_diagnostic_value(value))
+}
+
+fn response_error_code(headers: &BTreeMap<String, String>, body: &str) -> Option<String> {
+    let body_code = serde_json::from_str::<Value>(body).ok().and_then(|body| {
+        ["code", "errorCode", "__type"]
+            .iter()
+            .find_map(|key| body.get(*key).and_then(Value::as_str))
+            .and_then(normalize_error_code)
+    });
+    body_code.or_else(|| {
+        response_header_value(headers, &["x-amzn-errortype"])
+            .and_then(|value| normalize_error_code(&value))
+    })
+}
+
 async fn run_bedrock_stream(
     model: &Model,
     context: &Context,
@@ -2124,9 +2402,22 @@ async fn run_bedrock_stream(
     api_key: Option<&str>,
     options: &BedrockOptions,
     push: &mut (dyn FnMut(AssistantMessageEvent) + Send),
-) -> Result<AssistantMessage, String> {
+) -> Result<AssistantMessage, BedrockRunError> {
     let config = resolve_config(model, options, api_key)?;
-    let body = build_command_input(model, context, options)?;
+    let mut body = build_command_input(model, context, options)?;
+    // Match the upstream order exactly: the hook sees the generated command
+    // input before JSON serialization, signing, and transport selection. It
+    // is intentionally awaited even when the signal is already set; callers
+    // can inspect or normalize the payload before the request is rejected at
+    // the next boundary.
+    if let Some(on_payload) = &options.base.on_payload {
+        if let Some(replacement) = on_payload(body.clone(), model.clone()).await {
+            body = replacement;
+        }
+    }
+    if super::openai_completions::signal_aborted(options.base.abort_signal.as_ref()) {
+        return Err(BedrockRunError::aborted());
+    }
     let body_bytes =
         serde_json::to_vec(&body).map_err(|e| format!("Failed to serialize request: {e}"))?;
 
@@ -2143,15 +2434,16 @@ async fn run_bedrock_stream(
         .header("content-type", "application/json")
         .header("accept", "application/vnd.amazon.eventstream")
         .body(body_bytes.clone());
+    if let Some(timeout_ms) = options.base.base.timeout_ms.filter(|timeout| *timeout > 0) {
+        request = request.timeout(Duration::from_millis(timeout_ms));
+    }
 
     // Caller headers (upstream middleware semantics): skip reserved
     // SigV4/auth headers case-insensitively.
-    let mut reserved_skip = Vec::new();
     if let Some(headers) = &options.base.base.headers {
         for (name, value) in headers {
             let lower = name.to_lowercase();
             if lower.starts_with("x-amz-") || lower == "authorization" || lower == "host" {
-                reserved_skip.push(lower);
                 continue;
             }
             if let Some(value) = value {
@@ -2163,9 +2455,15 @@ async fn run_bedrock_stream(
     if let Some(bearer) = &config.bearer_token {
         request = request.header("authorization", format!("Bearer {bearer}"));
     } else {
-        let runtime_credentials =
-            resolve_runtime_bedrock_credentials(&client, &config, options.base.base.env.as_ref())
-                .await?;
+        let runtime_credentials = match super::openai_completions::abortable(
+            resolve_runtime_bedrock_credentials(&client, &config, options.base.base.env.as_ref()),
+            options.base.abort_signal.clone(),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => return Err(BedrockRunError::aborted()),
+        };
         let access_key = runtime_credentials
             .as_ref()
             .map(|c| c.access_key.clone())
@@ -2199,10 +2497,16 @@ async fn run_bedrock_stream(
         }
     }
 
-    let response = request
-        .send()
-        .await
-        .map_err(|err| format!("Request failed: {err}"))?;
+    let response = match super::openai_completions::abortable(
+        request.send(),
+        options.base.abort_signal.clone(),
+    )
+    .await
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err(err)) => return Err(format!("Request failed: {err}").into()),
+        Err(_) => return Err(BedrockRunError::aborted()),
+    };
     let status = response.status();
     let headers_map = response
         .headers()
@@ -2213,35 +2517,115 @@ async fn run_bedrock_stream(
         on_response(
             &crate::types::ProviderResponse {
                 status: status.as_u16(),
-                headers: headers_map,
+                headers: headers_map.clone(),
             },
             model,
         );
     }
-    let response_bytes = response
-        .bytes()
-        .await
-        .map_err(|err| format!("Request body failed: {err}"))?;
+    let response_request_id =
+        response_header_value(&headers_map, &["x-amzn-requestid", "x-amzn-request-id"]);
+    let mut response_stream = response.bytes_stream();
 
     if !status.is_success() {
+        let mut response_bytes = Vec::new();
+        loop {
+            let chunk = match super::openai_completions::abortable(
+                response_stream.next(),
+                options.base.abort_signal.clone(),
+            )
+            .await
+            {
+                Ok(Some(Ok(chunk))) => chunk,
+                Ok(Some(Err(err))) => {
+                    return Err(BedrockRunError {
+                        message: format!("Request body failed: {err}"),
+                        status: Some(status.as_u16()),
+                        error_code: None,
+                        request_id: response_request_id.clone(),
+                        aborted: false,
+                    });
+                }
+                Ok(None) => break,
+                Err(_) => return Err(BedrockRunError::aborted()),
+            };
+            response_bytes.extend_from_slice(&chunk);
+        }
+        if super::openai_completions::signal_aborted(options.base.abort_signal.as_ref()) {
+            return Err(BedrockRunError::aborted());
+        }
         let body_text = String::from_utf8_lossy(&response_bytes).to_string();
-        return Err(format_bedrock_error(status.as_u16(), &body_text));
+        return Err(BedrockRunError {
+            message: format_bedrock_error(status.as_u16(), &body_text),
+            status: Some(status.as_u16()),
+            error_code: response_error_code(&headers_map, &body_text),
+            request_id: response_request_id,
+            aborted: false,
+        });
     }
 
-    let frames = decode_eventstream_frames(&response_bytes)?;
     let mut state = BedrockStreamState {
         output: new_output(model),
         blocks: Vec::new(),
     };
-    for frame in frames {
-        let Some(payload) = &frame.payload else {
-            continue;
+    let mut decoder = EventStreamDecoder::default();
+    loop {
+        let chunk = match super::openai_completions::abortable(
+            response_stream.next(),
+            options.base.abort_signal.clone(),
+        )
+        .await
+        {
+            Ok(Some(Ok(chunk))) => chunk,
+            Ok(Some(Err(err))) => {
+                return Err(BedrockRunError {
+                    message: format!("Request body failed: {err}"),
+                    status: None,
+                    error_code: None,
+                    request_id: response_request_id.clone(),
+                    aborted: false,
+                });
+            }
+            Ok(None) => break,
+            Err(_) => return Err(BedrockRunError::aborted()),
         };
-        process_stream_event(model, payload, &mut state, push)?;
+        if super::openai_completions::signal_aborted(options.base.abort_signal.as_ref()) {
+            return Err(BedrockRunError::aborted());
+        }
+        let frames = decoder.push(&chunk).map_err(|message| BedrockRunError {
+            message,
+            status: None,
+            error_code: None,
+            request_id: response_request_id.clone(),
+            aborted: false,
+        })?;
+        for frame in frames {
+            if super::openai_completions::signal_aborted(options.base.abort_signal.as_ref()) {
+                return Err(BedrockRunError::aborted());
+            }
+            let Some(payload) = &frame.payload else {
+                continue;
+            };
+            if let Err(error) = process_stream_event(model, payload, &mut state, push) {
+                return Err(error.with_request_id(response_request_id.as_deref()));
+            }
+        }
+    }
+    decoder.finish().map_err(|message| BedrockRunError {
+        message,
+        status: None,
+        error_code: None,
+        request_id: response_request_id.clone(),
+        aborted: false,
+    })?;
+    if super::openai_completions::signal_aborted(options.base.abort_signal.as_ref()) {
+        return Err(BedrockRunError::aborted());
     }
     finalize_blocks(&mut state);
     if state.output.stop_reason() == Some(StopReason::Pending) {
-        return Err("Bedrock stream ended without a stop reason".to_string());
+        return Err(BedrockRunError::from(
+            "Bedrock stream ended without a stop reason".to_string(),
+        )
+        .with_request_id(response_request_id.as_deref()));
     }
     if matches!(
         state.output.stop_reason(),
@@ -2252,7 +2636,13 @@ async fn run_bedrock_stream(
             .error_message()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "An unknown error occurred".to_string());
-        return Err(message);
+        return Err(BedrockRunError {
+            message,
+            status: None,
+            error_code: None,
+            request_id: response_request_id,
+            aborted: state.output.stop_reason() == Some(StopReason::Aborted),
+        });
     }
     Ok(state.output)
 }
@@ -2271,10 +2661,13 @@ fn url_host(endpoint: &str) -> Result<String, String> {
 /// + body with the data-retention hint.
 pub fn format_bedrock_error(status: u16, body: &str) -> String {
     let core = format!("{status}: {body}");
-    let data_retention_hint = if regex::Regex::new(r"(?i)data retention mode")
-        .unwrap()
-        .is_match(body)
-    {
+    static DATA_RETENTION_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
+        regex::Regex::new(r"(?i)data retention mode")
+            .unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
+    let data_retention_hint = if DATA_RETENTION_RE.is_match(body) {
         format!(" See {BEDROCK_DATA_RETENTION_DOCS_URL} for supported data retention modes.")
     } else {
         String::new()
@@ -2295,6 +2688,7 @@ pub fn stream_simple(
         base: options.base.clone(),
         region: None,
         profile: None,
+        bearer_token: None,
         tool_choice: options.tool_choice.map(|tc| match tc {
             ToolChoice::Auto => json!("auto"),
             ToolChoice::None => json!("none"),
@@ -2397,6 +2791,7 @@ pub fn clamp_max_tokens_to_context(model: &Model, context: &Context, max_tokens:
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::types::Context;
@@ -3096,6 +3491,112 @@ mod tests {
     }
 
     #[test]
+    fn explicit_bearer_token_precedes_other_api_key_sources() {
+        let model = base_model();
+        let options = BedrockOptions {
+            bearer_token: Some("explicit-bearer".to_string()),
+            base: StreamOptions {
+                base: crate::types::ProviderRequestOptions {
+                    api_key: Some("base-api-key".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config = resolve_config(&model, &options, Some("argument-api-key")).unwrap();
+        assert_eq!(config.bearer_token.as_deref(), Some("explicit-bearer"));
+        assert_eq!(config.access_key, None);
+    }
+
+    #[test]
+    fn empty_region_and_profile_fall_back_to_scoped_environment_values() {
+        let model = base_model();
+        let options = BedrockOptions {
+            region: Some(String::new()),
+            profile: Some(String::new()),
+            base: StreamOptions {
+                base: crate::types::ProviderRequestOptions {
+                    env: Some(crate::types::ProviderEnv::from([
+                        ("AWS_REGION".to_string(), "eu-west-1".to_string()),
+                        ("AWS_PROFILE".to_string(), "scoped".to_string()),
+                    ])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config = resolve_config(&model, &options, None).unwrap();
+        assert_eq!(config.region, "eu-west-1");
+        assert_eq!(config.profile.as_deref(), Some("scoped"));
+    }
+
+    #[test]
+    fn streamed_partial_contains_accumulated_content() {
+        let model = base_model();
+        let mut state = BedrockStreamState {
+            output: new_output(&model),
+            blocks: Vec::new(),
+        };
+        let mut pushed = Vec::new();
+        process_stream_event(
+            &model,
+            &json!({ "messageStart": { "role": "assistant" } }),
+            &mut state,
+            &mut |event| pushed.push(event),
+        )
+        .unwrap();
+        process_stream_event(
+            &model,
+            &json!({
+                "contentBlockDelta": {
+                    "contentBlockIndex": 0,
+                    "delta": { "text": "Hello" }
+                }
+            }),
+            &mut state,
+            &mut |event| pushed.push(event),
+        )
+        .unwrap();
+
+        let partial = pushed.iter().find_map(|event| match event {
+            AssistantMessageEvent::TextDelta { partial, .. } => Some(partial),
+            _ => None,
+        });
+        let partial = partial.expect("text delta event");
+        assert!(matches!(
+            partial.content().first(),
+            Some(ContentBlock::Text { text, .. }) if text == "Hello"
+        ));
+        assert!(matches!(
+            state.output.content().first(),
+            Some(ContentBlock::Text { text, .. }) if text == "Hello"
+        ));
+    }
+
+    #[test]
+    fn unknown_image_type_preserves_upstream_error_boundary() {
+        let model = base_model();
+        let context = Context {
+            system_prompt: None,
+            messages: vec![Message::User(UserContent::blocks(
+                vec![ContentBlock::image("aGVsbG8=", "image/tiff")],
+                1,
+            ))],
+            tools: vec![],
+        };
+        assert_eq!(
+            build_command_input(&model, &context, &BedrockOptions::default()).unwrap_err(),
+            "Unknown image type: image/tiff"
+        );
+
+        let mut text_only = model;
+        text_only.input = vec![crate::model::ModelInput::Text];
+        assert!(build_command_input(&text_only, &context, &BedrockOptions::default()).is_ok());
+    }
+
+    #[test]
     fn ambient_credentials_loaded() {
         let _guard = crate::utils::env_lock();
         let model = base_model();
@@ -3186,6 +3687,17 @@ mod tests {
         let last = bad.len() - 1;
         bad[last] ^= 0x01;
         assert!(decode_eventstream_frames(&bad).is_err());
+
+        // A frame must include the prelude, message CRC, and any declared
+        // headers/payload; malformed lengths return an error instead of
+        // producing an out-of-bounds slice.
+        let mut malformed = vec![0_u8; 16];
+        malformed[..4].copy_from_slice(&[0x00, 0xC0, 0xDE, 0x00]);
+        malformed[4..8].copy_from_slice(&16_u32.to_be_bytes());
+        assert!(decode_eventstream_frames(&malformed).is_err());
+        malformed[4..8].copy_from_slice(&20_u32.to_be_bytes());
+        malformed[8..12].copy_from_slice(&1_u32.to_be_bytes());
+        assert!(decode_eventstream_frames(&malformed).is_err());
     }
 
     // ------------------------------------------------------------------
@@ -3217,7 +3729,10 @@ mod tests {
                 }
             }
             let text = String::from_utf8_lossy(&buf).to_string();
-            requests_handle.lock().unwrap().push(text);
+            requests_handle
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(text);
             let _ = socket.write_all(
                 format!(
                     "HTTP/1.1 {status} OK\r\ncontent-type: application/vnd.amazon.eventstream\r\nx-amzn-requestid: req-123\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
@@ -3332,7 +3847,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, AssistantMessageEvent::TextDelta { .. })));
         // The request was SigV4-signed even with dummy keys (skipAuth path).
-        let req = requests.lock().unwrap()[0].clone();
+        let req = requests.lock().unwrap_or_else(|error| error.into_inner())[0].clone();
         assert!(
             req.to_lowercase()
                 .contains("authorization: aws4-hmac-sha256"),
@@ -3382,7 +3897,7 @@ mod tests {
         assert!(metadata_request
             .to_ascii_lowercase()
             .contains("authorization: bearer container-token"));
-        let bedrock_request = requests.lock().unwrap()[0].clone();
+        let bedrock_request = requests.lock().unwrap_or_else(|error| error.into_inner())[0].clone();
         assert!(bedrock_request.contains("Credential=AKIAMOCK/"));
         assert!(bedrock_request
             .to_ascii_lowercase()
@@ -3466,7 +3981,7 @@ mod tests {
         assert!(sts_request.contains("Action=AssumeRoleWithWebIdentity"));
         assert!(sts_request.contains("RoleSessionName=public-session"));
         assert!(sts_request.contains("WebIdentityToken=jwt-token"));
-        let bedrock_request = requests.lock().unwrap()[0].clone();
+        let bedrock_request = requests.lock().unwrap_or_else(|error| error.into_inner())[0].clone();
         assert!(bedrock_request.contains("Credential=AKIAWEB/"));
         assert!(bedrock_request
             .to_ascii_lowercase()
@@ -3644,6 +4159,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod profile_credentials_tests {
     use super::*;
     use crate::model::Model;

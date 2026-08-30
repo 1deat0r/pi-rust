@@ -269,6 +269,7 @@ pub fn get_grammar_tool_input(
     Ok(input.to_string())
 }
 
+#[allow(clippy::expect_used)] // invariant: serializing a &str cannot fail
 fn json_string_fragment(value: &str) -> String {
     let encoded = serde_json::to_string(value).expect("JSON strings are serializable");
     encoded[1..encoded.len() - 1].to_string()
@@ -303,6 +304,7 @@ pub fn append_grammar_tool_input_json_delta(
     let mut delta = String::new();
     if !buffer.started {
         delta.push('{');
+        #[allow(clippy::expect_used)] // invariant: serializing a &str cannot fail
         delta.push_str(
             &serde_json::to_string(input_property).expect("JSON strings are serializable"),
         );
@@ -338,6 +340,7 @@ fn infer_grammar_input_property(tool: &Tool) -> Result<String, String> {
                 .to_string(),
         );
     }
+    #[allow(clippy::expect_used)] // invariant: string-ness checked directly above
     let input_property = required[0]
         .as_str()
         .expect("required[0] was checked as a string")
@@ -418,6 +421,7 @@ pub fn create_grammar_tool_input_properties(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

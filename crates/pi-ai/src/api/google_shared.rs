@@ -39,6 +39,7 @@ impl ResolvedGoogleThinkingLevel {
 
 /// Resolve a supported pi level or model-specific Google mapping to a
 /// standard Google level (upstream `resolveGoogleThinkingLevel`).
+#[allow(clippy::panic)] // invariant: unsupported mapping is a build defect
 pub fn resolve_google_thinking_level(
     level: ModelThinkingLevel,
     model: &Model,
@@ -52,7 +53,7 @@ pub fn resolve_google_thinking_level(
         .and_then(|m| m.get(&level))
         .cloned()
         .flatten();
-    let resolved = match mapped {
+    let resolved = match mapped.as_deref() {
         Some(s) => s.to_lowercase(),
         None => model_level_string(&level).to_string(),
     };
@@ -61,9 +62,12 @@ pub fn resolve_google_thinking_level(
         "low" => ResolvedGoogleThinkingLevel::Low,
         "medium" => ResolvedGoogleThinkingLevel::Medium,
         "high" => ResolvedGoogleThinkingLevel::High,
-        other => panic!(
+        _ => panic!(
             "Unsupported Google thinking level mapping for {}/{}: {:?} -> {}",
-            model.provider, model.id, level, other
+            model.provider,
+            model.id,
+            level,
+            mapped.as_deref().unwrap_or("undefined")
         ),
     }
 }
@@ -482,8 +486,10 @@ pub fn resolve_google_function_calling_mode(
             use_strict_mode = true;
         }
     }
-    if matches!(tool_choice, Some("none") | Some("any")) {
-        return Ok(Some(map_tool_choice(tool_choice.unwrap()).to_string()));
+    if let Some(choice) = tool_choice {
+        if matches!(choice, "none" | "any") {
+            return Ok(Some(map_tool_choice(choice).to_string()));
+        }
     }
     if use_strict_mode {
         return Ok(Some("VALIDATED".to_string()));
@@ -502,6 +508,7 @@ pub fn map_stop_reason(reason: Option<&str>) -> StopReason {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::model::Model;
@@ -556,6 +563,26 @@ mod tests {
         m.thinking_level_map = Some(map);
         let r = resolve_google_thinking_level(ModelThinkingLevel::Low, &m);
         assert_eq!(r, ResolvedGoogleThinkingLevel::High);
+    }
+
+    #[test]
+    fn resolve_invalid_mapping_preserves_upstream_error_value() {
+        let mut m = model("gemini-2.5-pro");
+        let mut map = ThinkingLevelMap::new();
+        map.insert(ModelThinkingLevel::Low, Some("XHIGH".to_string()));
+        m.thinking_level_map = Some(map);
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            resolve_google_thinking_level(ModelThinkingLevel::Low, &m);
+        }))
+        .expect_err("unsupported mapping must fail like upstream");
+        let message = panic
+            .downcast_ref::<String>()
+            .expect("panic payload is a String");
+        assert_eq!(
+            message,
+            "Unsupported Google thinking level mapping for google/gemini-2.5-pro: Low -> XHIGH"
+        );
     }
 
     #[test]

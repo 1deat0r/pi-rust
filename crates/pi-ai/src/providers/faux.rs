@@ -248,15 +248,24 @@ impl FauxProviderCore {
     }
 
     pub fn set_responses(&self, responses: Vec<FauxResponseStep>) {
-        *self.pending_responses.lock().unwrap() = responses.into();
+        *self
+            .pending_responses
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = responses.into();
     }
 
     pub fn append_responses(&self, responses: Vec<FauxResponseStep>) {
-        self.pending_responses.lock().unwrap().extend(responses);
+        self.pending_responses
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .extend(responses);
     }
 
     pub fn get_pending_response_count(&self) -> usize {
-        self.pending_responses.lock().unwrap().len()
+        self.pending_responses
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
     }
 
     pub fn stream(
@@ -278,10 +287,15 @@ impl FauxProviderCore {
         let pending = self.pending_responses.clone();
 
         let outer = AssistantMessageEventStream::new();
+        // Invariant: a freshly created stream always has a live channel.
+        #[allow(clippy::expect_used)]
         let event_tx = outer
             .sender()
             .expect("fresh stream must have a live channel");
-        self.state.lock().unwrap().call_count += 1;
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .call_count += 1;
         let context = context.clone();
         let options = options.cloned();
         let request_model = request_model.clone();
@@ -307,7 +321,10 @@ impl FauxProviderCore {
                     &request_model,
                 );
             }
-            let step = pending.lock().unwrap().pop_front();
+            let step = pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pop_front();
             match step {
                 None => {
                     let mut message = create_error_message(
@@ -334,19 +351,22 @@ impl FauxProviderCore {
                             poll_after_ms: deferred_options.poll_after_ms,
                             data: None,
                         };
-                        deferred_responses.lock().unwrap().insert(
-                            handle_obj.id.clone(),
-                            DeferredEntry {
-                                handle: handle_obj.clone(),
-                                step,
-                                context: context.clone(),
-                                options: options.clone().unwrap_or_default(),
-                                model: request_model.clone(),
-                                pending_fetches: deferred_options.pending_fetches.unwrap_or(0),
-                                cancelled: false,
-                                final_: None,
-                            },
-                        );
+                        deferred_responses
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .insert(
+                                handle_obj.id.clone(),
+                                DeferredEntry {
+                                    handle: handle_obj.clone(),
+                                    step,
+                                    context: context.clone(),
+                                    options: options.clone().unwrap_or_default(),
+                                    model: request_model.clone(),
+                                    pending_fetches: deferred_options.pending_fetches.unwrap_or(0),
+                                    cancelled: false,
+                                    final_: None,
+                                },
+                            );
                         let deferred_message = create_deferred_message(&request_model, &handle_obj);
                         stream_with_deltas(
                             &mut outer,
@@ -365,7 +385,7 @@ impl FauxProviderCore {
                         FauxResponseStep::Factory(f) => f(
                             &context,
                             options.as_ref(),
-                            &state.lock().unwrap(),
+                            &state.lock().unwrap_or_else(|error| error.into_inner()),
                             &request_model,
                         ),
                     };
@@ -447,7 +467,10 @@ impl FauxProviderCore {
         };
         tokio::spawn(Box::pin(async move {
             let mut pusher = crate::event_stream::StreamSinkAdapter::new(tx.clone());
-            state.lock().unwrap().deferred_fetch_count += 1;
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .deferred_fetch_count += 1;
             let resolution = resolve_deferred_entry(
                 &deferred_responses,
                 &handle,
@@ -496,10 +519,15 @@ impl FauxProviderCore {
         let handle = handle.clone();
         self.state
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .cancelled_deferred
             .push(handle.clone());
-        if let Some(entry) = self.deferred_responses.lock().unwrap().get_mut(&handle.id) {
+        if let Some(entry) = self
+            .deferred_responses
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_mut(&handle.id)
+        {
             entry.cancelled = true;
         }
         Ok(())
@@ -516,7 +544,9 @@ fn resolve_deferred_entry(
     state: &Arc<Mutex<FauxProviderState>>,
     prompt_cache: &Arc<Mutex<BTreeMap<String, String>>>,
 ) -> Result<AssistantMessage, String> {
-    let mut lock = deferred_responses.lock().unwrap();
+    let mut lock = deferred_responses
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let entry = lock
         .get_mut(&handle.id)
         .ok_or_else(|| format!("Unknown faux deferred response: {}", handle.id))?;
@@ -539,7 +569,10 @@ fn resolve_deferred_entry(
     if let Some(final_) = &entry.final_ {
         return Ok(final_.clone());
     }
-    let state_snapshot = state.lock().unwrap().clone();
+    let state_snapshot = state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
     let resolved = match &entry.step {
         FauxResponseStep::Message(m) => m.clone(),
         FauxResponseStep::Factory(f) => f(&entry.context, None, &state_snapshot, &entry.model),
@@ -664,12 +697,15 @@ fn serialize_context(context: &Context) -> String {
     parts.join("\n\n")
 }
 
-fn common_prefix_length(a: &str, b: &str) -> usize {
-    a.as_bytes()
-        .iter()
-        .zip(b.as_bytes())
-        .take_while(|(x, y)| x == y)
-        .count()
+fn common_prefix_byte_length(a: &str, b: &str) -> usize {
+    let mut prefix_bytes = 0;
+    for ((byte_index, a_char), b_char) in a.char_indices().zip(b.chars()) {
+        if a_char != b_char {
+            break;
+        }
+        prefix_bytes = byte_index + a_char.len_utf8();
+    }
+    prefix_bytes
 }
 
 fn with_usage_estimate(
@@ -690,11 +726,13 @@ fn with_usage_estimate(
 
     if let Some(session_id) = session_id {
         if cache_retention.as_deref() != Some("none") {
-            let mut cache = prompt_cache.lock().unwrap();
+            let mut cache = prompt_cache
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             if let Some(previous) = cache.get(&session_id) {
-                let cached_chars = common_prefix_length(previous, &prompt_text);
-                cache_read = estimate_tokens(&previous[..cached_chars]) as i64;
-                cache_write = estimate_tokens(&prompt_text[cached_chars..]) as i64;
+                let cached_bytes = common_prefix_byte_length(previous, &prompt_text);
+                cache_read = estimate_tokens(&previous[..cached_bytes]) as i64;
+                cache_write = estimate_tokens(&prompt_text[cached_bytes..]) as i64;
                 input = (prompt_tokens as i64).saturating_sub(cache_read);
             } else {
                 cache_write = prompt_tokens as i64;
@@ -903,7 +941,13 @@ fn split_by_token_size(
         let token_size =
             min_token_size + (rnd * (max_token_size - min_token_size + 1) as f64) as usize;
         let char_size = (token_size * 4).max(1);
-        let end = (index + char_size).min(text.len());
+        let mut end = (index + char_size).min(text.len());
+        // Rust string slices are byte-indexed, while a provider response may
+        // contain multibyte UTF-8.  Keep the deterministic approximate token
+        // size, but never cut a scalar in half.
+        while end < text.len() && !text.is_char_boundary(end) {
+            end += 1;
+        }
         chunks.push(text[index..end].to_string());
         index = end;
     }
@@ -921,6 +965,7 @@ async fn delay_by_tokens(_chunk: &str, _tokens_per_second: Option<f64>) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod deferred_fetch_tests {
     use super::*;
     use crate::types::{ContentBlock, DeferredOption, StopReason};
@@ -968,8 +1013,19 @@ mod deferred_fetch_tests {
                 .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "deferred done")),
             "final message should carry the resolved content"
         );
-        assert_eq!(core.state.lock().unwrap().deferred_fetch_count, 2);
-        assert!(core.state.lock().unwrap().cancelled_deferred.is_empty());
+        assert_eq!(
+            core.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .deferred_fetch_count,
+            2
+        );
+        assert!(core
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .cancelled_deferred
+            .is_empty());
     }
 
     #[tokio::test]
@@ -1000,7 +1056,14 @@ mod deferred_fetch_tests {
 
         // Cancel then fetch -> cancelled error.
         core.cancel_deferred(&handle).await.unwrap();
-        assert_eq!(core.state.lock().unwrap().cancelled_deferred.len(), 1);
+        assert_eq!(
+            core.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .cancelled_deferred
+                .len(),
+            1
+        );
         let cancelled_stream = core.fetch_deferred(&model, &handle, None).await;
         let cancelled_msg = cancelled_stream.for_each(|_| {}).await;
         assert!(
@@ -1011,6 +1074,26 @@ mod deferred_fetch_tests {
             "{:?}",
             cancelled_msg.error_message()
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod split_tests {
+    use super::*;
+
+    #[test]
+    fn split_by_token_size_preserves_utf8_boundaries_and_content() {
+        let source = "ephemeral 日本語 🙂 é";
+        let chunks = split_by_token_size(
+            &AtomicU64::new(0),
+            source,
+            DEFAULT_MIN_TOKEN_SIZE,
+            DEFAULT_MAX_TOKEN_SIZE,
+        );
+
+        assert_eq!(chunks.concat(), source);
+        assert!(chunks.iter().all(|chunk| !chunk.is_empty()));
     }
 }
 
@@ -1034,6 +1117,7 @@ fn create_error_message(error: &str, api: &str, provider: &str, model: &str) -> 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::partial_json::parse_partial_json;
@@ -1123,6 +1207,117 @@ mod tests {
             assert_eq!(
                 u2.total_tokens,
                 u2.input + u2.output + u2.cache_read + u2.cache_write
+            );
+        });
+    }
+
+    #[test]
+    fn common_prefix_byte_length_stops_before_similar_utf8_codepoints() {
+        let previous = "prefix é";
+        let current = "prefix ê";
+        let prefix = common_prefix_byte_length(previous, current);
+
+        assert_eq!(&previous[..prefix], "prefix ");
+        assert_eq!(&current[..prefix], "prefix ");
+        assert!(previous.is_char_boundary(prefix));
+        assert!(current.is_char_boundary(prefix));
+    }
+
+    #[test]
+    fn usage_estimate_handles_unicode_cached_streaming() {
+        let rt = rt();
+        rt.block_on(async {
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            let response = || {
+                FauxResponseStep::Message(faux_assistant_message(
+                    vec![ContentBlock::text("ok")],
+                    FauxAssistantOptions::default(),
+                ))
+            };
+            core.set_responses(vec![response(), response(), response()]);
+
+            let model = core.get_model(None).unwrap().clone();
+            let options = SimpleStreamOptions {
+                base: crate::types::StreamOptions {
+                    session_id: Some("unicode-cache".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let context = |text: &str| {
+                let mut context = Context::default();
+                context
+                    .messages
+                    .push(Message::User(crate::types::UserContent::string(text, 1)));
+                context
+            };
+
+            let first_context = context("cache 日本語 🙂");
+            let second_context = context("cache 日木語 🙂");
+            let third_context = context("cache 日木語 🙃");
+
+            let (_, first) = core
+                .stream(&model, &first_context, Some(&options))
+                .collect()
+                .await;
+            let (_, second) = core
+                .stream(&model, &second_context, Some(&options))
+                .collect()
+                .await;
+            let (_, third) = core
+                .stream(&model, &third_context, Some(&options))
+                .collect()
+                .await;
+
+            let first_prompt = serialize_context(&first_context);
+            let second_prompt = serialize_context(&second_context);
+            let third_prompt = serialize_context(&third_context);
+
+            let cjk_prefix = common_prefix_byte_length(&first_prompt, &second_prompt);
+            assert_eq!(&first_prompt[..cjk_prefix], "user:cache 日");
+            assert!(first_prompt.is_char_boundary(cjk_prefix));
+            assert!(second_prompt.is_char_boundary(cjk_prefix));
+
+            let emoji_prefix = common_prefix_byte_length(&second_prompt, &third_prompt);
+            assert_eq!(&second_prompt[..emoji_prefix], "user:cache 日木語 ");
+            assert!(second_prompt.is_char_boundary(emoji_prefix));
+            assert!(third_prompt.is_char_boundary(emoji_prefix));
+
+            let first_usage = first.usage().unwrap();
+            let second_usage = second.usage().unwrap();
+            let third_usage = third.usage().unwrap();
+            assert_eq!(first_usage.input, first_usage.cache_write);
+            assert_eq!(
+                second_usage.cache_read,
+                estimate_tokens(&first_prompt[..cjk_prefix]) as i64
+            );
+            assert_eq!(
+                second_usage.cache_write,
+                estimate_tokens(&second_prompt[cjk_prefix..]) as i64
+            );
+            assert_eq!(
+                third_usage.cache_read,
+                estimate_tokens(&second_prompt[..emoji_prefix]) as i64
+            );
+            assert_eq!(
+                third_usage.cache_write,
+                estimate_tokens(&third_prompt[emoji_prefix..]) as i64
+            );
+            assert!(second_usage.cache_read > 0);
+            assert!(third_usage.cache_read > 0);
+            assert_eq!(
+                second_usage.total_tokens,
+                second_usage.input
+                    + second_usage.output
+                    + second_usage.cache_read
+                    + second_usage.cache_write
+            );
+            assert_eq!(
+                third_usage.total_tokens,
+                third_usage.input
+                    + third_usage.output
+                    + third_usage.cache_read
+                    + third_usage.cache_write
             );
         });
     }

@@ -35,6 +35,16 @@ implements `Display`/`Error`. pi-client behavior is exercised through the
 pi-server e2e suites. Workspace matrix 2,805 passed; `conversion_audit all`
 green. No numbered ledger row changed.
 
+Phase 2.3a checkpoint: **pi-ai** is under the hard gate. Poison-tolerant
+locking crate-wide; literal regexes became `LazyLock` statics; Bedrock
+eventstream byte reads use documented helpers; checked-invariant Option
+sites restructured to `if-let`/`let-else`; genuinely infallible invariants
+keep scoped, commented allows. Environment note: the Kitty-selector PTY
+regression needs `QWEN_TOKEN_PLAN_API_KEY` (or any second configured
+provider) in the test environment for multiple selector rows; with it set
+the full workspace matrix passes 2,805 tests. `conversion_audit all` green.
+No numbered ledger row changed.
+
 Next: Phase 2 crate conversions in order pi-server → pi-client → pi-ai →
 pi-agent → pi-coding-agent (core, then modes/bins) → pi-tui/pi-telemetry/
 pi-session-backends, each flipping its own gate to full deny.

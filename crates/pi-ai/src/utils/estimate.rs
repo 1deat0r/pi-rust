@@ -36,14 +36,18 @@ fn safe_json_stringify(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "[unserializable]".to_string())
 }
 
+fn utf16_code_units(text: &str) -> u64 {
+    text.encode_utf16().count() as u64
+}
+
 fn estimate_text_and_image_content_chars(content: &UserContentBody) -> u64 {
     match content {
-        UserContentBody::String(s) => s.chars().count() as u64,
+        UserContentBody::String(s) => utf16_code_units(s),
         UserContentBody::Blocks(blocks) => {
             let mut chars = 0u64;
             for block in blocks {
                 match block {
-                    ContentBlock::Text { text, .. } => chars += text.chars().count() as u64,
+                    ContentBlock::Text { text, .. } => chars += utf16_code_units(text),
                     ContentBlock::Image { .. } => chars += ESTIMATED_IMAGE_CHARS,
                     _ => {}
                 }
@@ -54,7 +58,7 @@ fn estimate_text_and_image_content_chars(content: &UserContentBody) -> u64 {
 }
 
 pub fn estimate_text_tokens(text: &str) -> u64 {
-    (text.chars().count() as u64).div_ceil(CHARS_PER_TOKEN)
+    utf16_code_units(text).div_ceil(CHARS_PER_TOKEN)
 }
 
 fn estimate_message_tokens(message: &Message) -> u64 {
@@ -67,7 +71,7 @@ fn estimate_message_tokens(message: &Message) -> u64 {
             for block in t.content() {
                 match block {
                     ContentBlock::Image { .. } => chars += ESTIMATED_IMAGE_CHARS,
-                    ContentBlock::Text { text, .. } => chars += text.chars().count() as u64,
+                    ContentBlock::Text { text, .. } => chars += utf16_code_units(text),
                     _ => {}
                 }
             }
@@ -77,15 +81,13 @@ fn estimate_message_tokens(message: &Message) -> u64 {
             let mut chars = 0u64;
             for block in a.content() {
                 match block {
-                    ContentBlock::Text { text, .. } => chars += text.chars().count() as u64,
-                    ContentBlock::Thinking { thinking, .. } => {
-                        chars += thinking.chars().count() as u64
-                    }
+                    ContentBlock::Text { text, .. } => chars += utf16_code_units(text),
+                    ContentBlock::Thinking { thinking, .. } => chars += utf16_code_units(thinking),
                     ContentBlock::ToolCall {
                         name, arguments, ..
                     } => {
-                        chars += name.chars().count() as u64
-                            + safe_json_stringify(arguments).chars().count() as u64;
+                        chars += utf16_code_units(name)
+                            + utf16_code_units(&safe_json_stringify(arguments));
                     }
                     _ => {}
                 }
@@ -208,6 +210,7 @@ pub fn estimate_context_tokens(context: &Context) -> ContextUsageEstimate {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::types::{AssistantMessage, ContentBlock, Message, UserContent};
@@ -217,6 +220,15 @@ mod tests {
         assert_eq!(estimate_text_tokens("hello"), 2); // 5 chars -> ceil(5/4)
         assert_eq!(estimate_text_tokens(""), 0);
         assert_eq!(estimate_text_tokens("abcdefgh"), 2);
+    }
+
+    #[test]
+    fn estimates_javascript_utf16_code_units_for_astral_unicode() {
+        // JavaScript String.length counts each 😀 as two UTF-16 code units.
+        // Three emoji therefore estimate as ceil(6 / 4) = 2 tokens.
+        assert_eq!(estimate_text_tokens("😀😀😀"), 2);
+        let user = Message::User(UserContent::string("😀😀😀", 1));
+        assert_eq!(estimate_message_tokens(&user), 2);
     }
 
     #[test]

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 // P2-D regression: a producer panic (integer overflow in the faux token-chunk
 // LCG used to panic under debug overflow-checks inside the spawned task) used
 // to hang consumers forever because collect() holds its own live sender.

@@ -24,6 +24,8 @@
 //! remain outside this adaptor's scope.
 
 use std::path::Path;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -40,9 +42,14 @@ use super::google_generative_ai::{
     build_params, extract_google_error, process_google_events, GoogleOptions, GoogleThinking,
 };
 use super::google_shared::{resolve_google_thinking_level, ResolvedGoogleThinkingLevel};
+use super::openai_completions::{
+    abortable, apply_payload_hook, error_reason, immediate_error_stream, signal_aborted,
+    terminal_error_message,
+};
 
 const API_VERSION: &str = "v1";
 const GCP_VERTEX_CREDENTIALS_MARKER: &str = "gcp-vertex-credentials";
+const DEFAULT_MAX_RETRY_DELAY_MS: u64 = 60_000;
 pub const VERTEX_ADC_DEFAULT_PATH: &str = "~/.config/gcloud/application_default_credentials.json";
 const DEFAULT_ADC_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
 const DEFAULT_ADC_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
@@ -85,7 +92,12 @@ pub fn resolve_api_key(api_key: Option<&str>) -> Option<String> {
 }
 
 fn is_placeholder_api_key(api_key: &str) -> bool {
-    regex::Regex::new(r"^<[^>]+>$").unwrap().is_match(api_key)
+    static PLACEHOLDER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
+        regex::Regex::new(r"^<[^>]+>$").unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
+    PLACEHOLDER.is_match(api_key)
 }
 
 /// Resolve the project id: options.project, `GOOGLE_CLOUD_PROJECT`, or
@@ -136,17 +148,23 @@ pub fn resolve_custom_base_url(base_url: &str) -> Option<String> {
 /// `baseUrlIncludesApiVersion`: the base path contains a `vNbetaM`-style
 /// version segment.
 pub fn base_url_includes_api_version(base_url: &str) -> bool {
-    let path_has_version = base_url.split('/').any(|part| {
+    static VERSION_PART: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
         regex::Regex::new(r"^v\d+(?:beta\d*)?$")
-            .unwrap()
-            .is_match(part)
+            .unwrap_or_else(|error| panic!("static regex: {error}"))
     });
+    static VERSION_PATH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
+        regex::Regex::new(r"(?:^|/)v\d+(?:beta\d*)?(?:/|$)")
+            .unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
+    let path_has_version = base_url.split('/').any(|part| VERSION_PART.is_match(part));
     if path_has_version {
         return true;
     }
-    regex::Regex::new(r"(?:^|/)v\d+(?:beta\d*)?(?:/|$)")
-        .unwrap()
-        .is_match(base_url)
+    VERSION_PATH.is_match(base_url)
 }
 
 /// Compute the URL + headers for a Vertex `:streamGenerateContent` request.
@@ -195,8 +213,11 @@ fn build_request(
     }
     if let Some(options_headers) = &options.base.base.headers {
         for (k, v) in options_headers {
+            // `providerHeadersToRecord({ ...model.headers, ...optionsHeaders })`
+            // drops null values after the spread.  Remove the inherited
+            // header even when the option is an explicit suppression.
+            headers.retain(|(ek, _)| !ek.eq_ignore_ascii_case(k));
             if let Some(v) = v {
-                headers.retain(|(ek, _)| !ek.eq_ignore_ascii_case(k));
                 headers.push((k.clone(), v.clone()));
             }
         }
@@ -212,22 +233,66 @@ fn build_request(
 }
 
 fn pi_user_agent() -> String {
-    format!("pi ({})", std::env::consts::OS)
+    static USER_AGENT: OnceLock<String> = OnceLock::new();
+    USER_AGENT
+        .get_or_init(|| format!("pi ({} {}; {})", node_platform(), os_release(), node_arch()))
+        .clone()
+}
+
+fn node_platform() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        platform => platform,
+    }
+}
+
+fn node_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        "x86" => "ia32",
+        arch => arch,
+    }
+}
+
+fn os_release() -> String {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("uname")
+            .arg("-r")
+            .output()
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|release| release.trim().to_string())
+            .filter(|release| !release.is_empty())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        "unknown".to_string()
+    }
 }
 
 fn is_gemini3_pro_model(id: &str) -> bool {
-    regex::Regex::new(r"(?i)gemini-3(?:\.\d+)?-pro")
-        .unwrap()
-        .is_match(id)
+    static GEMINI3_PRO: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
+        regex::Regex::new(r"(?i)gemini-3(?:\.\d+)?-pro")
+            .unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
+    GEMINI3_PRO.is_match(id)
 }
 
 fn is_gemini3_flash_model(id: &str) -> bool {
+    static GEMINI3_FLASH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
+        regex::Regex::new(r"gemini-3(?:\.\d+)?-flash")
+            .unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
     let id = id.to_lowercase();
-    regex::Regex::new(r"gemini-3(?:\.\d+)?-flash")
-        .unwrap()
-        .is_match(&id)
-        || id == "gemini-flash-latest"
-        || id == "gemini-flash-lite-latest"
+    GEMINI3_FLASH.is_match(&id) || id == "gemini-flash-latest" || id == "gemini-flash-lite-latest"
 }
 
 /// Apply a configured thinking level or budget to the options (upstream
@@ -269,6 +334,114 @@ fn to_google_options(options: &GoogleVertexOptions) -> GoogleOptions {
     }
 }
 
+enum GoogleRequestError {
+    Aborted,
+    Transport(String),
+    RetryDelay(String),
+}
+
+/// Execute a fresh Vertex HTTP request for each retry. The upstream Google
+/// SDK request is wrapped in `retryGoogleRequest`; the REST transport needs to
+/// apply the same policy to HTTP responses because reqwest does not turn a
+/// retryable status into an error for us.
+async fn send_google_request(
+    client: &reqwest::Client,
+    endpoint: &str,
+    params: &Value,
+    headers: &[(String, String)],
+    options: &GoogleVertexOptions,
+) -> Result<reqwest::Response, GoogleRequestError> {
+    let max_retries = options.base.base.max_retries.unwrap_or(0);
+    let max_retry_delay_ms = options.base.base.max_retry_delay_ms;
+    let timeout_ms = options.base.base.timeout_ms;
+    let signal = options.base.abort_signal.clone();
+    let mut retry_index = 0;
+
+    loop {
+        let mut request = client
+            .post(endpoint)
+            .header("content-type", "application/json");
+        if let Some(timeout_ms) = timeout_ms {
+            request = request.timeout(Duration::from_millis(timeout_ms));
+        }
+        request = request.json(params);
+        for (name, value) in headers {
+            request = request.header(name.as_str(), value.as_str());
+        }
+
+        let response = match abortable(request.send(), signal.clone()).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                if retry_index >= max_retries {
+                    return Err(GoogleRequestError::Transport(format!(
+                        "Request failed: {error}"
+                    )));
+                }
+                let delay = super::openai_completions::exponential_retry_delay(retry_index);
+                if abortable(
+                    tokio::time::sleep(Duration::from_millis(delay)),
+                    signal.clone(),
+                )
+                .await
+                .is_err()
+                {
+                    return Err(GoogleRequestError::Aborted);
+                }
+                retry_index += 1;
+                continue;
+            }
+            Err(_) => return Err(GoogleRequestError::Aborted),
+        };
+
+        let status = response.status().as_u16();
+        let should_retry = super::openai_completions::retryable_provider_status(
+            status,
+            response
+                .headers()
+                .get("x-should-retry")
+                .and_then(|value| value.to_str().ok()),
+        );
+        if retry_index >= max_retries || !should_retry {
+            return Ok(response);
+        }
+
+        let delay = match super::openai_completions::retry_after_delay_ms(response.headers()) {
+            Some(delay) => {
+                let max_delay = max_retry_delay_ms.unwrap_or(DEFAULT_MAX_RETRY_DELAY_MS);
+                if max_delay > 0 && delay > max_delay {
+                    let provider_message = match abortable(response.bytes(), signal.clone()).await {
+                        Ok(Ok(body)) => {
+                            let detail = extract_google_error(&String::from_utf8_lossy(&body));
+                            format!("Google API error ({status}): {detail}")
+                        }
+                        Ok(Err(error)) => format!("Request body failed: {error}"),
+                        Err(_) => return Err(GoogleRequestError::Aborted),
+                    };
+                    return Err(GoogleRequestError::RetryDelay(format!(
+                        "Server requested {}s retry delay (max: {}s). {provider_message}",
+                        delay.div_ceil(1000),
+                        max_delay.div_ceil(1000),
+                    )));
+                }
+                delay
+            }
+            None => super::openai_completions::exponential_retry_delay(retry_index),
+        };
+
+        drop(response);
+        if abortable(
+            tokio::time::sleep(Duration::from_millis(delay)),
+            signal.clone(),
+        )
+        .await
+        .is_err()
+        {
+            return Err(GoogleRequestError::Aborted);
+        }
+        retry_index += 1;
+    }
+}
+
 /// Stream a request against the Vertex AI endpoint.
 pub fn stream(
     model: &Model,
@@ -277,6 +450,9 @@ pub fn stream(
     api_key: Option<&str>,
     options: &GoogleVertexOptions,
 ) -> AssistantMessageEventStream {
+    if signal_aborted(options.base.abort_signal.as_ref()) {
+        return immediate_error_stream(model, "Request was aborted", true);
+    }
     let stream = AssistantMessageEventStream::new();
     let sender = match stream.sender() {
         Some(s) => s,
@@ -291,6 +467,9 @@ pub fn stream(
         let mut pusher = crate::event_stream::StreamSinkAdapter::new(sender);
 
         let result = async {
+            if signal_aborted(options.base.abort_signal.as_ref()) {
+                return Err("Request was aborted".to_string());
+            }
             // Resolve API key with marker/placeholder fallback to ADC.
             let store_api_key: Option<String> =
                 api_key.as_deref().and_then(|k| resolve_api_key(Some(k)));
@@ -314,14 +493,26 @@ pub fn stream(
                     resolve_project(options.project.as_deref(), options.base.base.env.as_ref())?;
                 let location =
                     resolve_location(options.location.as_deref(), options.base.base.env.as_ref())?;
-                let bearer =
-                    resolve_adc_access_token(&client, options.base.base.env.as_ref()).await?;
+                let bearer = abortable(
+                    resolve_adc_access_token(&client, options.base.base.env.as_ref()),
+                    options.base.abort_signal.clone(),
+                )
+                .await
+                .map_err(|_| "Request was aborted".to_string())??;
                 (Some(project), Some(location), Some(bearer))
             } else {
                 (None, None, None)
             };
 
             let params = build_params(&model, &context, &to_google_options(&options))?;
+            let params = apply_payload_hook(
+                params,
+                &model,
+                options.base.on_payload.as_ref(),
+                options.base.abort_signal.clone(),
+            )
+            .await
+            .map_err(|_| "Request was aborted".to_string())?;
 
             let (endpoint, headers) = build_request(
                 &model,
@@ -333,29 +524,30 @@ pub fn stream(
                 API_VERSION,
             );
 
-            let mut request = client
-                .post(&endpoint)
-                .header("content-type", "application/json")
-                .json(&params);
-            for (name, value) in headers {
-                request = request.header(name.as_str(), value.as_str());
-            }
-            let response = request
-                .send()
-                .await
-                .map_err(|err| format!("Request failed: {err}"))?;
+            let response =
+                match send_google_request(&client, &endpoint, &params, &headers, &options).await {
+                    Ok(response) => response,
+                    Err(GoogleRequestError::Aborted) => {
+                        return Err("Request was aborted".to_string())
+                    }
+                    Err(GoogleRequestError::Transport(error))
+                    | Err(GoogleRequestError::RetryDelay(error)) => return Err(error),
+                };
             let status = response.status();
             let provider_response = crate::types::ProviderResponse {
                 status: status.as_u16(),
-                headers: Default::default(),
+                headers: crate::utils::response_headers(response.headers()),
             };
             if let Some(on_response) = &options.base.on_response {
                 on_response(&provider_response, &model);
             }
-            let body = response
-                .bytes()
+            let body = abortable(response.bytes(), options.base.abort_signal.clone())
                 .await
+                .map_err(|_| "Request was aborted".to_string())?
                 .map_err(|err| format!("Request body failed: {err}"))?;
+            if signal_aborted(options.base.abort_signal.as_ref()) {
+                return Err("Request was aborted".to_string());
+            }
             if !status.is_success() {
                 let body_text = String::from_utf8_lossy(&body).to_string();
                 let detail = extract_google_error(&body_text);
@@ -378,6 +570,16 @@ pub fn stream(
                 });
                 match process_google_events(&model, &events, |event| pusher.push(event)) {
                     Ok(message) => {
+                        if signal_aborted(options.base.abort_signal.as_ref()) {
+                            let message =
+                                terminal_error_message(&model, "Request was aborted", true);
+                            pusher.push(AssistantMessageEvent::Error {
+                                reason: ErrorReason::Aborted,
+                                error_message: message.clone(),
+                            });
+                            pusher.end(Some(message));
+                            return;
+                        }
                         let reason = match message.stop_reason().unwrap_or(StopReason::Stop) {
                             StopReason::Stop => DoneReason::Stop,
                             StopReason::Length => DoneReason::Length,
@@ -404,11 +606,18 @@ pub fn stream(
                 }
             }
             Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(&mut message, err);
+                let aborted = signal_aborted(options.base.abort_signal.as_ref());
+                let message = terminal_error_message(
+                    &model,
+                    if aborted {
+                        "Request was aborted".to_string()
+                    } else {
+                        err
+                    },
+                    aborted,
+                );
                 pusher.push(AssistantMessageEvent::Error {
-                    reason: ErrorReason::Error,
+                    reason: error_reason(aborted),
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -454,7 +663,10 @@ pub fn stream_simple(
         );
     }
 
-    let reasoning = options.reasoning.unwrap();
+    #[allow(clippy::expect_used)] // invariant: callers resolve reasoning before this path
+    let reasoning = options
+        .reasoning
+        .expect("reasoning resolved before thinking clamp");
     let clamped = clamp_thinking_level(model, ModelThinkingLevel::from(reasoning));
     let resolved = resolve_google_thinking_level(clamped, model);
     let thinking = thinking_for_level(&model.id, resolved, options.thinking_budgets.as_ref());
@@ -649,8 +861,14 @@ fn build_self_signed_jwt_with_scopes(
         "iat": now_secs,
         "exp": now_secs.saturating_add(3600),
     });
-    let header_b64 = engine.encode(serde_json::to_vec(&header).unwrap());
-    let claims_b64 = engine.encode(serde_json::to_vec(&claims).unwrap());
+    // Invariant: serializing json! literals cannot fail.
+    #[allow(clippy::unwrap_used)]
+    let (header_b64, claims_b64) = {
+        (
+            engine.encode(serde_json::to_vec(&header).unwrap()),
+            engine.encode(serde_json::to_vec(&claims).unwrap()),
+        )
+    };
     let signing_input = format!("{header_b64}.{claims_b64}");
 
     let key_pair = decode_rsa_key(private_key_pem)?;
@@ -824,6 +1042,7 @@ async fn resolve_adc_access_token(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use base64::Engine;
@@ -889,6 +1108,44 @@ pxb9Ao9R6mqLWjzEaSeYzN4o
             String::from_utf8(request).unwrap()
         });
         (format!("http://{address}/token"), handle)
+    }
+
+    async fn retry_stream_fixture(
+        body: &str,
+        retry_after_ms: &'static str,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let response_body = body.to_string();
+        let handle = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for (status, status_text, body, retry_after) in [
+                (
+                    503,
+                    "Service Unavailable",
+                    "{\"error\":{\"message\":\"temporary outage\"}}".to_string(),
+                    Some(retry_after_ms),
+                ),
+                (200, "OK", response_body, None),
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = vec![0u8; 16 * 1024];
+                let size = socket.read(&mut request).await.unwrap();
+                request.truncate(size);
+                requests.push(String::from_utf8(request).unwrap());
+                let retry_header = retry_after
+                    .map(|value| format!("retry-after-ms: {value}\r\n"))
+                    .unwrap_or_default();
+                let response = format!(
+                    "HTTP/1.1 {status} {status_text}\r\ncontent-type: text/event-stream\r\n{retry_header}content-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        (format!("http://{address}"), handle)
     }
 
     fn write_adc_fixture(label: &str, value: Value) -> String {
@@ -964,6 +1221,67 @@ pxb9Ao9R6mqLWjzEaSeYzN4o
             .error_message()
             .unwrap_or("")
             .contains("Vertex AI requires a project ID"));
+    }
+
+    #[tokio::test]
+    async fn stream_retries_retryable_vertex_response_and_replays_request() {
+        let body = r#"data: {"candidates":[{"content":{"parts":[{"text":"retried"}]},"finishReason":"STOP"}]}
+
+"#;
+        let (base_url, server) = retry_stream_fixture(body, "0").await;
+        let mut model = vertex_model();
+        model.base_url = base_url;
+        let mut options = GoogleVertexOptions::default();
+        options.base.base.max_retries = Some(1);
+        options.base.base.max_retry_delay_ms = Some(1);
+
+        let (_, message) = stream(
+            &model,
+            &Context::default(),
+            reqwest::Client::new(),
+            Some("retry-key"),
+            &options,
+        )
+        .collect()
+        .await;
+        let requests = server.await.unwrap();
+
+        assert_eq!(requests.len(), 2);
+        assert_eq!(message.stop_reason(), Some(StopReason::Stop));
+        assert!(message
+            .content()
+            .iter()
+            .any(|block| matches!(block, crate::types::ContentBlock::Text { text, .. } if text == "retried")));
+    }
+
+    #[tokio::test]
+    async fn stream_abort_interrupts_vertex_retry_backoff() {
+        let body = r#"data: {"candidates":[{"content":{"parts":[{"text":"never"}]},"finishReason":"STOP"}]}
+
+"#;
+        let (base_url, server) = retry_stream_fixture(body, "10000").await;
+        let mut model = vertex_model();
+        model.base_url = base_url;
+        let signal = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut options = GoogleVertexOptions::default();
+        options.base.base.max_retries = Some(1);
+        options.base.base.max_retry_delay_ms = Some(0);
+        options.base.abort_signal = Some(signal.clone());
+
+        let stream = stream(
+            &model,
+            &Context::default(),
+            reqwest::Client::new(),
+            Some("retry-key"),
+            &options,
+        );
+        let collecting = tokio::spawn(async move { stream.collect().await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        signal.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (_, message) = collecting.await.unwrap();
+
+        assert_eq!(message.stop_reason(), Some(StopReason::Aborted));
+        server.abort();
     }
 
     #[tokio::test]
@@ -1114,6 +1432,13 @@ pxb9Ao9R6mqLWjzEaSeYzN4o
     }
 
     #[test]
+    fn user_agent_matches_node_runtime_shape() {
+        let expected = format!("pi ({} {}; {})", node_platform(), os_release(), node_arch());
+        assert_eq!(pi_user_agent(), expected);
+        assert!(!pi_user_agent().contains("pi (linux)"));
+    }
+
+    #[test]
     fn build_request_uses_custom_base_with_version_and_api_key() {
         let mut model = vertex_model();
         model.base_url =
@@ -1160,6 +1485,40 @@ pxb9Ao9R6mqLWjzEaSeYzN4o
             .unwrap();
         assert_eq!(ua, "custom-agent");
         assert_eq!(headers.iter().filter(|(k, _)| k == "User-Agent").count(), 1);
+    }
+
+    #[test]
+    fn build_request_null_headers_suppress_inherited_headers() {
+        let mut model = vertex_model();
+        model.headers = Some({
+            let mut headers = std::collections::BTreeMap::new();
+            headers.insert("X-Model-Header".to_string(), "model-value".to_string());
+            headers
+        });
+        let mut options = GoogleVertexOptions::default();
+        options.base.base.headers = Some({
+            let mut headers = std::collections::BTreeMap::new();
+            headers.insert("x-model-header".to_string(), None);
+            headers.insert("user-agent".to_string(), None);
+            headers
+        });
+
+        let (_, headers) = build_request(
+            &model,
+            &options,
+            Some("project"),
+            Some("location"),
+            None,
+            None,
+            API_VERSION,
+        );
+
+        assert!(!headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("x-model-header")));
+        assert!(!headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("user-agent")));
     }
 
     #[tokio::test]

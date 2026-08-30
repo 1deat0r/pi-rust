@@ -1,12 +1,13 @@
 //! Provider implementations — port of `packages/ai/src/providers/`.
 //!
-//! Providers currently registered: `faux` (scripted test provider).
-//! Remaining providers (anthropic, openai, google, bedrock, etc.) are
-//! tracked in `crates/pi-ai/TODO.md`.
+//! All bundled providers are registered through `all`; `faux` remains an
+//! explicit deterministic test provider and is never used for production
+//! authentication or live inference.
 
 pub mod all;
 pub mod anthropic;
 pub mod faux;
+pub mod radius;
 
 pub use all::{
     amazon_bedrock_provider, ant_ling_provider, anthropic_provider, anthropic_streams_for,
@@ -16,16 +17,21 @@ pub use all::{
     google_provider, google_provider_real, google_streams, google_vertex_provider, groq_provider,
     huggingface_provider, kimi_coding_provider, minimax_cn_provider, minimax_provider,
     mistral_provider, moonshotai_cn_provider, moonshotai_provider, nvidia_provider,
-    openai_codex_provider, openai_provider, openai_responses_streams, opencode_go_provider,
-    opencode_provider, openrouter_provider, qwen_token_plan_cn_provider,
-    qwen_token_plan_individual_provider, qwen_token_plan_provider, together_provider,
-    vercel_ai_gateway_provider, xai_provider, xiaomi_provider, xiaomi_token_plan_ams_provider,
-    xiaomi_token_plan_cn_provider, xiaomi_token_plan_sgp_provider, zai_coding_cn_provider,
-    zai_provider,
+    openai_codex_provider, openai_codex_provider_with_oauth, openai_provider,
+    openai_responses_streams, opencode_go_provider, opencode_provider, openrouter_provider,
+    qwen_token_plan_cn_provider, qwen_token_plan_individual_provider, qwen_token_plan_provider,
+    radius_provider, radius_provider_with_options, together_provider, vercel_ai_gateway_provider,
+    xai_provider, xiaomi_provider, xiaomi_token_plan_ams_provider, xiaomi_token_plan_cn_provider,
+    xiaomi_token_plan_sgp_provider, zai_coding_cn_provider, zai_provider,
 };
 pub use anthropic::{anthropic_models, AnthropicProvider};
 pub use faux::{
     faux_assistant_message, faux_text, faux_thinking, faux_tool_call, FauxAssistantOptions,
     FauxDeferredOptions, FauxModelDefinition, FauxProviderCore, FauxProviderState,
     FauxResponseStep, FauxTokenSize, RegisterFauxProviderOptions, DEFAULT_PROVIDER,
+};
+pub use radius::{
+    get_radius_credential_config, get_radius_models, get_radius_models_from_config,
+    load_radius_gateway_config, normalize_radius_gateway_url, RadiusGatewayConfig,
+    RadiusGatewayModel, RadiusOAuth, RadiusProviderOptions, DEFAULT_RADIUS_GATEWAY,
 };

@@ -5,21 +5,40 @@
 //! `{ model, context, options }` to `<baseUrl>/messages`; the response is an
 //! SSE stream of serialized assistant-message events plus a terminal
 //! `done`/`error` event (the wire protocol spoken by the Radius gateway).
-//!
-//! DOCUMENTED DIVERGENCE: upstream attaches `pi_messages_rewrite` and
-//! `pi_messages_response_failure` diagnostics to the assistant message. The
-//! ported `AssistantMessage` type has no `diagnostics` field; the observable
-//! error surfaces (message text, status/code composition) are preserved
-//! verbatim. Seam marked `TODO(diagnostics)` below.
-
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 use crate::event_stream::{AssistantMessageEventStream, StreamSink};
 use crate::model::Model;
 use crate::types::{
-    AssistantMessage, AssistantMessageEvent, ContentBlock, Context, DoneReason, ErrorReason,
-    SimpleStreamOptions, StopReason, StreamOptions, Usage,
+    AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent, ContentBlock, Context,
+    DoneReason, ErrorReason, SimpleStreamOptions, StopReason, StreamOptions, Usage,
 };
+
+#[derive(Debug)]
+struct PiMessagesRunError {
+    message: String,
+    diagnostic_details: Option<BTreeMap<String, Value>>,
+    aborted: bool,
+}
+
+impl PiMessagesRunError {
+    fn plain(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            diagnostic_details: None,
+            aborted: false,
+        }
+    }
+
+    fn aborted() -> Self {
+        Self {
+            message: "Request was aborted".to_string(),
+            diagnostic_details: None,
+            aborted: true,
+        }
+    }
+}
 
 /// Options for pi-messages requests (subset of upstream `PiMessagesOptions`).
 #[derive(Clone, Default)]
@@ -35,10 +54,8 @@ fn create_empty_usage() -> Usage {
     Usage::default()
 }
 
-/// Parse a backend `usage` object into the unified `Usage`. The wire uses
-/// camelCase cost fields (`cacheRead`/`cacheWrite`), while the Rust `Cost`
-/// struct serializes snake_case, so build the struct field-by-field instead
-/// of relying on serde rename symmetry.
+/// Parse a backend `usage` object into the unified `Usage`. Build the struct
+/// field-by-field so missing totals and provider extensions are normalized.
 fn parse_usage_value(value: &Value) -> Option<Usage> {
     let token_field = |name: &str| value.get(name).and_then(|v| v.as_i64()).unwrap_or(0);
     let cost = value.get("cost");
@@ -103,6 +120,7 @@ impl EventConverter {
                     self.partial.set_response_id(rid.to_string());
                 }
                 self.partial.set_stop_reason(stop_reason_for_done(reason));
+                append_rewrite_diagnostic(&mut self.partial, event.get("rewrite"));
                 AssistantMessageEvent::Done {
                     reason: dreason,
                     message: self.partial.clone(),
@@ -133,6 +151,7 @@ impl EventConverter {
                 } else {
                     StopReason::Error
                 });
+                append_rewrite_diagnostic(&mut self.partial, event.get("rewrite"));
                 AssistantMessageEvent::Error {
                     reason: if reason == "aborted" {
                         ErrorReason::Aborted
@@ -425,21 +444,42 @@ fn stop_reason_for_done(reason: &str) -> StopReason {
     }
 }
 
+/// Attach the upstream `pi_messages_rewrite` diagnostic when a gateway
+/// reports that it changed the request. Unknown fields are retained as JSON
+/// values so the diagnostic remains forward-compatible with newer gateways.
+fn append_rewrite_diagnostic(message: &mut AssistantMessage, rewrite: Option<&Value>) {
+    let Some(Value::Object(rewrite)) = rewrite else {
+        return;
+    };
+    let details = rewrite
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut diagnostic = AssistantMessageDiagnostic::new("pi_messages_rewrite");
+    diagnostic.details = Some(details);
+    message.append_diagnostic(diagnostic);
+}
+
 /// Parse one buffered SSE event frame (upstream `parsePiMessagesEvent`): the
 /// first `data:` line, `[DONE]` sentinel handling.
-fn parse_pi_messages_event(raw: &str) -> Option<Value> {
+fn parse_pi_messages_event(raw: &str) -> Result<Option<Value>, String> {
     let data = raw
         .split('\n')
         .find(|line| line.starts_with("data:"))
         .map(|line| line[5..].trim())
-        .filter(|s| !s.is_empty() && *s != "[DONE]")?;
-    serde_json::from_str(data).ok()
+        .filter(|s| !s.is_empty() && *s != "[DONE]");
+    let Some(data) = data else {
+        return Ok(None);
+    };
+    serde_json::from_str(data)
+        .map(Some)
+        .map_err(|error| format!("Could not parse pi-messages event: {error}"))
 }
 
 /// Incremental SSE event reader for the pi-messages protocol (upstream
 /// `readPiMessagesEvents`): normalizes `\r\n`, splits on blank lines, and
 /// flushes any trailing buffered data at EOF.
-fn read_pi_messages_events(bytes: impl Iterator<Item = Vec<u8>>) -> Vec<Value> {
+fn read_pi_messages_events(bytes: impl Iterator<Item = Vec<u8>>) -> Result<Vec<Value>, String> {
     let mut buffer = String::new();
     let mut events = Vec::new();
     let mut pushed = false;
@@ -448,7 +488,7 @@ fn read_pi_messages_events(bytes: impl Iterator<Item = Vec<u8>>) -> Vec<Value> {
         buffer = buffer.replace("\r\n", "\n");
         while let Some(split) = buffer.find("\n\n") {
             let raw = buffer[..split].to_string();
-            if let Some(event) = parse_pi_messages_event(&raw) {
+            if let Some(event) = parse_pi_messages_event(&raw)? {
                 events.push(event);
             }
             buffer = buffer[split + 2..].to_string();
@@ -456,12 +496,12 @@ fn read_pi_messages_events(bytes: impl Iterator<Item = Vec<u8>>) -> Vec<Value> {
         }
     }
     if buffer.trim() != "" {
-        if let Some(event) = parse_pi_messages_event(&buffer) {
+        if let Some(event) = parse_pi_messages_event(&buffer)? {
             events.push(event);
         }
     }
     let _ = pushed;
-    events
+    Ok(events)
 }
 
 /// Serialize the unified context into the upstream request `context`
@@ -544,6 +584,8 @@ pub fn stream(
                     let message = error_event_message(
                         &model,
                         format!("{} stream ended without a terminal event", model.provider),
+                        None,
+                        false,
                     );
                     pusher.push(AssistantMessageEvent::Error {
                         reason: ErrorReason::Error,
@@ -552,10 +594,16 @@ pub fn stream(
                     pusher.end(Some(message));
                 }
             }
-            Err(message) => {
-                let message = error_event_message(&model, message);
+            Err(error) => {
+                let aborted = error.aborted;
+                let message =
+                    error_event_message(&model, error.message, error.diagnostic_details, aborted);
                 pusher.push(AssistantMessageEvent::Error {
-                    reason: ErrorReason::Error,
+                    reason: if aborted {
+                        ErrorReason::Aborted
+                    } else {
+                        ErrorReason::Error
+                    },
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -565,14 +613,34 @@ pub fn stream(
     stream
 }
 
-fn error_event_message(model: &Model, message: String) -> AssistantMessage {
+fn error_event_message(
+    model: &Model,
+    message: String,
+    diagnostic_details: Option<BTreeMap<String, Value>>,
+    aborted: bool,
+) -> AssistantMessage {
     let mut msg = AssistantMessage::new();
     msg.set_api_provider_model(&model.api, &model.provider, &model.id);
-    msg.set_stop_reason(StopReason::Error);
+    msg.set_stop_reason(if aborted {
+        StopReason::Aborted
+    } else {
+        StopReason::Error
+    });
     msg.set_usage(create_empty_usage());
     let AssistantMessage::Assistant { error_message, .. } = &mut msg;
     *error_message = Some(message);
+    if let Some(details) = diagnostic_details {
+        let mut diagnostic = AssistantMessageDiagnostic::new("pi_messages_response_failure");
+        diagnostic.details = Some(details);
+        msg.append_diagnostic(diagnostic);
+    }
     msg
+}
+
+async fn wait_for_abort(signal: crate::types::AbortSignal) {
+    while !signal.load(std::sync::atomic::Ordering::SeqCst) {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
 }
 
 async fn run(
@@ -581,9 +649,21 @@ async fn run(
     client: reqwest::Client,
     api_key: Option<&str>,
     options: &PiMessagesOptions,
-) -> Result<Vec<Value>, String> {
-    let api_key = api_key
-        .ok_or_else(|| format!("No API key provided for provider \"{}\"", model.provider))?;
+) -> Result<Vec<Value>, PiMessagesRunError> {
+    if options
+        .base
+        .abort_signal
+        .as_ref()
+        .is_some_and(|signal| signal.load(std::sync::atomic::Ordering::SeqCst))
+    {
+        return Err(PiMessagesRunError::aborted());
+    }
+    let api_key = api_key.ok_or_else(|| {
+        PiMessagesRunError::plain(format!(
+            "No API key provided for provider \"{}\"",
+            model.provider
+        ))
+    })?;
 
     let mut url = format!("{}/messages", model.base_url.trim_end_matches('/'));
     if options.debug {
@@ -618,6 +698,23 @@ async fn run(
     }
     payload["options"] = Value::Object(inner);
 
+    if let Some(hook) = options.base.on_payload.clone() {
+        let generated = payload.clone();
+        let hook_future = hook(generated.clone(), model.clone());
+        tokio::pin!(hook_future);
+        let replacement = if let Some(signal) = options.base.abort_signal.clone() {
+            tokio::select! {
+                replacement = &mut hook_future => replacement,
+                _ = wait_for_abort(signal) => return Err(PiMessagesRunError::aborted()),
+            }
+        } else {
+            hook_future.await
+        };
+        if let Some(replacement) = replacement {
+            payload = replacement;
+        }
+    }
+
     let mut request = client
         .post(&url)
         .header("accept", "text/event-stream")
@@ -631,9 +728,21 @@ async fn run(
             }
         }
     }
-    let response = match request.send().await {
-        Ok(response) => response,
-        Err(err) => return Err(format!("Request failed: {err}")),
+    let response = if let Some(signal) = options.base.abort_signal.clone() {
+        let send_future = request.send();
+        tokio::pin!(send_future);
+        tokio::select! {
+            response = &mut send_future => match response {
+                Ok(response) => response,
+                Err(err) => return Err(PiMessagesRunError::plain(format!("Request failed: {err}"))),
+            },
+            _ = wait_for_abort(signal) => return Err(PiMessagesRunError::aborted()),
+        }
+    } else {
+        match request.send().await {
+            Ok(response) => response,
+            Err(err) => return Err(PiMessagesRunError::plain(format!("Request failed: {err}"))),
+        }
     };
     let status = response.status();
     let headers_map = response
@@ -650,18 +759,44 @@ async fn run(
             model,
         );
     }
-    let body = match response.bytes().await {
-        Ok(body) => body,
-        Err(err) => return Err(format!("Request body failed: {err}")),
+    let body = if let Some(signal) = options.base.abort_signal.clone() {
+        let body_future = response.bytes();
+        tokio::pin!(body_future);
+        tokio::select! {
+            body = &mut body_future => match body {
+                Ok(body) => body,
+                Err(err) => return Err(PiMessagesRunError::plain(format!("Request body failed: {err}"))),
+            },
+            _ = wait_for_abort(signal) => return Err(PiMessagesRunError::aborted()),
+        }
+    } else {
+        match response.bytes().await {
+            Ok(body) => body,
+            Err(err) => {
+                return Err(PiMessagesRunError::plain(format!(
+                    "Request body failed: {err}"
+                )))
+            }
+        }
     };
 
     if !status.is_success() {
         let body_text = String::from_utf8_lossy(&body).to_string();
-        return Err(format_pi_messages_response_error(
-            status.as_u16(),
-            status.canonical_reason().unwrap_or(""),
-            &body_text,
-        ));
+        return Err(PiMessagesRunError {
+            message: format_pi_messages_response_error(
+                status.as_u16(),
+                status.canonical_reason().unwrap_or(""),
+                &body_text,
+            ),
+            diagnostic_details: Some(pi_messages_response_diagnostic_details(
+                model,
+                &url,
+                status.as_u16(),
+                status.canonical_reason().unwrap_or(""),
+                &body_text,
+            )),
+            aborted: false,
+        });
     }
 
     let chunks: Vec<Vec<u8>> = if body.is_empty() {
@@ -669,7 +804,7 @@ async fn run(
     } else {
         vec![body.to_vec()]
     };
-    Ok(read_pi_messages_events(chunks.into_iter()))
+    read_pi_messages_events(chunks.into_iter()).map_err(PiMessagesRunError::plain)
 }
 
 /// Parse a backend error body and compose the upstream error surface:
@@ -694,6 +829,52 @@ fn format_pi_messages_response_error(status: u16, status_text: &str, body: &str)
     format!("{status} {status_text}: {suffix}{code_suffix}")
 }
 
+/// Build the structured response-failure details used by the upstream
+/// `pi_messages_response_failure` diagnostic. Keep arbitrary backend fields
+/// out of the durable diagnostic so a gateway cannot accidentally persist a
+/// credential or cookie it echoed in an extension field.
+fn pi_messages_response_diagnostic_details(
+    model: &Model,
+    url: &str,
+    status: u16,
+    status_text: &str,
+    body: &str,
+) -> BTreeMap<String, Value> {
+    let parsed = serde_json::from_str::<Value>(body).ok();
+    let error = parsed
+        .as_ref()
+        .and_then(|value| value.get("error"))
+        .and_then(Value::as_object);
+    let mut details = BTreeMap::from([
+        ("version".to_string(), json!(1)),
+        ("provider".to_string(), json!(model.provider)),
+        ("model".to_string(), json!(model.id)),
+        ("url".to_string(), json!(url)),
+        ("status".to_string(), json!(status)),
+        ("statusText".to_string(), json!(status_text)),
+        ("timestampMs".to_string(), json!(crate::types::now_ms())),
+    ]);
+    if let Some(error) = error {
+        let mut safe_error = serde_json::Map::new();
+        if let Some(message) = error.get("message").and_then(Value::as_str) {
+            safe_error.insert("message".to_string(), json!(message));
+        }
+        if let Some(code) = error
+            .get("code")
+            .filter(|value| value.is_string() || value.is_number())
+        {
+            safe_error.insert("code".to_string(), code.clone());
+        }
+        if !safe_error.is_empty() {
+            details.insert("error".to_string(), Value::Object(safe_error));
+        }
+    } else if !body.is_empty() {
+        let truncated = body.chars().take(8192).collect::<String>();
+        details.insert("body".to_string(), json!(truncated));
+    }
+    details
+}
+
 /// `streamSimple` — mirrors upstream by forwarding reasoning/toolChoice/debug
 /// onto the full options.
 pub fn stream_simple(
@@ -716,6 +897,7 @@ pub fn stream_simple(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -802,15 +984,18 @@ mod tests {
                 .nth(1)
                 .unwrap_or("/")
                 .to_string();
-            requests_handle.lock().unwrap().push(RecordedRequest {
-                url: path,
-                headers: req_headers,
-                body: if body.is_empty() {
-                    Value::Null
-                } else {
-                    serde_json::from_str(&body).unwrap_or(Value::Null)
-                },
-            });
+            requests_handle
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(RecordedRequest {
+                    url: path,
+                    headers: req_headers,
+                    body: if body.is_empty() {
+                        Value::Null
+                    } else {
+                        serde_json::from_str(&body).unwrap_or(Value::Null)
+                    },
+                });
             let resp_headers = headers_owned
                 .iter()
                 .map(|(k, v)| format!("{k}: {v}\r\n"))
@@ -850,6 +1035,67 @@ mod tests {
             )],
             tools: vec![],
         }
+    }
+
+    #[test]
+    fn serializes_context_tools_and_usage_with_upstream_wire_names() {
+        let json_schema_tool = crate::types::Tool {
+            name: "lookup".to_string(),
+            description: "Look up a value".to_string(),
+            parameters: json!({"type": "object"}),
+            constrained_sampling: Some(crate::types::ConstrainedSampling::JsonSchema {
+                strict: crate::types::StrictPreference::Prefer,
+            }),
+        };
+        let grammar_tool = crate::types::Tool {
+            name: "regex".to_string(),
+            description: "Match a value".to_string(),
+            parameters: json!({"type": "object"}),
+            constrained_sampling: Some(crate::types::ConstrainedSampling::Grammar {
+                variants: std::collections::BTreeMap::from([(
+                    "openai_regex".to_string(),
+                    "^[a-z]+$".to_string(),
+                )]),
+            }),
+        };
+        let wire = context_to_json(&Context {
+            system_prompt: Some("Be exact".to_string()),
+            messages: vec![],
+            tools: vec![json_schema_tool, grammar_tool],
+        });
+
+        assert_eq!(wire["systemPrompt"], json!("Be exact"));
+        assert_eq!(
+            wire["tools"][0]["constrainedSampling"],
+            json!({"type": "json_schema", "strict": "prefer"})
+        );
+        assert_eq!(
+            wire["tools"][1]["constrainedSampling"],
+            json!({"type": "grammar", "variants": {"openai_regex": "^[a-z]+$"}})
+        );
+        assert!(wire["tools"][0].get("constrained_sampling").is_none());
+
+        let disabled: crate::types::Tool = serde_json::from_value(json!({
+            "name": "disabled",
+            "description": "",
+            "parameters": {},
+            "constrainedSampling": false
+        }))
+        .expect("upstream false constrainedSampling form");
+        assert_eq!(disabled.constrained_sampling, None);
+
+        let usage = crate::types::Usage {
+            cost: crate::types::Cost {
+                cache_read: 0.25,
+                cache_write: 0.5,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let usage_wire = serde_json::to_value(usage).expect("usage JSON");
+        assert_eq!(usage_wire["cost"]["cacheRead"], json!(0.25));
+        assert_eq!(usage_wire["cost"]["cacheWrite"], json!(0.5));
+        assert!(usage_wire["cost"].get("cache_read").is_none());
     }
 
     fn usage_json() -> Value {
@@ -912,7 +1158,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, AssistantMessageEvent::TextDelta { .. })));
 
-        let reqs = requests.lock().unwrap();
+        let reqs = requests.lock().unwrap_or_else(|error| error.into_inner());
         assert_eq!(reqs.len(), 1);
         assert_eq!(reqs[0].url, "/messages");
         assert_eq!(
@@ -946,7 +1192,8 @@ mod tests {
             base: StreamOptions {
                 on_response: Some(std::sync::Arc::new(
                     move |resp: &crate::types::ProviderResponse, _m: &Model| {
-                        *observed2.lock().unwrap() = Some(resp.clone());
+                        *observed2.lock().unwrap_or_else(|error| error.into_inner()) =
+                            Some(resp.clone());
                     },
                 )),
                 ..Default::default()
@@ -959,8 +1206,15 @@ mod tests {
         let s = stream(&model, &ctx(), client, Some("test-key"), &options);
         let (_, message) = s.collect().await;
         assert_eq!(message.stop_reason(), Some(StopReason::Stop));
-        assert_eq!(requests.lock().unwrap()[0].url, "/messages?debug=1");
-        let resp = observed.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            requests.lock().unwrap_or_else(|error| error.into_inner())[0].url,
+            "/messages?debug=1"
+        );
+        let resp = observed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+            .unwrap();
         assert_eq!(
             resp.headers
                 .get("x-pi-gateway-upstream-provider")
@@ -989,6 +1243,20 @@ mod tests {
         assert!(err.starts_with("401 "), "got: {err}");
         assert!(err.contains("Token expired"), "got: {err}");
         assert!(err.contains("unauthorized"), "got: {err}");
+        let diagnostics = message.diagnostics().expect("response diagnostic");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].diagnostic_type,
+            "pi_messages_response_failure"
+        );
+        assert_eq!(
+            diagnostics[0].details.as_ref().unwrap()["status"],
+            json!(401)
+        );
+        assert_eq!(
+            diagnostics[0].details.as_ref().unwrap()["error"]["code"],
+            json!("unauthorized")
+        );
     }
 
     #[tokio::test]
@@ -1010,6 +1278,51 @@ mod tests {
         assert_eq!(message.stop_reason(), Some(StopReason::Error));
         assert_eq!(message.error_message(), Some("Upstream failed"));
         assert_eq!(message.usage().map(|u| u.output), Some(5));
+    }
+
+    #[tokio::test]
+    async fn preserves_gateway_rewrite_diagnostics_on_terminal_events() {
+        let (base_url, _) = start_server(
+            200,
+            &[],
+            &[json!({
+                "type": "done",
+                "reason": "stop",
+                "usage": usage_json(),
+                "rewrite": {
+                    "policyId": "safe-content",
+                    "policyVersion": 2,
+                    "changed": true,
+                    "tokenCountChange": 1,
+                    "messageCountChange": 0,
+                    "systemPromptChanged": true
+                }
+            })],
+            None,
+        )
+        .await;
+        let model = model(&base_url);
+        let message = stream(
+            &model,
+            &ctx(),
+            reqwest::Client::new(),
+            Some("test-key"),
+            &PiMessagesOptions::default(),
+        )
+        .collect()
+        .await
+        .1;
+        let diagnostics = message.diagnostics().expect("rewrite diagnostic");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].diagnostic_type, "pi_messages_rewrite");
+        assert_eq!(
+            diagnostics[0].details.as_ref().unwrap()["policyId"],
+            json!("safe-content")
+        );
+        assert_eq!(
+            diagnostics[0].details.as_ref().unwrap()["systemPromptChanged"],
+            json!(true)
+        );
     }
 
     #[tokio::test]
@@ -1054,14 +1367,93 @@ mod tests {
             .contains("stream ended without a terminal event"));
     }
 
+    #[tokio::test]
+    async fn applies_payload_hook_before_request_serialization() {
+        let (base_url, requests) = start_server(
+            200,
+            &[],
+            &[json!({"type": "done", "reason": "stop", "usage": usage_json()})],
+            None,
+        )
+        .await;
+        let model = model(&base_url);
+        let hook: crate::types::OnPayloadFn = std::sync::Arc::new(|mut payload, _model| {
+            Box::pin(async move {
+                payload["options"]["hookMarker"] = json!(true);
+                Some(payload)
+            })
+        });
+        let options = PiMessagesOptions {
+            base: StreamOptions {
+                on_payload: Some(hook),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let message = stream(
+            &model,
+            &ctx(),
+            reqwest::Client::new(),
+            Some("test-key"),
+            &options,
+        )
+        .collect()
+        .await
+        .1;
+        assert_eq!(message.stop_reason(), Some(StopReason::Stop));
+        assert_eq!(
+            requests.lock().unwrap_or_else(|error| error.into_inner())[0].body["options"]
+                ["hookMarker"],
+            json!(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn aborts_real_request_before_delayed_response() {
+        let (base_url, _) = start_server(
+            200,
+            &[],
+            &[json!({"type": "done", "reason": "stop", "usage": usage_json()})],
+            None,
+        )
+        .await;
+        let signal = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let model = model(&base_url);
+        let options = PiMessagesOptions {
+            base: StreamOptions {
+                abort_signal: Some(signal.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let stream = stream(
+            &model,
+            &ctx(),
+            reqwest::Client::new(),
+            Some("test-key"),
+            &options,
+        );
+        signal.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (_, message) = stream.collect().await;
+        assert_eq!(message.stop_reason(), Some(StopReason::Aborted));
+        assert_eq!(message.error_message(), Some("Request was aborted"));
+    }
+
     #[test]
     fn parses_sse_frames_and_ignores_done_sentinel() {
         let chunks = vec![
             b"data: {\"type\": \"start\"}\n\ndata: {\"type\": \"text_delta\", \"contentIndex\": 0, \"delta\": \"hi\"}\r\n\r\ndata: [DONE]\n\n".to_vec(),
         ];
-        let events = read_pi_messages_events(chunks.into_iter());
+        let events = read_pi_messages_events(chunks.into_iter()).unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0]["type"], json!("start"));
         assert_eq!(events[1]["type"], json!("text_delta"));
+    }
+
+    #[test]
+    fn malformed_sse_event_is_reported_instead_of_silently_dropped() {
+        let error = read_pi_messages_events(vec![b"data: {not-json}\n\n".to_vec()].into_iter())
+            .expect_err("malformed JSON must propagate to the stream error path");
+        assert!(error.starts_with("Could not parse pi-messages event:"));
     }
 }

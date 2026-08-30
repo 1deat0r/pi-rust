@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Deterministic wire fixtures for Anthropic OAuth/provider edge parity.
 
 use std::collections::BTreeMap;
@@ -427,6 +429,36 @@ fn deferred_references_and_server_fallback_preserve_wire_shape() {
     );
 }
 
+#[test]
+fn unspecified_reasoning_does_not_enable_anthropic_thinking() {
+    let model = model("MiniMax-M2.7", true);
+    let context = Context {
+        messages: vec![Message::User(UserContent::string("hello", 1))],
+        ..Default::default()
+    };
+
+    let omitted = build_params(&model, &context, &Default::default()).unwrap();
+    assert!(omitted.get("thinking").is_none());
+
+    let enabled = build_params(
+        &model,
+        &context,
+        &AnthropicOptions {
+            thinking_enabled: Some(true),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        enabled["thinking"],
+        serde_json::json!({
+            "type": "enabled",
+            "budget_tokens": 1024,
+            "display": "summarized",
+        })
+    );
+}
+
 #[tokio::test]
 async fn server_side_fallback_maps_response_model_and_cost() {
     let mut model = model("claude-opus-4-6", false);
@@ -501,6 +533,52 @@ fn malformed_and_truncated_known_events_keep_upstream_errors() {
     assert_eq!(
         process_anthropic_events(&model, &events, |_| {}).unwrap_err(),
         "Anthropic stream ended before message_stop"
+    );
+}
+
+#[test]
+fn kimi_tool_stream_repairs_malformed_event_and_final_arguments() {
+    let mut model = model("k3", true);
+    model.provider = "kimi-coding".to_string();
+    let events = vec![
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"message_start","message":{"id":"m","model":"k3","usage":{}}}"#.to_string(),
+            event: Some("message_start".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu","name":"edit","input":{}}}"#.to_string(),
+            event: Some("content_block_start".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"A\H\",\"text\":\"col1	col2\"}"}}"#.to_string(),
+            event: Some("content_block_delta".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"content_block_stop","index":0}"#.to_string(),
+            event: Some("content_block_stop".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}"#.to_string(),
+            event: Some("message_delta".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"message_stop"}"#.to_string(),
+            event: Some("message_stop".to_string()),
+            id: None,
+        },
+    ];
+    let output = process_anthropic_events(&model, &events, |_| {}).unwrap();
+    assert_eq!(
+        output.content().iter().find_map(|block| match block {
+            ContentBlock::ToolCall { arguments, .. } => Some(arguments),
+            _ => None,
+        }),
+        Some(&serde_json::json!({"path": "A\\H", "text": "col1\tcol2"}))
     );
 }
 

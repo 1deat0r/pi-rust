@@ -28,3 +28,6 @@ tokio-tungstenite = "0.24"
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+[lints]
+workspace = true

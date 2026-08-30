@@ -15,10 +15,15 @@ use crate::model::{calculate_cost, clamp_thinking_level, Model};
 use crate::sse::SseParser;
 use crate::types::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, Context, DoneReason, ErrorReason,
-    ModelThinkingLevel, SimpleStreamOptions, StopReason, StreamOptions, ToolChoice, Usage,
+    ModelThinkingLevel, ProviderHeaders, SimpleStreamOptions, StopReason, StreamOptions,
+    ToolChoice, Usage,
 };
 
 use super::google_shared::*;
+use super::openai_completions::{
+    abortable, apply_payload_hook, error_reason, immediate_error_stream, signal_aborted,
+    terminal_error_message,
+};
 
 pub const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -52,22 +57,33 @@ impl GoogleOptions {
 // ---------------------------------------------------------------------------
 
 fn is_gemma4_model(id: &str) -> bool {
-    regex::Regex::new(r"(?i)gemma-?4").unwrap().is_match(id)
+    static GEMMA4: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
+        regex::Regex::new(r"(?i)gemma-?4").unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
+    GEMMA4.is_match(id)
 }
 
 fn is_gemini3_pro_model(id: &str) -> bool {
-    regex::Regex::new(r"(?i)gemini-3(?:\.\d+)?-pro")
-        .unwrap()
-        .is_match(id)
+    static GEMINI3_PRO: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
+        regex::Regex::new(r"(?i)gemini-3(?:\.\d+)?-pro")
+            .unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
+    GEMINI3_PRO.is_match(id)
 }
 
 fn is_gemini3_flash_model(id: &str) -> bool {
+    static GEMINI3_FLASH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
+        regex::Regex::new(r"gemini-3(?:\.\d+)?-flash")
+            .unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
     let id = id.to_lowercase();
-    regex::Regex::new(r"gemini-3(?:\.\d+)?-flash")
-        .unwrap()
-        .is_match(&id)
-        || id == "gemini-flash-latest"
-        || id == "gemini-flash-lite-latest"
+    GEMINI3_FLASH.is_match(&id) || id == "gemini-flash-latest" || id == "gemini-flash-lite-latest"
 }
 
 /// `thinkingConfig` when thinking is disabled for a model (upstream
@@ -254,6 +270,19 @@ enum BlockKind {
     Thinking,
 }
 
+/// Build the partial assistant snapshot carried by every streamed event.
+///
+/// The upstream adapter mutates `output.content` as each block is opened and
+/// extended, so observers see the live transcript on `*_delta` events. Keep
+/// the Rust state machine's separate block buffer, but copy it into the
+/// snapshot at the event boundary rather than only at stream completion.
+fn partial_with_blocks(output: &AssistantMessage, blocks: &[ContentBlock]) -> AssistantMessage {
+    let mut partial = output.clone();
+    let AssistantMessage::Assistant { content, .. } = &mut partial;
+    *content = blocks.to_vec();
+    partial
+}
+
 fn new_output(model: &Model) -> AssistantMessage {
     let mut output = AssistantMessage::new();
     output.set_api_provider_model(&model.api, &model.provider, &model.id);
@@ -316,14 +345,14 @@ fn process_chunk(
                                     push(AssistantMessageEvent::TextEnd {
                                         content_index: blocks.len() - 1,
                                         content: block_text(blocks, *prev),
-                                        partial: output.clone(),
+                                        partial: partial_with_blocks(output, blocks),
                                     });
                                 }
                                 BlockKind::Thinking => {
                                     push(AssistantMessageEvent::ThinkingEnd {
                                         content_index: blocks.len() - 1,
                                         content: block_thinking(blocks, *prev),
-                                        partial: output.clone(),
+                                        partial: partial_with_blocks(output, blocks),
                                     });
                                 }
                             }
@@ -334,14 +363,14 @@ fn process_chunk(
                             *block_kind = Some(BlockKind::Thinking);
                             push(AssistantMessageEvent::ThinkingStart {
                                 content_index: blocks.len() - 1,
-                                partial: output.clone(),
+                                partial: partial_with_blocks(output, blocks),
                             });
                         } else {
                             blocks.push(ContentBlock::text(""));
                             *block_kind = Some(BlockKind::Text);
                             push(AssistantMessageEvent::TextStart {
                                 content_index: blocks.len() - 1,
-                                partial: output.clone(),
+                                partial: partial_with_blocks(output, blocks),
                             });
                         }
                     }
@@ -368,7 +397,7 @@ fn process_chunk(
                             push(AssistantMessageEvent::ThinkingDelta {
                                 content_index: blocks.len() - 1,
                                 delta,
-                                partial: output.clone(),
+                                partial: partial_with_blocks(output, blocks),
                             });
                         }
                         _ => {
@@ -384,7 +413,7 @@ fn process_chunk(
                             push(AssistantMessageEvent::TextDelta {
                                 content_index: blocks.len() - 1,
                                 delta,
-                                partial: output.clone(),
+                                partial: partial_with_blocks(output, blocks),
                             });
                         }
                     }
@@ -399,21 +428,23 @@ fn process_chunk(
                                 push(AssistantMessageEvent::TextEnd {
                                     content_index: blocks.len() - 1,
                                     content: block_text(blocks, *prev),
-                                    partial: output.clone(),
+                                    partial: partial_with_blocks(output, blocks),
                                 });
                             }
                             BlockKind::Thinking => {
                                 push(AssistantMessageEvent::ThinkingEnd {
                                     content_index: blocks.len() - 1,
                                     content: block_thinking(blocks, *prev),
-                                    partial: output.clone(),
+                                    partial: partial_with_blocks(output, blocks),
                                 });
                             }
                         }
                         *block_kind = None;
                     }
 
-                    let function_call = part.get("functionCall").unwrap();
+                    let Some(function_call) = part.get("functionCall") else {
+                        continue;
+                    };
                     let provided_id = function_call.get("id").and_then(|v| v.as_str());
                     let name = function_call
                         .get("name")
@@ -432,7 +463,8 @@ fn process_chunk(
                             next_tool_call_counter()
                         )
                     } else {
-                        provided_id.unwrap().to_string()
+                        // provided_id presence was required by the branch above.
+                        provided_id.unwrap_or_default().to_string()
                     };
                     let thought_sig = part.get("thoughtSignature").and_then(|v| v.as_str());
 
@@ -458,18 +490,18 @@ fn process_chunk(
                     blocks.push(tool_call.clone());
                     push(AssistantMessageEvent::ToolCallStart {
                         content_index: blocks.len() - 1,
-                        partial: output.clone(),
+                        partial: partial_with_blocks(output, blocks),
                     });
                     let delta = serde_json::to_string(&tool_args).unwrap_or_else(|_| "{}".into());
                     push(AssistantMessageEvent::ToolCallDelta {
                         content_index: blocks.len() - 1,
                         delta,
-                        partial: output.clone(),
+                        partial: partial_with_blocks(output, blocks),
                     });
                     push(AssistantMessageEvent::ToolCallEnd {
                         content_index: blocks.len() - 1,
                         tool_call,
-                        partial: output.clone(),
+                        partial: partial_with_blocks(output, blocks),
                     });
                 }
             }
@@ -585,14 +617,14 @@ pub fn process_google_events(
                 push(AssistantMessageEvent::TextEnd {
                     content_index: state.blocks.len() - 1,
                     content: block_text(&state.blocks, prev),
-                    partial: state.output.clone(),
+                    partial: partial_with_blocks(&state.output, &state.blocks),
                 });
             }
             BlockKind::Thinking => {
                 push(AssistantMessageEvent::ThinkingEnd {
                     content_index: state.blocks.len() - 1,
                     content: block_thinking(&state.blocks, prev),
-                    partial: state.output.clone(),
+                    partial: partial_with_blocks(&state.output, &state.blocks),
                 });
             }
         }
@@ -624,6 +656,39 @@ pub fn process_google_events(
 // stream / streamSimple
 // ---------------------------------------------------------------------------
 
+fn replace_header(headers: &mut ProviderHeaders, name: impl Into<String>, value: Option<String>) {
+    let name = name.into();
+    headers.retain(|existing, _| !existing.eq_ignore_ascii_case(&name));
+    headers.insert(name, value);
+}
+
+fn build_request_headers(
+    model: &Model,
+    options_headers: Option<&ProviderHeaders>,
+    api_key: Option<&str>,
+) -> ProviderHeaders {
+    let mut headers = ProviderHeaders::new();
+    replace_header(
+        &mut headers,
+        "User-Agent",
+        Some(super::mistral_conversations::pi_user_agent()),
+    );
+    if let Some(model_headers) = &model.headers {
+        for (name, value) in model_headers {
+            replace_header(&mut headers, name.clone(), Some(value.clone()));
+        }
+    }
+    if let Some(api_key) = api_key {
+        replace_header(&mut headers, "x-goog-api-key", Some(api_key.to_string()));
+    }
+    if let Some(options_headers) = options_headers {
+        for (name, value) in options_headers {
+            replace_header(&mut headers, name.clone(), value.clone());
+        }
+    }
+    headers
+}
+
 /// Streams a request against the Google Generative AI REST endpoint.
 pub fn stream(
     model: &Model,
@@ -633,9 +698,18 @@ pub fn stream(
     api_key: Option<&str>,
     options: &GoogleOptions,
 ) -> AssistantMessageEventStream {
+    if signal_aborted(options.base.abort_signal.as_ref()) {
+        return immediate_error_stream(model, "Request was aborted", true);
+    }
     // Upstream throws synchronously when the api key is absent; the port
     // encodes the same failure as an immediate terminal error event (stream).
-    if api_key.is_none() && std::env::var("GEMINI_API_KEY").is_err() {
+    if api_key.is_none()
+        && crate::api::openai_completions::get_provider_env_value(
+            "GEMINI_API_KEY",
+            options.base.base.env.as_ref(),
+        )
+        .is_none()
+    {
         let mut message = new_output(model);
         message.set_stop_reason(StopReason::Error);
         super::anthropic_messages::set_error_message(
@@ -656,21 +730,50 @@ pub fn stream(
     let model = model.clone();
     let context = context.clone();
     let options = options.clone();
-    let api_key = api_key
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("GEMINI_API_KEY").ok());
+    let api_key = api_key.map(|s| s.to_string()).or_else(|| {
+        crate::api::openai_completions::get_provider_env_value(
+            "GEMINI_API_KEY",
+            options.base.base.env.as_ref(),
+        )
+    });
     let base_url = base_url.to_string();
 
     let handle = tokio::spawn(async move {
         let mut pusher = crate::event_stream::StreamSinkAdapter::new(sender);
+        if signal_aborted(options.base.abort_signal.as_ref()) {
+            let message = terminal_error_message(&model, "Request was aborted", true);
+            pusher.push(AssistantMessageEvent::Error {
+                reason: ErrorReason::Aborted,
+                error_message: message.clone(),
+            });
+            pusher.end(Some(message));
+            return;
+        }
         let params = match build_params(&model, &context, &options) {
             Ok(params) => params,
             Err(error) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(&mut message, error);
+                let message = terminal_error_message(&model, error, false);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+        };
+        let params = match apply_payload_hook(
+            params,
+            &model,
+            options.base.on_payload.as_ref(),
+            options.base.abort_signal.clone(),
+        )
+        .await
+        {
+            Ok(params) => params,
+            Err(_) => {
+                let message = terminal_error_message(&model, "Request was aborted", true);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Aborted,
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -682,30 +785,37 @@ pub fn stream(
             "{base_url}/models/{}:streamGenerateContent?alt=sse",
             model.id
         );
+        let headers = build_request_headers(
+            &model,
+            options.base.base.headers.as_ref(),
+            api_key.as_deref(),
+        );
         let mut request = client
             .post(&endpoint)
             .header("content-type", "application/json")
-            .header("x-goog-api-key", api_key.clone().unwrap_or_default())
             .json(&params);
-        if let Some(headers) = &options.base.base.headers {
-            for (name, value) in headers {
-                if let Some(value) = value {
-                    request = request.header(name.as_str(), value.as_str());
-                }
+        for (name, value) in headers {
+            if let Some(value) = value {
+                request = request.header(name.as_str(), value.as_str());
             }
         }
 
-        let response = match request.send().await {
-            Ok(response) => response,
-            Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(
-                    &mut message,
-                    format!("Request failed: {err}"),
-                );
+        let response = match abortable(request.send(), options.base.abort_signal.clone()).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                let message =
+                    terminal_error_message(&model, format!("Request failed: {err}"), false);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+            Err(_) => {
+                let message = terminal_error_message(&model, "Request was aborted", true);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Aborted,
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -715,20 +825,16 @@ pub fn stream(
         let status = response.status();
         let provider_response = crate::types::ProviderResponse {
             status: status.as_u16(),
-            headers: Default::default(),
+            headers: crate::utils::response_headers(response.headers()),
         };
         if let Some(on_response) = &options.base.on_response {
             on_response(&provider_response, &model);
         }
-        let body = match response.bytes().await {
-            Ok(body) => body,
-            Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(
-                    &mut message,
-                    format!("Request body failed: {err}"),
-                );
+        let body = match abortable(response.bytes(), options.base.abort_signal.clone()).await {
+            Ok(Ok(body)) => body,
+            Ok(Err(err)) => {
+                let message =
+                    terminal_error_message(&model, format!("Request body failed: {err}"), false);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -736,15 +842,32 @@ pub fn stream(
                 pusher.end(Some(message));
                 return;
             }
+            Err(_) => {
+                let message = terminal_error_message(&model, "Request was aborted", true);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Aborted,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
         };
+        if signal_aborted(options.base.abort_signal.as_ref()) {
+            let message = terminal_error_message(&model, "Request was aborted", true);
+            pusher.push(AssistantMessageEvent::Error {
+                reason: ErrorReason::Aborted,
+                error_message: message.clone(),
+            });
+            pusher.end(Some(message));
+            return;
+        }
         if !status.is_success() {
             let body_text = String::from_utf8_lossy(&body).to_string();
             let detail = extract_google_error(&body_text);
-            let mut message = new_output(&model);
-            message.set_stop_reason(StopReason::Error);
-            super::anthropic_messages::set_error_message(
-                &mut message,
+            let message = terminal_error_message(
+                &model,
                 format!("Google API error ({}): {}", status.as_u16(), detail),
+                false,
             );
             pusher.push(AssistantMessageEvent::Error {
                 reason: ErrorReason::Error,
@@ -762,6 +885,15 @@ pub fn stream(
         });
         match process_google_events(&model, &events, |event| pusher.push(event)) {
             Ok(message) => {
+                if signal_aborted(options.base.abort_signal.as_ref()) {
+                    let message = terminal_error_message(&model, "Request was aborted", true);
+                    pusher.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Aborted,
+                        error_message: message.clone(),
+                    });
+                    pusher.end(Some(message));
+                    return;
+                }
                 let reason = match message.stop_reason().unwrap_or(StopReason::Stop) {
                     StopReason::Stop => DoneReason::Stop,
                     StopReason::Length => DoneReason::Length,
@@ -776,11 +908,18 @@ pub fn stream(
                 pusher.end(Some(message));
             }
             Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(&mut message, err);
+                let aborted = signal_aborted(options.base.abort_signal.as_ref());
+                let message = terminal_error_message(
+                    &model,
+                    if aborted {
+                        "Request was aborted".to_string()
+                    } else {
+                        err
+                    },
+                    aborted,
+                );
                 pusher.push(AssistantMessageEvent::Error {
-                    reason: ErrorReason::Error,
+                    reason: error_reason(aborted),
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -818,10 +957,12 @@ pub fn stream_simple(
     api_key: Option<&str>,
     options: &SimpleStreamOptions,
 ) -> AssistantMessageEventStream {
-    let Some(api_key) = api_key
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("GEMINI_API_KEY").ok())
-    else {
+    let Some(api_key) = api_key.map(|s| s.to_string()).or_else(|| {
+        crate::api::openai_completions::get_provider_env_value(
+            "GEMINI_API_KEY",
+            options.base.base.env.as_ref(),
+        )
+    }) else {
         let mut message = new_output(model);
         message.set_stop_reason(StopReason::Error);
         super::anthropic_messages::set_error_message(
@@ -854,7 +995,10 @@ pub fn stream_simple(
         return stream(model, context, client, base_url, Some(&api_key), &go);
     }
 
-    let reasoning = options.reasoning.unwrap();
+    #[allow(clippy::expect_used)] // invariant: callers resolve reasoning before this path
+    let reasoning = options
+        .reasoning
+        .expect("reasoning resolved before thinking clamp");
     let clamped = clamp_thinking_level(model, ModelThinkingLevel::from(reasoning));
     let resolved = resolve_google_thinking_level(clamped, model);
     let model_id = model.id.clone();
@@ -892,6 +1036,7 @@ pub fn stream_simple(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::model::{Model, ModelInput};
@@ -1167,6 +1312,63 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, AssistantMessageEvent::TextStart { .. })));
+    }
+
+    #[test]
+    fn streamed_partials_include_live_text_and_tool_blocks() {
+        let m = model("gemini-2.5-pro");
+        let events = vec![
+            crate::sse::SseEvent {
+                data: json!({
+                    "candidates": [{
+                        "content": { "parts": [{ "text": "answer" }] }
+                    }]
+                })
+                .to_string(),
+                event: None,
+                id: None,
+            },
+            crate::sse::SseEvent {
+                data: json!({
+                    "candidates": [{
+                        "content": { "parts": [{
+                            "functionCall": {
+                                "name": "lookup",
+                                "args": { "key": "value" },
+                                "id": "call-1"
+                            }
+                        }] },
+                        "finishReason": "STOP"
+                    }]
+                })
+                .to_string(),
+                event: None,
+                id: None,
+            },
+        ];
+        let mut seen_text = false;
+        let mut seen_tool = false;
+        let result = process_google_events(&m, &events, |event| match event {
+            AssistantMessageEvent::TextDelta { partial, .. } => {
+                seen_text = partial.content().iter().any(
+                    |block| matches!(block, ContentBlock::Text { text, .. } if text == "answer"),
+                );
+            }
+            AssistantMessageEvent::ToolCallStart { partial, .. } => {
+                seen_tool = partial.content().iter().any(
+                    |block| matches!(block, ContentBlock::ToolCall { id, .. } if id == "call-1"),
+                );
+            }
+            _ => {}
+        })
+        .expect("fixture has a terminal finish reason");
+
+        assert!(seen_text, "text delta partial lost the current text block");
+        assert!(seen_tool, "tool-call partial lost the current tool block");
+        assert!(result
+            .content()
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolCall { id, .. } if id == "call-1")));
     }
 
     #[test]

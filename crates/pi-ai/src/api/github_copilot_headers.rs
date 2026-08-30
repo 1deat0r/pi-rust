@@ -65,6 +65,7 @@ pub fn build_copilot_dynamic_headers(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::model::Model;
@@ -176,7 +177,7 @@ mod tests {
                 }
             }
             let text = String::from_utf8_lossy(&buf).to_string();
-            *captured2.lock().unwrap() = Some(text);
+            *captured2.lock().unwrap_or_else(|error| error.into_inner()) = Some(text);
             // A minimal SSE response with a terminal message_delta (enough for
             // the adaptor to finish).
             let body = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n";
@@ -221,7 +222,11 @@ mod tests {
             &super::super::anthropic_messages::AnthropicOptions::default(),
         );
         let (_, _msg) = s.collect().await;
-        let req = captured.lock().unwrap().clone().unwrap_or_default();
+        let req = captured
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+            .unwrap_or_default();
         let lower = req.to_lowercase();
         assert!(lower.contains("x-initiator: agent"), "got: {req}");
         assert!(

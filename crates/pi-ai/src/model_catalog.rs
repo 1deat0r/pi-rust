@@ -7,7 +7,7 @@
 //! file has the shape `{ api: { modelId: Model } }`; `flattenModelCatalog`
 //! merges every api group into one model map keyed by model id.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::model::Model;
@@ -58,22 +58,26 @@ static PROVIDER_DATA: &[(&str, &str)] = &[
         "github-copilot",
         include_str!("../data/github-copilot.json"),
     ),
-    ("google-vertex", include_str!("../data/google-vertex.json")),
     ("google", include_str!("../data/google.json")),
+    ("google-vertex", include_str!("../data/google-vertex.json")),
     ("groq", include_str!("../data/groq.json")),
     ("huggingface", include_str!("../data/huggingface.json")),
     ("kimi-coding", include_str!("../data/kimi-coding.json")),
-    ("minimax-cn", include_str!("../data/minimax-cn.json")),
     ("minimax", include_str!("../data/minimax.json")),
+    ("minimax-cn", include_str!("../data/minimax-cn.json")),
     ("mistral", include_str!("../data/mistral.json")),
-    ("moonshotai-cn", include_str!("../data/moonshotai-cn.json")),
     ("moonshotai", include_str!("../data/moonshotai.json")),
+    ("moonshotai-cn", include_str!("../data/moonshotai-cn.json")),
     ("nvidia", include_str!("../data/nvidia.json")),
-    ("openai-codex", include_str!("../data/openai-codex.json")),
     ("openai", include_str!("../data/openai.json")),
-    ("opencode-go", include_str!("../data/opencode-go.json")),
+    ("openai-codex", include_str!("../data/openai-codex.json")),
     ("opencode", include_str!("../data/opencode.json")),
+    ("opencode-go", include_str!("../data/opencode-go.json")),
     ("openrouter", include_str!("../data/openrouter.json")),
+    (
+        "qwen-token-plan",
+        include_str!("../data/qwen-token-plan.json"),
+    ),
     (
         "qwen-token-plan-cn",
         include_str!("../data/qwen-token-plan-cn.json"),
@@ -82,16 +86,13 @@ static PROVIDER_DATA: &[(&str, &str)] = &[
         "qwen-token-plan-individual",
         include_str!("../data/qwen-token-plan-individual.json"),
     ),
-    (
-        "qwen-token-plan",
-        include_str!("../data/qwen-token-plan.json"),
-    ),
     ("together", include_str!("../data/together.json")),
     (
         "vercel-ai-gateway",
         include_str!("../data/vercel-ai-gateway.json"),
     ),
     ("xai", include_str!("../data/xai.json")),
+    ("xiaomi", include_str!("../data/xiaomi.json")),
     (
         "xiaomi-token-plan-ams",
         include_str!("../data/xiaomi-token-plan-ams.json"),
@@ -104,10 +105,40 @@ static PROVIDER_DATA: &[(&str, &str)] = &[
         "xiaomi-token-plan-sgp",
         include_str!("../data/xiaomi-token-plan-sgp.json"),
     ),
-    ("xiaomi", include_str!("../data/xiaomi.json")),
-    ("zai-coding-cn", include_str!("../data/zai-coding-cn.json")),
     ("zai", include_str!("../data/zai.json")),
+    ("zai-coding-cn", include_str!("../data/zai-coding-cn.json")),
 ];
+
+/// Preserve the generated object's property order for callers that expose a
+/// catalog list. The lookup facade below intentionally remains a BTreeMap for
+/// its stable keyed API, while upstream `Object.keys`/`Object.values` are
+/// insertion ordered.
+static GENERATED_MODEL_IDS: OnceLock<BTreeMap<String, Vec<String>>> = OnceLock::new();
+
+fn generated_model_ids() -> &'static BTreeMap<String, Vec<String>> {
+    GENERATED_MODEL_IDS.get_or_init(|| {
+        let mut table = BTreeMap::new();
+        for (provider, json) in PROVIDER_DATA {
+            #[allow(clippy::expect_used)] // invariant: vendored data is a build artifact
+            let groups: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(json).expect("vendored model data must parse");
+            let mut seen = HashSet::new();
+            let mut ids = Vec::new();
+            for models_value in groups.values() {
+                let Some(models) = models_value.as_object() else {
+                    continue;
+                };
+                for model_id in models.keys() {
+                    if seen.insert(model_id.clone()) {
+                        ids.push(model_id.clone());
+                    }
+                }
+            }
+            table.insert((*provider).to_string(), ids);
+        }
+        table
+    })
+}
 
 /// Lazily parse the embedded catalog. Mirrors upstream `MODELS` (a static
 /// table), so parse errors are treated as unreachable.
@@ -116,14 +147,17 @@ pub fn models() -> &'static BTreeMap<String, BTreeMap<String, Model>> {
         let mut table: BTreeMap<String, BTreeMap<String, Model>> = BTreeMap::new();
         for (provider, json) in PROVIDER_DATA {
             // Each file: { api: { modelId: Model } }.
+            #[allow(clippy::expect_used)] // invariant: vendored data is a build artifact
             let groups: serde_json::Map<String, serde_json::Value> =
                 serde_json::from_str(json).expect("vendored model data must parse");
             let mut provider_models: BTreeMap<String, Model> = BTreeMap::new();
             for (_, models_value) in groups {
+                #[allow(clippy::expect_used)] // invariant: vendored data is a build artifact
                 let models_obj = models_value
                     .as_object()
                     .expect("api group must be an object of models");
                 for (model_id, model_value) in models_obj {
+                    #[allow(clippy::expect_used)] // invariant: vendored data is a build artifact
                     let model: Model = serde_json::from_value(model_value.clone())
                         .expect("vendored model entry must deserialize");
                     debug_assert_eq!(
@@ -148,15 +182,23 @@ pub fn get_builtin_model(provider: &str, model_id: &str) -> Option<&'static Mode
 
 /// All built-in provider ids (upstream `getBuiltinProviders`).
 pub fn get_builtin_providers() -> Vec<String> {
-    models().keys().cloned().collect()
+    PROVIDER_DATA
+        .iter()
+        .map(|(provider, _)| (*provider).to_string())
+        .collect()
 }
 
 /// All built-in models for a provider (upstream `getBuiltinModels`).
 pub fn get_builtin_models(provider: &str) -> Vec<&'static Model> {
-    models()
+    let Some(provider_models) = models().get(provider) else {
+        return Vec::new();
+    };
+    generated_model_ids()
         .get(provider)
-        .map(|m| m.values().collect())
-        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|ids| ids.iter())
+        .filter_map(|model_id| provider_models.get(model_id))
+        .collect()
 }
 
 /// Generation timestamp shared by all built-in provider catalogs.
@@ -166,7 +208,10 @@ pub fn get_builtin_model_data_generated_at() -> Option<u64> {
 
 /// All built-in models across all providers, in provider order.
 pub fn get_all_builtin_models() -> Vec<&'static Model> {
-    models().values().flat_map(|m| m.values()).collect()
+    get_builtin_providers()
+        .into_iter()
+        .flat_map(|provider| get_builtin_models(&provider))
+        .collect()
 }
 
 /// Merge a remote/provider-owned list over a baseline list. Existing model ids
@@ -259,6 +304,7 @@ pub fn parse_catalog_models(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -273,10 +319,75 @@ mod tests {
     }
 
     #[test]
+    fn catalog_lists_providers_in_generated_order() {
+        assert_eq!(
+            get_builtin_providers(),
+            [
+                "amazon-bedrock",
+                "ant-ling",
+                "anthropic",
+                "azure-openai-responses",
+                "baseten",
+                "cerebras",
+                "cloudflare-ai-gateway",
+                "cloudflare-workers-ai",
+                "deepseek",
+                "fireworks",
+                "github-copilot",
+                "google",
+                "google-vertex",
+                "groq",
+                "huggingface",
+                "kimi-coding",
+                "minimax",
+                "minimax-cn",
+                "mistral",
+                "moonshotai",
+                "moonshotai-cn",
+                "nvidia",
+                "openai",
+                "openai-codex",
+                "opencode",
+                "opencode-go",
+                "openrouter",
+                "qwen-token-plan",
+                "qwen-token-plan-cn",
+                "qwen-token-plan-individual",
+                "together",
+                "vercel-ai-gateway",
+                "xai",
+                "xiaomi",
+                "xiaomi-token-plan-ams",
+                "xiaomi-token-plan-cn",
+                "xiaomi-token-plan-sgp",
+                "zai",
+                "zai-coding-cn",
+            ]
+        );
+    }
+
+    #[test]
+    fn catalog_lists_models_in_generated_order() {
+        let google = get_builtin_models("google");
+        assert_eq!(
+            google.first().map(|model| model.id.as_str()),
+            Some("deep-research-max-preview-04-2026")
+        );
+        assert_eq!(
+            get_all_builtin_models()
+                .first()
+                .map(|model| model.provider.as_str()),
+            Some("amazon-bedrock")
+        );
+    }
+
+    #[test]
     fn catalog_has_expected_model_counts() {
         assert_eq!(models().get("google").map(|m| m.len()), Some(22));
         assert_eq!(models().get("anthropic").map(|m| m.len()), Some(13));
         assert_eq!(models().get("openrouter").map(|m| m.len()), Some(346));
+        assert_eq!(models().get("zai").map(|m| m.len()), Some(7));
+        assert_eq!(models().get("zai-coding-cn").map(|m| m.len()), Some(10));
     }
 
     #[test]
@@ -343,6 +454,6 @@ mod tests {
         }
         // Cross-check: total model count matches the vendored files.
         let total: usize = models().values().map(|m| m.len()).sum();
-        assert_eq!(total, 1267);
+        assert_eq!(total, 1292);
     }
 }

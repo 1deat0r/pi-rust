@@ -6,6 +6,9 @@
 //! resource/deployment name from env or options. Message conversion, tool
 //! conversion and the stream processor come from `openai_responses_shared`.
 
+use std::time::Duration;
+
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 
 use crate::event_stream::{AssistantMessageEventStream, StreamSink};
@@ -13,9 +16,14 @@ use crate::model::{clamp_thinking_level, Model};
 use crate::sse::SseParser;
 use crate::types::{
     AssistantMessage, AssistantMessageEvent, Context, DoneReason, ErrorReason, ModelThinkingLevel,
-    SimpleStreamOptions, StopReason, StreamOptions, ToolChoice, Usage,
+    ProviderEnv, ProviderHeaders, SimpleStreamOptions, StopReason, StreamOptions, ToolChoice,
+    Usage,
 };
 
+use super::openai_completions::{
+    abortable, apply_payload_hook, error_reason, immediate_error_stream, signal_aborted,
+    terminal_error_message,
+};
 use super::openai_responses_shared::*;
 
 const DEFAULT_AZURE_API_VERSION: &str = "v1";
@@ -39,8 +47,15 @@ pub struct AzureOpenAIResponsesOptions {
     pub azure_deployment_name: Option<String>,
 }
 
-fn env_value(name: &str) -> Option<String> {
-    std::env::var(name).ok()
+fn env_value(name: &str, env: Option<&ProviderEnv>) -> Option<String> {
+    env.and_then(|env| env.get(name))
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            std::env::var(name)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
 }
 
 fn parse_deployment_name_map(value: Option<&str>) -> std::collections::HashMap<String, String> {
@@ -63,10 +78,20 @@ fn parse_deployment_name_map(value: Option<&str>) -> std::collections::HashMap<S
 }
 
 fn resolve_deployment_name(model: &Model, options: &AzureOpenAIResponsesOptions) -> String {
-    if let Some(name) = &options.azure_deployment_name {
-        return name.clone();
+    if let Some(name) = options
+        .azure_deployment_name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+    {
+        return name.to_string();
     }
-    let map = parse_deployment_name_map(env_value("AZURE_OPENAI_DEPLOYMENT_NAME_MAP").as_deref());
+    let map = parse_deployment_name_map(
+        env_value(
+            "AZURE_OPENAI_DEPLOYMENT_NAME_MAP",
+            options.base.base.env.as_ref(),
+        )
+        .as_deref(),
+    );
     if let Some(name) = map.get(&model.id) {
         return name.clone();
     }
@@ -111,18 +136,20 @@ fn resolve_azure_config(
     let api_version = options
         .azure_api_version
         .clone()
-        .or_else(|| env_value("AZURE_OPENAI_API_VERSION"))
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| env_value("AZURE_OPENAI_API_VERSION", options.base.base.env.as_ref()))
         .unwrap_or_else(|| DEFAULT_AZURE_API_VERSION.to_string());
 
     let base_url = options
         .azure_base_url
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .or_else(|| env_value("AZURE_OPENAI_BASE_URL").filter(|s| !s.trim().is_empty()));
+        .or_else(|| env_value("AZURE_OPENAI_BASE_URL", options.base.base.env.as_ref()));
     let resource_name = options
         .azure_resource_name
         .clone()
-        .or_else(|| env_value("AZURE_OPENAI_RESOURCE_NAME"));
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| env_value("AZURE_OPENAI_RESOURCE_NAME", options.base.base.env.as_ref()));
 
     let resolved = if let Some(base_url) = &base_url {
         Some(base_url.clone())
@@ -140,6 +167,41 @@ fn resolve_azure_config(
         );
     };
     Ok((normalize_azure_base_url(&resolved)?, api_version))
+}
+
+fn replace_header(headers: &mut ProviderHeaders, name: impl Into<String>, value: Option<String>) {
+    let name = name.into();
+    headers.retain(|existing, _| !existing.eq_ignore_ascii_case(&name));
+    headers.insert(name, value);
+}
+
+fn build_request_headers(
+    model: &Model,
+    options_headers: Option<&ProviderHeaders>,
+) -> ProviderHeaders {
+    let mut headers = ProviderHeaders::new();
+    replace_header(
+        &mut headers,
+        "User-Agent",
+        Some(super::mistral_conversations::pi_user_agent()),
+    );
+    if let Some(model_headers) = &model.headers {
+        for (name, value) in model_headers {
+            replace_header(&mut headers, name.clone(), Some(value.clone()));
+        }
+    }
+    if let Some(options_headers) = options_headers {
+        for (name, value) in options_headers {
+            replace_header(&mut headers, name.clone(), value.clone());
+        }
+    }
+    headers
+}
+
+fn has_header_name(headers: &ProviderHeaders, name: &str) -> bool {
+    headers
+        .keys()
+        .any(|existing| existing.eq_ignore_ascii_case(name))
 }
 
 fn build_params(
@@ -172,13 +234,14 @@ fn build_params(
         "model": deployment_name,
         "input": messages,
         "stream": true,
-        "prompt_cache_key": options.base.session_id.as_deref().map(|s| {
-            s.chars().take(64).collect::<String>()
-        }),
         "store": false,
     });
 
-    if let Some(max_tokens) = options.base.max_tokens {
+    if let Some(session_id) = options.base.session_id.as_deref() {
+        params["prompt_cache_key"] = Value::String(session_id.chars().take(64).collect());
+    }
+
+    if let Some(max_tokens) = options.base.max_tokens.filter(|tokens| *tokens > 0) {
         params["max_output_tokens"] = json!(max_tokens.max(OPENAI_RESPONSES_MIN_OUTPUT_TOKENS));
     }
     if let Some(temperature) = options.base.temperature {
@@ -205,25 +268,26 @@ fn build_params(
     }
 
     if model.reasoning {
-        if options.reasoning_effort.is_some() || options.reasoning_summary.is_some() {
-            let effort = options
-                .reasoning_effort
-                .clone()
-                .or_else(|| Some("medium".to_string()));
+        let reasoning_effort = options
+            .reasoning_effort
+            .as_deref()
+            .filter(|effort| !effort.is_empty());
+        let reasoning_summary = options
+            .reasoning_summary
+            .as_deref()
+            .filter(|summary| !summary.is_empty());
+        if reasoning_effort.is_some() || reasoning_summary.is_some() {
+            let requested_effort = reasoning_effort.unwrap_or("medium");
             let effort = model
                 .thinking_level_map
                 .as_ref()
-                .and_then(|m| {
-                    m.get(&ModelThinkingLevel::from_effort_str(
-                        effort.as_deref().unwrap_or("medium"),
-                    ))
-                })
+                .and_then(|m| m.get(&ModelThinkingLevel::from_effort_str(requested_effort)))
                 .cloned()
                 .flatten()
-                .unwrap_or_else(|| effort.unwrap_or_else(|| "medium".to_string()));
+                .unwrap_or_else(|| requested_effort.to_string());
             params["reasoning"] = json!({
                 "effort": effort,
-                "summary": options.reasoning_summary.clone().unwrap_or_else(|| "auto".to_string()),
+                "summary": reasoning_summary.unwrap_or("auto"),
             });
             params["include"] = json!(["reasoning.encrypted_content"]);
         } else if model
@@ -262,6 +326,64 @@ fn new_output(model: &Model) -> AssistantMessage {
     output
 }
 
+/// Consume an Azure Responses SSE body incrementally, matching the upstream
+/// async-generator lifecycle: emit each complete event as soon as its frame
+/// arrives and stop reading after the terminal response event.
+async fn process_responses_sse_stream(
+    response: reqwest::Response,
+    output: &mut AssistantMessage,
+    push: &mut (dyn FnMut(AssistantMessageEvent) + Send),
+    model: &Model,
+    options: &ProcessResponsesOptions,
+    signal: Option<crate::types::AbortSignal>,
+) -> Result<(), String> {
+    let mut parser = SseParser::new();
+    let mut state = ProcessResponsesStreamState::default();
+    let mut body_stream = response.bytes_stream();
+
+    loop {
+        let next_chunk = match abortable(body_stream.next(), signal.clone()).await {
+            Ok(next_chunk) => next_chunk,
+            Err(_) => return Err("Request was aborted".to_string()),
+        };
+        let Some(chunk) = next_chunk else { break };
+        let chunk = chunk.map_err(|error| format!("Azure OpenAI SSE read failed: {error}"))?;
+        for event in parser.push_bytes(&chunk) {
+            process_responses_stream_chunk(
+                &mut state,
+                std::slice::from_ref(&event),
+                output,
+                push,
+                model,
+                options,
+            )?;
+            if state.saw_terminal_response_event() {
+                return Ok(());
+            }
+        }
+    }
+
+    for event in parser.finish() {
+        process_responses_stream_chunk(
+            &mut state,
+            std::slice::from_ref(&event),
+            output,
+            push,
+            model,
+            options,
+        )?;
+        if state.saw_terminal_response_event() {
+            return Ok(());
+        }
+    }
+
+    if state.saw_terminal_response_event() {
+        Ok(())
+    } else {
+        Err("OpenAI Responses stream ended before a terminal response event".to_string())
+    }
+}
+
 /// Streams a request against the Azure OpenAI Responses API.
 pub fn stream(
     model: &Model,
@@ -277,9 +399,12 @@ pub fn stream(
     let model = model.clone();
     let context = context.clone();
     let options = options.clone();
+    if signal_aborted(options.base.abort_signal.as_ref()) {
+        return immediate_error_stream(&model, "Request was aborted", true);
+    }
     let Some(api_key) = api_key
         .map(|s| s.to_string())
-        .or_else(|| env_value("AZURE_OPENAI_API_KEY"))
+        .or_else(|| env_value("AZURE_OPENAI_API_KEY", options.base.base.env.as_ref()))
     else {
         let mut message = new_output(&model);
         message.set_stop_reason(StopReason::Error);
@@ -301,9 +426,7 @@ pub fn stream(
         let (base_url, api_version) = match resolve_azure_config(&model, &options) {
             Ok(cfg) => cfg,
             Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(&mut message, err);
+                let message = terminal_error_message(&model, err, false);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -315,11 +438,28 @@ pub fn stream(
         let params = match build_params(&model, &context, &options, &deployment_name) {
             Ok(params) => params,
             Err(error) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(&mut message, error);
+                let message = terminal_error_message(&model, error, false);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+        };
+        let params = match apply_payload_hook(
+            params,
+            &model,
+            options.base.on_payload.as_ref(),
+            options.base.abort_signal.clone(),
+        )
+        .await
+        {
+            Ok(params) => params,
+            Err(_) => {
+                let message = terminal_error_message(&model, "Request was aborted", true);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Aborted,
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -339,9 +479,7 @@ pub fn stream(
             ) {
                 Ok(properties) => properties,
                 Err(error) => {
-                    let mut message = new_output(&model);
-                    message.set_stop_reason(StopReason::Error);
-                    super::anthropic_messages::set_error_message(&mut message, error);
+                    let message = terminal_error_message(&model, error, false);
                     pusher.push(AssistantMessageEvent::Error {
                         reason: ErrorReason::Error,
                         error_message: message.clone(),
@@ -352,36 +490,39 @@ pub fn stream(
             };
         let endpoint =
             format!("{base_url}/deployments/{deployment_name}/responses?api-version={api_version}");
+        let headers = build_request_headers(&model, options.base.base.headers.as_ref());
         let mut request = client
             .post(&endpoint)
-            .header("content-type", "application/json")
-            .bearer_auth(&api_key)
-            .query(&[("api-version", api_version.as_str())]);
-        if let Some(headers) = &model.headers {
-            for (name, value) in headers {
-                request = request.header(name.as_str(), value.as_str());
-            }
+            .header("content-type", "application/json");
+        if let Some(timeout_ms) = options.base.base.timeout_ms {
+            request = request.timeout(Duration::from_millis(timeout_ms));
         }
-        if let Some(headers) = &options.base.base.headers {
-            for (name, value) in headers {
-                if let Some(value) = value {
-                    request = request.header(name.as_str(), value.as_str());
-                }
+        if !has_header_name(&headers, "authorization") {
+            request = request.bearer_auth(&api_key);
+        }
+        for (name, value) in headers {
+            if let Some(value) = value {
+                request = request.header(name.as_str(), value.as_str());
             }
         }
         request = request.json(&params);
 
-        let response = match request.send().await {
-            Ok(response) => response,
-            Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(
-                    &mut message,
-                    format!("Request failed: {err}"),
-                );
+        let response = match abortable(request.send(), options.base.abort_signal.clone()).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                let message =
+                    terminal_error_message(&model, format!("Request failed: {err}"), false);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+            Err(_) => {
+                let message = terminal_error_message(&model, "Request was aborted", true);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Aborted,
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -391,29 +532,37 @@ pub fn stream(
         let status = response.status();
         let provider_response = crate::types::ProviderResponse {
             status: status.as_u16(),
-            headers: Default::default(),
+            headers: crate::utils::response_headers(response.headers()),
         };
         if let Some(on_response) = &options.base.on_response {
             on_response(&provider_response, &model);
         }
-        let body = match response.bytes().await {
-            Ok(body) => body,
-            Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(
-                    &mut message,
-                    format!("Request body failed: {err}"),
-                );
-                pusher.push(AssistantMessageEvent::Error {
-                    reason: ErrorReason::Error,
-                    error_message: message.clone(),
-                });
-                pusher.end(Some(message));
-                return;
-            }
-        };
         if !status.is_success() {
+            let body = match abortable(response.bytes(), options.base.abort_signal.clone()).await {
+                Ok(Ok(body)) => body,
+                Ok(Err(err)) => {
+                    let message = terminal_error_message(
+                        &model,
+                        format!("Request body failed: {err}"),
+                        false,
+                    );
+                    pusher.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Error,
+                        error_message: message.clone(),
+                    });
+                    pusher.end(Some(message));
+                    return;
+                }
+                Err(_) => {
+                    let message = terminal_error_message(&model, "Request was aborted", true);
+                    pusher.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Aborted,
+                        error_message: message.clone(),
+                    });
+                    pusher.end(Some(message));
+                    return;
+                }
+            };
             let body_text = String::from_utf8_lossy(&body).to_string();
             let detail = super::openai_responses::extract_openai_responses_error(&body_text);
             let mut message = new_output(&model);
@@ -429,15 +578,13 @@ pub fn stream(
             pusher.end(Some(message));
             return;
         }
-        let body_text = String::from_utf8_lossy(&body).to_string();
-        let events = SseParser::parse_text(&body_text);
 
         pusher.push(AssistantMessageEvent::Start {
             partial: new_output(&model),
         });
         let mut output = new_output(&model);
-        match process_responses_stream(
-            &events,
+        match process_responses_sse_stream(
+            response,
             &mut output,
             &mut |event| pusher.push(event),
             &model,
@@ -445,8 +592,20 @@ pub fn stream(
                 grammar_tool_input_properties: grammar_properties,
                 ..Default::default()
             },
-        ) {
+            options.base.abort_signal.clone(),
+        )
+        .await
+        {
             Ok(()) => {
+                if signal_aborted(options.base.abort_signal.as_ref()) {
+                    let message = terminal_error_message(&model, "Request was aborted", true);
+                    pusher.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Aborted,
+                        error_message: message.clone(),
+                    });
+                    pusher.end(Some(message));
+                    return;
+                }
                 let reason = match output.stop_reason().unwrap_or(StopReason::Stop) {
                     StopReason::Stop => DoneReason::Stop,
                     StopReason::Length => DoneReason::Length,
@@ -461,11 +620,18 @@ pub fn stream(
                 pusher.end(Some(output));
             }
             Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                super::anthropic_messages::set_error_message(&mut message, err);
+                let aborted = signal_aborted(options.base.abort_signal.as_ref());
+                let message = terminal_error_message(
+                    &model,
+                    if aborted {
+                        "Request was aborted".to_string()
+                    } else {
+                        err
+                    },
+                    aborted,
+                );
                 pusher.push(AssistantMessageEvent::Error {
-                    reason: ErrorReason::Error,
+                    reason: error_reason(aborted),
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -506,6 +672,7 @@ pub fn stream_simple(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::model::{Model, ModelInput};

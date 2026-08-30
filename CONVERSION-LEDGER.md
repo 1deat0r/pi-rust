@@ -1902,3 +1902,6 @@ behavioral change (workspace matrix 2,805 tests passed).
 
 Phase 2.2 brought pi-client under the hard lint gate (poison-tolerant
 locking, no production unwrap/expect); ledger rows unchanged.
+
+Phase 2.3a brought pi-ai under the hard lint gate (poison-tolerant locking,
+LazyLock regexes, guarded invariants); ledger rows unchanged.

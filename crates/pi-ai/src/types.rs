@@ -1,9 +1,28 @@
 //! Core message/model/stream types — port of `packages/ai/src/types.ts`.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{atomic::AtomicBool, Arc};
 
 /// JSON-compatible value (mirrors `JsonValue` in the upstream types).
 pub type JsonValue = serde_json::Value;
+
+/// Shared abort flag for provider streams.
+///
+/// The upstream API exposes an `AbortSignal`.  The Rust runtime already uses
+/// an `Arc<AtomicBool>` for cooperative cancellation, so stream options carry
+/// that same signal without changing the assistant-message protocol.
+pub type AbortSignal = Arc<AtomicBool>;
+
+/// Rust representation of the upstream asynchronous `onPayload` hook.
+///
+/// The hook receives owned values so a caller can await work without holding
+/// a borrow into the provider's request-building state. Returning `None`
+/// preserves the generated payload; returning `Some` replaces it before wire
+/// conversion or transport selection.
+pub type OnPayloadFuture = Pin<Box<dyn Future<Output = Option<JsonValue>> + Send>>;
+pub type OnPayloadFn = Arc<dyn Fn(JsonValue, crate::model::Model) -> OnPayloadFuture + Send + Sync>;
 
 pub const KNOWN_APIS: [&str; 10] = [
     "openai-completions",
@@ -225,7 +244,7 @@ pub struct ProviderResponse {
 }
 
 /// Request options shared by provider requests.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ProviderRequestOptions {
     pub api_key: Option<String>,
     pub env: Option<ProviderEnv>,
@@ -234,6 +253,30 @@ pub struct ProviderRequestOptions {
     pub max_retries: Option<u32>,
     pub max_retry_delay_ms: Option<u64>,
     pub telemetry_context: Option<pi_telemetry::InMemoryTelemetryContext>,
+}
+
+impl std::fmt::Debug for ProviderRequestOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderRequestOptions")
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field(
+                "env_keys",
+                &self.env.as_ref().map(|env| env.keys().collect::<Vec<_>>()),
+            )
+            .field(
+                "header_names",
+                &self
+                    .headers
+                    .as_ref()
+                    .map(|headers| headers.keys().collect::<Vec<_>>()),
+            )
+            .field("timeout_ms", &self.timeout_ms)
+            .field("max_retries", &self.max_retries)
+            .field("max_retry_delay_ms", &self.max_retry_delay_ms)
+            .field("telemetry_context", &self.telemetry_context)
+            .finish()
+    }
 }
 
 /// Stream request options.
@@ -248,6 +291,12 @@ pub struct StreamOptions {
     pub session_id: Option<String>,
     pub websocket_connect_timeout_ms: Option<u64>,
     pub metadata: Option<JsonValue>,
+    /// Cooperative cancellation signal corresponding to upstream
+    /// `StreamOptions.signal`.
+    pub abort_signal: Option<AbortSignal>,
+    /// Optional asynchronous payload replacement hook corresponding to
+    /// upstream `StreamOptions.onPayload`.
+    pub on_payload: Option<OnPayloadFn>,
     /// Optional callback invoked with the provider response before the body
     /// is consumed. Providers that do not produce HTTP responses call it with
     /// a synthetic `{status: 200, headers: {}}` (matching upstream faux).
@@ -393,7 +442,9 @@ impl ContentBlock {
 pub struct Cost {
     pub input: f64,
     pub output: f64,
+    #[serde(rename = "cacheRead", alias = "cache_read")]
     pub cache_read: f64,
+    #[serde(rename = "cacheWrite", alias = "cache_write")]
     pub cache_write: f64,
     pub total: f64,
 }
@@ -488,11 +539,39 @@ pub struct DeferredHandle {
 // Messages
 // ---------------------------------------------------------------------------
 
+fn empty_user_content_body() -> UserContentBody {
+    UserContentBody::Blocks(Vec::new())
+}
+
+fn deserialize_optional_user_content_body<'de, D>(
+    deserializer: D,
+) -> Result<UserContentBody, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <Option<UserContentBody> as serde::Deserialize>::deserialize(deserializer)
+        .map(|content| content.unwrap_or_else(empty_user_content_body))
+}
+
+fn deserialize_optional_content_blocks<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ContentBlock>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <Option<Vec<ContentBlock>> as serde::Deserialize>::deserialize(deserializer)
+        .map(Option::unwrap_or_default)
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum UserContent {
     #[serde(rename = "user")]
     RoleUser {
+        #[serde(
+            default = "empty_user_content_body",
+            deserialize_with = "deserialize_optional_user_content_body"
+        )]
         content: UserContentBody,
         timestamp: u64,
     },
@@ -535,6 +614,7 @@ pub enum UserContentBody {
 pub enum AssistantMessage {
     #[serde(rename = "assistant")]
     Assistant {
+        #[serde(default, deserialize_with = "deserialize_optional_content_blocks")]
         content: Vec<ContentBlock>,
         api: Option<Api>,
         provider: Option<ProviderId>,
@@ -545,6 +625,11 @@ pub enum AssistantMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[serde(rename = "responseId")]
         response_id: Option<String>,
+        /// Redacted provider/runtime diagnostics for failures and recovery
+        /// paths. This mirrors the optional upstream diagnostics array while
+        /// keeping ordinary successful messages byte-compatible.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        diagnostics: Option<Vec<AssistantMessageDiagnostic>>,
         usage: Option<Usage>,
         #[serde(rename = "stopReason")]
         stop_reason: Option<StopReason>,
@@ -572,6 +657,7 @@ impl AssistantMessage {
             model: None,
             response_model: None,
             response_id: None,
+            diagnostics: None,
             usage: None,
             stop_reason: None,
             deferred: None,
@@ -655,6 +741,17 @@ impl AssistantMessage {
         let AssistantMessage::Assistant { response_id, .. } = self;
         *response_id = Some(id);
     }
+
+    pub fn diagnostics(&self) -> Option<&[AssistantMessageDiagnostic]> {
+        match self {
+            AssistantMessage::Assistant { diagnostics, .. } => diagnostics.as_deref(),
+        }
+    }
+
+    pub fn append_diagnostic(&mut self, diagnostic: AssistantMessageDiagnostic) {
+        let AssistantMessage::Assistant { diagnostics, .. } = self;
+        diagnostics.get_or_insert_with(Vec::new).push(diagnostic);
+    }
     pub fn set_response_model(&mut self, model: String) {
         let AssistantMessage::Assistant { response_model, .. } = self;
         *response_model = Some(model);
@@ -709,6 +806,43 @@ impl AssistantMessage {
     }
 }
 
+/// Structured diagnostic error details used by provider/recovery paths.
+/// Values are intentionally JSON-compatible so provider-specific numeric or
+/// string error codes round-trip without being guessed or discarded.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DiagnosticErrorInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stack: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<JsonValue>,
+}
+
+/// Redacted provider/runtime diagnostic attached to an assistant message.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AssistantMessageDiagnostic {
+    #[serde(rename = "type")]
+    pub diagnostic_type: String,
+    pub timestamp: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<DiagnosticErrorInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<BTreeMap<String, JsonValue>>,
+}
+
+impl AssistantMessageDiagnostic {
+    pub fn new(diagnostic_type: impl Into<String>) -> Self {
+        Self {
+            diagnostic_type: diagnostic_type.into(),
+            timestamp: now_ms(),
+            error: None,
+            details: None,
+        }
+    }
+}
+
 impl Default for AssistantMessage {
     fn default() -> Self {
         Self::new()
@@ -724,6 +858,7 @@ pub enum ToolResultMessage {
         tool_call_id: String,
         #[serde(rename = "toolName")]
         tool_name: String,
+        #[serde(default, deserialize_with = "deserialize_optional_content_blocks")]
         content: Vec<ContentBlock>,
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<JsonValue>,
@@ -876,22 +1011,53 @@ pub struct AssistantImages {
 // Context / tools
 // ---------------------------------------------------------------------------
 
+fn deserialize_constrained_sampling<'de, D>(
+    deserializer: D,
+) -> Result<Option<ConstrainedSampling>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum WireConstrainedSampling {
+        Disabled(bool),
+        Config(ConstrainedSampling),
+    }
+
+    match <Option<WireConstrainedSampling> as serde::Deserialize>::deserialize(deserializer)? {
+        None | Some(WireConstrainedSampling::Disabled(false)) => Ok(None),
+        Some(WireConstrainedSampling::Disabled(true)) => Err(serde::de::Error::custom(
+            "constrainedSampling must be false or a configuration object",
+        )),
+        Some(WireConstrainedSampling::Config(config)) => Ok(Some(config)),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Tool {
     pub name: String,
     pub description: String,
     /// JSON Schema (TypeBox schema serialized) for the tool parameters.
     pub parameters: JsonValue,
+    #[serde(
+        rename = "constrainedSampling",
+        alias = "constrained_sampling",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_constrained_sampling"
+    )]
     pub constrained_sampling: Option<ConstrainedSampling>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConstrainedSampling {
     JsonSchema { strict: StrictPreference },
     Grammar { variants: BTreeMap<String, String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum StrictPreference {
     Prefer,
     Require,

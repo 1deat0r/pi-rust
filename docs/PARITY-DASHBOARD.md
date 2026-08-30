@@ -336,3 +336,5 @@ pi-evals and pi-server) do not move any dashboard dimension; all counts above
 are unchanged by that work.
 
 Phase 2.2 (pi-client) does not move any dashboard dimension.
+
+Phase 2.3a (pi-ai) does not move any dashboard dimension.

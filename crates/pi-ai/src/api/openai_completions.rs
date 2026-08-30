@@ -12,10 +12,13 @@
 //! per-provider thinking formats), chunk usage parsing, stop-reason mapping,
 //! and the streaming event loop (text/thinking/tool-call deltas with
 //! streaming JSON for tool arguments). OpenAI grammar custom tools are
-//! converted and replayed through the same streaming path; chat-template kwargs
-//! remain documented as deferred (see TODO).
+//! converted and replayed through the same streaming path, including the
+//! provider-specific chat-template reasoning fields.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -36,6 +39,9 @@ use super::constrained_sampling::{
     resolve_json_schema_strict_sampling as shared_resolve_json_schema_strict_sampling,
     GrammarToolInputJsonBuffer,
 };
+
+const DEFAULT_MAX_RETRY_DELAY_MS: u64 = 60_000;
+const BASE_RETRY_DELAY_MS: u64 = 500;
 
 // ---------------------------------------------------------------------------
 // Compatibility
@@ -66,6 +72,10 @@ pub struct OpenAiCompletionsCompat {
     pub deferred_tools_mode: Option<String>,
     pub session_affinity_format: String, // "openai" | "openrouter" | "openai-nosession"
     pub supports_long_cache_retention: bool,
+    /// Provider compatibility values resolved into `chat_template_kwargs`.
+    pub chat_template_kwargs: BTreeMap<String, Value>,
+    /// Provider compatibility values resolved into `chat_template_args`.
+    pub chat_template_args: BTreeMap<String, Value>,
 }
 
 impl OpenAiCompletionsCompat {
@@ -188,6 +198,8 @@ impl OpenAiCompletionsCompat {
                 || is_cloudflare_ai_gateway
                 || is_nvidia
                 || is_ant_ling),
+            chat_template_kwargs: BTreeMap::new(),
+            chat_template_args: BTreeMap::new(),
         }
     }
 
@@ -206,6 +218,18 @@ impl OpenAiCompletionsCompat {
                 .map(|s| s.to_string())
         };
         let get_str_opt = |k: &str| compat.get(k).cloned();
+        let get_object = |k: &str| {
+            compat
+                .get(k)
+                .and_then(Value::as_object)
+                .map(|object| {
+                    object
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect::<BTreeMap<_, _>>()
+                })
+                .unwrap_or_default()
+        };
         let cache_control_format_override = match get_str_opt("cacheControlFormat") {
             Some(Value::String(s)) => Some(s),
             Some(Value::Null) => None,
@@ -251,6 +275,8 @@ impl OpenAiCompletionsCompat {
                 .unwrap_or(detected.session_affinity_format),
             supports_long_cache_retention: get_bool("supportsLongCacheRetention")
                 .unwrap_or(detected.supports_long_cache_retention),
+            chat_template_kwargs: get_object("chatTemplateKwargs"),
+            chat_template_args: get_object("chatTemplateArgs"),
         }
     }
 }
@@ -283,6 +309,74 @@ fn get_client_api_key(
     Err(format!("No API key for provider: {provider}"))
 }
 
+fn replace_header(headers: &mut ProviderHeaders, name: impl Into<String>, value: Option<String>) {
+    let name = name.into();
+    headers.retain(|existing, _| !existing.eq_ignore_ascii_case(&name));
+    headers.insert(name, value);
+}
+
+fn build_request_headers(
+    model: &Model,
+    context: &Context,
+    options_headers: Option<&ProviderHeaders>,
+    session_id: Option<&str>,
+    compat: &OpenAiCompletionsCompat,
+) -> ProviderHeaders {
+    let mut headers = ProviderHeaders::new();
+    replace_header(
+        &mut headers,
+        "User-Agent",
+        Some(super::mistral_conversations::pi_user_agent()),
+    );
+    if let Some(model_headers) = &model.headers {
+        for (name, value) in model_headers {
+            replace_header(&mut headers, name.clone(), Some(value.clone()));
+        }
+    }
+    if model.provider == "github-copilot" {
+        let has_images = super::github_copilot_headers::has_copilot_vision_input(&context.messages);
+        for (name, value) in super::github_copilot_headers::build_copilot_dynamic_headers(
+            &context.messages,
+            has_images,
+        ) {
+            replace_header(&mut headers, name, Some(value));
+        }
+    }
+    if let Some(session_id) = session_id.filter(|session_id| !session_id.is_empty()) {
+        if compat.send_session_affinity_headers {
+            if compat.session_affinity_format == "openrouter" {
+                replace_header(&mut headers, "x-session-id", Some(session_id.to_string()));
+            } else {
+                if compat.session_affinity_format == "openai" {
+                    replace_header(&mut headers, "session_id", Some(session_id.to_string()));
+                }
+                replace_header(
+                    &mut headers,
+                    "x-client-request-id",
+                    Some(session_id.to_string()),
+                );
+                replace_header(
+                    &mut headers,
+                    "x-session-affinity",
+                    Some(session_id.to_string()),
+                );
+            }
+        }
+    }
+    if let Some(options_headers) = options_headers {
+        for (name, value) in options_headers {
+            replace_header(&mut headers, name.clone(), value.clone());
+        }
+    }
+    headers
+}
+
+fn has_header_name(headers: &ProviderHeaders, name: &str) -> bool {
+    headers
+        .keys()
+        .any(|existing| existing.eq_ignore_ascii_case(name))
+}
+
 fn has_tool_history(messages: &[crate::types::Message]) -> bool {
     for msg in messages {
         match msg {
@@ -298,6 +392,40 @@ fn has_tool_history(messages: &[crate::types::Message]) -> bool {
         }
     }
     false
+}
+
+/// Return deferred tool names in transcript order, matching the upstream
+/// `Set` insertion order while ignoring duplicate load notifications.
+fn get_deferred_tool_names(messages: &[crate::types::Message]) -> Vec<String> {
+    let mut names = Vec::new();
+    for message in messages {
+        let crate::types::Message::ToolResult(result) = message else {
+            continue;
+        };
+        let crate::types::ToolResultMessage::ToolResult {
+            added_tool_names: Some(added_tool_names),
+            ..
+        } = result
+        else {
+            continue;
+        };
+        for name in added_tool_names {
+            if !names.iter().any(|existing| existing == name) {
+                names.push(name.clone());
+            }
+        }
+    }
+    names
+}
+
+/// Resolve deferred tool names against the current context in transcript order,
+/// omitting stale references that no longer have a current definition.
+fn get_tools_by_name(context: &Context, names: &[String]) -> Vec<Tool> {
+    names
+        .iter()
+        .filter_map(|name| context.tools.iter().find(|tool| tool.name == *name))
+        .cloned()
+        .collect()
 }
 
 pub fn get_provider_env_value(name: &str, env: Option<&ProviderEnv>) -> Option<String> {
@@ -488,6 +616,14 @@ pub fn convert_messages_with_grammar(
                     .iter()
                     .filter(|b| matches!(b, ContentBlock::ToolCall { .. }))
                     .collect();
+                let preserved_reasoning_details =
+                    thinking_blocks.iter().find_map(|block| match block {
+                        ContentBlock::Thinking {
+                            thinking_signature: Some(signature),
+                            ..
+                        } => parse_openai_reasoning_details(signature),
+                        _ => None,
+                    });
 
                 let non_empty_thinking: Vec<&ContentBlock> = thinking_blocks
                     .iter()
@@ -515,33 +651,37 @@ pub fn convert_messages_with_grammar(
                         if !assistant_text.is_empty() {
                             assistant_msg.insert("content".into(), json!(assistant_text));
                         }
-                        // Reasoning signature replay: use the first thinking
-                        // block's signature as the reasoning field.
-                        let signature = non_empty_thinking[0].as_thinking().and_then(|t| match t {
-                            ContentBlock::Thinking {
-                                thinking_signature, ..
-                            } => thinking_signature.clone(),
-                            _ => None,
-                        });
-                        let signature = signature.as_deref();
-                        if let Some(sig) = signature {
-                            let sig = if model.provider == "opencode-go" && sig == "reasoning" {
-                                "reasoning_content"
-                            } else {
-                                sig
-                            };
-                            if is_openai_completions_reasoning_field(sig) {
-                                let content = non_empty_thinking
-                                    .iter()
-                                    .filter_map(|b| match b {
-                                        ContentBlock::Thinking { thinking, .. } => {
-                                            Some(thinking.clone())
-                                        }
-                                        _ => None,
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                assistant_msg.insert(sig.into(), json!(content));
+                        if preserved_reasoning_details.is_none() {
+                            // Reasoning signature replay: use the first
+                            // thinking block's signature as the raw reasoning
+                            // field when structured details are unavailable.
+                            let signature =
+                                non_empty_thinking[0].as_thinking().and_then(|t| match t {
+                                    ContentBlock::Thinking {
+                                        thinking_signature, ..
+                                    } => thinking_signature.clone(),
+                                    _ => None,
+                                });
+                            let signature = signature.as_deref();
+                            if let Some(sig) = signature {
+                                let sig = if model.provider == "opencode-go" && sig == "reasoning" {
+                                    "reasoning_content"
+                                } else {
+                                    sig
+                                };
+                                if is_openai_completions_reasoning_field(sig) {
+                                    let content = non_empty_thinking
+                                        .iter()
+                                        .filter_map(|b| match b {
+                                            ContentBlock::Thinking { thinking, .. } => {
+                                                Some(thinking.clone())
+                                            }
+                                            _ => None,
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    assistant_msg.insert(sig.into(), json!(content));
+                                }
                             }
                         }
                     }
@@ -581,6 +721,9 @@ pub fn convert_messages_with_grammar(
                     }
                     assistant_msg.insert("tool_calls".into(), json!(converted));
                 }
+                if let Some(details) = preserved_reasoning_details {
+                    assistant_msg.insert("reasoning_details".into(), Value::Array(details));
+                }
 
                 if compat.requires_reasoning_content_on_assistant_messages
                     && model.reasoning
@@ -606,6 +749,7 @@ pub fn convert_messages_with_grammar(
             crate::types::Message::ToolResult(_tr) => {
                 // Group consecutive tool-result messages (upstream advances j).
                 let mut image_blocks: Vec<Value> = Vec::new();
+                let mut deferred_tool_names = Vec::new();
                 let mut j = i;
                 while j < transformed.len() {
                     if let crate::types::Message::ToolResult(tr) = &transformed[j] {
@@ -639,6 +783,21 @@ pub fn convert_messages_with_grammar(
                         }
                         params.push(Value::Object(tool_msg));
 
+                        if compat.deferred_tools_mode.as_deref() == Some("kimi") {
+                            if let crate::types::ToolResultMessage::ToolResult {
+                                added_tool_names: Some(added_tool_names),
+                                ..
+                            } = tr
+                            {
+                                for name in added_tool_names {
+                                    if !deferred_tool_names.iter().any(|existing| existing == name)
+                                    {
+                                        deferred_tool_names.push(name.clone());
+                                    }
+                                }
+                            }
+                        }
+
                         if has_images && model.input.contains(&crate::model::ModelInput::Image) {
                             for block in tr.content() {
                                 if let ContentBlock::Image {
@@ -670,6 +829,20 @@ pub fn convert_messages_with_grammar(
                     last_role = Some("user");
                 } else {
                     last_role = Some("toolResult");
+                }
+
+                if !deferred_tool_names.is_empty() {
+                    let deferred_tools = get_tools_by_name(context, &deferred_tool_names);
+                    if !deferred_tools.is_empty() {
+                        // Kimi accepts loaded tool definitions in a system
+                        // message without a content field. They must follow
+                        // the corresponding tool results and are not sent in
+                        // the ordinary top-level `tools` array.
+                        params.push(json!({
+                            "role": "system",
+                            "tools": convert_tools(&deferred_tools, compat)?,
+                        }));
+                    }
                 }
                 // Advance past the grouped tool results (the while loop adds 1).
                 i = j.saturating_sub(1);
@@ -767,6 +940,26 @@ fn is_same_model(assistant: &AssistantMessage, model: &Model) -> bool {
         && assistant.model() == Some(model.id.as_str())
 }
 
+fn insert_synthetic_tool_results(
+    result: &mut Vec<crate::types::Message>,
+    pending_tool_calls: &mut Vec<(String, String)>,
+    existing_tool_result_ids: &mut BTreeSet<String>,
+) {
+    for (tool_call_id, tool_name) in pending_tool_calls.drain(..) {
+        if !existing_tool_result_ids.contains(&tool_call_id) {
+            result.push(crate::types::Message::ToolResult(
+                crate::types::ToolResultMessage::new(
+                    tool_call_id,
+                    tool_name,
+                    vec![ContentBlock::text("No result provided")],
+                    true,
+                ),
+            ));
+        }
+    }
+    existing_tool_result_ids.clear();
+}
+
 /// Port of `transformMessages`: cross-model thinking-signature downgrade,
 /// redacted-thinking dropping, tool-call-id normalization.
 pub fn transform_messages(
@@ -809,7 +1002,11 @@ pub fn transform_messages(
                                     new_content.push(block.clone());
                                 }
                                 // redacted thinking dropped cross-model
-                            } else if same_model && thinking_signature.is_some() {
+                            } else if same_model
+                                && thinking_signature
+                                    .as_ref()
+                                    .is_some_and(|signature| !signature.is_empty())
+                            {
                                 new_content.push(block.clone());
                             } else if thinking.trim().is_empty() {
                                 // skip empty
@@ -851,11 +1048,63 @@ pub fn transform_messages(
         }
     }
 
-    // Second pass (upstream): insert synthetic empty tool results for orphaned
-    // tool calls. The core coding-agent loop never produces orphaned calls;
-    // kept as a documented no-op for now.
-    let _ = &tool_call_id_map;
-    transformed
+    // Second pass (upstream): preserve the assistant/tool-call sequence by
+    // inserting an error tool result whenever a tool call is interrupted by a
+    // new assistant/user turn or by the end of the conversation. Providers
+    // reject an assistant tool call without a following tool result, and the
+    // synthetic result is deliberately marked as an error so the missing
+    // execution is not mistaken for a successful tool invocation.
+    let mut result = Vec::with_capacity(transformed.len());
+    let mut pending_tool_calls: Vec<(String, String)> = Vec::new();
+    let mut existing_tool_result_ids = BTreeSet::new();
+
+    for msg in transformed {
+        match &msg {
+            crate::types::Message::Assistant(assistant) => {
+                insert_synthetic_tool_results(
+                    &mut result,
+                    &mut pending_tool_calls,
+                    &mut existing_tool_result_ids,
+                );
+                // Upstream drops incomplete assistant turns so partial
+                // reasoning/tool-call output is not replayed into a later
+                // request as an invalid conversation item.
+                if matches!(
+                    assistant.stop_reason(),
+                    Some(StopReason::Error | StopReason::Aborted)
+                ) {
+                    continue;
+                }
+                pending_tool_calls = assistant
+                    .content()
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::ToolCall { id, name, .. } => Some((id.clone(), name.clone())),
+                        _ => None,
+                    })
+                    .collect();
+                result.push(msg);
+            }
+            crate::types::Message::ToolResult(tool_result) => {
+                existing_tool_result_ids.insert(tool_result.tool_call_id().to_string());
+                result.push(msg);
+            }
+            crate::types::Message::User(_) => {
+                insert_synthetic_tool_results(
+                    &mut result,
+                    &mut pending_tool_calls,
+                    &mut existing_tool_result_ids,
+                );
+                result.push(msg);
+            }
+        }
+    }
+    insert_synthetic_tool_results(
+        &mut result,
+        &mut pending_tool_calls,
+        &mut existing_tool_result_ids,
+    );
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -941,12 +1190,11 @@ pub fn build_params(
 ) -> Result<Value, String> {
     let grammar_properties =
         create_grammar_tool_input_properties(&context.tools, compat.supports_openai_grammar_tools)?;
-    let messages = convert_messages_with_grammar(model, context, compat, &grammar_properties)?;
+    let mut messages = convert_messages_with_grammar(model, context, compat, &grammar_properties)?;
     let cache_control = get_compat_cache_control(compat, cache_retention);
 
     let mut params = serde_json::Map::new();
     params.insert("model".into(), json!(model.id));
-    params.insert("messages".into(), json!(messages));
     params.insert("stream".into(), json!(true));
 
     // prompt_cache_key/prompt_cache_retention for OpenAI + long-retention.
@@ -954,12 +1202,11 @@ pub fn build_params(
     let openai_cache_key = base_url_openai && cache_retention != "none";
     let long_cache_retention = cache_retention == "long" && compat.supports_long_cache_retention;
     if openai_cache_key || long_cache_retention {
-        let session_id = options
-            .and_then(|o| o.session_id.clone())
-            .unwrap_or_default();
-        if base_url_openai || long_cache_retention {
-            let key = clamp_openai_prompt_cache_key(session_id.as_str());
-            params.insert("prompt_cache_key".into(), json!(key));
+        if let Some(session_id) = options.and_then(|o| o.session_id.as_deref()) {
+            if base_url_openai || long_cache_retention {
+                let key = clamp_openai_prompt_cache_key(session_id);
+                params.insert("prompt_cache_key".into(), json!(key));
+            }
         }
         if cache_retention == "long" && compat.supports_long_cache_retention {
             params.insert("prompt_cache_retention".into(), json!("24h"));
@@ -987,7 +1234,19 @@ pub fn build_params(
     }
 
     // Tools: active (non-deferred) tools; empty array when conversation has tool history.
-    let active_tools = context.tools.clone();
+    let deferred_tool_names = if compat.deferred_tools_mode.as_deref() == Some("kimi") {
+        get_deferred_tool_names(&context.messages)
+    } else {
+        Vec::new()
+    };
+    let deferred_tool_name_set: BTreeSet<&str> =
+        deferred_tool_names.iter().map(String::as_str).collect();
+    let active_tools: Vec<Tool> = context
+        .tools
+        .iter()
+        .filter(|tool| !deferred_tool_name_set.contains(tool.name.as_str()))
+        .cloned()
+        .collect();
     if !active_tools.is_empty() {
         params.insert("tools".into(), json!(convert_tools(&active_tools, compat)?));
         if compat.zai_tool_stream {
@@ -997,16 +1256,180 @@ pub fn build_params(
         params.insert("tools".into(), json!([]));
     }
 
-    if cache_control.is_some() {
-        // Anthropic-style cache control on messages/tools is deferred; the
-        // cache_control_format only applies to openrouter-anthropic models.
-        tracing::debug!("anthropic cache control deferred in openai-completions");
+    if let Some(cache_control) = cache_control.as_ref() {
+        apply_anthropic_cache_control(&mut messages, params.get_mut("tools"), cache_control);
     }
+
+    // Insert after cache-control processing so the markers are present on the
+    // wire payload, matching the upstream OpenRouter/Anthropic compatibility
+    // path.
+    params.insert("messages".into(), json!(messages));
 
     // Thinking formats.
     apply_thinking_params(model, options, compat, &mut params);
 
     Ok(Value::Object(params))
+}
+
+fn apply_anthropic_cache_control(
+    messages: &mut [Value],
+    tools: Option<&mut Value>,
+    cache_control: &Value,
+) {
+    add_cache_control_to_system_prompt(messages, cache_control);
+    add_cache_control_to_last_tool(tools, cache_control);
+    add_cache_control_to_last_conversation_message(messages, cache_control);
+}
+
+fn add_cache_control_to_system_prompt(messages: &mut [Value], cache_control: &Value) {
+    for message in messages {
+        let Some(object) = message.as_object_mut() else {
+            continue;
+        };
+        let is_instruction = matches!(
+            object.get("role").and_then(Value::as_str),
+            Some("system" | "developer")
+        );
+        if is_instruction {
+            add_cache_control_to_text_content(object, cache_control);
+            return;
+        }
+    }
+}
+
+fn add_cache_control_to_last_tool(tools: Option<&mut Value>, cache_control: &Value) {
+    let Some(Value::Array(tools)) = tools else {
+        return;
+    };
+    let Some(tool) = tools.last_mut().and_then(Value::as_object_mut) else {
+        return;
+    };
+    tool.insert("cache_control".to_string(), cache_control.clone());
+}
+
+fn add_cache_control_to_last_conversation_message(messages: &mut [Value], cache_control: &Value) {
+    for message in messages.iter_mut().rev() {
+        let Some(object) = message.as_object_mut() else {
+            continue;
+        };
+        let is_conversation = matches!(
+            object.get("role").and_then(Value::as_str),
+            Some("user" | "assistant" | "tool")
+        );
+        if is_conversation && add_cache_control_to_text_content(object, cache_control) {
+            return;
+        }
+    }
+}
+
+fn add_cache_control_to_text_content(
+    message: &mut serde_json::Map<String, Value>,
+    cache_control: &Value,
+) -> bool {
+    let Some(content) = message.get_mut("content") else {
+        return false;
+    };
+    match content {
+        Value::String(text) if !text.is_empty() => {
+            let text = text.clone();
+            *content = json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": cache_control.clone(),
+            }]);
+            true
+        }
+        Value::Array(parts) => {
+            for part in parts.iter_mut().rev() {
+                let Some(part) = part.as_object_mut() else {
+                    continue;
+                };
+                if part.get("type").and_then(Value::as_str) == Some("text") {
+                    part.insert("cache_control".to_string(), cache_control.clone());
+                    return true;
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn default_thinking_budget(level: crate::types::ModelThinkingLevel) -> u64 {
+    match level {
+        crate::types::ModelThinkingLevel::Minimal => 1024,
+        crate::types::ModelThinkingLevel::Low => 2048,
+        crate::types::ModelThinkingLevel::Medium => 8192,
+        crate::types::ModelThinkingLevel::High
+        | crate::types::ModelThinkingLevel::Xhigh
+        | crate::types::ModelThinkingLevel::Max => 16384,
+        crate::types::ModelThinkingLevel::Off => 0,
+    }
+}
+
+fn thinking_budget_for_level(
+    level: crate::types::ModelThinkingLevel,
+    budgets: Option<&crate::types::ThinkingBudgets>,
+) -> u64 {
+    let custom = budgets.and_then(|budgets| match level {
+        crate::types::ModelThinkingLevel::Minimal => budgets.minimal,
+        crate::types::ModelThinkingLevel::Low => budgets.low,
+        crate::types::ModelThinkingLevel::Medium => budgets.medium,
+        crate::types::ModelThinkingLevel::High
+        | crate::types::ModelThinkingLevel::Xhigh
+        | crate::types::ModelThinkingLevel::Max => budgets.high,
+        crate::types::ModelThinkingLevel::Off => None,
+    });
+    custom.unwrap_or_else(|| default_thinking_budget(level))
+}
+
+fn build_params_for_chat_options(
+    model: &Model,
+    context: &Context,
+    options: &OpenAIChatOptions,
+    compat: &OpenAiCompletionsCompat,
+    cache_retention: &str,
+) -> Result<Value, String> {
+    let mut base = options.base.clone();
+    let mut sampling_params = base
+        .sampling_params
+        .take()
+        .and_then(|params| params.as_object().cloned())
+        .unwrap_or_default();
+
+    // `OpenAIChatOptions` is the Rust equivalent of upstream
+    // `OpenAICompletionsOptions`; keep its named reasoning controls visible to
+    // the shared buildParams implementation without changing StreamOptions.
+    if let Some(reasoning_effort) = &options.reasoning_effort {
+        sampling_params
+            .entry("reasoningEffort".to_string())
+            .or_insert_with(|| json!(reasoning_effort));
+        if !sampling_params.contains_key("thinkingBudget")
+            && !sampling_params.contains_key("thinking_budget")
+        {
+            let level = thinking_level_from_str(reasoning_effort);
+            let ceiling = options
+                .base
+                .max_tokens
+                .unwrap_or(model.max_tokens)
+                .saturating_sub(1024);
+            let budget =
+                thinking_budget_for_level(level, options.thinking_budgets.as_ref()).min(ceiling);
+            if budget > 0 {
+                sampling_params.insert("thinkingBudget".to_string(), json!(budget));
+            }
+        }
+    }
+    if !sampling_params.is_empty() {
+        base.sampling_params = Some(Value::Object(sampling_params));
+    }
+
+    let mut params = build_params(model, context, Some(&base), compat, cache_retention)?;
+    if let Some(tool_choice) = options.tool_choice {
+        params["tool_choice"] = serde_json::to_value(tool_choice)
+            .map_err(|error| format!("failed to serialize tool choice: {error}"))?;
+    }
+    Ok(params)
 }
 
 fn thinking_level_from_str(s: &str) -> crate::types::ModelThinkingLevel {
@@ -1019,6 +1442,74 @@ fn thinking_level_from_str(s: &str) -> crate::types::ModelThinkingLevel {
         "max" => crate::types::ModelThinkingLevel::Max,
         _ => crate::types::ModelThinkingLevel::Medium,
     }
+}
+
+fn simple_reasoning_effort(
+    model: &Model,
+    reasoning: Option<crate::types::ThinkingLevel>,
+) -> Option<String> {
+    match reasoning.map(|level| clamp_thinking_level(model, level.into())) {
+        Some(level) if level != crate::types::ModelThinkingLevel::Off => {
+            Some(level.as_str().to_string())
+        }
+        _ => None,
+    }
+}
+
+fn resolve_chat_template_value(
+    value: &Value,
+    model: &Model,
+    reasoning_effort: Option<&str>,
+    thinking_budget: Option<u64>,
+) -> Option<Value> {
+    let Value::Object(object) = value else {
+        return Some(value.clone());
+    };
+
+    if reasoning_effort.is_none()
+        && object
+            .get("omitWhenOff")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+
+    match object.get("$var").and_then(Value::as_str) {
+        Some("thinking.enabled") => Some(json!(reasoning_effort.is_some())),
+        Some("thinking.budget") => thinking_budget.map(|budget| json!(budget)),
+        _ => {
+            let level = reasoning_effort
+                .map(thinking_level_from_str)
+                .unwrap_or(crate::types::ModelThinkingLevel::Off);
+            match model
+                .thinking_level_map
+                .as_ref()
+                .and_then(|map| map.get(&level))
+            {
+                Some(Some(mapped)) => Some(json!(mapped)),
+                Some(None) => None,
+                None => reasoning_effort.map(|effort| json!(effort)),
+            }
+        }
+    }
+}
+
+fn build_chat_template_values(
+    values: &BTreeMap<String, Value>,
+    model: &Model,
+    reasoning_effort: Option<&str>,
+    thinking_budget: Option<u64>,
+) -> Option<Value> {
+    let mut resolved = serde_json::Map::new();
+    for (key, value) in values {
+        if let Some(value) =
+            resolve_chat_template_value(value, model, reasoning_effort, thinking_budget)
+        {
+            resolved.insert(key.clone(), value);
+        }
+    }
+    (!resolved.is_empty()).then_some(Value::Object(resolved))
 }
 
 fn clamp_openai_prompt_cache_key(session_id: &str) -> String {
@@ -1039,11 +1530,17 @@ fn apply_thinking_params(
 ) {
     let reasoning_effort = options
         .and_then(|o| o.sampling_params.as_ref())
-        .and_then(|sp| sp.get("reasoningEffort"))
+        .and_then(|sp| {
+            sp.get("reasoningEffort")
+                .or_else(|| sp.get("reasoning_effort"))
+        })
         .and_then(|v| v.as_str().map(|s| s.to_string()));
     let thinking_budget = options
         .and_then(|o| o.sampling_params.as_ref())
-        .and_then(|sp| sp.get("thinkingBudget"))
+        .and_then(|sp| {
+            sp.get("thinkingBudget")
+                .or_else(|| sp.get("thinking_budget"))
+        })
         .and_then(|v| v.as_u64());
 
     match compat.thinking_format.as_str() {
@@ -1061,11 +1558,16 @@ fn apply_thinking_params(
                     let mapped = model
                         .thinking_level_map
                         .as_ref()
-                        .and_then(|m| m.get(&thinking_level_from_str(effort)))
-                        .cloned()
-                        .flatten();
-                    let value = mapped.unwrap_or_else(|| effort.clone());
-                    params.insert("reasoning_effort".into(), json!(value));
+                        .and_then(|map| map.get(&thinking_level_from_str(effort)));
+                    match mapped {
+                        Some(Some(mapped)) => {
+                            params.insert("reasoning_effort".into(), json!(mapped));
+                        }
+                        Some(None) => {}
+                        None => {
+                            params.insert("reasoning_effort".into(), json!(effort));
+                        }
+                    }
                 }
             }
         }
@@ -1075,8 +1577,8 @@ fn apply_thinking_params(
             } else if model
                 .thinking_level_map
                 .as_ref()
-                .and_then(|m| m.get(&crate::types::ModelThinkingLevel::Off))
-                != Some(&Some("off".to_string()))
+                .and_then(|map| map.get(&crate::types::ModelThinkingLevel::Off))
+                != Some(&None)
             {
                 // off not explicitly mapped to null -> disable
                 params.insert("thinking".into(), json!({ "type": "disabled" }));
@@ -1111,7 +1613,11 @@ fn apply_thinking_params(
                 params.insert("reasoning".into(), json!({ "effort": mapped.unwrap_or_else(|| reasoning_effort.clone().unwrap_or_default()) }));
             }
         }
-        "together" | "ant-ling" if model.reasoning => {
+        "together" if model.reasoning => {
+            params.insert(
+                "reasoning".into(),
+                json!({ "enabled": reasoning_effort.is_some() }),
+            );
             if let Some(effort) = &reasoning_effort {
                 if compat.supports_reasoning_effort {
                     let mapped = model
@@ -1124,6 +1630,91 @@ fn apply_thinking_params(
                         "reasoning_effort".into(),
                         json!(mapped.unwrap_or_else(|| effort.clone())),
                     );
+                }
+            }
+        }
+        "ant-ling" if model.reasoning => {
+            if let Some(effort) = &reasoning_effort {
+                if compat.supports_reasoning_effort {
+                    let mapped = model
+                        .thinking_level_map
+                        .as_ref()
+                        .and_then(|m| m.get(&thinking_level_from_str(effort)))
+                        .cloned()
+                        .flatten();
+                    params.insert(
+                        "reasoning_effort".into(),
+                        json!(mapped.unwrap_or_else(|| effort.clone())),
+                    );
+                }
+            }
+        }
+        "qwen" if model.reasoning => {
+            // QwenCloud Token Plan uses the OpenAI-compatible endpoint but
+            // its reasoning switch is `enable_thinking`, not the OpenAI
+            // `thinking` object. Preserve the upstream contract exactly:
+            // send the boolean for every reasoning model, and only add
+            // `reasoning_effort` when that catalog entry supports it.
+            params.insert("enable_thinking".into(), json!(reasoning_effort.is_some()));
+            if let Some(effort) = &reasoning_effort {
+                if compat.supports_reasoning_effort {
+                    let mapped = model
+                        .thinking_level_map
+                        .as_ref()
+                        .and_then(|m| m.get(&thinking_level_from_str(effort)))
+                        .cloned()
+                        .flatten();
+                    params.insert(
+                        "reasoning_effort".into(),
+                        json!(mapped.unwrap_or_else(|| effort.clone())),
+                    );
+                }
+            }
+        }
+        "qwen-chat-template" if model.reasoning => {
+            params.insert(
+                "chat_template_kwargs".into(),
+                json!({
+                    "enable_thinking": reasoning_effort.is_some(),
+                    "preserve_thinking": true,
+                }),
+            );
+        }
+        "chat-template" if model.reasoning => {
+            if let Some(values) = build_chat_template_values(
+                &compat.chat_template_kwargs,
+                model,
+                reasoning_effort.as_deref(),
+                thinking_budget,
+            ) {
+                params.insert("chat_template_kwargs".into(), values);
+            }
+        }
+        "baseten" if model.reasoning => {
+            if let Some(values) = build_chat_template_values(
+                &compat.chat_template_args,
+                model,
+                reasoning_effort.as_deref(),
+                thinking_budget,
+            ) {
+                params.insert("chat_template_args".into(), values);
+            }
+            if compat.supports_reasoning_effort {
+                let level = reasoning_effort
+                    .as_deref()
+                    .map(thinking_level_from_str)
+                    .unwrap_or(crate::types::ModelThinkingLevel::Off);
+                let mapped = model
+                    .thinking_level_map
+                    .as_ref()
+                    .and_then(|map| map.get(&level));
+                let effort = match mapped {
+                    Some(Some(mapped)) => Some(mapped.clone()),
+                    Some(None) => None,
+                    None => reasoning_effort.clone(),
+                };
+                if let Some(effort) = effort {
+                    params.insert("reasoning_effort".into(), json!(effort));
                 }
             }
         }
@@ -1148,6 +1739,26 @@ fn apply_thinking_params(
             }
         }
     }
+
+    // Some OpenAI-compatible local servers expose a provider-specific
+    // top-level budget field. The explicit field wins over the vLLM alias,
+    // matching upstream `resolveThinkingTokenBudgetField`; the budget itself
+    // is populated by `build_params_for_chat_options` from thinkingBudgets.
+    if model.reasoning {
+        if let Some(field) = resolve_thinking_token_budget_field(compat) {
+            if let Some(budget) = thinking_budget.filter(|budget| *budget > 0) {
+                params.insert(field.to_string(), json!(budget));
+            }
+        }
+    }
+}
+
+fn resolve_thinking_token_budget_field(compat: &OpenAiCompletionsCompat) -> Option<&str> {
+    compat.thinking_token_budget_field.as_deref().or_else(|| {
+        compat
+            .supports_thinking_token_budget
+            .then_some("thinking_token_budget")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1185,7 +1796,12 @@ pub fn parse_chunk_usage(raw_usage: &Value, model: &Model) -> Option<Usage> {
         .and_then(|d| d.get("reasoning_tokens"))
         .and_then(|v| v.as_i64());
 
-    let input = prompt_tokens;
+    // OpenAI-compatible providers report cached prompt tokens inside
+    // `prompt_tokens`; match upstream by exposing only uncached input here.
+    let input = prompt_tokens
+        .saturating_sub(cache_read_tokens)
+        .saturating_sub(cache_write_tokens)
+        .max(0);
     let output = completion_tokens;
     let cache_read = cache_read_tokens;
     let cache_write = cache_write_tokens;
@@ -1251,6 +1867,327 @@ fn new_output(model: &Model) -> AssistantMessage {
 fn set_error_message(message: &mut AssistantMessage, text: String) {
     let AssistantMessage::Assistant { error_message, .. } = message;
     *error_message = Some(text);
+}
+
+/// Poll the shared Rust cancellation flag used by `StreamOptions.abort_signal`.
+/// JavaScript's `AbortSignal` wakes an in-flight fetch immediately; the Rust
+/// option is an `Arc<AtomicBool>`, so the polling interval is the smallest
+/// faithful wake-up boundary available without changing the public type.
+pub(crate) async fn wait_for_abort(signal: crate::types::AbortSignal) {
+    while !signal.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AbortSignalError;
+
+/// Await a provider operation while observing `StreamOptions.abort_signal`.
+/// Dropping the losing future is intentional: reqwest cancels its request/body
+/// operation when the future is dropped, matching AbortSignal-driven fetch
+/// cancellation for send, body, and stream reads.
+pub(crate) async fn abortable<F, T>(
+    future: F,
+    signal: Option<crate::types::AbortSignal>,
+) -> Result<T, AbortSignalError>
+where
+    F: Future<Output = T>,
+{
+    if signal
+        .as_ref()
+        .is_some_and(|signal| signal.load(Ordering::SeqCst))
+    {
+        return Err(AbortSignalError);
+    }
+    let Some(signal) = signal else {
+        return Ok(future.await);
+    };
+    tokio::pin!(future);
+    tokio::select! {
+        value = &mut future => Ok(value),
+        _ = wait_for_abort(signal) => Err(AbortSignalError),
+    }
+}
+
+/// Apply the upstream-style asynchronous payload replacement hook. `None`
+/// keeps the generated payload; `Some(value)` replaces it. Abort wins over a
+/// hook that is still pending, just as an aborted fetch wins over request
+/// construction in the JavaScript adaptors.
+pub(crate) async fn apply_payload_hook(
+    payload: Value,
+    model: &Model,
+    hook: Option<&crate::types::OnPayloadFn>,
+    signal: Option<crate::types::AbortSignal>,
+) -> Result<Value, AbortSignalError> {
+    let Some(hook) = hook else {
+        return Ok(payload);
+    };
+    let replacement = abortable(hook(payload.clone(), model.clone()), signal).await?;
+    Ok(replacement.unwrap_or(payload))
+}
+
+pub(crate) fn signal_aborted(signal: Option<&crate::types::AbortSignal>) -> bool {
+    signal.is_some_and(|signal| signal.load(Ordering::SeqCst))
+}
+
+pub(crate) fn terminal_error_message(
+    model: &Model,
+    text: impl Into<String>,
+    aborted: bool,
+) -> AssistantMessage {
+    let mut message = new_output(model);
+    message.set_stop_reason(if aborted {
+        StopReason::Aborted
+    } else {
+        StopReason::Error
+    });
+    set_error_message(&mut message, text.into());
+    message
+}
+
+enum OpenAiRequestError {
+    Aborted,
+    Transport(String),
+    RetryDelay(String),
+}
+
+struct OpenAiRequestOptions<'a> {
+    client: &'a reqwest::Client,
+    url: &'a str,
+    params: &'a Value,
+    headers: &'a ProviderHeaders,
+    api_key: &'a str,
+    use_bearer_auth: bool,
+    timeout_ms: Option<u64>,
+    max_retries: u32,
+    max_retry_delay_ms: Option<u64>,
+    signal: Option<crate::types::AbortSignal>,
+}
+
+/// Execute a fresh OpenAI-compatible request for each retry, matching the
+/// pinned upstream `retryProviderRequest` wrapper around the SDK call.
+async fn send_openai_request(
+    request_options: OpenAiRequestOptions<'_>,
+) -> Result<reqwest::Response, OpenAiRequestError> {
+    let OpenAiRequestOptions {
+        client,
+        url,
+        params,
+        headers,
+        api_key,
+        use_bearer_auth,
+        timeout_ms,
+        max_retries,
+        max_retry_delay_ms,
+        signal,
+    } = request_options;
+    let make_request = || {
+        let mut request = client.post(url).header("content-type", "application/json");
+        if use_bearer_auth {
+            request = request.bearer_auth(api_key);
+        }
+        for (name, value) in headers {
+            if let Some(value) = value {
+                request = request.header(name.as_str(), value.as_str());
+            }
+        }
+        if let Some(timeout_ms) = timeout_ms {
+            request = request.timeout(Duration::from_millis(timeout_ms));
+        }
+        request.json(params)
+    };
+
+    let mut retry_index = 0;
+    loop {
+        let response = match abortable(make_request().send(), signal.clone()).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                if retry_index >= max_retries {
+                    return Err(OpenAiRequestError::Transport(format!(
+                        "Request failed: {error}"
+                    )));
+                }
+                let delay = exponential_retry_delay(retry_index);
+                if abortable(
+                    tokio::time::sleep(Duration::from_millis(delay)),
+                    signal.clone(),
+                )
+                .await
+                .is_err()
+                {
+                    return Err(OpenAiRequestError::Aborted);
+                }
+                retry_index += 1;
+                continue;
+            }
+            Err(_) => return Err(OpenAiRequestError::Aborted),
+        };
+
+        let status = response.status().as_u16();
+        let should_retry = retryable_provider_status(
+            status,
+            response
+                .headers()
+                .get("x-should-retry")
+                .and_then(|value| value.to_str().ok()),
+        );
+        if retry_index >= max_retries || !should_retry {
+            return Ok(response);
+        }
+
+        let delay = match retry_after_delay_ms(response.headers()) {
+            Some(delay) => {
+                let max_delay = max_retry_delay_ms.unwrap_or(DEFAULT_MAX_RETRY_DELAY_MS);
+                if max_delay > 0 && delay > max_delay {
+                    let provider_message = match abortable(response.bytes(), signal.clone()).await {
+                        Ok(Ok(body)) => extract_openai_error(&String::from_utf8_lossy(&body)),
+                        Ok(Err(error)) => format!("Request body failed: {error}"),
+                        Err(_) => return Err(OpenAiRequestError::Aborted),
+                    };
+                    return Err(OpenAiRequestError::RetryDelay(format!(
+                        "Server requested {}s retry delay (max: {}s). {}",
+                        delay.div_ceil(1000),
+                        max_delay.div_ceil(1000),
+                        provider_message
+                    )));
+                }
+                delay
+            }
+            None => exponential_retry_delay(retry_index),
+        };
+
+        drop(response);
+        if abortable(
+            tokio::time::sleep(Duration::from_millis(delay)),
+            signal.clone(),
+        )
+        .await
+        .is_err()
+        {
+            return Err(OpenAiRequestError::Aborted);
+        }
+        retry_index += 1;
+    }
+}
+
+pub(crate) fn retryable_provider_status(status: u16, should_retry: Option<&str>) -> bool {
+    match should_retry.map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("true") => return true,
+        Some(value) if value.eq_ignore_ascii_case("false") => return false,
+        _ => {}
+    }
+    matches!(status, 408 | 409 | 429) || status >= 500
+}
+
+pub(crate) fn retry_after_delay_ms(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    if let Some(value) = headers
+        .get("retry-after-ms")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_nonnegative_float)
+    {
+        return Some(value as u64);
+    }
+    let value = headers.get("retry-after")?.to_str().ok()?;
+    parse_nonnegative_float(value)
+        .map(|seconds| (seconds * 1000.0) as u64)
+        .or_else(|| parse_http_date_delay_ms(value))
+}
+
+fn parse_nonnegative_float(value: &str) -> Option<f64> {
+    let value = value.parse::<f64>().ok()?;
+    (value.is_finite() && value >= 0.0).then_some(value)
+}
+
+fn parse_http_date_delay_ms(value: &str) -> Option<u64> {
+    let mut fields = value.split_whitespace();
+    let _weekday = fields.next()?;
+    let day = fields.next()?.parse::<i64>().ok()?;
+    let month = match fields.next()? {
+        "Jan" => 1_i64,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    };
+    let year = fields.next()?.parse::<i64>().ok()?;
+    let mut time = fields.next()?.split(':');
+    let hour = time.next()?.parse::<i64>().ok()?;
+    let minute = time.next()?.parse::<i64>().ok()?;
+    let second = time.next()?.parse::<i64>().ok()?;
+    if time.next().is_some() || fields.next()? != "GMT" || fields.next().is_some() {
+        return None;
+    }
+    if !(1..=31).contains(&day)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=60).contains(&second)
+        || year < 1
+    {
+        return None;
+    }
+    let max_day = match month {
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if day > max_day {
+        return None;
+    }
+
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = if adjusted_year >= 0 {
+        adjusted_year / 400
+    } else {
+        (adjusted_year - 399) / 400
+    };
+    let year_of_era = adjusted_year - era * 400;
+    let month_prime = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    let target_ms = days
+        .checked_mul(86_400_000)?
+        .checked_add((hour * 3_600 + minute * 60 + second) * 1_000)?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i128;
+    Some((i128::from(target_ms) - now_ms).max(0) as u64)
+}
+
+pub(crate) fn exponential_retry_delay(retry_index: u32) -> u64 {
+    BASE_RETRY_DELAY_MS.saturating_mul(1_u64 << retry_index.min(4))
+}
+
+pub(crate) fn error_reason(aborted: bool) -> ErrorReason {
+    if aborted {
+        ErrorReason::Aborted
+    } else {
+        ErrorReason::Error
+    }
+}
+
+pub(crate) fn immediate_error_stream(
+    model: &Model,
+    text: impl Into<String>,
+    aborted: bool,
+) -> AssistantMessageEventStream {
+    let mut stream = AssistantMessageEventStream::new();
+    let message = terminal_error_message(model, text, aborted);
+    stream.push(AssistantMessageEvent::Error {
+        reason: error_reason(aborted),
+        error_message: message,
+    });
+    stream
 }
 
 /// Options for the OpenAI-completions adaptor (upstream `OpenAICompletionsOptions`).
@@ -1338,10 +2275,19 @@ pub fn stream(
             options.base.cache_retention.as_ref(),
             options.base.base.env.as_ref(),
         );
-        let params = match build_params(
+        if signal_aborted(options.base.abort_signal.as_ref()) {
+            let message = terminal_error_message(&model, "Request was aborted", true);
+            pusher.push(AssistantMessageEvent::Error {
+                reason: ErrorReason::Aborted,
+                error_message: message.clone(),
+            });
+            pusher.end(Some(message));
+            return;
+        }
+        let params = match build_params_for_chat_options(
             &model,
             &context,
-            Some(&options.base),
+            &options,
             &compat,
             &cache_retention,
         ) {
@@ -1352,6 +2298,25 @@ pub fn stream(
                 set_error_message(&mut message, error);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+        };
+        let params = match apply_payload_hook(
+            params,
+            &model,
+            options.base.on_payload.as_ref(),
+            options.base.abort_signal.clone(),
+        )
+        .await
+        {
+            Ok(params) => params,
+            Err(_) => {
+                let message = terminal_error_message(&model, "Request was aborted", true);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Aborted,
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -1399,38 +2364,44 @@ pub fn stream(
             }
         };
 
-        let mut request = client
-            .post(format!(
-                "{}/chat/completions",
-                base_url.trim_end_matches('/')
-            ))
-            .header("content-type", "application/json")
-            .bearer_auth(&resolved_key)
-            .json(&params);
-        // GitHub Copilot proxy dynamic headers (upstream github-copilot-headers.ts).
-        if model.provider == "github-copilot" {
-            let has_images =
-                super::github_copilot_headers::has_copilot_vision_input(&context.messages);
-            for (name, value) in super::github_copilot_headers::build_copilot_dynamic_headers(
-                &context.messages,
-                has_images,
-            ) {
-                request = request.header(name.as_str(), value.as_str());
-            }
-        }
-        if let Some(headers) = &options.base.base.headers {
-            for (name, value) in headers {
-                if let Some(value) = value {
-                    request = request.header(name.as_str(), value.as_str());
-                }
-            }
-        }
-        let response = match request.send().await {
+        let headers = build_request_headers(
+            &model,
+            &context,
+            options.base.base.headers.as_ref(),
+            options.base.session_id.as_deref(),
+            &compat,
+        );
+        // An explicit Authorization header, including a null suppression
+        // marker, must win over the SDK-style bearer default. This is used by
+        // Cloudflare AI Gateway and by custom provider credentials.
+        let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+        let response = match send_openai_request(OpenAiRequestOptions {
+            client: &client,
+            url: &endpoint,
+            params: &params,
+            headers: &headers,
+            api_key: &resolved_key,
+            use_bearer_auth: !has_header_name(&headers, "authorization"),
+            timeout_ms: options.base.base.timeout_ms,
+            max_retries: options.base.base.max_retries.unwrap_or(0),
+            max_retry_delay_ms: options.base.base.max_retry_delay_ms,
+            signal: options.base.abort_signal.clone(),
+        })
+        .await
+        {
             Ok(response) => response,
-            Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                set_error_message(&mut message, format!("Request failed: {err}"));
+            Err(OpenAiRequestError::Aborted) => {
+                let message = terminal_error_message(&model, "Request was aborted", true);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Aborted,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+            Err(OpenAiRequestError::Transport(error))
+            | Err(OpenAiRequestError::RetryDelay(error)) => {
+                let message = terminal_error_message(&model, error, false);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -1442,17 +2413,16 @@ pub fn stream(
         let status = response.status();
         let provider_response = crate::types::ProviderResponse {
             status: status.as_u16(),
-            headers: BTreeMap::new(),
+            headers: crate::utils::response_headers(response.headers()),
         };
         if let Some(on_response) = &options.base.on_response {
             on_response(&provider_response, &model);
         }
-        let body = match response.bytes().await {
-            Ok(body) => body,
-            Err(err) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                set_error_message(&mut message, format!("Request body failed: {err}"));
+        let body = match abortable(response.bytes(), options.base.abort_signal.clone()).await {
+            Ok(Ok(body)) => body,
+            Ok(Err(err)) => {
+                let message =
+                    terminal_error_message(&model, format!("Request body failed: {err}"), false);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -1460,7 +2430,25 @@ pub fn stream(
                 pusher.end(Some(message));
                 return;
             }
+            Err(_) => {
+                let message = terminal_error_message(&model, "Request was aborted", true);
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Aborted,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
         };
+        if signal_aborted(options.base.abort_signal.as_ref()) {
+            let message = terminal_error_message(&model, "Request was aborted", true);
+            pusher.push(AssistantMessageEvent::Error {
+                reason: ErrorReason::Aborted,
+                error_message: message.clone(),
+            });
+            pusher.end(Some(message));
+            return;
+        }
         if !status.is_success() {
             let body_text = String::from_utf8_lossy(&body).to_string();
             let detail = extract_openai_error(&body_text);
@@ -1495,7 +2483,17 @@ pub fn stream(
             &grammar_properties,
             |event| pusher.push(event),
         ) {
-            Ok(message) => {
+            Ok(mut message) => {
+                if signal_aborted(options.base.abort_signal.as_ref()) {
+                    message.set_stop_reason(StopReason::Aborted);
+                    set_error_message(&mut message, "Request was aborted".to_string());
+                    pusher.push(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Aborted,
+                        error_message: message.clone(),
+                    });
+                    pusher.end(Some(message));
+                    return;
+                }
                 if message.stop_reason() == Some(StopReason::Error) {
                     let err_text = message
                         .error_message()
@@ -1522,11 +2520,18 @@ pub fn stream(
                 }
             }
             Err(err_text) => {
-                let mut message = new_output(&model);
-                message.set_stop_reason(StopReason::Error);
-                set_error_message(&mut message, err_text);
+                let aborted = signal_aborted(options.base.abort_signal.as_ref());
+                let message = terminal_error_message(
+                    &model,
+                    if aborted {
+                        "Request was aborted".to_string()
+                    } else {
+                        err_text
+                    },
+                    aborted,
+                );
                 pusher.push(AssistantMessageEvent::Error {
-                    reason: ErrorReason::Error,
+                    reason: error_reason(aborted),
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -1546,19 +2551,7 @@ pub fn stream_simple(
     api_key: Option<&str>,
     options: &SimpleStreamOptions,
 ) -> AssistantMessageEventStream {
-    let clamped = options
-        .reasoning
-        .map(|r| clamp_thinking_level(model, r.into()));
-    let reasoning_effort = match clamped {
-        Some(crate::types::ModelThinkingLevel::Off)
-        | Some(crate::types::ModelThinkingLevel::Minimal) => None,
-        Some(crate::types::ModelThinkingLevel::Low) => Some("low".to_string()),
-        Some(crate::types::ModelThinkingLevel::Medium) => Some("medium".to_string()),
-        Some(crate::types::ModelThinkingLevel::High) => Some("high".to_string()),
-        Some(crate::types::ModelThinkingLevel::Xhigh) => Some("high".to_string()),
-        Some(crate::types::ModelThinkingLevel::Max) => Some("high".to_string()),
-        None => None,
-    };
+    let reasoning_effort = simple_reasoning_effort(model, options.reasoning);
     let chat_options = OpenAIChatOptions {
         base: options.base.clone(),
         reasoning_effort,
@@ -1575,10 +2568,24 @@ pub(crate) fn extract_openai_error(body: &str) -> String {
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
         {
-            return msg.to_string();
+            return append_openrouter_raw(msg, &value);
+        }
+        if let Some(msg) = value.get("message").and_then(Value::as_str) {
+            return append_openrouter_raw(msg, &value);
         }
     }
     body.chars().take(300).collect()
+}
+
+fn append_openrouter_raw(message: &str, value: &Value) -> String {
+    let raw = value
+        .pointer("/metadata/raw")
+        .or_else(|| value.pointer("/error/metadata/raw"))
+        .and_then(Value::as_str);
+    match raw.filter(|raw| !raw.is_empty() && !message.contains(raw)) {
+        Some(raw) => format!("{message}\n{raw}"),
+        None => message.to_string(),
+    }
 }
 
 struct StreamingBlock {
@@ -1737,6 +2744,36 @@ pub fn process_completions_events_with_grammar(
                         partial: output.clone(),
                     });
                     break;
+                }
+            }
+        }
+
+        // OpenRouter and newer OpenAI-compatible endpoints can attach
+        // structured reasoning details to a delta instead of (or alongside)
+        // textual reasoning fields. Preserve the ordered detail array in the
+        // thinking signature so the next request can replay it.
+        if let Some(details) = delta.get("reasoning_details").and_then(|v| v.as_array()) {
+            let valid_details = details
+                .iter()
+                .filter(|detail| is_openai_reasoning_detail(detail))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !valid_details.is_empty() {
+                let idx = ensure_thinking_block(
+                    &mut blocks,
+                    &mut thinking_block,
+                    String::new(),
+                    &mut on_event,
+                    &output,
+                );
+                if let Some(block) = blocks.get_mut(idx) {
+                    let mut preserved = serde_json::from_str::<Value>(&block.thinking_signature)
+                        .ok()
+                        .filter(|value| value.is_array())
+                        .and_then(|value| value.as_array().cloned())
+                        .unwrap_or_default();
+                    preserved.extend(valid_details);
+                    block.thinking_signature = Value::Array(preserved).to_string();
                 }
             }
         }
@@ -1933,13 +2970,53 @@ pub fn process_completions_events_with_grammar(
     Ok(output)
 }
 
+fn is_openai_reasoning_detail(detail: &Value) -> bool {
+    let Some(object) = detail.as_object() else {
+        return false;
+    };
+    let common_fields_valid = ["id", "format", "index"].iter().all(|field| {
+        object.get(*field).is_none_or(|value| match *field {
+            "id" => value.is_null() || value.is_string(),
+            "format" => value.is_string(),
+            "index" => value.is_number(),
+            _ => false,
+        })
+    });
+    if !common_fields_valid {
+        return false;
+    }
+    match object.get("type").and_then(Value::as_str) {
+        Some("reasoning.summary") => object.get("summary").is_some_and(Value::is_string),
+        Some("reasoning.encrypted") => object.get("data").is_some_and(Value::is_string),
+        Some("reasoning.text") => {
+            object.get("text").is_some_and(Value::is_string)
+                && object
+                    .get("signature")
+                    .is_none_or(|value| value.is_null() || value.is_string())
+        }
+        _ => false,
+    }
+}
+
+fn parse_openai_reasoning_details(signature: &str) -> Option<Vec<Value>> {
+    let details = serde_json::from_str::<Value>(signature).ok()?;
+    let details = details.as_array()?;
+    if details.is_empty() || !details.iter().all(is_openai_reasoning_detail) {
+        return None;
+    }
+    Some(details.to_vec())
+}
+
 fn ensure_text_block(
     blocks: &mut Vec<StreamingBlock>,
     text_block: &mut Option<usize>,
     on_event: &mut impl FnMut(AssistantMessageEvent),
     output: &AssistantMessage,
 ) -> usize {
-    if text_block.is_none() {
+    if let Some(existing) = *text_block {
+        return existing;
+    }
+    {
         blocks.push(StreamingBlock {
             kind: BlockKind::Text,
             text: String::new(),
@@ -1958,8 +3035,8 @@ fn ensure_text_block(
             content_index: idx,
             partial: output.clone(),
         });
+        idx
     }
-    text_block.unwrap()
 }
 
 fn ensure_thinking_block(
@@ -1969,7 +3046,10 @@ fn ensure_thinking_block(
     on_event: &mut impl FnMut(AssistantMessageEvent),
     output: &AssistantMessage,
 ) -> usize {
-    if thinking_block.is_none() {
+    if let Some(existing) = *thinking_block {
+        return existing;
+    }
+    {
         blocks.push(StreamingBlock {
             kind: BlockKind::Thinking,
             text: String::new(),
@@ -1988,8 +3068,8 @@ fn ensure_thinking_block(
             content_index: idx,
             partial: output.clone(),
         });
+        idx
     }
-    thinking_block.unwrap()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2063,6 +3143,7 @@ fn ensure_tool_call_block(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::types::AssistantMessage;
@@ -2117,6 +3198,466 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_session_affinity_header_is_opt_in_and_overridable() {
+        let m = model("anthropic/claude-sonnet", "openrouter");
+        let context = context(None, vec![], vec![]);
+        let mut compat = OpenAiCompletionsCompat::get(&m);
+
+        let headers = build_request_headers(&m, &context, None, Some("session-1"), &compat);
+        assert!(!headers.contains_key("x-session-id"));
+
+        compat.send_session_affinity_headers = true;
+        let headers = build_request_headers(&m, &context, None, Some("session-1"), &compat);
+        assert_eq!(
+            headers.get("x-session-id"),
+            Some(&Some("session-1".to_string()))
+        );
+        assert!(!headers.contains_key("session_id"));
+        assert!(!headers.contains_key("x-client-request-id"));
+
+        let mut overrides = ProviderHeaders::new();
+        overrides.insert("x-session-id".to_string(), Some("override".to_string()));
+        let headers =
+            build_request_headers(&m, &context, Some(&overrides), Some("session-1"), &compat);
+        assert_eq!(
+            headers.get("x-session-id"),
+            Some(&Some("override".to_string()))
+        );
+    }
+
+    #[test]
+    fn detect_compat_matches_target_openai_compatible_providers() {
+        for provider in ["groq", "huggingface"] {
+            let compat = OpenAiCompletionsCompat::get(&model("target-model", provider));
+            assert!(compat.supports_store, "{provider} should support store");
+            assert!(
+                compat.supports_developer_role,
+                "{provider} should support developer messages"
+            );
+            assert!(
+                compat.supports_reasoning_effort,
+                "{provider} should support reasoning effort"
+            );
+            assert_eq!(compat.max_tokens_field, "max_completion_tokens");
+            assert!(compat.supports_strict_mode);
+            assert_eq!(compat.thinking_format, "openai");
+        }
+
+        let compat = OpenAiCompletionsCompat::get(&model("moonshot-v1-8k", "moonshotai"));
+        assert!(!compat.supports_store);
+        assert!(!compat.supports_developer_role);
+        assert!(!compat.supports_reasoning_effort);
+        assert_eq!(compat.max_tokens_field, "max_tokens");
+        assert!(!compat.supports_strict_mode);
+        assert_eq!(compat.thinking_format, "openai");
+    }
+
+    #[test]
+    fn xiaomi_mimo_replays_tool_calls_and_deepseek_thinking_wire_shape() {
+        let model = crate::providers::catalog_models("xiaomi")
+            .into_iter()
+            .find(|model| model.id == "mimo-v2.5-pro")
+            .expect("pinned Xiaomi MiMo model");
+        let compat = OpenAiCompletionsCompat::get(&model);
+        assert_eq!(compat.thinking_format, "deepseek");
+        assert!(compat.requires_reasoning_content_on_assistant_messages);
+        assert!(compat.supports_store);
+        assert_eq!(compat.max_tokens_field, "max_completion_tokens");
+
+        let mut assistant = AssistantMessage::new();
+        assistant.set_content(vec![ContentBlock::tool_call(
+            "call_1",
+            "read",
+            json!({"path":"README.md"}),
+        )]);
+        let context = context(
+            None,
+            vec![
+                Message::User(UserContent::string("Read README.md", 1)),
+                Message::Assistant(assistant),
+                Message::ToolResult(crate::types::ToolResultMessage::text(
+                    "call_1", "read", "contents", false,
+                )),
+            ],
+            vec![],
+        );
+        let options = StreamOptions {
+            sampling_params: Some(json!({"reasoningEffort":"high"})),
+            max_tokens: Some(4096),
+            ..Default::default()
+        };
+
+        let params = build_params(&model, &context, Some(&options), &compat, "none")
+            .expect("Xiaomi request parameters");
+        assert_eq!(params["thinking"], json!({"type":"enabled"}));
+        assert_eq!(params["reasoning_effort"], json!("high"));
+        assert_eq!(params["max_completion_tokens"], json!(4096));
+        assert_eq!(params["stream_options"]["include_usage"], json!(true));
+        assert_eq!(params["store"], json!(false));
+
+        let replayed = params["messages"]
+            .as_array()
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .find(|message| message["role"] == "assistant")
+            })
+            .expect("replayed assistant tool call");
+        assert_eq!(replayed["reasoning_content"], json!(""));
+        assert_eq!(replayed["tool_calls"][0]["id"], json!("call_1"));
+        assert_eq!(replayed["tool_calls"][0]["function"]["name"], json!("read"));
+        assert_eq!(
+            replayed["tool_calls"][0]["function"]["arguments"],
+            json!(r#"{"path":"README.md"}"#)
+        );
+
+        let off_params = build_params(&model, &context, None, &compat, "none")
+            .expect("Xiaomi no-thinking parameters");
+        assert_eq!(off_params["thinking"], json!({"type":"disabled"}));
+        assert!(off_params.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn target_catalog_overrides_match_groq_huggingface_and_moonshot_wire_contracts() {
+        let groq = crate::providers::catalog_models("groq")
+            .into_iter()
+            .find(|model| model.id == "qwen/qwen3.6-27b")
+            .expect("Groq Qwen reasoning model");
+        let groq_compat = OpenAiCompletionsCompat::get(&groq);
+        assert!(groq.reasoning);
+        assert!(groq_compat.supports_store);
+        assert!(groq_compat.supports_developer_role);
+        assert!(groq_compat.supports_reasoning_effort);
+        assert_eq!(groq_compat.max_tokens_field, "max_completion_tokens");
+
+        let huggingface = crate::providers::catalog_models("huggingface")
+            .into_iter()
+            .find(|model| model.id == "MiniMaxAI/MiniMax-M2")
+            .expect("Hugging Face MiniMax model");
+        let huggingface_compat = OpenAiCompletionsCompat::get(&huggingface);
+        assert!(huggingface.reasoning);
+        assert!(!huggingface_compat.supports_developer_role);
+        assert!(huggingface_compat.supports_reasoning_effort);
+        assert_eq!(huggingface_compat.max_tokens_field, "max_completion_tokens");
+
+        let moonshot = crate::providers::catalog_models("moonshotai")
+            .into_iter()
+            .find(|model| model.id == "kimi-k3")
+            .expect("Moonshot Kimi K3 model");
+        let moonshot_compat = OpenAiCompletionsCompat::get(&moonshot);
+        assert!(moonshot.reasoning);
+        assert!(moonshot_compat.supports_reasoning_effort);
+        assert!(moonshot_compat.requires_reasoning_content_on_assistant_messages);
+        assert_eq!(moonshot_compat.max_tokens_field, "max_tokens");
+        assert_eq!(moonshot_compat.deferred_tools_mode.as_deref(), Some("kimi"));
+    }
+
+    #[test]
+    fn together_reasoning_uses_upstream_enabled_wire_field() {
+        let model = crate::providers::catalog_models("together")
+            .into_iter()
+            .find(|model| model.id == "MiniMaxAI/MiniMax-M3")
+            .expect("Together reasoning model");
+        let compat = OpenAiCompletionsCompat::get(&model);
+        assert_eq!(compat.thinking_format, "together");
+        assert!(!compat.supports_reasoning_effort);
+
+        let options = StreamOptions {
+            sampling_params: Some(json!({ "reasoningEffort": "medium" })),
+            ..Default::default()
+        };
+        let enabled = build_params(&model, &Context::default(), Some(&options), &compat, "none")
+            .expect("Together enabled parameters");
+        assert_eq!(enabled["reasoning"], json!({ "enabled": true }));
+        assert!(enabled.get("reasoning_effort").is_none());
+
+        let disabled = build_params(&model, &Context::default(), None, &compat, "none")
+            .expect("Together disabled parameters");
+        assert_eq!(disabled["reasoning"], json!({ "enabled": false }));
+    }
+
+    #[test]
+    fn kimi_deferred_tools_are_replayed_after_tool_results_and_removed_from_active_tools() {
+        let model = crate::providers::catalog_models("moonshotai")
+            .into_iter()
+            .find(|model| model.id == "kimi-k3")
+            .expect("Moonshot Kimi K3 model");
+        let compat = OpenAiCompletionsCompat::get(&model);
+        let active_tool = crate::types::json_tool(
+            "active",
+            "available immediately",
+            &json!({"type":"object","properties":{}}),
+        );
+        let deferred_tool = crate::types::json_tool(
+            "deferred",
+            "loaded by the tool result",
+            &json!({"type":"object","properties":{}}),
+        );
+        let mut assistant = AssistantMessage::new();
+        assistant.set_content(vec![ContentBlock::tool_call(
+            "load-1",
+            "loader",
+            json!({"query":"deferred"}),
+        )]);
+        let mut result = crate::types::ToolResultMessage::text("load-1", "loader", "loaded", false);
+        let crate::types::ToolResultMessage::ToolResult {
+            added_tool_names, ..
+        } = &mut result;
+        *added_tool_names = Some(vec!["deferred".to_string()]);
+        let context = Context {
+            messages: vec![
+                Message::User(UserContent::string("load the tool", 1)),
+                Message::Assistant(assistant),
+                Message::ToolResult(result),
+                Message::User(UserContent::string("continue", 2)),
+            ],
+            tools: vec![active_tool, deferred_tool],
+            ..Default::default()
+        };
+
+        let params = build_params(&model, &context, None, &compat, "none").unwrap();
+        let active_tools = params["tools"].as_array().unwrap();
+        assert_eq!(active_tools.len(), 1);
+        assert_eq!(active_tools[0]["function"]["name"], "active");
+
+        let messages = params["messages"].as_array().unwrap();
+        let roles: Vec<_> = messages
+            .iter()
+            .map(|message| message["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["user", "assistant", "tool", "system", "user"]);
+        assert!(messages[3].get("content").is_none());
+        assert_eq!(messages[3]["tools"][0]["function"]["name"], "deferred");
+    }
+
+    #[test]
+    fn simple_options_forward_tool_choice_to_openai_compatible_payload() {
+        let model = model("gpt-5", "groq");
+        let options = OpenAIChatOptions {
+            tool_choice: Some(ToolChoice::None),
+            ..Default::default()
+        };
+        let params = build_params_for_chat_options(
+            &model,
+            &Context::default(),
+            &options,
+            &OpenAiCompletionsCompat::get(&model),
+            "none",
+        )
+        .unwrap();
+        assert_eq!(params["tool_choice"], json!("none"));
+    }
+
+    #[test]
+    fn openai_compatible_provider_catalogs_preserve_pinned_metadata() {
+        let baseten = crate::providers::catalog_models("baseten")
+            .into_iter()
+            .find(|model| model.id == "zai-org/GLM-5.2")
+            .expect("Baseten GLM 5.2 model");
+        assert_eq!(baseten.name, "GLM 5.2");
+        assert_eq!(
+            baseten.input,
+            vec![
+                crate::model::ModelInput::Text,
+                crate::model::ModelInput::Image
+            ]
+        );
+        assert_eq!(baseten.context_window, 1_048_576);
+        assert_eq!(baseten.max_tokens, 262_144);
+        assert_eq!(
+            baseten
+                .thinking_level_map
+                .as_ref()
+                .and_then(|levels| levels.get(&crate::types::ModelThinkingLevel::High)),
+            Some(&Some("high".to_string()))
+        );
+        assert_eq!(
+            baseten
+                .compat
+                .as_ref()
+                .and_then(|compat| compat.get("supportsReasoningEffort"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let cerebras = crate::providers::catalog_models("cerebras")
+            .into_iter()
+            .find(|model| model.id == "gpt-oss-120b")
+            .expect("Cerebras GPT OSS 120B model");
+        assert_eq!(cerebras.base_url, "https://api.cerebras.ai/v1");
+        assert_eq!(cerebras.max_tokens, 40_960);
+        assert_eq!(
+            cerebras
+                .thinking_level_map
+                .as_ref()
+                .and_then(|levels| levels.get(&crate::types::ModelThinkingLevel::Low)),
+            Some(&Some("low".to_string()))
+        );
+    }
+
+    #[test]
+    fn retry_policy_honors_server_override_and_retry_after_headers() {
+        assert!(retryable_provider_status(400, Some("true")));
+        assert!(!retryable_provider_status(503, Some("false")));
+        assert!(retryable_provider_status(429, None));
+        assert!(!retryable_provider_status(400, None));
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "retry-after-ms",
+            reqwest::header::HeaderValue::from_static("250"),
+        );
+        headers.insert(
+            "retry-after",
+            reqwest::header::HeaderValue::from_static("2"),
+        );
+        assert_eq!(retry_after_delay_ms(&headers), Some(250));
+
+        headers.remove("retry-after-ms");
+        assert_eq!(retry_after_delay_ms(&headers), Some(2_000));
+        headers.insert(
+            "retry-after",
+            reqwest::header::HeaderValue::from_static("0.5"),
+        );
+        assert_eq!(retry_after_delay_ms(&headers), Some(500));
+        assert_eq!(exponential_retry_delay(0), 500);
+        assert_eq!(exponential_retry_delay(4), 8_000);
+        assert_eq!(exponential_retry_delay(12), 8_000);
+    }
+
+    #[test]
+    fn qwen_token_plan_uses_enable_thinking_and_maps_effort() {
+        let model = crate::providers::catalog_models("qwen-token-plan")
+            .into_iter()
+            .find(|model| model.id == "qwen3.8-max")
+            .expect("Qwen Token Plan international model");
+        let compat = OpenAiCompletionsCompat::get(&model);
+        assert_eq!(compat.thinking_format, "qwen");
+        assert!(compat.supports_reasoning_effort);
+
+        let options = StreamOptions {
+            sampling_params: Some(json!({"reasoningEffort":"xhigh"})),
+            ..Default::default()
+        };
+        let params = build_params(&model, &Context::default(), Some(&options), &compat, "none")
+            .expect("Qwen Token Plan request params");
+        assert_eq!(params["enable_thinking"], json!(true));
+        assert_eq!(params["reasoning_effort"], json!("xhigh"));
+        assert!(params.get("thinking").is_none());
+
+        let off = StreamOptions::default();
+        let off_params = build_params(&model, &Context::default(), Some(&off), &compat, "none")
+            .expect("Qwen Token Plan off params");
+        assert_eq!(off_params["enable_thinking"], json!(false));
+        assert!(off_params.get("reasoning_effort").is_none());
+        assert!(off_params.get("thinking").is_none());
+    }
+
+    #[test]
+    fn moonshot_deepseek_omits_thinking_when_off_is_null() {
+        let model = crate::providers::catalog_models("moonshotai")
+            .into_iter()
+            .find(|model| model.id == "kimi-k2.7-code")
+            .expect("Moonshot Kimi K2.7 Code model");
+        let compat = OpenAiCompletionsCompat::get(&model);
+        assert_eq!(compat.thinking_format, "deepseek");
+        assert_eq!(
+            model
+                .thinking_level_map
+                .as_ref()
+                .and_then(|map| map.get(&crate::types::ModelThinkingLevel::Off)),
+            Some(&None)
+        );
+
+        let params = build_params(&model, &Context::default(), None, &compat, "none")
+            .expect("Moonshot request params");
+        assert!(params.get("thinking").is_none());
+    }
+
+    #[test]
+    fn qwen_token_plan_stream_simple_preserves_extended_effort_after_clamping() {
+        for provider_id in [
+            "qwen-token-plan",
+            "qwen-token-plan-cn",
+            "qwen-token-plan-individual",
+        ] {
+            let model = crate::providers::catalog_models(provider_id)
+                .into_iter()
+                .find(|model| model.id == "qwen3.8-max")
+                .expect("Qwen Token Plan qwen3.8-max model");
+            let compat = OpenAiCompletionsCompat::get(&model);
+            let effort = simple_reasoning_effort(&model, Some(crate::types::ThinkingLevel::Xhigh));
+            assert_eq!(effort.as_deref(), Some("xhigh"), "{provider_id}");
+            let max_effort =
+                simple_reasoning_effort(&model, Some(crate::types::ThinkingLevel::Max));
+            assert_eq!(max_effort.as_deref(), Some("xhigh"), "{provider_id}");
+
+            let params = build_params_for_chat_options(
+                &model,
+                &Context::default(),
+                &OpenAIChatOptions {
+                    reasoning_effort: effort,
+                    ..Default::default()
+                },
+                &compat,
+                "none",
+            )
+            .expect("Qwen Token Plan request params");
+            assert_eq!(params["enable_thinking"], json!(true), "{provider_id}");
+            assert_eq!(params["reasoning_effort"], json!("xhigh"), "{provider_id}");
+            assert!(params.get("thinking").is_none(), "{provider_id}");
+        }
+    }
+
+    #[test]
+    fn local_openai_compatible_thinking_budget_uses_explicit_field_and_alias() {
+        let mut model = model("local-model", "llama.cpp");
+        model.reasoning = true;
+        model.max_tokens = 16_384;
+        model.compat = Some(json!({
+            "thinkingFormat": "zai",
+            "supportsThinkingTokenBudget": true
+        }));
+        let options = OpenAIChatOptions {
+            reasoning_effort: Some("medium".to_string()),
+            thinking_budgets: Some(crate::types::ThinkingBudgets {
+                medium: Some(4_096),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let compat = OpenAiCompletionsCompat::get(&model);
+        let params =
+            build_params_for_chat_options(&model, &Context::default(), &options, &compat, "none")
+                .expect("local llama.cpp-compatible request params");
+        assert_eq!(params["thinking_token_budget"], json!(4_096));
+
+        model.compat = Some(json!({
+            "thinkingFormat": "qwen",
+            "supportsThinkingTokenBudget": true,
+            "thinkingTokenBudgetField": "thinking_budget_tokens"
+        }));
+        let compat = OpenAiCompletionsCompat::get(&model);
+        let params =
+            build_params_for_chat_options(&model, &Context::default(), &options, &compat, "none")
+                .expect("explicit local budget field request params");
+        assert_eq!(params["thinking_budget_tokens"], json!(4_096));
+        assert!(params.get("thinking_token_budget").is_none());
+
+        let off = OpenAIChatOptions {
+            thinking_budgets: Some(crate::types::ThinkingBudgets {
+                high: Some(8_192),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let params =
+            build_params_for_chat_options(&model, &Context::default(), &off, &compat, "none")
+                .expect("local off request params");
+        assert!(params.get("thinking_budget_tokens").is_none());
+    }
+
+    #[test]
     fn map_stop_reason_cases() {
         assert_eq!(map_stop_reason("stop").0, StopReason::Stop);
         assert_eq!(map_stop_reason("end").0, StopReason::Stop);
@@ -2137,12 +3678,34 @@ mod tests {
             "completion_tokens_details": { "reasoning_tokens": 1 }
         });
         let usage = parse_chunk_usage(&raw, &m).unwrap();
-        assert_eq!(usage.input, 10);
+        assert_eq!(usage.input, 5);
         assert_eq!(usage.output, 5);
         assert_eq!(usage.cache_read, 3);
         assert_eq!(usage.cache_write, 2);
         assert_eq!(usage.reasoning, Some(1));
-        assert_eq!(usage.total_tokens, 20);
+        assert_eq!(usage.total_tokens, 15);
+    }
+
+    #[test]
+    fn openrouter_error_preserves_raw_metadata_without_duplicate() {
+        assert_eq!(
+            extract_openai_error(
+                r#"{"error":{"message":"Provider returned error","metadata":{"raw":"WAF policy"}}}"#
+            ),
+            "Provider returned error\nWAF policy"
+        );
+        assert_eq!(
+            extract_openai_error(
+                r#"{"message":"Provider returned error","metadata":{"raw":"WAF policy"}}"#
+            ),
+            "Provider returned error\nWAF policy"
+        );
+        assert_eq!(
+            extract_openai_error(
+                r#"{"error":{"message":"WAF policy","metadata":{"raw":"WAF policy"}}}"#
+            ),
+            "WAF policy"
+        );
     }
 
     #[test]
@@ -2218,6 +3781,86 @@ mod tests {
         assert_eq!(params["stream_options"]["include_usage"], true);
         assert_eq!(params["store"], false);
         assert!(params.get("tools").is_none());
+    }
+
+    #[test]
+    fn optional_prompt_cache_key_is_omitted_without_session_id() {
+        let mut m = model("gpt-5", "openai");
+        m.base_url = "https://api.openai.com/v1".to_string();
+        let compat = OpenAiCompletionsCompat::get(&m);
+        let opts = StreamOptions {
+            cache_retention: Some("short".to_string()),
+            ..Default::default()
+        };
+        let params = build_params(
+            &m,
+            &context(None, vec![], vec![]),
+            Some(&opts),
+            &compat,
+            "short",
+        )
+        .unwrap();
+        assert!(params.get("prompt_cache_key").is_none());
+        assert!(params.get("prompt_cache_retention").is_none());
+
+        let opts = StreamOptions {
+            cache_retention: Some("short".to_string()),
+            session_id: Some("session-123".to_string()),
+            ..Default::default()
+        };
+        let params = build_params(
+            &m,
+            &context(None, vec![], vec![]),
+            Some(&opts),
+            &compat,
+            "short",
+        )
+        .unwrap();
+        assert_eq!(params["prompt_cache_key"], json!("session-123"));
+    }
+
+    #[test]
+    fn openrouter_anthropic_cache_control_marks_instruction_tools_and_last_message() {
+        let model = model("anthropic/claude-sonnet", "openrouter");
+        let context = context(
+            Some("System prompt"),
+            vec![Message::User(UserContent::string("Hello", 1))],
+            vec![crate::types::json_tool(
+                "read",
+                "Read a file",
+                &json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}}
+                }),
+            )],
+        );
+        let compat = OpenAiCompletionsCompat::get(&model);
+        let params = build_params(&model, &context, None, &compat, "short").unwrap();
+        let marker = json!({"type": "ephemeral"});
+
+        assert_eq!(params["messages"][0]["content"][0]["cache_control"], marker);
+        assert_eq!(params["tools"][0]["cache_control"], marker);
+        assert_eq!(params["messages"][1]["content"][0]["cache_control"], marker);
+    }
+
+    #[test]
+    fn openrouter_anthropic_cache_control_is_omitted_for_none_retention() {
+        let model = model("anthropic/claude-sonnet", "openrouter");
+        let context = context(
+            Some("System prompt"),
+            vec![Message::User(UserContent::string("Hello", 1))],
+            vec![crate::types::json_tool(
+                "read",
+                "Read a file",
+                &json!({"type": "object", "properties": {}}),
+            )],
+        );
+        let compat = OpenAiCompletionsCompat::get(&model);
+        let params = build_params(&model, &context, None, &compat, "none").unwrap();
+
+        assert!(params["messages"][0]["content"].is_string());
+        assert!(params["messages"][1]["content"].is_string());
+        assert!(params["tools"][0].get("cache_control").is_none());
     }
 
     #[test]
@@ -2387,6 +4030,42 @@ data: [DONE]
     }
 
     #[test]
+    fn process_events_preserves_structured_reasoning_details() {
+        let sse = r#"data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"r1","data":"opaque"}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"Answer"},"finish_reason":"stop"}]}
+
+data: [DONE]
+"#;
+        let m = model("openrouter-model", "openrouter");
+        let compat = OpenAiCompletionsCompat::get(&m);
+        let events = crate::sse::SseParser::parse_text(sse);
+        let result = process_completions_events(&m, &events, &compat, |_| {}).unwrap();
+        let signature = match &result.content()[0] {
+            ContentBlock::Thinking {
+                thinking_signature: Some(signature),
+                ..
+            } => signature,
+            other => panic!("expected preserved reasoning signature, got {other:?}"),
+        };
+        let details: Value = serde_json::from_str(signature).unwrap();
+        assert_eq!(details[0]["type"], "reasoning.encrypted");
+        assert_eq!(details[0]["data"], "opaque");
+
+        let replayed = convert_messages(
+            &m,
+            &context(None, vec![Message::Assistant(result)], vec![]),
+            &compat,
+        )
+        .unwrap();
+        assert_eq!(
+            replayed[0]["reasoning_details"][0]["type"],
+            "reasoning.encrypted"
+        );
+        assert_eq!(replayed[0]["reasoning_details"][0]["data"], "opaque");
+    }
+
+    #[test]
     fn process_events_missing_finish_reason_errors() {
         let sse = r#"data: {"choices":[{"index":0,"delta":{"content":"oops"}}]}
 "#;
@@ -2406,6 +4085,25 @@ data: [DONE]
         // openai: truncate at 40
         let n2 = normalize_tool_call_id(&"a".repeat(50), "openai");
         assert_eq!(n2.len(), 40);
+    }
+
+    #[test]
+    fn transform_messages_drops_empty_same_model_thinking_signature() {
+        let model = model("gpt-5", "openai");
+        let mut assistant = AssistantMessage::new();
+        assistant.set_api_provider_model("openai-completions", "openai", "gpt-5");
+        assistant.set_content(vec![ContentBlock::Thinking {
+            thinking: String::new(),
+            thinking_signature: Some(String::new()),
+            redacted: None,
+        }]);
+
+        let transformed = transform_messages(&model, &[Message::Assistant(assistant)]);
+
+        assert!(matches!(
+            &transformed[0],
+            Message::Assistant(message) if message.content().is_empty()
+        ));
     }
 
     fn assistant_with_text(text: &str) -> AssistantMessage {

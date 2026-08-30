@@ -48,8 +48,9 @@ fn lazy_stream(
     let Some(tx) = outer.sender() else {
         return outer;
     };
+    let end_handle = outer.end_handle();
     tokio::spawn(async move {
-        let mut sink = crate::event_stream::StreamSinkAdapter::new(tx);
+        let mut sink = crate::event_stream::StreamSinkAdapter::new_with_end(tx, end_handle);
         match setup.await {
             Ok(inner) => {
                 let final_message = inner.for_each(|event| sink.push(event)).await;
@@ -159,6 +160,7 @@ pub fn lazy_api(load: ProviderStreamsLoader, capabilities: LazyApiCapabilities) 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::models::{DeferredCancelOptions, ProviderStreams};

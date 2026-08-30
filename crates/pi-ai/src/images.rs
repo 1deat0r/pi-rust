@@ -54,6 +54,9 @@ pub struct ImagesOptions {
     pub timeout_ms: Option<u64>,
     pub max_retries: Option<u32>,
     pub max_retry_delay_ms: Option<u64>,
+    /// Optional upstream-style payload replacement hook, invoked before the
+    /// image request is sent and before retry attempts are started.
+    pub on_payload: Option<crate::types::OnPayloadFn>,
     pub on_response: Option<crate::model::OnResponseFn>,
     /// Shared cancellation flag. This is the Rust equivalent of the
     /// upstream `AbortSignal`; the image adapter observes it while sending,
@@ -78,7 +81,10 @@ fn registry() -> &'static std::sync::RwLock<std::collections::BTreeMap<String, I
 
 /// Register an image API implementation (upstream `registerImagesApiProvider`).
 pub fn register_images_api_provider(api: &str, f: ImagesFunction) {
-    registry().write().unwrap().insert(api.to_string(), f);
+    registry()
+        .write()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(api.to_string(), f);
 }
 
 fn parse_model_input(value: &Value) -> Vec<ModelInput> {
@@ -182,6 +188,9 @@ pub fn register_builtin_images_api_providers() {
             // thread runtime so the sync images facade can reuse `generate_images`.
             let client = reqwest::Client::new();
             let opts = options.clone();
+            // Invariant: a single-threaded runtime with default features
+            // always builds; failure would be an environment defect.
+            #[allow(clippy::expect_used)]
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -200,6 +209,7 @@ pub fn register_builtin_images_api_providers() {
 pub struct ImagesProvider {
     pub id: String,
     pub name: String,
+    pub auth: crate::auth::ProviderAuth,
     pub models: Vec<ImagesModel>,
 }
 
@@ -208,6 +218,13 @@ pub fn openrouter_images_provider() -> ImagesProvider {
     ImagesProvider {
         id: "openrouter".to_string(),
         name: "OpenRouter".to_string(),
+        auth: crate::auth::ProviderAuth {
+            api_key: Some(crate::auth::env_api_key_auth(
+                "OpenRouter API key",
+                vec!["OPENROUTER_API_KEY".to_string()],
+            )),
+            oauth: Some(crate::auth_flows::OpenRouterOAuth::new()),
+        },
         models: catalog_images("openrouter"),
     }
 }
@@ -220,7 +237,11 @@ pub fn generate_images(
     context: &ImagesContext,
     options: &ImagesOptions,
 ) -> AssistantImages {
-    let f = registry().read().unwrap().get(&model.api).cloned();
+    let f = registry()
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&model.api)
+        .cloned();
     let Some(f) = f else {
         let mut output = AssistantImages {
             api: model.api.clone(),
@@ -260,6 +281,7 @@ pub fn text_content(text: &str) -> ContentBlock {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
