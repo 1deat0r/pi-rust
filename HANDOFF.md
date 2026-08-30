@@ -36,7 +36,42 @@ unification.
 Next: Phase 2.4 pi-agent error unification + `unreachable!` cleanup, then
 the cross-crate transport error type.
 
-## Push blocker — 2026-08-30 — Phase 2.3a commit is local-only
+## Latest checkpoint — 2026-08-30 — Rust-idiom campaign Phase 2.4 (pi-agent under the hard gate)
+
+Sixth campaign checkpoint, direct child of Phase 2.3b (`b161865`). pi-agent
+opts into `[workspace.lints.clippy] unwrap_used/expect_used/panic = "deny"`
+and is clean with `-D warnings`.
+
+Implemented:
+
+- Poison-tolerant locking crate-wide (rich_agent, agent_harness, search,
+  session/jsonl, tools, events, env, memory, stream_fn, fs).
+- Template/path regexes became `LazyLock` statics (prompt_templates
+  `$N`/`${@:N:L}`, path_utils AM/PM normalizer).
+- Remaining `.expect`/`.unwrap`/`panic!` sites are checked invariants or
+  upstream-mirroring contract panics (e.g. the missing default stream fn
+  diagnostic); each carries a scoped, commented allow on its enclosing
+  function. `unreachable!` arms in the harness queue match internal enums
+  and are the idiomatic impossible-arm guard; they are intentional and
+  stay.
+- pi-agent test modules/tests dirs carry scoped allows only.
+
+Environment note (adding to the Phase 2.3a note): the model-selector PTY
+tests read provider credentials from the tmux SERVER environment, which is
+fixed when the server process starts. After killing a stale tmux server
+(`tmux kill-server`) and rerunning from a shell with
+`QWEN_TOKEN_PLAN_API_KEY` exported, the complete matrix passes. If PTY
+selector tests fail with a one-row selector, kill the tmux server first.
+
+Exact validation: workspace matrix exit 0, 2,805 passed; strict workspace
+clippy; fmt/diff checks; `conversion_audit all`
+`Conversion progress: 100.00% (166/166; 0 open)`. No numbered ledger row
+changed.
+
+Next: Phase 2.5/2.6 pi-coding-agent error typing (largest remaining
+String-error surface), then the cross-crate transport error unification.
+
+## Push blocker — 2026-08-30 — three campaign commits are local-only
 
 The Phase 2.3a commit exists locally as `c611c74` (recreated after the
 first attempt `b48171f` was lost to repository corruption: 39 zero-length
@@ -51,8 +86,9 @@ Pushing to `origin/main` currently fails reproducibly with
 with `http.postBuffer=500MB`), while small reads (`git ls-remote`) succeed
 and `gh auth status` hangs indefinitely. This host's GitHub HTTPS upload
 path is broken; the failure predates and is independent of the campaign
-changes. Local `main` (`c611c74`) is ahead of `origin/main` (`fb46809`) by
-the Phase 2.3a commit only. Per the commit gate protocol the local commit
+changes. Local `main` (`b161865`) is ahead of `origin/main` (`fb46809`) by three
+commits: `c611c74` (Phase 2.3a pi-ai gate), `e02528a` (blocker note), and
+`b161865` (Phase 2.3b typed PiAiError). Per the commit gate protocol the local commit
 is preserved and local/remote parity is NOT claimed until the network
 issue clears; rerun `git push origin main` and verify
 `git rev-parse HEAD == git ls-remote origin refs/heads/main`.

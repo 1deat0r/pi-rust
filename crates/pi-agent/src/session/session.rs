@@ -65,28 +65,41 @@ impl<F: FileSystem> Session<F> {
             // `InMemorySessionStorage::metadata` is synchronous. Clone it
             // before releasing the storage mutex so callers can safely await
             // the facade method from a Send future.
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().metadata().clone(),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .metadata()
+                .clone(),
         }
     }
 
     pub async fn get_lanes(&self) -> Vec<LanePointer> {
         match &self.inner {
             SessionStorageKind::Jsonl(s) => s.get_lanes().await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().get_lanes(),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_lanes(),
         }
     }
 
     pub async fn create_lane(&mut self, lane: &str, at: Option<&str>) -> Result<(), SessionError> {
         match &mut self.inner {
             SessionStorageKind::Jsonl(s) => s.create_lane(lane, at).await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().create_lane(lane, at),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .create_lane(lane, at),
         }
     }
 
     pub async fn move_lane(&mut self, lane: &str, to: Option<&str>) -> Result<(), SessionError> {
         match &mut self.inner {
             SessionStorageKind::Jsonl(s) => s.move_lane(lane, to).await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().move_lane(lane, to),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .move_lane(lane, to),
         }
     }
 
@@ -125,7 +138,10 @@ impl<F: FileSystem> Session<F> {
     ) -> Result<Entry, SessionError> {
         match &mut self.inner {
             SessionStorageKind::Jsonl(s) => s.append_entry(entry, lane).await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().append_entry(entry, lane),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .append_entry(entry, lane),
         }
     }
 
@@ -209,14 +225,20 @@ impl<F: FileSystem> Session<F> {
     pub async fn append_record(&mut self, record: NewRecord) -> Result<LaneRecord, SessionError> {
         match &mut self.inner {
             SessionStorageKind::Jsonl(s) => s.append_record(record).await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().append_record(record),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .append_record(record),
         }
     }
 
     pub async fn get_entry(&self, id: &str) -> Option<Entry> {
         match &self.inner {
             SessionStorageKind::Jsonl(s) => s.get_entry(id).await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().get_entry(id),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_entry(id),
         }
     }
 
@@ -247,7 +269,10 @@ impl<F: FileSystem> Session<F> {
         Self::assert_valid_cursor(query.cursor.map(|c| c.after_seq))?;
         match &self.inner {
             SessionStorageKind::Jsonl(s) => s.find_entries(query).await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().find_entries(query),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .find_entries(query),
         }
     }
 
@@ -315,7 +340,7 @@ impl<F: FileSystem> Session<F> {
                 }
                 SessionStorageKind::InMemory(s) => s
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|error| error.into_inner())
                     .find_entries_on_branch(query, &start, bounds),
             },
             None => Ok(Vec::new()),
@@ -336,7 +361,10 @@ impl<F: FileSystem> Session<F> {
         }
         match &self.inner {
             SessionStorageKind::Jsonl(s) => s.find_records(query).await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().find_records(query),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .find_records(query),
         }
     }
 
@@ -348,7 +376,10 @@ impl<F: FileSystem> Session<F> {
         Self::assert_valid_limit(limit)?;
         match &self.inner {
             SessionStorageKind::Jsonl(s) => s.find_open_operations(lane, limit).await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().find_open_operations(lane, limit),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .find_open_operations(lane, limit),
         }
     }
 
@@ -358,7 +389,10 @@ impl<F: FileSystem> Session<F> {
         Self::assert_valid_cursor(options.after_seq)?;
         match &self.inner {
             SessionStorageKind::Jsonl(s) => s.get_log(options).await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().get_log(options),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_log(options),
         }
     }
 
@@ -369,35 +403,50 @@ impl<F: FileSystem> Session<F> {
     pub async fn get_stats(&self) -> SessionStats {
         match &self.inner {
             SessionStorageKind::Jsonl(s) => s.get_stats().await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().get_stats(),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_stats(),
         }
     }
 
     pub async fn get_name(&self) -> Option<String> {
         match &self.inner {
             SessionStorageKind::Jsonl(s) => s.get_name().await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().get_name(),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_name(),
         }
     }
 
     pub async fn set_name(&mut self, name: Option<&str>) -> Result<(), SessionError> {
         match &mut self.inner {
             SessionStorageKind::Jsonl(s) => s.set_name(name).await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().set_name(name),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_name(name),
         }
     }
 
     pub async fn get_label(&self, id: &str) -> Option<String> {
         match &self.inner {
             SessionStorageKind::Jsonl(s) => s.get_label(id).await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().get_label(id),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_label(id),
         }
     }
 
     pub async fn set_label(&mut self, id: &str, label: Option<&str>) -> Result<(), SessionError> {
         match &mut self.inner {
             SessionStorageKind::Jsonl(s) => s.set_label(id, label).await,
-            SessionStorageKind::InMemory(s) => s.lock().unwrap().set_label(id, label),
+            SessionStorageKind::InMemory(s) => s
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .set_label(id, label),
         }
     }
 

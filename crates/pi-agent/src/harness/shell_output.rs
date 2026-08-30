@@ -207,9 +207,12 @@ pub async fn execute_shell_with_capture<E: ExecutionEnv>(
         let writes = writes.clone();
         let maybe_full_path = maybe_full_path.clone();
         let handler: ChunkHandler = Arc::new(move |chunk: &str| {
-            let mut accum = accum.lock().unwrap();
-            let mut writes = writes.lock().unwrap();
-            let full_path = maybe_full_path.lock().unwrap().clone();
+            let mut accum = accum.lock().unwrap_or_else(|error| error.into_inner());
+            let mut writes = writes.lock().unwrap_or_else(|error| error.into_inner());
+            let full_path = maybe_full_path
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
             let text = sanitize_binary_output(chunk).replace('\r', "");
             let text_bytes = text.len();
             let newline_count = text.split('\n').count() - 1;
@@ -273,15 +276,17 @@ pub async fn execute_shell_with_capture<E: ExecutionEnv>(
         Err(e) if e.code == ExecutionErrorCode::CallbackError => Some(e.clone()),
         _ => None,
     };
-    if let Some(err) = capture_error {
-        return Err(err);
-    }
 
     // Final ensure-full-output after the process settles.
     {
-        let mut accum = accum.lock().unwrap();
-        let mut writes = writes.lock().unwrap();
-        let progress = create_progress(&accum, &maybe_full_path.lock().unwrap());
+        let mut accum = accum.lock().unwrap_or_else(|error| error.into_inner());
+        let mut writes = writes.lock().unwrap_or_else(|error| error.into_inner());
+        let progress = create_progress(
+            &accum,
+            &maybe_full_path
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
         if progress.truncation.truncated && !accum.full_output_requested {
             accum.full_output_requested = true;
             writes.push(WriteOp::CreateTempFile {
@@ -293,7 +298,11 @@ pub async fn execute_shell_with_capture<E: ExecutionEnv>(
     // Flush serialized full-output writes.
     let mut full_output_path: Option<String> = None;
     {
-        let ops: Vec<WriteOp> = writes.lock().unwrap().drain(..).collect();
+        let ops: Vec<WriteOp> = writes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .drain(..)
+            .collect();
         for op in ops {
             match op {
                 WriteOp::CreateTempFile { initial } => {
@@ -325,9 +334,22 @@ pub async fn execute_shell_with_capture<E: ExecutionEnv>(
             }
         }
     }
-    *maybe_full_path.lock().unwrap() = full_output_path.clone();
+    *maybe_full_path
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = full_output_path.clone();
 
-    let progress = create_progress(&accum.lock().unwrap(), &full_output_path);
+    // The upstream implementation waits for the serialized full-output write
+    // chain before surfacing an observer/capture callback failure. This keeps
+    // the diagnostic log complete even when the callback itself rejects a
+    // chunk.
+    if let Some(err) = capture_error {
+        return Err(err);
+    }
+
+    let progress = create_progress(
+        &accum.lock().unwrap_or_else(|error| error.into_inner()),
+        &full_output_path,
+    );
     let truncation = progress.truncation.clone();
 
     match result {
@@ -380,6 +402,7 @@ pub async fn execute_shell_with_capture<E: ExecutionEnv>(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::harness::env::StdExecutionEnv;

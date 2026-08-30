@@ -98,10 +98,18 @@ struct WatchState {
 
 impl WatchState {
     fn deliver(&self, event: &HarnessEvent) {
-        if let Some(listener) = self.live.lock().unwrap().as_ref() {
+        if let Some(listener) = self
+            .live
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
             listener(event);
         } else {
-            self.buffered.lock().unwrap().push(event.clone());
+            self.buffered
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(event.clone());
         }
     }
 
@@ -109,7 +117,12 @@ impl WatchState {
         // Stay in buffering mode while flushing so reentrant emissions
         // preserve order (port of the upstream start loop).
         loop {
-            let pending = std::mem::take(&mut *self.buffered.lock().unwrap());
+            let pending = std::mem::take(
+                &mut *self
+                    .buffered
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            );
             if pending.is_empty() {
                 break;
             }
@@ -117,12 +130,18 @@ impl WatchState {
                 listener(event);
             }
         }
-        *self.live.lock().unwrap() = Some(listener);
+        *self.live.lock().unwrap_or_else(|error| error.into_inner()) = Some(listener);
     }
 
     fn clear(&self) {
-        self.buffered.lock().unwrap().clear();
-        self.live.lock().unwrap().take();
+        self.buffered
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.live
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
     }
 }
 
@@ -147,7 +166,11 @@ impl<T> WatchHandle<T> {
     }
 
     pub fn is_listening(&self) -> bool {
-        self.state.live.lock().unwrap().is_some()
+        self.state
+            .live
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_some()
     }
 }
 
@@ -228,6 +251,7 @@ impl HarnessEventBus {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -272,17 +296,28 @@ mod tests {
         let sub = bus.on(
             "run_start",
             Box::new(move |e| {
-                rx.lock().unwrap().push(e.event_type().to_string());
+                rx.lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(e.event_type().to_string());
             }),
         );
         bus.emit(&run_start("l", "r"));
         bus.emit(&run_end("l", "r", RunOutcome::Completed, "e"));
-        assert_eq!(*received.lock().unwrap(), vec!["run_start".to_string()]);
+        assert_eq!(
+            *received.lock().unwrap_or_else(|error| error.into_inner()),
+            vec!["run_start".to_string()]
+        );
         assert_eq!(bus.listener_count("run_start"), 1);
         bus.unsubscribe(sub);
         assert_eq!(bus.listener_count("run_start"), 0);
         bus.emit(&run_start("l", "r"));
-        assert_eq!(received.lock().unwrap().len(), 1);
+        assert_eq!(
+            received
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -296,17 +331,19 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
         let sx = seen.clone();
         handle.start(Box::new(move |e| {
-            sx.lock().unwrap().push(e.event_type().to_string());
+            sx.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(e.event_type().to_string());
         }));
         assert_eq!(
-            *seen.lock().unwrap(),
+            *seen.lock().unwrap_or_else(|error| error.into_inner()),
             vec!["run_start".to_string()],
             "buffered run_start delivered after start"
         );
 
         bus.emit(&run_end("l", "r2", RunOutcome::Completed, "e"));
         assert_eq!(
-            *seen.lock().unwrap(),
+            *seen.lock().unwrap_or_else(|error| error.into_inner()),
             vec!["run_start".to_string(), "run_end".to_string()]
         );
         assert!(handle.is_listening());
@@ -314,7 +351,7 @@ mod tests {
         handle.unsubscribe();
         bus.emit(&run_start("l", "r3"));
         assert_eq!(
-            seen.lock().unwrap().len(),
+            seen.lock().unwrap_or_else(|error| error.into_inner()).len(),
             2,
             "no delivery after unsubscribe"
         );
@@ -327,12 +364,16 @@ mod tests {
         let seen = Arc::new(Mutex::new(0usize));
         let sx = seen.clone();
         handle.start(Box::new(move |_| {
-            *sx.lock().unwrap() += 1;
+            *sx.lock().unwrap_or_else(|error| error.into_inner()) += 1;
         }));
         bus.emit(&run_start("l", "r"));
-        assert_eq!(*seen.lock().unwrap(), 1);
+        assert_eq!(*seen.lock().unwrap_or_else(|error| error.into_inner()), 1);
         drop(handle);
         bus.emit(&run_start("l", "r2"));
-        assert_eq!(*seen.lock().unwrap(), 1, "stale handle no longer receives");
+        assert_eq!(
+            *seen.lock().unwrap_or_else(|error| error.into_inner()),
+            1,
+            "stale handle no longer receives"
+        );
     }
 }

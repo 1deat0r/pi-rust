@@ -170,3 +170,5 @@ Phase 2.2 (pi-client) likewise does not touch TUI rows.
 Phase 2.3a (pi-ai) likewise does not touch TUI rows.
 
 Phase 2.3b (PiAiError) likewise does not touch TUI rows.
+
+Phase 2.4 (pi-agent) likewise does not touch TUI rows.

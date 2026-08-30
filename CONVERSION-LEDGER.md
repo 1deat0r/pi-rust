@@ -1908,3 +1908,5 @@ LazyLock regexes, guarded invariants); ledger rows unchanged.
 
 Phase 2.3b introduced the typed PiAiError for the pi-ai auth/OAuth surface;
 ledger rows unchanged.
+
+Phase 2.4 brought pi-agent under the hard lint gate; ledger rows unchanged.

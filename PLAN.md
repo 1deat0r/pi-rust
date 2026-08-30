@@ -52,6 +52,13 @@ host-side `AuthInteraction` intentionally stays String. Downstream
 pi-coding-agent maps at the boundary with unchanged user-visible text.
 Workspace matrix 2,805 passed; `conversion_audit all` green. No numbered
 ledger row changed.
+Phase 2.4 checkpoint: **pi-agent** is under the hard gate. Poison-tolerant
+locking crate-wide; LazyLock regexes; remaining expects/panics are
+documented checked invariants with scoped allows; harness `unreachable!`
+arms kept as idiomatic impossible-arm guards. PTY note: kill any stale
+tmux server before selector tests so they inherit fresh provider
+credentials. Workspace matrix 2,805 passed; `conversion_audit all` green.
+No numbered ledger row changed.
 
 Next: Phase 2 crate conversions in order pi-server → pi-client → pi-ai →
 pi-agent → pi-coding-agent (core, then modes/bins) → pi-tui/pi-telemetry/

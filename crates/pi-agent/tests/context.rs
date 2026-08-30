@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Session context builder — port of
 //! `packages/agent/test/harness/session/context.test.ts` against
 //! `session/context.rs`.
@@ -27,6 +29,7 @@ fn assistant_message(text: &str) -> AgentMessage {
             model: Some("claude-sonnet-4-5".into()),
             response_model: None,
             response_id: None,
+            diagnostics: None,
             usage: Some(Usage {
                 input: 0,
                 output: 0,
@@ -62,6 +65,7 @@ fn deferred_assistant_message() -> AgentMessage {
             model: Some("gpt-5".into()),
             response_model: None,
             response_id: None,
+            diagnostics: None,
             usage: None,
             stop_reason: Some(StopReason::Deferred),
             deferred: Some(pi_ai::types::DeferredHandle {

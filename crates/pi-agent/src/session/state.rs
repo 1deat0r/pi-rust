@@ -158,6 +158,14 @@ impl SessionState {
             .collect()
     }
 
+    /// Restore the implicit v3 main-lane leaf while loading a legacy session.
+    /// v3 files persist parent links but do not persist lane mutations, so
+    /// this pointer must be advanced separately from `apply_mutation`.
+    pub(crate) fn set_main_leaf_for_legacy(&mut self, entry_id: &str) {
+        self.lanes
+            .insert("main".to_string(), Some(entry_id.to_string()));
+    }
+
     pub fn validate_new_lane(&self, lane: &str) -> Result<(), SessionError> {
         if self.lanes.contains_key(lane) {
             // Upstream validateNewLane: already_exists (`Lane already exists`).
@@ -287,7 +295,9 @@ impl SessionState {
 
     /// `walkToRoot(start, bounds)` — yields entries from `start` toward the
     /// root, stopping at (and including) the first bound hit. Throws
-    /// `not_found` on missing entries and `invalid_entry` on cycles.
+    /// `not_found` for a missing start and `invalid_entry` for a broken parent
+    /// chain or cycle.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn walk_to_root<'a>(
         &'a self,
         start: &str,
@@ -320,7 +330,7 @@ impl SessionState {
                 .find(|e| e.id() == parent.as_deref().unwrap_or_default());
             if current.is_none() {
                 return Err(session_error(
-                    SessionErrorKind::NotFound,
+                    SessionErrorKind::InvalidEntry,
                     format!("Entry not found: {}", parent.unwrap()),
                 ));
             }
@@ -597,6 +607,22 @@ impl SessionState {
     /// Applies a mutation to the in-memory state (after it has been
     /// persisted). Mirrors `SessionState.applyMutation`.
     pub fn apply_mutation(&mut self, mutation: &Mutation) -> Result<(), SessionError> {
+        // JSONL sequence numbers are the storage log's integrity boundary.
+        // Upstream rejects gaps, duplicates, and reordered mutations before
+        // applying any mutation-specific state changes.
+        let seq = match mutation {
+            Mutation::Entry { entry, .. } => entry.seq(),
+            Mutation::Record { record } => record.seq(),
+            Mutation::Lane { seq, .. } => *seq,
+            Mutation::Fact(fact) => fact_seq(fact),
+        };
+        if seq != self.sequence + 1 {
+            return Err(session_error(
+                SessionErrorKind::InvalidEntry,
+                format!("has non-consecutive seq {seq}"),
+            ));
+        }
+
         match mutation {
             Mutation::Entry { lane, entry } => {
                 let entry = entry.clone();

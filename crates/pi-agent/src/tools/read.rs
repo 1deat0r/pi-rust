@@ -3,9 +3,12 @@
 
 use super::image::{process_image, ProcessImageOptions};
 use super::path_utils::resolve_read_tool_path_existing;
-use super::truncate::{format_size, truncate_head, DEFAULT_MAX_BYTES};
+use super::truncate::{
+    format_size, truncate_head, TruncatedBy, Truncation, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES,
+};
 use pi_ai::types::ContentBlock;
 use pi_ai::types::ToolResultMessage;
+use std::sync::Arc;
 
 pub use super::image::detect_supported_image_mime_type;
 
@@ -18,13 +21,14 @@ pub async fn execute_read(
     limit: Option<f64>,
     cwd: &str,
 ) -> Result<ToolResultMessage, String> {
-    execute_read_with_options(
+    execute_read_with_options_and_abort(
         tool_call_id,
         path,
         offset,
         limit,
         cwd,
         ProcessImageOptions::default(),
+        None,
     )
     .await
 }
@@ -37,12 +41,37 @@ pub async fn execute_read_with_options(
     cwd: &str,
     image_options: ProcessImageOptions,
 ) -> Result<ToolResultMessage, String> {
+    execute_read_with_options_and_abort(tool_call_id, path, offset, limit, cwd, image_options, None)
+        .await
+}
+
+/// Read with the agent-loop abort flag attached. The checks mirror the
+/// upstream signal boundaries around path resolution, filesystem reads, and
+/// image processing while keeping the existing public convenience API.
+pub async fn execute_read_with_options_and_abort(
+    tool_call_id: &str,
+    path: &str,
+    offset: Option<f64>,
+    limit: Option<f64>,
+    cwd: &str,
+    image_options: ProcessImageOptions,
+    abort: Option<Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<ToolResultMessage, String> {
+    if crate::agent::is_aborted(abort.as_ref()) {
+        return Err("Operation aborted".to_string());
+    }
     let absolute = resolve_read_tool_path_existing(cwd, path);
     let bytes = std::fs::read(&absolute).map_err(|e| format!("Failed to read {path}: {e}"))?;
+    if crate::agent::is_aborted(abort.as_ref()) {
+        return Err("Operation aborted".to_string());
+    }
 
     if let Some(mime_type) = detect_supported_image_mime_type(&bytes) {
         match process_image(&bytes, mime_type, image_options) {
             Ok(processed) => {
+                if crate::agent::is_aborted(abort.as_ref()) {
+                    return Err("Operation aborted".to_string());
+                }
                 let mut text = format!("Read image file [{}]", processed.mime_type);
                 if !processed.hints.is_empty() {
                     text.push('\n');
@@ -59,6 +88,9 @@ pub async fn execute_read_with_options(
                 ));
             }
             Err(message) => {
+                if crate::agent::is_aborted(abort.as_ref()) {
+                    return Err("Operation aborted".to_string());
+                }
                 return Ok(ToolResultMessage::text(
                     tool_call_id,
                     "read",
@@ -136,14 +168,117 @@ pub async fn execute_read_with_options(
         output_text = truncation.content.clone();
     }
 
-    Ok(ToolResultMessage::text(
-        tool_call_id,
-        "read",
-        output_text,
-        false,
-    ))
+    if crate::agent::is_aborted(abort.as_ref()) {
+        return Err("Operation aborted".to_string());
+    }
+
+    let details = truncation.truncated.then(|| {
+        serde_json::json!({
+            "truncation": read_truncation_details(&truncation, selected_content.len()),
+        })
+    });
+    Ok(
+        ToolResultMessage::text(tool_call_id, "read", output_text, false)
+            .with_details_usage_timestamp(None, details, pi_ai::types::now_ms()),
+    )
 }
 
 fn utf8_len(s: &str) -> usize {
     s.len()
+}
+
+fn read_truncation_details(truncation: &Truncation, total_bytes: usize) -> serde_json::Value {
+    serde_json::json!({
+        "content": truncation.content.clone(),
+        "truncated": truncation.truncated,
+        "truncatedBy": match truncation.truncated_by {
+            Some(TruncatedBy::Lines) => serde_json::Value::String("lines".to_string()),
+            Some(TruncatedBy::Bytes) => serde_json::Value::String("bytes".to_string()),
+            None => serde_json::Value::Null,
+        },
+        "totalLines": truncation.total_lines,
+        "totalBytes": total_bytes,
+        "outputLines": truncation.output_lines,
+        "outputBytes": truncation.output_bytes,
+        "lastLinePartial": false,
+        "maxLines": DEFAULT_MAX_LINES,
+        "maxBytes": DEFAULT_MAX_BYTES,
+        "firstLineExceedsLimit": truncation.output_lines == 0
+            && matches!(truncation.truncated_by, Some(TruncatedBy::Bytes)),
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use pi_ai::types::ContentBlock;
+    use std::fs;
+    use std::sync::atomic::AtomicBool;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("pi-read-{tag}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn text(result: &ToolResultMessage) -> String {
+        result
+            .content()
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn attaches_upstream_truncation_details() {
+        let dir = temp_dir("details");
+        let path = dir.join("large.txt");
+        fs::write(
+            &path,
+            (0..(DEFAULT_MAX_LINES + 1))
+                .map(|line| format!("line-{line}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+
+        let result = execute_read(
+            "read-1",
+            &path.display().to_string(),
+            None,
+            None,
+            &dir.display().to_string(),
+        )
+        .await
+        .unwrap();
+        assert!(text(&result).contains("Showing lines 1-2000"));
+        let details = result.details().expect("truncation details");
+        assert_eq!(details["truncation"]["truncatedBy"], "lines");
+        assert_eq!(details["truncation"]["totalLines"], DEFAULT_MAX_LINES + 1);
+        assert_eq!(details["truncation"]["firstLineExceedsLimit"], false);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn aborts_before_reading() {
+        let dir = temp_dir("aborted");
+        let abort = Arc::new(AtomicBool::new(true));
+        let error = execute_read_with_options_and_abort(
+            "read-1",
+            "missing.txt",
+            None,
+            None,
+            &dir.display().to_string(),
+            ProcessImageOptions::default(),
+            Some(abort),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "Operation aborted");
+        let _ = fs::remove_dir_all(dir);
+    }
 }

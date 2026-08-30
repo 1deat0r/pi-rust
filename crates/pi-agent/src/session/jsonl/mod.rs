@@ -4,6 +4,7 @@
 pub mod errors;
 pub mod repo;
 pub mod storage;
+pub(crate) mod v3;
 
 use serde_json::Value as JsonValue;
 
@@ -113,6 +114,7 @@ fn require_nullable_id(
 }
 
 /// Validated header decode. Mirrors `decodeHeader`.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn decode_header(line: &str) -> Result<JsonlV4Header, JsonlDecodeError> {
     let value = parse_object(line)?;
     if !matches!(value.get("kind"), Some(JsonValue::String(k)) if k == "header") {
@@ -182,6 +184,14 @@ pub fn parse_header(line: &str) -> Result<JsonlV4Header, JsonlDecodeError> {
     decode_header(line)
 }
 
+/// Parse an upstream coding-agent v3 session header for caller-level
+/// selectors. Durable v4 storage remains the native internal representation;
+/// this adapter keeps explicit legacy paths discoverable without duplicating
+/// timestamp/schema parsing in every caller.
+pub fn parse_v3_header(line: &str) -> Result<JsonlV4Header, JsonlDecodeError> {
+    v3::parse_header(line)
+}
+
 pub fn encode_header(header: &JsonlV4Header) -> Result<String, serde_json::Error> {
     Ok(format!("{}\n", serde_json::to_string(header)?))
 }
@@ -206,6 +216,7 @@ pub fn metadata_from_header(
 
 /// Decodes one mutation line with strict field validation (mirrors
 /// `decodeMutation` + `parseEntryMutation`/`parseRecordMutation`/...).
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn decode_mutation(line: &str) -> Result<Mutation, JsonlDecodeError> {
     let value = parse_object(line)?;
     let seq = require_sequence(value.get("seq"))?;

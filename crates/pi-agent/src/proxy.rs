@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use pi_ai::event_stream::{AssistantMessageEventStream, StreamSink};
@@ -56,6 +57,7 @@ pub enum ProxyAssistantMessageEvent {
         #[serde(rename = "contentSignature", default)]
         content_signature: Option<String>,
     },
+    #[serde(rename = "toolcall_start")]
     ToolCallStart {
         #[serde(rename = "contentIndex")]
         content_index: usize,
@@ -63,11 +65,13 @@ pub enum ProxyAssistantMessageEvent {
         #[serde(rename = "toolName")]
         tool_name: String,
     },
+    #[serde(rename = "toolcall_delta")]
     ToolCallDelta {
         #[serde(rename = "contentIndex")]
         content_index: usize,
         delta: String,
     },
+    #[serde(rename = "toolcall_end")]
     ToolCallEnd {
         #[serde(rename = "contentIndex")]
         content_index: usize,
@@ -87,10 +91,12 @@ pub enum ProxyAssistantMessageEvent {
 }
 
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ProxyDoneReason {
+    #[serde(rename = "stop")]
     Stop,
+    #[serde(rename = "length")]
     Length,
+    #[serde(rename = "toolUse")]
     ToolUse,
 }
 
@@ -224,14 +230,38 @@ pub fn stream_proxy(
         let body_json =
             serde_json::json!({ "model": model, "context": context_json, "options": serializable });
 
-        let response = match client
+        if aborted(&signal) {
+            finalize_error(
+                &mut sink,
+                &mut partial,
+                true,
+                "Request aborted by user".to_string(),
+            );
+            return;
+        }
+
+        let request = client
             .post(format!("{proxy_url}/api/stream"))
             .bearer_auth(auth_token)
             .header("Content-Type", "application/json")
-            .json(&body_json)
-            .send()
-            .await
-        {
+            .json(&body_json);
+        let response = if let Some(signal) = signal.clone() {
+            tokio::select! {
+                response = request.send() => response,
+                _ = wait_for_proxy_abort(signal) => {
+                    finalize_error(
+                        &mut sink,
+                        &mut partial,
+                        true,
+                        "Request aborted by user".to_string(),
+                    );
+                    return;
+                }
+            }
+        } else {
+            request.send().await
+        };
+        let response = match response {
             Ok(resp) => resp,
             Err(e) => {
                 finalize_error(
@@ -262,6 +292,7 @@ pub fn stream_proxy(
         // Read the SSE body incrementally, splitting on '\n' like upstream.
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut utf8_carry = Vec::new();
         let mut tool_partials: BTreeMap<usize, String> = BTreeMap::new();
         loop {
             if aborted(&signal) {
@@ -273,13 +304,34 @@ pub fn stream_proxy(
                 );
                 return;
             }
-            match stream.next().await {
+            let next_chunk = if let Some(signal) = signal.clone() {
+                tokio::select! {
+                    chunk = stream.next() => chunk,
+                    _ = wait_for_proxy_abort(signal) => {
+                        finalize_error(
+                            &mut sink,
+                            &mut partial,
+                            true,
+                            "Request aborted by user".to_string(),
+                        );
+                        return;
+                    }
+                }
+            } else {
+                stream.next().await
+            };
+            match next_chunk {
                 Some(Ok(chunk)) => {
-                    buffer.push_str(&String::from_utf8_lossy(&chunk));
+                    buffer.push_str(&decode_proxy_utf8_chunk(&mut utf8_carry, &chunk));
                     while let Some(at) = buffer.find('\n') {
                         let head = buffer[..at].to_string();
                         buffer = buffer[at + 1..].to_string();
-                        handle_sse_line(&head, &mut sink, &mut partial, &mut tool_partials);
+                        if let Err(error) =
+                            handle_sse_line(&head, &mut sink, &mut partial, &mut tool_partials)
+                        {
+                            finalize_error(&mut sink, &mut partial, aborted(&signal), error);
+                            return;
+                        }
                     }
                 }
                 Some(Err(e)) => {
@@ -304,9 +356,15 @@ pub fn stream_proxy(
             return;
         }
         // Trailing line without a newline.
+        buffer.push_str(&finish_proxy_utf8(&mut utf8_carry, String::new()));
         let trailing = buffer.trim_end().to_string();
         if !trailing.is_empty() {
-            handle_sse_line(&trailing, &mut sink, &mut partial, &mut tool_partials);
+            if let Err(error) =
+                handle_sse_line(&trailing, &mut sink, &mut partial, &mut tool_partials)
+            {
+                finalize_error(&mut sink, &mut partial, aborted(&signal), error);
+                return;
+            }
         }
         // Normal completion: the terminal `done` event was already pushed by
         // process_proxy_event; upstream calls stream.end() without a final
@@ -351,21 +409,20 @@ fn handle_sse_line(
     sink: &mut ProxyStreamPusher,
     partial: &mut AssistantMessage,
     tool_partials: &mut BTreeMap<usize, String>,
-) {
+) -> Result<(), String> {
     let Some(data) = line.strip_prefix("data:") else {
-        return;
+        return Ok(());
     };
     let data = data.trim();
     if data.is_empty() {
-        return;
+        return Ok(());
     }
-    let proxy_event: ProxyAssistantMessageEvent = match serde_json::from_str(data) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    if let Some(event) = process_proxy_event(proxy_event, partial, tool_partials) {
+    let proxy_event: ProxyAssistantMessageEvent =
+        serde_json::from_str(data).map_err(|error| format!("Invalid proxy event: {error}"))?;
+    if let Some(event) = process_proxy_event(proxy_event, partial, tool_partials)? {
         sink.push(event);
     }
+    Ok(())
 }
 
 /// Process a proxy event and update the partial message (upstream
@@ -376,52 +433,56 @@ fn process_proxy_event(
     proxy_event: ProxyAssistantMessageEvent,
     partial: &mut AssistantMessage,
     tool_partials: &mut BTreeMap<usize, String>,
-) -> Option<AssistantMessageEvent> {
+) -> Result<Option<AssistantMessageEvent>, String> {
     match proxy_event {
-        ProxyAssistantMessageEvent::Start => Some(AssistantMessageEvent::Start {
+        ProxyAssistantMessageEvent::Start => Ok(Some(AssistantMessageEvent::Start {
             partial: partial.clone(),
-        }),
+        })),
         ProxyAssistantMessageEvent::TextStart { content_index } => {
             ensure_len(partial, content_index);
             partial.content_mut()[content_index] = ContentBlock::Text {
                 text: String::new(),
                 text_signature: None,
             };
-            Some(AssistantMessageEvent::TextStart {
+            Ok(Some(AssistantMessageEvent::TextStart {
                 content_index,
                 partial: partial.clone(),
-            })
+            }))
         }
         ProxyAssistantMessageEvent::TextDelta {
             content_index,
             delta,
         } => {
-            let text = text_mut(partial, content_index)?;
+            let text = text_mut(partial, content_index)
+                .ok_or_else(|| "Received text_delta for non-text content".to_string())?;
             text.push_str(&delta);
-            Some(AssistantMessageEvent::TextDelta {
+            Ok(Some(AssistantMessageEvent::TextDelta {
                 content_index,
                 delta,
                 partial: partial.clone(),
-            })
+            }))
         }
         ProxyAssistantMessageEvent::TextEnd {
             content_index,
             content_signature,
         } => {
-            let block = partial.content_mut().get_mut(content_index)?;
+            let block = partial
+                .content_mut()
+                .get_mut(content_index)
+                .ok_or_else(|| "Received text_end for non-text content".to_string())?;
             match block {
                 ContentBlock::Text {
                     text,
                     text_signature,
                 } => {
                     *text_signature = content_signature;
-                    Some(AssistantMessageEvent::TextEnd {
+                    Ok(Some(AssistantMessageEvent::TextEnd {
                         content_index,
                         content: text.clone(),
                         partial: partial.clone(),
-                    })
+                    }))
                 }
-                _ => None,
+                _ => Err("Received text_end for non-text content".to_string()),
             }
         }
         ProxyAssistantMessageEvent::ThinkingStart { content_index } => {
@@ -431,28 +492,32 @@ fn process_proxy_event(
                 thinking_signature: None,
                 redacted: None,
             };
-            Some(AssistantMessageEvent::ThinkingStart {
+            Ok(Some(AssistantMessageEvent::ThinkingStart {
                 content_index,
                 partial: partial.clone(),
-            })
+            }))
         }
         ProxyAssistantMessageEvent::ThinkingDelta {
             content_index,
             delta,
         } => {
-            let thinking = thinking_mut(partial, content_index)?;
+            let thinking = thinking_mut(partial, content_index)
+                .ok_or_else(|| "Received thinking_delta for non-thinking content".to_string())?;
             thinking.push_str(&delta);
-            Some(AssistantMessageEvent::ThinkingDelta {
+            Ok(Some(AssistantMessageEvent::ThinkingDelta {
                 content_index,
                 delta,
                 partial: partial.clone(),
-            })
+            }))
         }
         ProxyAssistantMessageEvent::ThinkingEnd {
             content_index,
             content_signature,
         } => {
-            let block = partial.content_mut().get_mut(content_index)?;
+            let block = partial
+                .content_mut()
+                .get_mut(content_index)
+                .ok_or_else(|| "Received thinking_end for non-thinking content".to_string())?;
             match block {
                 ContentBlock::Thinking {
                     thinking,
@@ -460,13 +525,13 @@ fn process_proxy_event(
                     ..
                 } => {
                     *thinking_signature = content_signature;
-                    Some(AssistantMessageEvent::ThinkingEnd {
+                    Ok(Some(AssistantMessageEvent::ThinkingEnd {
                         content_index,
                         content: thinking.clone(),
                         partial: partial.clone(),
-                    })
+                    }))
                 }
-                _ => None,
+                _ => Err("Received thinking_end for non-thinking content".to_string()),
             }
         }
         ProxyAssistantMessageEvent::ToolCallStart {
@@ -478,18 +543,21 @@ fn process_proxy_event(
             partial.content_mut()[content_index] =
                 ContentBlock::tool_call(id, tool_name, serde_json::json!({}));
             tool_partials.insert(content_index, String::new());
-            Some(AssistantMessageEvent::ToolCallStart {
+            Ok(Some(AssistantMessageEvent::ToolCallStart {
                 content_index,
                 partial: partial.clone(),
-            })
+            }))
         }
         ProxyAssistantMessageEvent::ToolCallDelta {
             content_index,
             delta,
         } => {
-            let block = partial.content_mut().get_mut(content_index)?;
+            let block = partial
+                .content_mut()
+                .get_mut(content_index)
+                .ok_or_else(|| "Received toolcall_delta for non-toolCall content".to_string())?;
             let ContentBlock::ToolCall { arguments, .. } = block else {
-                return None;
+                return Err("Received toolcall_delta for non-toolCall content".to_string());
             };
             let acc = tool_partials.entry(content_index).or_default();
             acc.push_str(&delta);
@@ -499,31 +567,36 @@ fn process_proxy_event(
             } else {
                 parsed
             };
-            Some(AssistantMessageEvent::ToolCallDelta {
+            Ok(Some(AssistantMessageEvent::ToolCallDelta {
                 content_index,
                 delta,
                 partial: partial.clone(),
-            })
+            }))
         }
         ProxyAssistantMessageEvent::ToolCallEnd {
             content_index,
             tool_call,
         } => {
-            let ContentBlock::ToolCall { id, name, .. } = &tool_call else {
-                return None;
+            if !matches!(tool_call, ContentBlock::ToolCall { .. }) {
+                return Ok(None);
+            }
+            let Some(block) = partial.content_mut().get_mut(content_index) else {
+                return Ok(None);
             };
-            let block = partial.content_mut().get_mut(content_index)?;
-            let ContentBlock::ToolCall { arguments, .. } = block else {
-                return None;
-            };
-            let arguments = arguments.clone();
-            *block = ContentBlock::tool_call(id.clone(), name.clone(), arguments);
+            if !matches!(block, ContentBlock::ToolCall { .. }) {
+                return Ok(None);
+            }
+            // The terminal event is authoritative. The streaming deltas are
+            // only a progressively parsed preview; mirror the upstream
+            // Object.assign(toolCall) behavior instead of retaining a stale
+            // id/name/arguments value from the preview block.
+            *block = tool_call;
             tool_partials.remove(&content_index);
-            Some(AssistantMessageEvent::ToolCallEnd {
+            Ok(Some(AssistantMessageEvent::ToolCallEnd {
                 content_index,
                 tool_call: block.clone(),
                 partial: partial.clone(),
-            })
+            }))
         }
         ProxyAssistantMessageEvent::Done { reason, usage } => {
             partial.set_stop_reason(match reason {
@@ -531,16 +604,16 @@ fn process_proxy_event(
                 ProxyDoneReason::Length => StopReason::Length,
                 ProxyDoneReason::ToolUse => StopReason::ToolUse,
             });
-            partial.set_usage(parse_usage(usage));
+            partial.set_usage(parse_usage(usage)?);
             let done_reason = match partial.stop_reason() {
                 Some(StopReason::ToolUse) => DoneReason::ToolUse,
                 Some(StopReason::Length) => DoneReason::Length,
                 _ => DoneReason::Stop,
             };
-            Some(AssistantMessageEvent::Done {
+            Ok(Some(AssistantMessageEvent::Done {
                 reason: done_reason,
                 message: partial.clone(),
-            })
+            }))
         }
         ProxyAssistantMessageEvent::Error {
             reason,
@@ -558,16 +631,55 @@ fn process_proxy_event(
                 ..
             } = partial;
             *slot = error_message;
-            partial.set_usage(parse_usage(usage));
-            Some(AssistantMessageEvent::Error {
+            partial.set_usage(parse_usage(usage)?);
+            Ok(Some(AssistantMessageEvent::Error {
                 reason: if is_aborted {
                     ErrorReason::Aborted
                 } else {
                     ErrorReason::Error
                 },
                 error_message: partial.clone(),
-            })
+            }))
         }
+    }
+}
+
+/// Decode HTTP body chunks like the browser `TextDecoder` used by the
+/// upstream proxy client: a multibyte code point split between chunks must
+/// survive until the following chunk arrives.
+fn decode_proxy_utf8_chunk(carry: &mut Vec<u8>, bytes: &[u8]) -> String {
+    carry.extend_from_slice(bytes);
+    match std::str::from_utf8(carry) {
+        Ok(text) => {
+            let decoded = text.to_string();
+            carry.clear();
+            decoded
+        }
+        Err(error) if error.error_len().is_none() => {
+            let valid = error.valid_up_to();
+            let decoded = String::from_utf8_lossy(&carry[..valid]).into_owned();
+            *carry = carry[valid..].to_vec();
+            decoded
+        }
+        Err(_) => {
+            let decoded = String::from_utf8_lossy(carry).into_owned();
+            carry.clear();
+            decoded
+        }
+    }
+}
+
+fn finish_proxy_utf8(carry: &mut Vec<u8>, mut decoded: String) -> String {
+    if !carry.is_empty() {
+        decoded.push_str(&String::from_utf8_lossy(carry));
+        carry.clear();
+    }
+    decoded
+}
+
+async fn wait_for_proxy_abort(signal: Arc<AtomicBool>) {
+    while !signal.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }
 
@@ -594,8 +706,116 @@ fn ensure_len(partial: &mut AssistantMessage, index: usize) {
     }
 }
 
-fn parse_usage(value: JsonValue) -> Usage {
-    serde_json::from_value(value).unwrap_or_default()
+fn parse_usage(value: JsonValue) -> Result<Usage, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Invalid proxy usage: expected an object".to_string())?;
+    let cost = object
+        .get("cost")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| "Invalid proxy usage: missing cost object".to_string())?;
+    Ok(Usage {
+        input: wire_i64(object, "input")?,
+        output: wire_i64(object, "output")?,
+        cache_read: wire_i64_alias(object, "cacheRead", "cache_read")?,
+        cache_write: wire_i64_alias(object, "cacheWrite", "cache_write")?,
+        cache_write_1h: wire_optional_i64_alias(object, "cacheWrite1h", "cache_write_1h")?,
+        reasoning: wire_optional_i64(object, "reasoning")?,
+        total_tokens: wire_i64_alias(object, "totalTokens", "total_tokens")?,
+        cost: Cost {
+            input: wire_f64(cost, "input")?,
+            output: wire_f64(cost, "output")?,
+            cache_read: wire_f64_alias(cost, "cacheRead", "cache_read")?,
+            cache_write: wire_f64_alias(cost, "cacheWrite", "cache_write")?,
+            total: wire_f64(cost, "total")?,
+        },
+    })
+}
+
+fn wire_i64(object: &serde_json::Map<String, JsonValue>, field: &str) -> Result<i64, String> {
+    let Some(value) = object.get(field) else {
+        return Ok(0);
+    };
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+        .ok_or_else(|| format!("Invalid proxy usage: {field} must be an integer"))
+}
+
+fn wire_i64_alias(
+    object: &serde_json::Map<String, JsonValue>,
+    primary: &str,
+    alias: &str,
+) -> Result<i64, String> {
+    object
+        .get(primary)
+        .or_else(|| object.get(alias))
+        .map_or(Ok(0), |value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+                .ok_or_else(|| format!("Invalid proxy usage: {primary} must be an integer"))
+        })
+}
+
+fn wire_optional_i64(
+    object: &serde_json::Map<String, JsonValue>,
+    field: &str,
+) -> Result<Option<i64>, String> {
+    object
+        .get(field)
+        .map_or(Ok(None), |_value| wire_i64(object, field).map(Some))
+}
+
+fn wire_optional_i64_alias(
+    object: &serde_json::Map<String, JsonValue>,
+    primary: &str,
+    alias: &str,
+) -> Result<Option<i64>, String> {
+    object
+        .get(primary)
+        .or_else(|| object.get(alias))
+        .map_or(Ok(None), |value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+                .map(Some)
+                .ok_or_else(|| format!("Invalid proxy usage: {primary} must be an integer"))
+        })
+}
+
+fn wire_f64(object: &serde_json::Map<String, JsonValue>, field: &str) -> Result<f64, String> {
+    let Some(value) = object.get(field) else {
+        return Ok(0.0);
+    };
+    let number = value
+        .as_f64()
+        .ok_or_else(|| format!("Invalid proxy usage: {field} must be a number"))?;
+    if number.is_finite() {
+        Ok(number)
+    } else {
+        Err(format!("Invalid proxy usage: {field} must be finite"))
+    }
+}
+
+fn wire_f64_alias(
+    object: &serde_json::Map<String, JsonValue>,
+    primary: &str,
+    alias: &str,
+) -> Result<f64, String> {
+    object
+        .get(primary)
+        .or_else(|| object.get(alias))
+        .map_or(Ok(0.0), |value| {
+            let number = value
+                .as_f64()
+                .ok_or_else(|| format!("Invalid proxy usage: {primary} must be a number"))?;
+            if number.is_finite() {
+                Ok(number)
+            } else {
+                Err(format!("Invalid proxy usage: {primary} must be finite"))
+            }
+        })
 }
 
 fn finalize_error(
@@ -656,6 +876,7 @@ impl StreamSink for ProxyStreamPusher {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use pi_ai::types::Tool;
@@ -700,7 +921,8 @@ mod tests {
             ProxyAssistantMessageEvent::TextStart { content_index: 0 },
             &mut partial,
             &mut tool_partials,
-        );
+        )
+        .unwrap();
         process_proxy_event(
             ProxyAssistantMessageEvent::TextDelta {
                 content_index: 0,
@@ -708,7 +930,8 @@ mod tests {
             },
             &mut partial,
             &mut tool_partials,
-        );
+        )
+        .unwrap();
         process_proxy_event(
             ProxyAssistantMessageEvent::TextDelta {
                 content_index: 0,
@@ -716,7 +939,8 @@ mod tests {
             },
             &mut partial,
             &mut tool_partials,
-        );
+        )
+        .unwrap();
         assert!(
             matches!(&partial.content()[0], ContentBlock::Text { text, .. } if text == "hello")
         );
@@ -733,7 +957,8 @@ mod tests {
             },
             &mut partial,
             &mut tool_partials,
-        );
+        )
+        .unwrap();
         assert!(matches!(
             ev,
             Some(AssistantMessageEvent::Done {
@@ -756,7 +981,8 @@ mod tests {
             },
             &mut partial,
             &mut tool_partials,
-        );
+        )
+        .unwrap();
         assert!(matches!(
             ev,
             Some(AssistantMessageEvent::Error {
@@ -780,7 +1006,8 @@ mod tests {
             },
             &mut partial,
             &mut tool_partials,
-        );
+        )
+        .unwrap();
         process_proxy_event(
             ProxyAssistantMessageEvent::ToolCallDelta {
                 content_index: 0,
@@ -788,7 +1015,8 @@ mod tests {
             },
             &mut partial,
             &mut tool_partials,
-        );
+        )
+        .unwrap();
         process_proxy_event(
             ProxyAssistantMessageEvent::ToolCallDelta {
                 content_index: 0,
@@ -796,7 +1024,8 @@ mod tests {
             },
             &mut partial,
             &mut tool_partials,
-        );
+        )
+        .unwrap();
         assert!(
             matches!(&partial.content()[0], ContentBlock::ToolCall { name, .. } if name == "bash")
         );
@@ -817,7 +1046,8 @@ mod tests {
             },
             &mut partial,
             &mut tool_partials,
-        );
+        )
+        .unwrap();
         process_proxy_event(
             ProxyAssistantMessageEvent::ToolCallDelta {
                 content_index: 0,
@@ -825,20 +1055,24 @@ mod tests {
             },
             &mut partial,
             &mut tool_partials,
-        );
-        process_proxy_event(
+        )
+        .unwrap();
+        let _ = process_proxy_event(
             ProxyAssistantMessageEvent::ToolCallEnd {
                 content_index: 0,
                 tool_call: ContentBlock::tool_call(
                     "tc1",
                     "bash",
-                    serde_json::json!({"command": "ls"}),
+                    serde_json::json!({"command": "ls -la"}),
                 ),
             },
             &mut partial,
             &mut tool_partials,
         );
         assert!(matches!(&partial.content()[0], ContentBlock::ToolCall { id, .. } if id == "tc1"));
+        assert!(
+            matches!(&partial.content()[0], ContentBlock::ToolCall { arguments, .. } if arguments.get("command").and_then(|v| v.as_str()) == Some("ls -la"))
+        );
         assert!(tool_partials.is_empty());
     }
 
@@ -856,20 +1090,132 @@ mod tests {
             &mut sink,
             &mut partial,
             &mut tool_partials,
-        );
+        )
+        .unwrap();
         handle_sse_line(
             "data: {\"type\":\"text_start\",\"contentIndex\":0}",
             &mut sink,
             &mut partial,
             &mut tool_partials,
-        );
+        )
+        .unwrap();
         handle_sse_line(
             "data: {\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"hi\"}",
             &mut sink,
             &mut partial,
             &mut tool_partials,
-        );
+        )
+        .unwrap();
         assert!(matches!(&partial.content()[0], ContentBlock::Text { text, .. } if text == "hi"));
+    }
+
+    #[test]
+    fn accepts_the_official_toolcall_wire_names() {
+        let event: ProxyAssistantMessageEvent = serde_json::from_value(serde_json::json!({
+            "type": "toolcall_start",
+            "contentIndex": 0,
+            "id": "call-1",
+            "toolName": "bash"
+        }))
+        .expect("official proxy toolcall event should deserialize");
+        assert!(matches!(
+            event,
+            ProxyAssistantMessageEvent::ToolCallStart {
+                content_index: 0,
+                id,
+                tool_name
+            } if id == "call-1" && tool_name == "bash"
+        ));
+    }
+
+    #[test]
+    fn accepts_camel_case_tool_use_stop_reason_and_rejects_invalid_usage() {
+        let event: ProxyAssistantMessageEvent = serde_json::from_value(serde_json::json!({
+            "type": "done",
+            "reason": "toolUse",
+            "usage": test_usage(),
+        }))
+        .expect("official toolUse stop reason should deserialize");
+        assert!(matches!(
+            event,
+            ProxyAssistantMessageEvent::Done {
+                reason: ProxyDoneReason::ToolUse,
+                ..
+            }
+        ));
+
+        let mut partial = new_partial();
+        let mut tool_partials = BTreeMap::new();
+        let error = process_proxy_event(
+            ProxyAssistantMessageEvent::Done {
+                reason: ProxyDoneReason::Stop,
+                usage: serde_json::json!("not-usage"),
+            },
+            &mut partial,
+            &mut tool_partials,
+        )
+        .expect_err("malformed usage must fail closed");
+        assert!(error.contains("expected an object"), "{error}");
+    }
+
+    #[test]
+    fn malformed_and_out_of_order_proxy_events_are_errors() {
+        let mut partial = new_partial();
+        let mut tool_partials = BTreeMap::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut sink = ProxyStreamPusher {
+            tx,
+            finished: false,
+        };
+        let error = handle_sse_line(
+            "data: {\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"x\"}",
+            &mut sink,
+            &mut partial,
+            &mut tool_partials,
+        )
+        .expect_err("text deltas before text_start must fail closed");
+        assert!(error.contains("text_delta"), "{error}");
+
+        let error = handle_sse_line(
+            "data: not-json",
+            &mut sink,
+            &mut partial,
+            &mut tool_partials,
+        )
+        .expect_err("malformed SSE JSON must not be silently ignored");
+        assert!(error.contains("Invalid proxy event"), "{error}");
+    }
+
+    #[test]
+    fn proxy_utf8_decoder_preserves_split_code_points() {
+        let mut carry = Vec::new();
+        assert_eq!(decode_proxy_utf8_chunk(&mut carry, &[b'h', 0xc3]), "h");
+        assert_eq!(decode_proxy_utf8_chunk(&mut carry, &[0xa9, b'!']), "é!");
+        assert_eq!(finish_proxy_utf8(&mut carry, String::new()), "");
+    }
+
+    #[tokio::test]
+    async fn an_already_aborted_proxy_request_returns_an_aborted_message() {
+        let model = sample_model();
+        let context = Context {
+            system_prompt: None,
+            messages: vec![],
+            tools: Vec::<Tool>::new(),
+        };
+        let signal = Arc::new(AtomicBool::new(true));
+        let stream = stream_proxy(
+            &model,
+            &context,
+            ProxyStreamOptions {
+                signal: Some(signal),
+                auth_token: "token".into(),
+                proxy_url: "http://127.0.0.1:1".into(),
+                options: Default::default(),
+            },
+        );
+        let (_, message) = stream.collect().await;
+        assert_eq!(message.stop_reason(), Some(StopReason::Aborted));
+        assert_eq!(message.error_message(), Some("Request aborted by user"));
     }
 
     #[tokio::test]

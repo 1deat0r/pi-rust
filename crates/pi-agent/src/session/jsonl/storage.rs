@@ -1,5 +1,5 @@
-//! JSONL v4 per-session storage — port of
-//! `packages/agent/src/harness/session/jsonl/storage.ts`.
+//! Durable JSONL session storage — official v3 files with backward-compatible
+//! reads/writes for the prior native v4 format.
 
 use super::super::state::{BranchBounds, EntryQuery, LogOptions, RecordQuery, SessionState};
 use super::super::types::{
@@ -7,6 +7,7 @@ use super::super::types::{
     NewRecord, SessionError, SessionErrorKind, SessionMetadata, SessionStats,
 };
 use super::errors::{file_result, JsonlDecodeError, JsonlDecodeErrorKind};
+use super::v3;
 use super::{encode_header, encode_mutation, metadata_from_header, parse_header, parse_mutation};
 use crate::fs::FileSystem;
 use crate::types::FileError;
@@ -17,6 +18,12 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionFileFormat {
+    V3,
+    V4,
 }
 
 /// Build a complete sibling temporary file, then atomically rename it over
@@ -47,6 +54,7 @@ pub struct JsonlSessionStorage<F: FileSystem> {
     fs: F,
     metadata: SessionMetadata,
     state: SessionState,
+    format: SessionFileFormat,
 }
 
 impl<F: FileSystem> JsonlSessionStorage<F> {
@@ -55,19 +63,49 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
             fs,
             metadata,
             state: SessionState::default(),
+            format: SessionFileFormat::V4,
         }
     }
 
     pub async fn create(fs: F, path: &str, header: JsonlV4Header) -> Result<Self, FileError> {
+        Self::create_with_format(fs, path, header, SessionFileFormat::V4).await
+    }
+
+    pub async fn create_v3(fs: F, path: &str, header: JsonlV4Header) -> Result<Self, FileError> {
+        Self::create_with_format(fs, path, header, SessionFileFormat::V3).await
+    }
+
+    async fn create_with_format(
+        fs: F,
+        path: &str,
+        header: JsonlV4Header,
+        format: SessionFileFormat,
+    ) -> Result<Self, FileError> {
+        let encoded_header = if format == SessionFileFormat::V3 {
+            v3::encode_header(&header).map_err(to_fs)?
+        } else {
+            encode_header(&header).map_err(to_fs)?
+        };
         file_result(
-            fs.write_file(path, &encode_header(&header).map_err(to_fs)?),
+            fs.write_file(path, &encoded_header),
             &format!("Failed to initialize session {path}"),
         )?;
         let file_info = file_result(
             fs.file_info(path),
             &format!("Failed to read session metadata {path}"),
         )?;
-        let storage = Self::new(fs, metadata_from_header(&header, path, file_info.mtime_ms));
+        let mut metadata = metadata_from_header(&header, path, file_info.mtime_ms);
+        metadata.source_format = if format == SessionFileFormat::V3 {
+            3
+        } else {
+            4
+        };
+        let storage = Self {
+            fs,
+            metadata,
+            state: SessionState::default(),
+            format,
+        };
         Ok(storage)
     }
 
@@ -90,16 +128,44 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
                 message: "is missing a header".to_string(),
             });
         }
-        let header = parse_header(physical_lines[0]).map_err(|e| invalid_file(path, 1, e))?;
+        let (header, format) = match parse_header(physical_lines[0]) {
+            Ok(header) => (header, SessionFileFormat::V4),
+            Err(v4_error) => match v3::parse_header(physical_lines[0]) {
+                Ok(header) => (header, SessionFileFormat::V3),
+                Err(_) => return Err(invalid_file(path, 1, v4_error)),
+            },
+        };
         let file_info = file_result(
             fs.file_info(path),
             &format!("Failed to read session metadata {path}"),
         )
         .map_err(LoadError::Io)?;
-        let mut storage = Self::new(fs, metadata_from_header(&header, path, file_info.mtime_ms));
+        let mut metadata = metadata_from_header(&header, path, file_info.mtime_ms);
+        metadata.source_format = if format == SessionFileFormat::V3 {
+            3
+        } else {
+            4
+        };
+        let mut storage = Self {
+            fs,
+            metadata,
+            state: SessionState::default(),
+            format,
+        };
         let mut torn_tail_repaired = false;
+        let mut legacy_seq = 0u64;
         for (index, line) in physical_lines.iter().enumerate().skip(1) {
-            let mutation = match parse_mutation(line) {
+            if format == SessionFileFormat::V3 && line.trim().is_empty() {
+                continue;
+            }
+            if format == SessionFileFormat::V3 {
+                legacy_seq += 1;
+            }
+            let mutation = match if format == SessionFileFormat::V3 {
+                v3::parse_entry(line, legacy_seq)
+            } else {
+                parse_mutation(line)
+            } {
                 Ok(m) => m,
                 Err(e) => {
                     let is_torn_tail =
@@ -133,6 +199,11 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
                     line: index + 1,
                     error: e,
                 })?;
+            if format == SessionFileFormat::V3 {
+                if let Mutation::Entry { entry, .. } = &mutation {
+                    storage.state.set_main_leaf_for_legacy(entry.id());
+                }
+            }
         }
         if !torn_tail_repaired && !content.ends_with('\n') {
             file_result(
@@ -165,6 +236,35 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
     where
         F: Clone,
     {
+        self.fork_with_format(path, header, options, self.format)
+            .await
+    }
+
+    /// Explicitly stage a v3 fork for coding-agent's upstream-compatible
+    /// durable session path, even when the source is a native v4 session.
+    pub async fn fork_v3(
+        &self,
+        path: &str,
+        header: JsonlV4Header,
+        options: &super::super::state::ForkOptions,
+    ) -> Result<Self, ForkError>
+    where
+        F: Clone,
+    {
+        self.fork_with_format(path, header, options, SessionFileFormat::V3)
+            .await
+    }
+
+    async fn fork_with_format(
+        &self,
+        path: &str,
+        header: JsonlV4Header,
+        options: &super::super::state::ForkOptions,
+        format: SessionFileFormat,
+    ) -> Result<Self, ForkError>
+    where
+        F: Clone,
+    {
         let mutations = self
             .state
             .create_fork_mutations(options)
@@ -172,9 +272,15 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
         let temp_path = format!("{path}.tmp");
         let fs = self.fs.clone();
         let staged: Result<(), FileError> = async {
-            let mut target = JsonlSessionStorage::create(fs.clone(), &temp_path, header)
-                .await
-                .map_err(|e| FileError::new(format!("Failed to stage fork {path}: {e}")))?;
+            let mut target = match format {
+                SessionFileFormat::V3 => {
+                    JsonlSessionStorage::create_v3(fs.clone(), &temp_path, header).await
+                }
+                SessionFileFormat::V4 => {
+                    JsonlSessionStorage::create(fs.clone(), &temp_path, header).await
+                }
+            }
+            .map_err(|e| FileError::new(format!("Failed to stage fork {path}: {e}")))?;
             for mutation in &mutations {
                 target
                     .append_mutation(mutation)
@@ -364,12 +470,24 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
     }
 
     async fn append_mutation(&mut self, mutation: &Mutation) -> Result<(), SessionError> {
-        let line = encode_mutation(mutation).map_err(|e| {
-            SessionError::new(
-                SessionErrorKind::Storage,
-                format!("failed to encode mutation: {e}"),
-            )
-        })?;
+        let line = if self.format == SessionFileFormat::V3 {
+            v3::encode_mutation(mutation, now_ms()).map_err(|e| {
+                SessionError::new(
+                    SessionErrorKind::Storage,
+                    format!("failed to encode session entry: {e}"),
+                )
+            })?
+        } else {
+            encode_mutation(mutation).map(Some).map_err(|e| {
+                SessionError::new(
+                    SessionErrorKind::Storage,
+                    format!("failed to encode mutation: {e}"),
+                )
+            })?
+        };
+        let Some(line) = line else {
+            return Ok(());
+        };
         file_result(
             self.fs.append_file(&self.metadata.path, &line),
             &format!("Failed to append session {}", self.metadata.path),

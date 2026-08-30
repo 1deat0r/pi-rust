@@ -1,7 +1,7 @@
 //! Bash tool — port of `packages/agent/src/harness/tools/bash.ts`, including
 //! bounded live output updates and a final progress snapshot.
 
-use super::truncate::{format_size, truncate_tail, DEFAULT_MAX_BYTES};
+use super::truncate::{format_size, DEFAULT_MAX_BYTES};
 use super::{AgentToolResult, ToolUpdateCallback};
 use crate::harness::env::{ExecutionErrorCode, StdExecutionEnv};
 use crate::harness::shell_output::{
@@ -10,7 +10,7 @@ use crate::harness::shell_output::{
 };
 use crate::types::FileError;
 use pi_ai::types::ToolResultMessage;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -23,8 +23,10 @@ pub struct BashCapture {
     pub exit_code: Option<i32>,
     pub truncated: bool,
     pub truncation_message: String,
+    pub full_output_path: Option<String>,
     pub timed_out: bool,
     pub aborted: bool,
+    pub error_message: Option<String>,
 }
 
 /// Validates a bash timeout (seconds). Mirrors upstream `validateTimeout`.
@@ -52,144 +54,92 @@ pub async fn run_bash(
     timeout_secs: Option<f64>,
     abort: Option<Arc<AtomicBool>>,
 ) -> Result<BashCapture, FileError> {
-    run_bash_with_callback(command, cwd, timeout_secs, abort, None).await
+    validate_timeout(timeout_secs).map_err(FileError::new)?;
+
+    // Keep every public bash entry point on the same bounded capture path as
+    // the upstream harness so RPC/non-update calls retain the full-output
+    // artifact when the displayed tail is truncated.
+    let capture = run_bash_with_output(command, cwd, timeout_secs, abort, None).await?;
+    if !capture.aborted && !capture.timed_out {
+        if let Some(error) = capture.error_message.clone() {
+            return Err(FileError::new(error));
+        }
+    }
+    Ok(capture)
 }
 
-type BashOutputCallback = Arc<dyn Fn(String) + Send + Sync>;
+/// Receives the current combined stdout/stderr snapshot while a direct bash
+/// command is running. The callback is invoked from the async shell-capture
+/// path, never from a detached renderer thread.
+pub type BashOutputCallback = Arc<dyn Fn(String) + Send + Sync>;
 
-async fn run_bash_with_callback(
+/// Run a direct interactive bash command through the shared shell-capture
+/// implementation. This variant preserves the streamed output callback and
+/// the final truncation/full-output metadata needed by the interactive TUI's
+/// `BashExecution` record.
+pub async fn run_bash_with_output(
     command: &str,
     cwd: &str,
     timeout_secs: Option<f64>,
     abort: Option<Arc<AtomicBool>>,
-    on_output: Option<&BashOutputCallback>,
+    on_output: Option<BashOutputCallback>,
 ) -> Result<BashCapture, FileError> {
-    let mut child = tokio::process::Command::new("/bin/bash")
-        .arg("-c")
-        .arg(command)
-        .current_dir(cwd)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| FileError::new(format!("failed to spawn bash: {e}")))?;
+    validate_timeout(timeout_secs).map_err(FileError::new)?;
 
-    let mut stdout = child.stdout.take().expect("stdout piped");
-    let mut stderr = child.stderr.take().expect("stderr piped");
-    use tokio::io::AsyncReadExt;
-
-    // Drain both pipes concurrently, racing the deadline and agent abort so
-    // partial output is preserved without allowing a full stderr pipe to
-    // deadlock stdout or cancellation.
-    let deadline = timeout_secs
-        .map(|secs| tokio::time::Instant::now() + std::time::Duration::from_secs_f64(secs));
-    let polling_deadline =
-        tokio::time::Instant::now() + std::time::Duration::from_secs(3_153_600_000);
-    let mut so: Vec<u8> = Vec::new();
-    let mut se: Vec<u8> = Vec::new();
-    let mut so_eof = false;
-    let mut se_eof = false;
-    let mut timed_out = false;
-    let mut aborted = false;
-    let mut buf_so = [0u8; 8192];
-    let mut buf_se = [0u8; 8192];
-    while !(so_eof && se_eof) {
-        if abort
-            .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::SeqCst))
-        {
-            aborted = true;
-            let _ = child.kill().await;
-            break;
-        }
-
-        tokio::select! {
-            _ = tokio::time::sleep_until(deadline.unwrap_or(polling_deadline)), if deadline.is_some() => {
-                timed_out = true;
-                let _ = child.kill().await;
-                break;
-            }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
-            result = stdout.read(&mut buf_so), if !so_eof => {
-                match result {
-                    Ok(0) => so_eof = true,
-                    Ok(n) => {
-                        so.extend_from_slice(&buf_so[..n]);
-                        if let Some(on_output) = on_output {
-                            on_output(combined_output(&so, &se));
-                        }
-                    }
-                    Err(_) => so_eof = true,
-                }
-            }
-            result = stderr.read(&mut buf_se), if !se_eof => {
-                match result {
-                    Ok(0) => se_eof = true,
-                    Ok(n) => {
-                        se.extend_from_slice(&buf_se[..n]);
-                        if let Some(on_output) = on_output {
-                            on_output(combined_output(&so, &se));
-                        }
-                    }
-                    Err(_) => se_eof = true,
-                }
-            }
-        }
-    }
-    if timed_out || aborted {
-        let _ = child.kill().await;
-    }
-    let exit_code = child.wait().await.ok().and_then(|s| s.code());
-
-    let output = combined_output(&so, &se);
-
-    let (truncation, last_line_partial, last_line_bytes) = truncate_tail(&output);
-    let mut truncation_message = String::new();
-    if truncation.truncated {
-        let start_line = truncation.total_lines - truncation.output_lines + 1;
-        let end_line = truncation.total_lines;
-        if last_line_partial {
-            truncation_message = format!(
-                "\n\n[Showing last {} of line {end_line} (line is {}). Full output truncated]",
-                format_size(truncation.output_bytes),
-                format_size(last_line_bytes)
-            );
-        } else if truncation.truncated_by == Some(super::truncate::TruncatedBy::Lines) {
-            truncation_message = format!(
-                "\n\n[Showing lines {start_line}-{end_line} of {}. Full output truncated]",
-                truncation.total_lines
-            );
-        } else {
-            truncation_message = format!(
-                "\n\n[Showing lines {start_line}-{end_line} of {} ({} limit). Full output truncated]",
-                truncation.total_lines,
-                format_size(DEFAULT_MAX_BYTES)
-            );
-        }
-    }
-
-    Ok(BashCapture {
-        output: truncation.content,
-        exit_code: if timed_out || aborted {
-            None
-        } else {
-            exit_code
+    let on_chunk: Option<ChunkHandlerWithProgress> = on_output.map(|callback| {
+        Arc::new(
+            move |_chunk: &str, progress: &Mutex<ShellCaptureProgress>| {
+                callback(
+                    progress
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .output
+                        .clone(),
+                );
+                Ok(())
+            },
+        ) as ChunkHandlerWithProgress
+    });
+    let environment = StdExecutionEnv::new(cwd.to_string());
+    let capture = execute_shell_with_capture(
+        &environment,
+        command,
+        &ShellCaptureOptions {
+            cwd: Some(cwd.to_string()),
+            env: None,
+            timeout: timeout_secs,
+            abort,
+            on_chunk,
+            inherit_env: true,
+            return_execution_errors: true,
         },
-        truncated: truncation.truncated,
-        truncation_message,
-        timed_out,
-        aborted,
-    })
-}
+    )
+    .await
+    .map_err(|error| FileError::new(error.to_string()))?;
 
-fn combined_output(stdout: &[u8], stderr: &[u8]) -> String {
-    let mut output = String::from_utf8_lossy(stdout).into_owned();
-    if !stderr.is_empty() {
-        if !output.is_empty() {
-            output.push('\n');
-        }
-        output.push_str(&String::from_utf8_lossy(stderr));
-    }
-    output
+    let timed_out = capture
+        .execution_error
+        .as_ref()
+        .is_some_and(|error| error.code == ExecutionErrorCode::Timeout);
+    let error_message = capture
+        .execution_error
+        .as_ref()
+        .map(|error| error.message.clone());
+    let formatted = format_bash_output(&capture);
+    let truncation_message = formatted
+        .strip_prefix(&capture.output)
+        .unwrap_or_default()
+        .to_string();
+    Ok(BashCapture {
+        output: capture.output,
+        exit_code: capture.exit_code,
+        truncated: capture.truncated,
+        truncation_message,
+        full_output_path: capture.full_output_path,
+        timed_out,
+        aborted: capture.cancelled,
+        error_message,
+    })
 }
 
 /// Execute handler for the agent tool: validates, runs, and renders the
@@ -275,7 +225,9 @@ pub async fn execute_bash_with_updates(
         Arc::new(
             move |_chunk: &str, progress: &Mutex<ShellCaptureProgress>| {
                 let should_emit = {
-                    let mut last_update_at = last_update_at.lock().unwrap();
+                    let mut last_update_at = last_update_at
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
                     if last_update_at.elapsed() < Duration::from_millis(BASH_UPDATE_THROTTLE_MS) {
                         false
                     } else {
@@ -284,7 +236,10 @@ pub async fn execute_bash_with_updates(
                     }
                 };
                 if should_emit {
-                    let progress = progress.lock().unwrap().clone();
+                    let progress = progress
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .clone();
                     emit_bash_partial(
                         &on_update,
                         progress.output.clone(),

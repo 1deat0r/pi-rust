@@ -756,6 +756,6 @@ MIT — see [LICENSE](LICENSE). The port targets the MIT-licensed
 Production code across the workspace is progressively adopting hard clippy
 gates (`[workspace.lints.clippy] unwrap_used/expect_used/panic = "deny"`,
 opted into per crate via `[lints] workspace = true`). Converted crates so
-far: `pi-evals`, `pi-server`, `pi-client`, `pi-ai` (auth/OAuth now uses the typed
-`PiAiError`). Test code carries scoped `#[allow]`s only.
+far: `pi-evals`, `pi-server`, `pi-client`, `pi-ai`, `pi-agent`. Test code carries
+scoped `#[allow]`s only.
 See `PLAN.md` for the Rust-idiom campaign status.

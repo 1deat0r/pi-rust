@@ -17,11 +17,30 @@ pub async fn execute_edit(
     edits: Vec<Edit>,
     cwd: &str,
 ) -> Result<ToolResultMessage, String> {
+    execute_edit_with_abort(tool_call_id, path, edits, cwd, None).await
+}
+
+/// Edit with the agent-loop abort flag attached. These checks mirror the
+/// upstream signal boundaries around file inspection, read, and write while
+/// keeping the existing public convenience API unchanged.
+pub async fn execute_edit_with_abort(
+    tool_call_id: &str,
+    path: &str,
+    edits: Vec<Edit>,
+    cwd: &str,
+    abort: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<ToolResultMessage, String> {
+    if crate::agent::is_aborted(abort.as_ref()) {
+        return Err("Operation aborted".to_string());
+    }
     let absolute = resolve_tool_path(cwd, path);
     let key = crate::harness::tools::resolve_mutation_key(cwd, path);
     let path = path.to_string();
     let tool_call_id = tool_call_id.to_string();
     crate::harness::tools::with_file_mutation_queue(key, async move {
+        if crate::agent::is_aborted(abort.as_ref()) {
+            return Err("Operation aborted".to_string());
+        }
         let metadata = std::fs::metadata(&absolute)
             .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
         if !metadata.is_file() {
@@ -30,15 +49,24 @@ pub async fn execute_edit(
 
         let content = std::fs::read_to_string(&absolute)
             .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
+        if crate::agent::is_aborted(abort.as_ref()) {
+            return Err("Operation aborted".to_string());
+        }
 
         let (bom, text) = strip_bom(&content);
         let original_ending = detect_line_ending(&text);
         let normalized_content = normalize_to_lf(&text);
         let result = apply_edits_to_normalized_content(&normalized_content, &edits, &path)?;
+        if crate::agent::is_aborted(abort.as_ref()) {
+            return Err("Operation aborted".to_string());
+        }
 
         let final_content = bom + &restore_line_endings(&result.new_content, original_ending);
         std::fs::write(&absolute, final_content)
             .map_err(|e| format!("Could not edit file: {path}. Error code: {e}."))?;
+        if crate::agent::is_aborted(abort.as_ref()) {
+            return Err("Operation aborted".to_string());
+        }
 
         let (diff, first_changed_line) =
             generate_diff_string(&result.base_content, &result.new_content, 4);
@@ -170,6 +198,7 @@ pub fn extract_edits(args: &serde_json::Value) -> Result<Vec<Edit>, String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -278,6 +307,22 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("Found 3 occurrences"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn aborts_before_inspecting_the_file() {
+        let (dir, _) = tmpdir("aborted");
+        let abort = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let error = execute_edit_with_abort(
+            "e",
+            "missing.txt",
+            vec![edit("before", "after")],
+            &dir.display().to_string(),
+            Some(abort),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "Operation aborted");
     }
 
     #[tokio::test]

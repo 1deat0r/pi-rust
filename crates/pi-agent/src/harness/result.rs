@@ -59,6 +59,7 @@ impl std::fmt::Display for TaggedError {
 impl std::error::Error for TaggedError {}
 
 /// Dispatches on an error's tag, mirroring upstream `matchError`.
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 pub fn match_error<TValue>(error: &TaggedError, matchers: &ErrorMatchers<TValue>) -> TValue {
     match matchers.get(&error.tag) {
         Some(matcher) => matcher(error),
@@ -67,6 +68,7 @@ pub fn match_error<TValue>(error: &TaggedError, matchers: &ErrorMatchers<TValue>
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

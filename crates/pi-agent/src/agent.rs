@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use futures_util::FutureExt;
 use pi_ai::types::{
     AssistantMessage, Context, Message, StopReason, ToolResultMessage, UserContentBody,
 };
@@ -17,8 +18,21 @@ use crate::types::AgentMessage;
 /// Provider stream function: `(model, context) -> event stream`.
 pub type StreamFn =
     Arc<dyn Fn(&pi_ai::model::Model, &Context) -> AssistantMessageEventStream + Send + Sync>;
+/// Option-aware provider stream function. This additive companion to
+/// [`StreamFn`] preserves source compatibility for existing callers while
+/// allowing rich agent loops to forward the upstream `SimpleStreamOptions`.
+pub type StreamFnWithOptions = Arc<
+    dyn Fn(
+            &pi_ai::model::Model,
+            &Context,
+            &pi_ai::types::SimpleStreamOptions,
+        ) -> AssistantMessageEventStream
+        + Send
+        + Sync,
+>;
 pub type StreamEventObserver = Arc<dyn Fn(&pi_ai::AssistantMessageEvent) + Send + Sync>;
 
+#[derive(Clone)]
 pub struct AgentContext {
     pub system_prompt: Option<String>,
     pub messages: Vec<AgentMessage>,
@@ -85,6 +99,7 @@ pub async fn run_agent_loop(
         .cloned()
         .chain(prompts.clone())
         .collect();
+    context.messages = current_messages.clone();
 
     emit(AgentEvent::AgentStart);
     emit(AgentEvent::TurnStart);
@@ -100,7 +115,16 @@ pub async fn run_agent_loop(
     loop {
         // Stream an assistant response.
         let message = stream_assistant_response(&current_messages, context, config).await;
-        new_messages.push(AgentMessage::Core(Message::Assistant(message.clone())));
+        let assistant_message = AgentMessage::Core(Message::Assistant(message.clone()));
+        current_messages.push(assistant_message.clone());
+        context.messages = current_messages.clone();
+        new_messages.push(assistant_message.clone());
+        emit(AgentEvent::MessageStart {
+            message: assistant_message.clone(),
+        });
+        emit(AgentEvent::MessageEnd {
+            message: assistant_message,
+        });
 
         // Terminal error/abort ends the run.
         if matches!(
@@ -126,7 +150,7 @@ pub async fn run_agent_loop(
             .cloned()
             .collect();
         let mut tool_results: Vec<ToolResultMessage> = Vec::new();
-        let mut has_more_tool_calls = false;
+        let mut terminate_flags = Vec::new();
         if !tool_calls.is_empty() {
             let truncated = message.stop_reason() == Some(StopReason::Length);
             for call in &tool_calls {
@@ -138,6 +162,7 @@ pub async fn run_agent_loop(
                         ..
                     } => {
                         if truncated {
+                            terminate_flags.push(false);
                             ToolResultMessage::text(
                                 id.clone(),
                                 name.clone(),
@@ -147,44 +172,30 @@ pub async fn run_agent_loop(
                         } else {
                             match context.tools.iter().find(|t| t.tool.name == *name) {
                                 Some(tool) => {
-                                    match (tool.execute)(id.clone(), arguments.clone(), None, None)
-                                        .await
-                                    {
-                                        Ok(result) => {
-                                            let content = result.content;
-                                            let details = result.details;
-                                            let usage = result.usage;
-                                            let added_tool_names =
-                                                if result.added_tool_names.is_empty() {
-                                                    None
-                                                } else {
-                                                    Some(result.added_tool_names)
-                                                };
-                                            ToolResultMessage::ToolResult {
-                                                tool_call_id: id.clone(),
-                                                tool_name: name.clone(),
-                                                content,
-                                                details,
-                                                usage,
-                                                added_tool_names,
-                                                is_error: false,
-                                                timestamp: pi_ai::types::now_ms(),
-                                            }
-                                        }
-                                        Err(e) => ToolResultMessage::text(
-                                            id.clone(),
-                                            name.clone(),
-                                            e,
-                                            true,
-                                        ),
-                                    }
+                                    let (result, is_error) = execute_tool_with_cancellation(
+                                        tool,
+                                        id.clone(),
+                                        arguments.clone(),
+                                        config.signal.clone(),
+                                    )
+                                    .await;
+                                    terminate_flags.push(result.terminate && !is_error);
+                                    agent_tool_result_to_message(
+                                        id.clone(),
+                                        name.clone(),
+                                        &result,
+                                        is_error,
+                                    )
                                 }
-                                None => ToolResultMessage::text(
-                                    id.clone(),
-                                    name.clone(),
-                                    format!("Unknown tool: {name}"),
-                                    true,
-                                ),
+                                None => {
+                                    terminate_flags.push(false);
+                                    ToolResultMessage::text(
+                                        id.clone(),
+                                        name.clone(),
+                                        format!("Unknown tool: {name}"),
+                                        true,
+                                    )
+                                }
                             }
                         }
                     }
@@ -194,8 +205,11 @@ pub async fn run_agent_loop(
                 new_messages.push(AgentMessage::Core(Message::ToolResult(result.clone())));
                 tool_results.push(result);
             }
-            has_more_tool_calls = tool_results.iter().any(|r| !r.is_error());
         }
+
+        let batch_terminates =
+            !terminate_flags.is_empty() && terminate_flags.iter().all(|terminated| *terminated);
+        let has_more_tool_calls = !tool_calls.is_empty() && !batch_terminates;
 
         emit(AgentEvent::TurnEnd {
             message: message.clone(),
@@ -212,11 +226,79 @@ pub async fn run_agent_loop(
     }
 }
 
+fn agent_tool_result_to_message(
+    tool_call_id: String,
+    tool_name: String,
+    result: &crate::tools::AgentToolResult,
+    is_error: bool,
+) -> ToolResultMessage {
+    let added_tool_names =
+        (!result.added_tool_names.is_empty()).then(|| result.added_tool_names.clone());
+    ToolResultMessage::ToolResult {
+        tool_call_id,
+        tool_name,
+        content: result.content.clone(),
+        details: result.details.clone(),
+        usage: result.usage.clone(),
+        added_tool_names,
+        is_error,
+        timestamp: pi_ai::types::now_ms(),
+    }
+}
+
+async fn execute_tool_with_cancellation(
+    tool: &AgentTool,
+    tool_call_id: String,
+    arguments: serde_json::Value,
+    signal: Option<Arc<AtomicBool>>,
+) -> (crate::tools::AgentToolResult, bool) {
+    if is_aborted(signal.as_ref()) {
+        return (
+            crate::tools::AgentToolResult::text("Operation aborted"),
+            true,
+        );
+    }
+    let abort_signal = signal.clone();
+    let tool = tool.clone();
+    let mut execution = Box::pin(async move {
+        let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (tool.execute)(tool_call_id, arguments, signal.clone(), None)
+        })) {
+            Ok(future) => future,
+            Err(_) => return Err("tool execution panicked".to_string()),
+        };
+        std::panic::AssertUnwindSafe(future)
+            .catch_unwind()
+            .await
+            .map_err(|_| "tool execution panicked".to_string())?
+    });
+    let result = if let Some(signal) = abort_signal {
+        tokio::select! {
+            result = &mut execution => result,
+            _ = wait_for_abort(signal) => {
+                tokio::spawn(async move {
+                    let _ = execution.await;
+                });
+                Err("Operation aborted".to_string())
+            },
+        }
+    } else {
+        execution.await
+    };
+    match result {
+        Ok(result) => (result, false),
+        Err(error) => (crate::tools::AgentToolResult::text(error), true),
+    }
+}
+
 async fn stream_assistant_response(
     current_messages: &[AgentMessage],
     context: &AgentContext,
     config: &AgentLoopConfig,
 ) -> AssistantMessage {
+    if is_aborted(config.signal.as_ref()) {
+        return aborted_assistant_message(&config.model);
+    }
     // Message conversion goes through the harness converter (messages.rs
     // `convertToLlm`): custom agent messages are rendered into user messages
     // (bash executions, custom content, compaction/branch summaries) instead
@@ -230,11 +312,59 @@ async fn stream_assistant_response(
         messages: llm_messages,
         tools: context.tools.iter().map(|t| t.tool.clone()).collect(),
     };
-    let stream = (config.stream_fn)(&config.model, &llm_context);
-    if let Some(observer) = &config.on_stream_event {
-        stream.collect_with_observer(observer).await
+    let stream = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        (config.stream_fn)(&config.model, &llm_context)
+    })) {
+        Ok(stream) => stream,
+        Err(payload) => {
+            return error_assistant_message(&config.model, panic_payload_message(payload));
+        }
+    };
+    let collect = async {
+        if let Some(observer) = &config.on_stream_event {
+            stream.collect_with_observer(observer).await
+        } else {
+            stream.collect().await.1
+        }
+    };
+    if let Some(signal) = config.signal.clone() {
+        tokio::select! {
+            message = collect => message,
+            _ = wait_for_abort(signal) => aborted_assistant_message(&config.model),
+        }
     } else {
-        stream.collect().await.1
+        collect.await
+    }
+}
+
+fn aborted_assistant_message(model: &pi_ai::model::Model) -> AssistantMessage {
+    let mut message = AssistantMessage::new();
+    message.set_api_provider_model(&model.api, &model.provider, &model.id);
+    message.set_stop_reason(StopReason::Aborted);
+    message
+}
+
+fn error_assistant_message(model: &pi_ai::model::Model, error: String) -> AssistantMessage {
+    let mut message = AssistantMessage::new();
+    message.set_api_provider_model(&model.api, &model.provider, &model.id);
+    message.set_stop_reason(StopReason::Error);
+    message.set_error_message(error);
+    message
+}
+
+fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "provider stream panicked".to_string()
+}
+
+async fn wait_for_abort(signal: Arc<AtomicBool>) {
+    while !signal.load(Ordering::SeqCst) {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
 }
 
@@ -265,9 +395,14 @@ pub fn is_aborted(signal: Option<&Arc<AtomicBool>>) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::types::CustomAgentMessage;
+    use pi_ai::providers::{
+        faux_assistant_message, FauxAssistantOptions, FauxProviderCore, FauxResponseStep,
+        RegisterFauxProviderOptions,
+    };
     use pi_ai::types::{ContentBlock, UserContent};
 
     fn bash_message() -> AgentMessage {
@@ -361,5 +496,54 @@ mod tests {
         assert!(!blocks
             .iter()
             .any(|block| matches!(block, ContentBlock::Image { .. })));
+    }
+
+    #[test]
+    fn legacy_loop_updates_context_and_emits_assistant_lifecycle_events() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
+                vec![ContentBlock::text("reply")],
+                FauxAssistantOptions::default(),
+            ))]);
+            let model = core.get_model(None).unwrap().clone();
+            let stream_fn: StreamFn =
+                Arc::new(move |model, context| core.stream(model, context, None));
+            let config = AgentLoopConfig {
+                model,
+                stream_fn,
+                signal: None,
+                stop_after_turn: false,
+                on_stream_event: None,
+            };
+            let mut context = AgentContext::new(None, Vec::new());
+            let mut events = Vec::new();
+            let messages = run_agent_loop(
+                vec![user_text_prompt("hello", 1)],
+                &mut context,
+                &config,
+                &mut |event| events.push(event),
+            )
+            .await;
+
+            assert_eq!(messages.len(), 2);
+            assert_eq!(context.messages, messages);
+            assert!(events.iter().any(|event| matches!(
+                event,
+                AgentEvent::MessageStart {
+                    message: AgentMessage::Core(Message::Assistant(_))
+                }
+            )));
+            assert!(events.iter().any(|event| matches!(
+                event,
+                AgentEvent::MessageEnd {
+                    message: AgentMessage::Core(Message::Assistant(_))
+                }
+            )));
+        });
     }
 }

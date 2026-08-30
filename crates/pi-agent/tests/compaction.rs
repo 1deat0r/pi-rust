@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Harness compaction + branch-summarization — port of
 //! `packages/agent/test/harness/compaction.test.ts` and
 //! `branch-summarization.test.ts` (LLM paths driven by scripted
@@ -87,6 +89,7 @@ fn assistant_message(text: &str, usage: Option<Usage>) -> AgentMessage {
             model: Some("claude-sonnet-4-5".into()),
             response_model: None,
             response_id: None,
+            diagnostics: None,
             usage,
             stop_reason: Some(StopReason::Stop),
             deferred: None,

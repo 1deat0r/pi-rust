@@ -42,6 +42,7 @@ pub fn err<T, E>(error: E) -> Result<T, E> {
 
 /// Return the success value or panic with the failure error (upstream
 /// `getOrThrow`, intended for tests and explicit adapter boundaries).
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 pub fn get_or_throw<T, E: std::fmt::Display>(result: Result<T, E>) -> T {
     match result {
         Ok(value) => value,
@@ -735,20 +736,23 @@ struct PipeDrain {
 async fn drain_pipe<R: tokio::io::AsyncRead + Unpin>(
     mut reader: R,
     callback: Option<ChunkHandler>,
+    callback_failed: Arc<AtomicBool>,
 ) -> PipeDrain {
     use tokio::io::AsyncReadExt;
     let mut buf = [0u8; 8192];
-    let mut raw: Vec<u8> = Vec::new();
+    let mut text = String::new();
+    let mut utf8_carry = Vec::new();
     loop {
         match reader.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
-                raw.extend_from_slice(&buf[..n]);
+                let chunk = decode_utf8_chunk(&mut utf8_carry, &buf[..n]);
+                text.push_str(&chunk);
                 if let Some(cb) = &callback {
-                    let text = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    if let Err(message) = cb(&text) {
+                    if let Err(message) = cb(&chunk) {
+                        callback_failed.store(true, Ordering::Release);
                         return PipeDrain {
-                            text: String::from_utf8_lossy(&raw).into_owned(),
+                            text: finish_utf8(&mut utf8_carry, text),
                             callback_error: Some(ExecutionError::new(
                                 ExecutionErrorCode::CallbackError,
                                 message,
@@ -760,10 +764,45 @@ async fn drain_pipe<R: tokio::io::AsyncRead + Unpin>(
             Err(_) => break,
         }
     }
+    text.push_str(&finish_utf8(&mut utf8_carry, String::new()));
     PipeDrain {
-        text: String::from_utf8_lossy(&raw).into_owned(),
+        text,
         callback_error: None,
     }
+}
+
+/// Decode process output like Node's streaming `setEncoding("utf8")`: keep
+/// an incomplete final code point for the next read instead of replacing a
+/// multibyte sequence merely because the OS split it across chunks.
+fn decode_utf8_chunk(carry: &mut Vec<u8>, bytes: &[u8]) -> String {
+    carry.extend_from_slice(bytes);
+    match std::str::from_utf8(carry) {
+        Ok(text) => {
+            let decoded = text.to_string();
+            carry.clear();
+            decoded
+        }
+        Err(error) if error.error_len().is_none() => {
+            let valid = error.valid_up_to();
+            let decoded = String::from_utf8_lossy(&carry[..valid]).into_owned();
+            let remainder = carry[valid..].to_vec();
+            *carry = remainder;
+            decoded
+        }
+        Err(_) => {
+            let decoded = String::from_utf8_lossy(carry).into_owned();
+            carry.clear();
+            decoded
+        }
+    }
+}
+
+fn finish_utf8(carry: &mut Vec<u8>, mut decoded: String) -> String {
+    if !carry.is_empty() {
+        decoded.push_str(&String::from_utf8_lossy(carry));
+        carry.clear();
+    }
+    decoded
 }
 
 async fn wait_for_abort(flag: Option<&AbortFlag>) {
@@ -782,6 +821,12 @@ async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
             tokio::time::sleep_until(instant).await;
         }
         None => std::future::pending::<()>().await,
+    }
+}
+
+async fn wait_for_callback_failure(flag: Arc<AtomicBool>) {
+    while !flag.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }
 
@@ -1074,19 +1119,23 @@ impl FileSystem for StdExecutionEnv {
         let pids: Vec<u32> = self
             .active_child_pids
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .iter()
             .copied()
             .collect();
         for pid in pids {
             kill_process_group(pid);
         }
-        self.active_child_pids.lock().unwrap().clear();
+        self.active_child_pids
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
     }
 }
 
 #[async_trait]
 impl Shell for StdExecutionEnv {
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     async fn exec(
         &self,
         command: &str,
@@ -1141,14 +1190,18 @@ impl Shell for StdExecutionEnv {
         };
 
         let pid = child.id().unwrap_or(0);
-        self.active_child_pids.lock().unwrap().insert(pid);
+        self.active_child_pids
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(pid);
 
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
         let so_cb = options.on_stdout.clone();
         let se_cb = options.on_stderr.clone();
-        let so_handle = tokio::spawn(drain_pipe(stdout, so_cb));
-        let se_handle = tokio::spawn(drain_pipe(stderr, se_cb));
+        let callback_failed = Arc::new(AtomicBool::new(false));
+        let so_handle = tokio::spawn(drain_pipe(stdout, so_cb, callback_failed.clone()));
+        let se_handle = tokio::spawn(drain_pipe(stderr, se_cb, callback_failed.clone()));
 
         let abort_flag = options.abort.clone();
         let deadline = timeout_ms.map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms));
@@ -1167,13 +1220,29 @@ impl Shell for StdExecutionEnv {
                     kill_process_group(pid);
                     timed_out = true;
                 }
+                _ = wait_for_callback_failure(callback_failed.clone()) => {
+                    kill_process_group(pid);
+                }
                 status = &mut wait => {
                     exit_status = Some(status.map_err(|e| {
-                        self.active_child_pids.lock().unwrap().remove(&pid);
+                        self.active_child_pids.lock().unwrap_or_else(|error| error.into_inner()).remove(&pid);
                         ExecutionError::new(ExecutionErrorCode::SpawnError, format!("wait failed: {e}"))
                     })?);
                 }
             }
+        }
+
+        // The cancellation/timeout/callback branches kill the process group
+        // but intentionally cancel the first wait future. Await once more so
+        // the child is reaped before returning and cannot become a zombie.
+        if exit_status.is_none() {
+            exit_status = Some(child.wait().await.map_err(|e| {
+                self.active_child_pids
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(&pid);
+                ExecutionError::new(ExecutionErrorCode::SpawnError, format!("wait failed: {e}"))
+            })?);
         }
 
         let so = so_handle.await.unwrap_or_else(|_| PipeDrain {
@@ -1184,7 +1253,10 @@ impl Shell for StdExecutionEnv {
             text: String::new(),
             callback_error: None,
         });
-        self.active_child_pids.lock().unwrap().remove(&pid);
+        self.active_child_pids
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&pid);
 
         if let Some(err) = so.callback_error.or(se.callback_error) {
             return Err(err);
@@ -1214,6 +1286,7 @@ impl Shell for StdExecutionEnv {
 impl ExecutionEnv for StdExecutionEnv {}
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
@@ -1235,7 +1308,6 @@ mod tests {
             ]),
         );
         let m = env.build_env(None, true);
-        eprintln!("DIRECT BUILD_ENV keys: {:?}", m.keys().collect::<Vec<_>>());
         assert_eq!(
             m.get("PI_NODE_ENV_PRESERVED_TEST").map(|s| s.as_str()),
             Some("preserved")
@@ -1684,18 +1756,6 @@ mod tests {
                 )
                 .await,
             );
-            eprintln!("DEBUG shell_env: {:?}", env.shell_env);
-            eprintln!("DEBUG env result stdout: {:?}", result.stdout);
-            let dbg = get_or_throw(
-                env.exec("env | sort | grep PI_", &ShellExecOptions::default()).await,
-            );
-            eprintln!("DEBUG env dump:\n{}", dbg.stdout);
-            let full = get_or_throw(
-                env.exec("env", &ShellExecOptions::default()).await,
-            );
-            eprintln!("DEBUG FULL ENV:\n{}", full.stdout);
-            eprintln!("DEBUG parent PI_CODING_AGENT: {:?}", std::env::var("PI_CODING_AGENT"));
-            eprintln!("DEBUG parent PI_NODE_ENV_PRESERVED_TEST: {:?}", std::env::var("PI_NODE_ENV_PRESERVED_TEST"));
             assert_eq!(result.stdout, "x:|true|preserved");
 
         });
@@ -1736,11 +1796,17 @@ mod tests {
             let so_sink = stdout.clone();
             let se_sink = stderr.clone();
             opts.on_stdout = Some(Arc::new(move |chunk| {
-                so_sink.lock().unwrap().push_str(chunk);
+                so_sink
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push_str(chunk);
                 Ok(())
             }));
             opts.on_stderr = Some(Arc::new(move |chunk| {
-                se_sink.lock().unwrap().push_str(chunk);
+                se_sink
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push_str(chunk);
                 Ok(())
             }));
             let result = get_or_throw(env.exec("printf out; printf err >&2", &opts).await);
@@ -1752,8 +1818,14 @@ mod tests {
                     exit_code: 0
                 }
             );
-            assert_eq!(*stdout.lock().unwrap(), "out");
-            assert_eq!(*stderr.lock().unwrap(), "err");
+            assert_eq!(
+                *stdout.lock().unwrap_or_else(|error| error.into_inner()),
+                "out"
+            );
+            assert_eq!(
+                *stderr.lock().unwrap_or_else(|error| error.into_inner()),
+                "err"
+            );
         });
     }
 
@@ -1814,6 +1886,35 @@ mod tests {
             let err = result.unwrap_err();
             assert_eq!(err.code, ExecutionErrorCode::CallbackError);
             assert_eq!(err.message, "callback failed");
+        });
+    }
+
+    #[test]
+    fn streaming_utf8_decoder_preserves_split_code_points() {
+        let mut carry = Vec::new();
+        assert_eq!(decode_utf8_chunk(&mut carry, &[0xf0, 0x9f]), "");
+        assert_eq!(decode_utf8_chunk(&mut carry, &[0x98, 0x80]), "😀");
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn callback_errors_terminate_a_still_running_process() {
+        rt().block_on(async {
+            let root = temp_root();
+            let env = StdExecutionEnv::new(root);
+            let opts = ShellExecOptions {
+                on_stdout: Some(Arc::new(|_| Err("stop capture".to_string()))),
+                ..Default::default()
+            };
+            let result = tokio::time::timeout(
+                Duration::from_secs(1),
+                env.exec("printf out; sleep 5", &opts),
+            )
+            .await
+            .expect("callback failure must not leave the child running")
+            .expect_err("callback failure should be returned");
+            assert_eq!(result.code, ExecutionErrorCode::CallbackError);
+            assert_eq!(result.message, "stop capture");
         });
     }
 

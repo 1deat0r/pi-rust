@@ -422,6 +422,7 @@ impl<F: FileSystem + 'static, H> ScanningSessionSearch<F, H> {
 
     /// Stream search hits as they are discovered, matching upstream's
     /// `SessionSearch.search()` async iterable contract.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn stream_search<'a>(
         &'a self,
         text: &str,
@@ -607,6 +608,7 @@ where
     }
 
     /// Stream hits from the lazy session source.
+    #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     pub fn stream_search<'a>(
         &'a self,
         text: &str,
@@ -843,6 +845,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::fs::MemoryFs;
@@ -1069,7 +1072,14 @@ mod tests {
         let search =
             create_scanning_session_search::<Session<MemoryFs>, _, _>(move |_query, _options| {
                 source_calls_for_source.fetch_add(1, Ordering::Relaxed);
-                stream::iter(source_slot.lock().unwrap().take().into_iter().map(Ok))
+                stream::iter(
+                    source_slot
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .take()
+                        .into_iter()
+                        .map(Ok),
+                )
             });
 
         assert!(search
@@ -1109,7 +1119,7 @@ mod tests {
                 stream::iter(
                     source_slot_for_source
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|error| error.into_inner())
                         .take()
                         .into_iter()
                         .map(Ok),
@@ -1165,7 +1175,7 @@ mod tests {
                 stream::iter(
                     source_slot_for_source
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|error| error.into_inner())
                         .take()
                         .into_iter()
                         .map(Ok),

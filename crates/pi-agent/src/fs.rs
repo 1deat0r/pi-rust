@@ -211,14 +211,24 @@ impl MemoryFs {
         }
     }
     pub fn content(&self, path: &str) -> Option<String> {
-        self.files.lock().unwrap().get(path).cloned()
+        self.files
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(path)
+            .cloned()
     }
     /// Test helper: set a file's modification time directly.
     pub fn set_mtime(&self, path: &str, mtime: u64) {
-        self.mtimes.lock().unwrap().insert(path.to_string(), mtime);
+        self.mtimes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(path.to_string(), mtime);
     }
     pub fn ensure_dir(&self, path: &str) {
-        self.dirs.lock().unwrap().insert(path.to_string());
+        self.dirs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(path.to_string());
     }
 }
 
@@ -238,7 +248,7 @@ impl FileSystem for MemoryFs {
     fn read_text_file(&self, path: &str) -> Result<String, FileError> {
         self.files
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .get(path)
             .cloned()
             .ok_or_else(|| FileError::new(format!("read {path}: No such file or directory")))
@@ -258,41 +268,59 @@ impl FileSystem for MemoryFs {
         let ts = self.clock.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.files
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .insert(path.to_string(), content.to_string());
-        self.mtimes.lock().unwrap().insert(path.to_string(), ts + 1);
+        self.mtimes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(path.to_string(), ts + 1);
         if let Some(parent) = path_parent(path) {
-            self.dirs.lock().unwrap().insert(parent);
+            self.dirs
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(parent);
         }
         Ok(())
     }
     fn append_file(&self, path: &str, content: &str) -> Result<(), FileError> {
         let ts = self.clock.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let mut files = self.files.lock().unwrap();
+        let mut files = self.files.lock().unwrap_or_else(|error| error.into_inner());
         let entry = files.entry(path.to_string()).or_default();
         entry.push_str(content);
         drop(files);
-        self.mtimes.lock().unwrap().insert(path.to_string(), ts + 1);
+        self.mtimes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(path.to_string(), ts + 1);
         Ok(())
     }
     fn rename_file(&self, from: &str, to: &str) -> Result<(), FileError> {
-        let mut files = self.files.lock().unwrap();
+        let mut files = self.files.lock().unwrap_or_else(|error| error.into_inner());
         let content = files
             .remove(from)
             .ok_or_else(|| FileError::new(format!("rename {from}: missing")))?;
         files.insert(to.to_string(), content);
         drop(files);
         let ts = self.clock.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.mtimes.lock().unwrap().insert(to.to_string(), ts + 1);
+        self.mtimes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(to.to_string(), ts + 1);
         Ok(())
     }
     fn file_info(&self, path: &str) -> Result<FileInfo, FileError> {
         self.files
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .get(path)
             .map(|_| FileInfo {
-                mtime_ms: self.mtimes.lock().unwrap().get(path).copied().unwrap_or(1),
+                mtime_ms: self
+                    .mtimes
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .get(path)
+                    .copied()
+                    .unwrap_or(1),
             })
             .ok_or_else(|| FileError::new(format!("metadata {path}: No such file")))
     }
@@ -302,8 +330,11 @@ impl FileSystem for MemoryFs {
 
     fn list_dir_entries(&self, path: &str) -> Result<Vec<DirEntry>, FileError> {
         let prefix = format!("{path}/");
-        let files = self.files.lock().unwrap();
-        let mtimes = self.mtimes.lock().unwrap();
+        let files = self.files.lock().unwrap_or_else(|error| error.into_inner());
+        let mtimes = self
+            .mtimes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut out: Vec<DirEntry> = Vec::new();
         for full in files.keys() {
             if let Some(rel) = full.strip_prefix(&prefix) {
@@ -317,7 +348,7 @@ impl FileSystem for MemoryFs {
                 }
             }
         }
-        let dirs = self.dirs.lock().unwrap();
+        let dirs = self.dirs.lock().unwrap_or_else(|error| error.into_inner());
         for dir in dirs.iter() {
             if let Some(rel) = dir.strip_prefix(&prefix) {
                 if let Some(name) = rel.split('/').next() {
@@ -336,11 +367,19 @@ impl FileSystem for MemoryFs {
     }
 
     fn exists(&self, path: &str) -> bool {
-        self.files.lock().unwrap().contains_key(path) || self.dirs.lock().unwrap().contains(path)
+        self.files
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(path)
+            || self
+                .dirs
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains(path)
     }
     fn create_dir(&self, path: &str) -> Result<(), FileError> {
         {
-            let mut dirs = self.dirs.lock().unwrap();
+            let mut dirs = self.dirs.lock().unwrap_or_else(|error| error.into_inner());
             let mut current = Some(path.to_string());
             while let Some(dir) = current {
                 dirs.insert(dir.clone());
@@ -350,7 +389,11 @@ impl FileSystem for MemoryFs {
         Ok(())
     }
     fn remove(&self, path: &str) -> Result<(), FileError> {
-        let _ = self.files.lock().unwrap().remove(path);
+        let _ = self
+            .files
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(path);
         Ok(())
     }
 }

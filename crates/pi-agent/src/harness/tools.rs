@@ -73,7 +73,10 @@ where
     let state = state();
     // Serialize queue-registration globally (upstream registration chain).
     let (previous_reg, reg_link) = {
-        let mut reg = state.registration.lock().unwrap();
+        let mut reg = state
+            .registration
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let previous_reg = reg.take();
         let link = Arc::new(RegistrationLink {
             notified: tokio::sync::Notify::new(),
@@ -88,7 +91,10 @@ where
     // Chain this key's queue entry behind the current tail (scoped so the
     // lock guard drops before awaiting).
     let (previous_queue, link) = {
-        let mut queues = state.queues.lock().unwrap();
+        let mut queues = state
+            .queues
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let previous_queue = queues.get(&key).cloned();
         let link = Arc::new(QueueLink {
             ready: tokio::sync::Notify::new(),
@@ -115,7 +121,10 @@ where
 
     // Clean up the map entry if we are still the tail.
     {
-        let mut queues = state.queues.lock().unwrap();
+        let mut queues = state
+            .queues
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if let Some(tail) = queues.get(&key) {
             if Arc::ptr_eq(tail, &link) {
                 queues.remove(&key);
@@ -142,6 +151,7 @@ pub struct ExecutionToolContext {
 pub const MUTATION_POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -156,14 +166,14 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 with_file_mutation_queue("key".to_string(), async move {
                     let current = {
-                        let mut c = counter.lock().unwrap();
+                        let mut c = counter.lock().unwrap_or_else(|error| error.into_inner());
                         *c += 1;
-                        let mut m = max.lock().unwrap();
+                        let mut m = max.lock().unwrap_or_else(|error| error.into_inner());
                         *m = (*m).max(*c);
                         *c
                     };
                     tokio::time::sleep(Duration::from_millis(2)).await;
-                    *counter.lock().unwrap() -= 1;
+                    *counter.lock().unwrap_or_else(|error| error.into_inner()) -= 1;
                     current
                 })
                 .await
@@ -172,9 +182,12 @@ mod tests {
         for h in handles {
             h.await.unwrap();
         }
-        assert_eq!(*counter.lock().unwrap(), 0);
         assert_eq!(
-            *max.lock().unwrap(),
+            *counter.lock().unwrap_or_else(|error| error.into_inner()),
+            0
+        );
+        assert_eq!(
+            *max.lock().unwrap_or_else(|error| error.into_inner()),
             1,
             "never more than one mutation runs at a time"
         );

@@ -7,12 +7,14 @@ use super::super::session::Session;
 use super::super::state::ForkOptions;
 use super::super::types::{JsonlV4Header, SessionError, SessionErrorKind, SessionMetadata};
 use super::storage::JsonlSessionStorage;
+use super::v3;
 use super::{metadata_from_header, parse_header};
 use crate::fs::FileSystem;
 use crate::types::FileError;
 
 const SESSION_ID_PATTERN: &str = r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$";
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn validate_session_id(id: &str) -> Result<(), SessionError> {
     let re = regex::Regex::new(SESSION_ID_PATTERN).expect("static regex");
     if !re.is_match(id) {
@@ -24,9 +26,13 @@ fn validate_session_id(id: &str) -> Result<(), SessionError> {
     Ok(())
 }
 
-/// `--<cwd with / and : replaced by ->--`; strips a leading path separator.
+/// `--<cwd with / and : replaced by ->--`; strips exactly one leading path
+/// separator, matching upstream's single-character replacement.
 pub fn jsonl_session_directory_name(cwd: &str) -> String {
-    let stripped = cwd.trim_start_matches(['/', '\\']);
+    let stripped = cwd
+        .strip_prefix('/')
+        .or_else(|| cwd.strip_prefix('\\'))
+        .unwrap_or(cwd);
     let replaced: String = stripped
         .chars()
         .map(|c| {
@@ -93,15 +99,39 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
     where
         F: Clone,
     {
+        self.create_with_format(options, false).await
+    }
+
+    /// Create an upstream-compatible v3 session. Native pi-agent callers use
+    /// [`Self::create`] and therefore retain the v4 lane/record format; this
+    /// opt-in is for coding-agent durable JSON sessions only.
+    pub async fn create_v3(&mut self, options: CreateOptions) -> Result<Session<F>, SessionError>
+    where
+        F: Clone,
+    {
+        self.create_with_format(options, true).await
+    }
+
+    async fn create_with_format(
+        &mut self,
+        options: CreateOptions,
+        v3: bool,
+    ) -> Result<Session<F>, SessionError>
+    where
+        F: Clone,
+    {
         let destination = self.resolve_create_destination(options.id.as_deref(), &options.cwd)?;
         let sessions_root = self.sessions_root.clone();
         let fs = self.fs.clone();
         let dest = destination.clone();
         self.claim_create_destination(&destination, async move {
             let (header, path) = prepare_create(&sessions_root, &fs, &dest, &options)?;
-            let storage = JsonlSessionStorage::create(fs, &path, header)
-                .await
-                .map_err(StorageError)?;
+            let storage_result = if v3 {
+                JsonlSessionStorage::create_v3(fs, &path, header).await
+            } else {
+                JsonlSessionStorage::create(fs, &path, header).await
+            };
+            let storage = storage_result.map_err(StorageError)?;
             Ok(Session::new(storage))
         })
         .await
@@ -146,6 +176,31 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
     where
         F: Clone,
     {
+        self.fork_with_format(source, options, false).await
+    }
+
+    /// Fork into an upstream-compatible v3 file. This is an explicit
+    /// coding-agent adapter; the native repository fork remains v4.
+    pub async fn fork_v3(
+        &mut self,
+        source: &SessionMetadata,
+        options: CreateOptions,
+    ) -> Result<Session<F>, SessionError>
+    where
+        F: Clone,
+    {
+        self.fork_with_format(source, options, true).await
+    }
+
+    async fn fork_with_format(
+        &mut self,
+        source: &SessionMetadata,
+        options: CreateOptions,
+        v3: bool,
+    ) -> Result<Session<F>, SessionError>
+    where
+        F: Clone,
+    {
         let source_storage = JsonlSessionStorage::load(self.fs.clone(), &source.path)
             .await
             .map_err(|e| SessionError::new(SessionErrorKind::InvalidEntry, e.to_string()))?;
@@ -165,15 +220,17 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
         let dest = destination.clone();
         self.claim_create_destination(&destination, async move {
             let (header, path) = prepare_create(&sessions_root, &fs, &dest, &create_options)?;
-            let storage = source_storage
-                .fork(&path, header, &fork_options)
-                .await
-                .map_err(|e| match e {
-                    // Preserve domain errors (invalid_fork_target etc.) instead
-                    // of folding them into a generic storage error.
-                    super::super::jsonl::storage::ForkError::Session(e) => e,
-                    other => SessionError::new(SessionErrorKind::Storage, other.to_string()),
-                })?;
+            let storage_result = if v3 {
+                source_storage.fork_v3(&path, header, &fork_options).await
+            } else {
+                source_storage.fork(&path, header, &fork_options).await
+            };
+            let storage = storage_result.map_err(|e| match e {
+                // Preserve domain errors (invalid_fork_target etc.) instead
+                // of folding them into a generic storage error.
+                super::super::jsonl::storage::ForkError::Session(e) => e,
+                other => SessionError::new(SessionErrorKind::Storage, other.to_string()),
+            })?;
             Ok(Session::new(storage))
         })
         .await
@@ -373,10 +430,16 @@ pub fn list_jsonl_session_metadata<F: FileSystem>(
             if first_line.is_empty() {
                 continue;
             }
-            let Ok(header) = parse_header(first_line) else {
+            if let Ok(header) = parse_header(first_line) {
+                metadata.push(metadata_from_header(&header, &path, entry.mtime_ms));
+                continue;
+            }
+            let Ok(header) = v3::parse_header(first_line) else {
                 continue;
             };
-            metadata.push(metadata_from_header(&header, &path, entry.mtime_ms));
+            let mut item = metadata_from_header(&header, &path, entry.mtime_ms);
+            item.source_format = 3;
+            metadata.push(item);
         }
     }
     metadata.sort_by_key(|a| std::cmp::Reverse(a.modified_at));

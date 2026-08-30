@@ -148,6 +148,18 @@ impl AgentTool {
         self.execution_mode = Some(mode);
         self
     }
+
+    /// Apply the opt-in experimental strict-schema preference used by the
+    /// coding-agent built-ins. Kept as an explicit builder so extension tools
+    /// remain unchanged unless their owner opts in.
+    pub fn with_experimental_sampling(mut self) -> Self {
+        if matches!(std::env::var("PI_EXPERIMENTAL").ok().as_deref(), Some("1")) {
+            self.tool.constrained_sampling = Some(pi_ai::types::ConstrainedSampling::JsonSchema {
+                strict: pi_ai::types::StrictPreference::Prefer,
+            });
+        }
+        self
+    }
 }
 
 /// Builds the unified `read` tool bound to a working directory.
@@ -184,13 +196,14 @@ pub fn read_tool_with_options(cwd: String, image_options: image::ProcessImageOpt
                     .ok_or_else(|| "read: missing required argument path".to_string())?;
                 let offset = args.get("offset").and_then(|v| v.as_f64());
                 let limit = args.get("limit").and_then(|v| v.as_f64());
-                let result = read::execute_read_with_options(
+                let result = read::execute_read_with_options_and_abort(
                     &tool_call_id,
                     path,
                     offset,
                     limit,
                     &cwd,
                     image_options,
+                    signal.clone(),
                 )
                 .await?;
                 if crate::agent::is_aborted(signal.as_ref()) {
@@ -200,6 +213,7 @@ pub fn read_tool_with_options(cwd: String, image_options: image::ProcessImageOpt
             })
         }),
     )
+    .with_experimental_sampling()
 }
 
 pub fn write_tool(cwd: String) -> AgentTool {
@@ -231,7 +245,9 @@ pub fn write_tool(cwd: String) -> AgentTool {
                     .get("content")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let result = write::execute_write(&tool_call_id, path, content, &cwd).await?;
+                let result =
+                    write::execute_write_with_abort(&tool_call_id, path, content, &cwd, signal.clone())
+                        .await?;
                 if crate::agent::is_aborted(signal.as_ref()) {
                     return Err("Operation aborted".to_string());
                 }
@@ -239,6 +255,7 @@ pub fn write_tool(cwd: String) -> AgentTool {
             })
         }),
     )
+    .with_experimental_sampling()
 }
 
 pub fn edit_tool(cwd: String) -> AgentTool {
@@ -278,7 +295,9 @@ pub fn edit_tool(cwd: String) -> AgentTool {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "edit: missing required argument path".to_string())?;
                 let edits = edit::extract_edits(&args)?;
-                let result = edit::execute_edit(&tool_call_id, path, edits, &cwd).await?;
+                let result =
+                    edit::execute_edit_with_abort(&tool_call_id, path, edits, &cwd, signal.clone())
+                        .await?;
                 if crate::agent::is_aborted(signal.as_ref()) {
                     return Err("Operation aborted".to_string());
                 }
@@ -286,6 +305,7 @@ pub fn edit_tool(cwd: String) -> AgentTool {
             })
         }),
     )
+    .with_experimental_sampling()
     .with_prepare_arguments(Arc::new(edit::prepare_edit_arguments))
 }
 
@@ -316,4 +336,5 @@ pub fn bash_tool(cwd: String) -> AgentTool {
             })
         }),
     )
+    .with_experimental_sampling()
 }

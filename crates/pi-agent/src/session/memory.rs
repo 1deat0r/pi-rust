@@ -405,7 +405,13 @@ impl InMemorySessionRepo {
     pub fn list(&self) -> Vec<SessionMetadata> {
         let mut metas: Vec<SessionMetadata> = Vec::new();
         for storage in self.sessions.values() {
-            metas.push(storage.lock().unwrap().metadata().clone());
+            metas.push(
+                storage
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .metadata()
+                    .clone(),
+            );
         }
         metas
     }
@@ -436,7 +442,10 @@ impl InMemorySessionRepo {
             .or_else(|| Some(source.id.clone()));
         let metadata = in_memory_metadata(id.clone(), parent);
         let storage = Arc::new(Mutex::new(
-            source_storage.lock().unwrap().fork(metadata, options)?,
+            source_storage
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .fork(metadata, options)?,
         ));
         self.sessions.insert(id, storage.clone());
         Ok(super::session::Session::from_in_memory(storage))

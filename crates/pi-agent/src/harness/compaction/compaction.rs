@@ -474,6 +474,7 @@ pub async fn complete_simple_with_retries(
             max_tokens: options.max_tokens,
             cache_retention: Some(CacheRetention::from("none")),
             session_id: Some(new_id()),
+            abort_signal: options.signal.cloned(),
             ..Default::default()
         },
         reasoning: options.reasoning,
@@ -1041,6 +1042,7 @@ pub async fn compact(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::types::CustomAgentMessage;

@@ -49,6 +49,7 @@ pub fn format_skills_for_system_prompt(skills: &[Skill]) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

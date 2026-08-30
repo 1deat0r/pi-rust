@@ -1,12 +1,9 @@
 //! Agent harness — port of `packages/agent/src/harness/`.
 //!
-//! Landed: compaction + branch-summarization (LLM-backed summary generation
-//! over session paths), the minimal `SimpleModels` seam used by the
-//! summarization calls, and the harness error types.
-//!
-//! Remaining harness surfaces (tracked in `crates/pi-agent/TODO.md`):
-//! `events` landed this session; reducer, prompt templates, system prompt,
-//! skills, env, agent-loop integration, and telemetry wiring remain.
+//! This module exposes compaction, branch summarization, reducers, prompt
+//! templates, skills, environment execution, lifecycle events, telemetry,
+//! and the harness composition surface. The `AgentHarness` operations are
+//! session-backed and use the real agent/compaction runtime where configured.
 
 pub mod agent_harness;
 pub mod compaction;

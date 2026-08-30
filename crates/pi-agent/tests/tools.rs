@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Tool behavior tests: bash capture, read truncation messages, write/edit,
 //! path normalization, and an agent-loop tool-call round trip.
 
@@ -34,7 +36,7 @@ fn bash_runs_command_and_reports_exit_code() {
         let text = pi_ai::types::ToolResultMessage::content(&result);
         assert!(text
             .iter()
-            .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "hello")));
+            .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "hello\n")));
     });
 }
 
@@ -65,6 +67,128 @@ fn bash_timeout_kills_command_and_reports() {
             err.contains("Command timed out after 0.2 seconds"),
             "got {err}"
         );
+    });
+}
+
+#[test]
+fn direct_bash_output_stream_preserves_interactive_metadata() {
+    let rt = rt();
+    rt.block_on(async {
+        let dir = tmpdir("bash-direct-output");
+        let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = updates.clone();
+        let callback: pi_agent::tools::bash::BashOutputCallback =
+            std::sync::Arc::new(move |output| received.lock().unwrap().push(output));
+        let capture = pi_agent::tools::bash::run_bash_with_output(
+            "printf hello",
+            &dir.to_string_lossy(),
+            None,
+            None,
+            Some(callback),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(capture.output, "hello");
+        assert_eq!(capture.exit_code, Some(0));
+        assert!(!capture.aborted);
+        assert!(!capture.timed_out);
+        assert!(!capture.truncated);
+        assert!(capture.full_output_path.is_none());
+        assert!(updates
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|output| output == "hello"));
+    });
+}
+
+#[test]
+fn direct_bash_output_exposes_full_file_when_truncated() {
+    let rt = rt();
+    rt.block_on(async {
+        let dir = tmpdir("bash-direct-truncated");
+        let capture = pi_agent::tools::bash::run_bash_with_output(
+            "yes line | head -n 15000",
+            &dir.to_string_lossy(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let path = capture
+            .full_output_path
+            .as_deref()
+            .expect("direct bash should preserve the full-output path");
+        assert!(capture.truncated);
+        assert!(std::path::Path::new(path).is_file());
+        assert!(std::fs::read_to_string(path).unwrap().contains("line\n"));
+    });
+}
+
+#[test]
+fn run_bash_uses_bounded_capture_and_preserves_full_output() {
+    let rt = rt();
+    rt.block_on(async {
+        let dir = tmpdir("bash-run-bounded");
+        let capture = pi_agent::tools::bash::run_bash(
+            "yes line | head -n 15000",
+            &dir.to_string_lossy(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let path = capture
+            .full_output_path
+            .as_deref()
+            .expect("run_bash should preserve the full-output path");
+        let full_output = std::fs::read_to_string(path).unwrap();
+        assert_eq!(capture.exit_code, Some(0));
+        assert!(capture.truncated);
+        assert!(full_output.lines().count() > 10_000);
+        assert!(capture.output.len() < full_output.len());
+        assert!(capture.error_message.is_none());
+    });
+}
+
+#[test]
+fn run_bash_returns_spawn_failure_instead_of_fake_success() {
+    let rt = rt();
+    rt.block_on(async {
+        let dir = tmpdir("bash-missing-cwd").join("does-not-exist");
+        let error = pi_agent::tools::bash::run_bash(
+            "printf should-not-run",
+            &dir.to_string_lossy(),
+            None,
+            None,
+        )
+        .await
+        .expect_err("an invalid working directory must remain an error");
+        assert!(!error.to_string().is_empty());
+    });
+}
+
+#[test]
+fn run_bash_preserves_pre_cancelled_state_without_running_command() {
+    let rt = rt();
+    rt.block_on(async {
+        let dir = tmpdir("bash-pre-cancelled");
+        let abort = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let capture = pi_agent::tools::bash::run_bash(
+            "printf should-not-run",
+            &dir.to_string_lossy(),
+            None,
+            Some(abort),
+        )
+        .await
+        .unwrap();
+        assert!(capture.aborted);
+        assert!(capture.output.is_empty());
+        assert_eq!(capture.exit_code, None);
     });
 }
 

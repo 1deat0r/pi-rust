@@ -220,6 +220,7 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::messages::convert_to_llm;

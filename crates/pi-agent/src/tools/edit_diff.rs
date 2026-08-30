@@ -245,6 +245,7 @@ fn overlap_error(path: &str, previous: usize, current: usize) -> String {
 // Replacement application
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn get_replacement_line_range(lines: &[LineSpan], replacement: &TextReplacement) -> (usize, usize) {
     let replacement_start = replacement.match_index;
     let replacement_end = replacement.match_index + replacement.match_length;
@@ -287,6 +288,7 @@ fn apply_replacements(content: &str, replacements: &[TextReplacement], offset: u
 /// Apply replacements matched against `base_content` to `original_content`
 /// while preserving unchanged line blocks from the original (used by the
 /// fuzzy path so duplicates cannot be misaligned and untouched bytes stay).
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn apply_replacements_preserving_unchanged_lines(
     original_content: &str,
     base_content: &str,
@@ -753,6 +755,7 @@ fn hunk_range(start: usize, count: usize) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

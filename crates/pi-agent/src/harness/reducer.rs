@@ -975,6 +975,7 @@ fn derive_tool_batch(
 
 /// Purely reconstructs one lane's orchestration state from its bounded
 /// recovery inputs (upstream `reduceLaneState`).
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 pub fn reduce_lane_state(
     input: &LaneReductionInput,
 ) -> Result<LaneReductionResult, RecordLogCorruption> {
@@ -1309,6 +1310,7 @@ fn entry_id_of_no_stats(entry: &crate::session::types::EntryNoStats) -> &str {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::session::types::{EntryNoStats, LaneRecord};

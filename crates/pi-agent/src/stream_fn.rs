@@ -14,18 +14,25 @@ static DEFAULT_STREAM_FN: std::sync::LazyLock<RwLock<Option<StreamFn>>> =
 
 /// Install the fallback stream function used when callers omit `streamFn`.
 pub fn set_default_stream_fn(stream_fn: StreamFn) {
-    *DEFAULT_STREAM_FN.write().unwrap() = Some(stream_fn);
+    *DEFAULT_STREAM_FN
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = Some(stream_fn);
 }
 
 /// Clear the default stream function (mostly useful in tests).
 pub fn clear_default_stream_fn() {
-    *DEFAULT_STREAM_FN.write().unwrap() = None;
+    *DEFAULT_STREAM_FN
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = None;
 }
 
 /// Return the configured default stream function or panic with the upstream
 /// message (mirrors `getDefaultStreamFn`).
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 pub fn get_default_stream_fn() -> StreamFn {
-    let slot = DEFAULT_STREAM_FN.read().unwrap();
+    let slot = DEFAULT_STREAM_FN
+        .read()
+        .unwrap_or_else(|error| error.into_inner());
     match slot.as_ref() {
         Some(s) => s.clone(),
         None => panic!(
@@ -35,6 +42,7 @@ pub fn get_default_stream_fn() -> StreamFn {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use pi_ai::types::Context;

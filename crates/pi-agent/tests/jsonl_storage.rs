@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Port of the storage round-trip cases from
 //! `packages/agent/test/harness/session/jsonl-storage.test.ts`
 //! (entries + branch queries; records + recovery projection + stats; facts).
@@ -467,6 +469,125 @@ fn round_trips_records_facts_and_recovery() {
         assert!(raw.contains(r#""kind":"header","version":4"#));
         assert!(raw.contains(r#""fact":"name""#));
         assert!(raw.lines().last().unwrap().contains(r#""fact":"label""#));
+    });
+}
+
+#[test]
+fn creates_official_v3_header_and_reopens_entries() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let mut session = JsonlSessionStorage::create_v3(
+            fs.clone(),
+            "/sessions/v3.jsonl",
+            header("v3", "/work/project"),
+        )
+        .await
+        .unwrap();
+        session
+            .append_entry(enter_message("hello", "m1", 1), "main")
+            .await
+            .unwrap();
+
+        let lines: Vec<serde_json::Value> = fs
+            .content("/sessions/v3.jsonl")
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines[0]["type"], "session");
+        assert_eq!(lines[0]["version"], 3);
+        assert_eq!(lines[0]["id"], "v3");
+        assert_eq!(lines[0]["timestamp"], "2023-11-14T22:13:20.000Z");
+        assert_eq!(lines[0]["cwd"], "/work/project");
+        assert_eq!(lines[1]["type"], "message");
+        assert!(lines[1]["timestamp"]
+            .as_str()
+            .is_some_and(|value| value.ends_with('Z')));
+        assert_eq!(lines[1]["parentId"], serde_json::Value::Null);
+
+        let restored = JsonlSessionStorage::load(fs, "/sessions/v3.jsonl")
+            .await
+            .unwrap();
+        assert_eq!(restored.get_metadata().await.source_format, 3);
+        let entries = restored
+            .find_entries(&EntryQuery {
+                order: Some(EntryOrder::OldestFirst),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id(), "m1");
+    });
+}
+
+#[test]
+fn keeps_reading_and_appending_prior_v4_files() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let header = serde_json::json!({
+            "kind": "header",
+            "version": 4,
+            "id": "v4",
+            "createdAt": 1_700_000_000_000u64,
+            "cwd": "/work"
+        });
+        let entry = serde_json::json!({
+            "kind": "entry",
+            "lane": "main",
+            "type": "message",
+            "id": "old",
+            "seq": 1,
+            "parentId": null,
+            "timestamp": 1,
+            "message": user_message("old")
+        });
+        fs.write_file("/sessions/v4.jsonl", &format!("{}\n{}\n", header, entry))
+            .unwrap();
+        let mut restored = JsonlSessionStorage::load(fs.clone(), "/sessions/v4.jsonl")
+            .await
+            .unwrap();
+        assert_eq!(restored.get_metadata().await.source_format, 4);
+        restored
+            .append_entry(enter_message("new", "new", 2), "main")
+            .await
+            .unwrap();
+        let raw = fs.content("/sessions/v4.jsonl").unwrap();
+        assert!(raw.contains(r#""kind":"entry""#));
+        assert!(raw.contains(r#""id":"new""#));
+    });
+}
+
+#[test]
+fn rejects_malformed_v3_header_and_unsupported_version() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        for (name, header) in [
+            (
+                "bad-version",
+                r#"{"type":"session","version":4,"id":"s","timestamp":"2023-11-14T22:13:20.000Z","cwd":"/work"}"#,
+            ),
+            (
+                "bad-time",
+                r#"{"type":"session","version":3,"id":"s","timestamp":"not-a-time","cwd":"/work"}"#,
+            ),
+        ] {
+            let path = format!("/sessions/{name}.jsonl");
+            fs.write_file(&path, &format!("{header}\n")).unwrap();
+            assert!(JsonlSessionStorage::load(fs.clone(), &path).await.is_err());
+        }
     });
 }
 

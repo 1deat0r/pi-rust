@@ -219,44 +219,52 @@ pub fn parse_command_args(args_string: &str) -> Vec<String> {
 /// Substitute prompt template placeholders (`$1`, `$@`, `$ARGUMENTS`,
 /// `${@:N}`, `${@:N:L}`) with command arguments (upstream `substituteArgs`).
 pub fn substitute_args(content: &str, args: &[String]) -> String {
+    static NUM_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
+        regex::Regex::new(r"\$(\d+)").unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
+    static SLICE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Compile-time literal; a failure is a build defect.
+        #[allow(clippy::panic)]
+        regex::Regex::new(r"\$\{@:(\d+)(?::(\d+))?\}")
+            .unwrap_or_else(|error| panic!("static regex: {error}"))
+    });
     let mut result = content.to_string();
-    result = regex_replace(&result, &regex::Regex::new(r"\$(\d+)").unwrap(), |caps| {
+    result = regex_replace(&result, &NUM_RE, |caps| {
         let num: usize = caps[1].parse().unwrap_or(0);
         args.get(num.wrapping_sub(1)).cloned().unwrap_or_default()
     });
-    result = regex_replace(
-        &result,
-        &regex::Regex::new(r"\$\{@:(\d+)(?::(\d+))?\}").unwrap(),
-        |caps| {
-            let start_raw: isize = caps[1].parse().unwrap_or(1);
-            let mut start = start_raw - 1;
-            if start < 0 {
-                start = 0;
-            }
-            let start = start as usize;
-            if let Some(len) = caps.get(2) {
-                let len: usize = len.as_str().parse().unwrap_or(0);
-                args.iter()
-                    .skip(start)
-                    .take(len)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            } else {
-                args.iter()
-                    .skip(start)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            }
-        },
-    );
+    result = regex_replace(&result, &SLICE_RE, |caps| {
+        let start_raw: isize = caps[1].parse().unwrap_or(1);
+        let mut start = start_raw - 1;
+        if start < 0 {
+            start = 0;
+        }
+        let start = start as usize;
+        if let Some(len) = caps.get(2) {
+            let len: usize = len.as_str().parse().unwrap_or(0);
+            args.iter()
+                .skip(start)
+                .take(len)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            args.iter()
+                .skip(start)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    });
     let all_args = args.join(" ");
     result = result.replace("$ARGUMENTS", &all_args);
     result = result.replace("$@", &all_args);
     result
 }
 
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
 fn regex_replace(
     text: &str,
     re: &regex::Regex,
@@ -281,6 +289,7 @@ pub fn format_prompt_template_invocation(template: &PromptTemplate, args: &[Stri
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

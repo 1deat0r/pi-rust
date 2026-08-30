@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Session backend conformance — port of
 //! `packages/agent/src/harness/session/testing/conformance.ts`.
 //!
@@ -42,6 +44,7 @@ fn assistant_message(text: &str) -> AgentMessage {
             model: Some("claude-sonnet-4-5".into()),
             response_model: None,
             response_id: None,
+            diagnostics: None,
             usage: Some(zero_usage()),
             stop_reason: Some(StopReason::Stop),
             deferred: None,

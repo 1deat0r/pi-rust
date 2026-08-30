@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
+
 //! Port of repository-level cases from
 //! `packages/agent/test/harness/session/jsonl.test.ts` (metadata contract,
 //! listing, id validation, sequence restore, forks, validation on open).
@@ -18,6 +20,22 @@ fn user_message(text: &str) -> pi_agent::types::AgentMessage {
 
 fn repo(fs: MemoryFs) -> JsonlSessionRepo<MemoryFs> {
     JsonlSessionRepo::new(fs.clone(), "/sessions")
+}
+
+#[test]
+fn cwd_directory_encoding_strips_only_one_leading_separator() {
+    assert_eq!(
+        jsonl_session_directory_name("/tmp/project"),
+        "--tmp-project--"
+    );
+    assert_eq!(
+        jsonl_session_directory_name("//tmp/project"),
+        "---tmp-project--"
+    );
+    assert_eq!(
+        jsonl_session_directory_name("\\\\tmp\\project"),
+        "---tmp-project--"
+    );
 }
 
 #[test]
@@ -56,6 +74,69 @@ fn exposes_complete_metadata_contract_with_cwd_layout() {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "metadata");
         assert!(r.list(Some("/work/other")).await.unwrap().is_empty());
+    });
+}
+
+#[test]
+fn explicitly_selected_v3_create_and_source_format_fork_reopen() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let mut r = repo(fs.clone());
+        let mut source = r
+            .create_v3(CreateOptions::new("/work".to_string()).with_id("v3-source"))
+            .await
+            .unwrap();
+        source
+            .append_entry(
+                EntryNoStats::Message {
+                    id: "m1".into(),
+                    message: user_message("hello"),
+                    terminate: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        let source_meta = source.get_metadata().await;
+        assert_eq!(source_meta.source_format, 3);
+        assert!(fs
+            .content(&source_meta.path)
+            .unwrap()
+            .starts_with("{\"type\":\"session\",\"version\":3"));
+
+        let fork = r
+            .fork(
+                &source_meta,
+                CreateOptions::new("/work".to_string()).with_id("v3-fork"),
+            )
+            .await
+            .unwrap();
+        let fork_meta = fork.get_metadata().await;
+        assert_eq!(fork_meta.source_format, 3);
+        assert!(fs
+            .content(&fork_meta.path)
+            .unwrap()
+            .starts_with("{\"type\":\"session\",\"version\":3"));
+        assert_eq!(
+            fork.find_entries(&EntryQuery::default())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            r.open(&fork_meta)
+                .await
+                .unwrap()
+                .get_metadata()
+                .await
+                .source_format,
+            3
+        );
     });
 }
 
@@ -521,5 +602,35 @@ fn rejects_imported_entry_referencing_missing_parent() {
         let err = pi_agent::session::jsonl::storage::JsonlSessionStorage::<MemoryFs>::load(fs.clone(), path).await.unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("invalid"), "expected invalid entry error, got {msg}");
+    });
+}
+
+#[test]
+fn rejects_non_consecutive_sequence_during_replay() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let path = "/sessions/--work--/gap.jsonl";
+        fs.ensure_dir("/sessions/--work--");
+        let header =
+            serde_json::json!({"kind":"header","version":4,"id":"gap","createdAt":1,"cwd":"/work"});
+        let line = serde_json::json!({
+            "kind": "entry", "lane": "main", "type": "custom", "id": "x", "seq": 2,
+            "parentId": null, "timestamp": 1, "customType": "note",
+        });
+        fs.write_file(path, &format!("{header}\n{line}\n")).unwrap();
+
+        let error =
+            pi_agent::session::jsonl::storage::JsonlSessionStorage::<MemoryFs>::load(fs, path)
+                .await
+                .expect_err("a sequence gap corrupts the session log");
+        let message = error.to_string();
+        assert!(
+            message.contains("non-consecutive seq 2"),
+            "expected sequence-integrity diagnostic, got {message}"
+        );
     });
 }
