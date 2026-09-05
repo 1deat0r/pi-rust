@@ -138,10 +138,10 @@ TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 40.60% (108/266 PASS; 158 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 38.72% (103/266 PASS; 163 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 20.68% (55/266 PASS; 160 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 20.30% (54/266)
-Whole-product behavioral parity: 16.98% (54/318)
+Non-TUI deterministic evidence parity: 39.10% (104/266 PASS; 162 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 21.05% (56/266 PASS; 159 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 20.68% (55/266)
+Whole-product behavioral parity: 17.30% (55/318)
 
 The definitions and refresh command are maintained in
 [`PARITY-DASHBOARD.md`](PARITY-DASHBOARD.md).

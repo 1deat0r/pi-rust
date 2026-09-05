@@ -267,6 +267,40 @@ fn invalid_pi_reasoning_level_warns_and_falls_back_to_default() {
 }
 
 #[test]
+fn every_thinking_level_reaches_the_provider_request_verbatim() {
+    // The openai-responses reasoning model carries no thinking_level_map, so
+    // off/minimal/low/medium/high reach the wire verbatim; xhigh/max need an
+    // explicit map entry (upstream EXTENDED_THINKING_LEVELS) and the clamp
+    // walks down to high; off omits the reasoning field entirely.
+    for (level, expected) in [
+        ("off", None),
+        ("minimal", Some("\"effort\":\"minimal\"")),
+        ("medium", Some("\"effort\":\"medium\"")),
+        ("xhigh", Some("\"effort\":\"high\"")),
+        ("max", Some("\"effort\":\"high\"")),
+    ] {
+        let (output, request) = think_turn_effort(&[("PI_REASONING_LEVEL", level)], &[]);
+        assert!(
+            output.status.success(),
+            "{level} turn failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        match expected {
+            Some(fragment) => assert!(
+                request.contains(fragment),
+                "provider request lost level {level}: {}",
+                request_body(&request)
+            ),
+            None => assert!(
+                !request.contains("\"effort\"") && !request.contains("\"reasoning\""),
+                "off must omit reasoning entirely: {}",
+                request_body(&request)
+            ),
+        }
+    }
+}
+
+#[test]
 fn version_output_has_no_update_banner_with_or_without_skip_flag() {
     for env in [
         vec![("PI_SKIP_VERSION_CHECK", "1")],

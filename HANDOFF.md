@@ -2,6 +2,35 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-06 — CLI-011 `--thinking` PASS
+
+One loopback payload-matrix test closes the row (off omits reasoning;
+xhigh/max clamp to high; minimal/medium verbatim). Row PASS/PASS/PASS.
+Gate green: lib 901/901 serial, env_thinking_version 8/8, check, strict
+clippy, fmt. Metrics: evidence 104/266, runtime 56/266, overall 55/266,
+product 55/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 40.60% (108/266 PASS; 158 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 39.10% (104/266 PASS; 162 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 21.05% (56/266 PASS; 159 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 20.68% (55/266)
+Whole-product behavioral parity: 17.30% (55/318)
+
+Next: commit + push, then the anthropic-messages thinking-budget slice
+(queued). Files touched: `tests/env_thinking_version.rs`,
+`docs/NON-TUI-PARITY-STATUS.md` (CLI-011 row), metric blocks in README,
+TUI-STATUS, DASHBOARD, plus CONVERSION-LEDGER.md, PLAN.md, this file.
+
 ## Assessment — 2026-09-06 — CLI-011 thinking-clamping residual
 
 The remaining CLI-011 residual (provider capability clamping + request
@@ -34,10 +63,10 @@ TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 40.60% (108/266 PASS; 158 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 38.72% (103/266 PASS; 163 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 20.68% (55/266 PASS; 160 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 20.30% (54/266)
-Whole-product behavioral parity: 16.98% (54/318)
+Non-TUI deterministic evidence parity: 39.10% (104/266 PASS; 162 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 21.05% (56/266 PASS; 159 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 20.68% (55/266)
+Whole-product behavioral parity: 17.30% (55/318)
 
 Next: commit + push, then the CLI-011 thinking-clamping assessment. Files
 touched: `tests/cli_session_restart_parity.rs`,
