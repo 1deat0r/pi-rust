@@ -36,9 +36,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 154 PARTIAL; 6 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 168 PARTIAL; 6 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 158 PARTIAL; 57 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 155 PARTIAL; 5 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 169 PARTIAL; 5 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 159 PARTIAL; 56 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
@@ -262,6 +262,18 @@ loopback fixture (4/4, print + JSON) proves `PI_CACHE_RETENTION=long`
 reaches the wire as `"prompt_cache_retention":"24h"` while unset/invalid
 sends no retention field. The row is PARTIAL/PARTIAL/PARTIAL; live-vendor
 breadth, cross-provider wire breadth, and platform evidence remain open.
+
+ENV-013 evidence note (2026-09-05): the settings→env proxy bridge already
+matches pinned upstream nullish semantics (explicit env, including empty,
+wins; blank settings ignored), so no source change was needed. Three new
+`http_dispatcher::tests` pin empty-env preservation, settings-file bootstrap,
+and malformed-JSON diagnostics; real-process loopback fixture
+`tests/env_proxy.rs` (3/3, print) proves dead-proxy failure with
+absolute-URI interception and the provider untouched, `NO_PROXY` bypass, and
+`settings.json httpProxy` interception. The row is PARTIAL/PARTIAL/PARTIAL;
+proxy-auth forwarding (reqwest drops env-proxy userinfo), per-request env-map
+override, malformed-value fast failure, and live/platform evidence remain
+open.
 <!-- PARITY_DASHBOARD_METRICS:END -->
 
 Latest 2026-08-31 operation-record verification: SES-004 implementation and

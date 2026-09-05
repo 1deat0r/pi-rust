@@ -122,6 +122,72 @@ mod tests {
         restore("HTTP_PROXY", old_http);
         restore("HTTPS_PROXY", old_https);
     }
+    #[test]
+    fn proxy_setting_preserves_explicitly_empty_environment() {
+        let _guard = env_lock();
+        let old_http = std::env::var_os("HTTP_PROXY");
+        let old_https = std::env::var_os("HTTPS_PROXY");
+        std::env::set_var("HTTP_PROXY", "");
+        std::env::set_var("HTTPS_PROXY", "");
+
+        apply_http_proxy_settings(Some("http://settings:7890"));
+
+        assert_eq!(std::env::var("HTTP_PROXY").unwrap(), "");
+        assert_eq!(std::env::var("HTTPS_PROXY").unwrap(), "");
+        restore("HTTP_PROXY", old_http);
+        restore("HTTPS_PROXY", old_https);
+    }
+
+    #[test]
+    fn global_bootstrap_populates_environment_from_settings() {
+        let _guard = env_lock();
+        let old_http = std::env::var_os("HTTP_PROXY");
+        let old_https = std::env::var_os("HTTPS_PROXY");
+        std::env::remove_var("HTTP_PROXY");
+        std::env::remove_var("HTTPS_PROXY");
+        let root = std::env::temp_dir().join(format!(
+            "pi-http-dispatcher-proxy-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("settings.json"),
+            r#"{"httpProxy":"http://127.0.0.1:7890"}"#,
+        )
+        .unwrap();
+
+        assert!(apply_global_http_proxy_settings(&root).is_ok());
+        assert_eq!(
+            std::env::var("HTTP_PROXY").unwrap(),
+            "http://127.0.0.1:7890"
+        );
+        assert_eq!(
+            std::env::var("HTTPS_PROXY").unwrap(),
+            "http://127.0.0.1:7890"
+        );
+        restore("HTTP_PROXY", old_http);
+        restore("HTTPS_PROXY", old_https);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn malformed_settings_reports_the_offending_path() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-http-dispatcher-malformed-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("settings.json"), "{bad").unwrap();
+
+        let error = apply_global_http_proxy_settings(&root).unwrap_err();
+        assert!(
+            error.contains("settings.json"),
+            "diagnostic must name the file: {error}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn timeout_defaults_and_parser_match_upstream_choices() {

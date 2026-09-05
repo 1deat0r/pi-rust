@@ -6,6 +6,30 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-09-05)
 
+ENV-013 checkpoint (2026-09-05): the row is promoted from OPEN/OPEN/OPEN to
+PARTIAL/PARTIAL/PARTIAL. `apply_http_proxy_settings` already implements the
+pinned upstream nullish settings→env bridge (explicit env, including empty,
+wins; blank settings ignored), so no source change was needed; the slice is
+evidence only. Three new `http_dispatcher::tests` pin explicitly-empty-env
+preservation, settings-file bootstrap population, and malformed-JSON
+diagnostics naming the path, and a new real-process loopback fixture
+`tests/env_proxy.rs` (3/3, print) proves a credential-bearing dead proxy
+fails the turn with absolute-URI interception and the provider untouched,
+`NO_PROXY=127.0.0.1` bypasses direct with the proxy seeing nothing, and
+`settings.json httpProxy` intercepts the provider chain. The independent
+gate is green with pi-ai lib 459/459 serially, coding-agent lib 876/876
+serially, the env fixtures (4/4 + 7/7 + 3/3), check, strict workspace
+clippy, stable rustfmt, both audits, and diff cleanliness. Known gaps kept
+open: reqwest drops env-proxy userinfo (no `Proxy-Authorization`
+forwarded; upstream ProxyAgent authenticates), per-request env-map proxy
+override is not honored by prebuilt clients, malformed proxy values stall
+rather than failing fast, and live/platform evidence is missing. No numbered
+conversion task changed; source conversion remains
+`Conversion progress: 100.00% (166/166; 0 open)`. Current behavioral metrics
+are implementation 106 PASS / 155 PARTIAL / 5 OPEN, evidence 92 PASS / 169
+PARTIAL / 5 OPEN, runtime 51 PASS / 159 PARTIAL / 56 OPEN, non-TUI overall
+44/266, and whole-product 44/318.
+
 ENV-011 checkpoint (2026-09-05): the row is promoted from OPEN/OPEN/OPEN to
 PARTIAL/PARTIAL/PARTIAL. Provider resolvers already match the pinned
 upstream rule exactly (explicit option wins, per-request env map then
@@ -623,9 +647,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 154 PARTIAL; 6 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 168 PARTIAL; 6 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 158 PARTIAL; 57 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 155 PARTIAL; 5 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 169 PARTIAL; 5 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 159 PARTIAL; 56 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 

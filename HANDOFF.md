@@ -2,6 +2,42 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-05 — ENV-013 proxy variables evidence
+
+ENV-013 is promoted from OPEN/OPEN/OPEN to PARTIAL/PARTIAL/PARTIAL with an
+evidence-only slice: `apply_http_proxy_settings` already implements the
+pinned upstream nullish bridge (explicit env, including empty, wins; blank
+settings ignored), verified against `upstream_pi` (`http-dispatcher.ts`,
+`node-http-proxy.ts`). New `http_dispatcher::tests`
+(`proxy_setting_preserves_explicitly_empty_environment`,
+`global_bootstrap_populates_environment_from_settings`,
+`malformed_settings_reports_the_offending_path`) and new real-process
+fixture `tests/env_proxy.rs` (3/3: credential-bearing dead proxy fails with
+absolute-URI interception and the provider untouched, `NO_PROXY=127.0.0.1`
+bypasses direct, `settings.json httpProxy` intercepts the chain).
+
+Validation (all green): pi-ai lib 459/459 serially, coding-agent lib 876/876
+serially, env_cache_retention 4/4, env_thinking_version 7/7, env_proxy 3/3;
+workspace `cargo check`, strict all-target clippy (`-D warnings`),
+`cargo fmt --check`, `git diff --check`, `conversion_audit -- all` →
+`Conversion progress: 100.00% (166/166; 0 open)` (blockers 0),
+`parity_audit -- dashboard` → `PARITY_DASHBOARD_OK`. Metrics now: impl
+106/155/5, evidence 92/169/5, runtime 51/159/56, non-TUI overall 44/266,
+whole-product 44/318. No numbered conversion task changed.
+
+Known gaps kept open: reqwest drops env-proxy userinfo (no
+`Proxy-Authorization`; upstream ProxyAgent authenticates), per-request
+env-map proxy override not honored by prebuilt clients, malformed proxy
+values stall rather than failing fast (probed `://bad-proxy-value` hanging
+the turn past 60s), and live/platform evidence is missing.
+
+Next: commit + push this slice, then ENV-012/014/015/016 and DIST-004. Files
+touched: `crates/pi-coding-agent/src/core/http_dispatcher.rs` (3 unit tests),
+`crates/pi-coding-agent/tests/env_proxy.rs` (new, 3 tests),
+`docs/NON-TUI-PARITY-STATUS.md` (ENV-013 row), `docs/PARITY-DASHBOARD.md`
+(note + synced blocks), README/`docs/TUI-PARITY-STATUS.md` (synced blocks),
+plus CONVERSION-LEDGER.md, PLAN.md, and this file.
+
 ## Latest checkpoint — 2026-09-05 — ENV-011 cache-retention evidence
 
 ENV-011 is promoted from OPEN/OPEN/OPEN to PARTIAL/PARTIAL/PARTIAL with an
@@ -1700,9 +1736,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 154 PARTIAL; 6 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 168 PARTIAL; 6 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 158 PARTIAL; 57 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 155 PARTIAL; 5 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 169 PARTIAL; 5 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 159 PARTIAL; 56 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
