@@ -241,6 +241,16 @@ mod tests {
         assert!(matches!(result, ExternalEditorResult::Failed(_)));
         let _ = fs::remove_dir_all(root);
     }
+    #[test]
+    fn editor_sigint_maps_to_cancelled() {
+        let (root, script) = fixture_script("editor.sh", "kill -INT $$");
+        let result = edit_in_external_editor_blocking(ExternalEditorOptions {
+            command: script.display().to_string(),
+            content: "original".into(),
+        });
+        assert_eq!(result, ExternalEditorResult::Cancelled);
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn command_parser_handles_quotes_and_rejects_malformed_input() {

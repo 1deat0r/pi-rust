@@ -2128,4 +2128,128 @@ mod tests {
             .is_none()
         );
     }
+    #[test]
+    fn normalize_llama_server_url_matches_upstream_shapes() {
+        assert_eq!(
+            normalize_llama_server_url("http://127.0.0.1:8080/").unwrap(),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            normalize_llama_server_url("  http://127.0.0.1:8080/v1/  ").unwrap(),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            normalize_llama_server_url("http://127.0.0.1:8080/v1?token=x#frag").unwrap(),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            normalize_llama_server_url("https://router.example:8080/prefix/v1").unwrap(),
+            "https://router.example:8080/prefix"
+        );
+        assert_eq!(
+            llama_inference_url("http://127.0.0.1:8080").unwrap(),
+            "http://127.0.0.1:8080/v1"
+        );
+        assert!(normalize_llama_server_url("ftp://127.0.0.1:8080").is_err());
+        assert!(normalize_llama_server_url("127.0.0.1:8080").is_err());
+        assert!(normalize_llama_server_url("").is_err());
+    }
+
+    #[test]
+    fn stored_credential_env_beats_context_env() {
+        let ctx = AuthContext {
+            env: std::sync::Arc::new(|name| {
+                (name == "LLAMA_BASE_URL").then(|| "http://ctx.example:8080".to_owned())
+            }),
+            file_exists: std::sync::Arc::new(|_| false),
+        };
+        let auth = LlamaApiKeyAuth;
+
+        let mut stored = ProviderEnv::new();
+        stored.insert(
+            "LLAMA_BASE_URL".to_owned(),
+            "http://stored.example:8080/v1/".to_owned(),
+        );
+        let credential = ApiKeyCredential {
+            key: None,
+            env: Some(stored),
+        };
+        assert_eq!(
+            auth.server_url(&ctx, Some(&credential)),
+            Some("http://stored.example:8080".to_owned())
+        );
+
+        let mut blank = ProviderEnv::new();
+        blank.insert("LLAMA_BASE_URL".to_owned(), "   ".to_owned());
+        let blank_credential = ApiKeyCredential {
+            key: None,
+            env: Some(blank),
+        };
+        assert_eq!(
+            auth.server_url(&ctx, Some(&blank_credential)),
+            Some("http://ctx.example:8080".to_owned())
+        );
+        assert_eq!(
+            auth.server_url(&ctx, None),
+            Some("http://ctx.example:8080".to_owned())
+        );
+    }
+    #[test]
+    fn huggingface_token_search_follows_upstream_path_precedence() {
+        let root = std::env::temp_dir().join(format!("pi-hf-token-{}", uuid::Uuid::new_v4()));
+        let explicit = root.join("explicit-token");
+        let hf_home = root.join("hf-home");
+        let xdg_cache = root.join("xdg-cache");
+        let home = root.join("home");
+        for dir in [
+            &hf_home,
+            &xdg_cache.join("huggingface"),
+            &home.join(".cache/huggingface"),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(&explicit, "explicit-secret\n").unwrap();
+        std::fs::write(hf_home.join("token"), "hf-home-secret\n").unwrap();
+        std::fs::write(xdg_cache.join("huggingface/token"), "xdg-secret\n").unwrap();
+        std::fs::write(home.join(".cache/huggingface/token"), "home-secret\n").unwrap();
+
+        let environment = BTreeMap::from([
+            ("HF_TOKEN_PATH".to_owned(), explicit.display().to_string()),
+            ("HF_HOME".to_owned(), hf_home.display().to_string()),
+            ("XDG_CACHE_HOME".to_owned(), xdg_cache.display().to_string()),
+        ]);
+        assert_eq!(
+            find_huggingface_token_from(&environment, Some(&home)),
+            Some("explicit-secret".to_owned())
+        );
+
+        let environment = BTreeMap::from([
+            ("HF_HOME".to_owned(), hf_home.display().to_string()),
+            ("XDG_CACHE_HOME".to_owned(), xdg_cache.display().to_string()),
+        ]);
+        assert_eq!(
+            find_huggingface_token_from(&environment, Some(&home)),
+            Some("hf-home-secret".to_owned())
+        );
+
+        let environment =
+            BTreeMap::from([("XDG_CACHE_HOME".to_owned(), xdg_cache.display().to_string())]);
+        assert_eq!(
+            find_huggingface_token_from(&environment, Some(&home)),
+            Some("xdg-secret".to_owned())
+        );
+        assert_eq!(
+            find_huggingface_token_from(&BTreeMap::new(), Some(&home)),
+            Some("home-secret".to_owned())
+        );
+        assert_eq!(find_huggingface_token_from(&BTreeMap::new(), None), None);
+
+        let environment = BTreeMap::from([("HF_TOKEN".to_owned(), "  env-secret  ".to_owned())]);
+        assert_eq!(
+            find_huggingface_token_from(&environment, Some(&home)),
+            Some("env-secret".to_owned())
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

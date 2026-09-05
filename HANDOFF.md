@@ -2,6 +2,40 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-05 — ENV-012/014/015/016 evidence sweep
+
+All four rows are promoted from OPEN/OPEN/OPEN to PARTIAL/PARTIAL/PARTIAL
+with evidence-only slices, verified against `upstream_pi`. ENV-015: editor
+chain precedence pins (`external_editor_prefers_setting_over_environment`,
+`external_editor_falls_back_through_visual_then_editor`,
+`external_editor_ignores_blank_setting`) plus SIGINT→Cancelled
+(`editor_sigint_maps_to_cancelled`); launch/input/failure already covered.
+ENV-016: llama normalization matrix
+(`normalize_llama_server_url_matches_upstream_shapes`), stored-beats-context
+precedence, and HF XDG path precedence
+(`huggingface_token_search_follows_upstream_path_precedence`). ENV-014: HF
+XDG pins plus new real-process `tests/env_home.rs` (2/2: home-derived
+catalog, homeless fallback). ENV-012: cursor/shrink settings precedence
+pins on top of the existing pi-tui escape-timeout pins and constructor env
+defaults.
+
+Validation (all green): pi-ai lib 459/459 serially, coding-agent lib 886/886
+serially, env_cache_retention 4/4, env_thinking_version 7/7, env_proxy 3/3,
+env_home 2/2; workspace `cargo check`, strict all-target clippy
+(`-D warnings`), `cargo fmt --check`, `git diff --check`,
+`conversion_audit -- all` → `Conversion progress: 100.00% (166/166; 0 open)`
+(blockers 0), `parity_audit -- dashboard` → `PARITY_DASHBOARD_OK`. Metrics
+now: impl 106/159/1, evidence 92/173/1, runtime 51/163/52, non-TUI overall
+44/266, whole-product 44/318. No numbered conversion task changed.
+
+Next: commit + push this slice, then DIST-004. Files touched:
+`core/settings.rs` (6 tests), `core/llama.rs` (3 tests),
+`interactive/external_editor.rs` (1 test),
+`tests/env_home.rs` (new, 2 tests), `docs/NON-TUI-PARITY-STATUS.md` (4 rows),
+`docs/PARITY-DASHBOARD.md` (notes + synced blocks),
+README/`docs/TUI-PARITY-STATUS.md` (synced blocks), plus
+CONVERSION-LEDGER.md, PLAN.md, and this file.
+
 ## Latest checkpoint — 2026-09-05 — ENV-013 proxy variables evidence
 
 ENV-013 is promoted from OPEN/OPEN/OPEN to PARTIAL/PARTIAL/PARTIAL with an
@@ -1736,9 +1770,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 155 PARTIAL; 5 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 169 PARTIAL; 5 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 159 PARTIAL; 56 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 159 PARTIAL; 1 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 173 PARTIAL; 1 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 163 PARTIAL; 52 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 

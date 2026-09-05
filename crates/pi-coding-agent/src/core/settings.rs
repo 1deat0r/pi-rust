@@ -1930,8 +1930,125 @@ mod tests {
     fn m(v: Value) -> SettingsMap {
         serde_json::from_value(v).unwrap()
     }
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+            std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+        LOCK.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn external_editor_prefers_setting_over_environment() {
+        let _guard = env_lock();
+        let old_visual = std::env::var_os("VISUAL");
+        let old_editor = std::env::var_os("EDITOR");
+        std::env::set_var("VISUAL", "env-visual");
+        std::env::set_var("EDITOR", "env-editor");
+
+        let manager = SettingsManager::in_memory(m(json!({ "externalEditor": "code --wait" })));
+        assert_eq!(manager.get_external_editor_command(), "code --wait");
+
+        restore_env("VISUAL", old_visual);
+        restore_env("EDITOR", old_editor);
+    }
+
+    #[test]
+    fn external_editor_falls_back_through_visual_then_editor() {
+        let _guard = env_lock();
+        let old_visual = std::env::var_os("VISUAL");
+        let old_editor = std::env::var_os("EDITOR");
+
+        std::env::set_var("VISUAL", "env-visual");
+        std::env::set_var("EDITOR", "env-editor");
+        let manager = SettingsManager::in_memory(m(json!({})));
+        assert_eq!(manager.get_external_editor_command(), "env-visual");
+
+        std::env::set_var("VISUAL", "");
+        assert_eq!(manager.get_external_editor_command(), "env-editor");
+
+        std::env::set_var("EDITOR", "");
+        let expected = if cfg!(windows) { "notepad" } else { "nano" };
+        assert_eq!(manager.get_external_editor_command(), expected);
+
+        restore_env("VISUAL", old_visual);
+        restore_env("EDITOR", old_editor);
+    }
+
+    #[test]
+    fn external_editor_ignores_blank_setting() {
+        let _guard = env_lock();
+        let old_editor = std::env::var_os("EDITOR");
+        std::env::remove_var("VISUAL");
+        std::env::set_var("EDITOR", "env-editor");
+
+        let manager = SettingsManager::in_memory(m(json!({ "externalEditor": "   " })));
+        assert_eq!(manager.get_external_editor_command(), "env-editor");
+
+        restore_env("EDITOR", old_editor);
+    }
 
     // ---- deep_merge ------------------------------------------------------
+    #[test]
+    fn hardware_cursor_prefers_setting_over_environment() {
+        let _guard = env_lock();
+        let old = std::env::var_os("PI_HARDWARE_CURSOR");
+        std::env::set_var("PI_HARDWARE_CURSOR", "1");
+
+        let manager = SettingsManager::in_memory(m(json!({ "showHardwareCursor": false })));
+        assert!(!manager.get_show_hardware_cursor());
+        let manager = SettingsManager::in_memory(m(json!({ "showHardwareCursor": true })));
+        std::env::set_var("PI_HARDWARE_CURSOR", "0");
+        assert!(manager.get_show_hardware_cursor());
+
+        restore_env("PI_HARDWARE_CURSOR", old);
+    }
+
+    #[test]
+    fn hardware_cursor_matches_upstream_env_rule() {
+        let _guard = env_lock();
+        let old = std::env::var_os("PI_HARDWARE_CURSOR");
+
+        std::env::set_var("PI_HARDWARE_CURSOR", "1");
+        assert!(SettingsManager::in_memory(m(json!({}))).get_show_hardware_cursor());
+        for value in ["0", "true", "", "2"] {
+            std::env::set_var("PI_HARDWARE_CURSOR", value);
+            assert!(
+                !SettingsManager::in_memory(m(json!({}))).get_show_hardware_cursor(),
+                "only exactly \"1\" enables the cursor: {value:?}"
+            );
+        }
+        std::env::remove_var("PI_HARDWARE_CURSOR");
+        assert!(!SettingsManager::in_memory(m(json!({}))).get_show_hardware_cursor());
+
+        restore_env("PI_HARDWARE_CURSOR", old);
+    }
+
+    #[test]
+    fn clear_on_shrink_prefers_setting_over_environment() {
+        let _guard = env_lock();
+        let old = std::env::var_os("PI_CLEAR_ON_SHRINK");
+        std::env::set_var("PI_CLEAR_ON_SHRINK", "1");
+
+        let manager =
+            SettingsManager::in_memory(m(json!({ "terminal": { "clearOnShrink": false } })));
+        assert!(!manager.get_clear_on_shrink());
+        std::env::set_var("PI_CLEAR_ON_SHRINK", "0");
+        let manager =
+            SettingsManager::in_memory(m(json!({ "terminal": { "clearOnShrink": true } })));
+        assert!(manager.get_clear_on_shrink());
+        let manager = SettingsManager::in_memory(m(json!({})));
+        assert!(!manager.get_clear_on_shrink());
+        std::env::set_var("PI_CLEAR_ON_SHRINK", "1");
+        assert!(SettingsManager::in_memory(m(json!({}))).get_clear_on_shrink());
+
+        restore_env("PI_CLEAR_ON_SHRINK", old);
+    }
 
     #[test]
     fn deep_merge_adds_missing_keys() {

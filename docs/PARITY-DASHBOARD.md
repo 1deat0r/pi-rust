@@ -36,9 +36,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 155 PARTIAL; 5 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 169 PARTIAL; 5 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 159 PARTIAL; 56 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 159 PARTIAL; 1 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 173 PARTIAL; 1 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 163 PARTIAL; 52 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
@@ -274,6 +274,31 @@ absolute-URI interception and the provider untouched, `NO_PROXY` bypass, and
 proxy-auth forwarding (reqwest drops env-proxy userinfo), per-request env-map
 override, malformed-value fast failure, and live/platform evidence remain
 open.
+
+ENV-012 evidence note (2026-09-05): escape-timeout resolution already matches
+pinned upstream exactly with pi-tui unit pins, and hardware-cursor/shrink
+already follow setting-wins-then-strict-`"1"`-env through constructors,
+settings chain, and startup wiring. New settings precedence pins close the
+row to PARTIAL/PARTIAL/PARTIAL; live PTY, multi-terminal, and platform
+evidence remain open.
+
+ENV-014 evidence note (2026-09-05): home resolution already implements
+host-platform precedence with fallback and unit pins. New HuggingFace XDG
+search pins plus real-process fixture `tests/env_home.rs` (2/2: home-derived
+catalog, homeless fallback) close the row to PARTIAL/PARTIAL/PARTIAL;
+Windows/macOS runs remain open.
+
+ENV-015 evidence note (2026-09-05): the editor chain already matches upstream
+(setting > `VISUAL` > `EDITOR` > platform default) with Ctrl+G wiring and
+launch/input/failure coverage. New precedence pins plus a SIGINT→Cancelled
+pin close the row to PARTIAL/PARTIAL/PARTIAL; live editor and platform
+evidence remain open.
+
+ENV-016 evidence note (2026-09-05): llama server resolution already matches
+upstream (stored env > context env, identical normalization, process-env
+login default). New normalization, precedence, and HF path pins close the
+row to PARTIAL/PARTIAL/PARTIAL; live traffic, restart breadth, and platform
+evidence remain open.
 <!-- PARITY_DASHBOARD_METRICS:END -->
 
 Latest 2026-08-31 operation-record verification: SES-004 implementation and
