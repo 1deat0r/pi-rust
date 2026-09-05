@@ -267,6 +267,127 @@ fn clean_child_restart_honors_session_dir_precedence_and_reopens_file() {
     assert_eq!(jsonl_files(&settings_sessions).len(), 1);
     assert!(jsonl_files(&env_sessions).is_empty());
 }
+#[test]
+fn continue_variants_cover_wrong_cwd_no_session_and_malformed_file() {
+    let sandbox = Sandbox::new("continue-variants");
+    let continue_args = [
+        "--mode",
+        "text",
+        "--provider",
+        "faux",
+        "--model",
+        "faux-1",
+        "--no-tools",
+        "--continue",
+    ];
+
+    // Wrong cwd: the session belongs to another project, so lookup must
+    // miss and the run must fail with the no-previous-session diagnostic.
+    let other_project = sandbox.root.join("other-project");
+    fs::create_dir_all(&other_project).expect("create other project");
+    let wrong_cwd = sandbox
+        .command()
+        .current_dir(&other_project)
+        .args(continue_args)
+        .arg("--print")
+        .arg("wrong cwd")
+        .output()
+        .expect("run wrong-cwd continue");
+    assert!(
+        !wrong_cwd.status.success(),
+        "wrong-cwd continue must fail: {}",
+        stderr(&wrong_cwd)
+    );
+    assert!(
+        stderr(&wrong_cwd).contains("no previous session found to continue in this directory"),
+        "expected no-previous-session diagnostic, got: {}",
+        stderr(&wrong_cwd)
+    );
+
+    // No session at all in the right cwd: same fail-closed diagnostic.
+    let no_session = sandbox
+        .command()
+        .args(continue_args)
+        .arg("--print")
+        .arg("no session")
+        .output()
+        .expect("run no-session continue");
+    assert!(
+        !no_session.status.success(),
+        "no-session continue must fail: {}",
+        stderr(&no_session)
+    );
+    assert!(
+        stderr(&no_session).contains("no previous session found to continue in this directory"),
+        "expected no-previous-session diagnostic, got: {}",
+        stderr(&no_session)
+    );
+
+    // Seed a real session, then corrupt it to a malformed header. Discovery
+    // skips unreadable headers (upstream readSessionHeaderForDiscovery),
+    // so --continue must keep failing closed with the same diagnostic
+    // instead of opening a broken file.
+    let seed = sandbox
+        .command()
+        .args([
+            "--mode",
+            "text",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--no-tools",
+            "--session-id",
+            "malformed-target",
+            "--print",
+            "seed prompt",
+        ])
+        .output()
+        .expect("run seed session");
+    assert!(seed.status.success(), "seed stderr: {}", stderr(&seed));
+    let session_file = jsonl_files(&sandbox.sessions)
+        .pop()
+        .expect("seed session file");
+    let original = fs::read_to_string(&session_file).expect("read seed session");
+    fs::write(&session_file, b"{ corrupted jsonl\n").expect("corrupt session file");
+
+    let malformed = sandbox
+        .command()
+        .args(continue_args)
+        .arg("--print")
+        .arg("malformed")
+        .output()
+        .expect("run malformed continue");
+    assert!(
+        !malformed.status.success(),
+        "malformed continue must fail: {}",
+        stderr(&malformed)
+    );
+    assert!(
+        stderr(&malformed).contains("no previous session found to continue in this directory"),
+        "expected no-previous-session diagnostic, got: {}",
+        stderr(&malformed)
+    );
+
+    // Recovery: restoring the bytes makes --continue work again and append.
+    fs::write(&session_file, original).expect("restore session file");
+    let recovered = sandbox
+        .command()
+        .args(continue_args)
+        .arg("--print")
+        .arg("recovered prompt")
+        .output()
+        .expect("run recovered continue");
+    assert!(
+        recovered.status.success(),
+        "recovered stderr: {}",
+        stderr(&recovered)
+    );
+    assert!(stdout(&recovered).contains("faux response to: recovered prompt"));
+    let contents = fs::read_to_string(&session_file).expect("read recovered session");
+    assert!(contents.contains("seed prompt"));
+    assert!(contents.contains("recovered prompt"));
+}
 
 #[test]
 fn explicit_session_id_reopens_the_same_session_across_processes() {
