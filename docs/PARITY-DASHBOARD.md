@@ -36,9 +36,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 153 PARTIAL; 7 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 167 PARTIAL; 7 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 157 PARTIAL; 58 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 154 PARTIAL; 6 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 168 PARTIAL; 6 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 158 PARTIAL; 57 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
@@ -252,6 +252,16 @@ precedence and is loopback-proven, RPC carries loop reasoning plus stream
 options, interactive threads the level into every turn with harness rebuild
 on change, and SDK/experimental set with-options. Footer selection,
 per-vendor breadth, and live/platform evidence remain open.
+
+ENV-011 evidence note (2026-09-05): provider resolvers already match pinned
+upstream exactly (explicit option wins, per-request env then process env,
+only exact `long` maps to long, silent short fallback), so no source change
+was needed. pi-ai precedence unit tests prove explicit-beats-env-long plus
+invalid/empty/case-variant fallback on `openai-responses`; a real-process
+loopback fixture (4/4, print + JSON) proves `PI_CACHE_RETENTION=long`
+reaches the wire as `"prompt_cache_retention":"24h"` while unset/invalid
+sends no retention field. The row is PARTIAL/PARTIAL/PARTIAL; live-vendor
+breadth, cross-provider wire breadth, and platform evidence remain open.
 <!-- PARITY_DASHBOARD_METRICS:END -->
 
 Latest 2026-08-31 operation-record verification: SES-004 implementation and

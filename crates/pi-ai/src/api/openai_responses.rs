@@ -874,6 +874,53 @@ mod tests {
     }
 
     #[test]
+    fn explicit_cache_retention_beats_env_long() {
+        let m = model("gpt-5");
+        let opts = OpenAIResponsesOptions {
+            base: StreamOptions {
+                cache_retention: Some("none".to_string()),
+                base: ProviderRequestOptions {
+                    env: Some(BTreeMap::from([(
+                        "PI_CACHE_RETENTION".to_string(),
+                        "long".to_string(),
+                    )])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let params = build_params(&m, &ctx(), &opts).unwrap();
+        assert!(params.get("prompt_cache_key").is_none());
+        assert!(params.get("prompt_cache_retention").is_none());
+    }
+
+    #[test]
+    fn invalid_and_empty_env_cache_retention_falls_back_to_short() {
+        let m = model("gpt-5");
+        for value in ["ultra", "", "LONG", "none"] {
+            let opts = OpenAIResponsesOptions {
+                base: StreamOptions {
+                    base: ProviderRequestOptions {
+                        env: Some(BTreeMap::from([(
+                            "PI_CACHE_RETENTION".to_string(),
+                            value.to_string(),
+                        )])),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let params = build_params(&m, &ctx(), &opts).unwrap();
+            assert!(
+                params.get("prompt_cache_retention").is_none(),
+                "env {value:?} must fall back to short without a retention field"
+            );
+        }
+    }
+
+    #[test]
     fn client_api_key_handling() {
         assert_eq!(
             get_client_api_key("openai", Some("sk-123"), None).unwrap(),

@@ -6,6 +6,26 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-09-05)
 
+ENV-011 checkpoint (2026-09-05): the row is promoted from OPEN/OPEN/OPEN to
+PARTIAL/PARTIAL/PARTIAL. Provider resolvers already match the pinned
+upstream rule exactly (explicit option wins, per-request env map then
+process env, only exact `long` maps to long, silent short fallback), so no
+source change was needed; the slice is evidence only. pi-ai precedence unit
+tests prove explicit-beats-env-long plus invalid/empty/case-variant
+fallback on `openai-responses`, and a new real-process loopback fixture
+`tests/env_cache_retention.rs` (4/4, print + JSON) proves
+`PI_CACHE_RETENTION=long` reaches the wire as
+`"prompt_cache_retention":"24h"` while unset/invalid sends no retention
+field. The independent gate is green with pi-ai lib 459/459 serially,
+coding-agent lib 873/873 serially, the three env fixtures, check, strict
+workspace clippy, stable rustfmt, both audits, and diff cleanliness.
+Live-vendor breadth, cross-provider wire breadth, and platform evidence
+remain open. No numbered conversion task changed; source conversion remains
+`Conversion progress: 100.00% (166/166; 0 open)`. Current behavioral metrics
+are implementation 106 PASS / 154 PARTIAL / 6 OPEN, evidence 92 PASS / 168
+PARTIAL / 6 OPEN, runtime 51 PASS / 158 PARTIAL / 57 OPEN, non-TUI overall
+44/266, and whole-product 44/318.
+
 ENV-007 caller-wiring checkpoint (2026-09-05): row stays PARTIAL/PARTIAL/
 PARTIAL (no promotion). The shared `stream_fn_with_reasoning` helper
 (run.rs, now `pub(crate)`) is wired into every remaining caller: JSON mode
@@ -603,9 +623,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 153 PARTIAL; 7 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 167 PARTIAL; 7 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 157 PARTIAL; 58 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 154 PARTIAL; 6 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 168 PARTIAL; 6 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 158 PARTIAL; 57 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 

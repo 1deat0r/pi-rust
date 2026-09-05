@@ -1,5 +1,26 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-05 checkpoint — ENV-011 cache-retention evidence
+
+ENV-011 is now PARTIAL/PARTIAL/PARTIAL. Provider resolvers already match the
+pinned upstream rule exactly (explicit option wins, per-request env then
+process env, only exact `long` maps to long, silent short fallback), so no
+source change was needed. New pi-ai precedence unit tests plus a real-process
+loopback `openai-responses` fixture (4/4, print + JSON) prove
+`PI_CACHE_RETENTION=long` reaches the wire as
+`"prompt_cache_retention":"24h"` while unset/invalid sends no retention
+field. The independent gate is green: pi-ai lib 459/459 and coding-agent lib
+873/873 serially, the three env fixtures, check, strict workspace clippy,
+stable rustfmt, both audits, and diff cleanliness.
+
+Next dependency-safe action: ENV-013 (proxy variables), then ENV-012/014/
+015/016 and DIST-004. ENV-011 still needs live-vendor breadth,
+cross-provider wire breadth, and platform evidence. Metrics are
+implementation 106 PASS / 154 PARTIAL / 6 OPEN, deterministic evidence 92
+PASS / 168 PARTIAL / 6 OPEN, runtime 51 PASS / 158 PARTIAL / 57 OPEN,
+non-TUI overall 44/266, whole-product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
 ## Active 2026-09-05 checkpoint — ENV-007 per-mode reasoning wiring
 
 All non-print callers now carry per-turn reasoning into provider requests via
@@ -903,9 +924,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 153 PARTIAL; 7 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 167 PARTIAL; 7 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 157 PARTIAL; 58 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 154 PARTIAL; 6 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 168 PARTIAL; 6 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 158 PARTIAL; 57 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
