@@ -267,16 +267,19 @@ ENV-013 evidence note (2026-09-05): the settings→env proxy bridge already
 matches pinned upstream nullish semantics (explicit env, including empty,
 wins; blank settings ignored). Three new `http_dispatcher::tests` pin
 empty-env preservation, settings-file bootstrap, and malformed-JSON
-diagnostics; real-process loopback fixture `tests/env_proxy.rs` (4/4,
-print) proves dead-proxy failure with absolute-URI interception,
-`Proxy-Authorization` forwarding, and the provider untouched, `NO_PROXY`
-bypass, `settings.json httpProxy` interception, and fail-closed startup on
-unroutable values. (Correction 2026-09-06: an earlier note claimed reqwest
-drops env-proxy userinfo; that was a case-sensitive test-string bug.)
-Follow-up 2026-09-06: `validate_proxy_env` fails startup on values the
-client would silently ignore (upstream throws lazily per request instead).
-The row is PARTIAL/PARTIAL/PARTIAL; per-request env-map override and
-live/platform evidence remain open.
+diagnostics; real-process loopback fixture
+`tests/env_proxy.rs` (4/4, print) proves dead-proxy failure with
+absolute-URI interception, `Proxy-Authorization` forwarding, and the
+provider untouched, `NO_PROXY` bypass, `settings.json httpProxy`
+interception, and fail-closed startup on unroutable values (including
+`socks://`, unsupported by this build and upstream alike). (Correction
+2026-09-06: an earlier note claimed reqwest drops env-proxy userinfo; that
+was a case-sensitive test-string bug.) Follow-up 2026-09-06:
+`validate_proxy_env` fails startup on values the client would silently
+ignore (upstream throws lazily per request instead). The row is
+PARTIAL/PARTIAL/PARTIAL; per-request env-map override (needs per-request
+client construction; deferred) and live/platform evidence remain open.
+
 ENV-012 evidence note (2026-09-05): escape-timeout resolution already matches
 pinned upstream exactly with pi-tui unit pins, and hardware-cursor/shrink
 already follow setting-wins-then-strict-`"1"`-env through constructors,

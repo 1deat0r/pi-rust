@@ -1,19 +1,16 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
-## Active 2026-09-06 checkpoint — ENV-013 fail-closed proxy validation
+## Active 2026-09-06 checkpoint — ENV-013 socks rejection
 
-Unroutable proxy values now fail at startup (`validate_proxy_env` in the
-`main.rs` bootstrap, exiting nonzero naming the variable) instead of
-silently going direct — a raw-reqwest probe proved the client ignores
-`://bad-proxy-value` while upstream throws on first use. New unit matrix
-plus a fourth `env_proxy` case; ENV-013 stays PARTIAL/PARTIAL/PARTIAL with
-an intentional startup-vs-lazy divergence recorded. Gate green:
-coding-agent lib 890/890 serially, env_proxy 4/4, check, strict workspace
-clippy, stable rustfmt, diff cleanliness. Metrics unchanged: implementation
-106 PASS / 160 PARTIAL / 0 OPEN, deterministic evidence 92 PASS / 174
-PARTIAL / 0 OPEN, runtime 51 PASS / 164 PARTIAL / 51 OPEN, non-TUI overall
-44/266, whole-product 44/318, and historical conversion
-`Conversion progress: 100.00% (166/166; 0 open)`.
+Startup proxy validation now rejects `socks://` values (no-socks-feature
+build; upstream throws too). Per-request env-map override stays deferred
+by design (per-request client construction cost, no observed demand).
+ENV-013 stays PARTIAL/PARTIAL/PARTIAL. Gate green: coding-agent lib
+890/890 serially, check, strict workspace clippy, stable rustfmt, diff
+cleanliness. Metrics unchanged: implementation 106 PASS / 160 PARTIAL / 0
+OPEN, deterministic evidence 92 PASS / 174 PARTIAL / 0 OPEN, runtime 51
+PASS / 164 PARTIAL / 51 OPEN, non-TUI overall 44/266, whole-product 44/318,
+and historical conversion `Conversion progress: 100.00% (166/166; 0 open)`.
 
 ## Active 2026-09-05 checkpoint — ENV-007 per-mode reasoning wiring
 

@@ -2,6 +2,24 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-06 — ENV-013 socks rejection
+
+`validate_proxy_env` now rejects `socks://` (no-socks-feature build;
+upstream throws on non-http(s) too); unit lists updated, 10/10 dispatcher
+tests green. Per-request override deferred by design (recorded with the
+seam: per-request client construction). Row stays PARTIAL; metrics
+unchanged. Also repaired two self-inflicted doc edits this round (a stray
+placeholder line in `env_proxy.rs`, since reverted byte-clean, and
+dashboard-note line surgery, now verified clean).
+
+Next: commit + push, then resume the standing goal. Files touched:
+`core/http_dispatcher.rs`, `docs/NON-TUI-PARITY-STATUS.md` (ENV-013 row),
+`docs/PARITY-DASHBOARD.md` (ENV-013 note), plus CONVERSION-LEDGER.md,
+PLAN.md, and this file.
+
+Hook note (standing): metrics unchanged; `--no-verify` covers the
+staged-docs rule only.
+
 ## Latest checkpoint — 2026-09-06 — register repair (DIST-004 row)
 
 The fail-closed commit went in with two self-inflicted defects: a

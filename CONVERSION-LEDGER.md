@@ -6,6 +6,15 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-09-05)
 
+ENV-013 socks follow-up (2026-09-06): startup validation now rejects
+`socks://` proxy values. This distribution builds reqwest without the
+socks feature, so a socks value could never route; upstream likewise
+throws on non-http(s) proxy protocols. Unit accept/reject lists updated.
+Per-request env-map proxy override stays deferred by design: honoring it
+needs per-request client construction (pool loss) across every provider
+site for a scenario with no observed demand. Row stays
+PARTIAL/PARTIAL/PARTIAL; metrics unchanged.
+
 ENV-013 fail-closed follow-up (2026-09-06): unroutable proxy values now
 fail at startup instead of silently going direct. A raw-reqwest probe
 proved `HTTP_PROXY="://bad-proxy-value"` is ignored by the client (200 OK

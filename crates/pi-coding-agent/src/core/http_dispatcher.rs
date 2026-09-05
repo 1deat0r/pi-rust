@@ -61,10 +61,13 @@ fn proxy_value_routable(value: &str) -> bool {
     if value.is_empty() {
         return true;
     }
-    // Mirror the underlying client's acceptance: an http/https/socks scheme
-    // (or none, defaulting to http) plus a non-empty authority carrying a
-    // host. Anything else is dropped by the client, which would bypass a
-    // mandated proxy without a sound.
+    // Mirror the underlying client's acceptance: an http/https scheme (or
+    // none, defaulting to http) plus a non-empty authority carrying a host.
+    // Anything else is dropped by the client, which would bypass a mandated
+    // proxy without a sound. SOCKS is rejected even though the matcher
+    // parses it: this distribution builds reqwest without the socks feature
+    // (matching upstream, which throws on non-http(s) proxy protocols), so
+    // a socks value could never route.
     let (scheme, rest) = match value.split_once("://") {
         Some((scheme, rest)) => (Some(scheme.to_ascii_lowercase()), rest),
         None => {
@@ -78,10 +81,7 @@ fn proxy_value_routable(value: &str) -> bool {
         }
     };
     if let Some(scheme) = &scheme {
-        if !matches!(
-            scheme.as_str(),
-            "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h"
-        ) {
+        if !matches!(scheme.as_str(), "http" | "https") {
             return false;
         }
     }
@@ -246,7 +246,6 @@ mod tests {
             "  http://127.0.0.1:7890  ",
             "127.0.0.1:7890",
             "proxy.example",
-            "socks5://127.0.0.1:1080",
         ] {
             assert!(proxy_value_routable(value), "routable: {value:?}");
         }
@@ -260,6 +259,7 @@ mod tests {
             "not a url at all !!!",
             "http://",
             "ftp://127.0.0.1:21",
+            "socks5://127.0.0.1:1080",
             "http:///no-host",
         ] {
             assert!(!proxy_value_routable(value), "unroutable: {value:?}");
