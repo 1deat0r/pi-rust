@@ -883,3 +883,98 @@ fn session_dir_symlink_target_and_missing_parent_chain_are_created_and_rediscove
     );
     assert!(stdout(&continued_deep).contains("faux response to: deep continued"));
 }
+
+#[test]
+fn session_selector_missing_parent_and_readonly_target_fail_closed() {
+    let sandbox = Sandbox::new("session-selector-bounds");
+
+    // Missing parent: an explicit path whose directory does not exist must
+    // fail closed instead of creating anything.
+    let orphan = sandbox.root.join("no-such-dir/session.jsonl");
+    let missing = sandbox
+        .command()
+        .args([
+            "--mode",
+            "text",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--no-tools",
+            "--session",
+        ])
+        .arg(&orphan)
+        .arg("--print")
+        .arg("missing parent")
+        .output()
+        .expect("run missing-parent session child");
+    assert!(
+        !missing.status.success(),
+        "missing-parent session must fail: {}",
+        stderr(&missing)
+    );
+    assert!(
+        !sandbox.root.join("no-such-dir").exists(),
+        "missing parent must not be created"
+    );
+
+    // Read-only target: reopening an explicit session in a read-only
+    // directory must surface the failure instead of silently forking.
+    let readonly_dir = sandbox.root.join("readonly-dir");
+    fs::create_dir_all(&readonly_dir).expect("create readonly dir");
+    let seeded = sandbox
+        .command()
+        .args([
+            "--mode",
+            "text",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--no-tools",
+            "--session-dir",
+        ])
+        .arg(&readonly_dir)
+        .args(["--session-id", "readonly-target", "--print", "seed"])
+        .output()
+        .expect("run seed child");
+    assert!(seeded.status.success(), "seed stderr: {}", stderr(&seeded));
+    let session_file = jsonl_files(&readonly_dir).pop().expect("seed file");
+    let mut permissions = fs::metadata(&readonly_dir).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    permissions.set_mode(0o500);
+    fs::set_permissions(&readonly_dir, permissions).expect("make dir read-only");
+    if fs::write(&session_file, b"probe").is_ok() {
+        // Running as root: read-only-by-mode is not achievable.
+        let mut restore = fs::metadata(&readonly_dir).unwrap().permissions();
+        restore.set_mode(0o700);
+        fs::set_permissions(&readonly_dir, restore).ok();
+        return;
+    }
+
+    let rejected = sandbox
+        .command()
+        .args([
+            "--mode",
+            "text",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--no-tools",
+            "--session",
+        ])
+        .arg(&session_file)
+        .arg("--print")
+        .arg("append attempt")
+        .output()
+        .expect("run readonly session child");
+    let mut restore = fs::metadata(&readonly_dir).unwrap().permissions();
+    restore.set_mode(0o700);
+    fs::set_permissions(&readonly_dir, restore).expect("restore dir permissions");
+    assert!(
+        !rejected.status.success(),
+        "read-only session append must fail: {}",
+        stderr(&rejected)
+    );
+}

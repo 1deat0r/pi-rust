@@ -2,6 +2,34 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-06 — CLI-014 `--session` PASS
+
+One process test closes the matrix (missing-parent fail-closed, read-only
+append failure). Row PASS/PASS/PASS. Gate green: lib 901/901 serial,
+restart suite 9/9, check, strict clippy, fmt. Metrics: evidence 100/266,
+runtime 52/266, overall 51/266, product 51/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 37.59% (100/266 PASS; 166 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.55% (52/266 PASS; 163 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 19.17% (51/266)
+Whole-product behavioral parity: 16.04% (51/318)
+
+Next: commit + push, then CLI-016 `--fork` id-selection. Files touched:
+`tests/cli_session_restart_parity.rs`, `docs/NON-TUI-PARITY-STATUS.md`
+(CLI-014 row), metric blocks in README, TUI-STATUS, DASHBOARD, plus
+CONVERSION-LEDGER.md, PLAN.md, this file.
+
 ## Latest checkpoint — 2026-09-06 — CLI-005 evidence PASS
 
 Two `prepare_file_arguments` units close the boundary matrix (empty skip +
@@ -21,10 +49,10 @@ TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 37.22% (99/266 PASS; 167 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 18.80% (50/266)
-Whole-product behavioral parity: 15.72% (50/318)
+Non-TUI deterministic evidence parity: 37.59% (100/266 PASS; 166 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.55% (52/266 PASS; 163 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 19.17% (51/266)
+Whole-product behavioral parity: 16.04% (51/318)
 
 Next: commit + push, then CLI-014 `--session` matrix and CLI-016 `--fork`
 id-selection. Files touched: `run.rs` (tests only),
@@ -53,9 +81,9 @@ TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
 Non-TUI deterministic evidence parity: 36.84% (98/266 PASS; 168 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 18.80% (50/266)
-Whole-product behavioral parity: 15.72% (50/318)
+Non-TUI runtime-boundary parity: 19.55% (52/266 PASS; 163 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 19.17% (51/266)
+Whole-product behavioral parity: 16.04% (51/318)
 
 Next: commit + push. Remaining CLI-003/038 note: non-tmux emulator breadth
 stays an intentional divergence (only tmux provable here). Files touched:
@@ -101,7 +129,7 @@ TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
 Non-TUI deterministic evidence parity: 36.47% (97/266 PASS; 169 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI runtime-boundary parity: 19.55% (52/266 PASS; 163 PARTIAL; 51 OPEN)
 Non-TUI overall parity: 18.42% (49/266)
 Whole-product behavioral parity: 15.41% (49/318)
 
@@ -132,7 +160,7 @@ TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
 Non-TUI deterministic evidence parity: 36.09% (96/266 PASS; 170 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI runtime-boundary parity: 19.55% (52/266 PASS; 163 PARTIAL; 51 OPEN)
 Non-TUI overall parity: 18.05% (48/266)
 Whole-product behavioral parity: 15.09% (48/318)
 
@@ -163,7 +191,7 @@ TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
 Non-TUI deterministic evidence parity: 35.71% (95/266 PASS; 171 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI runtime-boundary parity: 19.55% (52/266 PASS; 163 PARTIAL; 51 OPEN)
 Non-TUI overall parity: 17.67% (47/266)
 Whole-product behavioral parity: 14.78% (47/318)
 
@@ -193,7 +221,7 @@ TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
 Non-TUI deterministic evidence parity: 35.34% (94/266 PASS; 172 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI runtime-boundary parity: 19.55% (52/266 PASS; 163 PARTIAL; 51 OPEN)
 Non-TUI overall parity: 17.29% (46/266)
 Whole-product behavioral parity: 14.47% (46/318)
 
@@ -226,7 +254,7 @@ TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
 Non-TUI deterministic evidence parity: 34.96% (93/266 PASS; 173 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI runtime-boundary parity: 19.55% (52/266 PASS; 163 PARTIAL; 51 OPEN)
 Non-TUI overall parity: 16.92% (45/266)
 Whole-product behavioral parity: 14.15% (45/318)
 
@@ -2125,7 +2153,7 @@ TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
 Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 174 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI runtime-boundary parity: 19.55% (52/266 PASS; 163 PARTIAL; 51 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
