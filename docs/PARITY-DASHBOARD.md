@@ -36,9 +36,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 159 PARTIAL; 1 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 173 PARTIAL; 1 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 163 PARTIAL; 52 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 174 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
@@ -299,6 +299,12 @@ upstream (stored env > context env, identical normalization, process-env
 login default). New normalization, precedence, and HF path pins close the
 row to PARTIAL/PARTIAL/PARTIAL; live traffic, restart breadth, and platform
 evidence remain open.
+
+DIST-004 evidence note (2026-09-05): compiled installs cannot self-update,
+so the disposable-installer fixture `tests/dist_upgrade.rs` (2/2) proves
+binary replacement preserves sessions/settings/auth byte-identical and a
+failed `pi update` touches nothing. The row is PARTIAL/PARTIAL/PARTIAL;
+live installer provenance and platform breadth remain open.
 <!-- PARITY_DASHBOARD_METRICS:END -->
 
 Latest 2026-08-31 operation-record verification: SES-004 implementation and

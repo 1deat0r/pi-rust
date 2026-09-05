@@ -2,6 +2,30 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-05 — DIST-004 upgrade/rollback evidence
+
+DIST-004 is promoted from OPEN/OPEN/OPEN to PARTIAL/PARTIAL/PARTIAL with a
+new real-process disposable-installer fixture `tests/dist_upgrade.rs` (2/2:
+binary replacement preserves the v1 session file plus settings/auth bytes
+byte-identical across a second loopback turn; failed `pi update` leaves
+every state file untouched and names the unavailable path).
+
+Validation (all green): coding-agent lib 886/886 serially, dist_upgrade 2/2,
+env_home 2/2; workspace `cargo check`, strict all-target clippy
+(`-D warnings`), `cargo fmt --check`, `git diff --check`,
+`conversion_audit -- all` → `Conversion progress: 100.00% (166/166; 0 open)`
+(blockers 0), `parity_audit -- dashboard` → `PARITY_DASHBOARD_OK`. Metrics
+now: impl 106/160/0, evidence 92/174/0, runtime 51/164/51, non-TUI overall
+44/266, whole-product 44/318. No numbered conversion task changed.
+
+Next: commit + push this slice; the ENV sweep and DIST-004 are done, leaving
+live/vendor/PTY/platform breadth. Files touched:
+`crates/pi-coding-agent/tests/dist_upgrade.rs` (new, 2 tests),
+`docs/NON-TUI-PARITY-STATUS.md` (DIST-004 row + metric block),
+`docs/PARITY-DASHBOARD.md` (note + synced blocks),
+README/`docs/TUI-PARITY-STATUS.md` (synced blocks), plus
+CONVERSION-LEDGER.md, PLAN.md, and this file.
+
 ## Latest checkpoint — 2026-09-05 — ENV-012/014/015/016 evidence sweep
 
 All four rows are promoted from OPEN/OPEN/OPEN to PARTIAL/PARTIAL/PARTIAL
@@ -1770,9 +1794,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 159 PARTIAL; 1 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 173 PARTIAL; 1 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 163 PARTIAL; 52 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 174 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 

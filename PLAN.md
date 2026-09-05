@@ -1,22 +1,20 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
-## Active 2026-09-05 checkpoint — ENV-012/014/015/016 evidence sweep
+## Active 2026-09-05 checkpoint — DIST-004 upgrade/rollback evidence
 
-All four rows are now PARTIAL/PARTIAL/PARTIAL with evidence-only slices; no
-source change was needed beyond tests. ENV-015 pins the editor precedence
-chain plus SIGINT→Cancelled; ENV-016 pins llama normalization, stored-beats-
-context precedence, and HF XDG paths; ENV-014 adds HF XDG pins plus
-real-process `tests/env_home.rs` (2/2: home-derived catalog, homeless
-fallback); ENV-012 pins cursor/shrink settings precedence on top of the
-existing escape-timeout and constructor env handling. The independent gate
-is green: pi-ai lib 459/459 and coding-agent lib 886/886 serially, the env
-fixtures (4/4 + 7/7 + 3/3 + 2/2), check, strict workspace clippy, stable
-rustfmt, both audits, and diff cleanliness.
+DIST-004 is now PARTIAL/PARTIAL/PARTIAL. Compiled installs cannot
+self-update, so the new real-process disposable-installer fixture
+`tests/dist_upgrade.rs` (2/2) proves binary replacement preserves the v1
+session file plus settings/auth bytes byte-identical across a second turn,
+and a failed `pi update` leaves every state file untouched. The gate is
+green: coding-agent lib 886/886 serially, dist_upgrade 2/2, env_home 2/2,
+check, strict workspace clippy, stable rustfmt, both audits, and diff
+cleanliness.
 
-Next dependency-safe action: DIST-004, then live/vendor/PTY/platform breadth
-for the ENV rows. Metrics are implementation 106 PASS / 159 PARTIAL / 1
-OPEN, deterministic evidence 92 PASS / 173 PARTIAL / 1 OPEN, runtime 51 PASS
-/ 163 PARTIAL / 52 OPEN, non-TUI overall 44/266, whole-product 44/318, and
+Next dependency-safe action: live/vendor/PTY/platform breadth for the open
+boundaries. Metrics are implementation 106 PASS / 160 PARTIAL / 0 OPEN,
+deterministic evidence 92 PASS / 174 PARTIAL / 0 OPEN, runtime 51 PASS / 164
+PARTIAL / 51 OPEN, non-TUI overall 44/266, whole-product 44/318, and
 historical conversion `Conversion progress: 100.00% (166/166; 0 open)`.
 
 ## Active 2026-09-05 checkpoint — ENV-007 per-mode reasoning wiring
@@ -922,9 +920,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 159 PARTIAL; 1 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 173 PARTIAL; 1 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 163 PARTIAL; 52 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 174 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 

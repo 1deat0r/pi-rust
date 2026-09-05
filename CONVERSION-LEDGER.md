@@ -6,6 +6,25 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-09-05)
 
+DIST-004 checkpoint (2026-09-05): the row is promoted from OPEN/OPEN/OPEN
+to PARTIAL/PARTIAL/PARTIAL. pi-rust cannot self-update a compiled
+installation (`pi update` exits nonzero with a rebuild instruction,
+matching the upstream unavailable-installation path), so version
+replacement means replacing the binary file while sessions, settings, and
+auth live outside it. The new real-process disposable-installer fixture
+`tests/dist_upgrade.rs` (2/2) stages the test binary into a temp install
+root, runs a loopback turn, replaces the binary file, runs a second turn,
+and proves the v1 session file plus settings/auth bytes survive
+byte-identical; a failed self-update leaves every state file untouched.
+The gate is green with coding-agent lib 886/886 serially, dist_upgrade 2/2,
+env_home 2/2, check, strict workspace clippy, stable rustfmt, both audits,
+and diff cleanliness. Live installer provenance and platform breadth remain
+open. No numbered conversion task changed; source conversion remains
+`Conversion progress: 100.00% (166/166; 0 open)`. Current behavioral metrics
+are implementation 106 PASS / 160 PARTIAL / 0 OPEN, evidence 92 PASS / 174
+PARTIAL / 0 OPEN, runtime 51 PASS / 164 PARTIAL / 51 OPEN, non-TUI overall
+44/266, and whole-product 44/318.
+
 ENV-012/014/015/016 checkpoint (2026-09-05): all four rows are promoted
 from OPEN/OPEN/OPEN to PARTIAL/PARTIAL/PARTIAL with evidence-only slices;
 no source change was needed beyond tests. ENV-015: the editor chain already
@@ -670,9 +689,10 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 159 PARTIAL; 1 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 173 PARTIAL; 1 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 163 PARTIAL; 52 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 174 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
 TOOL-007 checkpoint (2026-08-31): `find` implementation and deterministic
