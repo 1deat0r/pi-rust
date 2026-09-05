@@ -2,6 +2,44 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Session close — 2026-09-05 — resume point (work continues)
+
+Worktree is CLEAN and pushed: `main` at `4ad6990`, `git rev-parse HEAD`
+equals `git ls-remote origin refs/heads/main`, `git status` empty. No
+staged/unstaged changes, no stash, no blockers on publication.
+
+Session landed four pushed commits on top of `c2157f3`:
+`73915e8` joint parity wave checkpoint (118 files, incl. two red-test
+corrections and the `AGENTS.md` protocol), `205badb` dashboard-copy sync,
+`55badd0` X-011/X-012 diagnostics/regression boundary, `5a35f25`
+ENV-001/ENV-002 precedence/redaction boundary, `4ad6990` ENV-007/ENV-009
+thinking/version boundary. Behavioral movement this session: X-011, X-012,
+ENV-001, ENV-002, ENV-007, ENV-009 OPEN → PARTIAL×3; OPEN counts now impl
+7, deterministic 7, runtime 58; whole-product still 44/318.
+
+Fresh verification at close (exact commands, all green):
+`cargo run -p pi-coding-agent --offline --bin conversion_audit -- all` →
+`Conversion progress: 100.00% (166/166; 0 open)`, audit blockers 0;
+`parity_audit -- dashboard` → `PARITY_DASHBOARD_OK`, whole-product
+`13.84% (44/318)`; lib suites pi-ai 457 / pi-agent 270 / pi-tui 394 /
+coding-agent 871, all focused/new integration targets serially green,
+strict workspace clippy, `cargo fmt --all -- --check`, `git diff --check`.
+
+Resume procedure: read `CONVERSION-LEDGER.md`, `PLAN.md`, this file; rerun
+the two audit commands above before trusting any percentage.
+
+Next dependency-safe actions in order: (1) wire the existing
+`stream_fn_with_reasoning` helper (run.rs) into JSON (`json_event.rs`),
+interactive, RPC, and SDK callers with per-mode loopback/PTY proof —
+print path is the only proven caller; (2) ENV-011 (`PI_CACHE_RETENTION`)
+and ENV-013 (proxy variables); (3) ENV-012/014/015/016, then DIST-004
+disposable installer harness. Standing constraints: live vendor evidence
+limited to openai-codex / opencode Muse Spark / z.ai glm-5.3-flash;
+Windows/macOS + emulator matrix, 52 manual TUI visual reviews, and
+browser/OAuth/desktop proof remain open. Recorded intentional
+divergences: startup PI_PROVIDER/PI_MODEL/PI_KEY/PI_REASONING_LEVEL
+defaults and ignored PI_VERSION (pinned upstream lacks them).
+
 ## Latest checkpoint — 2026-09-05 — ENV-007/ENV-009 thinking/version boundary
 
 ENV-007 and ENV-009 are promoted from OPEN/OPEN/OPEN to
