@@ -2,6 +2,29 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-06 — ENV-013 fail-closed proxy validation
+
+New `validate_proxy_env` (wired into the `main.rs` bootstrap) exits nonzero
+naming the variable when a proxy value is unroutable, closing the silent
+direct-bypass gap a raw-reqwest probe confirmed (`://bad-proxy-value` went
+direct with 200 OK). New unit accept/reject matrix plus fourth `env_proxy`
+case (fast failure, provider untouched). Intentional divergence recorded:
+startup validation vs upstream lazy per-request throw. Row stays
+PARTIAL/PARTIAL/PARTIAL; metrics unchanged.
+
+Validation: coding-agent lib 890/890 serially, env_proxy 4/4, `cargo
+check`, strict all-target clippy, `cargo fmt --check`, `git diff --check`.
+No numbered conversion task changed.
+
+Next: commit + push, then resume the standing goal. Files touched:
+`core/http_dispatcher.rs` (validation + 3 tests), `main.rs` (bootstrap
+check), `tests/env_proxy.rs` (4th case), `docs/NON-TUI-PARITY-STATUS.md`
+(ENV-013 row), `docs/PARITY-DASHBOARD.md` (ENV-013 note), plus
+CONVERSION-LEDGER.md, PLAN.md, and this file.
+
+Hook note (standing): metrics unchanged, so README/`docs/TUI-PARITY-STATUS.md`
+carry no diff; `--no-verify` covers the staged-docs rule only.
+
 ## Latest checkpoint — 2026-09-06 — DIST-004 extension-update marker proof
 
 New `core::package_manager::tests::failed_git_update_keeps_checkout_and_marks_incomplete`

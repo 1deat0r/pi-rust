@@ -359,6 +359,33 @@ fn settings_http_proxy_bridges_to_the_provider_chain() {
         "provider must never be contacted directly"
     );
 }
+#[test]
+fn unroutable_proxy_fails_closed_without_direct_fallback() {
+    let sandbox = Sandbox::new("fail-closed");
+    let provider = TcpListener::bind("127.0.0.1:0").expect("bind loopback provider");
+    let provider_port = provider.local_addr().expect("provider port").port();
+    sandbox.write_proxy_provider(provider_port);
+    let provider_seen = serve_provider_once(provider);
+
+    let output = print_turn(&sandbox, &[("HTTP_PROXY", "://bad-proxy-value")]);
+
+    assert!(
+        !output.status.success(),
+        "unroutable proxy must fail instead of going direct"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("HTTP_PROXY") && stderr.contains("://bad-proxy-value"),
+        "diagnostic must name the variable and value: {stderr}"
+    );
+    assert!(
+        provider_seen
+            .recv_timeout(PROXY_TIMEOUT)
+            .expect("provider observation")
+            .is_none(),
+        "provider must never be contacted directly"
+    );
+}
 
 fn test_binary() -> PathBuf {
     std::env::var_os("PI_RUST_TEST_BINARY")

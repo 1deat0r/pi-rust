@@ -362,6 +362,14 @@ async fn main() {
     {
         eprintln!("Warning: {error}");
     }
+    // Fail closed on proxy values the HTTP clients would silently ignore:
+    // an unroutable proxy must never degrade into direct traffic. Upstream
+    // throws when a request first consults the bad value; the Rust port
+    // reports it once at startup instead.
+    if let Err(error) = pi_coding_agent::core::http_dispatcher::validate_proxy_env() {
+        eprintln!("Error: {error}");
+        std::process::exit(1);
+    }
 
     // Keep startup network behavior consistent across subcommands. The
     // upstream sets both switches before auth/package dispatch, so an

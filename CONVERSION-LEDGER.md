@@ -6,6 +6,18 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-09-05)
 
+ENV-013 fail-closed follow-up (2026-09-06): unroutable proxy values now
+fail at startup instead of silently going direct. A raw-reqwest probe
+proved `HTTP_PROXY="://bad-proxy-value"` is ignored by the client (200 OK
+direct), while upstream undici throws on first use; `validate_proxy_env`
+mirrors the client's acceptance (http/https/socks or schemeless with a
+host, non-empty authority) and `main.rs` exits nonzero naming the variable.
+New unit matrix plus a fourth `env_proxy` case (fast failure, provider
+untouched, diagnostic names the value). INTENTIONAL DIVERGENCE: upstream
+fails lazily per request; Rust fails once at startup, which also fails
+no-network turns with a misconfigured proxy. Row stays
+PARTIAL/PARTIAL/PARTIAL; metrics unchanged.
+
 DIST-004 extension-update follow-up (2026-09-06): git extension updates
 mirror the upstream fetch/reset/marker lifecycle, now proven by
 `failed_git_update_keeps_checkout_and_marks_incomplete` with local

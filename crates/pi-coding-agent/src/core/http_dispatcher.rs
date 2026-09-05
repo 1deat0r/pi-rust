@@ -52,6 +52,71 @@ pub fn apply_global_http_proxy_settings(agent_dir: impl AsRef<Path>) -> Result<(
     apply_http_proxy_settings(proxy);
     Ok(())
 }
+/// Proxy variable names honored by the provider HTTP clients, in the same
+/// upper-then-lowercase lookup order the underlying client uses.
+const PROXY_ENV_VARS: [&str; 4] = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"];
+
+fn proxy_value_routable(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return true;
+    }
+    // Mirror the underlying client's acceptance: an http/https/socks scheme
+    // (or none, defaulting to http) plus a non-empty authority carrying a
+    // host. Anything else is dropped by the client, which would bypass a
+    // mandated proxy without a sound.
+    let (scheme, rest) = match value.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme.to_ascii_lowercase()), rest),
+        None => {
+            // Schemeless values default to http but cannot carry userinfo
+            // (the client parses those as scheme-relative paths and drops
+            // them) and must not contain whitespace.
+            if value.contains('@') || value.chars().any(char::is_whitespace) {
+                return false;
+            }
+            (None, value)
+        }
+    };
+    if let Some(scheme) = &scheme {
+        if !matches!(
+            scheme.as_str(),
+            "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h"
+        ) {
+            return false;
+        }
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or("");
+    if host_port.is_empty() {
+        return false;
+    }
+    let candidate = match &scheme {
+        Some(_) => value.to_owned(),
+        None => format!("http://{value}"),
+    };
+    url::Url::parse(&candidate)
+        .ok()
+        .is_some_and(|url| url.host_str().is_some_and(|host| !host.is_empty()))
+}
+
+/// Fail closed on proxy values the HTTP clients would silently ignore.
+/// Upstream throws when a request first consults an unparseable proxy URL;
+/// the Rust port validates once at startup instead so no request can ever
+/// slip past a misconfigured proxy. An explicitly empty value stays
+/// harmless (it only blocks the settings bridge, matching upstream).
+pub fn validate_proxy_env() -> Result<(), String> {
+    for var in PROXY_ENV_VARS {
+        if let Some(value) = std::env::var_os(var) {
+            let value = value.to_string_lossy();
+            if !value.trim().is_empty() && !proxy_value_routable(&value) {
+                return Err(format!(
+                    "invalid {var} proxy URL {value:?}: the address must be an http(s) URL with a host (optionally user:pass@) or a bare host:port"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -62,8 +127,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        apply_global_http_proxy_settings, apply_http_proxy_settings,
-        DEFAULT_AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS, DEFAULT_HTTP_IDLE_TIMEOUT_MS,
+        apply_global_http_proxy_settings, apply_http_proxy_settings, proxy_value_routable,
+        validate_proxy_env, DEFAULT_AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS,
+        DEFAULT_HTTP_IDLE_TIMEOUT_MS,
     };
     use crate::core::settings::parse_http_idle_timeout_ms;
 
@@ -169,6 +235,50 @@ mod tests {
         restore("HTTP_PROXY", old_http);
         restore("HTTPS_PROXY", old_https);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn proxy_validation_accepts_routable_shapes() {
+        for value in [
+            "http://127.0.0.1:7890",
+            "https://proxy.example:8443",
+            "http://user:pass@127.0.0.1:7890",
+            "  http://127.0.0.1:7890  ",
+            "127.0.0.1:7890",
+            "proxy.example",
+            "socks5://127.0.0.1:1080",
+        ] {
+            assert!(proxy_value_routable(value), "routable: {value:?}");
+        }
+    }
+
+    #[test]
+    fn proxy_validation_rejects_silently_ignored_shapes() {
+        for value in [
+            "://bad-proxy-value",
+            "http://[::1",
+            "not a url at all !!!",
+            "http://",
+            "ftp://127.0.0.1:21",
+            "http:///no-host",
+        ] {
+            assert!(!proxy_value_routable(value), "unroutable: {value:?}");
+        }
+        assert!(proxy_value_routable(""));
+    }
+
+    #[test]
+    fn proxy_validation_names_the_offending_variable() {
+        let _guard = env_lock();
+        let old = std::env::var_os("HTTP_PROXY");
+        std::env::set_var("HTTP_PROXY", "://bad-proxy-value");
+
+        let error = validate_proxy_env().unwrap_err();
+        assert!(
+            error.contains("HTTP_PROXY") && error.contains("://bad-proxy-value"),
+            "diagnostic must name the variable and value: {error}"
+        );
+        restore("HTTP_PROXY", old);
     }
 
     #[test]
