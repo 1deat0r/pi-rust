@@ -2,6 +2,19 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Assessment — 2026-09-06 — CLI-011 thinking-clamping residual
+
+The remaining CLI-011 residual (provider capability clamping + request
+payload across all seven levels) is a per-API slice, not blocked: the
+pattern exists in `tests/env_thinking_version.rs`, which drives a loopback
+`openai-responses` model with `"reasoning": true` and asserts the wire
+payload. Scoped plan: extend that harness (or clone it per API) to (1) loop
+`off/minimal/low/medium/high/xhigh/max` asserting each payload mapping for
+`openai-responses`, (2) repeat for `anthropic-messages` thinking budgets,
+and (3) pin clamping by running a `reasoning: false` model and asserting
+the request omits the reasoning field. Live vendor evidence stays a separate
+gated capability as recorded on other rows.
+
 ## Latest checkpoint — 2026-09-06 — CLI-013 `--resume` PASS
 
 One process test pins print-mode no-match fail-closed and newest-by-mtime
