@@ -4026,6 +4026,65 @@ mod tests {
         assert!(!error.contains("�"));
         std::fs::remove_dir_all(&root).ok();
     }
+    #[test]
+    fn file_arguments_skip_empty_files_and_concatenate_repeated_files() {
+        let root = std::env::temp_dir().join(format!("pi-run-file-bounds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("empty.txt"), b"").unwrap();
+        std::fs::write(root.join("once.txt"), b"alpha").unwrap();
+
+        // Empty files are skipped; the caller sees empty text and pushes no
+        // prompt (run() checks `!initial_text.is_empty() || !images`).
+        let (text, images) =
+            prepare_file_arguments(&["empty.txt".to_string()], &root.to_string_lossy(), false)
+                .unwrap()
+                .expect("file args present even when every file is empty");
+        assert!(text.is_empty() && images.is_empty(), "empty file: {text:?}");
+
+        // Repeated files concatenate in argument order.
+        let (text, _) = prepare_file_arguments(
+            &["once.txt".to_string(), "once.txt".to_string()],
+            &root.to_string_lossy(),
+            false,
+        )
+        .unwrap()
+        .expect("repeated files produce a prompt");
+        assert_eq!(text.matches("alpha").count(), 2, "repeated content: {text}");
+
+        // Absolute paths resolve without the cwd join.
+        let absolute = root.join("once.txt").to_string_lossy().into_owned();
+        let (text, _) = prepare_file_arguments(&[absolute], "/", false)
+            .unwrap()
+            .expect("absolute path produces a prompt");
+        assert!(text.contains("alpha"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn file_arguments_name_unreadable_files_in_the_diagnostic() {
+        let root = std::env::temp_dir().join(format!("pi-run-file-unread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("locked.txt");
+        std::fs::write(&path, b"secret").unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o000);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        if std::fs::read(&path).is_ok() {
+            // Running as root: unreadable-by-mode is not achievable.
+            std::fs::remove_dir_all(&root).ok();
+            return;
+        }
+
+        let error =
+            prepare_file_arguments(&["locked.txt".to_string()], &root.to_string_lossy(), false)
+                .unwrap_err();
+        assert!(error.starts_with("Error: Could not read file "), "{error}");
+        assert!(error.contains("locked.txt"), "{error}");
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[tokio::test]
     async fn deferred_mode_wiring_keeps_fetch_and_cancel_hooks() {

@@ -6,6 +6,30 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-09-05)
 
+CLI-005 `@file` evidence PASS (2026-09-06): two new `prepare_file_arguments`
+units pin empty-file skip (caller contract), repeated-file concatenation,
+absolute-path resolution, and unreadable-file diagnostics; invalid-UTF-8
+rejection was already pinned. Deterministic evidence promotes to PASS;
+implementation/process stay PARTIAL (unreadable real process run, multiline/
+relative process breadth). Metrics move to deterministic evidence 99/266,
+non-TUI overall 50/266, whole-product 50/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 37.22% (99/266 PASS; 167 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 18.80% (50/266)
+Whole-product behavioral parity: 15.72% (50/318)
+
 CLI-003 no-args PASS + stale-fixture repair (2026-09-06): new tmux PTY case
 proves no-args startup resolves provider/model and restores the terminal;
 `startup_error_path_never_enters_raw_mode` was pre-existing red (pinned the

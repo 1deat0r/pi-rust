@@ -2,6 +2,35 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-06 — CLI-005 evidence PASS
+
+Two `prepare_file_arguments` units close the boundary matrix (empty skip +
+caller contract, repeated concatenation, absolute paths, unreadable
+diagnostics); CLI-005 promotes to PASS/PARTIAL/PARTIAL. Gate green: lib
+901/901 serial, check, strict clippy, fmt. Metrics: evidence 99/266,
+overall 50/266, product 50/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 37.22% (99/266 PASS; 167 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 18.80% (50/266)
+Whole-product behavioral parity: 15.72% (50/318)
+
+Next: commit + push, then CLI-014 `--session` matrix and CLI-016 `--fork`
+id-selection. Files touched: `run.rs` (tests only),
+`docs/NON-TUI-PARITY-STATUS.md` (CLI-005 row), metric blocks in README,
+TUI-STATUS, DASHBOARD, plus CONVERSION-LEDGER.md, PLAN.md, this file.
+
 ## Latest checkpoint — 2026-09-06 — CLI-003 no-args PTY PASS + stale fixture repair
 
 New `no_args_startup_selects_the_configured_default_provider_and_model` tmux

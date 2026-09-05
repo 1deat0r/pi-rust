@@ -1,18 +1,16 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
-## Active 2026-09-06 checkpoint — CLI-003 no-args PTY PASS + stale fixture repair
+## Active 2026-09-06 checkpoint — CLI-005 evidence PASS
 
-The no-args boundary is row-proven with a new tmux PTY case (no
-`--provider`/`--model`: banner + resolved provider/model footer + raw mode +
-clean `/quit` restoration). The same slice repaired a pre-existing red:
-`startup_error_path_never_enters_raw_mode` pinned the retired hard-error
-contract for an unknown faux model; the binary now does the upstream-correct
-custom-model fallback, so the test was rewritten to pin warning + raw mode +
-restoration and the stale fixture removed (verified red on clean HEAD
-first). CLI-038 gained a second-geometry resize case. Gate green:
-coding-agent lib 899/899 serially, full PTY matrix 9/9, check, strict
+Two new `prepare_file_arguments` units close the boundary matrix: empty
+files skip without synthesizing a prompt (caller contract pinned), repeated
+files concatenate in order, absolute paths bypass the cwd join, and
+unreadable files are named in the diagnostic (root-safe self-skip).
+Combined with the existing invalid-UTF-8 rejection unit, the deterministic
+evidence dimension promotes to PASS while implementation/process stay
+PARTIAL. Gate green: coding-agent lib 901/901 serially, check, strict
 workspace clippy, stable rustfmt, diff cleanliness. Metrics: implementation
-106 PASS / 160 PARTIAL / 0 OPEN, deterministic evidence 98 PASS / 168
+106 PASS / 160 PARTIAL / 0 OPEN, deterministic evidence 99 PASS / 167
 PARTIAL / 0 OPEN, runtime 51 PASS / 164 PARTIAL / 51 OPEN, non-TUI overall
 50/266, whole-product 50/318, and historical conversion
 `Conversion progress: 100.00% (166/166; 0 open)`.
@@ -28,7 +26,7 @@ TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 36.84% (98/266 PASS; 168 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 37.22% (99/266 PASS; 167 PARTIAL; 0 OPEN)
 Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
 Non-TUI overall parity: 18.80% (50/266)
 Whole-product behavioral parity: 15.72% (50/318)
