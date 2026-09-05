@@ -295,3 +295,85 @@ fn no_context_files_changes_the_provider_visible_prompt() {
 
     fs::remove_dir_all(root).expect("remove loopback fixture");
 }
+
+#[test]
+fn unicode_system_prompt_reaches_the_provider_and_empty_value_keeps_default() {
+    let root = std::env::temp_dir().join(format!("pi-agent009-unicode-{}", uuid::Uuid::new_v4()));
+    let home = root.join("home");
+    let agent_dir = home.join(".pi").join("agent");
+    let sessions = root.join("sessions");
+    fs::create_dir_all(&agent_dir).expect("create agent dir");
+    fs::create_dir_all(&sessions).expect("create session dir");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback provider");
+    let address = listener.local_addr().expect("loopback provider address");
+    let (requests_tx, requests_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept provider request");
+            requests.push(request_body(&mut stream));
+            let body = response_body();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write provider response");
+        }
+        requests_tx.send(requests).expect("send captured requests");
+    });
+
+    fs::write(
+        agent_dir.join("models.json"),
+        format!(r#"{{"providers":{{"openai":{{"baseUrl":"http://{address}/v1"}}}}}}"#),
+    )
+    .expect("write loopback models config");
+
+    let unicode = run_pi_with_args(
+        &root,
+        &home,
+        &agent_dir,
+        &sessions,
+        &["--system-prompt", "Ünïcødé 織号 🌍 prompt"],
+    );
+    assert!(
+        unicode.status.success(),
+        "unicode stderr: {}",
+        String::from_utf8_lossy(&unicode.stderr)
+    );
+    let empty = run_pi_with_args(
+        &root,
+        &home,
+        &agent_dir,
+        &sessions,
+        &["--system-prompt", ""],
+    );
+    assert!(
+        empty.status.success(),
+        "empty stderr: {}",
+        String::from_utf8_lossy(&empty.stderr)
+    );
+
+    let requests = requests_rx.recv().expect("captured provider requests");
+    server.join().expect("join loopback provider");
+    assert_eq!(requests.len(), 2);
+
+    let unicode_prompt = system_prompt(&requests[0]);
+    assert!(
+        unicode_prompt.starts_with("Ünïcødé 織号 🌍 prompt"),
+        "unicode prompt lost on the wire: {unicode_prompt}"
+    );
+
+    // An explicitly empty CLI value retains the upstream default prompt
+    // instead of shadowing it with an empty string.
+    let empty_prompt = system_prompt(&requests[1]);
+    assert!(
+        empty_prompt.starts_with("You are an expert coding assistant"),
+        "empty value must keep the default: {empty_prompt}"
+    );
+
+    fs::remove_dir_all(root).expect("remove loopback fixture");
+}

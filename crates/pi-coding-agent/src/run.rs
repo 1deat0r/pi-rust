@@ -3592,6 +3592,40 @@ mod tests {
     }
 
     #[test]
+    fn append_system_prompt_missing_file_passes_through_verbatim() {
+        // `resolvePromptInput` only reads existing files; a missing @-style
+        // path is treated as inline text rather than an error (upstream
+        // behavior for --append-system-prompt).
+        let root =
+            std::env::temp_dir().join(format!("pi-run-append-missing-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let args = Args {
+            system_prompt: Some("base".to_string()),
+            append_system_prompt: vec![root
+                .join("no-such-append.md")
+                .to_string_lossy()
+                .into_owned()],
+            no_context_files: true,
+            no_skills: true,
+            ..Default::default()
+        };
+        let settings = SettingsManager::in_memory(SettingsMap::new());
+        let prompt = assemble_run_system_prompt(
+            &args,
+            &root.to_string_lossy(),
+            &root.join("agent"),
+            &settings,
+            &crate::core::extensions::ResourceDiscovery::default(),
+        );
+        assert!(prompt.starts_with("base"));
+        assert!(
+            prompt.contains("no-such-append.md"),
+            "missing path passes through verbatim: {prompt}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn repeated_append_prompts_preserve_order_and_strip_bom() {
         let root =
             std::env::temp_dir().join(format!("pi-run-repeated-append-{}", uuid::Uuid::new_v4()));

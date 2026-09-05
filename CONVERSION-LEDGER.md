@@ -6,6 +6,30 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-09-05)
 
+CLI-009/CLI-010 system-prompt PASS (2026-09-06): CLI-009 gains a loopback
+test proving Unicode prompts on the wire and empty-value-keeps-default;
+CLI-beats-SYSTEM.md conflict was already unit-pinned. CLI-010 gains a unit
+pinning missing-file pass-through; loopback appends-on-the-wire were already
+proven. Both rows now PASS/PASS/PASS; metrics move to implementation
+110/266, deterministic evidence 106/266, runtime 58/266, non-TUI overall
+57/266, whole-product 57/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 41.35% (110/266 PASS; 156 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 21.80% (58/266 PASS; 157 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 21.43% (57/266)
+Whole-product behavioral parity: 17.92% (57/318)
+
 CLI-011 `--thinking` PASS (2026-09-06): one loopback openai-responses test
 pins the full payload matrix — off omits reasoning, minimal/medium verbatim,
 xhigh/max clamp to high (EXTENDED_THINKING_LEVELS walk-down); clamp
@@ -23,11 +47,11 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 40.60% (108/266 PASS; 158 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 39.10% (104/266 PASS; 162 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 21.05% (56/266 PASS; 159 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 20.68% (55/266)
-Whole-product behavioral parity: 17.30% (55/318)
+Non-TUI implementation parity: 41.35% (110/266 PASS; 156 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 21.80% (58/266 PASS; 157 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 21.43% (57/266)
+Whole-product behavioral parity: 17.92% (57/318)
 
 CLI-013 `--resume` PASS (2026-09-06): one process test pins print-mode
 no-match fail-closed (distinct wording) and newest-by-mtime selection with

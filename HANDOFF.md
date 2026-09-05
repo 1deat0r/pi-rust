@@ -2,6 +2,36 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-06 — CLI-009/CLI-010 system-prompt PASS
+
+CLI-009 loopback Unicode/empty-value test + existing conflict units;
+CLI-010 missing-file pass-through unit + existing loopback wire order.
+Both rows PASS/PASS/PASS. Gate green: lib 902/902 serial, loopback 3/3,
+check, strict clippy, fmt. Metrics: implementation 110/266, evidence
+106/266, runtime 58/266, overall 57/266, product 57/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 41.35% (110/266 PASS; 156 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 21.80% (58/266 PASS; 157 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 21.43% (57/266)
+Whole-product behavioral parity: 17.92% (57/318)
+
+Next: commit + push, then CLI-020 `--models` matrix. Files touched:
+`tests/cli_context_loopback.rs`, `run.rs` (tests only),
+`docs/NON-TUI-PARITY-STATUS.md` (CLI-009/CLI-010 rows), metric blocks in
+README, TUI-STATUS, DASHBOARD, plus CONVERSION-LEDGER.md, PLAN.md, this
+file.
+
 ## Latest checkpoint — 2026-09-06 — CLI-011 `--thinking` PASS
 
 One loopback payload-matrix test closes the row (off omits reasoning;
@@ -20,11 +50,11 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 40.60% (108/266 PASS; 158 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 39.10% (104/266 PASS; 162 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 21.05% (56/266 PASS; 159 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 20.68% (55/266)
-Whole-product behavioral parity: 17.30% (55/318)
+Non-TUI implementation parity: 41.35% (110/266 PASS; 156 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 21.80% (58/266 PASS; 157 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 21.43% (57/266)
+Whole-product behavioral parity: 17.92% (57/318)
 
 Next: commit + push, then the anthropic-messages thinking-budget slice
 (queued). Files touched: `tests/env_thinking_version.rs`,
