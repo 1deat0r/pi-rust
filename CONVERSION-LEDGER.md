@@ -6,6 +6,33 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-09-05)
 
+CLI-006 `--provider` PASS (2026-09-06): the row's deterministic-evidence
+residual is closed. Three new `resolve_cli_model` units pin case variation
+(`GOOGLE`/`GEMINI-3.1-FLASH`, `Google` + `GOOGLE/gemini-3.1-flash`) and the
+cross-provider custom-model fallback warning; a new
+`uppercase_provider_and_model_flags_resolve_canonically` process test in
+`cli_print_parity` proves `--provider FAUX --model FAUX-1` end to end.
+Implementation already matched upstream; no source change needed. Row now
+PASS/PASS/PASS; metrics move to deterministic evidence 93/266, non-TUI
+overall 45/266, whole-product 45/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 34.96% (93/266 PASS; 173 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 16.92% (45/266)
+Whole-product behavioral parity: 14.15% (45/318)
+
+
 ENV-013 socks follow-up (2026-09-06): startup validation now rejects
 `socks://` proxy values. This distribution builds reqwest without the
 socks feature, so a socks value could never route; upstream likewise

@@ -1,16 +1,35 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
-## Active 2026-09-06 checkpoint — ENV-013 socks rejection
+## Active 2026-09-06 checkpoint — CLI-006 `--provider` PASS
 
-Startup proxy validation now rejects `socks://` values (no-socks-feature
-build; upstream throws too). Per-request env-map override stays deferred
-by design (per-request client construction cost, no observed demand).
-ENV-013 stays PARTIAL/PARTIAL/PARTIAL. Gate green: coding-agent lib
-890/890 serially, check, strict workspace clippy, stable rustfmt, diff
-cleanliness. Metrics unchanged: implementation 106 PASS / 160 PARTIAL / 0
-OPEN, deterministic evidence 92 PASS / 174 PARTIAL / 0 OPEN, runtime 51
-PASS / 164 PARTIAL / 51 OPEN, non-TUI overall 44/266, whole-product 44/318,
+CLI-006 promotes to PASS/PASS/PASS: case variation row-proven at resolver
+level (`GOOGLE`/`GEMINI-3.1-FLASH`, `Google` + `GOOGLE/gemini-3.1-flash`) and
+end to end (`--provider FAUX --model FAUX-1` completes with canonical
+`faux`/`faux-1` persisted); conflict diagnostics row-proven
+(unknown-provider text, ambiguity error, cross-provider custom-model
+fallback warning). Gate green: coding-agent lib 893/893 serially,
+cli_print_parity 11/11, check, strict workspace clippy, stable rustfmt,
+diff cleanliness. Metrics: implementation 106 PASS / 160 PARTIAL / 0
+OPEN, deterministic evidence 93 PASS / 173 PARTIAL / 0 OPEN, runtime 51
+PASS / 164 PARTIAL / 51 OPEN, non-TUI overall 45/266, whole-product 45/318,
 and historical conversion `Conversion progress: 100.00% (166/166; 0 open)`.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 34.96% (93/266 PASS; 173 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 16.92% (45/266)
+Whole-product behavioral parity: 14.15% (45/318)
+
 
 ## Active 2026-09-05 checkpoint — ENV-007 per-mode reasoning wiring
 

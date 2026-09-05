@@ -1111,6 +1111,44 @@ mod tests {
         let result = resolve_cli_model(Some("nope"), Some("x"), None, &models);
         assert!(result.error.unwrap().contains("Unknown provider \"nope\""));
     }
+    #[test]
+    fn resolve_cli_model_provider_case_variation() {
+        let models = catalog();
+        let result = resolve_cli_model(Some("GOOGLE"), Some("GEMINI-3.1-FLASH"), None, &models);
+        assert_eq!(result.error, None);
+        let model = result.model.unwrap();
+        assert_eq!(model.provider, "google");
+        assert_eq!(model.id, "gemini-3.1-flash");
+    }
+
+    #[test]
+    fn resolve_cli_model_provider_prefixed_case_variation() {
+        let models = catalog();
+        let result = resolve_cli_model(
+            Some("Google"),
+            Some("GOOGLE/gemini-3.1-flash"),
+            None,
+            &models,
+        );
+        assert_eq!(result.error, None);
+        let model = result.model.unwrap();
+        assert_eq!(model.provider, "google");
+        assert_eq!(model.id, "gemini-3.1-flash");
+    }
+
+    #[test]
+    fn resolve_cli_model_cross_provider_model_warns_and_falls_back() {
+        let models = catalog();
+        let result = resolve_cli_model(Some("xai"), Some("gemini-3.1-flash"), None, &models);
+        assert_eq!(result.error, None);
+        let model = result.model.unwrap();
+        assert_eq!(model.provider, "xai");
+        assert_eq!(model.id, "gemini-3.1-flash");
+        assert!(result
+            .warning
+            .unwrap()
+            .contains("Model \"gemini-3.1-flash\" not found for provider \"xai\""));
+    }
 
     #[test]
     fn resolve_cli_model_builds_fallback_custom_id() {

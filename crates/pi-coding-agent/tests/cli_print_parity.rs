@@ -201,6 +201,25 @@ fn multiple_messages_are_prompted_as_sequential_turns() {
         assert_eq!(assistant["message"]["model"], "faux-1");
     }
 }
+#[test]
+fn uppercase_provider_and_model_flags_resolve_canonically() {
+    let sandbox = Sandbox::new("provider-case");
+    let cwd = sandbox.root.clone();
+    let out = sandbox.pi(
+        &cwd,
+        &["-p", "--provider", "FAUX", "--model", "FAUX-1", "hello"],
+    );
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    assert_eq!(sandbox.stdout(&out), "faux response to: hello\n");
+
+    let entries = message_entries(&sandbox.session());
+    let assistant = entries
+        .iter()
+        .find(|entry| entry["message"]["role"] == "assistant")
+        .expect("assistant turn");
+    assert_eq!(assistant["message"]["provider"], "faux");
+    assert_eq!(assistant["message"]["model"], "faux-1");
+}
 
 #[test]
 fn piped_stdin_is_the_initial_text_print_prompt() {

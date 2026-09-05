@@ -2,6 +2,39 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-06 — CLI-006 `--provider` PASS
+
+Closed the row's deterministic-evidence residual with 3 resolver unit tests
+(provider/model case variation, prefixed case variation, cross-provider
+fallback warning) plus 1 real print-mode process test (`FAUX`/`FAUX-1`
+canonical end to end). No source change: implementation already matched
+upstream. Row PASS/PASS/PASS. Gate green: lib 893/893 serial,
+cli_print_parity 11/11, check, strict clippy, fmt. Metrics: evidence
+93/266, overall 45/266, product 45/318.
+
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 34.96% (93/266 PASS; 173 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 16.92% (45/266)
+Whole-product behavioral parity: 14.15% (45/318)
+
+Next: keep working the PASS/PARTIAL/PASS CLI cluster (CLI-004, CLI-007,
+CLI-012, CLI-017 next by closability). Files touched:
+`core/model_resolver.rs` (tests only), `tests/cli_print_parity.rs`,
+`docs/NON-TUI-PARITY-STATUS.md` (CLI-006 row), metric blocks in README,
+TUI-STATUS, DASHBOARD, plus CONVERSION-LEDGER.md, PLAN.md, this file.
+
 ## Latest checkpoint — 2026-09-06 — ENV-013 socks rejection
 
 `validate_proxy_env` now rejects `socks://` (no-socks-feature build;
