@@ -301,12 +301,14 @@ upstream (stored env > context env, identical normalization, process-env
 login default). New normalization, precedence, and HF path pins close the
 row to PARTIAL/PARTIAL/PARTIAL; live traffic, restart breadth, and platform
 evidence remain open.
-
 DIST-004 evidence note (2026-09-05): compiled installs cannot self-update,
 so the disposable-installer fixture `tests/dist_upgrade.rs` (2/2) proves
 binary replacement preserves sessions/settings/auth byte-identical and a
-failed `pi update` touches nothing. The row is PARTIAL/PARTIAL/PARTIAL;
-live installer provenance and platform breadth remain open.
+failed `pi update` touches nothing. Git extension updates mirror the
+upstream fetch/reset/marker lifecycle (fetch failure leaves no marker,
+reset failure marks with the old checkout intact, next success heals).
+The row is PARTIAL/PARTIAL/PARTIAL; live installer provenance and platform
+breadth remain open.
 <!-- PARITY_DASHBOARD_METRICS:END -->
 
 Latest 2026-08-31 operation-record verification: SES-004 implementation and

@@ -1,17 +1,18 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
-## Active 2026-09-06 checkpoint — ENV-013 proxy-auth correction
+## Active 2026-09-06 checkpoint — DIST-004 extension-update marker proof
 
-Proxy-auth forwarding is proven, not diverged: the stub receives
-`proxy-authorization: Basic dXNlcjpwYXNz` for credential-bearing proxy
-URLs. The earlier gap note was a case-sensitive test-string bug; the
-fixture now compares the header name case-insensitively and the value
-exactly, and `tests/env_proxy.rs` passes 3/3 with real auth proof. Row
-text and dashboard note corrected; the row stays PARTIAL/PARTIAL/PARTIAL.
-Metrics unchanged: implementation 106 PASS / 160 PARTIAL / 0 OPEN,
-deterministic evidence 92 PASS / 174 PARTIAL / 0 OPEN, runtime 51 PASS / 164
-PARTIAL / 51 OPEN, non-TUI overall 44/266, whole-product 44/318, and
-historical conversion `Conversion progress: 100.00% (166/166; 0 open)`.
+Git extension updates mirror the upstream fetch/reset/marker lifecycle,
+now proven by `failed_git_update_keeps_checkout_and_marks_incomplete`
+(local repos only): fetch failure leaves no marker with the checkout
+intact, shimmed reset failure marks with the old checkout, and the next
+success heals both. DIST-004 stays PARTIAL/PARTIAL/PARTIAL. Gate green:
+coding-agent lib 887/887 serially, check, strict workspace clippy, stable
+rustfmt, diff cleanliness. Metrics unchanged: implementation 106 PASS / 160
+PARTIAL / 0 OPEN, deterministic evidence 92 PASS / 174 PARTIAL / 0 OPEN,
+runtime 51 PASS / 164 PARTIAL / 51 OPEN, non-TUI overall 44/266,
+whole-product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
 
 ## Active 2026-09-05 checkpoint — ENV-007 per-mode reasoning wiring
 

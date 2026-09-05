@@ -6,6 +6,15 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-09-05)
 
+DIST-004 extension-update follow-up (2026-09-06): git extension updates
+mirror the upstream fetch/reset/marker lifecycle, now proven by
+`failed_git_update_keeps_checkout_and_marks_incomplete` with local
+repositories only (no network): fetch failure leaves no marker with the
+checkout intact, a PATH-shimmed reset failure leaves the marker with the
+old checkout, and the next successful update heals both (git's lock-file
+renames defeat permission-based failure injection, hence the shim). The
+row stays PARTIAL/PARTIAL/PARTIAL; metrics unchanged.
+
 ENV-013 auth correction (2026-09-06): proxy-auth forwarding is proven, not
 diverged. A minimal reqwest repro plus the corrected
 `tests/env_proxy.rs` interception case show the stub receiving

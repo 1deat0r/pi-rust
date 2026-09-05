@@ -3284,6 +3284,146 @@ mod tests {
         assert!(!parse_semver_valid("^1.2.3"));
         assert!(parse_semver_valid_range("^1.2.3"));
     }
+    fn git(args: &[&str], cwd: &Path) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?} failed in {}", cwd.display());
+    }
+
+    fn git_commit(cwd: &Path, name: &str, contents: &str) {
+        std::fs::write(cwd.join(name), contents).unwrap();
+        git(&["add", name], cwd);
+        git(
+            &[
+                "-c",
+                "user.name=pi-test",
+                "-c",
+                "user.email=pi-test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "test commit",
+            ],
+            cwd,
+        );
+    }
+
+    /// Failed git updates must leave the installed checkout intact and record
+    /// the incomplete-update marker; the next successful update clears it.
+    /// Uses local repositories only, so no network is involved. The suite
+    /// runs serially (`--test-threads=1`) because this mutates PI_OFFLINE.
+    #[cfg(unix)]
+    #[test]
+    fn failed_git_update_keeps_checkout_and_marks_incomplete() {
+        use std::os::unix::fs::PermissionsExt;
+
+        static LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+            std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+        let _guard = LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let previous_offline = std::env::var_os(crate::config::ENV_OFFLINE);
+        std::env::remove_var(crate::config::ENV_OFFLINE);
+
+        let root = std::env::temp_dir().join(format!("pi-pm-update-{}", uuid::Uuid::new_v4()));
+        let origin = root.join("origin");
+        let agent_dir = root.join("agent");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&["-c", "init.defaultBranch=main", "init"], &origin);
+        git_commit(&origin, "payload.txt", "v1");
+
+        let pm = manager(&root, &agent_dir);
+        let source = GitSource {
+            repo: origin.display().to_string(),
+            host: "localhost".to_string(),
+            path: "origin-repo".to_string(),
+            ref_: None,
+            pinned: false,
+        };
+        pm.install_git(&source, "user")
+            .expect("install from local origin");
+        let target = pm.get_git_install_path(&source, "user");
+        let marker = pm.git_update_marker_path(&target);
+        assert_eq!(
+            std::fs::read_to_string(target.join("payload.txt")).unwrap(),
+            "v1"
+        );
+
+        // A broken remote fails the fetch before anything is reset.
+        git(
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                root.join("missing").display().to_string().as_str(),
+            ],
+            &target,
+        );
+        let error = pm.update_git(&source, "user").unwrap_err();
+        assert!(!marker.exists(), "fetch failure must not mark: {error}");
+        assert_eq!(
+            std::fs::read_to_string(target.join("payload.txt")).unwrap(),
+            "v1",
+            "checkout must stay intact"
+        );
+
+        // A failed reset leaves the marker behind with the old checkout.
+        // Fail `reset` deterministically with a PATH shim: git's lock-file
+        // renames defeat permission-based injection.
+        git_commit(&origin, "payload.txt", "v2");
+        git(
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                origin.display().to_string().as_str(),
+            ],
+            &target,
+        );
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join("git"),
+            "#!/bin/sh\nif [ \"$1\" = \"reset\" ]; then echo \"simulated reset failure\" >&2; exit 1; fi\nexec /usr/bin/git \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let previous_path = std::env::var_os("PATH");
+        let mut path = bin.display().to_string();
+        if let Some(previous) = previous_path.as_ref() {
+            path.push(':');
+            path.push_str(&previous.to_string_lossy());
+        }
+        std::env::set_var("PATH", &path);
+        let error = pm.update_git(&source, "user").unwrap_err();
+        match previous_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        assert!(marker.exists(), "reset failure must mark: {error}");
+        assert_eq!(
+            std::fs::read_to_string(target.join("payload.txt")).unwrap(),
+            "v1",
+            "checkout must stay intact"
+        );
+
+        // The next successful update heals both.
+        pm.update_git(&source, "user").expect("retry update");
+        assert!(!marker.exists(), "success must clear the marker");
+        assert_eq!(
+            std::fs::read_to_string(target.join("payload.txt")).unwrap(),
+            "v2"
+        );
+
+        match previous_offline {
+            Some(value) => std::env::set_var(crate::config::ENV_OFFLINE, value),
+            None => std::env::remove_var(crate::config::ENV_OFFLINE),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]
