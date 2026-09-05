@@ -2,6 +2,39 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-06 — CLI-003 no-args PTY PASS + stale fixture repair
+
+New `no_args_startup_selects_the_configured_default_provider_and_model` tmux
+case closes the no-args boundary; `resize_tracks_a_second_geometry_without_
+losing_raw_mode` covers CLI-038's second geometry. Repaired pre-existing red
+`startup_error_path_never_enters_raw_mode` (retired hard-error contract →
+upstream-correct fallback warning; red verified on clean HEAD, stale fixture
+deleted). Gate green: lib 899/899 serial, PTY matrix 9/9, check, strict
+clippy, fmt. Metrics: evidence 98/266, overall 50/266, product 50/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 36.84% (98/266 PASS; 168 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 18.80% (50/266)
+Whole-product behavioral parity: 15.72% (50/318)
+
+Next: commit + push. Remaining CLI-003/038 note: non-tmux emulator breadth
+stays an intentional divergence (only tmux provable here). Files touched:
+`tests/interactive_full_matrix.rs`, deleted
+`fixtures/interactive-full/error_paths.txt`, `docs/NON-TUI-PARITY-STATUS.md`
+(CLI-003 row), metric blocks in README, TUI-STATUS, DASHBOARD, plus
+CONVERSION-LEDGER.md, PLAN.md, this file.
+
 ## Assessment — 2026-09-06 — CLI-003/CLI-038 interactive residuals
 
 Both rows' residuals are executable next work, not blocked: the tmux PTY

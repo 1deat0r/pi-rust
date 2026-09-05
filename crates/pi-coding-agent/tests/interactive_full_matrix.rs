@@ -79,10 +79,17 @@ mod unix {
 
     impl TmuxSession {
         fn start(sandbox: &Sandbox, model: &str) -> Self {
-            Self::start_with_mode(sandbox, model, None)
+            Self::start_with_mode(sandbox, Some(model), None)
         }
 
-        fn start_with_mode(sandbox: &Sandbox, model: &str, tui_mode: Option<&str>) -> Self {
+        /// Launch with no `--provider`/`--model` selection (the CLI-003
+        /// no-args boundary): the TUI must resolve the configured/default
+        /// provider and model on its own.
+        fn start_no_args(sandbox: &Sandbox) -> Self {
+            Self::start_with_mode(sandbox, None, None)
+        }
+
+        fn start_with_mode(sandbox: &Sandbox, model: Option<&str>, tui_mode: Option<&str>) -> Self {
             let name = format!("pi-interactive-full-{}", uuid::Uuid::new_v4());
             let created = tmux(&[
                 "new-session",
@@ -116,12 +123,15 @@ mod unix {
             let mode_flag = tui_mode
                 .map(|mode| format!(" --tui-mode {mode}"))
                 .unwrap_or_default();
+            let selection = model
+                .map(|model| format!(" --provider faux --model {}", shell_quote(Path::new(model))))
+                .unwrap_or_default();
             let command = format!(
-                "env HOME={} PI_CODING_AGENT_DIR={} PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_SHARE_DRY_RUN=1 {} --approve --provider faux --model {}{}",
+                "env HOME={} PI_CODING_AGENT_DIR={} PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_SHARE_DRY_RUN=1 {} --approve{}{}",
                 shell_quote(&sandbox.home),
                 shell_quote(&sandbox.agent_dir),
                 shell_quote(&test_binary()),
-                shell_quote(Path::new(model)),
+                selection,
                 mode_flag,
             );
             let configured = tmux(&["set-option", "-t", &name, "remain-on-exit", "on"]);
@@ -625,7 +635,7 @@ mod unix {
     #[test]
     fn fullscreen_tui_mode_owns_alternate_screen_and_restores_it() {
         let sandbox = Sandbox::new();
-        let session = TmuxSession::start_with_mode(&sandbox, "faux-1", Some("fullscreen"));
+        let session = TmuxSession::start_with_mode(&sandbox, Some("faux-1"), Some("fullscreen"));
         session.wait_for_capture(|capture| capture.contains("faux-1"));
         session.assert_raw_mode();
         let startup_raw = session.wait_for_raw_contains(&sandbox.raw_log, "\x1b[?1049h");
@@ -640,7 +650,7 @@ mod unix {
     #[test]
     fn regular_tui_mode_preserves_main_screen_without_alt_screen_sequences() {
         let sandbox = Sandbox::new();
-        let session = TmuxSession::start_with_mode(&sandbox, "faux-1", Some("regular"));
+        let session = TmuxSession::start_with_mode(&sandbox, Some("faux-1"), Some("regular"));
         session.wait_for_capture(|capture| capture.contains("faux-1"));
         session.assert_raw_mode();
         let raw = session.wait_for_raw_contains(&sandbox.raw_log, "\x1b[?2004h");
@@ -791,26 +801,55 @@ mod unix {
     }
 
     #[test]
-    fn startup_error_path_never_enters_raw_mode() {
-        for row in fixture_rows(include_str!("fixtures/interactive-full/error_paths.txt"), 3) {
-            let sandbox = Sandbox::new();
-            let session = TmuxSession::start(&sandbox, &row[0]);
-            let expected = expand_fixture_value(&row[1], &sandbox);
-            let capture =
-                session.wait_for_capture(|capture| contains_visible_text(capture, &expected));
-            assert!(
-                contains_visible_text(&capture, &expected),
-                "startup error missing from pane: expected={expected:?}, capture={capture}"
-            );
+    fn unknown_model_falls_back_with_warning_and_enters_raw_mode() {
+        // Upstream `resolveCliModel` never hard-fails an unknown model when
+        // the provider has a catalog: it warns ("Using custom model id") and
+        // starts the TUI with the custom id. The old startup-error contract
+        // predates that parity fix and was retired with it.
+        let sandbox = Sandbox::new();
+        let session = TmuxSession::start(&sandbox, "missing");
+        session.wait_for_capture(|capture| contains_visible_text(capture, "Using custom model id"));
+        session.assert_raw_mode();
+        session.send_line("/quit");
+        assert_terminal_restored(&session, &sandbox);
+    }
 
-            let forbidden = row[2].replace("\\x1b", "\x1b");
-            let raw = fs::read_to_string(&sandbox.raw_log).unwrap_or_default();
-            assert!(
-                !raw.contains(&forbidden),
-                "startup error entered terminal mode unexpectedly: {raw:?}"
-            );
-            session.stop_pipe();
-            session.wait_for_cooked_mode();
-        }
+    #[test]
+    fn no_args_startup_selects_the_configured_default_provider_and_model() {
+        let sandbox = Sandbox::new();
+        let session = TmuxSession::start_no_args(&sandbox);
+        // The banner proves interactive startup without any selection flags;
+        // the footer proves the TUI resolved a provider/model on its own.
+        session.wait_for_capture(|capture| capture.contains("pi v") && capture.contains("•"));
+        session.assert_raw_mode();
+        session.send_line("/quit");
+        assert_terminal_restored(&session, &sandbox);
+    }
+
+    #[test]
+    fn resize_tracks_a_second_geometry_without_losing_raw_mode() {
+        let sandbox = Sandbox::new();
+        let session = TmuxSession::start(&sandbox, "faux-1");
+        session.wait_for_capture(|capture| capture.contains("faux-1"));
+        session.assert_raw_mode();
+
+        let raw_before_first = fs::metadata(&sandbox.raw_log)
+            .expect("startup raw log must exist")
+            .len();
+        session.resize("72", "18");
+        session.wait_for_size((72, 18));
+        session.wait_for_raw_growth(&sandbox.raw_log, raw_before_first);
+        session.assert_raw_mode();
+
+        let raw_before_second = fs::metadata(&sandbox.raw_log)
+            .expect("first resize raw log must exist")
+            .len();
+        session.resize("110", "40");
+        session.wait_for_size((110, 40));
+        session.wait_for_raw_growth(&sandbox.raw_log, raw_before_second);
+        session.assert_raw_mode();
+
+        session.send_line("/quit");
+        assert_terminal_restored(&session, &sandbox);
     }
 }
