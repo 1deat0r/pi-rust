@@ -6,6 +6,29 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-09-05)
 
+CLI-017 `--session-dir` PASS (2026-09-06): one real-process test closes the
+variant matrix — symlinked dir resolves into the target (symlink survives),
+`--continue` rediscovers through it with verified append, and a deep
+missing-parent chain is created wholesale and reopened. No source change.
+Row now PASS/PASS/PASS; metrics move to deterministic evidence 97/266,
+non-TUI overall 49/266, whole-product 49/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 36.47% (97/266 PASS; 169 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 18.42% (49/266)
+Whole-product behavioral parity: 15.41% (49/318)
+
 CLI-012 `--continue` PASS (2026-09-06): one real-process test closes the
 variant matrix — wrong-cwd lookup miss, no-session fail-closed, and
 malformed-session skip all exit nonzero with `no previous session found to

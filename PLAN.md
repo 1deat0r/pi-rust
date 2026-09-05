@@ -1,17 +1,17 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
-## Active 2026-09-06 checkpoint — CLI-012 `--continue` PASS
+## Active 2026-09-06 checkpoint — CLI-017 `--session-dir` PASS
 
-One real-process test closes the variants: wrong-cwd lookup miss, no-session
-fail-closed, malformed-session skip (corrupted header keeps `--continue`
-failing closed with `no previous session found to continue in this
-directory`, matching upstream discovery-skip), and byte-restore recovery
-with verified append. No source change: selection already matched upstream.
-Gate green: coding-agent lib 899/899 serially, restart suite 7/7, check,
-strict workspace clippy, stable rustfmt, diff cleanliness. Metrics:
-implementation 106 PASS / 160 PARTIAL / 0 OPEN, deterministic evidence 96
-PASS / 170 PARTIAL / 0 OPEN, runtime 51 PASS / 164 PARTIAL / 51 OPEN,
-non-TUI overall 48/266, whole-product 48/318, and historical conversion
+One real-process test closes the variants: symlinked session dir resolves
+sessions into the target (symlink survives), `--continue` rediscovers
+through the symlink with verified append, and a deep missing-parent chain
+is created wholesale and reopened. No source change: `create_dir_all` and
+std symlink semantics already matched upstream. Gate green: coding-agent
+lib 899/899 serially, restart suite 8/8, check, strict workspace clippy,
+stable rustfmt, diff cleanliness. Metrics: implementation 106 PASS / 160
+PARTIAL / 0 OPEN, deterministic evidence 97 PASS / 169 PARTIAL / 0 OPEN,
+runtime 51 PASS / 164 PARTIAL / 51 OPEN, non-TUI overall 49/266,
+whole-product 49/318, and historical conversion
 `Conversion progress: 100.00% (166/166; 0 open)`.
 Current dashboard metrics:
 
@@ -25,10 +25,10 @@ TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 36.09% (96/266 PASS; 170 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 36.47% (97/266 PASS; 169 PARTIAL; 0 OPEN)
 Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 18.05% (48/266)
-Whole-product behavioral parity: 15.09% (48/318)
+Non-TUI overall parity: 18.42% (49/266)
+Whole-product behavioral parity: 15.41% (49/318)
 
 ## Active 2026-09-05 checkpoint — ENV-007 per-mode reasoning wiring
 

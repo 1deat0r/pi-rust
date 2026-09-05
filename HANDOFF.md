@@ -2,6 +2,37 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-06 — CLI-017 `--session-dir` PASS
+
+One real-process test closes the variant matrix (symlink target resolution,
+continue-through-symlink with append, deep missing-parent creation +
+reopen). No source change. Row PASS/PASS/PASS. Gate green: lib 899/899
+serial, restart suite 8/8, check, strict clippy, fmt. Metrics: evidence
+97/266, overall 49/266, product 49/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 36.47% (97/266 PASS; 169 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 18.42% (49/266)
+Whole-product behavioral parity: 15.41% (49/318)
+
+Next: commit + push, then the CLI-003/CLI-038 interactive-residual
+assessment (likely blocked on PTY breadth). Files touched:
+`tests/cli_session_restart_parity.rs`, `docs/NON-TUI-PARITY-STATUS.md`
+(CLI-017 row; CLI-018 briefly clobbered by a stale anchor and restored
+byte-identical — audit verified 266 rows), metric blocks in README,
+TUI-STATUS, DASHBOARD, plus CONVERSION-LEDGER.md, PLAN.md, this file.
+
 ## Latest checkpoint — 2026-09-06 — CLI-012 `--continue` PASS
 
 One real-process test closes the variant matrix (wrong-cwd miss, no-session

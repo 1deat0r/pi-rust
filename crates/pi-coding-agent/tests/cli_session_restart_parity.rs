@@ -513,6 +513,7 @@ fn settings_round_trip_is_clean_startup_atomic_and_concurrent() {
         SettingsManagerCreateOptions::default(),
     );
     manager.set_theme("dark".to_string());
+
     manager.set_default_provider("faux".to_string());
     manager.flush_sync();
     assert!(manager.drain_errors().is_empty());
@@ -775,4 +776,110 @@ fn malformed_files_fail_closed_then_recover_and_cancellation_allows_restart() {
             &AuthOperationOptions::default(),
         ))
         .expect("restart recovers dead lock");
+}
+#[test]
+fn session_dir_symlink_target_and_missing_parent_chain_are_created_and_rediscovered() {
+    let sandbox = Sandbox::new("session-dir-variants");
+    let run_args = [
+        "--mode",
+        "text",
+        "--provider",
+        "faux",
+        "--model",
+        "faux-1",
+        "--no-tools",
+        "--print",
+    ];
+
+    // Symlinked session dir: sessions must land in the symlink target and
+    // the symlink itself must survive.
+    let real_dir = sandbox.root.join("real-sessions");
+    let linked_dir = sandbox.root.join("linked-sessions");
+    fs::create_dir_all(&real_dir).expect("create real session dir");
+    std::os::unix::fs::symlink(&real_dir, &linked_dir).expect("symlink session dir");
+    let seeded = sandbox
+        .command()
+        .args(run_args)
+        .arg("--session-dir")
+        .arg(&linked_dir)
+        .arg("--session-id")
+        .arg("symlink-session")
+        .arg("seed prompt")
+        .output()
+        .expect("run symlinked session-dir child");
+    assert!(
+        seeded.status.success(),
+        "symlink stderr: {}",
+        stderr(&seeded)
+    );
+    assert!(
+        fs::symlink_metadata(&linked_dir)
+            .expect("linked metadata")
+            .file_type()
+            .is_symlink(),
+        "session dir symlink must not be replaced"
+    );
+    assert_eq!(
+        jsonl_files(&real_dir).len(),
+        1,
+        "session must resolve into the symlink target"
+    );
+
+    // --continue must rediscover the session through the same symlink.
+    let continued = sandbox
+        .command()
+        .args(run_args)
+        .arg("--session-dir")
+        .arg(&linked_dir)
+        .arg("--continue")
+        .arg("continued prompt")
+        .output()
+        .expect("run symlinked continue child");
+    assert!(
+        continued.status.success(),
+        "continue stderr: {}",
+        stderr(&continued)
+    );
+    assert!(stdout(&continued).contains("faux response to: continued prompt"));
+    let contents =
+        fs::read_to_string(jsonl_files(&real_dir).pop().expect("session file")).expect("read");
+    assert!(contents.contains("seed prompt") && contents.contains("continued prompt"));
+
+    // Missing parent chain: a deep nonexistent path is created wholesale.
+    let deep_dir = sandbox.root.join("deep/one/two/sessions");
+    let created = sandbox
+        .command()
+        .args(run_args)
+        .arg("--session-dir")
+        .arg(&deep_dir)
+        .arg("--session-id")
+        .arg("deep-session")
+        .arg("deep prompt")
+        .output()
+        .expect("run deep session-dir child");
+    assert!(
+        created.status.success(),
+        "deep stderr: {}",
+        stderr(&created)
+    );
+    assert_eq!(
+        jsonl_files(&deep_dir).len(),
+        1,
+        "missing parent chain must be created"
+    );
+    let continued_deep = sandbox
+        .command()
+        .args(run_args)
+        .arg("--session-dir")
+        .arg(&deep_dir)
+        .arg("--continue")
+        .arg("deep continued")
+        .output()
+        .expect("run deep continue child");
+    assert!(
+        continued_deep.status.success(),
+        "deep continue stderr: {}",
+        stderr(&continued_deep)
+    );
+    assert!(stdout(&continued_deep).contains("faux response to: deep continued"));
 }
