@@ -269,11 +269,13 @@ wins; blank settings ignored), so no source change was needed. Three new
 `http_dispatcher::tests` pin empty-env preservation, settings-file bootstrap,
 and malformed-JSON diagnostics; real-process loopback fixture
 `tests/env_proxy.rs` (3/3, print) proves dead-proxy failure with
-absolute-URI interception and the provider untouched, `NO_PROXY` bypass, and
-`settings.json httpProxy` interception. The row is PARTIAL/PARTIAL/PARTIAL;
-proxy-auth forwarding (reqwest drops env-proxy userinfo), per-request env-map
-override, malformed-value fast failure, and live/platform evidence remain
-open.
+absolute-URI interception, `Proxy-Authorization` forwarding, and the
+provider untouched, `NO_PROXY` bypass, and `settings.json httpProxy`
+interception. (Correction 2026-09-06: an earlier note claimed reqwest drops
+env-proxy userinfo; that was a case-sensitive test-string bug — the wire
+header is lowercase and forwarding is proven.) The row is
+PARTIAL/PARTIAL/PARTIAL; per-request env-map override, malformed-value fast
+failure, and live/platform evidence remain open.
 
 ENV-012 evidence note (2026-09-05): escape-timeout resolution already matches
 pinned upstream exactly with pi-tui unit pins, and hardware-cursor/shrink

@@ -1,18 +1,14 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
-## Active 2026-09-05 checkpoint — DIST-004 upgrade/rollback evidence
+## Active 2026-09-06 checkpoint — ENV-013 proxy-auth correction
 
-DIST-004 is now PARTIAL/PARTIAL/PARTIAL. Compiled installs cannot
-self-update, so the new real-process disposable-installer fixture
-`tests/dist_upgrade.rs` (2/2) proves binary replacement preserves the v1
-session file plus settings/auth bytes byte-identical across a second turn,
-and a failed `pi update` leaves every state file untouched. The gate is
-green: coding-agent lib 886/886 serially, dist_upgrade 2/2, env_home 2/2,
-check, strict workspace clippy, stable rustfmt, both audits, and diff
-cleanliness.
-
-Next dependency-safe action: live/vendor/PTY/platform breadth for the open
-boundaries. Metrics are implementation 106 PASS / 160 PARTIAL / 0 OPEN,
+Proxy-auth forwarding is proven, not diverged: the stub receives
+`proxy-authorization: Basic dXNlcjpwYXNz` for credential-bearing proxy
+URLs. The earlier gap note was a case-sensitive test-string bug; the
+fixture now compares the header name case-insensitively and the value
+exactly, and `tests/env_proxy.rs` passes 3/3 with real auth proof. Row
+text and dashboard note corrected; the row stays PARTIAL/PARTIAL/PARTIAL.
+Metrics unchanged: implementation 106 PASS / 160 PARTIAL / 0 OPEN,
 deterministic evidence 92 PASS / 174 PARTIAL / 0 OPEN, runtime 51 PASS / 164
 PARTIAL / 51 OPEN, non-TUI overall 44/266, whole-product 44/318, and
 historical conversion `Conversion progress: 100.00% (166/166; 0 open)`.

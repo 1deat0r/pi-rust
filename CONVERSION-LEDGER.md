@@ -6,6 +6,21 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-09-05)
 
+ENV-013 auth correction (2026-09-06): proxy-auth forwarding is proven, not
+diverged. A minimal reqwest repro plus the corrected
+`tests/env_proxy.rs` interception case show the stub receiving
+`proxy-authorization: Basic dXNlcjpwYXNz` for credential-bearing proxy
+URLs. The earlier "reqwest drops userinfo" note was a case-sensitive
+test-string bug (the wire header is lowercase; lowercasing the whole head
+also corrupts the base64 token, so the fixture now compares the header
+name case-insensitively line by line and the value exactly). The ENV-013
+row text and dashboard note are corrected; the row stays
+PARTIAL/PARTIAL/PARTIAL with per-request env-map override, malformed-value
+fast failure, and live/platform evidence still open. Metrics unchanged:
+implementation 106 PASS / 160 PARTIAL / 0 OPEN, evidence 92 PASS / 174
+PARTIAL / 0 OPEN, runtime 51 PASS / 164 PARTIAL / 51 OPEN, non-TUI overall
+44/266, and whole-product 44/318.
+
 DIST-004 checkpoint (2026-09-05): the row is promoted from OPEN/OPEN/OPEN
 to PARTIAL/PARTIAL/PARTIAL. pi-rust cannot self-update a compiled
 installation (`pi update` exits nonzero with a rebuild instruction,

@@ -261,11 +261,17 @@ fn dead_proxy_with_credentials_fails_without_touching_the_provider() {
         proxy_head.starts_with("POST http://127.0.0.1:"),
         "request must be routed to the proxy in absolute-URI form: {proxy_head}"
     );
-    // Known upstream gap: reqwest honors env-proxy routing but drops
-    // userinfo, so no `Proxy-Authorization` header is forwarded for
-    // credential-bearing proxy URLs. Upstream's ProxyAgent authenticates.
-    // Tracked as a follow-up (central proxy-aware client builder); this
-    // case pins the interception half of the contract.
+    let auth_value = proxy_head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("proxy-authorization")
+            .then(|| value.trim().to_owned())
+    });
+    assert_eq!(
+        auth_value.as_deref(),
+        Some("Basic dXNlcjpwYXNz"),
+        "proxy credentials must be forwarded as Proxy-Authorization: {proxy_head}"
+    );
     assert!(
         provider_seen
             .recv_timeout(PROXY_TIMEOUT)
