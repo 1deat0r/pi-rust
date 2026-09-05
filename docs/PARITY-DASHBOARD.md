@@ -36,9 +36,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 149 PARTIAL; 11 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 163 PARTIAL; 11 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 153 PARTIAL; 62 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 151 PARTIAL; 9 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 165 PARTIAL; 9 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 155 PARTIAL; 60 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
@@ -230,6 +230,15 @@ text plus secret absence, and permanently re-tests malformed/unknown/deep
 wire input, malformed-session switch, failed-export no-write, and abort
 with post-failure reuse. Both rows are PARTIAL/PARTIAL/PARTIAL; broader
 crash/platform matrices remain open. The independent gate is 4/4.
+
+ENV-001/ENV-002 evidence note (2026-09-05): deterministic resolver tests
+prove CLI/env/default/empty precedence and key precedence; a real-process
+fixture proves env-only selection, CLI override, empty fallthrough,
+value-naming invalid diagnostics, and PI_KEY/dual-key redaction. Both rows
+are PARTIAL/PARTIAL/PARTIAL; footer/request selection, per-vendor breadth,
+and live/platform evidence remain open. Startup PI_PROVIDER/PI_MODEL/PI_KEY
+defaults are an intentional divergence: pinned upstream only propagates
+them to tool children and eval config.
 <!-- PARITY_DASHBOARD_METRICS:END -->
 
 Latest 2026-08-31 operation-record verification: SES-004 implementation and

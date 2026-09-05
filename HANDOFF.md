@@ -2,6 +2,37 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-05 — ENV-001/ENV-002 precedence/redaction boundary
+
+ENV-001 and ENV-002 are promoted from OPEN/OPEN/OPEN to
+PARTIAL/PARTIAL/PARTIAL. Deterministic `config::tests` now cover
+CLI/env/default/empty precedence for `resolve_provider`/`resolve_model`
+(serialized with a module-local lock because the suite is also compiled
+into the `llama_parity` integration target via `#[path]`, where
+`crate::core` does not resolve). New real-process fixture
+`crates/pi-coding-agent/tests/env_precedence.rs` (6/6, stable reruns)
+proves env-only selection, CLI override, empty fallthrough, invalid-value
+diagnostics naming the value, and PI_KEY/dual-key faux turns with both
+synthetic keys absent from stdout/stderr and every sandbox artifact.
+
+The independent gate
+`.unlazy/parity-20260827/gates/leaf-env-provider-model-key.md` is 3/3:
+focused config/env suites, neighboring request-key/secret suites,
+coding-agent check, strict all-target clippy, stable rustfmt, conversion/
+parity/register audits, and `git diff --check`. INTENTIONAL DIVERGENCE:
+pinned upstream has no startup PI_PROVIDER/PI_MODEL/PI_KEY consumption
+(child-env + eval config only); Rust implements them per the inventory
+contract. ENV-001 remains partial for footer/request selection and
+config-file breadth; ENV-002 for per-vendor env precedence and live
+traffic.
+
+No numbered conversion task changed. Current metrics are implementation
+106 PASS / 151 PARTIAL / 9 OPEN, deterministic evidence 92 PASS / 165
+PARTIAL / 9 OPEN, runtime 51 PASS / 155 PARTIAL / 60 OPEN, non-TUI overall
+44/266, whole product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`. Next continue the ENV
+sweep at ENV-007/ENV-009, then ENV-011..016.
+
 ## Latest checkpoint — 2026-09-05 — X-011/X-012 diagnostics/regression boundary
 
 X-011 and X-012 are promoted from OPEN/OPEN/OPEN to
@@ -1528,9 +1559,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 149 PARTIAL; 11 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 163 PARTIAL; 11 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 153 PARTIAL; 62 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 151 PARTIAL; 9 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 165 PARTIAL; 9 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 155 PARTIAL; 60 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 

@@ -191,4 +191,83 @@ mod tests {
             Some(PathBuf::from("/fallback"))
         );
     }
+
+    // Local serializing lock for process-environment mutation. This test
+    // module is also compiled into the `llama_parity` integration target via
+    // `#[path]`, so it must not reference `crate::core` or tokio here; the
+    // sanctioned suites run with `--test-threads=1`.
+    static ENV_PRECEDENCE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_PRECEDENCE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_provider_prefers_cli_over_env_over_default() {
+        let _guard = lock_env();
+        let _provider = EnvGuard::remove(super::ENV_PROVIDER);
+
+        assert_eq!(super::resolve_provider(None), "google");
+        assert_eq!(super::resolve_provider(Some("")), "google");
+
+        let _env = EnvGuard::set(super::ENV_PROVIDER, "faux");
+        assert_eq!(super::resolve_provider(None), "faux");
+        assert_eq!(super::resolve_provider(Some("other")), "other");
+        // An empty CLI value does not mask the environment.
+        assert_eq!(super::resolve_provider(Some("")), "faux");
+
+        let _empty = EnvGuard::set(super::ENV_PROVIDER, "");
+        assert_eq!(super::resolve_provider(None), "google");
+    }
+
+    #[test]
+    fn resolve_model_prefers_cli_over_env() {
+        let _guard = lock_env();
+        let _model = EnvGuard::remove(super::ENV_MODEL);
+
+        assert_eq!(super::resolve_model(None), None);
+        assert_eq!(super::resolve_model(Some("")), None);
+
+        let _env = EnvGuard::set(super::ENV_MODEL, "faux-1");
+        assert_eq!(super::resolve_model(None), Some("faux-1".to_string()));
+        assert_eq!(
+            super::resolve_model(Some("other-1")),
+            Some("other-1".to_string())
+        );
+        // An empty CLI value does not mask the environment.
+        assert_eq!(super::resolve_model(Some("")), Some("faux-1".to_string()));
+
+        let _empty = EnvGuard::set(super::ENV_MODEL, "");
+        assert_eq!(super::resolve_model(None), None);
+    }
 }
