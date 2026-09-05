@@ -178,11 +178,11 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 40.23% (107/266 PASS; 159 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 38.35% (102/266 PASS; 164 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 20.30% (54/266 PASS; 161 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 19.92% (53/266)
-Whole-product behavioral parity: 16.67% (53/318)
+Non-TUI implementation parity: 40.60% (108/266 PASS; 158 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 38.72% (103/266 PASS; 163 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 20.68% (55/266 PASS; 160 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 20.30% (54/266)
+Whole-product behavioral parity: 16.98% (54/318)
 
 See [`docs/PARITY-DASHBOARD.md`](docs/PARITY-DASHBOARD.md) for the
 definitions and the machine-validated current checkpoint.

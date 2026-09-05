@@ -6,6 +6,29 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-09-05)
 
+CLI-013 `--resume` PASS (2026-09-06): one process test pins print-mode
+no-match fail-closed (distinct wording) and newest-by-mtime selection with
+verified append; deleted-file races fail closed by construction (repo open
+→ NotFound). Row now PASS/PASS/PASS; metrics move to implementation
+108/266, deterministic evidence 103/266, runtime 55/266, non-TUI overall
+54/266, whole-product 54/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 40.60% (108/266 PASS; 158 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 38.72% (103/266 PASS; 163 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 20.68% (55/266 PASS; 160 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 20.30% (54/266)
+Whole-product behavioral parity: 16.98% (54/318)
+
 CLI-015 `--session-id` PASS (2026-09-06): one process test closes the
 semantics — new-ID creation with header id, existing-ID reopen + append
 without duplicates, unknown-ID warn-and-create (exact upstream text),
@@ -23,11 +46,11 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 40.23% (107/266 PASS; 159 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 38.35% (102/266 PASS; 164 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 20.30% (54/266 PASS; 161 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 19.92% (53/266)
-Whole-product behavioral parity: 16.67% (53/318)
+Non-TUI implementation parity: 40.60% (108/266 PASS; 158 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 38.72% (103/266 PASS; 163 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 20.68% (55/266 PASS; 160 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 20.30% (54/266)
+Whole-product behavioral parity: 16.98% (54/318)
 
 CLI-016 `--fork` PASS (2026-09-06): one process test closes the matrix —
 fork by bare session id with parent linkage, source untouched by child

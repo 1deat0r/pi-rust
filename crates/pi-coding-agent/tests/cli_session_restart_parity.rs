@@ -1094,3 +1094,77 @@ fn session_id_new_existing_invalid_and_warning_paths_are_process_proven() {
         stderr(&invalid)
     );
 }
+
+#[test]
+fn resume_print_mode_variants_fail_closed_and_reopen_the_newest_session() {
+    let sandbox = Sandbox::new("resume-variants");
+    let run_args = [
+        "--mode",
+        "text",
+        "--provider",
+        "faux",
+        "--model",
+        "faux-1",
+        "--no-tools",
+    ];
+
+    // No-match: --resume with no sessions fails closed with its own
+    // diagnostic (distinct from --continue's wording).
+    let no_match = sandbox
+        .command()
+        .args(run_args)
+        .args(["--resume", "--print", "nothing yet"])
+        .output()
+        .expect("run no-match resume child");
+    assert!(
+        !no_match.status.success(),
+        "no-match resume must fail: {}",
+        stderr(&no_match)
+    );
+    assert!(
+        stderr(&no_match).contains("no sessions found to resume in this directory"),
+        "expected resume diagnostic, got: {}",
+        stderr(&no_match)
+    );
+
+    // Seed two sessions; --resume must pick the newest by mtime and append.
+    let first = sandbox
+        .command()
+        .args(run_args)
+        .args(["--session-id", "resume-older", "--print", "older"])
+        .output()
+        .expect("run older seed child");
+    assert!(first.status.success(), "seed stderr: {}", stderr(&first));
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let second = sandbox
+        .command()
+        .args(run_args)
+        .args(["--session-id", "resume-newer", "--print", "newer seed"])
+        .output()
+        .expect("run newer seed child");
+    assert!(second.status.success(), "seed stderr: {}", stderr(&second));
+
+    let resumed = sandbox
+        .command()
+        .args(run_args)
+        .args(["--resume", "--print", "resumed prompt"])
+        .output()
+        .expect("run resume child");
+    assert!(resumed.status.success(), "stderr: {}", stderr(&resumed));
+    assert!(stdout(&resumed).contains("faux response to: resumed prompt"));
+    let files = jsonl_files(&sandbox.sessions);
+    assert_eq!(files.len(), 2, "resume must append, not create");
+    let resumed_file = files
+        .into_iter()
+        .find(|path| {
+            fs::read_to_string(path)
+                .map(|content| content.contains("resumed prompt"))
+                .unwrap_or(false)
+        })
+        .expect("resumed session file");
+    let header = fs::read_to_string(&resumed_file).expect("read header");
+    assert!(
+        header.contains("\"resume-newer\""),
+        "resume must select the newest session: {header}"
+    );
+}
