@@ -593,3 +593,90 @@ fn fork_accepts_a_session_path_and_persists_parent_metadata() {
         "fork copies history then appends"
     );
 }
+
+#[test]
+fn fork_accepts_a_bare_session_id_and_independent_writes_diverge() {
+    let sandbox = Sandbox::new("fork-id");
+    let cwd = sandbox.root.clone();
+    let first = sandbox.pi(
+        &cwd,
+        &["-p", "--provider", "faux", "--model", "faux-1", "first"],
+    );
+    assert!(first.status.success(), "stderr: {}", sandbox.stderr(&first));
+    let source = walk_jsonl(&sandbox.sessions)
+        .into_iter()
+        .next()
+        .expect("source session");
+    let source_id = read_header(&source)["id"].as_str().unwrap().to_string();
+
+    // Fork by bare id (no path, no extension).
+    let forked = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--fork",
+            &source_id,
+            "child",
+        ],
+    );
+    assert!(
+        forked.status.success(),
+        "stderr: {}",
+        sandbox.stderr(&forked)
+    );
+    let files = walk_jsonl(&sandbox.sessions);
+    assert_eq!(files.len(), 2, "fork by id must create a child file");
+    let child = files
+        .iter()
+        .find(|path| read_header(path)["parentSessionId"].as_str() == Some(source_id.as_str()))
+        .expect("fork-by-id header parentSessionId");
+    assert!(sandbox.stdout(&forked).contains("faux response to: child"));
+
+    // Independent writes: appending to the child must not touch the source.
+    let source_len = fs::metadata(&source).unwrap().len();
+    let again = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--session",
+            child.to_str().unwrap(),
+            "second child turn",
+        ],
+    );
+    assert!(again.status.success(), "stderr: {}", sandbox.stderr(&again));
+    assert_eq!(
+        fs::metadata(&source).unwrap().len(),
+        source_len,
+        "source must stay untouched by child writes"
+    );
+    let child_content = fs::read_to_string(child).unwrap();
+    assert!(child_content.contains("second child turn"));
+
+    // Missing target: unknown ids fail with the fork diagnostic.
+    let missing = sandbox.pi(
+        &cwd,
+        &[
+            "-p",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--fork",
+            "no-such-session-id",
+            "x",
+        ],
+    );
+    assert!(
+        !missing.status.success(),
+        "unknown fork target must fail: {}",
+        sandbox.stderr(&missing)
+    );
+}
