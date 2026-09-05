@@ -236,6 +236,21 @@ fn unicode_and_whitespace_messages_survive_verbatim() {
 }
 
 #[test]
+fn bare_model_ambiguous_across_providers_names_both() {
+    let sandbox = Sandbox::new("bare-ambiguous");
+    let cwd = sandbox.root.clone();
+    let out = sandbox.pi(&cwd, &["-p", "--model", "gemini-2.5-flash", "hello"]);
+    assert!(!out.status.success(), "expected nonzero exit");
+    let stderr = sandbox.stderr(&out);
+    assert!(
+        stderr.contains("Model \"gemini-2.5-flash\" is ambiguous across providers")
+            && stderr.contains("google/gemini-2.5-flash")
+            && stderr.contains("google-vertex/gemini-2.5-flash")
+            && stderr.contains("Use --provider or provider/model"),
+        "expected upstream ambiguity diagnostic, got: {stderr}"
+    );
+}
+#[test]
 fn uppercase_provider_and_model_flags_resolve_canonically() {
     let sandbox = Sandbox::new("provider-case");
     let cwd = sandbox.root.clone();

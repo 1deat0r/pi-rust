@@ -1167,6 +1167,53 @@ mod tests {
         let result = resolve_cli_model(None, Some("dup"), None, &models);
         assert!(result.error.unwrap().contains("ambiguous"));
     }
+    #[test]
+    fn resolve_cli_model_bare_model_exact_no_provider() {
+        let models = catalog();
+        let result = resolve_cli_model(None, Some("grok-4.6"), None, &models);
+        assert_eq!(result.error, None);
+        let model = result.model.unwrap();
+        assert_eq!(model.provider, "xai");
+        assert_eq!(model.id, "grok-4.6");
+    }
+
+    #[test]
+    fn resolve_cli_model_fuzzy_partial_matches_alias() {
+        let models = catalog();
+        let result = resolve_cli_model(Some("anthropic"), Some("opus"), None, &models);
+        assert_eq!(result.error, None);
+        assert_eq!(result.model.unwrap().id, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn resolve_cli_model_thinking_suffix_returns_level() {
+        let models = catalog();
+        let result = resolve_cli_model(Some("xai"), Some("grok-4.6:high"), None, &models);
+        assert_eq!(result.error, None);
+        assert_eq!(result.model.unwrap().id, "grok-4.6");
+        assert_eq!(result.thinking_level.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn resolve_cli_model_unknown_model_no_provider_errors() {
+        let models = catalog();
+        let result = resolve_cli_model(None, Some("nope-xyz"), None, &models);
+        let error = result.error.unwrap();
+        assert!(error.contains("Model \"nope-xyz\" not found"), "{error}");
+        assert!(result.model.is_none());
+    }
+
+    #[test]
+    fn resolve_cli_model_resolves_model_without_configured_auth() {
+        // Upstream resolves against *all* models, not just authenticated
+        // providers, so `--api-key` first-time setup keeps working.
+        let registry = RegistrySnapshot::from_parts(catalog(), &[]);
+        let result = resolve_cli_model(None, Some("google/gemini-3.1-flash"), None, &registry);
+        assert_eq!(result.error, None);
+        let model = result.model.unwrap();
+        assert_eq!(model.provider, "google");
+        assert_eq!(model.id, "gemini-3.1-flash");
+    }
 
     #[test]
     fn resolve_cli_model_no_models() {
