@@ -2,6 +2,23 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Assessment — 2026-09-06 — CLI-003/CLI-038 interactive residuals
+
+Both rows' residuals are executable next work, not blocked: the tmux PTY
+harness in `tests/interactive_full_matrix.rs` already provides terminal
+lifecycle, resize, alt-screen, and raw-mode assertions. CLI-003 needs a
+no-args tmux scenario (no `--provider`/`--model`) pinning the default-
+selection or clean startup-error surface; CLI-038 needs resize assertions
+across at least a second geometry plus one non-tmux-emulator pass or an
+explicit emulator-breadth divergence note. Non-TTY probing shows `pi` with
+no args and no TTY exits 0 silently (falls out of
+`interactive_requested`), so both scenarios require the PTY harness.
+Scoped plan: (1) add `no_args_default_selection` tmux case to the full
+matrix asserting either the configured-default provider/model banner or
+the raw-mode-free startup error; (2) extend the resize case with a second
+geometry and record emulator breadth as an intentional divergence note on
+CLI-038 if only tmux is provable on this machine.
+
 ## Latest checkpoint — 2026-09-06 — CLI-017 `--session-dir` PASS
 
 One real-process test closes the variant matrix (symlink target resolution,
