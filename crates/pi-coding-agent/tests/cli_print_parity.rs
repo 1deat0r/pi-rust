@@ -202,6 +202,40 @@ fn multiple_messages_are_prompted_as_sequential_turns() {
     }
 }
 #[test]
+fn unicode_and_whitespace_messages_survive_verbatim() {
+    let sandbox = Sandbox::new("unicode-messages");
+    let cwd = sandbox.root.clone();
+    let messages = ["héllo wörld 🌍", "  padded  ", "\ttabbed", "   "];
+    let mut argv = vec!["-p", "--provider", "faux", "--model", "faux-1"];
+    argv.extend(messages);
+    let out = sandbox.pi(&cwd, &argv);
+    assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+    // Only the last assistant turn is visible; whitespace-only input must
+    // survive verbatim (upstream applies no trim/filter to messages).
+    assert_eq!(sandbox.stdout(&out), "faux response to:    \n");
+
+    let entries = message_entries(&sandbox.session());
+    let user_texts: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry["message"]["role"] == "user")
+        .filter_map(message_text)
+        .collect();
+    assert_eq!(user_texts, messages);
+    let assistant_texts: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry["message"]["role"] == "assistant")
+        .filter_map(message_text)
+        .collect();
+    assert_eq!(
+        assistant_texts,
+        messages
+            .iter()
+            .map(|text| format!("faux response to: {text}"))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn uppercase_provider_and_model_flags_resolve_canonically() {
     let sandbox = Sandbox::new("provider-case");
     let cwd = sandbox.root.clone();

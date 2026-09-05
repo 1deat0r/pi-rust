@@ -2,6 +2,36 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-06 — CLI-004 positional messages PASS
+
+Closed the Unicode/whitespace residual with 1 args unit + 1 real print-mode
+process test (four sequential faux turns, exact persistence and echo, no
+trim/filter). No source change. Row PASS/PASS/PASS. Gate green: lib 894/894
+serial, cli_print_parity 12/12, check, strict clippy, fmt. Metrics: evidence
+94/266, overall 46/266, product 46/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 35.34% (94/266 PASS; 172 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 17.29% (46/266)
+Whole-product behavioral parity: 14.47% (46/318)
+
+Next: CLI-007 (model matrix), CLI-012 (wrong-cwd/malformed-session), CLI-017
+(symlink/missing-parent). Files touched: `args.rs` (tests only),
+`tests/cli_print_parity.rs`, `docs/NON-TUI-PARITY-STATUS.md` (CLI-004 row),
+metric blocks in README, TUI-STATUS, DASHBOARD, plus CONVERSION-LEDGER.md,
+PLAN.md, this file.
+
 ## Latest checkpoint — 2026-09-06 — CLI-006 `--provider` PASS
 
 Closed the row's deterministic-evidence residual with 3 resolver unit tests

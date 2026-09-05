@@ -37,10 +37,10 @@ TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 34.96% (93/266 PASS; 173 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 35.34% (94/266 PASS; 172 PARTIAL; 0 OPEN)
 Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 16.92% (45/266)
-Whole-product behavioral parity: 14.15% (45/318)
+Non-TUI overall parity: 17.29% (46/266)
+Whole-product behavioral parity: 14.47% (46/318)
 
 Latest evidence note (2026-08-31): SES-008 durable reopen now proves message,
 model/provider, thinking, active-tool, operation, and queue projection across

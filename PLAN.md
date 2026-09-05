@@ -1,18 +1,18 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
-## Active 2026-09-06 checkpoint — CLI-006 `--provider` PASS
+## Active 2026-09-06 checkpoint — CLI-004 positional messages PASS
 
-CLI-006 promotes to PASS/PASS/PASS: case variation row-proven at resolver
-level (`GOOGLE`/`GEMINI-3.1-FLASH`, `Google` + `GOOGLE/gemini-3.1-flash`) and
-end to end (`--provider FAUX --model FAUX-1` completes with canonical
-`faux`/`faux-1` persisted); conflict diagnostics row-proven
-(unknown-provider text, ambiguity error, cross-provider custom-model
-fallback warning). Gate green: coding-agent lib 893/893 serially,
-cli_print_parity 11/11, check, strict workspace clippy, stable rustfmt,
-diff cleanliness. Metrics: implementation 106 PASS / 160 PARTIAL / 0
-OPEN, deterministic evidence 93 PASS / 173 PARTIAL / 0 OPEN, runtime 51
-PASS / 164 PARTIAL / 51 OPEN, non-TUI overall 45/266, whole-product 45/318,
-and historical conversion `Conversion progress: 100.00% (166/166; 0 open)`.
+CLI-004 promotes to PASS/PASS/PASS: the Unicode/whitespace matrix is
+row-proven at parse level (args unit pins unicode/padded/tab/whitespace-only
+verbatim) and end to end (real print-mode process test proves four sequential
+faux turns with exact persisted texts and exact echoed replies). No source
+change: parsing already passes messages through untouched, matching upstream.
+Gate green: coding-agent lib 894/894 serially, cli_print_parity 12/12,
+check, strict workspace clippy, stable rustfmt, diff cleanliness. Metrics:
+implementation 106 PASS / 160 PARTIAL / 0 OPEN, deterministic evidence 94
+PASS / 172 PARTIAL / 0 OPEN, runtime 51 PASS / 164 PARTIAL / 51 OPEN,
+non-TUI overall 46/266, whole-product 46/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
 Current dashboard metrics:
 
 Source/conversion ledger: 100.00% (166/166; 0 open)
@@ -25,11 +25,10 @@ TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 34.96% (93/266 PASS; 173 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 35.34% (94/266 PASS; 172 PARTIAL; 0 OPEN)
 Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 164 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 16.92% (45/266)
-Whole-product behavioral parity: 14.15% (45/318)
-
+Non-TUI overall parity: 17.29% (46/266)
+Whole-product behavioral parity: 14.47% (46/318)
 
 ## Active 2026-09-05 checkpoint — ENV-007 per-mode reasoning wiring
 

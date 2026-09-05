@@ -614,6 +614,14 @@ mod tests {
         let args = parse(&["hello", "world"]);
         assert_eq!(args.messages, vec!["hello", "world"]);
     }
+    #[test]
+    fn positional_messages_keep_unicode_and_whitespace_verbatim() {
+        let args = parse(&["héllo wörld 🌍", "  padded  ", "\ttabbed", "   "]);
+        assert_eq!(
+            args.messages,
+            vec!["héllo wörld 🌍", "  padded  ", "\ttabbed", "   "]
+        );
+    }
 
     #[test]
     fn parses_file_args() {
