@@ -107,6 +107,64 @@ fn nonempty_value(value: Option<&str>) -> Option<&str> {
     value.filter(|value| !value.is_empty())
 }
 
+/// Build the per-turn stream function that carries turn-scoped options into
+/// `stream_simple`.
+///
+/// The bare `StreamFn` path only passes base `StreamOptions`, so without
+/// this the harness-selected thinking level never reaches provider requests
+/// (upstream sends per-turn reasoning). Only reasoning is overlaid here;
+/// auth, transport, telemetry, session affinity, and abort keep flowing
+/// through the captured base options and facade state exactly as before.
+fn stream_fn_with_reasoning(
+    models: pi_ai::models::Models,
+    base: pi_ai::types::SimpleStreamOptions,
+) -> pi_agent::StreamFnWithOptions {
+    Arc::new(move |model, ctx, turn_options| {
+        let mut merged = base.clone();
+        if turn_options.reasoning.is_some() {
+            merged.reasoning = turn_options.reasoning;
+        }
+        models.stream_simple(model, ctx, Some(&merged))
+    })
+}
+
+/// Resolved startup thinking level plus an optional invalid-environment
+/// warning. Precedence mirrors provider/model selection: explicit CLI, then
+/// the model-hint scope, then `PI_REASONING_LEVEL`, then the settings
+/// default, then the builtin default. An invalid environment value warns in
+/// the `--thinking` message shape and falls through instead of failing the
+/// run.
+pub(crate) struct ResolvedThinkingLevel {
+    pub level: String,
+    pub warning: Option<String>,
+}
+
+pub(crate) fn resolve_requested_thinking_level(
+    cli: Option<&str>,
+    selected: Option<&str>,
+    env: Option<&str>,
+    settings_default: Option<&str>,
+    builtin_default: &str,
+) -> ResolvedThinkingLevel {
+    let mut warning = None;
+    let level = nonempty_value(cli)
+        .or_else(|| nonempty_value(selected))
+        .or_else(|| match nonempty_value(env) {
+            Some(value) if crate::args::VALID_THINKING_LEVELS.contains(&value) => Some(value),
+            Some(value) => {
+                warning = Some(format!(
+                    "Invalid PI_REASONING_LEVEL \"{value}\". Valid values: off, minimal, low, medium, high, xhigh, max"
+                ));
+                None
+            }
+            None => None,
+        })
+        .or_else(|| nonempty_value(settings_default))
+        .unwrap_or(builtin_default)
+        .to_string();
+    ResolvedThinkingLevel { level, warning }
+}
+
 /// Resolve the model-scope source using the pinned CLI precedence: an
 /// explicit `--models` value wins, while omitted CLI scope inherits the
 /// persisted `enabledModels` setting.
@@ -666,182 +724,200 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     // scripted path for tests.
     let mut selected_provider_uses_oauth = false;
     let mut selected_thinking_level: Option<String> = None;
-    let (mut model, stream_fn, summary_stream_fn): (pi_ai::model::Model, StreamFn, StreamFn) =
-        if provider == "faux" {
-            let models =
-                pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
-            let core = crate::core::model_runtime::register_faux_provider(
-                &models,
-                &pi_ai::providers::RegisterFauxProviderOptions::default(),
+    let (mut model, stream_fn, summary_stream_fn, stream_fn_with_options): (
+        pi_ai::model::Model,
+        StreamFn,
+        StreamFn,
+        Option<pi_agent::StreamFnWithOptions>,
+    ) = if provider == "faux" {
+        let models = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
+        let core = crate::core::model_runtime::register_faux_provider(
+            &models,
+            &pi_ai::providers::RegisterFauxProviderOptions::default(),
+        );
+        crate::core::extensions::register_loaded_native_providers(&models, &loaded_extensions)
+            .map_err(|error| format!("register extension providers: {error}"))?;
+        let model = if let Some(hint) = model_hint.as_deref() {
+            let resolved = resolve_cli_model(
+                args.provider.as_deref(),
+                Some(hint),
+                args.thinking.as_deref(),
+                &core.models,
             );
-            crate::core::extensions::register_loaded_native_providers(&models, &loaded_extensions)
-                .map_err(|error| format!("register extension providers: {error}"))?;
-            let model = if let Some(hint) = model_hint.as_deref() {
-                let resolved = resolve_cli_model(
-                    args.provider.as_deref(),
-                    Some(hint),
-                    args.thinking.as_deref(),
-                    &core.models,
-                );
-                if let Some(warning) = resolved.warning {
-                    eprintln!("Warning: {warning}");
-                }
-                if let Some(error) = resolved.error {
-                    return Err(error);
-                }
-                selected_thinking_level = resolved.thinking_level;
-                resolved
-                    .model
-                    .ok_or_else(|| format!("unknown faux model {hint:?}"))?
-            } else if !model_patterns.is_empty() {
-                let (scoped_models, diagnostics) =
-                    resolve_model_scope_from_models(&model_patterns, &core.models);
-                for diagnostic in diagnostics {
-                    eprintln!("Warning: {}", diagnostic.message);
-                }
-                let scoped = scoped_models
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| "No models match the requested --models patterns".to_string())?;
-                selected_thinking_level = scoped.thinking_level;
-                scoped.model
-            } else {
-                core.models
-                    .first()
-                    .cloned()
-                    .ok_or_else(|| "no faux model".to_string())?
-            };
-            // Queue one scripted faux response per prompt so sequential
-            // print-mode turns (one assistant turn per positional message,
-            // upstream `runPrintMode`) each pop a reply.
-            let mut prompts = Vec::new();
-            let stdin_content = args.stdin_content.as_deref().unwrap_or_default();
-            let first_message = args.messages.first().cloned().unwrap_or_default();
-            let initial_prompt = format!("{stdin_content}{first_message}");
-            if !initial_prompt.is_empty() {
-                prompts.push(initial_prompt);
-            } else if args.messages.is_empty() {
-                prompts.push("Hello from pi-rust".to_string());
+            if let Some(warning) = resolved.warning {
+                eprintln!("Warning: {warning}");
             }
-            prompts.extend(
-                args.messages
-                    .iter()
-                    .skip(usize::from(!args.messages.is_empty()))
-                    .cloned(),
-            );
-            let responses: Vec<pi_ai::providers::FauxResponseStep> = prompts
-                .into_iter()
-                .map(|text| {
-                    pi_ai::providers::FauxResponseStep::Message(
-                        pi_ai::providers::faux_assistant_message(
-                            vec![pi_ai::types::ContentBlock::text(format!(
-                                "faux response to: {text}"
-                            ))],
-                            pi_ai::providers::FauxAssistantOptions::default(),
-                        ),
-                    )
-                })
-                .collect();
-            core.set_responses(responses);
-            let stream_models = models.clone();
-            let stream_fn: StreamFn = Arc::new(move |model, ctx| {
-                stream_models.stream(model, ctx, Some(&pi_ai::types::StreamOptions::default()))
-            });
-            // Keep compaction completions off the scripted user-response
-            // queue. The real provider uses the same stream path for both
-            // calls; faux is deliberately split so a summary cannot consume a
-            // later print turn.
-            let summary_core = pi_ai::providers::FauxProviderCore::new(
-                &pi_ai::providers::RegisterFauxProviderOptions::default(),
-            );
-            let summary_responses = (0..64)
-                .map(|_| {
-                    pi_ai::providers::FauxResponseStep::Message(
-                        pi_ai::providers::faux_assistant_message(
-                            vec![pi_ai::types::ContentBlock::text("faux compaction summary")],
-                            pi_ai::providers::FauxAssistantOptions::default(),
-                        ),
-                    )
-                })
-                .collect();
-            summary_core.set_responses(summary_responses);
-            let summary_core = summary_core.clone();
-            let summary_stream_fn: StreamFn =
-                Arc::new(move |model, ctx| summary_core.stream(model, ctx, None));
-            (model, stream_fn, summary_stream_fn)
-        } else {
-            // models.json runtime merge: the registry overlays the bundled
-            // catalog with ~/.pi/agent/models.json (upstream applyModelsJson).
-            let models = {
-                let models = crate::core::model_registry::builtin_models();
-                let config = crate::core::model_config::ModelConfig::load(
-                    crate::core::model_config::models_json_path().as_deref(),
-                );
-                let registry = crate::core::model_registry::ModelRegistry::new(models, config);
-                registry.into_models()
-            };
-            crate::core::extensions::register_loaded_native_providers(&models, &loaded_extensions)
-                .map_err(|error| format!("register extension providers: {error}"))?;
-            provider = canonicalize_registered_provider(&models, &provider);
-            crate::core::model_runtime::register_llama_provider_if_selected(
-                &models,
-                &provider,
-                !args.offline && !config::env_flag(config::ENV_OFFLINE),
-            )
-            .await?;
-            if models.get_provider(&provider).is_none() {
-                return Err(unknown_provider_error(&provider));
+            if let Some(error) = resolved.error {
+                return Err(error);
             }
-            let env_provider = config::nonempty_env_value(config::env(config::ENV_PROVIDER));
-            let env_model = config::nonempty_env_value(config::env(config::ENV_MODEL));
-            let (scoped_models, scope_diagnostics) = if model_patterns.is_empty() {
-                (Vec::new(), Vec::new())
-            } else {
-                resolve_model_scope_from_models(&model_patterns, &models.get_models(None))
-            };
-            for diagnostic in scope_diagnostics {
+            selected_thinking_level = resolved.thinking_level;
+            resolved
+                .model
+                .ok_or_else(|| format!("unknown faux model {hint:?}"))?
+        } else if !model_patterns.is_empty() {
+            let (scoped_models, diagnostics) =
+                resolve_model_scope_from_models(&model_patterns, &core.models);
+            for diagnostic in diagnostics {
                 eprintln!("Warning: {}", diagnostic.message);
             }
-            let snapshot = RegistrySnapshot::from_models(&models);
-            let initial = find_initial_model(InitialModelOptions {
-                cli_provider: nonempty_value(args.provider.as_deref()),
-                cli_model: nonempty_value(args.model.as_deref()),
-                env_provider: env_provider.as_deref(),
-                env_model: env_model.as_deref(),
-                scoped_models: &scoped_models,
-                is_continuing: false,
-                default_provider: settings.get_default_provider(),
-                default_model_id: settings.get_default_model(),
-                default_thinking_level: settings.get_default_thinking_level(),
-                registry: &snapshot,
-            })?;
-            let model = initial
-                .model
-                .ok_or_else(crate::core::auth_guidance::format_no_models_available_message)?;
-            selected_thinking_level = Some(initial.thinking_level);
-            provider = model.provider.clone();
-            // A request-scoped --api-key/PI_KEY is valid auth for the selected
-            // provider, but must remain non-persistent. Attach it only after
-            // model resolution so `--model provider/id` cannot leak the key
-            // onto the provisional provider chosen before resolution.
-            if let Some(api_key) = request_api_key(args, config::env(config::ENV_KEY)) {
-                models.set_runtime_api_key(provider.clone(), api_key);
-            }
-            selected_provider_uses_oauth = models
-                .get_provider(&provider)
-                .is_some_and(|registered| registered.auth.oauth.is_some());
-            crate::core::model_runtime::refresh_provider_oauth_if_needed(&models, &provider)
-                .await?;
-            // Stream options carry the explicit --api-key / PI_KEY (the facade
-            // applies env-key auth when absent).
-            let api_key = request_api_key(args, config::env(config::ENV_KEY));
-            let stream_options = stream_options_from_settings(&settings, api_key);
-            let models = models.clone();
-            let stream_fn: StreamFn =
-                Arc::new(move |_model, ctx| models.stream(_model, ctx, Some(&stream_options)));
-            let summary_stream_fn = stream_fn.clone();
-            (model, stream_fn, summary_stream_fn)
+            let scoped = scoped_models
+                .into_iter()
+                .next()
+                .ok_or_else(|| "No models match the requested --models patterns".to_string())?;
+            selected_thinking_level = scoped.thinking_level;
+            scoped.model
+        } else {
+            core.models
+                .first()
+                .cloned()
+                .ok_or_else(|| "no faux model".to_string())?
         };
+        // Queue one scripted faux response per prompt so sequential
+        // print-mode turns (one assistant turn per positional message,
+        // upstream `runPrintMode`) each pop a reply.
+        let mut prompts = Vec::new();
+        let stdin_content = args.stdin_content.as_deref().unwrap_or_default();
+        let first_message = args.messages.first().cloned().unwrap_or_default();
+        let initial_prompt = format!("{stdin_content}{first_message}");
+        if !initial_prompt.is_empty() {
+            prompts.push(initial_prompt);
+        } else if args.messages.is_empty() {
+            prompts.push("Hello from pi-rust".to_string());
+        }
+        prompts.extend(
+            args.messages
+                .iter()
+                .skip(usize::from(!args.messages.is_empty()))
+                .cloned(),
+        );
+        let responses: Vec<pi_ai::providers::FauxResponseStep> = prompts
+            .into_iter()
+            .map(|text| {
+                pi_ai::providers::FauxResponseStep::Message(
+                    pi_ai::providers::faux_assistant_message(
+                        vec![pi_ai::types::ContentBlock::text(format!(
+                            "faux response to: {text}"
+                        ))],
+                        pi_ai::providers::FauxAssistantOptions::default(),
+                    ),
+                )
+            })
+            .collect();
+        core.set_responses(responses);
+        let stream_models = models.clone();
+        let stream_fn: StreamFn = Arc::new(move |model, ctx| {
+            stream_models.stream(model, ctx, Some(&pi_ai::types::StreamOptions::default()))
+        });
+        // Keep compaction completions off the scripted user-response
+        // queue. The real provider uses the same stream path for both
+        // calls; faux is deliberately split so a summary cannot consume a
+        // later print turn.
+        let summary_core = pi_ai::providers::FauxProviderCore::new(
+            &pi_ai::providers::RegisterFauxProviderOptions::default(),
+        );
+        let summary_responses = (0..64)
+            .map(|_| {
+                pi_ai::providers::FauxResponseStep::Message(
+                    pi_ai::providers::faux_assistant_message(
+                        vec![pi_ai::types::ContentBlock::text("faux compaction summary")],
+                        pi_ai::providers::FauxAssistantOptions::default(),
+                    ),
+                )
+            })
+            .collect();
+        summary_core.set_responses(summary_responses);
+        let summary_core = summary_core.clone();
+        let summary_stream_fn: StreamFn =
+            Arc::new(move |model, ctx| summary_core.stream(model, ctx, None));
+        let stream_fn_with_options = Some(stream_fn_with_reasoning(
+            models.clone(),
+            pi_ai::types::SimpleStreamOptions::default(),
+        ));
+        (model, stream_fn, summary_stream_fn, stream_fn_with_options)
+    } else {
+        // models.json runtime merge: the registry overlays the bundled
+        // catalog with ~/.pi/agent/models.json (upstream applyModelsJson).
+        let models = {
+            let models = crate::core::model_registry::builtin_models();
+            let config = crate::core::model_config::ModelConfig::load(
+                crate::core::model_config::models_json_path().as_deref(),
+            );
+            let registry = crate::core::model_registry::ModelRegistry::new(models, config);
+            registry.into_models()
+        };
+        crate::core::extensions::register_loaded_native_providers(&models, &loaded_extensions)
+            .map_err(|error| format!("register extension providers: {error}"))?;
+        provider = canonicalize_registered_provider(&models, &provider);
+        crate::core::model_runtime::register_llama_provider_if_selected(
+            &models,
+            &provider,
+            !args.offline && !config::env_flag(config::ENV_OFFLINE),
+        )
+        .await?;
+        if models.get_provider(&provider).is_none() {
+            return Err(unknown_provider_error(&provider));
+        }
+        let env_provider = config::nonempty_env_value(config::env(config::ENV_PROVIDER));
+        let env_model = config::nonempty_env_value(config::env(config::ENV_MODEL));
+        let (scoped_models, scope_diagnostics) = if model_patterns.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            resolve_model_scope_from_models(&model_patterns, &models.get_models(None))
+        };
+        for diagnostic in scope_diagnostics {
+            eprintln!("Warning: {}", diagnostic.message);
+        }
+        let snapshot = RegistrySnapshot::from_models(&models);
+        let initial = find_initial_model(InitialModelOptions {
+            cli_provider: nonempty_value(args.provider.as_deref()),
+            cli_model: nonempty_value(args.model.as_deref()),
+            env_provider: env_provider.as_deref(),
+            env_model: env_model.as_deref(),
+            scoped_models: &scoped_models,
+            is_continuing: false,
+            default_provider: settings.get_default_provider(),
+            default_model_id: settings.get_default_model(),
+            default_thinking_level: settings.get_default_thinking_level(),
+            registry: &snapshot,
+        })?;
+        let model = initial
+            .model
+            .ok_or_else(crate::core::auth_guidance::format_no_models_available_message)?;
+        selected_thinking_level = if initial.thinking_explicit {
+            Some(initial.thinking_level)
+        } else {
+            None
+        };
+        provider = model.provider.clone();
+        // A request-scoped --api-key/PI_KEY is valid auth for the selected
+        // provider, but must remain non-persistent. Attach it only after
+        // model resolution so `--model provider/id` cannot leak the key
+        // onto the provisional provider chosen before resolution.
+        if let Some(api_key) = request_api_key(args, config::env(config::ENV_KEY)) {
+            models.set_runtime_api_key(provider.clone(), api_key);
+        }
+        selected_provider_uses_oauth = models
+            .get_provider(&provider)
+            .is_some_and(|registered| registered.auth.oauth.is_some());
+        crate::core::model_runtime::refresh_provider_oauth_if_needed(&models, &provider).await?;
+        // Stream options carry the explicit --api-key / PI_KEY (the facade
+        // applies env-key auth when absent).
+        let api_key = request_api_key(args, config::env(config::ENV_KEY));
+        let stream_options = stream_options_from_settings(&settings, api_key);
+        let models = models.clone();
+        let with_options_models = models.clone();
+        let stream_fn: StreamFn =
+            Arc::new(move |_model, ctx| models.stream(_model, ctx, Some(&stream_options)));
+        let summary_stream_fn = stream_fn.clone();
+        let stream_fn_with_options = Some(stream_fn_with_reasoning(
+            with_options_models,
+            pi_ai::types::SimpleStreamOptions {
+                base: stream_options_from_settings(&settings, None),
+                ..Default::default()
+            },
+        ));
+        (model, stream_fn, summary_stream_fn, stream_fn_with_options)
+    };
 
     // Register built-in tools (bash/read/write/edit + ls/find/grep) unless
     // --no-tools or --no-builtin-tools.
@@ -979,15 +1055,20 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     )
     .await?;
     let session_metadata = harness_session.get_metadata().await;
-    let requested_thinking_level = args
-        .thinking
-        .as_deref()
-        .or(selected_thinking_level.as_deref())
-        .or_else(|| settings.get_default_thinking_level())
-        .unwrap_or(DEFAULT_THINKING_LEVEL);
+    let resolved_thinking = resolve_requested_thinking_level(
+        args.thinking.as_deref(),
+        selected_thinking_level.as_deref(),
+        config::env_reasoning_level().as_deref(),
+        settings.get_default_thinking_level(),
+        DEFAULT_THINKING_LEVEL,
+    );
+    if let Some(warning) = &resolved_thinking.warning {
+        eprintln!("Warning: {warning}");
+    }
+    let requested_thinking_level = resolved_thinking.level;
     let thinking_level = pi_ai::model::clamp_thinking_level(
         &model,
-        pi_ai::types::ModelThinkingLevel::from_effort_str(requested_thinking_level),
+        pi_ai::types::ModelThinkingLevel::from_effort_str(&requested_thinking_level),
     );
     let _session_environment = crate::core::session_env::install(
         &session_metadata.id,
@@ -1002,6 +1083,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         .collect::<Vec<_>>();
     let mut harness_options = AgentHarnessOptions::new(harness_session, model.clone());
     harness_options.stream_fn = Some(stream_fn);
+    harness_options.stream_fn_with_options = stream_fn_with_options;
     harness_options.system_prompt = Some(system_prompt);
     harness_options.block_images = settings.get_block_images();
     harness_options.tool_result_image_options = Some(ProcessImageOptions {
@@ -2655,6 +2737,56 @@ mod tests {
         assert!(!settings.is_project_trusted());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn requested_thinking_level_prefers_cli_over_env_over_settings() {
+        // CLI wins over everything; empty CLI values fall through.
+        let resolved = resolve_requested_thinking_level(
+            Some("high"),
+            Some("low"),
+            Some("off"),
+            Some("minimal"),
+            "medium",
+        );
+        assert_eq!(resolved.level, "high");
+        assert!(resolved.warning.is_none());
+
+        // Model-hint scope beats the environment.
+        let resolved =
+            resolve_requested_thinking_level(None, Some("low"), Some("high"), None, "medium");
+        assert_eq!(resolved.level, "low");
+        assert!(resolved.warning.is_none());
+
+        // The environment beats the settings default.
+        let resolved =
+            resolve_requested_thinking_level(None, None, Some("high"), Some("low"), "medium");
+        assert_eq!(resolved.level, "high");
+        assert!(resolved.warning.is_none());
+
+        // Empty values at every tier fall through to the builtin default.
+        let resolved =
+            resolve_requested_thinking_level(Some(""), Some(""), Some(""), Some(""), "medium");
+        assert_eq!(resolved.level, "medium");
+        assert!(resolved.warning.is_none());
+        let resolved = resolve_requested_thinking_level(None, None, None, None, "medium");
+        assert_eq!(resolved.level, "medium");
+        assert!(resolved.warning.is_none());
+
+        // An invalid environment value warns (CLI message shape) and falls
+        // through to the settings default.
+        let resolved =
+            resolve_requested_thinking_level(None, None, Some("ultra"), Some("low"), "medium");
+        assert_eq!(resolved.level, "low");
+        assert!(
+            resolved
+                .warning
+                .as_deref()
+                .unwrap()
+                .contains("Invalid PI_REASONING_LEVEL \"ultra\""),
+            "unexpected warning: {:?}",
+            resolved.warning
+        );
     }
 
     #[test]

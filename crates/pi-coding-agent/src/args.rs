@@ -4,7 +4,7 @@
 use crate::config::VERSION;
 
 /// Upstream `VALID_THINKING_LEVELS` (args.ts).
-const VALID_THINKING_LEVELS: [&str; 7] =
+pub(crate) const VALID_THINKING_LEVELS: [&str; 7] =
     ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 #[derive(Debug, Clone, Default)]

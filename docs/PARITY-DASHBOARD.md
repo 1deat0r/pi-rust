@@ -36,9 +36,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 151 PARTIAL; 9 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 165 PARTIAL; 9 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 155 PARTIAL; 60 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 153 PARTIAL; 7 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 167 PARTIAL; 7 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 157 PARTIAL; 58 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
@@ -239,6 +239,16 @@ are PARTIAL/PARTIAL/PARTIAL; footer/request selection, per-vendor breadth,
 and live/platform evidence remain open. Startup PI_PROVIDER/PI_MODEL/PI_KEY
 defaults are an intentional divergence: pinned upstream only propagates
 them to tool children and eval config.
+
+ENV-007/ENV-009 evidence note (2026-09-05): `PI_REASONING_LEVEL` now
+resolves CLI > scope > env > settings > builtin with CLI-shaped invalid
+warnings, closing a default-fill shadowing bug and wiring per-turn
+reasoning into print-path provider requests; a loopback `openai-responses`
+fixture proves env/CLI/invalid levels reach the wire `"effort"`. Version
+output and no-banner behavior are proven with/without the skip flag and
+with `PI_VERSION` ignored. Both rows are PARTIAL/PARTIAL/PARTIAL;
+JSON/interactive/RPC/SDK caller wiring, footer selection, per-vendor
+breadth, and live/platform evidence remain open.
 <!-- PARITY_DASHBOARD_METRICS:END -->
 
 Latest 2026-08-31 operation-record verification: SES-004 implementation and

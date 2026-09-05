@@ -124,6 +124,13 @@ pub fn resolve_model(cli_model: Option<&str>) -> Option<String> {
         .or_else(|| nonempty_env_value(env(ENV_MODEL)))
 }
 
+/// Raw `PI_REASONING_LEVEL` environment value (empty counts as unset).
+/// Validation against the upstream level set happens at the thinking
+/// resolution sites so CLI, RPC, and interactive callers share one rule.
+pub(crate) fn env_reasoning_level() -> Option<String> {
+    nonempty_env_value(env(ENV_REASONING_LEVEL))
+}
+
 pub fn cwd() -> String {
     std::env::current_dir()
         .map(|p| p.to_string_lossy().into_owned())

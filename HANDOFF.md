@@ -2,6 +2,39 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-05 — ENV-007/ENV-009 thinking/version boundary
+
+ENV-007 and ENV-009 are promoted from OPEN/OPEN/OPEN to
+PARTIAL/PARTIAL/PARTIAL. `PI_REASONING_LEVEL` is honored in run
+(`resolve_requested_thinking_level`) and RPC (`configured_thinking_level`)
+startup with CLI-shaped invalid warnings; deterministic precedence matrix
+green. Two production gaps closed: `find_initial_model` default-fill
+shadowed env/settings (new `thinking_explicit` flag; settings defaults now
+apply in print mode), and per-turn reasoning never reached provider
+requests (print path wires `stream_fn_with_options` carrying only
+reasoning; auth/transport/affinity/abort paths untouched). New
+`env_thinking_version` fixture (6/6, stable 3×) proves env/CLI/invalid
+levels in the loopback wire `"effort"`, version output with/without the
+skip flag, `PI_VERSION` ignored, and no update banner.
+
+The independent gate
+`.unlazy/parity-20260827/gates/leaf-env-thinking-version.md` is 3/3:
+focused unit/process suites, neighboring model/resolver/RPC/harness suites
+(871 lib, clean-home/RPC/harness/CLI/selector/contract/cross-cutting
+targets), coding-agent check, strict all-target clippy, stable rustfmt,
+conversion/parity/register audits, and `git diff --check`. INTENTIONAL
+DIVERGENCES: startup PI_REASONING_LEVEL (upstream: child-env only) and
+ignored PI_VERSION (upstream: no such variable). ENV-007 remains partial
+for JSON/interactive/RPC/SDK caller wiring, footer selection, and
+live/platform; ENV-009 for installer provenance and catalog breadth.
+
+No numbered conversion task changed. Current metrics are implementation
+106 PASS / 153 PARTIAL / 7 OPEN, deterministic evidence 92 PASS / 167
+PARTIAL / 7 OPEN, runtime 51 PASS / 157 PARTIAL / 58 OPEN, non-TUI overall
+44/266, whole product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`. Next wire the helper
+into remaining callers, then continue the ENV sweep at ENV-011/ENV-013.
+
 ## Latest checkpoint — 2026-09-05 — ENV-001/ENV-002 precedence/redaction boundary
 
 ENV-001 and ENV-002 are promoted from OPEN/OPEN/OPEN to
@@ -1559,9 +1592,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 151 PARTIAL; 9 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 165 PARTIAL; 9 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 155 PARTIAL; 60 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 153 PARTIAL; 7 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 167 PARTIAL; 7 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 157 PARTIAL; 58 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 

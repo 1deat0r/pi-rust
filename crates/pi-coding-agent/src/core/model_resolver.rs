@@ -813,6 +813,12 @@ pub fn resolve_cli_model(
 pub struct InitialModelResult {
     pub model: Option<Model>,
     pub thinking_level: String,
+    /// True only when the thinking level came from an explicit user source
+    /// (a model-pattern thinking suffix or a scoped-model override). Settings
+    /// defaults and the builtin fallback fill `thinking_level` but leave this
+    /// false so callers can order ambient sources (environment) above
+    /// defaults without shadowing explicit selections.
+    pub thinking_explicit: bool,
     pub fallback_message: Option<String>,
 }
 
@@ -833,10 +839,15 @@ pub struct InitialModelOptions<'a> {
     pub registry: &'a dyn RegistryView,
 }
 
-fn initial_model_result(model: Option<Model>, thinking_level: Option<&str>) -> InitialModelResult {
+fn initial_model_result(
+    model: Option<Model>,
+    thinking_level: Option<&str>,
+    thinking_explicit: bool,
+) -> InitialModelResult {
     InitialModelResult {
         model,
         thinking_level: thinking_level.unwrap_or(DEFAULT_THINKING_LEVEL).to_string(),
+        thinking_explicit,
         fallback_message: None,
     }
 }
@@ -886,9 +897,11 @@ pub fn find_initial_model(options: InitialModelOptions<'_>) -> Result<InitialMod
                 return Err(error);
             }
             if let Some(model) = resolved.model {
+                let thinking_explicit = resolved.thinking_level.is_some();
                 return Ok(initial_model_result(
                     Some(model),
                     resolved.thinking_level.as_deref(),
+                    thinking_explicit,
                 ));
             }
         } else if let Some(provider) = explicit_provider {
@@ -902,7 +915,7 @@ pub fn find_initial_model(options: InitialModelOptions<'_>) -> Result<InitialMod
                     "Provider {canonical:?} has no models cataloged (check the bundled model catalog)"
                 )
             })?;
-            return Ok(initial_model_result(Some(model), None));
+            return Ok(initial_model_result(Some(model), None, false));
         }
 
         return Err("No model selected. Use --list-models to see available models.".to_string());
@@ -912,12 +925,14 @@ pub fn find_initial_model(options: InitialModelOptions<'_>) -> Result<InitialMod
     // preserve their order and thinking override for new sessions.
     if !options.is_continuing {
         if let Some(scoped) = options.scoped_models.first() {
+            let thinking_explicit = scoped.thinking_level.is_some();
             return Ok(initial_model_result(
                 Some(scoped.model.clone()),
                 scoped
                     .thinking_level
                     .as_deref()
                     .or(options.default_thinking_level),
+                thinking_explicit,
             ));
         }
     }
@@ -937,6 +952,7 @@ pub fn find_initial_model(options: InitialModelOptions<'_>) -> Result<InitialMod
             return Ok(initial_model_result(
                 Some(model.clone()),
                 options.default_thinking_level,
+                false,
             ));
         }
     }
@@ -950,13 +966,14 @@ pub fn find_initial_model(options: InitialModelOptions<'_>) -> Result<InitialMod
             .iter()
             .find(|model| model.provider == *provider && model.id == default_id)
         {
-            return Ok(initial_model_result(Some(model.clone()), None));
+            return Ok(initial_model_result(Some(model.clone()), None, false));
         }
     }
 
     Ok(initial_model_result(
         available_models.into_iter().next(),
         None,
+        false,
     ))
 }
 

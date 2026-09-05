@@ -454,8 +454,23 @@ fn configured_thinking_level(
 ) -> pi_ai::types::ModelThinkingLevel {
     let raw = settings
         .get_model_thinking_level(&model.provider, &model.id)
-        .or_else(|| settings.get_default_thinking_level())
-        .unwrap_or("off");
+        .map(str::to_string)
+        .or_else(|| match crate::config::env_reasoning_level() {
+            Some(value)
+                if crate::args::VALID_THINKING_LEVELS.contains(&value.as_str()) =>
+            {
+                Some(value)
+            }
+            Some(value) => {
+                eprintln!(
+                    "Warning: Invalid PI_REASONING_LEVEL \"{value}\". Valid values: off, minimal, low, medium, high, xhigh, max"
+                );
+                None
+            }
+            None => None,
+        })
+        .or_else(|| settings.get_default_thinking_level().map(str::to_string))
+        .unwrap_or_else(|| "off".to_string());
     let requested = raw
         .parse::<pi_ai::types::ModelThinkingLevel>()
         .unwrap_or(pi_ai::types::ModelThinkingLevel::Off);

@@ -6,6 +6,19 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-31)
 
+ENV-007/ENV-009 checkpoint (2026-09-05): both rows are PARTIAL/PARTIAL/
+PARTIAL. Env thinking selection resolves CLI > scope > env > settings >
+builtin with CLI-shaped warnings; the slice fixed default-fill shadowing
+and wired per-turn reasoning into print-path provider requests (loopback
+proven). Version/no-banner/`PI_VERSION`-ignored behavior proven.
+INTENTIONAL DIVERGENCES: startup PI_REASONING_LEVEL and ignored PI_VERSION
+have no pinned-upstream source. Caller wiring for other modes plus
+live/platform evidence remain open. No numbered conversion task changed;
+source conversion remains `Conversion progress: 100.00% (166/166; 0 open)`.
+Current behavioral metrics are implementation 106 PASS / 153 PARTIAL / 7
+OPEN, evidence 92 PASS / 167 PARTIAL / 7 OPEN, runtime 51 PASS / 157
+PARTIAL / 58 OPEN, non-TUI overall 44/266, and whole-product 44/318.
+
 ENV-001/ENV-002 checkpoint (2026-09-05): both rows are PARTIAL/PARTIAL/
 PARTIAL. Deterministic resolver/key precedence tests plus a 6/6 real-process
 fixture prove env defaults, CLI override, empty fallthrough, value-naming
@@ -571,9 +584,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 151 PARTIAL; 9 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 165 PARTIAL; 9 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 155 PARTIAL; 60 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 153 PARTIAL; 7 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 167 PARTIAL; 7 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 157 PARTIAL; 58 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
