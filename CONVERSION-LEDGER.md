@@ -6,6 +6,19 @@ Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
 ## Current status (last updated 2026-08-31)
 
+X-011/X-012 checkpoint (2026-09-05): both rows are PARTIAL/PARTIAL/PARTIAL.
+A real RPC process proves failure diagnostics carry the action and offending
+value with exact recovery text plus request-scoped secret absence, and
+permanently re-tests wire/session-switch/export/abort/deep-input failures
+with recovery and exactly-once durable state. The focused 2/2 suite passes
+3/3 stable reruns; neighboring parser/secret/cancellation suites, check,
+strict clippy, formatting, conversion/parity/register audits, and diff checks
+pass. Broader provider/path breadth, live surfaces, and crash/platform
+matrices remain open. No numbered conversion task changed; source conversion
+remains `Conversion progress: 100.00% (166/166; 0 open)`. Current behavioral
+metrics are implementation 106/266, evidence 92/266, runtime 51/266, non-TUI
+overall 44/266, and whole-product 44/318.
+
 The latest SES-013 checkpoint repairs the interactive manual-compaction
 extension boundary without promoting the row. Manual `/compact` now aborts a
 retained active harness before reading history, emits the full
@@ -545,9 +558,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 147 PARTIAL; 13 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 161 PARTIAL; 13 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 151 PARTIAL; 64 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 149 PARTIAL; 11 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 163 PARTIAL; 11 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 153 PARTIAL; 62 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 

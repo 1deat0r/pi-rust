@@ -36,9 +36,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 147 PARTIAL; 13 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 161 PARTIAL; 13 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 151 PARTIAL; 64 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 149 PARTIAL; 11 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 163 PARTIAL; 11 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 153 PARTIAL; 62 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
@@ -223,6 +223,13 @@ X-001..X-012 audit note (2026-08-31): the complete cross-cutting block was
 re-audited. Aggregate process gates now move X-001..X-010 to PARTIAL across all
 dimensions; X-011..X-012 remain OPEN/OPEN/OPEN. Distributed feature evidence is
 extensive, but complete adversarial/platform combinations remain open.
+
+X-011/X-012 evidence note (2026-09-05): a real-process aggregate proves
+failure diagnostics carry the action and offending value with exact recovery
+text plus secret absence, and permanently re-tests malformed/unknown/deep
+wire input, malformed-session switch, failed-export no-write, and abort
+with post-failure reuse. Both rows are PARTIAL/PARTIAL/PARTIAL; broader
+crash/platform matrices remain open. The independent gate is 4/4.
 <!-- PARITY_DASHBOARD_METRICS:END -->
 
 Latest 2026-08-31 operation-record verification: SES-004 implementation and

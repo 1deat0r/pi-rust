@@ -1,6 +1,35 @@
 # Pi → pi-rust conversion handoff
 
-Date: 2026-08-31 (Pacific/Auckland)
+Date: 2026-09-05 (Pacific/Auckland)
+
+## Latest checkpoint — 2026-09-05 — X-011/X-012 diagnostics/regression boundary
+
+X-011 and X-012 are promoted from OPEN/OPEN/OPEN to
+PARTIAL/PARTIAL/PARTIAL. New real-process fixture
+`crates/pi-coding-agent/tests/cross_cutting_diagnostics_regression.rs`
+runs an RPC diagnostics battery (missing/unknown/invalid values, malformed
+and unknown wire input, deep-JSON rejection) where every failure names the
+action and offending value with exact recovery text and is followed by
+successful reuse, and proves a synthetic `--api-key` is absent from every
+record and sandbox artifact. Its regression case permanently re-tests wire,
+malformed-session switch, failed-export, abort, and deep-input failures with
+recovery, closing with exactly one valid durable session and clean EOF.
+
+The independent gate
+`.unlazy/parity-20260827/gates/leaf-cross-cutting-diagnostics-regression.md`
+is 4/4. The two focused real-process tests (3/3 stable reruns), neighboring
+malformed-parser, secret-concurrency, and cancel-idempotence suites pass,
+along with coding-agent check, strict all-target clippy, stable rustfmt,
+conversion/parity/register audits, and `git diff --check`. X-011 remains
+partial for complete provider/path breadth and live surfaces; X-012 remains
+partial for broader crash/platform matrices and per-leaf gate coverage.
+
+No numbered conversion task changed. Current metrics are implementation
+106 PASS / 149 PARTIAL / 11 OPEN, deterministic evidence 92 PASS / 163
+PARTIAL / 11 OPEN, runtime 51 PASS / 153 PARTIAL / 62 OPEN, non-TUI overall
+44/266, whole product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`. Next sweep the ENV OPEN
+rows with deterministic precedence/redaction plus clean-process evidence.
 
 ## Latest checkpoint — 2026-08-31 — X-009/X-010 limits/platform boundary
 
@@ -1499,9 +1528,9 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 147 PARTIAL; 13 OPEN)
-Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 161 PARTIAL; 13 OPEN)
-Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 151 PARTIAL; 64 OPEN)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 149 PARTIAL; 11 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 163 PARTIAL; 11 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 153 PARTIAL; 62 OPEN)
 Non-TUI overall parity: 16.54% (44/266)
 Whole-product behavioral parity: 13.84% (44/318)
 
