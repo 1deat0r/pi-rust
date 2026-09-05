@@ -2,6 +2,17 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-06 — register repair (DIST-004 row)
+
+The fail-closed commit went in with two self-inflicted defects: a
+stale-anchored register edit replaced the DIST-004 row with a duplicate
+ENV-013 instead of updating ENV-013 in place, and I committed despite the
+audit printing a duplicate-ID error. Repaired by restoring the exact
+a307e43 DIST-004 row (verified byte-identical) and updating ENV-013 in
+place; `parity_audit -- dashboard` is green again. Lessons: re-read the
+register before every row edit (never trust a carried tag), and never
+commit on a red audit — the hook does not run it.
+
 ## Latest checkpoint — 2026-09-06 — ENV-013 fail-closed proxy validation
 
 New `validate_proxy_env` (wired into the `main.rs` bootstrap) exits nonzero
