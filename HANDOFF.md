@@ -2,6 +2,34 @@
 
 Date: 2026-09-05 (Pacific/Auckland)
 
+## Latest checkpoint — 2026-09-06 — CLI-015 `--session-id` PASS
+
+One process test closes the semantics (new/existing/unknown/invalid id
+paths). Row PASS/PASS/PASS. Gate green: lib 901/901 serial, restart suite
+10/10, check, strict clippy, fmt. Metrics: implementation 107/266,
+evidence 102/266, runtime 54/266, overall 53/266, product 53/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 40.23% (107/266 PASS; 159 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 38.35% (102/266 PASS; 164 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 20.30% (54/266 PASS; 161 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 19.92% (53/266)
+Whole-product behavioral parity: 16.67% (53/318)
+
+Next: commit + push, then CLI-013 `--resume` variants. Files touched:
+`tests/cli_session_restart_parity.rs`, `docs/NON-TUI-PARITY-STATUS.md`
+(CLI-015 row), metric blocks in README, TUI-STATUS, DASHBOARD, plus
+CONVERSION-LEDGER.md, PLAN.md, this file.
+
 ## Latest checkpoint — 2026-09-06 — CLI-016 `--fork` PASS
 
 One process test closes the matrix (bare-id fork, parent linkage,
@@ -19,11 +47,11 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 37.97% (101/266 PASS; 165 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 19.92% (53/266 PASS; 162 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 19.55% (52/266)
-Whole-product behavioral parity: 16.35% (52/318)
+Non-TUI implementation parity: 40.23% (107/266 PASS; 159 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 38.35% (102/266 PASS; 164 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 20.30% (54/266 PASS; 161 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 19.92% (53/266)
+Whole-product behavioral parity: 16.67% (53/318)
 
 Next: commit + push, then CLI-015 `--session-id` process semantics or
 CLI-013 `--resume` matrix. Files touched:

@@ -19,7 +19,7 @@ The percentages are intentionally not collapsed into one misleading score:
   the product tree; generated Rustdoc assets are excluded from that boundary.
 - TUI completion dimensions measure functional behavior, test/evidence proof,
   visual/interaction comparison, and the intersection of all three.
-- Whole-product behavioral parity is the intersection of the TUI overall
+Whole-product behavioral parity: 16.67% (53/318)
   count and the non-TUI overall count over all 318 inventory IDs.
 - The separate non-TUI register is fully normalized, but most rows remain
   `OPEN`; register coverage is not a completion percentage.
@@ -36,10 +36,10 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 37.97% (101/266 PASS; 165 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 19.92% (53/266 PASS; 162 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 19.55% (52/266)
+Non-TUI implementation parity: 40.23% (107/266 PASS; 159 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 38.35% (102/266 PASS; 164 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 20.30% (54/266 PASS; 161 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 19.92% (53/266)
 Whole-product behavioral parity: 16.35% (52/318)
 
 Latest evidence note (2026-08-31): SES-008 durable reopen now proves message,

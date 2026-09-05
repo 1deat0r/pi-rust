@@ -978,3 +978,119 @@ fn session_selector_missing_parent_and_readonly_target_fail_closed() {
         stderr(&rejected)
     );
 }
+
+#[test]
+fn session_id_new_existing_invalid_and_warning_paths_are_process_proven() {
+    let sandbox = Sandbox::new("session-id-semantics");
+
+    // New exact ID: creates a session whose header carries the id.
+    let created = sandbox
+        .command()
+        .args([
+            "--mode",
+            "text",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--no-tools",
+            "--session-id",
+            "fresh-id-1",
+            "--print",
+            "create me",
+        ])
+        .output()
+        .expect("run new-id child");
+    assert!(created.status.success(), "stderr: {}", stderr(&created));
+    let files = jsonl_files(&sandbox.sessions);
+    assert_eq!(files.len(), 1);
+    let header = fs::read_to_string(&files[0]).expect("read header");
+    assert!(
+        header.contains("\"fresh-id-1\""),
+        "header must carry the requested id: {header}"
+    );
+
+    // Existing exact ID: reopens the same file instead of creating another.
+    let before = fs::metadata(&files[0]).unwrap().len();
+    let reopened = sandbox
+        .command()
+        .args([
+            "--mode",
+            "text",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--no-tools",
+            "--session-id",
+            "fresh-id-1",
+            "--print",
+            "append me",
+        ])
+        .output()
+        .expect("run existing-id child");
+    assert!(reopened.status.success(), "stderr: {}", stderr(&reopened));
+    assert_eq!(
+        jsonl_files(&sandbox.sessions).len(),
+        1,
+        "existing id must reopen, not create"
+    );
+    assert!(fs::metadata(&files[0]).unwrap().len() > before);
+
+    // Unknown ID: warns and creates a new session with that id.
+    let warned = sandbox
+        .command()
+        .args([
+            "--mode",
+            "text",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--no-tools",
+            "--session-id",
+            "unknown-id-9",
+            "--print",
+            "warn me",
+        ])
+        .output()
+        .expect("run unknown-id child");
+    assert!(warned.status.success(), "stderr: {}", stderr(&warned));
+    assert!(
+        stderr(&warned).contains(
+            "Warning: No project session found with id 'unknown-id-9'; creating a new session with that id."
+        ),
+        "expected upstream warning, got: {}",
+        stderr(&warned)
+    );
+    assert_eq!(jsonl_files(&sandbox.sessions).len(), 2);
+
+    // Invalid ID: rejected up front with the upstream diagnostic.
+    let invalid = sandbox
+        .command()
+        .args([
+            "--mode",
+            "text",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--no-tools",
+            "--session-id",
+            "-bad-id-",
+            "--print",
+            "reject me",
+        ])
+        .output()
+        .expect("run invalid-id child");
+    assert!(
+        !invalid.status.success(),
+        "invalid id must fail: {}",
+        stderr(&invalid)
+    );
+    assert!(
+        stderr(&invalid).contains("Session id must be non-empty"),
+        "expected validation diagnostic, got: {}",
+        stderr(&invalid)
+    );
+}
