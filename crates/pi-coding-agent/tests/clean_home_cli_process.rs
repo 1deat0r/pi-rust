@@ -222,6 +222,32 @@ impl RpcProcess {
             stderr,
         }
     }
+
+    #[cfg(unix)]
+    fn signal(mut self, signal: &str) -> Output {
+        let pid = self.child.id().to_string();
+        let kill = Command::new("kill")
+            .args([format!("-{signal}"), pid])
+            .status()
+            .expect("send RPC process signal");
+        assert!(kill.success(), "kill -{signal} failed: {kill:?}");
+        drop(self.stdin);
+        let status = self.child.wait().expect("wait for signalled RPC process");
+        let mut stdout = Vec::new();
+        while let Ok(Ok(Some(line))) = self.stdout.try_recv() {
+            stdout.extend_from_slice(line.as_bytes());
+        }
+        let stderr = self
+            .stderr
+            .recv_timeout(RPC_TIMEOUT)
+            .unwrap_or_default()
+            .into_bytes();
+        Output {
+            status,
+            stdout,
+            stderr,
+        }
+    }
 }
 
 fn test_binary() -> PathBuf {
@@ -474,6 +500,35 @@ fn rpc_mode_accepts_a_real_prompt_and_cleanly_handles_stdin_eof() {
         stderr(&output)
     );
     assert_eq!(sandbox.session_files().len(), 1, "RPC session missing");
+}
+
+#[cfg(unix)]
+#[test]
+fn rpc_mode_maps_sigterm_and_sighup_to_upstream_exit_codes() {
+    for (signal, expected_code) in [("TERM", 143), ("HUP", 129)] {
+        let sandbox = Sandbox::new(&format!("rpc-signal-{}", signal.to_ascii_lowercase()));
+        let mut rpc = RpcProcess::start(&sandbox, true);
+        rpc.send(serde_json::json!({
+            "id": format!("ready-{signal}"),
+            "type": "get_state"
+        }));
+        let records = rpc.read_until_response(&format!("ready-{signal}"));
+        assert_eq!(records.last().unwrap()["success"], true);
+
+        let output = rpc.signal(signal);
+        assert_eq!(
+            output.status.code(),
+            Some(expected_code),
+            "RPC {signal} stderr: {}",
+            stderr(&output)
+        );
+        assert!(output.stdout.is_empty(), "late RPC {signal} stdout");
+        assert!(
+            output.stderr.is_empty(),
+            "RPC {signal} stderr: {}",
+            stderr(&output)
+        );
+    }
 }
 
 #[test]

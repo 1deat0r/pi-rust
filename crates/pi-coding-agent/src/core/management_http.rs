@@ -409,4 +409,88 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 1);
         server.join().expect("server thread");
     }
+
+    #[tokio::test]
+    async fn rebuilds_idempotent_method_headers_and_body_for_every_attempt() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let observed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let observed_by_server = Arc::clone(&observed);
+        let server = std::thread::spawn(move || {
+            for status in ["503 Service Unavailable", "200 OK"] {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                let mut request = vec![0_u8; 4096];
+                let size = stream.read(&mut request).expect("read request");
+                observed_by_server
+                    .lock()
+                    .expect("observed requests")
+                    .push(String::from_utf8_lossy(&request[..size]).to_string());
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write response");
+            }
+        });
+        let mut request = ManagementRequest::new(
+            Method::POST,
+            Url::parse(&format!("http://{address}/management")).expect("test URL"),
+        );
+        request.headers.insert(
+            reqwest::header::HeaderName::from_static("x-management-test"),
+            reqwest::header::HeaderValue::from_static("same-on-retry"),
+        );
+        request.body = Some(b"idempotent-body".to_vec());
+
+        let response = fetch_with_retry(&client(), &request, FetchRetryOptions::default(), None)
+            .await
+            .expect("second attempt succeeds");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        server.join().expect("server thread");
+        let observed = observed.lock().expect("observed requests");
+        assert_eq!(observed.len(), 2);
+        for request in observed.iter() {
+            assert!(request.starts_with("POST /management HTTP/1.1\r\n"));
+            assert!(request.contains("x-management-test: same-on-retry\r\n"));
+            assert!(request.ends_with("\r\n\r\nidempotent-body"));
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_drops_an_unfinished_response_body_before_the_next_attempt() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().expect("accept first request");
+            let mut request = [0_u8; 1024];
+            let _ = first.read(&mut request).expect("read first request");
+            first
+                .write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 1000000\r\nConnection: keep-alive\r\n\r\nx",
+                )
+                .expect("write incomplete retry body");
+            first.flush().expect("flush first headers");
+
+            let (mut second, _) = listener.accept().expect("accept retry request");
+            let _ = second.read(&mut request).expect("read retry request");
+            second
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .expect("write successful retry");
+        });
+        let result = tokio::time::timeout(
+            Duration::from_millis(500),
+            fetch_with_retry(
+                &client(),
+                &request(format!("http://{address}/management")),
+                FetchRetryOptions::default(),
+                None,
+            ),
+        )
+        .await
+        .expect("unfinished retry body must not block the next attempt")
+        .expect("retry succeeds");
+        assert_eq!(result.status(), reqwest::StatusCode::OK);
+        server.join().expect("server thread");
+    }
 }

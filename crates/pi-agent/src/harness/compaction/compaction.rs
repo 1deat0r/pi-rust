@@ -160,19 +160,26 @@ pub fn should_compact(
     if !settings.enabled {
         return false;
     }
+    if settings.reserve_tokens > context_window {
+        return true;
+    }
     context_tokens > context_window.saturating_sub(settings.reserve_tokens)
 }
 
 const ESTIMATED_IMAGE_CHARS: u64 = 4800;
 
+fn utf16_code_units(text: &str) -> u64 {
+    text.encode_utf16().count() as u64
+}
+
 fn estimate_text_and_image_content_chars(content: &UserContentBody) -> u64 {
     match content {
-        UserContentBody::String(s) => s.len() as u64,
+        UserContentBody::String(s) => utf16_code_units(s),
         UserContentBody::Blocks(blocks) => {
             let mut chars = 0u64;
             for block in blocks {
                 match block {
-                    ContentBlock::Text { text, .. } => chars += text.len() as u64,
+                    ContentBlock::Text { text, .. } => chars += utf16_code_units(text),
                     ContentBlock::Image { .. } => chars += ESTIMATED_IMAGE_CHARS,
                     _ => {}
                 }
@@ -210,16 +217,16 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
             for block in assistant.content() {
                 match block {
                     ContentBlock::Text { text, .. } => {
-                        chars += text.len() as u64;
+                        chars += utf16_code_units(text);
                     }
                     ContentBlock::Thinking { thinking, .. } => {
-                        chars += thinking.len() as u64;
+                        chars += utf16_code_units(thinking);
                     }
                     ContentBlock::ToolCall {
                         name, arguments, ..
                     } => {
-                        chars += name.len() as u64;
-                        chars += safe_json_stringify(arguments).len() as u64;
+                        chars += utf16_code_units(name);
+                        chars += utf16_code_units(&safe_json_stringify(arguments));
                     }
                     _ => {}
                 }
@@ -232,20 +239,20 @@ pub fn estimate_tokens(message: &AgentMessage) -> u64 {
         AgentMessage::Custom(custom) => match custom {
             crate::types::CustomAgentMessage::BashExecution {
                 command, output, ..
-            } => (command.len() + output.len()) as u64,
+            } => utf16_code_units(command) + utf16_code_units(output),
             crate::types::CustomAgentMessage::Custom { content, .. } => match content {
-                crate::types::CustomContent::String(s) => s.len() as u64,
+                crate::types::CustomContent::String(s) => utf16_code_units(s),
                 crate::types::CustomContent::Blocks(blocks) => blocks
                     .iter()
                     .map(|b| match b {
-                        ContentBlock::Text { text, .. } => text.len() as u64,
+                        ContentBlock::Text { text, .. } => utf16_code_units(text),
                         _ => 0,
                     })
                     .sum(),
             },
             crate::types::CustomAgentMessage::BranchSummary { summary, .. }
             | crate::types::CustomAgentMessage::CompactionSummary { summary, .. } => {
-                summary.len() as u64
+                utf16_code_units(summary)
             }
         },
     };

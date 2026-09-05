@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use pi_agent::harness::agent_harness::{AgentLane, HarnessError};
 use pi_agent::harness::{AgentHarness, AgentHarnessOptions, HarnessTool};
 use pi_agent::rich_agent::RichAgentEvent;
 use pi_agent::session::jsonl::repo::CreateOptions;
@@ -1705,6 +1706,10 @@ fn bash_execution_message(
 /// Interactive session runtime (reuses the run/RPC wiring).
 struct InteractiveRuntime {
     cwd: String,
+    /// Stable builtin/provider base retained across explicit catalog refreshes.
+    /// Each refresh recomposes a new facade from this registry so providers
+    /// deleted from models.json cannot survive through a cloned provider map.
+    model_registry: crate::core::model_registry::ModelRegistry,
     models: pi_ai::models::Models,
     /// Shared faux core for deterministic mode tests and the local provider;
     /// registering it through Models keeps deferred hooks available to the
@@ -1739,11 +1744,18 @@ struct InteractiveRuntime {
     extension_agent_dir: String,
     auto_resize_images: bool,
     block_images: bool,
+    shell_command_prefix: Option<String>,
+    shell_path: Option<String>,
     /// Effective provider transport settings captured when the retained
     /// interactive harness is built. Settings changes invalidate that
     /// harness so the next turn receives the new request options.
     transport: String,
     http_idle_timeout_ms: u64,
+    provider_timeout_ms: Option<u64>,
+    provider_max_retries: Option<u32>,
+    max_retry_delay_ms: u64,
+    websocket_connect_timeout_ms: Option<u64>,
+    retry_policy: pi_ai::utils::RetryPolicy,
     /// Compaction settings captured when the retained harness is built. The
     /// harness installs its overflow-recovery hook at construction, so a
     /// settings change invalidates the idle harness and applies this value to
@@ -1800,6 +1812,61 @@ fn invalidate_interactive_harness(runtime: &mut InteractiveRuntime) {
     runtime.interactive_tool_event_handler = None;
 }
 
+fn refresh_interactive_retry_settings(
+    runtime: &mut InteractiveRuntime,
+    settings: &SettingsManager,
+) {
+    let (provider_timeout_ms, provider_max_retries, max_retry_delay_ms) =
+        settings.get_provider_retry_settings();
+    runtime.retry_policy = crate::run::retry_policy_from_settings(settings);
+    runtime.provider_timeout_ms = provider_timeout_ms;
+    runtime.provider_max_retries =
+        provider_max_retries.map(|retries| u32::try_from(retries).unwrap_or(u32::MAX));
+    runtime.max_retry_delay_ms = max_retry_delay_ms;
+    runtime.transport = settings.get_transport().to_string();
+    runtime.http_idle_timeout_ms = settings.get_http_idle_timeout_ms().unwrap_or(300_000);
+    runtime.websocket_connect_timeout_ms =
+        settings.get_websocket_connect_timeout_ms().ok().flatten();
+    runtime.shell_command_prefix = settings.get_shell_command_prefix().map(str::to_string);
+    runtime.shell_path = settings.get_shell_path();
+    invalidate_interactive_harness(runtime);
+}
+
+/// Reload models.json into the active interactive process. Pi performs this
+/// through ModelRuntime refresh boundaries (not an automatic background file
+/// watcher). Rebuilding from ModelRegistry's stable base prevents deleted or
+/// malformed overlay state from leaking into the replacement facade.
+fn reload_interactive_models(runtime: &mut InteractiveRuntime) -> Vec<String> {
+    let config = crate::core::model_config::ModelConfig::load(
+        crate::core::model_config::models_json_path().as_deref(),
+    );
+    apply_interactive_model_config(runtime, config)
+}
+
+fn apply_interactive_model_config(
+    runtime: &mut InteractiveRuntime,
+    config: crate::core::model_config::ModelConfig,
+) -> Vec<String> {
+    let config_error = config.get_error().map(str::to_owned);
+    let registry = runtime.model_registry.with_config(config);
+    let models = registry.into_models();
+
+    let mut notes = Vec::new();
+    if let Err(error) = register_loaded_native_providers(&models, &runtime.extensions) {
+        notes.push(format!("native provider reload failed: {error}"));
+    }
+    if let Some(refreshed) = models.get_model(&runtime.provider, &runtime.model.id) {
+        runtime.model = refreshed.clone();
+    }
+    runtime.model_registry = registry;
+    runtime.models = models;
+    invalidate_interactive_harness(runtime);
+    if let Some(error) = config_error {
+        notes.push(format!("models.json error: {error}"));
+    }
+    notes
+}
+
 /// Apply a queue-mode setting to the retained rich agent immediately. Pi's
 /// settings callbacks mutate the live session agent; rebuilding the harness
 /// here would discard its in-memory transcript and any queued messages.
@@ -1848,6 +1915,8 @@ fn start_interactive_bash_operation(
     cwd: String,
     exclude_from_context: bool,
     stream_buffer: Arc<Mutex<String>>,
+    command_prefix: Option<String>,
+    shell_path: Option<String>,
 ) -> InteractiveBashOperation {
     let signal = Arc::new(AtomicBool::new(false));
     let output = Arc::new(Mutex::new(String::new()));
@@ -1858,14 +1927,18 @@ fn start_interactive_bash_operation(
             .unwrap_or_else(|error| error.into_inner()) = snapshot;
     });
     let signal_for_task = Arc::clone(&signal);
-    let command_for_task = command.clone();
+    let command_for_task = match command_prefix.as_deref() {
+        Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{command}"),
+        _ => command.clone(),
+    };
     let task = tokio::spawn(async move {
-        pi_agent::tools::bash::run_bash_with_output(
+        pi_agent::tools::bash::run_bash_with_output_and_shell(
             &command_for_task,
             &cwd,
             None,
             Some(signal_for_task),
             Some(callback),
+            shell_path.as_deref(),
         )
         .await
         .map_err(|error| error.to_string())
@@ -2614,7 +2687,11 @@ fn same_session_path(left: &Path, right: &Path) -> bool {
 fn interactive_turn_tools(runtime: &InteractiveRuntime) -> Vec<pi_agent::tools::AgentTool> {
     let mut tools = if runtime.tools_enabled && runtime.builtin_tools_enabled {
         vec![
-            pi_agent::tools::bash_tool(runtime.cwd.clone()),
+            pi_agent::tools::bash_tool_with_options(
+                runtime.cwd.clone(),
+                runtime.shell_command_prefix.clone(),
+                runtime.shell_path.clone(),
+            ),
             pi_agent::tools::read_tool_with_options(
                 runtime.cwd.clone(),
                 pi_agent::tools::image::ProcessImageOptions {
@@ -2632,10 +2709,10 @@ fn interactive_turn_tools(runtime: &InteractiveRuntime) -> Vec<pi_agent::tools::
         Vec::new()
     };
     install_tools(&runtime.extensions, &mut tools, runtime.tools_enabled);
-    let mut active_names = if runtime.extension_args.no_tools {
-        Vec::new()
-    } else if let Some(explicit) = runtime.extension_args.tools.clone() {
+    let mut active_names = if let Some(explicit) = runtime.extension_args.tools.clone() {
         explicit
+    } else if runtime.extension_args.no_tools {
+        Vec::new()
     } else if runtime.extension_args.no_builtin_tools {
         tools
             .iter()
@@ -2709,18 +2786,23 @@ fn load_interactive_skills(
     settings: &SettingsManager,
     resources: &ResourceDiscovery,
 ) -> Vec<crate::core::skills::Skill> {
-    if args.no_skills {
-        return Vec::new();
-    }
-    let mut skill_paths = settings.get_skill_paths();
+    let mut skill_paths = if args.no_skills {
+        Vec::new()
+    } else {
+        settings.get_skill_paths()
+    };
     skill_paths.extend(args.skills.iter().cloned());
     skill_paths.extend(resources.resolved_skill_paths(cwd));
-    let (skills, diagnostics) =
-        crate::core::skills::load_skills(crate::core::skills::LoadSkillsOptions {
-            cwd: cwd.to_string(),
-            agent_dir: agent_dir.to_string(),
-            skill_paths,
-        });
+    let options = crate::core::skills::LoadSkillsOptions {
+        cwd: cwd.to_string(),
+        agent_dir: agent_dir.to_string(),
+        skill_paths,
+    };
+    let (skills, diagnostics) = if args.no_skills {
+        crate::core::skills::load_skills_without_defaults(options)
+    } else {
+        crate::core::skills::load_skills(options)
+    };
     for diagnostic in diagnostics {
         tracing::warn!(
             path = ?diagnostic.path,
@@ -3539,6 +3621,7 @@ async fn apply_pending_extension_lifecycle_actions(
             "reload" => {
                 (async {
                     settings.reload().await;
+                    refresh_interactive_retry_settings(runtime, settings);
                     let mut reload_notes = settings
                         .drain_errors()
                         .into_iter()
@@ -3555,6 +3638,7 @@ async fn apply_pending_extension_lifecycle_actions(
                     );
                     completion_sent = true;
                     reload_notes.extend(reload_extensions(runtime, settings, thinking_level));
+                    reload_notes.extend(reload_interactive_models(runtime));
                     register_interactive_themes(
                         &runtime.extension_args,
                         settings,
@@ -3888,16 +3972,22 @@ async fn start_interactive_turn(
             // largest representable SDK timeout. Provider adapters then
             // interpret it as effectively unbounded rather than an
             // immediate timeout.
-            timeout_ms: Some(if runtime.http_idle_timeout_ms == 0 {
-                i32::MAX as u64
-            } else {
-                runtime.http_idle_timeout_ms
-            }),
+            timeout_ms: Some(runtime.provider_timeout_ms.unwrap_or({
+                if runtime.http_idle_timeout_ms == 0 {
+                    i32::MAX as u64
+                } else {
+                    runtime.http_idle_timeout_ms
+                }
+            })),
+            max_retries: runtime.provider_max_retries,
+            max_retry_delay_ms: Some(runtime.max_retry_delay_ms),
             ..Default::default()
         },
         transport: Some(runtime.transport.clone()),
+        websocket_connect_timeout_ms: runtime.websocket_connect_timeout_ms,
         ..Default::default()
     };
+    let harness_stream_options = stream_options.clone();
     let provider = runtime.provider.clone();
     if provider != "faux" {
         crate::core::model_runtime::refresh_provider_oauth_if_needed(&models, &provider).await?;
@@ -4002,10 +4092,19 @@ async fn start_interactive_turn(
         options.stream_fn = Some(stream_fn);
         options.system_prompt = runtime.system_prompt.clone();
         options.block_images = runtime.block_images;
+        options.tool_result_image_options = Some(pi_agent::tools::image::ProcessImageOptions {
+            auto_resize_images: runtime.auto_resize_images,
+            ..Default::default()
+        });
         options.compaction = Some(runtime.compaction_settings.clone());
         options.tools = Some(tools.iter().map(HarnessTool::from_agent_tool).collect());
         options.steering_mode = steering_mode;
         options.follow_up_mode = follow_up_mode;
+        options.retry = Some(runtime.retry_policy.clone());
+        options.stream_options = Some(pi_ai::types::SimpleStreamOptions {
+            base: harness_stream_options,
+            ..Default::default()
+        });
         let (harness, _suspended) = AgentHarness::create(options)
             .await
             .map_err(|error| error.to_string())?;
@@ -4616,6 +4715,17 @@ async fn compact_interactive(
 ) -> Result<bool, String> {
     let operation = if force { "compact" } else { "auto-compact" };
     let settings = interactive_compaction_settings(settings_manager);
+    if force {
+        // Upstream aborts before it reads or prepares the branch. Automatic
+        // threshold compaction runs as part of the turn and must not do so.
+        if let Some(harness) = runtime.interactive_harness.as_ref() {
+            match harness.abort().await {
+                Ok(_) => {}
+                Err(HarnessError::Tagged(error)) if error.tag == "NoActiveOperation" => {}
+                Err(error) => return Err(format!("{operation}: abort active operation: {error}")),
+            }
+        }
+    }
     if !force {
         let estimate = pi_agent::harness::compaction::estimate_context_tokens(&runtime.messages);
         if !pi_agent::harness::compaction::should_compact(
@@ -4643,6 +4753,97 @@ async fn compact_interactive(
     else {
         return Ok(false);
     };
+    let first_kept_entry_id = preparation.retained_tail.first().and_then(|kept| {
+        entries.iter().find_map(|entry| {
+            entry
+                .as_message()
+                .filter(|message| *message == kept)
+                .map(|_| entry.id().to_string())
+        })
+    });
+    let preparation_value = json!({
+        "firstKeptEntryId": first_kept_entry_id,
+        "messagesToSummarize": preparation.messages_to_summarize,
+        "turnPrefixMessages": preparation.turn_prefix_messages,
+        "tokensBefore": preparation.tokens_before,
+        "isSplitTurn": preparation.is_split_turn,
+        "previousSummary": preparation.previous_summary,
+        "fileOps": {
+            "read": preparation.file_ops.read.iter().cloned().collect::<Vec<_>>(),
+            "written": preparation.file_ops.written.iter().cloned().collect::<Vec<_>>(),
+            "edited": preparation.file_ops.edited.iter().cloned().collect::<Vec<_>>(),
+        },
+        "settings": {
+            "enabled": preparation.settings.enabled,
+            "reserveTokens": preparation.settings.reserve_tokens,
+            "keepRecentTokens": preparation.settings.keep_recent_tokens,
+        },
+    });
+    let branch_entries = serde_json::to_value(&entries)
+        .map_err(|error| format!("{operation}: serialize branch entries: {error}"))?;
+    let hook_payload = json!({
+        "type": "session_before_compact",
+        "preparation": preparation_value,
+        "branchEntries": branch_entries,
+        "customInstructions": custom_instructions,
+        "reason": if force { "manual" } else { "threshold" },
+        "willRetry": false,
+    });
+    let mut extension_result: Option<pi_agent::harness::compaction::CompactResult> = None;
+    let mut extension_details = None;
+    match runtime
+        .extensions
+        .runner
+        .emit_session_before_compact(&hook_payload)
+    {
+        Ok(result) if result.cancelled => {
+            return Err(format!("{operation}: cancelled by extension"))
+        }
+        Ok(result) => {
+            if let Some(extension) = result.compaction {
+                let kept_index = entries
+                    .iter()
+                    .position(|entry| entry.id() == extension.first_kept_entry_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "{operation}: extension compaction firstKeptEntryId not found: {}",
+                            extension.first_kept_entry_id
+                        )
+                    })?;
+                let retained_tail = entries[kept_index..]
+                    .iter()
+                    .filter_map(|entry| entry.as_message().cloned())
+                    .collect::<Vec<_>>();
+                extension_details = extension.details.clone();
+                let details = extension.details.and_then(|value| {
+                    Some(pi_agent::harness::compaction::CompactionDetails {
+                        read_files: value
+                            .get("readFiles")?
+                            .as_array()?
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect(),
+                        modified_files: value
+                            .get("modifiedFiles")?
+                            .as_array()?
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect(),
+                    })
+                });
+                extension_result = Some(pi_agent::harness::compaction::CompactResult {
+                    summary: extension.summary,
+                    tokens_before: extension.tokens_before,
+                    usage: extension.usage,
+                    retained_tail,
+                    details,
+                });
+            }
+        }
+        Err(errors) => return Err(format!("{operation}: extension hook failed: {errors:?}")),
+    }
     // Summarize through the models facade (same seam as the RPC compact).
     let models = runtime.models.clone();
     let complete_simple_fn: pi_agent::harness::CompleteSimpleFn =
@@ -4660,18 +4861,21 @@ async fn compact_interactive(
         max_retries: u32::try_from(max_retries).unwrap_or(u32::MAX),
         base_delay_ms,
     };
-    let result = pi_agent::harness::compaction::compact(
-        &preparation,
-        &options,
-        &runtime.model,
-        custom_instructions,
-        None,
-        None,
-        Some(&retry),
-        None,
-    )
-    .await
-    .map_err(|e| format!("{operation}: {e}"))?;
+    let result = match extension_result {
+        Some(result) => result,
+        None => pi_agent::harness::compaction::compact(
+            &preparation,
+            &options,
+            &runtime.model,
+            custom_instructions,
+            None,
+            None,
+            Some(&retry),
+            None,
+        )
+        .await
+        .map_err(|e| format!("{operation}: {e}"))?,
+    };
 
     // Replace the in-memory context: summary message + retained tail.
     let summary_msg = pi_agent::agent::user_text_prompt(
@@ -4683,6 +4887,14 @@ async fn compact_interactive(
     runtime.messages = replaced;
 
     // Persist a compaction entry so the session file records the summary.
+    let persisted_details = extension_details.or_else(|| {
+        result.details.as_ref().map(|details| {
+            json!({
+                "readFiles": details.read_files,
+                "modifiedFiles": details.modified_files,
+            })
+        })
+    });
     runtime
         .session
         .append_entry(
@@ -4691,7 +4903,7 @@ async fn compact_interactive(
                 summary: result.summary.clone(),
                 retained_tail: result.retained_tail,
                 tokens_before: result.tokens_before,
-                details: None,
+                details: persisted_details,
                 usage: result.usage.clone(),
             },
             "main",
@@ -5772,18 +5984,28 @@ fn missing_session_id_warning(session_id: &str) -> String {
 pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Result<(), String> {
     let mut settings = settings;
     let cwd = config::cwd();
-    let models = {
-        let base = crate::core::model_registry::builtin_models();
-        match crate::core::model_config::models_json_path() {
-            Some(path) => crate::core::model_registry::ModelRegistry::new(
-                base,
-                crate::core::model_config::ModelConfig::load(Some(&path)),
-            )
-            .into_models(),
-            None => base,
-        }
+    let mut provider = crate::run::resolve_run_provider(
+        args.provider.as_deref(),
+        args.model.as_deref(),
+        &settings,
+    );
+    let base_models = crate::core::model_registry::builtin_models();
+    let faux_core = if provider == "faux" {
+        Some(crate::core::model_runtime::register_faux_provider(
+            &base_models,
+            &pi_ai::providers::RegisterFauxProviderOptions::default(),
+        ))
+    } else {
+        None
     };
-    let mut provider = crate::run::resolve_run_provider(args.provider.as_deref(), &settings);
+    let model_registry = crate::core::model_registry::ModelRegistry::new(
+        base_models,
+        crate::core::model_config::ModelConfig::load(
+            crate::core::model_config::models_json_path().as_deref(),
+        ),
+    );
+    let models = model_registry.into_models();
+    provider = crate::run::canonicalize_registered_provider(&models, &provider);
     let model_hint = crate::run::resolve_run_model(
         args.model.as_deref(),
         &settings,
@@ -5998,14 +6220,6 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     register_loaded_native_providers(&models, &extensions)
         .map_err(|error| format!("failed to register interactive native providers: {error}"))?;
 
-    let faux_core = if provider == "faux" {
-        Some(crate::core::model_runtime::register_faux_provider(
-            &models,
-            &pi_ai::providers::RegisterFauxProviderOptions::default(),
-        ))
-    } else {
-        None
-    };
     let (scoped_models, scope_diagnostics) =
         crate::run::resolve_effective_model_scope(args, &settings, &models.get_models(None));
     for diagnostic in scope_diagnostics {
@@ -6039,10 +6253,23 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     } else if provider == "faux" {
         let core = faux_core.as_ref().expect("faux core registered");
         match model_hint.as_deref() {
-            Some(hint) => core
-                .get_model(Some(hint.rsplit('/').next().unwrap_or(hint)))
-                .cloned()
-                .ok_or_else(|| format!("unknown faux model {hint:?}"))?,
+            Some(hint) => {
+                let resolved = crate::core::model_resolver::resolve_cli_model(
+                    args.provider.as_deref(),
+                    Some(hint),
+                    args.thinking.as_deref(),
+                    &core.models,
+                );
+                if let Some(warning) = resolved.warning {
+                    initial_status_banner.push_str(&format!("Warning: {warning}\n"));
+                }
+                if let Some(error) = resolved.error {
+                    return Err(error);
+                }
+                resolved
+                    .model
+                    .ok_or_else(|| format!("unknown faux model {hint:?}"))?
+            }
             None => core
                 .models
                 .first()
@@ -6091,8 +6318,11 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         std::path::Path::new(&agent_dir),
         &extension_resources,
     );
+    let (provider_timeout_ms, provider_max_retries, max_retry_delay_ms) =
+        settings.get_provider_retry_settings();
     let mut runtime = InteractiveRuntime {
         cwd: cwd.clone(),
+        model_registry,
         models,
         faux_core,
         provider: provider.clone(),
@@ -6106,8 +6336,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         session_name,
         session_persistence,
         system_prompt,
-        tools_enabled: !args.no_tools,
-        builtin_tools_enabled: !args.no_tools && !args.no_builtin_tools,
+        tools_enabled: crate::run::should_register_extension_tools(args),
+        builtin_tools_enabled: crate::run::should_register_builtin_tools(args),
         default_tool_names: settings.get_default_tools(),
         native_provider_ids: loaded_native_provider_ids(&extensions),
         extensions,
@@ -6118,8 +6348,16 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         extension_agent_dir: agent_dir.clone(),
         auto_resize_images: settings.get_image_auto_resize(),
         block_images: settings.get_block_images(),
+        shell_command_prefix: settings.get_shell_command_prefix().map(str::to_string),
+        shell_path: settings.get_shell_path(),
         transport: settings.get_transport().to_string(),
         http_idle_timeout_ms: settings.get_http_idle_timeout_ms().unwrap_or(300_000),
+        provider_timeout_ms,
+        provider_max_retries: provider_max_retries
+            .map(|retries| u32::try_from(retries).unwrap_or(u32::MAX)),
+        max_retry_delay_ms,
+        websocket_connect_timeout_ms: settings.get_websocket_connect_timeout_ms().ok().flatten(),
+        retry_policy: crate::run::retry_policy_from_settings(&settings),
         compaction_settings: interactive_compaction_settings(&settings),
         persisted_until: 0,
         active_tool_names: None,
@@ -8614,6 +8852,8 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                         cwd.clone(),
                         exclude_from_context,
                         Arc::clone(&stream_buffer),
+                        runtime.shell_command_prefix.clone(),
+                        runtime.shell_path.clone(),
                     ));
                     continue;
                 }
@@ -8798,6 +9038,11 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         Err(error) => status_banner = error,
                                     }
                                 } else {
+                                    let model_reload_notes =
+                                        reload_interactive_models(&mut runtime);
+                                    if !model_reload_notes.is_empty() {
+                                        status_banner = model_reload_notes.join("; ");
+                                    }
                                     let current_model =
                                         Some(format!("{}/{}", runtime.provider, runtime.model.id));
                                     let default_model = settings
@@ -9450,6 +9695,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         .unwrap_or(crate::theme::DEFAULT_THEME)
                                         .to_string();
                                     settings.reload().await;
+                                    refresh_interactive_retry_settings(&mut runtime, &settings);
                                     let mut notes: Vec<String> = Vec::new();
                                     for se in settings.drain_errors() {
                                         let where_ = se.path.clone().unwrap_or_else(|| format!("{:?}", se.scope));
@@ -9467,6 +9713,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         &settings,
                                         &thinking_level,
                                     ));
+                                    notes.extend(reload_interactive_models(&mut runtime));
                                     editor.lock().unwrap_or_else(|error| error.into_inner()).set_autocomplete_provider(Box::new(
                                         it::build_autocomplete_provider_with_skills(
                                             cwd.clone(),
@@ -9920,6 +10167,51 @@ mod tests {
     use pi_agent::session::jsonl::repo::CreateOptions;
     use pi_agent::session::state::ForkOptions;
     use pi_agent::session::JsonlSessionRepo;
+
+    #[test]
+    fn interactive_explicit_skills_survive_no_skills() {
+        let root =
+            std::env::temp_dir().join(format!("pi-interactive-no-skills-{}", uuid::Uuid::new_v4()));
+        let cwd = root.join("project");
+        let agent_dir = root.join("agent");
+        let automatic = agent_dir.join("skills/automatic/SKILL.md");
+        let explicit = root.join("explicit/SKILL.md");
+        std::fs::create_dir_all(automatic.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(explicit.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(
+            &automatic,
+            "---\nname: automatic\ndescription: automatic skill\n---\nautomatic body\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &explicit,
+            "---\nname: explicit\ndescription: explicit skill\n---\nexplicit body\n",
+        )
+        .unwrap();
+        let args = Args {
+            no_skills: true,
+            skills: vec![explicit.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let settings = SettingsManager::in_memory(Default::default());
+
+        let skills = load_interactive_skills(
+            &args,
+            &cwd.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            &settings,
+            &ResourceDiscovery::default(),
+        );
+        assert_eq!(
+            skills
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect::<Vec<_>>(),
+            ["explicit"]
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
 
     #[test]
     fn ctrl_d_exits_only_for_an_empty_editor() {
@@ -10956,12 +11248,17 @@ mod tests {
             })
             .await
             .unwrap();
-        let models =
+        let base_models =
             pi_ai::providers::builtin_models(pi_ai::models::CreateModelsOptions::default());
         let faux_core = Some(crate::core::model_runtime::register_faux_provider(
-            &models,
+            &base_models,
             &pi_ai::providers::RegisterFauxProviderOptions::default(),
         ));
+        let model_registry = crate::core::model_registry::ModelRegistry::new(
+            base_models,
+            crate::core::model_config::ModelConfig::default(),
+        );
+        let models = model_registry.into_models();
         let model = faux_core
             .as_ref()
             .and_then(|core| core.models.first().cloned())
@@ -10982,6 +11279,7 @@ mod tests {
         let extension_resources = extensions.resources.clone();
         InteractiveRuntime {
             cwd: cwd.clone(),
+            model_registry,
             models,
             faux_core,
             provider: "faux".to_string(),
@@ -11010,8 +11308,19 @@ mod tests {
             extension_agent_dir: cwd.clone(),
             auto_resize_images: true,
             block_images: false,
+            shell_command_prefix: None,
+            shell_path: None,
             transport: "auto".to_string(),
             http_idle_timeout_ms: 300_000,
+            provider_timeout_ms: None,
+            provider_max_retries: None,
+            max_retry_delay_ms: 60_000,
+            websocket_connect_timeout_ms: None,
+            retry_policy: pi_ai::utils::RetryPolicy {
+                enabled: true,
+                max_retries: 3,
+                base_delay_ms: 2_000,
+            },
             compaction_settings: pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS,
             persisted_until: 0,
             active_tool_names: None,
@@ -11021,6 +11330,121 @@ mod tests {
             interactive_tool_event_handler: None,
             extensions_shutdown: false,
         }
+    }
+
+    #[tokio::test]
+    async fn interactive_bash_paths_apply_live_shell_settings() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-interactive-bash-settings-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        runtime.shell_command_prefix = Some("PI_BASH_PREFIX_VALUE=agent-turn".to_string());
+        runtime.shell_path = Some("/bin/sh".to_string());
+
+        let bash = interactive_turn_tools(&runtime)
+            .into_iter()
+            .find(|tool| tool.tool.name == "bash")
+            .expect("interactive bash tool");
+        let result = (bash.execute)(
+            "configured-agent-bash".to_string(),
+            serde_json::json!({"command": "printf %s \"$PI_BASH_PREFIX_VALUE\""}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(result.content.iter().any(|content| {
+            matches!(content, pi_ai::types::ContentBlock::Text { text, .. } if text == "agent-turn")
+        }));
+
+        let stream = Arc::new(Mutex::new(String::new()));
+        let direct = start_interactive_bash_operation(
+            "printf %s \"$PI_BASH_PREFIX_VALUE\"".to_string(),
+            runtime.cwd.clone(),
+            false,
+            stream,
+            Some("PI_BASH_PREFIX_VALUE=direct-turn".to_string()),
+            Some("/bin/sh".to_string()),
+        );
+        let capture = direct.task.await.unwrap().unwrap();
+        assert_eq!(capture.output, "direct-turn");
+
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn interactive_models_json_reload_replaces_overlay_without_stale_state() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-interactive-model-reload-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        runtime
+            .models
+            .set_runtime_api_key("openai", "synthetic-runtime-key");
+
+        let first = crate::core::model_config::ModelConfig::from_value(json!({
+            "providers": {
+                "reload-only": {
+                    "baseUrl": "http://127.0.0.1:1/v1",
+                    "api": "openai-completions",
+                    "apiKey": "synthetic-overlay-key",
+                    "models": [{"id": "before-reload", "name": "Before reload"}]
+                }
+            }
+        }))
+        .unwrap();
+        assert!(apply_interactive_model_config(&mut runtime, first).is_empty());
+        assert!(runtime
+            .models
+            .get_model("reload-only", "before-reload")
+            .is_some());
+
+        let second = crate::core::model_config::ModelConfig::from_value(json!({
+            "providers": {
+                "reload-only": {
+                    "baseUrl": "http://127.0.0.1:2/v1",
+                    "api": "openai-completions",
+                    "apiKey": "synthetic-overlay-key",
+                    "models": [{"id": "after-reload", "name": "After reload"}]
+                }
+            }
+        }))
+        .unwrap();
+        assert!(apply_interactive_model_config(&mut runtime, second).is_empty());
+        assert!(runtime
+            .models
+            .get_model("reload-only", "before-reload")
+            .is_none());
+        assert!(runtime
+            .models
+            .get_model("reload-only", "after-reload")
+            .is_some());
+
+        let malformed_path = root.join("models.json");
+        std::fs::write(&malformed_path, "{\"providers\":").unwrap();
+        let malformed = crate::core::model_config::ModelConfig::load(Some(&malformed_path));
+        let notes = apply_interactive_model_config(&mut runtime, malformed);
+        assert!(notes
+            .iter()
+            .any(|note| note.contains("models.json error: Failed to parse models.json")));
+        assert!(runtime.models.get_provider("reload-only").is_none());
+        assert_eq!(
+            runtime
+                .models
+                .get_auth("openai", None)
+                .and_then(|auth| auth.auth.api_key),
+            Some("synthetic-runtime-key".to_string()),
+            "runtime credentials must survive replacement facade composition"
+        );
+        assert!(runtime.models.get_provider("faux").is_some());
+
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -11466,7 +11890,19 @@ mod tests {
             vec!["read", "grep"]
         );
 
+        runtime.extension_args.no_tools = true;
+        let selected = interactive_turn_tools(&runtime);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|tool| tool.tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["read", "grep"],
+            "an explicit allowlist overrides --no-tools"
+        );
+
         runtime.extension_args.tools = None;
+        runtime.extension_args.no_tools = false;
         runtime.extension_args.exclude_tools = Some(vec!["bash".to_owned(), "write".to_owned()]);
         let selected = interactive_turn_tools(&runtime);
         assert_eq!(
@@ -11817,6 +12253,119 @@ mod tests {
         assert!(!compacted);
         assert!(runtime.messages.is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn manual_compact_uses_extension_result_and_persists_once() {
+        use crate::core::extensions::types::{Extension, HandlerFn};
+        use crate::core::extensions::{ExtensionRunner, ExtensionRuntime};
+
+        let root =
+            std::env::temp_dir().join(format!("pi-compact-extension-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        runtime.messages = (0..6)
+            .map(|index| {
+                pi_agent::agent::user_text_prompt(
+                    format!("message {index}: {}", "x".repeat(200)),
+                    pi_ai::types::now_ms(),
+                )
+            })
+            .collect();
+        persist_messages(&mut runtime.session, &runtime.messages).await;
+        runtime.persisted_until = runtime.messages.len();
+
+        let observed = Arc::new(Mutex::new(None::<Value>));
+        let handler: HandlerFn = {
+            let observed = Arc::clone(&observed);
+            Arc::new(move |_, event| {
+                *observed.lock().unwrap_or_else(|error| error.into_inner()) = Some(event.clone());
+                let first_kept_entry_id = event["branchEntries"]
+                    .as_array()
+                    .and_then(|entries| entries.last())
+                    .and_then(|entry| entry["id"].as_str())
+                    .expect("last branch entry id");
+                Ok(Some(json!({
+                    "compaction": {
+                        "summary": "summary supplied by extension",
+                        "firstKeptEntryId": first_kept_entry_id,
+                        "tokensBefore": 321,
+                        "details": {
+                            "readFiles": ["README.md"],
+                            "modifiedFiles": ["src/lib.rs"]
+                        }
+                    }
+                })))
+            })
+        };
+        let mut extension = Extension {
+            path: "compact-extension".to_string(),
+            ..Default::default()
+        };
+        extension
+            .handlers
+            .insert("session_before_compact".to_string(), vec![handler]);
+        let extension_runtime = Arc::new(Mutex::new(ExtensionRuntime::new()));
+        runtime.extensions.runner = Arc::new(ExtensionRunner::new(
+            vec![extension],
+            Arc::clone(&extension_runtime),
+            runtime.cwd.clone(),
+        ));
+        runtime.extensions.runtime = extension_runtime;
+
+        let settings = SettingsManager::in_memory(crate::core::settings::SettingsMap::new());
+        assert!(
+            compact_interactive(&mut runtime, &settings, Some("focus on decisions"), true,)
+                .await
+                .expect("extension compaction")
+        );
+
+        let entries = runtime
+            .session
+            .find_entries(&pi_agent::session::state::EntryQuery {
+                order: Some(pi_agent::session::state::EntryOrder::OldestFirst),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let compacted = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Compaction {
+                    summary,
+                    retained_tail,
+                    tokens_before,
+                    details,
+                    ..
+                } => Some((summary, retained_tail, tokens_before, details)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            compacted.len(),
+            1,
+            "custom result must persist exactly once"
+        );
+        assert_eq!(compacted[0].0, "summary supplied by extension");
+        assert_eq!(*compacted[0].2, 321);
+        assert_eq!(compacted[0].1.len(), 1);
+        assert_eq!(
+            compacted[0].3.as_ref().unwrap()["readFiles"],
+            json!(["README.md"])
+        );
+        let event = observed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+            .expect("hook payload");
+        assert_eq!(event["reason"], "manual");
+        assert_eq!(event["willRetry"], false);
+        assert_eq!(event["customInstructions"], "focus on decisions");
+        assert!(event["preparation"]["messagesToSummarize"].is_array());
+        assert!(event["branchEntries"].is_array());
+
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -201,11 +201,24 @@ struct MutableRecordedTelemetrySpan {
     end_sequence: Option<u64>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct InMemoryTelemetryState {
     spans: Vec<MutableRecordedTelemetrySpan>,
     next_span_id: u64,
     next_end_sequence: u64,
+}
+
+impl Default for InMemoryTelemetryState {
+    fn default() -> Self {
+        // Upstream starts both public sequences at one. Besides matching the
+        // observable adapter contract, this keeps zero available as an
+        // uninitialized/sentinel value for external exporters.
+        Self {
+            spans: Vec::new(),
+            next_span_id: 1,
+            next_end_sequence: 1,
+        }
+    }
 }
 
 impl Default for MutableRecordedTelemetrySpan {
@@ -639,6 +652,32 @@ mod tests {
     }
 
     #[test]
+    fn noop_preserves_panics_without_recording_or_inspecting_payloads() {
+        let panic = std::panic::catch_unwind(|| {
+            NOOP_TELEMETRY_CONTEXT.start_span(
+                SpanOptions {
+                    name: "secret-looking-name".into(),
+                    attributes: Some(BTreeMap::from([(
+                        "api_key".into(),
+                        serde_json::json!("synthetic-secret"),
+                    )])),
+                },
+                |span| {
+                    span.add_event(
+                        "secret-looking-event",
+                        Some(BTreeMap::from([(
+                            "prompt".into(),
+                            serde_json::json!("synthetic-prompt"),
+                        )])),
+                    );
+                    panic!("callback failed")
+                },
+            )
+        });
+        assert!(panic.is_err());
+    }
+
+    #[test]
     fn memory_records_spans() {
         let ctx = InMemoryTelemetryContext::new();
         ctx.start_span(
@@ -652,9 +691,11 @@ mod tests {
         );
         let spans = ctx.get_spans();
         assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].id, 1);
         assert_eq!(spans[0].name, "root");
         assert_eq!(spans[0].parent_id, None);
         assert!(spans[0].settled);
+        assert_eq!(spans[0].end_sequence, Some(1));
         assert_eq!(spans[0].events.len(), 1);
         assert_eq!(spans[0].events[0].name, "start");
     }
@@ -720,6 +761,49 @@ mod tests {
         assert_eq!(span.attributes.get("a"), Some(&serde_json::json!(1)));
         assert_eq!(span.attributes.get("b"), Some(&serde_json::json!("x")));
         assert_eq!(span.status, SpanStatus::Error { error: None });
+    }
+
+    #[test]
+    fn snapshots_are_detached_and_recording_after_settlement_is_ignored() {
+        let ctx = InMemoryTelemetryContext::new();
+        let retained = std::cell::RefCell::new(None);
+        ctx.start_span(
+            SpanOptions {
+                name: "snapshot".into(),
+                attributes: Some(BTreeMap::from([(
+                    "tags".into(),
+                    serde_json::json!(["initial"]),
+                )])),
+            },
+            |span| {
+                span.add_event(
+                    "event",
+                    Some(BTreeMap::from([("value".into(), serde_json::json!(1))])),
+                );
+                *retained.borrow_mut() = Some(span.clone());
+                let open = ctx.get_spans();
+                assert!(!open[0].settled);
+                assert_eq!(open[0].end_sequence, None);
+            },
+        );
+
+        let mut first = ctx.get_spans();
+        first[0]
+            .attributes
+            .insert("tags".into(), serde_json::json!(["mutated"]));
+        first[0].events[0]
+            .attributes
+            .insert("value".into(), serde_json::json!(2));
+        let retained = retained.into_inner().expect("retained span handle");
+        retained.add_event("late", None);
+        retained.set_attributes(BTreeMap::from([("late".into(), serde_json::json!(true))]));
+
+        let second = ctx.get_spans();
+        assert_eq!(second[0].attributes["tags"], serde_json::json!(["initial"]));
+        assert_eq!(second[0].events[0].attributes["value"], 1);
+        assert_eq!(second[0].events.len(), 1);
+        assert!(!second[0].attributes.contains_key("late"));
+        assert_eq!(second[0].end_sequence, Some(1));
     }
 
     #[test]

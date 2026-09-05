@@ -16,6 +16,7 @@
 //! provider-specific chat-template reasoning fields.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error as _;
 use std::future::Future;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -42,6 +43,17 @@ use super::constrained_sampling::{
 
 const DEFAULT_MAX_RETRY_DELAY_MS: u64 = 60_000;
 const BASE_RETRY_DELAY_MS: u64 = 500;
+
+pub(crate) fn format_reqwest_error(error: &reqwest::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
 
 // ---------------------------------------------------------------------------
 // Compatibility
@@ -1268,6 +1280,17 @@ pub fn build_params(
     // Thinking formats.
     apply_thinking_params(model, options, compat, &mut params);
 
+    // Upstream applies samplingParams last so callers can intentionally
+    // override named request fields (for example max_tokens, temperature,
+    // tool_choice, or parallel_tool_calls) and add provider-specific keys.
+    if let Some(sampling_params) = options.and_then(|options| options.sampling_params.as_ref()) {
+        if let Some(sampling_params) = sampling_params.as_object() {
+            for (key, value) in sampling_params {
+                params.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
     Ok(Value::Object(params))
 }
 
@@ -1882,6 +1905,12 @@ pub(crate) async fn wait_for_abort(signal: crate::types::AbortSignal) {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AbortSignalError;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum AbortTimeoutError {
+    Aborted,
+    TimedOut(u64),
+}
+
 /// Await a provider operation while observing `StreamOptions.abort_signal`.
 /// Dropping the losing future is intentional: reqwest cancels its request/body
 /// operation when the future is dropped, matching AbortSignal-driven fetch
@@ -1906,6 +1935,27 @@ where
     tokio::select! {
         value = &mut future => Ok(value),
         _ = wait_for_abort(signal) => Err(AbortSignalError),
+    }
+}
+
+pub(crate) async fn abortable_with_timeout<F, T>(
+    future: F,
+    signal: Option<crate::types::AbortSignal>,
+    timeout_ms: Option<u64>,
+) -> Result<T, AbortTimeoutError>
+where
+    F: Future<Output = T>,
+{
+    let operation = abortable(future, signal);
+    match timeout_ms.filter(|timeout| *timeout > 0) {
+        Some(timeout_ms) => {
+            match tokio::time::timeout(Duration::from_millis(timeout_ms), operation).await {
+                Ok(Ok(value)) => Ok(value),
+                Ok(Err(_)) => Err(AbortTimeoutError::Aborted),
+                Err(_) => Err(AbortTimeoutError::TimedOut(timeout_ms)),
+            }
+        }
+        None => operation.await.map_err(|_| AbortTimeoutError::Aborted),
     }
 }
 
@@ -2004,7 +2054,8 @@ async fn send_openai_request(
             Ok(Err(error)) => {
                 if retry_index >= max_retries {
                     return Err(OpenAiRequestError::Transport(format!(
-                        "Request failed: {error}"
+                        "Request failed: {}",
+                        format_reqwest_error(&error)
                     )));
                 }
                 let delay = exponential_retry_delay(retry_index);
@@ -2041,7 +2092,9 @@ async fn send_openai_request(
                 if max_delay > 0 && delay > max_delay {
                     let provider_message = match abortable(response.bytes(), signal.clone()).await {
                         Ok(Ok(body)) => extract_openai_error(&String::from_utf8_lossy(&body)),
-                        Ok(Err(error)) => format!("Request body failed: {error}"),
+                        Ok(Err(error)) => {
+                            format!("Request body failed: {}", format_reqwest_error(&error))
+                        }
                         Err(_) => return Err(OpenAiRequestError::Aborted),
                     };
                     return Err(OpenAiRequestError::RetryDelay(format!(
@@ -2421,8 +2474,11 @@ pub fn stream(
         let body = match abortable(response.bytes(), options.base.abort_signal.clone()).await {
             Ok(Ok(body)) => body,
             Ok(Err(err)) => {
-                let message =
-                    terminal_error_message(&model, format!("Request body failed: {err}"), false);
+                let message = terminal_error_message(
+                    &model,
+                    format!("Request body failed: {}", format_reqwest_error(&err)),
+                    false,
+                );
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -2568,13 +2624,17 @@ pub(crate) fn extract_openai_error(body: &str) -> String {
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
         {
-            return append_openrouter_raw(msg, &value);
+            return crate::utils::error_body::truncate_provider_error_text(&append_openrouter_raw(
+                msg, &value,
+            ));
         }
         if let Some(msg) = value.get("message").and_then(Value::as_str) {
-            return append_openrouter_raw(msg, &value);
+            return crate::utils::error_body::truncate_provider_error_text(&append_openrouter_raw(
+                msg, &value,
+            ));
         }
     }
-    body.chars().take(300).collect()
+    crate::utils::error_body::truncate_provider_error_text(body.trim())
 }
 
 fn append_openrouter_raw(message: &str, value: &Value) -> String {

@@ -84,8 +84,8 @@ pub async fn grep_execute(
         glob,
         ignore_case,
         literal,
-        context,
-        limit,
+        context.map(|value| value as f64),
+        limit.map(|value| value as f64),
         None,
     )
     .await?
@@ -100,19 +100,22 @@ async fn grep_execute_with_details(
     glob: Option<&str>,
     ignore_case: bool,
     literal: bool,
-    context: Option<u64>,
-    limit: Option<u64>,
+    context: Option<f64>,
+    limit: Option<f64>,
     signal: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<ToolOutput, String> {
-    let search_path = resolve_tool_path(cwd, path.unwrap_or("."));
+    let search_path =
+        crate::core::settings::normalize_path(resolve_tool_path(cwd, path.unwrap_or(".")).into())
+            .to_string_lossy()
+            .into_owned();
 
     let is_directory = match std::fs::metadata(&search_path) {
         Ok(m) => m.is_dir(),
         Err(_) => return Err(format!("Path not found: {search_path}")),
     };
 
-    let context_value = context.filter(|c| *c > 0).unwrap_or(0) as usize;
-    let effective_limit = (limit.unwrap_or(DEFAULT_LIMIT)).max(1);
+    let context_value = context.filter(|value| *value > 0.0).unwrap_or(0.0);
+    let effective_limit = limit.unwrap_or(DEFAULT_LIMIT as f64).max(1.0);
 
     let mut args: Vec<String> = vec![
         "--json".to_string(),
@@ -134,13 +137,16 @@ async fn grep_execute_with_details(
     args.push(pattern.to_string());
     args.push(search_path.clone());
 
+    if pi_agent::agent::is_aborted(signal.as_ref()) {
+        return Err("Operation aborted".to_string());
+    }
     let mut child = tokio::process::Command::new("rg")
         .args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|_| "ripgrep (rg) is not available and could not be downloaded".to_string())?;
+        .map_err(map_rg_spawn_error)?;
 
     let stdout = child
         .stdout
@@ -185,7 +191,7 @@ async fn grep_execute_with_details(
                 return Err(format!("grep: failed to read rg output: {error}"));
             }
         };
-        if line.trim().is_empty() || match_count >= effective_limit {
+        if line.trim().is_empty() || (match_count as f64) >= effective_limit {
             continue;
         }
         let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
@@ -215,7 +221,7 @@ async fn grep_execute_with_details(
                 line_text,
             });
         }
-        if match_count >= effective_limit {
+        if (match_count as f64) >= effective_limit {
             match_limit_reached = true;
             killed_due_to_limit = true;
             let _ = child.kill().await;
@@ -255,7 +261,9 @@ async fn grep_execute_with_details(
         if let Some(lines) = cache.get(file_path) {
             return lines.clone();
         }
-        let content = std::fs::read_to_string(file_path).unwrap_or_default();
+        let content = std::fs::read(file_path)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default();
         let lines: Vec<String> = content
             .replace("\r\n", "\n")
             .replace('\r', "\n")
@@ -268,7 +276,7 @@ async fn grep_execute_with_details(
 
     for m in &matches {
         let relative_path = format_path(&search_path, is_directory, &m.file_path);
-        if context_value == 0 {
+        if context_value == 0.0 {
             if let Some(line_text) = &m.line_text {
                 let sanitized = line_text
                     .replace("\r\n", "\n")
@@ -294,24 +302,28 @@ async fn grep_execute_with_details(
                 ));
                 continue;
             }
-            let start = context_value
-                .saturating_sub(0)
-                .max(1)
-                .max(m.line_number.saturating_sub(context_value as u64) as usize);
-            let end = (m.line_number + context_value as u64).min(lines.len() as u64) as usize;
-            for current in start..=end {
-                let line_text = lines.get(current - 1).cloned().unwrap_or_default();
+            let start = (m.line_number as f64 - context_value).max(1.0);
+            let end = (m.line_number as f64 + context_value).min(lines.len() as f64);
+            let mut current = start;
+            while current <= end {
+                let line_text = if current.fract() == 0.0 && current >= 1.0 {
+                    lines.get(current as usize - 1).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                };
                 let sanitized = line_text.replace('\r', "");
                 let (truncated_text, was_truncated) =
                     truncate_line(&sanitized, GREP_MAX_LINE_LENGTH);
                 if was_truncated {
                     lines_truncated = true;
                 }
-                if current == m.line_number as usize {
-                    output_lines.push(format!("{relative_path}:{current}: {truncated_text}"));
+                let current_label = js_number(current);
+                if current == m.line_number as f64 {
+                    output_lines.push(format!("{relative_path}:{current_label}: {truncated_text}"));
                 } else {
-                    output_lines.push(format!("{relative_path}-{current}- {truncated_text}"));
+                    output_lines.push(format!("{relative_path}-{current_label}- {truncated_text}"));
                 }
+                current += 1.0;
             }
         }
     }
@@ -323,7 +335,7 @@ async fn grep_execute_with_details(
     if match_limit_reached {
         notices.push(format!(
             "{effective_limit} matches limit reached. Use limit={} for more, or refine pattern",
-            effective_limit * 2
+            js_number(effective_limit * 2.0)
         ));
     }
     if truncation.truncated {
@@ -341,7 +353,7 @@ async fn grep_execute_with_details(
     if match_limit_reached {
         details.insert(
             "matchLimitReached".to_string(),
-            serde_json::json!(effective_limit),
+            json_number(effective_limit),
         );
     }
     if truncation.truncated {
@@ -357,6 +369,30 @@ async fn grep_execute_with_details(
         text: output,
         details: (!details.is_empty()).then_some(serde_json::Value::Object(details)),
     })
+}
+
+fn map_rg_spawn_error(error: std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        "ripgrep (rg) is not available and could not be downloaded".to_string()
+    } else {
+        format!("Failed to run ripgrep: {error}")
+    }
+}
+
+fn js_number(value: f64) -> String {
+    if value == 0.0 {
+        "0".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn json_number(value: f64) -> serde_json::Value {
+    if value >= 0.0 && value.fract() == 0.0 && value <= u64::MAX as f64 {
+        serde_json::Value::from(value as u64)
+    } else {
+        serde_json::json!(value)
+    }
 }
 
 /// Builds the `grep` tool bound to a working directory.
@@ -394,8 +430,8 @@ pub fn grep_tool(cwd: String) -> AgentTool {
                 let glob = args.get("glob").and_then(|v| v.as_str());
                 let ignore_case = args.get("ignoreCase").and_then(|v| v.as_bool()).unwrap_or(false);
                 let literal = args.get("literal").and_then(|v| v.as_bool()).unwrap_or(false);
-                let context = args.get("context").and_then(|v| v.as_u64());
-                let limit = args.get("limit").and_then(|v| v.as_u64());
+                let context = args.get("context").and_then(|v| v.as_f64());
+                let limit = args.get("limit").and_then(|v| v.as_f64());
                 match grep_execute_with_details(
                     &cwd,
                     pattern,
@@ -664,6 +700,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn context_near_file_start_does_not_skip_early_lines() {
+        let tree = Tree::new("context-start");
+        fs::write(
+            tree.root.join("src").join("main.rs"),
+            "first\nTODO second\nthird\n",
+        )
+        .unwrap();
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "TODO second",
+            Some("src/main.rs"),
+            None,
+            false,
+            true,
+            Some(5),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("main.rs-1- first"), "got: {out}");
+        assert!(out.contains("main.rs:2: TODO second"), "got: {out}");
+        assert!(out.contains("main.rs-3- third"), "got: {out}");
+    }
+
+    #[tokio::test]
     async fn limit_caps_matches_with_notice() {
         let tree = Tree::new("limit");
         let out = grep_execute(
@@ -700,6 +761,171 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fractional_and_negative_limits_preserve_number_semantics() {
+        let tree = Tree::new("numeric-limits");
+        let fractional = grep_execute_with_details(
+            &tree.root.display().to_string(),
+            "TODO",
+            None,
+            None,
+            false,
+            false,
+            None,
+            Some(1.5),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            fractional
+                .text
+                .contains("1.5 matches limit reached. Use limit=3 for more"),
+            "got: {}",
+            fractional.text
+        );
+        assert_eq!(
+            fractional.details.as_ref().unwrap()["matchLimitReached"],
+            serde_json::json!(1.5)
+        );
+
+        let negative = grep_execute_with_details(
+            &tree.root.display().to_string(),
+            "TODO",
+            None,
+            None,
+            false,
+            false,
+            None,
+            Some(-4.0),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            negative
+                .text
+                .contains("1 matches limit reached. Use limit=2 for more"),
+            "got: {}",
+            negative.text
+        );
+        assert_eq!(
+            negative.details.as_ref().unwrap()["matchLimitReached"],
+            serde_json::json!(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn binary_context_is_lossy_and_does_not_panic() {
+        let tree = Tree::new("binary");
+        fs::write(
+            tree.root.join("src").join("binary.dat"),
+            b"before\nTODO \xff after\nlast\n",
+        )
+        .unwrap();
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "TODO",
+            Some("src/binary.dat"),
+            None,
+            false,
+            true,
+            Some(1),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("binary.dat-1- before"), "got: {out}");
+        assert!(out.contains("binary.dat:2: TODO � after"), "got: {out}");
+        assert!(out.contains("binary.dat-3- last"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn hidden_unicode_and_invalid_regex_boundaries_are_actionable() {
+        let tree = Tree::new("unicode-invalid");
+        fs::write(tree.root.join(".秘密.txt"), "needle 界🙂\n").unwrap();
+        let out = grep_execute(
+            &tree.root.display().to_string(),
+            "needle 界🙂",
+            None,
+            Some("*.txt"),
+            false,
+            true,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(out.contains(".秘密.txt:1: needle 界🙂"), "got: {out}");
+
+        let invalid = grep_execute(
+            &tree.root.display().to_string(),
+            "[",
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(invalid.contains("regex parse error"), "got: {invalid}");
+    }
+
+    #[tokio::test]
+    async fn byte_limit_sets_structured_truncation_details() {
+        let root = std::env::temp_dir().join(format!("pi-grep-bytes-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..110 {
+            fs::write(
+                root.join(format!("{index:03}.txt")),
+                format!("needle {}\n", "x".repeat(600)),
+            )
+            .unwrap();
+        }
+        let output = grep_execute_with_details(
+            &root.display().to_string(),
+            "needle",
+            None,
+            None,
+            false,
+            true,
+            None,
+            Some(110.0),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(output.text.contains("50.0KB limit reached"));
+        assert!(output
+            .details
+            .as_ref()
+            .and_then(|details| details.get("truncation"))
+            .is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn pre_cancel_stops_before_spawning_rg() {
+        let tree = Tree::new("pre-cancel");
+        let signal = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let error = grep_execute_with_details(
+            &tree.root.display().to_string(),
+            "TODO",
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            Some(signal),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "Operation aborted");
+    }
+
+    #[tokio::test]
     async fn long_lines_truncated_with_notice() {
         let tree = Tree::new("long");
         let long = "x".repeat(600);
@@ -732,6 +958,19 @@ mod tests {
         let body = truncated.strip_suffix("... [truncated]").unwrap();
         assert_eq!(body.encode_utf16().count(), GREP_MAX_LINE_LENGTH);
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn rg_spawn_errors_distinguish_missing_from_other_failures() {
+        assert_eq!(
+            map_rg_spawn_error(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            "ripgrep (rg) is not available and could not be downloaded"
+        );
+        let denied = map_rg_spawn_error(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(
+            denied.starts_with("Failed to run ripgrep:"),
+            "got: {denied}"
+        );
     }
 
     #[tokio::test]

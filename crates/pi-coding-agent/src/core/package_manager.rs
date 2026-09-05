@@ -78,6 +78,15 @@ fn rust_native_only_package_error(source: &str) -> String {
     format!("{RUST_NATIVE_ONLY_PACKAGE_ERROR} Unsupported source: {source}")
 }
 
+fn is_unsupported_js_package_source(source: &str) -> bool {
+    let source = source.trim_start();
+    ["npm:", "npx:", "bun:"].iter().any(|prefix| {
+        source
+            .get(..prefix.len())
+            .is_some_and(|value| value.eq_ignore_ascii_case(prefix))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Ports of utils/git.ts (parseGitUrl) + package-manager.ts parse helpers
 // ---------------------------------------------------------------------------
@@ -1559,6 +1568,9 @@ impl PackageManager {
     }
 
     pub fn install(&mut self, source: &str, local: bool) -> Result<(), String> {
+        if is_unsupported_js_package_source(source) {
+            return Err(rust_native_only_package_error(source));
+        }
         let scope: SourceScope = if local { "project" } else { "user" };
         let parsed = ParsedSource::parse(source);
         self.with_progress(
@@ -1586,6 +1598,9 @@ impl PackageManager {
     }
 
     pub fn remove(&mut self, source: &str, local: bool) -> Result<(), String> {
+        if is_unsupported_js_package_source(source) {
+            return Err(rust_native_only_package_error(source));
+        }
         let scope: SourceScope = if local { "project" } else { "user" };
         let parsed = ParsedSource::parse(source);
         self.with_progress(
@@ -1607,6 +1622,9 @@ impl PackageManager {
 
     pub fn update(&mut self, source: Option<&str>) -> Result<bool, String> {
         if let Some(source) = source {
+            if is_unsupported_js_package_source(source) {
+                return Err(rust_native_only_package_error(source));
+            }
             if matches!(ParsedSource::parse(source), ParsedSource::Npm(_)) {
                 return Err(rust_native_only_package_error(source));
             }
@@ -1617,6 +1635,9 @@ impl PackageManager {
                 .chain(self.get_scope_packages("project"))
             {
                 let (package_source, _) = package_source_parts(&package);
+                if is_unsupported_js_package_source(&package_source) {
+                    return Err(rust_native_only_package_error(&package_source));
+                }
                 if matches!(ParsedSource::parse(&package_source), ParsedSource::Npm(_)) {
                     return Err(rust_native_only_package_error(&package_source));
                 }
@@ -3233,19 +3254,28 @@ mod tests {
     #[test]
     fn npm_package_operations_fail_with_rust_native_guidance() {
         let mut pm = manager_in_memory(Default::default());
-        for operation in ["install", "remove"] {
-            let result = if operation == "install" {
-                pm.install("npm:left-pad", false)
-            } else {
-                pm.remove("npm:left-pad", false)
-            };
-            let error = result.expect_err(operation);
-            assert!(error.contains("Rust-native-only"), "{error}");
-            assert!(error.contains("npm, npx, and bun"), "{error}");
+        for source in [
+            "npm:left-pad",
+            "NPM:left-pad",
+            "npx:left-pad",
+            "bun:left-pad",
+        ] {
+            for operation in ["install", "remove"] {
+                let result = if operation == "install" {
+                    pm.install(source, false)
+                } else {
+                    pm.remove(source, false)
+                };
+                let error = result.expect_err(operation);
+                assert!(error.contains("Rust-native-only"), "{error}");
+                assert!(error.contains("npm, npx, and bun"), "{error}");
+            }
         }
-        let error = pm.update(Some("npm:left-pad")).expect_err("update");
-        assert!(error.contains("Rust-native-only"), "{error}");
-        assert!(error.contains("npm:left-pad"), "{error}");
+        for source in ["npm:left-pad", "npx:left-pad", "bun:left-pad"] {
+            let error = pm.update(Some(source)).expect_err("update");
+            assert!(error.contains("Rust-native-only"), "{error}");
+            assert!(error.contains(source), "{error}");
+        }
     }
 
     #[test]

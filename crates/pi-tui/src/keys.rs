@@ -797,6 +797,21 @@ fn with_modifiers(base: String, ctrl: bool, alt: bool, shift: bool) -> TuiKey {
 mod tests {
     use super::*;
 
+    /// Pins the process-global kitty-protocol flag for tests that assert
+    /// inactive-mode decoding; other tests toggle the flag concurrently.
+    struct KittyModeGuard(bool);
+    impl KittyModeGuard {
+        fn inactive() -> Self {
+            set_kitty_protocol_active(false);
+            Self(false)
+        }
+    }
+    impl Drop for KittyModeGuard {
+        fn drop(&mut self) {
+            set_kitty_protocol_active(self.0);
+        }
+    }
+
     #[test]
     fn matches_basic() {
         assert!(match_key(&TuiKey::simple("enter"), "enter"));
@@ -1062,6 +1077,10 @@ mod tests {
         assert!(!matches_raw_key("\x1ba", "alt+a"));
         assert!(!matches_raw_key("\x1b ", "alt+space"));
         assert!(!matches_raw_key("\x1b ", "shift+space"));
+        // The kitty-protocol flag is process-global; other tests toggle it.
+        // This case runs with the flag off, so pin it for the assertions
+        // below that depend on the inactive-mode decoding.
+        let _guard = KittyModeGuard::inactive();
         assert!(!matches_raw_key("\x1b\t", "shift+tab"));
         assert_eq!(
             parse_key("\x1bp"),

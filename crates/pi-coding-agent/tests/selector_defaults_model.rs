@@ -184,6 +184,93 @@ fn model_selector_opens_in_session_scope_and_switches_scope_without_losing_curre
 }
 
 #[test]
+fn model_selector_orders_current_then_default_then_provider_and_model() {
+    let selector = ModelSelector::new(
+        vec![
+            model("zeta", "beta"),
+            model("alpha", "beta"),
+            model("zeta", "alpha"),
+            model("default", "omega"),
+            model("current", "zulu"),
+        ],
+        Some("zulu/current".to_owned()),
+        Some("omega/default".to_owned()),
+    );
+
+    let rendered = pi_tui::strip_ansi_codes(&selector.render(100).join("\n"));
+    let positions = [
+        "current [zulu]",
+        "default [omega]",
+        "zeta [alpha]",
+        "alpha [beta]",
+        "zeta [beta]",
+    ]
+    .map(|row| rendered.find(row).expect("model row is rendered"));
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+#[test]
+fn model_selector_empty_state_is_safe_and_escape_cancels() {
+    let mut selector = ModelSelector::new(Vec::new(), None, None);
+    let rendered = pi_tui::strip_ansi_codes(&selector.render(100).join("\n"));
+    assert!(rendered.contains("No matching models"));
+    assert!(rendered.contains("Use /login to add providers"));
+    assert_eq!(selector.selected_model(), None);
+    assert_eq!(
+        selector.handle(&TuiKey::simple("enter")),
+        SelectorAction::None
+    );
+    assert_eq!(selector.handle(&TuiKey::ctrl("s")), SelectorAction::None);
+    assert_eq!(
+        selector.handle(&TuiKey::simple("escape")),
+        SelectorAction::Cancel
+    );
+}
+
+#[test]
+fn model_selector_refresh_failures_retain_cached_rows_and_selection() {
+    use pi_ai::models::{ModelsError, ModelsErrorCode, ModelsRefreshResult};
+    use std::collections::BTreeMap;
+
+    let cached = vec![model("current", "provider"), model("other", "provider")];
+    let mut selector =
+        ModelSelector::new(cached.clone(), Some("provider/current".to_owned()), None);
+
+    selector.apply_refresh(
+        cached.clone(),
+        &ModelsRefreshResult {
+            aborted: true,
+            errors: BTreeMap::new(),
+        },
+    );
+    let timed_out = pi_tui::strip_ansi_codes(&selector.render(100).join("\n"));
+    assert!(timed_out.contains("Model refresh timed out; showing cached models."));
+    assert!(timed_out.contains("current [provider] ✓"));
+    assert!(timed_out.contains("other [provider]"));
+    assert_eq!(
+        selector.selected_model_reference().as_deref(),
+        Some("provider/current")
+    );
+
+    let mut errors = BTreeMap::new();
+    errors.insert(
+        "provider".to_owned(),
+        ModelsError::new(ModelsErrorCode::ModelSource, "offline"),
+    );
+    selector.apply_refresh(
+        cached,
+        &ModelsRefreshResult {
+            aborted: false,
+            errors,
+        },
+    );
+    let failed = pi_tui::strip_ansi_codes(&selector.render(100).join("\n"));
+    assert!(failed.contains("Could not refresh provider; showing cached models."));
+    assert!(failed.contains("current [provider] ✓"));
+    assert!(failed.contains("other [provider]"));
+}
+
+#[test]
 fn list_selector_pages_filtered_rows_and_preserves_original_index() {
     let mut selector = ListSelector::new(
         vec![

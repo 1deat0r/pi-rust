@@ -197,9 +197,10 @@ pub fn expand_skill_command(text: &str, skills: &[crate::core::skills::Skill]) -
     let Ok(content) = std::fs::read_to_string(&skill.file_path) else {
         return text.to_string();
     };
-    let body = pi_agent::harness::frontmatter::parse_frontmatter(&content)
+    let content = crate::core::settings::strip_bom(&content);
+    let body = pi_agent::harness::frontmatter::parse_frontmatter(content)
         .map(|(_, body)| body)
-        .unwrap_or(content)
+        .unwrap_or_else(|| content.to_string())
         .trim()
         .to_string();
     let skill_block = format!(

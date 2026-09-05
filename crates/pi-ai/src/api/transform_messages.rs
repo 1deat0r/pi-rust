@@ -202,8 +202,12 @@ where
                                 new_content.push(ContentBlock::text(thinking.clone()));
                             }
                         }
-                        ContentBlock::Text { .. } => {
-                            new_content.push(block.clone());
+                        ContentBlock::Text { text, .. } => {
+                            if is_same_model {
+                                new_content.push(block.clone());
+                            } else {
+                                new_content.push(ContentBlock::text(text.clone()));
+                            }
                         }
                         ContentBlock::ToolCall {
                             id,
@@ -431,6 +435,49 @@ mod tests {
             },
             _ => panic!("expected assistant"),
         }
+    }
+
+    #[test]
+    fn text_signature_is_kept_same_model_and_stripped_cross_model() {
+        let model = model_with(true);
+        let signed_text = ContentBlock::Text {
+            text: "signed".to_string(),
+            text_signature: Some("provider-opaque".to_string()),
+        };
+
+        let mut same = assistant_msg(vec![signed_text.clone()]);
+        same.set_api_provider_model("google-generative-ai", "google", "gemini-3-pro");
+        let same = transform_messages(
+            &[Message::Assistant(same)],
+            &model,
+            None::<&fn(&str, &Model, &AssistantMessage) -> String>,
+        );
+        assert!(matches!(
+            &same[0],
+            Message::Assistant(message)
+                if matches!(
+                    &message.content()[0],
+                    ContentBlock::Text { text_signature: Some(signature), .. }
+                        if signature == "provider-opaque"
+                )
+        ));
+
+        let mut foreign = assistant_msg(vec![signed_text]);
+        foreign.set_api_provider_model("google-generative-ai", "google", "other-model");
+        let foreign = transform_messages(
+            &[Message::Assistant(foreign)],
+            &model,
+            None::<&fn(&str, &Model, &AssistantMessage) -> String>,
+        );
+        assert!(matches!(
+            &foreign[0],
+            Message::Assistant(message)
+                if matches!(
+                    &message.content()[0],
+                    ContentBlock::Text { text, text_signature: None }
+                        if text == "signed"
+                )
+        ));
     }
 
     #[test]

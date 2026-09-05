@@ -26,6 +26,24 @@ pub fn is_cjk_char(c: char) -> bool {
         | '\u{FF66}'..='\u{FF9D}')
 }
 
+/// True when the segment contains a Han ideograph (CJK radicals, Extension A,
+/// unified ideographs, compatibility ideographs).
+///
+/// Calibrated against `Intl.Segmenter(_, {granularity: "word"})`: phonetic
+/// scripts (Hiragana, Katakana, Hangul, Bopomofo) group into maximal runs
+/// (`こんにちは`, `コンピュータ`, `가나다라` each segment whole), while Han
+/// text groups into dictionary-sized units the fallback approximates as
+/// pairs (`你好|世界`). Mixed-script runs split at the Han boundary; deeper
+/// dictionary behavior (e.g. `世界を読む` → `世界|を|読む`) remains a
+/// documented approximation.
+pub fn cjk_segment_contains_han(segment: &str) -> bool {
+    segment.chars().any(|c| {
+        matches!(c,
+        '\u{2E80}'..='\u{2EFF}' | '\u{3400}'..='\u{4DBF}'
+        | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}')
+    })
+}
+
 /// A single segment: its text and whether it is word-like.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
@@ -520,5 +538,33 @@ mod tests {
         assert_eq!(find_word_backward(&full, 6 + marker.len(), &opts), 6);
         // Forward skips the atomic marker as one unit.
         assert_eq!(find_word_forward(&full, 6, &opts), 6 + marker.len());
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[test]
+    fn probe_one_two_three() {
+        let opts = WordNavigationOptions::default();
+        let text = "one two.three";
+        for cursor in [13usize, 8, 7, 4] {
+            println!(
+                "backward from {} -> {}",
+                cursor,
+                find_word_backward(text, cursor, &opts)
+            );
+        }
+        println!("forward from 0 -> {}", find_word_forward(text, 0, &opts));
+        let segs = segment_text(text);
+        println!(
+            "segments: {:?}",
+            segs.iter().map(|s| s.segment.clone()).collect::<Vec<_>>()
+        );
+        println!(
+            "word-like: {:?}",
+            segs.iter().map(|s| s.is_word_like).collect::<Vec<_>>()
+        );
     }
 }

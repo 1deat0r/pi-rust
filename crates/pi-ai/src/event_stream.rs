@@ -33,16 +33,22 @@ pub struct StreamEndHandle(Arc<StreamEndState>);
 
 impl StreamEndHandle {
     fn finish(&self, result: Option<AssistantMessage>) {
+        // Hold the result lock while publishing `ended`. A consumer may see
+        // `ended` immediately and proceed to `result()` without waiting for
+        // the notification, so publishing before storing could expose an
+        // empty result for an asynchronously completed stream.
+        let mut stored_result = self
+            .0
+            .result
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if self.0.ended.swap(true, Ordering::SeqCst) {
             return;
         }
         if let Some(message) = result {
-            *self
-                .0
-                .result
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()) = Some(message);
+            *stored_result = Some(message);
         }
+        drop(stored_result);
         self.0.notify.notify_waiters();
     }
 

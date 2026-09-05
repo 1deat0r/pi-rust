@@ -583,7 +583,11 @@ fn make_builtin_tools(
     };
     let mut tools = [
         pi_agent::tools::read_tool_with_options(cwd.to_string(), image_options),
-        pi_agent::tools::bash_tool(cwd.to_string()),
+        pi_agent::tools::bash_tool_with_options(
+            cwd.to_string(),
+            settings.get_shell_command_prefix().map(str::to_string),
+            settings.get_shell_path(),
+        ),
         pi_agent::tools::edit_tool(cwd.to_string()),
         pi_agent::tools::write_tool(cwd.to_string()),
         crate::core::tools::ls_tool(cwd.to_string()),
@@ -711,6 +715,10 @@ pub async fn create_agent_session(
     harness_options.stream_fn = Some(stream_fn);
     harness_options.system_prompt = options.system_prompt;
     harness_options.block_images = services.settings_manager.get_block_images();
+    harness_options.tool_result_image_options = Some(pi_agent::tools::image::ProcessImageOptions {
+        auto_resize_images: services.settings_manager.get_image_auto_resize(),
+        ..Default::default()
+    });
     harness_options.thinking_level = Some(thinking_level);
     harness_options.tools = Some(tools);
     harness_options.resources = Some(services.resource_loader.resources.clone());

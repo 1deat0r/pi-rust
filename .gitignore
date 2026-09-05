@@ -4,3 +4,8 @@
 
 /.unlazy/
 /.unlazy-hook-state.json
+
+# Generated/local artifacts that must never be committed.
+/doc/
+/rust_out
+/.zcode/

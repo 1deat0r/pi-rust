@@ -503,13 +503,13 @@
           "toolResults": 0,
           "totalMessages": 2,
           "tokens": {
-            "input": 0,
-            "output": 0,
+            "input": 1766,
+            "output": 21,
             "cacheRead": 0,
-            "cacheWrite": 0,
-            "total": 0
+            "cacheWrite": 1457,
+            "total": 3244
           },
-          "cost": 0
+          "cost": 0.0
         }
       }
     ]

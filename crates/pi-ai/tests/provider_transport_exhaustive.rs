@@ -24,8 +24,10 @@ use pi_ai::model::Model;
 use pi_ai::providers::all::builtin_providers;
 use pi_ai::types::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, Context, DoneReason, Message,
-    ProviderHeaders, ProviderRequestOptions, StopReason, StreamOptions, Tool, UserContent,
+    ProviderHeaders, ProviderRequestOptions, StopReason, StreamOptions, Tool, ToolResultMessage,
+    UserContent,
 };
+use pi_ai::utils::is_retryable_assistant_error;
 
 #[derive(Debug, Clone)]
 struct Reply {
@@ -108,6 +110,7 @@ fn status_line(status: u16) -> &'static str {
         401 => "401 Unauthorized",
         403 => "403 Forbidden",
         408 => "408 Request Timeout",
+        409 => "409 Conflict",
         429 => "429 Too Many Requests",
         500 => "500 Internal Server Error",
         503 => "503 Service Unavailable",
@@ -194,6 +197,45 @@ fn context_with_tool() -> Context {
             }),
             constrained_sampling: None,
         }],
+    }
+}
+
+fn cross_provider_handoff_context() -> Context {
+    let mut assistant = AssistantMessage::new();
+    assistant.set_api_provider_model("openai-responses", "openai", "foreign-source-model");
+    assistant.set_stop_reason(StopReason::ToolUse);
+    assistant.set_content(vec![
+        ContentBlock::Text {
+            text: "foreign text".to_string(),
+            text_signature: Some("source-only-text-signature".to_string()),
+        },
+        ContentBlock::Thinking {
+            thinking: "foreign reasoning".to_string(),
+            thinking_signature: Some("source-only-thinking-signature".to_string()),
+            redacted: None,
+        },
+        ContentBlock::ToolCall {
+            id: "foreign|call/id".to_string(),
+            name: "lookup".to_string(),
+            arguments: json!({"key": "value"}),
+            thought_signature: Some("source-only-tool-signature".to_string()),
+            namespace: None,
+        },
+    ]);
+    Context {
+        system_prompt: Some("Be exact".to_string()),
+        messages: vec![
+            Message::User(UserContent::string("start", 1)),
+            Message::Assistant(assistant),
+            Message::ToolResult(ToolResultMessage::text(
+                "foreign|call/id",
+                "lookup",
+                "done",
+                false,
+            )),
+            Message::User(UserContent::string("continue", 2)),
+        ],
+        tools: context_with_tool().tools,
     }
 }
 
@@ -666,10 +708,7 @@ async fn every_registered_provider_api_pair_uses_a_real_loopback_request() {
             &provider,
             simple_text_reply(&api),
             request_options(&key),
-            Context {
-                messages: vec![Message::User(UserContent::string("hello", 1))],
-                ..Default::default()
-            },
+            cross_provider_handoff_context(),
         )
         .await;
         assert_success(&message, &api, "hello");
@@ -727,6 +766,14 @@ async fn every_registered_provider_api_pair_uses_a_real_loopback_request() {
             }
             other => panic!("unhandled registered API {other}"),
         }
+        let serialized = body.to_string();
+        assert!(
+            serialized.contains("foreign text")
+                && serialized.contains("foreign reasoning")
+                && serialized.contains("lookup")
+                && serialized.contains("done"),
+            "{provider}/{api} dropped cross-provider replay content: {serialized}"
+        );
     }
 }
 
@@ -1096,6 +1143,91 @@ async fn every_http_adaptor_translates_a_non_success_response_to_a_redacted_erro
 }
 
 #[tokio::test]
+async fn provider_error_contract_preserves_status_body_and_retry_classification() {
+    let cases = [
+        (
+            401,
+            "application/json",
+            br#"{"error":{"message":"invalid api key"}}"#.to_vec(),
+            "invalid api key".to_string(),
+            false,
+        ),
+        (
+            403,
+            "text/plain",
+            b"gateway policy denied".to_vec(),
+            "gateway policy denied".to_string(),
+            false,
+        ),
+        (
+            408,
+            "text/plain",
+            b"gateway timed out while reading upstream".to_vec(),
+            "gateway timed out".to_string(),
+            true,
+        ),
+        (
+            409,
+            "application/json",
+            br#"{"detail":"provider conflict; please retry your request"}"#.to_vec(),
+            "provider conflict; please retry your request".to_string(),
+            true,
+        ),
+        (
+            429,
+            "application/json",
+            br#"{"error":{"message":"quota exceeded"}}"#.to_vec(),
+            "quota exceeded".to_string(),
+            false,
+        ),
+        (
+            503,
+            "application/json",
+            Vec::new(),
+            "OpenAI API error (503):".to_string(),
+            true,
+        ),
+        (
+            500,
+            "text/plain",
+            format!("{}🦀tail", "x".repeat(4_000)).into_bytes(),
+            "... [truncated 5 chars]".to_string(),
+            true,
+        ),
+    ];
+
+    for (status, content_type, body, expected_detail, retryable) in cases {
+        let secret = "error-contract-secret";
+        let (_, message, request) = run_direct_stream(
+            "openai-responses",
+            "openai",
+            Reply::text(status, content_type, body),
+            request_options(secret),
+            Context::default(),
+        )
+        .await;
+        let error = message.error_message().unwrap_or_default();
+        assert_eq!(
+            message.stop_reason(),
+            Some(StopReason::Error),
+            "{status}: {error}"
+        );
+        assert!(error.contains(&status.to_string()), "{status}: {error}");
+        assert!(error.contains(&expected_detail), "{status}: {error}");
+        assert!(!error.contains(secret), "{status}: {error}");
+        assert_eq!(
+            is_retryable_assistant_error(&message),
+            retryable,
+            "{status}: {error}"
+        );
+        assert_eq!(
+            request.headers.get("authorization"),
+            Some(&format!("Bearer {secret}"))
+        );
+    }
+}
+
+#[tokio::test]
 async fn retry_timeout_and_abort_paths_are_exercised_where_supported() {
     let mut attempts = 0_u32;
     let policy = pi_ai::utils::RetryPolicy {
@@ -1187,6 +1319,71 @@ async fn retry_timeout_and_abort_paths_are_exercised_where_supported() {
     let result = task.await.unwrap();
     server.await.unwrap();
     assert_eq!(result.unwrap_err().to_string(), "Request cancelled");
+}
+
+#[tokio::test]
+async fn abort_during_provider_retry_backoff_prevents_the_next_request() {
+    let (base_url, requests, server) = start_server(vec![
+        Reply::text(
+            503,
+            "application/json",
+            br#"{"error":{"message":"service overloaded"}}"#.to_vec(),
+        ),
+        simple_text_reply("openai-completions"),
+    ])
+    .await;
+    let signal = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut options = request_options("backoff-abort-key");
+    options.base.max_retries = Some(1);
+    options.abort_signal = Some(signal.clone());
+    let model = local_model("deepseek", "openai-completions", &base_url);
+    let task = tokio::spawn(async move {
+        openai_completions::stream(
+            &model,
+            &Context::default(),
+            reqwest::Client::new(),
+            &base_url,
+            Some("backoff-abort-key"),
+            &openai_completions::OpenAIChatOptions {
+                base: options,
+                ..Default::default()
+            },
+        )
+        .collect()
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while requests.lock().unwrap().len() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first retryable request must be observed");
+    signal.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (events, message) = tokio::time::timeout(Duration::from_secs(1), task)
+        .await
+        .expect("backoff abort must settle promptly")
+        .expect("stream task");
+    server.abort();
+    let _ = server.await;
+
+    assert_eq!(message.stop_reason(), Some(StopReason::Aborted));
+    assert_eq!(message.error_message(), Some("Request was aborted"));
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                AssistantMessageEvent::Error {
+                    reason: pi_ai::types::ErrorReason::Aborted,
+                    ..
+                }
+            ))
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]

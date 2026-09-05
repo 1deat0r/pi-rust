@@ -146,6 +146,7 @@ mod unix {
         sessions: PathBuf,
         project: PathBuf,
         settings: PathBuf,
+        prompt_template: PathBuf,
     }
 
     impl Sandbox {
@@ -157,6 +158,7 @@ mod unix {
             let sessions = root.join("sessions");
             let project = root.join("project");
             let settings = agent_dir.join("settings.json");
+            let prompt_template = project.join("explicit-review.md");
             fs::create_dir_all(&home).unwrap();
             fs::create_dir_all(&agent_dir).unwrap();
             fs::create_dir_all(&sessions).unwrap();
@@ -164,6 +166,11 @@ mod unix {
             fs::write(
                 project.join(".pi/skills/demo/SKILL.md"),
                 "---\nname: demo\ndescription: A deterministic PTY demo skill\n---\n\nPTY skill body marker\n",
+            )
+            .unwrap();
+            fs::write(
+                &prompt_template,
+                "---\ndescription: Explicit deterministic review template\n---\nINITIAL TEMPLATE FIRST=$1 ALL=$@ REST=${@:2}\n",
             )
             .unwrap();
             fs::write(
@@ -178,6 +185,7 @@ mod unix {
                 sessions,
                 project,
                 settings,
+                prompt_template,
             }
         }
     }
@@ -321,8 +329,22 @@ mod unix {
             return;
         }
         let sandbox = Sandbox::new();
-        let session = TmuxSession::start(&sandbox);
+        let prompt_template = sandbox.prompt_template.to_string_lossy().into_owned();
+        let session = TmuxSession::start_with_args(
+            &sandbox,
+            &["--prompt-template", prompt_template.as_str()],
+        );
         session.wait_for(|capture| capture.contains("faux-1"));
+
+        // An explicit template remains available even though this process is
+        // launched with --no-prompt-templates. Quoted, positional, all-args,
+        // and slice expansion all travel through the real composer/provider.
+        session.send_line("/explicit-review \"alpha beta\" gamma");
+        let template_expansion = session.wait_for(|capture| {
+            visible(capture)
+                .contains("INITIAL TEMPLATE FIRST=alpha beta ALL=alpha beta gamma REST=gamma")
+        });
+        assert!(visible(&template_expansion).contains("REST=gamma"));
 
         // Real composer autocomplete uses the loaded project skill, then a
         // second Enter submits the selected completion through the agent loop.
@@ -342,6 +364,40 @@ mod unix {
             visible(capture).contains("faux response to: <skill name=\"demo\"")
         });
         assert!(visible(&expanded).contains("<skill name=\"demo\""));
+
+        // Replace the skill while the process stays alive. `/reload` must
+        // rebuild both autocomplete metadata and invocation content without
+        // retaining the stale description/body.
+        fs::write(
+            sandbox.project.join(".pi/skills/demo/SKILL.md"),
+            "---\nname: demo\ndescription: Reloaded deterministic PTY skill\n---\n\nRELOADED SKILL BODY\n",
+        )
+        .unwrap();
+        fs::write(
+            &sandbox.prompt_template,
+            "---\ndescription: Reloaded deterministic review template\n---\nRELOADED TEMPLATE FIRST=$1 ALL=$@\n",
+        )
+        .unwrap();
+        session.send_line("/reload");
+        session.wait_for(|capture| visible(capture).contains("reloaded settings"));
+        session.send_line("/explicit-review delta epsilon");
+        let reloaded_template = session.wait_for(|capture| {
+            visible(capture).contains("RELOADED TEMPLATE FIRST=delta ALL=delta epsilon")
+        });
+        assert!(visible(&reloaded_template).contains("RELOADED TEMPLATE FIRST=delta"));
+        session.send_text("/skill:");
+        let reloaded_completion = session.wait_for(|capture| {
+            let screen = visible(capture);
+            screen.contains("skill:demo") && screen.contains("Reloaded deterministic PTY skill")
+        });
+        assert!(visible(&reloaded_completion).contains("Reloaded deterministic PTY skill"));
+        session.send_key("Enter");
+        thread::sleep(Duration::from_millis(200));
+        session.send_key("Enter");
+        let reloaded_expansion =
+            session.wait_for(|capture| visible(capture).contains("RELOADED SKILL BODY"));
+        assert!(visible(&reloaded_expansion).contains("RELOADED SKILL BODY"));
+
         // Give the owner loop a settled composer before opening the next
         // modal, just as a human would.
         thread::sleep(Duration::from_millis(750));

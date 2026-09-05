@@ -84,6 +84,19 @@ pub async fn run_bash_with_output(
     abort: Option<Arc<AtomicBool>>,
     on_output: Option<BashOutputCallback>,
 ) -> Result<BashCapture, FileError> {
+    run_bash_with_output_and_shell(command, cwd, timeout_secs, abort, on_output, None).await
+}
+
+/// Run a direct interactive bash command with an optional configured shell.
+/// `None` retains the platform's normal bash/sh discovery path.
+pub async fn run_bash_with_output_and_shell(
+    command: &str,
+    cwd: &str,
+    timeout_secs: Option<f64>,
+    abort: Option<Arc<AtomicBool>>,
+    on_output: Option<BashOutputCallback>,
+    shell_path: Option<&str>,
+) -> Result<BashCapture, FileError> {
     validate_timeout(timeout_secs).map_err(FileError::new)?;
 
     let on_chunk: Option<ChunkHandlerWithProgress> = on_output.map(|callback| {
@@ -100,7 +113,10 @@ pub async fn run_bash_with_output(
             },
         ) as ChunkHandlerWithProgress
     });
-    let environment = StdExecutionEnv::new(cwd.to_string());
+    let environment = match shell_path {
+        Some(path) => StdExecutionEnv::with_shell_path(cwd.to_string(), path.to_string()),
+        None => StdExecutionEnv::new(cwd.to_string()),
+    };
     let capture = execute_shell_with_capture(
         &environment,
         command,
@@ -210,6 +226,19 @@ pub async fn execute_bash_with_updates(
     abort: Option<Arc<AtomicBool>>,
     on_update: Option<ToolUpdateCallback>,
 ) -> Result<AgentToolResult, String> {
+    execute_bash_with_updates_and_shell(command, timeout, cwd, abort, on_update, None).await
+}
+
+/// Execute bash with the configured shell binary used by coding-agent
+/// settings. `None` retains the normal bash/sh discovery path.
+pub async fn execute_bash_with_updates_and_shell(
+    command: &str,
+    timeout: Option<f64>,
+    cwd: &str,
+    abort: Option<Arc<AtomicBool>>,
+    on_update: Option<ToolUpdateCallback>,
+    shell_path: Option<&str>,
+) -> Result<AgentToolResult, String> {
     validate_timeout(timeout)?;
 
     if let Some(on_update) = &on_update {
@@ -250,7 +279,10 @@ pub async fn execute_bash_with_updates(
             },
         ) as ChunkHandlerWithProgress
     });
-    let env = StdExecutionEnv::new(cwd.to_string());
+    let env = match shell_path {
+        Some(path) => StdExecutionEnv::with_shell_path(cwd.to_string(), path.to_string()),
+        None => StdExecutionEnv::new(cwd.to_string()),
+    };
     let capture = execute_shell_with_capture(
         &env,
         command,

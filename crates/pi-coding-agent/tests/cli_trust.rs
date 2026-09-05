@@ -291,9 +291,13 @@ mod interactive_prompt {
         );
         let launched = tmux(&["send-keys", "-t", &session, &command, "Enter"]);
         assert!(launched.status.success(), "interactive launch failed");
-        wait_for(&session, "Trust project folder?");
+        let prompt = wait_for(&session, "Trust project folder?");
+        assert!(
+            prompt.contains("Enter confirm") && prompt.contains("Esc cancel"),
+            "startup trust prompt was not rendered by the TUI selector: {prompt}"
+        );
 
-        let answered = tmux(&["send-keys", "-t", &session, "y", "Enter"]);
+        let answered = tmux(&["send-keys", "-t", &session, "Enter"]);
         assert!(answered.status.success(), "trust answer failed");
         wait_for(&session, "faux-1");
 
@@ -333,8 +337,9 @@ mod interactive_prompt {
         );
         let launched = tmux(&["send-keys", "-t", &session, &command, "Enter"]);
         assert!(launched.status.success(), "interactive launch failed");
-        wait_for(&session, "Trust project folder?");
-        let answered = tmux(&["send-keys", "-t", &session, "y", "Enter"]);
+        let prompt = wait_for(&session, "Trust project folder?");
+        assert!(prompt.contains("Esc cancel"));
+        let answered = tmux(&["send-keys", "-t", &session, "Enter"]);
         assert!(answered.status.success(), "trust answer failed");
         wait_for(&session, "faux-1");
 
@@ -361,6 +366,78 @@ mod interactive_prompt {
         thread::sleep(Duration::from_millis(150));
         let after_cancel = store.get_entry(cwd.to_str().unwrap()).unwrap();
         assert_eq!(after_cancel, saved_parent);
+
+        let quit = tmux(&["send-keys", "-t", &session, "/quit", "Enter"]);
+        assert!(quit.status.success(), "interactive quit failed");
+        thread::sleep(Duration::from_millis(150));
+        let _ = tmux(&["kill-session", "-t", &session]);
+
+        let restart_session = format!("pi-trust-restart-{}", uuid::Uuid::new_v4());
+        let restarted = tmux(&[
+            "new-session",
+            "-d",
+            "-x",
+            "100",
+            "-y",
+            "30",
+            "-c",
+            cwd.to_str().unwrap(),
+            "-s",
+            &restart_session,
+        ]);
+        assert!(restarted.status.success(), "tmux restart session failed");
+        let relaunched = tmux(&["send-keys", "-t", &restart_session, &command, "Enter"]);
+        assert!(relaunched.status.success(), "interactive restart failed");
+        let restarted_screen = wait_for(&restart_session, "faux-1");
+        assert!(
+            !restarted_screen.contains("Trust project folder?"),
+            "saved parent trust unexpectedly prompted again: {restarted_screen}"
+        );
+        let quit_restart = tmux(&["send-keys", "-t", &restart_session, "/quit", "Enter"]);
+        assert!(
+            quit_restart.status.success(),
+            "interactive restart quit failed"
+        );
+        thread::sleep(Duration::from_millis(150));
+        let _ = tmux(&["kill-session", "-t", &restart_session]);
+    }
+
+    #[test]
+    fn interactive_startup_trust_cancel_continues_untrusted_without_persisting() {
+        let sandbox = Sandbox::new("interactive-startup-cancel");
+        let cwd = trust_requiring_project(&sandbox);
+        let session = format!("pi-trust-cancel-{}", uuid::Uuid::new_v4());
+        let created = tmux(&[
+            "new-session",
+            "-d",
+            "-x",
+            "100",
+            "-y",
+            "30",
+            "-c",
+            cwd.to_str().unwrap(),
+            "-s",
+            &session,
+        ]);
+        assert!(created.status.success(), "tmux session creation failed");
+
+        let command = format!(
+            "env HOME={} PI_CODING_AGENT_DIR={} PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 {} --provider faux --model faux-1",
+            shell_quote(sandbox.home.to_str().unwrap()),
+            shell_quote(sandbox.agent_dir.to_str().unwrap()),
+            shell_quote(env!("CARGO_BIN_EXE_pi")),
+        );
+        let launched = tmux(&["send-keys", "-t", &session, &command, "Enter"]);
+        assert!(launched.status.success(), "interactive launch failed");
+        let prompt = wait_for(&session, "Trust project folder?");
+        assert!(prompt.contains("Esc cancel"));
+
+        let cancelled = tmux(&["send-keys", "-t", &session, "Escape"]);
+        assert!(cancelled.status.success(), "startup trust cancel failed");
+        wait_for(&session, "faux-1");
+
+        let store = ProjectTrustStore::new(sandbox.agent_dir.to_str().unwrap());
+        assert_eq!(store.get(cwd.to_str().unwrap()), None);
 
         let quit = tmux(&["send-keys", "-t", &session, "/quit", "Enter"]);
         assert!(quit.status.success(), "interactive quit failed");

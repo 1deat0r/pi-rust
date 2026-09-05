@@ -119,6 +119,11 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
+    fn takeover_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
     struct TransientWriter {
         attempts: usize,
         output: Vec<u8>,
@@ -258,6 +263,44 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
+    #[tokio::test]
+    async fn process_write_lock_keeps_concurrent_frames_contiguous() {
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let start = Arc::new(tokio::sync::Barrier::new(3));
+        let mut tasks = Vec::new();
+        for frame in [b"<first-frame>".as_slice(), b"<second-frame>".as_slice()] {
+            let output = output.clone();
+            let start = start.clone();
+            tasks.push(tokio::spawn(async move {
+                start.wait().await;
+                let _guard = write_lock().lock().await;
+                for byte in frame {
+                    tokio::task::yield_now().await;
+                    output
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(*byte);
+                }
+            }));
+        }
+        start.wait().await;
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        let output = String::from_utf8(
+            output
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone(),
+        )
+        .unwrap();
+        assert!(matches!(
+            output.as_str(),
+            "<first-frame><second-frame>" | "<second-frame><first-frame>"
+        ));
+    }
+
     #[test]
     fn retries_platform_buffer_errors() {
         for code in [11, 55, 105, 10_055] {
@@ -267,6 +310,9 @@ mod tests {
 
     #[test]
     fn takeover_is_scoped_and_restored() {
+        let _test_guard = takeover_test_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         assert!(!OutputTakeover::is_active());
         let outer = OutputTakeover::acquire();
         assert!(OutputTakeover::is_active());
@@ -277,6 +323,21 @@ mod tests {
         drop(outer);
         assert!(OutputTakeover::is_active());
         drop(inner);
+        assert!(!OutputTakeover::is_active());
+    }
+
+    #[test]
+    fn takeover_is_restored_during_panic_unwinding() {
+        let _test_guard = takeover_test_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert!(!OutputTakeover::is_active());
+        let result = std::panic::catch_unwind(|| {
+            let _takeover = OutputTakeover::acquire();
+            assert!(OutputTakeover::is_active());
+            panic!("synthetic terminal owner panic");
+        });
+        assert!(result.is_err());
         assert!(!OutputTakeover::is_active());
     }
 }

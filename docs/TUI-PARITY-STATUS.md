@@ -35,7 +35,7 @@ stay synchronized.
 | TUI-006 | editor deletion | PASS | PASS | OPEN | Direct unit evidence covers the full contract: backspace/delete, multi-scalar grapheme deletion as one unit, line joins, and empty-editor no-ops. Manual terminal comparison remains. |
 | TUI-007 | editor history | PARTIAL | PARTIAL | OPEN | History unit coverage exists; persistence-scope comparison remains. |
 | TUI-008 | kill/yank/undo | PARTIAL | PARTIAL | OPEN | Core unit coverage exists; complete parity boundary evidence remains. |
-| TUI-009 | word navigation | PARTIAL | PARTIAL | OPEN | Unicode/navigation tests exist; all terminal encodings remain. |
+| TUI-009 | word navigation | PASS | PASS | OPEN | Direct unit evidence covers the full contract: every platform binding alias (alt+left/ctrl+left/alt+b, alt+right/ctrl+right/alt+f, alt+d/alt+delete) navigates and deletes across word, punctuation-run, and CJK/Unicode segments, the terminal encodings decode to the canonical keys in both legacy and Kitty transports, and forward/backward segmentation matches upstream Intl.Segmenter stops. Manual terminal comparison remains. |
 | TUI-010 | bracketed paste | PARTIAL | PARTIAL | OPEN | Real PTY proves sub-second large-paste marker echo and exact Unicode/multiline payload persistence after submit; remaining paste boundaries remain. |
 | TUI-011 | autocomplete | PARTIAL | PARTIAL | OPEN | Completion tests exist; every source and cancel boundary remains. |
 | TUI-012 | input buffer | PASS | PASS | OPEN | Direct unit evidence covers the full contract: partial/fragmented sequences, escape timeout, bracketed paste, very-long-input boundaries, EOF (empty-buffer marker, repeated EOF, and EOF with a pending sequence kept flushable), and event ordering. Manual terminal comparison remains. |
@@ -83,8 +83,8 @@ stay synchronized.
 ## Current measured percentages
 
 <!-- PARITY_AUDIT_TUI_METRICS:START -->
-TUI functional implementation: 23.08% (12/52)
-TUI test/evidence parity: 23.08% (12/52)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 <!-- PARITY_AUDIT_TUI_METRICS:END -->
@@ -133,15 +133,15 @@ Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
 Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
 Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
 Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
-TUI functional implementation: 23.08% (12/52)
-TUI test/evidence parity: 23.08% (12/52)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 18.42% (49/266 PASS; 194 PARTIAL; 23 OPEN)
-Non-TUI deterministic evidence parity: 13.53% (36/266 PASS; 207 PARTIAL; 23 OPEN)
-Non-TUI runtime-boundary parity: 13.91% (37/266 PASS; 154 PARTIAL; 75 OPEN)
-Non-TUI overall parity: 11.28% (30/266)
-Whole-product behavioral parity: 9.43% (30/318)
+Non-TUI implementation parity: 31.58% (84/266 PASS; 159 PARTIAL; 23 OPEN)
+Non-TUI deterministic evidence parity: 26.69% (71/266 PASS; 172 PARTIAL; 23 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 141 PARTIAL; 74 OPEN)
+Non-TUI overall parity: 16.54% (44/266)
+Whole-product behavioral parity: 13.84% (44/318)
 
 The definitions and refresh command are maintained in
 [`PARITY-DASHBOARD.md`](PARITY-DASHBOARD.md).

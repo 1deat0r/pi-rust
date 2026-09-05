@@ -362,6 +362,33 @@ fn round_trips_records_facts_and_recovery() {
         );
         records.push(
             session
+                .append_record(NewRecord::QueueCancelled {
+                    id: "steer-cancelled".into(),
+                    lane: "main".into(),
+                    run_id: Some("run".into()),
+                    entry_id: "steer-message".into(),
+                })
+                .await
+                .unwrap(),
+        );
+        records.push(
+            session
+                .append_record(NewRecord::WriteDeferred {
+                    id: "deferred".into(),
+                    lane: "main".into(),
+                    run_id: "run".into(),
+                    target: serde_json::json!({
+                        "type": "custom",
+                        "id": "deferred-entry",
+                        "customType": "note",
+                        "data": {"text": "later"}
+                    }),
+                })
+                .await
+                .unwrap(),
+        );
+        records.push(
+            session
                 .append_record(NewRecord::StepAttempt {
                     id: "assistant-attempt".into(),
                     lane: "main".into(),
@@ -370,6 +397,23 @@ fn round_trips_records_facts_and_recovery() {
                     attempt: 1,
                     result_entry_id: "assistant-result".into(),
                     compaction_reason: None,
+                })
+                .await
+                .unwrap(),
+        );
+        records.push(
+            session
+                .append_record(NewRecord::ToolStarted {
+                    id: "tool-started".into(),
+                    lane: "main".into(),
+                    run_id: "run".into(),
+                    assistant_entry_id: "assistant-result".into(),
+                    tool_index: 0,
+                    tool_call_id: "call-1".into(),
+                    tool_name: "read".into(),
+                    effective_args: serde_json::json!({"path": "README.md"}),
+                    result_entry_id: "tool-result".into(),
+                    replay: "execute".into(),
                 })
                 .await
                 .unwrap(),
@@ -428,6 +472,41 @@ fn round_trips_records_facts_and_recovery() {
                 .unwrap(),
         );
 
+        // A second lane must share the file's global sequence while keeping
+        // its operation state independent from the main lane.
+        session
+            .create_lane("thread", Some(&anchor_id))
+            .await
+            .unwrap();
+        records.push(
+            session
+                .append_record(NewRecord::OperationStarted {
+                    id: "thread-run".into(),
+                    lane: "thread".into(),
+                    source_leaf_id: None,
+                    intent: OperationIntent::Run {
+                        original_prompt: vec![user_message("thread prompt")],
+                        initial_messages: vec![],
+                        system_prompt_override: None,
+                        resume_data: None,
+                    },
+                })
+                .await
+                .unwrap(),
+        );
+        records.push(
+            session
+                .append_record(NewRecord::OperationFinished {
+                    id: "thread-finished".into(),
+                    lane: "thread".into(),
+                    run_id: "thread-run".into(),
+                    outcome: "completed".into(),
+                    error: None,
+                })
+                .await
+                .unwrap(),
+        );
+
         // Facts
         session.set_name(Some("Example")).await.unwrap();
         session.set_label(&anchor_id_b, Some("checkpoint")).await.unwrap();
@@ -441,9 +520,28 @@ fn round_trips_records_facts_and_recovery() {
                 .unwrap(),
             records
         );
+        let all_records = restored
+            .find_records(&RecordQuery {
+                order: Some(EntryOrder::OldestFirst),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(all_records.windows(2).all(|pair| pair[0].seq() < pair[1].seq()));
+        assert!(restored
+            .find_open_operations("main", None)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(restored
+            .find_open_operations("thread", None)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(restored.get_stats().await.total_tokens, 10);
         assert_eq!(
             restored
-                .find_records(&RecordQuery { record_type: Some("operation_started".into()), operation_kind: Some("run".into()), limit: Some(1), ..Default::default() })
+                .find_records(&RecordQuery { record_type: Some("operation_started".into()), operation_kind: Some("run".into()), lane: Some("main".into()), limit: Some(1), ..Default::default() })
                 .await
                 .unwrap()
                 .iter()
@@ -656,5 +754,105 @@ fn load_repairs_unterminated_tail() {
             .unwrap()
             .ends_with('\n'));
         assert_eq!(restored.get_name().await, None);
+    });
+}
+
+#[test]
+fn reopens_interleaved_model_thinking_tools_and_replays_latest_state() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let mut session = JsonlSessionStorage::create(
+            fs.clone(),
+            "/sessions/interleaved.jsonl",
+            header("interleaved", "/work"),
+        )
+        .await
+        .unwrap();
+        session
+            .append_entry(enter_message("question", "u", 1), "main")
+            .await
+            .unwrap();
+        session
+            .append_entry(
+                EntryNoStats::ModelChange {
+                    id: "model".into(),
+                    provider: "faux".into(),
+                    model_id: "first".into(),
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        session
+            .append_entry(
+                EntryNoStats::ActiveTools {
+                    id: "empty-tools".into(),
+                    active_tool_names: vec![],
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        session
+            .append_entry(
+                EntryNoStats::ThinkingLevel {
+                    id: "thinking".into(),
+                    thinking_level: "high".into(),
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        session
+            .append_entry(
+                EntryNoStats::ActiveTools {
+                    id: "tools".into(),
+                    active_tool_names: vec!["bash".into()],
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        session
+            .append_entry(
+                EntryNoStats::ModelChange {
+                    id: "model-again".into(),
+                    provider: "faux".into(),
+                    model_id: "second".into(),
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+
+        let reopened = JsonlSessionStorage::load(fs, "/sessions/interleaved.jsonl")
+            .await
+            .unwrap();
+        let entries = reopened
+            .find_entries(&EntryQuery {
+                order: Some(EntryOrder::OldestFirst),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 6);
+        assert!(entries.windows(2).all(|pair| pair[0].seq() < pair[1].seq()));
+        let context =
+            pi_agent::session::context::build_session_context(&entries, &Default::default());
+        assert_eq!(
+            context.model.as_ref().map(|model| model.1.as_str()),
+            Some("second")
+        );
+        assert_eq!(context.thinking_level, "high");
+        assert_eq!(
+            context.active_tool_names.as_deref(),
+            Some(["bash".to_string()].as_slice())
+        );
+        assert_eq!(context.messages.len(), 1);
+        assert_eq!(context.messages[0].role(), "user");
     });
 }

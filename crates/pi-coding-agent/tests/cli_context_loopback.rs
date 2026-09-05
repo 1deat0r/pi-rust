@@ -67,6 +67,20 @@ fn run_pi(
     sessions: &Path,
     no_context_files: bool,
 ) -> std::process::Output {
+    let mut extra_args = vec!["--no-tools"];
+    if no_context_files {
+        extra_args.push("--no-context-files");
+    }
+    run_pi_with_args(root, home, agent_dir, sessions, &extra_args)
+}
+
+fn run_pi_with_args(
+    root: &Path,
+    home: &Path,
+    agent_dir: &Path,
+    sessions: &Path,
+    extra_args: &[&str],
+) -> std::process::Output {
     let mut args = vec![
         "--print",
         "--provider",
@@ -76,11 +90,8 @@ fn run_pi(
         "--api-key",
         "synthetic-loopback-key",
         "--no-session",
-        "--no-tools",
     ];
-    if no_context_files {
-        args.push("--no-context-files");
-    }
+    args.extend_from_slice(extra_args);
     args.push("context probe");
 
     Command::new(env!("CARGO_BIN_EXE_pi"))
@@ -98,6 +109,122 @@ fn run_pi(
         .args(args)
         .output()
         .expect("spawn pi loopback process")
+}
+
+#[test]
+fn composed_prompt_reaches_the_provider_with_upstream_section_order() {
+    let root = std::env::temp_dir().join(format!(
+        "pi-agent008-system-prompt-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let home = root.join("home");
+    let agent_dir = home.join(".pi").join("agent");
+    let sessions = root.join("sessions");
+    let skill_dir = agent_dir.join("skills").join("agent008");
+    fs::create_dir_all(&skill_dir).expect("create skill directory");
+    fs::create_dir_all(&sessions).expect("create session directory");
+    fs::write(
+        root.join("AGENTS.md"),
+        "AGENT008_CONTEXT: provider-visible project context",
+    )
+    .expect("write context fixture");
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: agent008\ndescription: AGENT008_SKILL provider-visible skill\n---\nbody\n",
+    )
+    .expect("write skill fixture");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback provider");
+    let address = listener.local_addr().expect("loopback provider address");
+    let (requests_tx, requests_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept provider request");
+            requests.push(request_body(&mut stream));
+            let body = response_body();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write provider response");
+        }
+        requests_tx.send(requests).expect("send captured requests");
+    });
+
+    fs::write(
+        agent_dir.join("models.json"),
+        format!(r#"{{"providers":{{"openai":{{"baseUrl":"http://{address}/v1"}}}}}}"#),
+    )
+    .expect("write loopback models config");
+
+    let default = run_pi_with_args(&root, &home, &agent_dir, &sessions, &["--tools", "read"]);
+    assert!(
+        default.status.success(),
+        "default stderr: {}",
+        String::from_utf8_lossy(&default.stderr)
+    );
+    let custom = run_pi_with_args(
+        &root,
+        &home,
+        &agent_dir,
+        &sessions,
+        &[
+            "--tools",
+            "read",
+            "--system-prompt",
+            "AGENT008_OVERRIDE: custom base",
+            "--append-system-prompt",
+            "AGENT008_APPEND_ONE",
+            "--append-system-prompt",
+            "AGENT008_APPEND_TWO",
+        ],
+    );
+    assert!(
+        custom.status.success(),
+        "custom stderr: {}",
+        String::from_utf8_lossy(&custom.stderr)
+    );
+
+    let requests = requests_rx.recv().expect("captured provider requests");
+    server.join().expect("join loopback provider");
+    assert_eq!(requests.len(), 2);
+
+    let default_prompt = system_prompt(&requests[0]);
+    assert!(default_prompt.starts_with("You are an expert coding assistant"));
+    assert!(default_prompt.contains("- read: Read file contents"));
+    assert!(!default_prompt.contains("- bash: Execute bash commands"));
+    assert!(default_prompt.contains("AGENT008_CONTEXT"));
+    assert!(default_prompt.contains("AGENT008_SKILL"));
+
+    let custom_prompt = system_prompt(&requests[1]);
+    let base = custom_prompt
+        .find("AGENT008_OVERRIDE")
+        .expect("custom base");
+    let append_one = custom_prompt
+        .find("AGENT008_APPEND_ONE")
+        .expect("first append");
+    let append_two = custom_prompt
+        .find("AGENT008_APPEND_TWO")
+        .expect("second append");
+    let context = custom_prompt.find("AGENT008_CONTEXT").expect("context");
+    let skill = custom_prompt.find("AGENT008_SKILL").expect("skill");
+    let cwd = custom_prompt
+        .find("Current working directory:")
+        .expect("working directory");
+    assert!(base < append_one);
+    assert!(append_one < append_two);
+    assert!(append_two < context);
+    assert!(context < skill);
+    assert!(skill < cwd);
+    assert!(custom_prompt.ends_with(&format!("{}\n", root.to_string_lossy())));
+    assert!(String::from_utf8_lossy(&default.stdout).contains("loopback reply"));
+    assert!(String::from_utf8_lossy(&custom.stdout).contains("loopback reply"));
+
+    fs::remove_dir_all(root).expect("remove loopback fixture");
 }
 
 #[test]

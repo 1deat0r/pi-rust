@@ -125,7 +125,7 @@ fn grapheme_safe_word_segments(text: &str) -> Vec<Segment> {
                 && segment.is_word_like
                 && is_cjk_word_segment(&previous.segment)
                 && is_cjk_word_segment(&segment.segment)
-                && grapheme_boundaries(&previous.segment).len() < 2
+                && cjk_runs_join(&previous.segment, &segment.segment)
         });
         if joins_previous {
             let previous = cjk_runs.last_mut().expect("checked above");
@@ -162,6 +162,24 @@ fn is_cjk_word_segment(segment: &str) -> bool {
                         && !('\u{3000}'..='\u{303f}').contains(&character)
                 })
         })
+}
+
+/// Script-aware CJK run grouping for word navigation.
+///
+/// Same-script-class runs join; mixed Han/phonetic runs split at the Han
+/// boundary. Han runs stay pair-capped (pinned `你好|世界` behavior);
+/// phonetic-script runs (Hiragana/Katakana/Hangul/Bopomofo) absorb maximally
+/// (pinned `こんにちは` whole-word behavior). See
+/// `word_navigation::cjk_segment_contains_han` for the calibration note.
+fn cjk_runs_join(previous: &str, segment: &str) -> bool {
+    let previous_han = crate::word_navigation::cjk_segment_contains_han(previous);
+    if previous_han != crate::word_navigation::cjk_segment_contains_han(segment) {
+        return false;
+    }
+    if previous_han {
+        return grapheme_boundaries(previous).len() < 2;
+    }
+    true
 }
 
 fn find_word_backward_safe(text: &str, cursor: usize) -> usize {

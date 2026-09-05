@@ -2042,7 +2042,15 @@ pub fn export_session_file(
 /// `<APP_NAME>-session-<basename-without-jsonl>.html` in the cwd.
 fn default_output_path(input_path: &str, output_path: Option<&str>) -> String {
     if let Some(p) = output_path {
-        return p.to_string();
+        let expanded = crate::config::expand_tilde_path(p);
+        if expanded.starts_with("file://") {
+            if let Ok(url) = url::Url::parse(&expanded) {
+                if let Ok(path) = url.to_file_path() {
+                    return path.to_string_lossy().into_owned();
+                }
+            }
+        }
+        return expanded;
     }
     let basename = Path::new(input_path)
         .file_stem()

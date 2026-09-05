@@ -7,7 +7,7 @@
 use pi_agent::fs::{FileSystem, MemoryFs};
 use pi_agent::session::jsonl::repo::jsonl_session_directory_name;
 use pi_agent::session::state::{EntryOrder, EntryQuery, ForkOptions};
-use pi_agent::session::types::{EntryNoStats, SessionErrorKind};
+use pi_agent::session::types::{Entry, EntryNoStats, SessionErrorKind};
 use pi_agent::session::{CreateOptions, JsonlSessionRepo};
 use pi_ai::types::{ContentBlock, Message, UserContent};
 
@@ -632,5 +632,74 @@ fn rejects_non_consecutive_sequence_during_replay() {
             message.contains("non-consecutive seq 2"),
             "expected sequence-integrity diagnostic, got {message}"
         );
+    });
+}
+
+#[test]
+fn replay_accepts_unknown_entry_fields_without_losing_tree_semantics() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let path = "/sessions/--work--/forward-compatible.jsonl";
+        fs.ensure_dir("/sessions/--work--");
+        let header = serde_json::json!({
+            "kind": "header", "version": 4, "id": "forward-compatible",
+            "createdAt": 1, "cwd": "/work"
+        });
+        let message = serde_json::json!({
+            "kind": "entry", "lane": "main", "type": "message", "id": "m1",
+            "seq": 1, "parentId": null, "timestamp": 1, "terminate": true,
+            "futureEntry": {"owner": "extension"},
+            "message": {
+                "role": "user", "content": [{"type": "text", "text": "hello", "futureBlock": 1}],
+                "timestamp": 1, "futureMessage": "raw"
+            }
+        });
+        let custom = serde_json::json!({
+            "kind": "entry", "lane": "main", "type": "custom", "id": "c1",
+            "seq": 2, "parentId": "m1", "timestamp": 2, "customType": "note",
+            "data": {"text": "world"}, "futureEntry": 42
+        });
+        fs.write_file(path, &format!("{header}\n{message}\n{custom}\n"))
+            .unwrap();
+
+        let storage = pi_agent::session::jsonl::storage::JsonlSessionStorage::<MemoryFs>::load(
+            fs.clone(),
+            path,
+        )
+        .await
+        .expect("unknown fields must not prevent replay");
+        let entries = storage
+            .find_entries(&EntryQuery {
+                order: Some(EntryOrder::OldestFirst),
+                ..EntryQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(
+            &entries[0],
+            Entry::Message {
+                id,
+                parent_id: None,
+                terminate: Some(true),
+                ..
+            } if id == "m1"
+        ));
+        assert!(matches!(
+            &entries[1],
+            Entry::Custom {
+                id,
+                parent_id: Some(parent),
+                custom_type,
+                ..
+            } if id == "c1" && parent == "m1" && custom_type == "note"
+        ));
+        let raw = fs.content(path).unwrap();
+        assert!(raw.contains("futureEntry"));
+        assert!(raw.contains("futureMessage"));
     });
 }

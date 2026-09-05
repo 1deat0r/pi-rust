@@ -4,8 +4,8 @@
 //! `openai_responses` (+ `openai_responses_shared`), `azure_openai_responses`,
 //! `google_generative_ai` (+ `google_shared`), `transform_messages`,
 //! `mistral_conversations` (native Mistral Chat Completions), and
-//! `openai_codex_responses` (ChatGPT Codex over SSE; the WebSocket transport
-//! is a documented divergence), `github_copilot_headers`, `cloudflare`,
+//! `openai_codex_responses` (ChatGPT Codex over SSE and WebSocket),
+//! `github_copilot_headers`, `cloudflare`,
 //! `pi_messages`, `openrouter_images`, `google_vertex`, `bedrock_converse`.
 
 pub mod anthropic_messages;

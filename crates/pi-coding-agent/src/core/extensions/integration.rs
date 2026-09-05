@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 use crate::args::{Args, ExtensionFlagValue};
 use crate::core::settings::SettingsManager;
 
-use super::loader::{discover_and_load_extensions, load_extensions_with_host_actions};
+use super::loader::load_extensions_with_host_actions;
 use super::runner::{ExtensionRunner, ResourceDiscovery};
 use super::types::{
     ExtensionHostAction, ExtensionHostActionOutcome, ExtensionHostActions, ExtensionLoadError,
@@ -1481,6 +1481,66 @@ pub fn load_for_mode(
     )
 }
 
+/// Load the extension subset allowed to participate in project-trust
+/// resolution. This bootstrap pass deliberately omits normal session and
+/// resource-discovery lifecycle events: the returned runner exists only long
+/// enough to emit `project_trust`, then the final trusted/untrusted runtime is
+/// built once through [`load_for_mode`].
+#[allow(clippy::too_many_arguments)]
+pub fn load_for_project_trust(
+    args: &Args,
+    settings: &SettingsManager,
+    cwd: &str,
+    agent_dir: &str,
+    mode: &str,
+    has_ui: bool,
+    session_name: Option<String>,
+    thinking_level: impl Into<String>,
+) -> LoadedExtensions {
+    debug_assert!(
+        !settings.is_project_trusted(),
+        "project-trust bootstrap settings must be untrusted"
+    );
+    let host = Arc::new(ExtensionHostState::new(session_name, thinking_level));
+    host.set_ui_enabled(false);
+    host.set_project_trusted(false);
+    host.set_system_prompt_options(json!({"cwd": cwd}));
+    let mut configured_paths = args.extensions.clone();
+    if !args.no_extensions {
+        configured_paths.extend(settings.get_extension_paths());
+    }
+    let result = if args.no_extensions {
+        load_extensions_with_host_actions(&configured_paths, cwd, None, None, host.clone())
+    } else {
+        let result = crate::core::extensions::loader::discover_and_load_extensions_for_trust(
+            &configured_paths,
+            cwd,
+            agent_dir,
+            None,
+            None,
+            false,
+        );
+        result.bind_core_with_actions(host.clone());
+        result
+    };
+    let runtime = result.runtime.clone();
+    if let Some(flag_values) = parsed_extension_flag_values(args) {
+        if let Ok(mut runtime) = runtime.lock() {
+            runtime.flag_values.extend(flag_values);
+        }
+    }
+    let mut runner = ExtensionRunner::new(result.extensions, result.runtime, cwd.to_string());
+    runner.set_ui_context(mode, has_ui);
+    let runner = Arc::new(runner);
+    LoadedExtensions {
+        runner,
+        host,
+        runtime,
+        errors: result.errors,
+        resources: ResourceDiscovery::default(),
+    }
+}
+
 /// Load a mode-scoped extension runtime and emit its session lifecycle
 /// startup event.  Reload callers use `reason = "reload"` so extensions can
 /// distinguish a fresh process from a resource refresh.
@@ -1575,7 +1635,14 @@ pub fn load_for_mode_with_reason_and_flags_and_previous(
         load_extensions_with_host_actions(&configured_paths, cwd, None, None, host.clone())
     } else {
         let agent_dir = agent_dir.to_string();
-        let result = discover_and_load_extensions(&configured_paths, cwd, &agent_dir, None, None);
+        let result = crate::core::extensions::loader::discover_and_load_extensions_for_trust(
+            &configured_paths,
+            cwd,
+            &agent_dir,
+            None,
+            None,
+            settings.is_project_trusted(),
+        );
         result.bind_core_with_actions(host.clone());
         result
     };
@@ -2087,6 +2154,77 @@ mod tests {
         );
         all.runner
             .invalidate(Some("extension precedence test complete"));
+    }
+
+    #[test]
+    fn untrusted_mode_loader_excludes_project_extension_discovery() {
+        let root = fixture_root("untrusted-mode-loader");
+        let project = root.join("project");
+        let agent_dir = root.join("agent");
+        let project_extensions = project
+            .join(crate::config::CONFIG_DIR_NAME)
+            .join("extensions");
+        let global_extensions = agent_dir.join("extensions");
+        std::fs::create_dir_all(&project_extensions).expect("project extensions");
+        std::fs::create_dir_all(&global_extensions).expect("global extensions");
+        let project_entry = project_extensions.join("project.ts");
+        let global_entry = global_extensions.join("global.ts");
+        std::fs::write(&project_entry, "project").expect("project extension");
+        std::fs::write(&global_entry, "global").expect("global extension");
+        let args = Args::default();
+        let mut settings = SettingsManager::create(
+            &project.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            crate::core::settings::SettingsManagerCreateOptions {
+                project_trusted: false,
+            },
+        );
+
+        let untrusted = load_for_mode(
+            &args,
+            &settings,
+            &project.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            "print",
+            false,
+            None,
+            "medium",
+        );
+        assert_eq!(
+            untrusted
+                .errors
+                .iter()
+                .map(|error| error.path.clone())
+                .collect::<Vec<_>>(),
+            vec![global_entry.to_string_lossy().into_owned()]
+        );
+        untrusted.runner.invalidate(Some("untrusted test complete"));
+
+        settings.set_project_trusted(true);
+        let trusted = load_for_mode(
+            &args,
+            &settings,
+            &project.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            "print",
+            false,
+            None,
+            "medium",
+        );
+        assert_eq!(
+            trusted
+                .errors
+                .iter()
+                .map(|error| error.path.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                project_entry.to_string_lossy().into_owned(),
+                global_entry.to_string_lossy().into_owned(),
+            ]
+        );
+        trusted.runner.invalidate(Some("trusted test complete"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

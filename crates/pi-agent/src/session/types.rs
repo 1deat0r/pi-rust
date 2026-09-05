@@ -16,9 +16,12 @@ pub type JsonValue = serde_json::Value;
 
 /// Entry union. JSONL files use `type` as the discriminator; `seq`,
 /// `parentId`, and `timestamp` are storage-assigned at append time.
+/// Unknown fields are intentionally ignored during typed projection, matching
+/// the forward-compatible upstream session reader. Required fields and their
+/// types remain validated by serde and the JSONL codec.
 #[allow(clippy::large_enum_variant)] // preserve the public upstream session union
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Entry {
     #[serde(rename = "message")]
     Message {
@@ -364,9 +367,11 @@ impl Entry {
 }
 
 /// Provisioned entries lack `seq`/`parentId`/`timestamp` (assigned at append).
+/// Extra fields are accepted and discarded when converting an extension/raw
+/// object into the typed append contract; required fields remain strict.
 #[allow(clippy::large_enum_variant)] // preserve the public upstream session union
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum EntryNoStats {
     #[serde(rename = "message")]
     Message {

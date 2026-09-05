@@ -384,6 +384,10 @@ pub struct RichAgentLoopConfig {
     /// Replace image blocks at the provider boundary while keeping them in
     /// the durable transcript/UI result.
     pub block_images: bool,
+    /// Normalize images in finalized tool results after `after_tool_call`.
+    /// `None` keeps the provider-neutral agent behavior; coding-agent enables
+    /// this with its persisted image processing setting.
+    pub tool_result_image_options: Option<crate::tools::image::ProcessImageOptions>,
     /// Optional transform applied at the AgentMessage level before conversion.
     pub transform_context: Option<TransformContextHook>,
     /// Dynamic API key resolver for each LLM call.
@@ -443,6 +447,7 @@ impl RichAgentLoopConfig {
             signal,
             convert_to_llm: None,
             block_images: false,
+            tool_result_image_options: None,
             transform_context: None,
             get_api_key: None,
             reasoning: None,
@@ -1369,61 +1374,66 @@ async fn finalize_tool_call(
     message: &AssistantMessage,
     tc: &ToolCallRef<'_>,
     args: serde_json::Value,
-    result: crate::tools::AgentToolResult,
+    mut result: crate::tools::AgentToolResult,
     is_error: bool,
     config: &RichAgentLoopConfig,
 ) -> (crate::tools::AgentToolResult, bool) {
-    let Some(hook) = &config.after_tool_call else {
-        return (result, is_error);
-    };
-    let after_future = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        hook(
-            AfterToolCallContext {
-                assistant_message: message.clone(),
-                tool_call_id: tc.id.to_string(),
-                tool_name: tc.name.to_string(),
-                args,
-                result: agent_tool_result_to_message(tc.id, tc.name, &result, is_error),
-                is_error,
+    let (mut result, is_error) = if let Some(hook) = &config.after_tool_call {
+        let after_future = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            hook(
+                AfterToolCallContext {
+                    assistant_message: message.clone(),
+                    tool_call_id: tc.id.to_string(),
+                    tool_name: tc.name.to_string(),
+                    args,
+                    result: agent_tool_result_to_message(tc.id, tc.name, &result, is_error),
+                    is_error,
+                },
+                config.signal.clone(),
+            )
+        }));
+        let after = match after_future {
+            Ok(future) => match await_hook_optional(future, config.signal.clone()).await {
+                Ok(after) => after,
+                Err(HookFailure::Aborted) => {
+                    return (create_error_agent_tool_result("Operation aborted"), true);
+                }
+                Err(HookFailure::Panicked(message)) => {
+                    return (create_error_agent_tool_result(&message), true);
+                }
             },
-            config.signal.clone(),
-        )
-    }));
-    let after = match after_future {
-        Ok(future) => match await_hook_optional(future, config.signal.clone()).await {
-            Ok(after) => after,
-            Err(HookFailure::Aborted) => {
-                return (create_error_agent_tool_result("Operation aborted"), true);
-            }
-            Err(HookFailure::Panicked(message)) => {
+            Err(panic) => {
+                let message = panic_payload_message(panic);
                 return (create_error_agent_tool_result(&message), true);
             }
-        },
-        Err(panic) => {
-            let message = panic_payload_message(panic);
-            return (create_error_agent_tool_result(&message), true);
+        };
+        if let Some(after) = after {
+            if let Some(content) = after.content {
+                result.content = content;
+            }
+            if let Some(details) = after.details {
+                result.details = Some(details);
+            }
+            if let Some(usage) = after.usage {
+                result.usage = Some(usage);
+            }
+            if let Some(added_tool_names) = after.added_tool_names {
+                result.added_tool_names = added_tool_names;
+            }
+            if let Some(terminate) = after.terminate {
+                result.terminate = terminate;
+            }
+            (result, after.is_error.unwrap_or(is_error))
+        } else {
+            (result, is_error)
         }
+    } else {
+        (result, is_error)
     };
-    let Some(after) = after else {
-        return (result, is_error);
-    };
-    let mut result = result;
-    if let Some(content) = after.content {
-        result.content = content;
+    if let Some(options) = config.tool_result_image_options {
+        result.content =
+            crate::tools::image::normalize_tool_result_images(&result.content, options);
     }
-    if let Some(details) = after.details {
-        result.details = Some(details);
-    }
-    if let Some(usage) = after.usage {
-        result.usage = Some(usage);
-    }
-    if let Some(added_tool_names) = after.added_tool_names {
-        result.added_tool_names = added_tool_names;
-    }
-    if let Some(terminate) = after.terminate {
-        result.terminate = terminate;
-    }
-    let is_error = after.is_error.unwrap_or(is_error);
     (result, is_error)
 }
 
@@ -2137,6 +2147,7 @@ pub struct Agent {
     should_stop_after_turn: Option<ShouldStopAfterTurnHook>,
     tool_execution: ToolExecutionMode,
     block_images: bool,
+    tool_result_image_options: Option<crate::tools::image::ProcessImageOptions>,
     session_id: Option<String>,
     runtime_options: Mutex<AgentRuntimeOptions>,
     prepare_next_turn: Option<PrepareNextTurnHook>,
@@ -2211,6 +2222,7 @@ impl Agent {
             should_stop_after_turn: None,
             tool_execution: ToolExecutionMode::Parallel,
             block_images: false,
+            tool_result_image_options: None,
             session_id: None,
             runtime_options: Mutex::new(AgentRuntimeOptions::default()),
             prepare_next_turn: None,
@@ -2326,6 +2338,12 @@ impl Agent {
     }
     pub fn set_block_images(&mut self, block_images: bool) {
         self.block_images = block_images;
+    }
+    pub fn set_tool_result_image_options(
+        &mut self,
+        options: Option<crate::tools::image::ProcessImageOptions>,
+    ) {
+        self.tool_result_image_options = options;
     }
 
     pub fn state(&self) -> std::sync::MutexGuard<'_, AgentState> {
@@ -2731,6 +2749,7 @@ impl Agent {
         config.on_response = self.on_response.clone();
         config.convert_to_llm = self.convert_to_llm.clone();
         config.block_images = self.block_images;
+        config.tool_result_image_options = self.tool_result_image_options;
         config.before_tool_call = self.before_tool_call.clone();
         config.after_tool_call = self.after_tool_call.clone();
         config.should_stop_after_turn = self.should_stop_after_turn.clone();
@@ -3023,7 +3042,9 @@ mod tests {
             ]);
             let model = core.get_model(None).unwrap().clone();
             let calls = Arc::new(AtomicUsize::new(0));
-            let options_seen = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+            let options_seen = Arc::new(Mutex::new(
+                Vec::<(Option<String>, Option<ThinkingLevel>)>::new(),
+            ));
             let stream_fn = {
                 let core = core.clone();
                 let options_seen = options_seen.clone();
@@ -3034,7 +3055,7 @@ mod tests {
                         options_seen
                             .lock()
                             .unwrap_or_else(|error| error.into_inner())
-                            .push(options.base.session_id.clone());
+                            .push((options.base.session_id.clone(), options.reasoning));
                         core.stream(model, context, Some(options))
                     },
                 ) as StreamFnWithOptions
@@ -3113,13 +3134,89 @@ mod tests {
                 *options_seen
                     .lock()
                     .unwrap_or_else(|error| error.into_inner()),
-                vec![Some("turn-1".into()), Some("turn-2".into())]
+                vec![
+                    (Some("turn-1".into()), None),
+                    (Some("turn-2".into()), Some(ThinkingLevel::Low)),
+                ]
             );
             assert_eq!(
                 *order.lock().unwrap_or_else(|error| error.into_inner()),
                 vec!["turn_end", "prepare", "turn_end", "prepare"]
             );
             assert_eq!(calls.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn rich_loop_api_key_resolver_precedes_fallback_and_panics_are_isolated() {
+        let rt = rt();
+        rt.block_on(async {
+            async fn run_with_resolver(
+                resolver: ApiKeyResolver,
+                expected: &str,
+            ) -> Vec<AgentMessage> {
+                let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+                core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
+                    vec![ContentBlock::text("safe")],
+                    FauxAssistantOptions::default(),
+                ))]);
+                let model = core.get_model(None).unwrap().clone();
+                let seen = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+                let seen_for_stream = seen.clone();
+                let core_for_stream = core.clone();
+                let stream_fn: StreamFnWithOptions = Arc::new(move |model, context, options| {
+                    seen_for_stream
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(options.base.base.api_key.clone());
+                    core_for_stream.stream(model, context, Some(options))
+                });
+                let mut config = RichAgentLoopConfig::new(
+                    model,
+                    Arc::new(|_, _| {
+                        pi_ai::create_error_stream("test", "test", "test", "unused".into())
+                    }),
+                    None,
+                );
+                config.stream_fn_with_options = Some(stream_fn);
+                config.get_api_key = Some(resolver);
+                config.api_key = Some("fallback-key".into());
+                let mut context = AgentContext::new(None, Vec::new());
+                let messages = run_rich_agent_loop(
+                    vec![steer_msg("resolve key")],
+                    &mut context,
+                    &config,
+                    &mut |_| {},
+                )
+                .await;
+                assert_eq!(
+                    *seen.lock().unwrap_or_else(|error| error.into_inner()),
+                    vec![Some(expected.to_string())]
+                );
+                messages
+            }
+
+            let resolved = run_with_resolver(
+                Arc::new(|provider| {
+                    assert_eq!(provider, "faux");
+                    Some("resolved-key".into())
+                }),
+                "resolved-key",
+            )
+            .await;
+            assert!(resolved.iter().any(|message| matches!(
+                message,
+                AgentMessage::Core(Message::Assistant(assistant))
+                    if assistant.stop_reason() == Some(StopReason::Stop)
+            )));
+
+            let recovered =
+                run_with_resolver(Arc::new(|_| panic!("resolver panic")), "fallback-key").await;
+            assert!(recovered.iter().any(|message| matches!(
+                message,
+                AgentMessage::Core(Message::Assistant(assistant))
+                    if assistant.stop_reason() == Some(StopReason::Stop)
+            )));
         });
     }
 
@@ -3509,16 +3606,39 @@ mod tests {
             let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
             let model = core.get_model(None).unwrap().clone();
             let mut cfg = RichAgentLoopConfig::new(model, scripted_stream(core), None);
-            cfg.after_tool_call = Some(Arc::new(|context, _| {
+            let mut bmp = vec![0u8; 58];
+            bmp[0..2].copy_from_slice(b"BM");
+            bmp[2..6].copy_from_slice(&58u32.to_le_bytes());
+            bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+            bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+            bmp[18..22].copy_from_slice(&1i32.to_le_bytes());
+            bmp[22..26].copy_from_slice(&1i32.to_le_bytes());
+            bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+            bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+            bmp[34..38].copy_from_slice(&4u32.to_le_bytes());
+            bmp[56] = 0xff;
+            let bmp = crate::tools::image::encode_base64(&bmp);
+            cfg.after_tool_call = Some(Arc::new(move |context, _| {
+                let bmp = bmp.clone();
                 Box::pin(async move {
                     assert_eq!(context.tool_name, "echo");
                     Some(AfterToolCallResult {
-                        content: Some(vec![ContentBlock::text("overridden")]),
+                        content: Some(vec![
+                            ContentBlock::text("overridden"),
+                            ContentBlock::Image {
+                                data: bmp,
+                                mime_type: "image/bmp".to_string(),
+                            },
+                        ]),
                         terminate: Some(true),
                         ..Default::default()
                     })
                 })
             }));
+            cfg.tool_result_image_options = Some(crate::tools::image::ProcessImageOptions {
+                auto_resize_images: false,
+                ..Default::default()
+            });
             let context = AgentContext::new(Some("test".into()), vec![tool]);
             let message = faux_assistant_message(
                 vec![
@@ -3561,6 +3681,15 @@ mod tests {
                     if content.iter().any(|block| matches!(
                         block,
                         ContentBlock::Text { text, .. } if text == "overridden"
+                    ))
+                    && content.iter().any(|block| matches!(
+                        block,
+                        ContentBlock::Image { mime_type, .. } if mime_type == "image/png"
+                    ))
+                    && content.iter().any(|block| matches!(
+                        block,
+                        ContentBlock::Text { text, .. }
+                            if text == "[Image converted from image/bmp to image/png.]"
                     ))
             ));
         });
@@ -3615,6 +3744,72 @@ mod tests {
                 *observed.lock().unwrap_or_else(|error| error.into_inner()),
                 vec![serde_json::json!(123)]
             );
+        });
+    }
+
+    #[test]
+    fn blocked_tool_terminate_hint_stops_the_batch_without_execution() {
+        let rt = rt();
+        rt.block_on(async {
+            let executions = Arc::new(AtomicUsize::new(0));
+            let executions_by_tool = executions.clone();
+            let tool = AgentTool::new(
+                pi_ai::types::json_tool(
+                    "blocked",
+                    "must be blocked before execution",
+                    &serde_json::json!({"type": "object", "properties": {}}),
+                ),
+                "blocked",
+                Arc::new(move |_, _, _, _| {
+                    executions_by_tool.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async { Ok(crate::tools::AgentToolResult::text("unexpected")) })
+                }),
+            );
+            let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+            let model = core.get_model(None).unwrap().clone();
+            let mut cfg = RichAgentLoopConfig::new(model, scripted_stream(core), None);
+            cfg.before_tool_call = Some(Arc::new(|_, _| {
+                Box::pin(async {
+                    Some(BeforeToolCallResult {
+                        block: true,
+                        reason: Some("policy denied".to_string()),
+                        terminate: true,
+                    })
+                })
+            }));
+            let context = AgentContext::new(Some("test".into()), vec![tool]);
+            let message = faux_assistant_message(
+                vec![ContentBlock::tool_call(
+                    "blocked-call",
+                    "blocked",
+                    serde_json::json!({}),
+                )],
+                FauxAssistantOptions {
+                    stop_reason: Some(pi_ai::types::StopReason::ToolUse),
+                    ..Default::default()
+                },
+            );
+            let mut events = Vec::new();
+            let batch =
+                execute_tool_batch(&message, &context, &cfg, &mut |event| events.push(event)).await;
+
+            assert!(batch.terminate);
+            assert_eq!(executions.load(Ordering::SeqCst), 0);
+            assert_eq!(batch.messages.len(), 1);
+            assert!(batch.messages[0].is_error());
+            assert!(matches!(
+                &batch.messages[0],
+                ToolResultMessage::ToolResult { content, .. }
+                    if content.iter().any(|block| matches!(
+                        block,
+                        ContentBlock::Text { text, .. } if text == "policy denied"
+                    ))
+            ));
+            assert!(events.iter().any(|event| matches!(
+                event,
+                RichAgentEvent::ToolExecutionEnd { result, is_error: true, .. }
+                    if result.terminate
+            )));
         });
     }
 

@@ -148,6 +148,23 @@ pub struct ProjectTrustResult {
     pub errors: Vec<ExtensionError>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ExtensionCompactionResult {
+    pub summary: String,
+    #[serde(rename = "firstKeptEntryId")]
+    pub first_kept_entry_id: String,
+    #[serde(rename = "tokensBefore")]
+    pub tokens_before: u64,
+    pub usage: Option<pi_ai::types::Usage>,
+    pub details: Option<Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionBeforeCompactResult {
+    pub cancelled: bool,
+    pub compaction: Option<ExtensionCompactionResult>,
+}
+
 /// Extension runner (upstream `ExtensionRunner`).
 #[derive(Clone)]
 pub struct ExtensionRunner {
@@ -605,6 +622,37 @@ impl ExtensionRunner {
         });
         self.emit("session_before_fork", &payload)
             .map(|result| result.is_some_and(|value| value["cancel"] == Value::Bool(true)))
+    }
+
+    /// Emit the cancellable compaction hook before summary generation.  Keep
+    /// this at the runner boundary so interactive and RPC callers observe
+    /// the same extension ordering and cancellation semantics.
+    pub fn emit_session_before_compact(
+        &self,
+        payload: &Value,
+    ) -> Result<SessionBeforeCompactResult, Vec<ExtensionError>> {
+        let result = self.emit("session_before_compact", payload)?;
+        let Some(value) = result else {
+            return Ok(SessionBeforeCompactResult {
+                cancelled: false,
+                compaction: None,
+            });
+        };
+        let cancelled = value.get("cancel") == Some(&Value::Bool(true));
+        let compaction = match value.get("compaction").cloned() {
+            Some(value) => Some(serde_json::from_value(value).map_err(|error| {
+                vec![ExtensionError {
+                    extension_path: "<session_before_compact>".to_string(),
+                    event: "session_before_compact".to_string(),
+                    error: format!("invalid compaction result: {error}"),
+                }]
+            })?),
+            None => None,
+        };
+        Ok(SessionBeforeCompactResult {
+            cancelled,
+            compaction,
+        })
     }
 
     fn resolved_commands(&self) -> Vec<ResolvedCommand> {
@@ -1328,8 +1376,11 @@ pub fn emit_project_trust_event(runner: &ExtensionRunner, event: &Value) -> Proj
         for handler in handlers {
             match ExtensionRunner::call_handler(handler, &context, event) {
                 Ok(Some(value)) => {
-                    let decided = value.get("result").and_then(Value::as_str).is_some()
-                        || value.get("trusted").is_some();
+                    let decided = value
+                        .get("trusted")
+                        .or_else(|| value.get("result"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|decision| matches!(decision, "yes" | "no"));
                     if decided {
                         output.result = Some(value);
                         return output;
@@ -1816,6 +1867,52 @@ mod tests {
                 "entryId": "entry-1",
                 "position": "at",
             })]
+        );
+    }
+
+    #[test]
+    fn session_before_compact_preserves_payload_and_decodes_custom_result() {
+        let observed = Arc::new(Mutex::new(None::<Value>));
+        let handler = {
+            let observed = Arc::clone(&observed);
+            Arc::new(move |_: &ExtensionContext, event: &Value| {
+                *observed.lock().unwrap_or_else(|error| error.into_inner()) = Some(event.clone());
+                Ok(Some(json!({
+                    "compaction": {
+                        "summary": "extension summary",
+                        "firstKeptEntryId": "kept-1",
+                        "tokensBefore": 42,
+                        "details": {"readFiles": ["README.md"], "modifiedFiles": []}
+                    }
+                })))
+            }) as HandlerFn
+        };
+        let mut extension = Extension {
+            path: "compact-hook.js".into(),
+            ..Default::default()
+        };
+        extension
+            .handlers
+            .insert("session_before_compact".into(), vec![handler]);
+        let runner = runner_with(vec![extension]);
+        let payload = json!({
+            "type": "session_before_compact",
+            "preparation": {"tokensBefore": 42},
+            "branchEntries": [{"type": "message", "id": "kept-1"}],
+            "customInstructions": "focus",
+            "reason": "manual",
+            "willRetry": false,
+        });
+
+        let result = runner.emit_session_before_compact(&payload).unwrap();
+        assert!(!result.cancelled);
+        let compaction = result.compaction.expect("custom compaction result");
+        assert_eq!(compaction.summary, "extension summary");
+        assert_eq!(compaction.first_kept_entry_id, "kept-1");
+        assert_eq!(compaction.tokens_before, 42);
+        assert_eq!(
+            *observed.lock().unwrap_or_else(|error| error.into_inner()),
+            Some(payload)
         );
     }
 }

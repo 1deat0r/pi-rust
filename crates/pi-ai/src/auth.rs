@@ -387,6 +387,62 @@ pub trait OAuthAuth: Send + Sync {
     fn to_auth(&self, credential: &OAuthCredential) -> Option<ModelAuth>;
 }
 
+/// Request-auth transformation applied after an OAuth provider derives its
+/// normal [`ModelAuth`]. The decorator receives the credential so callers can
+/// resolve credential-scoped configuration without taking ownership of the
+/// provider's login or refresh lifecycle.
+pub type OAuthAuthDecoratorFn =
+    Arc<dyn Fn(&OAuthCredential, ModelAuth) -> Option<ModelAuth> + Send + Sync>;
+
+struct DecoratedOAuthAuth {
+    inherited: Arc<dyn OAuthAuth>,
+    decorate: OAuthAuthDecoratorFn,
+}
+
+/// Preserve an OAuth provider's complete lifecycle while decorating only its
+/// final request auth. Coding-agent uses this for models.json configured
+/// request headers and `authHeader`.
+pub fn decorate_oauth_auth(
+    inherited: Arc<dyn OAuthAuth>,
+    decorate: OAuthAuthDecoratorFn,
+) -> Arc<dyn OAuthAuth> {
+    Arc::new(DecoratedOAuthAuth {
+        inherited,
+        decorate,
+    })
+}
+
+#[async_trait::async_trait]
+impl OAuthAuth for DecoratedOAuthAuth {
+    fn name(&self) -> &str {
+        self.inherited.name()
+    }
+
+    fn is_subscription(&self) -> bool {
+        self.inherited.is_subscription()
+    }
+
+    fn login_label(&self) -> Option<&str> {
+        self.inherited.login_label()
+    }
+
+    async fn login(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, PiAiError> {
+        self.inherited.login(interaction).await
+    }
+
+    async fn refresh(
+        &self,
+        credential: &OAuthCredential,
+        signal: &AtomicBool,
+    ) -> Result<OAuthCredential, PiAiError> {
+        self.inherited.refresh(credential, signal).await
+    }
+
+    fn to_auth(&self, credential: &OAuthCredential) -> Option<ModelAuth> {
+        (self.decorate)(credential, self.inherited.to_auth(credential)?)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Login interaction (upstream `auth/types.ts` AuthPrompt/AuthEvent/
 // AuthInteraction)

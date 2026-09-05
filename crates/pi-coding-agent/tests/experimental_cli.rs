@@ -135,6 +135,49 @@ fn server_starts_real_socket_and_client_completes_handshake_list_and_close() {
     let _ = std::fs::remove_dir_all(&session_root);
 }
 
+#[cfg(unix)]
+#[test]
+fn server_sigterm_and_sighup_close_listener_and_remove_socket() {
+    for signal_name in ["TERM", "HUP"] {
+        let socket = unique_socket();
+        let address = unix_address(&socket);
+        let session_root = std::env::temp_dir().join(format!(
+            "pi-experimental-signal-{}-{}-{}",
+            signal_name.to_ascii_lowercase(),
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&session_root).unwrap();
+        let mut server = pi()
+            .args(["server", "--listen", &address])
+            .env("PI_EXPERIMENTAL", "1")
+            .env("PI_OFFLINE", "1")
+            .env("PI_CODING_AGENT_SESSION_DIR", &session_root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start signal-test experimental server");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !socket.exists() {
+            assert!(Instant::now() < deadline, "server did not create socket");
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        let signal = Command::new("kill")
+            .args([format!("-{signal_name}"), server.id().to_string()])
+            .status()
+            .expect("send experimental server signal");
+        assert!(signal.success());
+        let status = server.wait().expect("wait for experimental server");
+        assert!(status.success(), "{signal_name} status: {status}");
+        assert!(!socket.exists(), "{signal_name} left server socket behind");
+        let _ = std::fs::remove_dir_all(session_root);
+    }
+}
+
 #[test]
 fn client_reports_connection_failures() {
     let socket = unique_socket();

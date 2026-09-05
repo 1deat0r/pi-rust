@@ -498,6 +498,7 @@ pub enum StopReason {
     Pending,
     Stop,
     Length,
+    #[serde(rename = "toolUse")]
     ToolUse,
     Error,
     Aborted,

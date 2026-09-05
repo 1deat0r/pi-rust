@@ -75,11 +75,32 @@ impl Drop for RunExtensionGuard {
 }
 
 fn normalize_run_provider(provider: String) -> String {
-    if provider.eq_ignore_ascii_case(crate::core::llama::LLAMA_PROVIDER_ID) {
+    if provider.eq_ignore_ascii_case("faux") {
+        "faux".to_string()
+    } else if provider.eq_ignore_ascii_case(crate::core::llama::LLAMA_PROVIDER_ID) {
         crate::core::llama::LLAMA_PROVIDER_ID.to_string()
     } else {
         provider
     }
+}
+
+/// Resolve a provider spelling to the canonical registration id. Model
+/// resolution is case-insensitive upstream, including models.json/native
+/// providers that are unavailable to the initial built-in-only bootstrap.
+pub(crate) fn canonicalize_registered_provider(
+    models: &pi_ai::models::Models,
+    provider: &str,
+) -> String {
+    models
+        .get_providers()
+        .into_iter()
+        .find(|candidate| candidate.id.eq_ignore_ascii_case(provider))
+        .map(|candidate| candidate.id)
+        .unwrap_or_else(|| provider.to_string())
+}
+
+pub(crate) fn unknown_provider_error(provider: &str) -> String {
+    format!("Unknown provider \"{provider}\". Use --list-models to see available providers/models.")
 }
 
 fn nonempty_value(value: Option<&str>) -> Option<&str> {
@@ -117,12 +138,36 @@ pub(crate) fn resolve_effective_model_scope(
 /// saved default → first authenticated provider default → settings/`google`
 /// fallback. The final fallback preserves the existing downstream auth
 /// diagnostic when no credentials are available.
-pub fn resolve_run_provider(cli_provider: Option<&str>, settings: &SettingsManager) -> String {
+pub fn resolve_run_provider(
+    cli_provider: Option<&str>,
+    cli_model: Option<&str>,
+    settings: &SettingsManager,
+) -> String {
     if let Some(provider) = nonempty_value(cli_provider)
         .map(str::to_owned)
         .or_else(|| config::nonempty_env_value(config::env(config::ENV_PROVIDER)))
     {
         return normalize_run_provider(provider);
+    }
+
+    let model_reference = nonempty_value(cli_model)
+        .map(str::to_owned)
+        .or_else(|| config::nonempty_env_value(config::env(config::ENV_MODEL)));
+    if let Some(prefix) = model_reference
+        .as_deref()
+        .and_then(|model| model.split_once('/').map(|(provider, _)| provider))
+    {
+        if prefix.eq_ignore_ascii_case("faux") {
+            return "faux".to_string();
+        }
+        let builtins = crate::core::model_registry::builtin_models();
+        if let Some(provider) = builtins
+            .get_providers()
+            .into_iter()
+            .find(|provider| provider.id.eq_ignore_ascii_case(prefix))
+        {
+            return provider.id;
+        }
     }
 
     let env_model = config::nonempty_env_value(config::env(config::ENV_MODEL));
@@ -243,6 +288,44 @@ fn request_api_key(args: &Args, env_api_key: Option<String>) -> Option<String> {
         .or_else(|| env_api_key.filter(|api_key| !api_key.is_empty()))
 }
 
+/// Resolve the two retry layers shared by print, JSON, interactive, and RPC:
+/// the agent-level retry policy and the provider-request transport limits.
+pub(crate) fn retry_policy_from_settings(settings: &SettingsManager) -> pi_ai::utils::RetryPolicy {
+    let (enabled, max_retries, base_delay_ms) = settings.get_retry_settings();
+    pi_ai::utils::RetryPolicy {
+        enabled,
+        max_retries: u32::try_from(max_retries).unwrap_or(u32::MAX),
+        base_delay_ms,
+    }
+}
+
+pub(crate) fn stream_options_from_settings(
+    settings: &SettingsManager,
+    api_key: Option<String>,
+) -> pi_ai::types::StreamOptions {
+    let (provider_timeout_ms, provider_max_retries, max_retry_delay_ms) =
+        settings.get_provider_retry_settings();
+    let idle_timeout_ms = settings.get_http_idle_timeout_ms().unwrap_or(300_000);
+    let effective_idle_timeout_ms = if idle_timeout_ms == 0 {
+        i32::MAX as u64
+    } else {
+        idle_timeout_ms
+    };
+    pi_ai::types::StreamOptions {
+        base: pi_ai::types::ProviderRequestOptions {
+            api_key,
+            timeout_ms: Some(provider_timeout_ms.unwrap_or(effective_idle_timeout_ms)),
+            max_retries: provider_max_retries
+                .map(|retries| u32::try_from(retries).unwrap_or(u32::MAX)),
+            max_retry_delay_ms: Some(max_retry_delay_ms),
+            ..Default::default()
+        },
+        transport: Some(settings.get_transport().to_string()),
+        websocket_connect_timeout_ms: settings.get_websocket_connect_timeout_ms().ok().flatten(),
+        ..Default::default()
+    }
+}
+
 /// Read the global `defaultProjectTrust` setting (allow/deny/ask) without
 /// loading project settings (which are themselves trust-gated).
 fn settings_default_project_trust(agent_dir: &std::path::Path) -> Option<String> {
@@ -266,62 +349,140 @@ fn project_trust_override(args: &Args) -> Option<bool> {
     }
 }
 
-fn prompt_project_trust(
-    cwd: &str,
-    trust_store: &crate::core::project_trust::ProjectTrustStore,
-) -> bool {
-    use std::io::Write;
-
-    let options = crate::core::project_trust::get_project_trust_options(cwd, true);
-    println!(
+fn project_trust_prompt(cwd: &str) -> String {
+    format!(
         "Trust project folder?\n{cwd}\n\nThis allows pi to load .pi settings and resources, install missing project packages, and execute project extensions."
-    );
-    for (index, option) in options.iter().enumerate() {
-        println!("  {}. {}", index + 1, option.label);
-    }
-    print!("Select a project trust option [1] (y/n also accepted): ");
-    let _ = std::io::stdout().flush();
-    let mut answer = String::new();
-    let read = std::io::stdin().read_line(&mut answer);
-    let Some(option) = read
-        .ok()
-        .filter(|count| *count > 0)
-        .and_then(|_| project_trust_option(&answer, &options))
-    else {
-        return false;
-    };
-    if let Err(error) = trust_store.try_set_many(&option.updates) {
-        eprintln!("Could not save project trust: {error}");
-        return false;
-    }
-    option.trusted
+    )
 }
 
-/// Resolve the cooked-startup answer to the same ordered options used by the
-/// upstream interactive trust prompt. The `y`/`n` aliases preserve the old
-/// Rust startup harness while numbered input exposes parent and session-only
-/// choices when no TUI is mounted yet.
-fn project_trust_option<'a>(
-    answer: &str,
-    options: &'a [crate::core::project_trust::ProjectTrustOption],
-) -> Option<&'a crate::core::project_trust::ProjectTrustOption> {
-    if options.is_empty() {
-        return None;
+fn extension_project_trust_decision(
+    runner: &crate::core::extensions::ExtensionRunner,
+    cwd: &str,
+    trust_store: &crate::core::project_trust::ProjectTrustStore,
+) -> Option<bool> {
+    let output = crate::core::extensions::emit_project_trust_event(
+        runner,
+        &serde_json::json!({"type": "project_trust", "cwd": cwd}),
+    );
+    for error in output.errors {
+        eprintln!(
+            "Extension \"{}\" project_trust error: {}",
+            error.extension_path, error.error
+        );
     }
-    let answer = answer.trim().to_ascii_lowercase();
-    let index = match answer.as_str() {
-        "" | "y" | "yes" => 0,
-        "n" | "no" => options
-            .iter()
-            .position(|option| !option.trusted)
-            .unwrap_or(options.len() - 1),
-        value => value
-            .parse::<usize>()
-            .ok()
-            .and_then(|index| index.checked_sub(1))
-            .filter(|index| *index < options.len())?,
+    let result = output.result?;
+    let trusted = result
+        .get("trusted")
+        .or_else(|| result.get("result"))
+        .and_then(serde_json::Value::as_str)?;
+    let trusted = match trusted {
+        "yes" => true,
+        "no" => false,
+        _ => return None,
     };
-    options.get(index)
+    if result.get("remember").and_then(serde_json::Value::as_bool) == Some(true) {
+        if let Err(error) = trust_store.try_set(cwd, Some(trusted)) {
+            eprintln!("Could not save project trust: {error}");
+            return Some(false);
+        }
+    }
+    Some(trusted)
+}
+
+fn resolve_project_trust_without_prompt(
+    cwd: &str,
+    agent_dir: &std::path::Path,
+    trust_override: Option<bool>,
+    extension_runner: Option<&crate::core::extensions::ExtensionRunner>,
+) -> Option<bool> {
+    if let Some(override_value) = trust_override {
+        return Some(override_value);
+    }
+    if !crate::core::project_trust::has_trust_requiring_project_resources(cwd) {
+        return Some(true);
+    }
+    let trust_store =
+        crate::core::project_trust::ProjectTrustStore::new(&agent_dir.display().to_string());
+    if let Some(runner) = extension_runner {
+        if let Some(decision) = extension_project_trust_decision(runner, cwd, &trust_store) {
+            return Some(decision);
+        }
+    }
+    match trust_store.try_get(cwd) {
+        Ok(Some(saved)) => Some(saved),
+        Ok(None) => match settings_default_project_trust(agent_dir).as_deref() {
+            Some("always") => Some(true),
+            Some("never") => Some(false),
+            _ => None,
+        },
+        Err(error) => {
+            // A malformed or temporarily inaccessible trust file must not
+            // abort startup before the user can repair it. Fail closed and
+            // expose the exact storage failure; the interactive selector can
+            // then retry/save with its Result path.
+            eprintln!("Could not read project trust: {error}");
+            Some(false)
+        }
+    }
+}
+
+fn trust_bootstrap_mode(args: &Args, has_ui: bool) -> &'static str {
+    if has_ui {
+        "interactive"
+    } else {
+        match args.mode.as_deref() {
+            Some("json") => "json",
+            Some("rpc") => "rpc",
+            _ => "print",
+        }
+    }
+}
+
+fn resolve_mode_project_trust_without_prompt(
+    args: &Args,
+    cwd: &str,
+    agent_dir: &std::path::Path,
+    has_ui: bool,
+) -> Option<bool> {
+    let trust_override = project_trust_override(args);
+    if trust_override.is_some()
+        || !crate::core::project_trust::has_trust_requiring_project_resources(cwd)
+    {
+        return resolve_project_trust_without_prompt(cwd, agent_dir, trust_override, None);
+    }
+
+    // The bootstrap SettingsManager is deliberately untrusted. Its extension
+    // paths therefore contain only global settings, and the scoped loader
+    // excludes cwd/.pi/extensions while retaining explicit CLI paths.
+    let bootstrap_settings = SettingsManager::create(
+        cwd,
+        &agent_dir.display().to_string(),
+        crate::core::settings::SettingsManagerCreateOptions {
+            project_trusted: false,
+        },
+    );
+    let loaded = crate::core::extensions::load_for_project_trust(
+        args,
+        &bootstrap_settings,
+        cwd,
+        &agent_dir.display().to_string(),
+        trust_bootstrap_mode(args, has_ui),
+        has_ui,
+        args.name.clone(),
+        args.thinking.as_deref().unwrap_or("medium"),
+    );
+    for error in &loaded.errors {
+        eprintln!(
+            "Failed to load extension \"{}\": {}",
+            error.path, error.error
+        );
+    }
+    let decision =
+        resolve_project_trust_without_prompt(cwd, agent_dir, trust_override, Some(&loaded.runner));
+    loaded
+        .runner
+        .invalidate(Some("project trust bootstrap complete"));
+    decision
 }
 
 /// Create settings for a mode after applying the upstream project-trust
@@ -334,33 +495,10 @@ pub fn create_settings_with_project_trust(
     cwd: &str,
     agent_dir: &std::path::Path,
     trust_override: Option<bool>,
-    has_ui: bool,
+    _has_ui: bool,
 ) -> SettingsManager {
-    let trust_store =
-        crate::core::project_trust::ProjectTrustStore::new(&agent_dir.display().to_string());
-    let project_trusted = if let Some(override_value) = trust_override {
-        override_value
-    } else if !crate::core::project_trust::has_trust_requiring_project_resources(cwd) {
-        true
-    } else {
-        match trust_store.try_get(cwd) {
-            Ok(Some(saved)) => saved,
-            Ok(None) => match settings_default_project_trust(agent_dir).as_deref() {
-                Some("always") => true,
-                Some("never") => false,
-                _ if has_ui => prompt_project_trust(cwd, &trust_store),
-                _ => false,
-            },
-            Err(error) => {
-                // A malformed or temporarily inaccessible trust file must not
-                // abort startup before the user can repair it. Fail closed and
-                // expose the exact storage failure; the interactive selector
-                // can then retry/save with its Result path.
-                eprintln!("Could not read project trust: {error}");
-                false
-            }
-        }
-    };
+    let project_trusted =
+        resolve_project_trust_without_prompt(cwd, agent_dir, trust_override, None).unwrap_or(false);
     SettingsManager::create(
         cwd,
         &agent_dir.display().to_string(),
@@ -376,7 +514,80 @@ pub fn create_mode_settings(
     agent_dir: &std::path::Path,
     has_ui: bool,
 ) -> SettingsManager {
-    create_settings_with_project_trust(cwd, agent_dir, project_trust_override(args), has_ui)
+    let project_trusted =
+        resolve_mode_project_trust_without_prompt(args, cwd, agent_dir, has_ui).unwrap_or(false);
+    SettingsManager::create(
+        cwd,
+        &agent_dir.display().to_string(),
+        crate::core::settings::SettingsManagerCreateOptions { project_trusted },
+    )
+}
+
+/// Interactive startup trust resolution uses the same pi-tui selector as the
+/// other startup dialogs. Cancellation and EOF fail closed; durable and
+/// session-only choices retain the ordered upstream option semantics.
+pub async fn create_interactive_mode_settings(
+    args: &Args,
+    cwd: &str,
+    agent_dir: &std::path::Path,
+) -> Result<SettingsManager, String> {
+    let project_trusted =
+        match resolve_mode_project_trust_without_prompt(args, cwd, agent_dir, true) {
+            Some(project_trusted) => project_trusted,
+            None => {
+                let bootstrap_settings = SettingsManager::create(
+                    cwd,
+                    &agent_dir.display().to_string(),
+                    crate::core::settings::SettingsManagerCreateOptions {
+                        project_trusted: false,
+                    },
+                );
+                let options = crate::core::project_trust::get_project_trust_options(cwd, true);
+                let startup_options = options
+                    .into_iter()
+                    .map(|option| crate::interactive::startup::StartupOption {
+                        label: option.label.clone(),
+                        value: option,
+                    })
+                    .collect();
+                let selected = crate::interactive::startup::show_startup_selector(
+                    &bootstrap_settings,
+                    project_trust_prompt(cwd),
+                    startup_options,
+                )
+                .await?;
+                let Some(selected) = selected else {
+                    return Ok(SettingsManager::create(
+                        cwd,
+                        &agent_dir.display().to_string(),
+                        crate::core::settings::SettingsManagerCreateOptions {
+                            project_trusted: false,
+                        },
+                    ));
+                };
+                if !selected.updates.is_empty() {
+                    let trust_store = crate::core::project_trust::ProjectTrustStore::new(
+                        &agent_dir.display().to_string(),
+                    );
+                    if let Err(error) = trust_store.try_set_many(&selected.updates) {
+                        eprintln!("Could not save project trust: {error}");
+                        return Ok(SettingsManager::create(
+                            cwd,
+                            &agent_dir.display().to_string(),
+                            crate::core::settings::SettingsManagerCreateOptions {
+                                project_trusted: false,
+                            },
+                        ));
+                    }
+                }
+                selected.trusted
+            }
+        };
+    Ok(SettingsManager::create(
+        cwd,
+        &agent_dir.display().to_string(),
+        crate::core::settings::SettingsManagerCreateOptions { project_trusted },
+    ))
 }
 
 /// Run the upstream-gated first-run setup before normal interactive startup.
@@ -440,7 +651,8 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     }
     let _extension_guard = RunExtensionGuard(loaded_extensions.runner.clone());
 
-    let mut provider = resolve_run_provider(args.provider.as_deref(), &settings);
+    let mut provider =
+        resolve_run_provider(args.provider.as_deref(), args.model.as_deref(), &settings);
     let model_hint = resolve_run_model(
         args.model.as_deref(),
         &settings,
@@ -570,6 +782,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             };
             crate::core::extensions::register_loaded_native_providers(&models, &loaded_extensions)
                 .map_err(|error| format!("register extension providers: {error}"))?;
+            provider = canonicalize_registered_provider(&models, &provider);
             crate::core::model_runtime::register_llama_provider_if_selected(
                 &models,
                 &provider,
@@ -577,9 +790,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             )
             .await?;
             if models.get_provider(&provider).is_none() {
-                return Err(format!(
-                    "provider {provider:?} is not registered in the model registry"
-                ));
+                return Err(unknown_provider_error(&provider));
             }
             let env_provider = config::nonempty_env_value(config::env(config::ENV_PROVIDER));
             let env_model = config::nonempty_env_value(config::env(config::ENV_MODEL));
@@ -624,13 +835,7 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
             // Stream options carry the explicit --api-key / PI_KEY (the facade
             // applies env-key auth when absent).
             let api_key = request_api_key(args, config::env(config::ENV_KEY));
-            let stream_options = pi_ai::types::StreamOptions {
-                base: pi_ai::types::ProviderRequestOptions {
-                    api_key,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
+            let stream_options = stream_options_from_settings(&settings, api_key);
             let models = models.clone();
             let stream_fn: StreamFn =
                 Arc::new(move |_model, ctx| models.stream(_model, ctx, Some(&stream_options)));
@@ -641,8 +846,12 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     // Register built-in tools (bash/read/write/edit + ls/find/grep) unless
     // --no-tools or --no-builtin-tools.
     let mut tools: Vec<pi_agent::tools::AgentTool> = Vec::new();
-    if !args.no_tools && !args.no_builtin_tools {
-        tools.push(pi_agent::tools::bash_tool(cwd.clone()));
+    if should_register_builtin_tools(args) {
+        tools.push(pi_agent::tools::bash_tool_with_options(
+            cwd.clone(),
+            settings.get_shell_command_prefix().map(str::to_string),
+            settings.get_shell_path(),
+        ));
         tools.push(pi_agent::tools::read_tool_with_options(
             cwd.clone(),
             ProcessImageOptions {
@@ -656,7 +865,11 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
         tools.push(crate::core::tools::find_tool(cwd.clone()));
         tools.push(crate::core::tools::grep_tool(cwd.clone()));
     }
-    crate::core::extensions::install_tools(&loaded_extensions, &mut tools, !args.no_tools);
+    crate::core::extensions::install_tools(
+        &loaded_extensions,
+        &mut tools,
+        should_register_extension_tools(args),
+    );
     tools = select_active_tools(args, &settings, tools);
     let extension_tool_definitions = loaded_extensions.runner.get_all_registered_tools();
     // Build the prompt from the same filtered vector that is handed to the
@@ -791,8 +1004,17 @@ pub async fn run(args: &Args) -> Result<RunOutcome, String> {
     harness_options.stream_fn = Some(stream_fn);
     harness_options.system_prompt = Some(system_prompt);
     harness_options.block_images = settings.get_block_images();
+    harness_options.tool_result_image_options = Some(ProcessImageOptions {
+        auto_resize_images: settings.get_image_auto_resize(),
+        ..Default::default()
+    });
     harness_options.thinking_level = Some(thinking_level);
     harness_options.tools = Some(harness_tools);
+    harness_options.retry = Some(retry_policy_from_settings(&settings));
+    harness_options.stream_options = Some(pi_ai::types::SimpleStreamOptions {
+        base: stream_options_from_settings(&settings, None),
+        ..Default::default()
+    });
     let (mut harness, _suspended) = AgentHarness::create(harness_options)
         .await
         .map_err(|error| format!("create agent harness: {error}"))?;
@@ -1665,6 +1887,16 @@ fn is_builtin_tool_name(name: &str) -> bool {
     BUILTIN_TOOL_NAMES.contains(&name)
 }
 
+/// Explicit `--tools` is an allowlist and therefore overrides either broad
+/// suppression flag, matching upstream `options.tools ?? options.noTools`.
+pub(crate) fn should_register_builtin_tools(args: &Args) -> bool {
+    args.tools.is_some() || (!args.no_tools && !args.no_builtin_tools)
+}
+
+pub(crate) fn should_register_extension_tools(args: &Args) -> bool {
+    args.tools.is_some() || !args.no_tools
+}
+
 fn builtin_tool_prompt_contribution(name: &str) -> Option<&'static BuiltinToolPromptContribution> {
     BUILTIN_TOOL_PROMPT_CONTRIBUTIONS
         .iter()
@@ -1680,10 +1912,10 @@ fn active_tool_names_for_policy(
     settings: &SettingsManager,
     available_tool_names: &[String],
 ) -> Vec<String> {
-    let mut active = if args.no_tools {
-        Vec::new()
-    } else if let Some(explicit) = &args.tools {
+    let mut active = if let Some(explicit) = &args.tools {
         explicit.clone()
+    } else if args.no_tools {
+        Vec::new()
     } else if args.no_builtin_tools {
         available_tool_names
             .iter()
@@ -2192,6 +2424,7 @@ mod tests {
     use super::*;
     use crate::core::settings::SettingsMap;
     use serde_json::json;
+    use std::sync::Arc;
 
     fn manager() -> SettingsManager {
         SettingsManager::in_memory(
@@ -2210,32 +2443,191 @@ mod tests {
         }
     }
 
-    #[test]
-    fn project_trust_startup_answers_follow_selector_order_and_aliases() {
-        let root =
-            std::env::temp_dir().join(format!("pi-run-trust-options-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let options =
-            crate::core::project_trust::get_project_trust_options(&root.to_string_lossy(), true);
+    fn project_trust_runner(
+        cwd: &str,
+        handlers: Vec<crate::core::extensions::HandlerFn>,
+    ) -> crate::core::extensions::ExtensionRunner {
+        let runtime = crate::core::extensions::create_extension_runtime();
+        let extension = crate::core::extensions::load_extension_from_factory(
+            move |api| {
+                for handler in handlers {
+                    api.on("project_trust", handler)?;
+                }
+                Ok(())
+            },
+            cwd,
+            runtime.clone(),
+            "<inline:project-trust>",
+        )
+        .unwrap();
+        let mut runner = crate::core::extensions::ExtensionRunner::new(
+            vec![extension],
+            runtime,
+            cwd.to_string(),
+        );
+        runner.set_ui_context("print", false);
+        runner
+    }
 
-        assert_eq!(project_trust_option("", &options).unwrap().label, "Trust");
+    #[test]
+    fn project_trust_bootstrap_extension_precedes_saved_and_default_and_remembers() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-run-project-trust-extension-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cwd = root.join("project");
+        let agent_dir = root.join("agent");
+        std::fs::create_dir_all(cwd.join(crate::config::CONFIG_DIR_NAME)).unwrap();
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            cwd.join(crate::config::CONFIG_DIR_NAME)
+                .join("settings.json"),
+            "{}",
+        )
+        .unwrap();
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            r#"{"defaultProjectTrust":"never"}"#,
+        )
+        .unwrap();
+        let store =
+            crate::core::project_trust::ProjectTrustStore::new(&agent_dir.to_string_lossy());
+        store.try_set(&cwd.to_string_lossy(), Some(false)).unwrap();
+        let runner = project_trust_runner(
+            &cwd.to_string_lossy(),
+            vec![Arc::new(|_, _| {
+                Ok(Some(json!({"trusted":"yes", "remember":true})))
+            })],
+        );
+
         assert_eq!(
-            project_trust_option("yes", &options).unwrap().label,
-            "Trust"
+            resolve_project_trust_without_prompt(
+                &cwd.to_string_lossy(),
+                &agent_dir,
+                None,
+                Some(&runner),
+            ),
+            Some(true)
+        );
+        assert_eq!(store.try_get(&cwd.to_string_lossy()).unwrap(), Some(true));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_trust_bootstrap_reports_error_then_accepts_later_decision() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-run-project-trust-errors-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cwd = root.join("project");
+        let agent_dir = root.join("agent");
+        std::fs::create_dir_all(cwd.join(crate::config::CONFIG_DIR_NAME)).unwrap();
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            cwd.join(crate::config::CONFIG_DIR_NAME)
+                .join("settings.json"),
+            "{}",
+        )
+        .unwrap();
+        let runner = project_trust_runner(
+            &cwd.to_string_lossy(),
+            vec![
+                Arc::new(|_, _| Err("synthetic trust failure".to_string())),
+                Arc::new(|_, _| Ok(Some(json!({"trusted":"no"})))),
+            ],
+        );
+
+        assert_eq!(
+            resolve_project_trust_without_prompt(
+                &cwd.to_string_lossy(),
+                &agent_dir,
+                None,
+                Some(&runner),
+            ),
+            Some(false)
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_trust_bootstrap_override_and_headless_fallback_are_fail_closed() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-run-project-trust-headless-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cwd = root.join("project");
+        let agent_dir = root.join("agent");
+        std::fs::create_dir_all(cwd.join(crate::config::CONFIG_DIR_NAME)).unwrap();
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            cwd.join(crate::config::CONFIG_DIR_NAME)
+                .join("settings.json"),
+            "{}",
+        )
+        .unwrap();
+        let runner = project_trust_runner(
+            &cwd.to_string_lossy(),
+            vec![Arc::new(|_, _| Ok(Some(json!({"trusted":"yes"}))))],
+        );
+
+        assert_eq!(
+            resolve_project_trust_without_prompt(
+                &cwd.to_string_lossy(),
+                &agent_dir,
+                Some(false),
+                Some(&runner),
+            ),
+            Some(false)
         );
         assert_eq!(
-            project_trust_option("n", &options).unwrap().label,
-            "Do not trust"
+            resolve_project_trust_without_prompt(&cwd.to_string_lossy(), &agent_dir, None, None,),
+            None
         );
+        assert!(!create_settings_with_project_trust(
+            &cwd.to_string_lossy(),
+            &agent_dir,
+            None,
+            false,
+        )
+        .is_project_trusted());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_trust_bootstrap_remember_failure_is_fail_closed() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-run-project-trust-remember-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let cwd = root.join("project");
+        let agent_dir = root.join("agent");
+        std::fs::create_dir_all(cwd.join(crate::config::CONFIG_DIR_NAME)).unwrap();
+        std::fs::create_dir_all(agent_dir.join("trust.json")).unwrap();
+        std::fs::write(
+            cwd.join(crate::config::CONFIG_DIR_NAME)
+                .join("settings.json"),
+            "{}",
+        )
+        .unwrap();
+        let runner = project_trust_runner(
+            &cwd.to_string_lossy(),
+            vec![Arc::new(|_, _| {
+                Ok(Some(json!({"trusted":"yes", "remember":true})))
+            })],
+        );
+
         assert_eq!(
-            project_trust_option("3", &options).unwrap().label,
-            "Trust (this session only)"
+            resolve_project_trust_without_prompt(
+                &cwd.to_string_lossy(),
+                &agent_dir,
+                None,
+                Some(&runner),
+            ),
+            Some(false)
         );
-        assert_eq!(
-            project_trust_option("5", &options).unwrap().label,
-            "Do not trust (this session only)"
-        );
-        assert!(project_trust_option("6", &options).is_none());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2288,6 +2680,44 @@ mod tests {
     }
 
     #[test]
+    fn retry_settings_feed_agent_and_provider_transport_options() {
+        let settings = SettingsManager::in_memory(
+            serde_json::from_value(json!({
+                "transport": "sse",
+                "httpIdleTimeoutMs": 4321,
+                "websocketConnectTimeoutMs": 8765,
+                "retry": {
+                    "enabled": false,
+                    "maxRetries": 4,
+                    "baseDelayMs": 17,
+                    "provider": {
+                        "timeoutMs": 1234,
+                        "maxRetries": 5,
+                        "maxRetryDelayMs": 888
+                    }
+                }
+            }))
+            .unwrap(),
+        );
+
+        assert_eq!(
+            retry_policy_from_settings(&settings),
+            pi_ai::utils::RetryPolicy {
+                enabled: false,
+                max_retries: 4,
+                base_delay_ms: 17,
+            }
+        );
+        let options = stream_options_from_settings(&settings, Some("synthetic".to_string()));
+        assert_eq!(options.base.api_key.as_deref(), Some("synthetic"));
+        assert_eq!(options.base.timeout_ms, Some(1234));
+        assert_eq!(options.base.max_retries, Some(5));
+        assert_eq!(options.base.max_retry_delay_ms, Some(888));
+        assert_eq!(options.transport.as_deref(), Some("sse"));
+        assert_eq!(options.websocket_connect_timeout_ms, Some(8765));
+    }
+
+    #[test]
     fn empty_provider_and_model_values_are_not_explicit_sources() {
         assert_eq!(nonempty_value(None), None);
         assert_eq!(nonempty_value(Some("")), None);
@@ -2303,14 +2733,15 @@ mod tests {
             }))
             .unwrap(),
         );
-        let provider = resolve_run_provider(Some("anthropic"), &settings);
+        let provider = resolve_run_provider(Some("anthropic"), None, &settings);
         assert_eq!(provider, "anthropic");
-        let provider = resolve_run_provider(None, &settings);
+        let provider = resolve_run_provider(None, None, &settings);
         // An authenticated built-in provider may supersede this synthetic
         // test-only saved default; the resolver must still return a usable
         // provider rather than allowing an unauthenticated default to win.
         assert!(!provider.is_empty());
-        let provider = resolve_run_provider(None, &SettingsManager::in_memory(SettingsMap::new()));
+        let provider =
+            resolve_run_provider(None, None, &SettingsManager::in_memory(SettingsMap::new()));
         assert!(!provider.is_empty());
     }
 
@@ -3267,6 +3698,25 @@ mod tests {
             ..Default::default()
         };
         assert!(active_tool_names_for_policy(&no_tools, &settings, &available).is_empty());
+
+        for mut suppression in [
+            Args {
+                no_tools: true,
+                ..Default::default()
+            },
+            Args {
+                no_builtin_tools: true,
+                ..Default::default()
+            },
+        ] {
+            suppression.tools = Some(vec!["read".to_owned(), "extension_tool".to_owned()]);
+            assert_eq!(
+                active_tool_names_for_policy(&suppression, &settings, &available),
+                vec!["read", "extension_tool"]
+            );
+            assert!(should_register_builtin_tools(&suppression));
+            assert!(should_register_extension_tools(&suppression));
+        }
     }
 
     #[test]

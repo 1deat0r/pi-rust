@@ -339,10 +339,16 @@ mod tests {
     ) {
         let models = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
         let core = register_faux_provider(&models, &RegisterFauxProviderOptions::default());
-        core.set_responses(vec![FauxResponseStep::Message(faux_assistant_message(
-            vec![ContentBlock::text("runtime-ready")],
-            FauxAssistantOptions::default(),
-        ))]);
+        core.set_responses(vec![
+            FauxResponseStep::Message(faux_assistant_message(
+                vec![ContentBlock::text("runtime-ready-before")],
+                FauxAssistantOptions::default(),
+            )),
+            FauxResponseStep::Message(faux_assistant_message(
+                vec![ContentBlock::text("runtime-ready-after")],
+                FauxAssistantOptions::default(),
+            )),
+        ]);
         let model = core.get_model(None).expect("faux model").clone();
         (crate::core::model_runtime::ModelRuntime::new(models), model)
     }
@@ -429,13 +435,55 @@ mod tests {
         .await
         .unwrap();
 
+        runtime
+            .session()
+            .prompt_text("before replacement")
+            .await
+            .unwrap();
+        let old_extension_runtime = runtime
+            .session()
+            .services
+            .resource_loader
+            .extensions
+            .runtime
+            .clone();
         assert!(!runtime.new_session(None).await.unwrap());
-        assert_ne!(
-            runtime.session().session_file.as_deref(),
-            Some(first_path.as_str())
+        let second_path = runtime
+            .session()
+            .session_file
+            .clone()
+            .expect("replacement session file");
+        assert_ne!(second_path, first_path);
+        assert!(
+            old_extension_runtime
+                .lock()
+                .expect("old extension runtime")
+                .is_stale(),
+            "replacement must invalidate the previous extension runtime"
         );
+        runtime
+            .session()
+            .prompt_text("after replacement")
+            .await
+            .unwrap();
         runtime.dispose().await;
         assert!(runtime.session().harness.is_closed());
+        let error = runtime
+            .session()
+            .prompt_text("after dispose")
+            .await
+            .expect_err("disposed runtime must reject later prompts");
+        assert!(error.to_string().contains("closed"), "{error}");
+
+        let first_jsonl = std::fs::read_to_string(&first_path).unwrap();
+        assert!(first_jsonl.contains("before replacement"), "{first_jsonl}");
+        assert!(!first_jsonl.contains("after replacement"), "{first_jsonl}");
+        let second_jsonl = std::fs::read_to_string(&second_path).unwrap();
+        assert!(second_jsonl.contains("after replacement"), "{second_jsonl}");
+        assert!(
+            !second_jsonl.contains("before replacement"),
+            "{second_jsonl}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

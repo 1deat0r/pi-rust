@@ -88,6 +88,29 @@ pub fn catalog_models(provider_id: &str) -> Vec<Model> {
         .collect()
 }
 
+/// Return the native Rust stream implementation registered for a model API.
+///
+/// Coding-agent's `models.json` composer uses this for providers that are not
+/// part of the bundled provider list, and for custom models whose API differs
+/// from their bundled provider's normal API. This is the Rust equivalent of
+/// upstream `getApiProvider(model.api)`; unknown API names deliberately return
+/// `None` so the provider emits the standard deterministic dispatch error.
+pub fn provider_streams_for_api(api: &str) -> Option<crate::models::ProviderStreams> {
+    match api {
+        "openai-completions" => Some(openai_completions_streams_from_model()),
+        "mistral-conversations" => Some(mistral_conversations_streams()),
+        "openai-responses" => Some(openai_responses_streams_from_model()),
+        "azure-openai-responses" => azure_openai_responses_provider().single_streams,
+        "openai-codex-responses" => Some(openai_codex_streams()),
+        "anthropic-messages" => Some(anthropic_streams_from_model()),
+        "bedrock-converse-stream" => Some(bedrock_streams()),
+        "google-generative-ai" => Some(google_streams_from_model()),
+        "google-vertex" => Some(google_vertex_streams()),
+        "pi-messages" => radius_provider().single_streams,
+        _ => None,
+    }
+}
+
 /// All built-in providers, freshly constructed.
 pub fn builtin_providers() -> Vec<Provider> {
     vec![

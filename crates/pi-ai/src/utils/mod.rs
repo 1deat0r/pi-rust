@@ -1,5 +1,6 @@
 //! Internal utilities — port of `packages/ai/src/utils/`.
 
+pub(crate) mod error_body;
 pub mod estimate;
 pub mod overflow;
 pub mod retry;

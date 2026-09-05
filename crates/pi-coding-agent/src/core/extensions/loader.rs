@@ -592,17 +592,37 @@ pub fn discover_and_load_extensions(
     runtime: Option<Arc<Mutex<ExtensionRuntime>>>,
     runner: Option<&str>,
 ) -> LoadExtensionsResult {
+    discover_and_load_extensions_for_trust(configured_paths, cwd, agent_dir, runtime, runner, true)
+}
+
+/// Discover extensions while respecting the project-trust boundary.
+///
+/// The pre-trust pass must still expose user/global extensions and explicit
+/// command-line paths, because those handlers may decide project trust. It
+/// must never inspect `cwd/.pi/extensions`: loading a project extension in
+/// order to decide whether project extensions are trusted inverts the safety
+/// boundary. The normal post-decision loader passes the resolved trust value.
+pub fn discover_and_load_extensions_for_trust(
+    configured_paths: &[String],
+    cwd: &str,
+    agent_dir: &str,
+    runtime: Option<Arc<Mutex<ExtensionRuntime>>>,
+    runner: Option<&str>,
+    project_trusted: bool,
+) -> LoadExtensionsResult {
     let mut all_paths = Vec::new();
     let mut explicit_errors = Vec::new();
     let mut seen = BTreeSet::new();
 
-    let local_ext_dir = Path::new(cwd).join(CONFIG_DIR_NAME).join("extensions");
-    add_discovered_paths(
-        cwd,
-        &mut seen,
-        &mut all_paths,
-        discover_extensions_in_dir(&local_ext_dir),
-    );
+    if project_trusted {
+        let local_ext_dir = Path::new(cwd).join(CONFIG_DIR_NAME).join("extensions");
+        add_discovered_paths(
+            cwd,
+            &mut seen,
+            &mut all_paths,
+            discover_extensions_in_dir(&local_ext_dir),
+        );
+    }
 
     let global_ext_dir = Path::new(agent_dir).join("extensions");
     add_discovered_paths(
@@ -926,6 +946,68 @@ mod tests {
         assert!(result.errors[1..]
             .iter()
             .all(|error| error.error.contains(RUST_NATIVE_ONLY_ERROR)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn untrusted_discovery_excludes_project_extensions() {
+        let root = sandbox("untrusted-discovery");
+        let project = root.join("project");
+        let agent_dir = root.join("agent");
+        let project_extensions = project.join(CONFIG_DIR_NAME).join("extensions");
+        let global_extensions = agent_dir.join("extensions");
+        fs::create_dir_all(&project_extensions).expect("create project extensions");
+        fs::create_dir_all(&global_extensions).expect("create global extensions");
+        let project_entry = project_extensions.join("project.ts");
+        let global_entry = global_extensions.join("global.ts");
+        let explicit_entry = root.join("explicit.ts");
+        fs::write(&project_entry, "project").expect("write project extension");
+        fs::write(&global_entry, "global").expect("write global extension");
+        fs::write(&explicit_entry, "explicit").expect("write explicit extension");
+
+        let untrusted = discover_and_load_extensions_for_trust(
+            &[explicit_entry.to_string_lossy().into_owned()],
+            &project.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            None,
+            None,
+            false,
+        );
+        let untrusted_paths = untrusted
+            .errors
+            .iter()
+            .map(|error| error.path.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            untrusted_paths,
+            vec![
+                global_entry.to_string_lossy().into_owned(),
+                explicit_entry.to_string_lossy().into_owned(),
+            ]
+        );
+
+        let trusted = discover_and_load_extensions_for_trust(
+            &[explicit_entry.to_string_lossy().into_owned()],
+            &project.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            None,
+            None,
+            true,
+        );
+        let trusted_paths = trusted
+            .errors
+            .iter()
+            .map(|error| error.path.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            trusted_paths,
+            vec![
+                project_entry.to_string_lossy().into_owned(),
+                global_entry.to_string_lossy().into_owned(),
+                explicit_entry.to_string_lossy().into_owned(),
+            ]
+        );
+
         let _ = fs::remove_dir_all(root);
     }
 

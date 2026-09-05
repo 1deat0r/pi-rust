@@ -66,7 +66,7 @@ use crate::harness::events::{
 };
 use crate::harness::models::{BoxFuture, SimpleModels};
 use crate::harness::result::TaggedError;
-use crate::rich_agent::{Agent, OverflowRecoveryHook};
+use crate::rich_agent::{AfterToolCallHook, Agent, BeforeToolCallHook, OverflowRecoveryHook};
 use crate::session::session::Session;
 use crate::session::state::{BranchBounds, EntryOrder, EntryQuery, RecordQuery};
 use crate::session::types::{Entry, EntryNoStats, LaneRecord, NewRecord, OperationIntent};
@@ -777,6 +777,7 @@ pub struct HarnessTool {
     pub tool: Tool,
     pub execute: ToolExecuteFn,
     pub prepare_arguments: Option<ToolPrepareArgumentsFn>,
+    pub execution_mode: Option<crate::tools::ToolExecutionMode>,
     pub replay: Option<ReplayPolicy>,
 }
 
@@ -784,6 +785,7 @@ impl std::fmt::Debug for HarnessTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HarnessTool")
             .field("name", &self.tool.name)
+            .field("execution_mode", &self.execution_mode)
             .field("replay", &self.replay)
             .finish_non_exhaustive()
     }
@@ -801,6 +803,7 @@ impl HarnessTool {
             tool: tool.tool.clone(),
             execute: tool.execute.clone(),
             prepare_arguments: tool.prepare_arguments.clone(),
+            execution_mode: tool.execution_mode,
             replay: None,
         }
     }
@@ -809,6 +812,9 @@ impl HarnessTool {
         let mut tool = AgentTool::new(self.tool.clone(), self.name(), self.execute.clone());
         if let Some(prepare_arguments) = &self.prepare_arguments {
             tool = tool.with_prepare_arguments(prepare_arguments.clone());
+        }
+        if let Some(execution_mode) = self.execution_mode {
+            tool = tool.with_execution_mode(execution_mode);
         }
         tool
     }
@@ -939,8 +945,13 @@ pub struct AgentHarnessOptions<F: FileSystem> {
     /// durable failed-response/compaction persistence and returns the rebuilt
     /// provider-facing context to the rich agent loop.
     pub overflow_recovery: Option<OverflowRecoveryHook>,
+    /// Mutates or rejects a tool call before execution.
+    pub before_tool_call: Option<BeforeToolCallHook>,
+    /// Replaces or annotates a tool result after execution.
+    pub after_tool_call: Option<AfterToolCallHook>,
     pub system_prompt: Option<String>,
     pub block_images: bool,
+    pub tool_result_image_options: Option<crate::tools::image::ProcessImageOptions>,
     pub thinking_level: Option<ModelThinkingLevel>,
     pub active_tool_names: Option<Vec<String>>,
     pub tools: Option<Vec<HarnessTool>>,
@@ -966,8 +977,11 @@ impl<F: FileSystem> AgentHarnessOptions<F> {
             stream_fn: None,
             stream_fn_with_options: None,
             overflow_recovery: None,
+            before_tool_call: None,
+            after_tool_call: None,
             system_prompt: None,
             block_images: false,
+            tool_result_image_options: None,
             thinking_level: None,
             active_tool_names: None,
             tools: None,
@@ -1210,6 +1224,8 @@ pub struct AgentHarness<F: FileSystem> {
     stream_fn: Option<crate::agent::StreamFn>,
     stream_fn_with_options: Option<crate::agent::StreamFnWithOptions>,
     overflow_recovery: Option<OverflowRecoveryHook>,
+    before_tool_call: Option<BeforeToolCallHook>,
+    after_tool_call: Option<AfterToolCallHook>,
     /// Messages persisted by the built-in overflow callback during the
     /// current run. The normal run owner consumes these occurrences instead
     /// of appending them a second time after the rich loop returns.
@@ -1217,6 +1233,7 @@ pub struct AgentHarness<F: FileSystem> {
     automatic_overflow_recovery: bool,
     system_prompt: String,
     block_images: bool,
+    tool_result_image_options: Option<crate::tools::image::ProcessImageOptions>,
     tool_execution: Option<ToolExecution>,
     telemetry_context: HarnessTelemetryContext,
     tool_context: Option<serde_json::Value>,
@@ -1237,6 +1254,8 @@ struct HarnessAgentConfig<'a> {
     stream_fn: Option<crate::agent::StreamFn>,
     stream_fn_with_options: Option<crate::agent::StreamFnWithOptions>,
     overflow_recovery: Option<OverflowRecoveryHook>,
+    before_tool_call: Option<BeforeToolCallHook>,
+    after_tool_call: Option<AfterToolCallHook>,
     model: &'a Model,
     system_prompt: &'a str,
     tools: &'a [HarnessTool],
@@ -1246,6 +1265,7 @@ struct HarnessAgentConfig<'a> {
     follow_up_mode: QueueMode,
     to_provider_messages: Option<ProviderMessageConverter>,
     block_images: bool,
+    tool_result_image_options: Option<crate::tools::image::ProcessImageOptions>,
     tool_execution: Option<ToolExecution>,
     stream_options: &'a StreamOptions,
     retry_policy: &'a RetryPolicy,
@@ -1471,8 +1491,15 @@ fn build_harness_agent(config: HarnessAgentConfig<'_>) -> Option<Arc<Agent>> {
             QueueMode::OneAtATime => crate::rich_agent::QueueMode::OneAtATime,
         });
         agent.set_block_images(config.block_images);
+        agent.set_tool_result_image_options(config.tool_result_image_options);
         if let Some(overflow_recovery) = config.overflow_recovery {
             agent.set_overflow_recovery(overflow_recovery);
+        }
+        if let Some(before_tool_call) = config.before_tool_call {
+            agent.set_before_tool_call(before_tool_call);
+        }
+        if let Some(after_tool_call) = config.after_tool_call {
+            agent.set_after_tool_call(after_tool_call);
         }
         if let Some(ToolExecution::Sequential) = config.tool_execution {
             agent.set_tool_execution(crate::rich_agent::ToolExecutionMode::Sequential);
@@ -1535,6 +1562,7 @@ fn reasoning_level(level: ModelThinkingLevel) -> Option<pi_ai::types::ThinkingLe
 
 fn suspended_operation_from_record(
     record: &LaneRecord,
+    deferred: Option<DeferredHandle>,
     aborting: Option<AbortingPlan>,
 ) -> SuspendedOperation {
     let LaneRecord::OperationStarted {
@@ -1547,23 +1575,55 @@ fn suspended_operation_from_record(
     else {
         unreachable!("suspended operation must originate from operation_started")
     };
-    let (prompt, deferred) = match intent {
+    let prompt = match intent {
         OperationIntent::Run {
             original_prompt, ..
-        } => (Some(original_prompt.clone()), None),
-        OperationIntent::Compaction { .. } | OperationIntent::Navigation { .. } => (None, None),
+        } => Some(original_prompt.clone()),
+        OperationIntent::Compaction { .. } | OperationIntent::Navigation { .. } => None,
     };
     SuspendedOperation {
         lane: lane.clone(),
         kind: operation_kind(intent),
         id: id.clone(),
         started_at: *timestamp,
-        reason: SuspensionReason::Crash,
+        reason: if deferred.is_some() {
+            SuspensionReason::Deferred
+        } else {
+            SuspensionReason::Crash
+        },
         prompt,
         deferred,
         aborting,
         missing: MissingIdentitiesInfo::default(),
     }
+}
+
+fn deferred_handle_for_open_run(
+    records: &[LaneRecord],
+    entries: &[Entry],
+    lane: &str,
+    run_id: &str,
+) -> Option<DeferredHandle> {
+    let result_entry_id = records.iter().rev().find_map(|record| match record {
+        LaneRecord::StepAttempt {
+            lane: record_lane,
+            run_id: record_run_id,
+            result_entry_id,
+            ..
+        } if record_lane == lane && record_run_id == run_id => Some(result_entry_id.as_str()),
+        _ => None,
+    })?;
+    entries.iter().find_map(|entry| match entry {
+        Entry::Message { id, message, .. } if id == result_entry_id => match message {
+            AgentMessage::Core(Message::Assistant(assistant))
+                if assistant.stop_reason() == Some(pi_ai::types::StopReason::Deferred) =>
+            {
+                assistant.deferred().cloned()
+            }
+            _ => None,
+        },
+        _ => None,
+    })
 }
 
 fn queued_item_from_target(
@@ -1613,8 +1673,13 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
     /// operation without a matching finish record is returned as suspended
     /// work.
     pub async fn create(
-        options: AgentHarnessOptions<F>,
+        mut options: AgentHarnessOptions<F>,
     ) -> Result<(AgentHarness<F>, Vec<SuspendedOperation>), HarnessError> {
+        let session_id = options.session.get_metadata().await.id;
+        let stream_options = options.stream_options.get_or_insert_with(Default::default);
+        if stream_options.base.session_id.is_none() {
+            stream_options.base.session_id = Some(session_id);
+        }
         let lanes = options.session.get_lanes().await;
         let records = options
             .session
@@ -1624,17 +1689,16 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
             })
             .await
             .map_err(HarnessError::from)?;
-        let materialized_entry_ids: HashSet<String> = options
+        let entries = options
             .session
             .find_entries(&EntryQuery {
                 order: Some(EntryOrder::OldestFirst),
                 ..Default::default()
             })
             .await
-            .map_err(HarnessError::from)?
-            .into_iter()
-            .map(|entry| entry.id().to_string())
-            .collect();
+            .map_err(HarnessError::from)?;
+        let materialized_entry_ids: HashSet<String> =
+            entries.iter().map(|entry| entry.id().to_string()).collect();
         let mut open_records = Vec::new();
         for lane in &lanes {
             if let Some(record) = options
@@ -1697,8 +1761,10 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
                     },
                 );
             let queues = harness.queue_snapshot_for_lane(lane);
+            let deferred = deferred_handle_for_open_run(&records, &entries, lane, id);
             suspended.push(suspended_operation_from_record(
                 record,
+                deferred,
                 aborting.then(|| AbortingPlan {
                     steer: queues.steer.into_iter().map(|item| item.message).collect(),
                     follow_up: queues
@@ -1764,6 +1830,8 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
             stream_fn: stream_fn.clone(),
             stream_fn_with_options: stream_fn_with_options.clone(),
             overflow_recovery: overflow_recovery.clone(),
+            before_tool_call: options.before_tool_call.clone(),
+            after_tool_call: options.after_tool_call.clone(),
             model: &options.model,
             system_prompt: &system_prompt,
             tools: &tools,
@@ -1773,6 +1841,7 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
             follow_up_mode: options.follow_up_mode.unwrap_or_default(),
             to_provider_messages: options.to_provider_messages.clone(),
             block_images: options.block_images,
+            tool_result_image_options: options.tool_result_image_options,
             tool_execution: options.tool_execution,
             stream_options: &stream_options,
             retry_policy: &retry_policy,
@@ -1796,10 +1865,13 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
             stream_fn,
             stream_fn_with_options,
             overflow_recovery,
+            before_tool_call: options.before_tool_call,
+            after_tool_call: options.after_tool_call,
             automatic_overflow_persisted,
             automatic_overflow_recovery,
             system_prompt,
             block_images: options.block_images,
+            tool_result_image_options: options.tool_result_image_options,
             tool_execution: options.tool_execution,
             telemetry_context,
             tool_context: options.tool_context,
@@ -2750,6 +2822,8 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
                 stream_fn: self.stream_fn.clone(),
                 stream_fn_with_options: self.stream_fn_with_options.clone(),
                 overflow_recovery: overflow_recovery.clone(),
+                before_tool_call: self.before_tool_call.clone(),
+                after_tool_call: self.after_tool_call.clone(),
                 model: &self.model,
                 system_prompt: &self.system_prompt,
                 tools: &self.tools,
@@ -2759,6 +2833,7 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
                 follow_up_mode: self.follow_up_mode,
                 to_provider_messages: self.to_provider_messages.clone(),
                 block_images: self.block_images,
+                tool_result_image_options: self.tool_result_image_options,
                 tool_execution: self.tool_execution,
                 stream_options: &self.stream_options,
                 retry_policy: &self.retry_policy,
@@ -2783,10 +2858,13 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
             stream_fn: self.stream_fn.clone(),
             stream_fn_with_options: self.stream_fn_with_options.clone(),
             overflow_recovery,
+            before_tool_call: self.before_tool_call.clone(),
+            after_tool_call: self.after_tool_call.clone(),
             automatic_overflow_persisted,
             automatic_overflow_recovery,
             system_prompt: self.system_prompt.clone(),
             block_images: self.block_images,
+            tool_result_image_options: self.tool_result_image_options,
             tool_execution: self.tool_execution,
             telemetry_context: self.telemetry_context.clone(),
             tool_context: self.tool_context.clone(),
@@ -4427,6 +4505,114 @@ mod tests {
         .0
     }
 
+    #[test]
+    fn session_id_is_forwarded_to_provider_stream_options_unless_explicit() {
+        rt().block_on(async {
+            let (implicit, _) = AgentHarness::create(AgentHarnessOptions::new(
+                create_session("cache-affinity"),
+                test_model(),
+            ))
+            .await
+            .unwrap();
+            assert_eq!(
+                implicit
+                    .get_stream_options()
+                    .await
+                    .base
+                    .session_id
+                    .as_deref(),
+                Some("cache-affinity")
+            );
+
+            let mut explicit_options =
+                AgentHarnessOptions::new(create_session("durable-session"), test_model());
+            explicit_options.stream_options = Some(StreamOptions {
+                base: pi_ai::types::StreamOptions {
+                    session_id: Some("request-override".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let (explicit, _) = AgentHarness::create(explicit_options).await.unwrap();
+            assert_eq!(
+                explicit
+                    .get_stream_options()
+                    .await
+                    .base
+                    .session_id
+                    .as_deref(),
+                Some("request-override")
+            );
+        });
+    }
+
+    #[test]
+    fn session_affinity_reaches_faux_cache_and_retention_none_opts_out() {
+        rt().block_on(async {
+            async fn run_two_turns(cache_retention: Option<&str>) -> (Usage, Usage) {
+                let core = FauxProviderCore::new(&RegisterFauxProviderOptions::default());
+                core.set_responses(vec![
+                    FauxResponseStep::Message(faux_assistant_message(
+                        vec![ContentBlock::text("first reply")],
+                        FauxAssistantOptions::default(),
+                    )),
+                    FauxResponseStep::Message(faux_assistant_message(
+                        vec![ContentBlock::text("second reply")],
+                        FauxAssistantOptions::default(),
+                    )),
+                ]);
+                let legacy_core = core.clone();
+                let stream_fn: crate::agent::StreamFn =
+                    Arc::new(move |model, context| legacy_core.stream(model, context, None));
+                let option_core = core.clone();
+                let stream_fn_with_options: crate::agent::StreamFnWithOptions =
+                    Arc::new(move |model, context, options| {
+                        option_core.stream(model, context, Some(options))
+                    });
+                let mut options =
+                    AgentHarnessOptions::new(create_session("cache-session"), test_model());
+                options.stream_fn = Some(stream_fn);
+                options.stream_fn_with_options = Some(stream_fn_with_options);
+                options.stream_options = Some(StreamOptions {
+                    base: pi_ai::types::StreamOptions {
+                        cache_retention: cache_retention.map(str::to_string),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+                let (harness, _) = AgentHarness::create(options).await.unwrap();
+
+                let first = harness
+                    .run_prompt(vec![user_message("first")])
+                    .await
+                    .unwrap();
+                let second = harness
+                    .run_prompt(vec![user_message("second")])
+                    .await
+                    .unwrap();
+                let assistant_usage = |messages: &[AgentMessage]| {
+                    messages
+                        .iter()
+                        .find_map(|message| match message {
+                            AgentMessage::Core(Message::Assistant(assistant)) => assistant.usage(),
+                            _ => None,
+                        })
+                        .cloned()
+                        .unwrap()
+                };
+                (assistant_usage(&first), assistant_usage(&second))
+            }
+
+            let (first, second) = run_two_turns(None).await;
+            assert!(first.cache_write > 0);
+            assert!(second.cache_read > 0);
+
+            let (first, second) = run_two_turns(Some("none")).await;
+            assert_eq!((first.cache_read, first.cache_write), (0, 0));
+            assert_eq!((second.cache_read, second.cache_write), (0, 0));
+        });
+    }
+
     fn user_message(text: &str) -> AgentMessage {
         AgentMessage::Core(Message::User(UserContent::string(text, 1)))
     }
@@ -4499,7 +4685,7 @@ mod tests {
             );
 
             let messages = harness
-                .run_prompt(vec![user_message("hello")])
+                .run_prompt(vec![user_message("synthetic-secret-prompt")])
                 .await
                 .unwrap();
             assert_eq!(messages.len(), 2);
@@ -4529,6 +4715,9 @@ mod tests {
                     .collect::<Vec<_>>(),
                 vec!["run_start", "run_end"]
             );
+            let telemetry_json = serde_json::to_string(&spans[0].attributes).unwrap();
+            assert!(!telemetry_json.contains("synthetic-secret-prompt"));
+            assert!(!telemetry_json.contains("api_key"));
         });
     }
 
@@ -5842,6 +6031,7 @@ mod tests {
                 ),
                 execute: crate::tools::read_tool(".".to_string()).execute,
                 prepare_arguments: None,
+                execution_mode: None,
                 replay: None,
             };
             let mut tools = vec![tool.clone()];
@@ -5854,6 +6044,7 @@ mod tests {
                 ),
                 execute: crate::tools::read_tool(".".to_string()).execute,
                 prepare_arguments: None,
+                execution_mode: None,
                 replay: None,
             });
             assert_eq!(

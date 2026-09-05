@@ -19,10 +19,11 @@ pub use all::{
     mistral_provider, moonshotai_cn_provider, moonshotai_provider, nvidia_provider,
     openai_codex_provider, openai_codex_provider_with_oauth, openai_provider,
     openai_responses_streams, opencode_go_provider, opencode_provider, openrouter_provider,
-    qwen_token_plan_cn_provider, qwen_token_plan_individual_provider, qwen_token_plan_provider,
-    radius_provider, radius_provider_with_options, together_provider, vercel_ai_gateway_provider,
-    xai_provider, xiaomi_provider, xiaomi_token_plan_ams_provider, xiaomi_token_plan_cn_provider,
-    xiaomi_token_plan_sgp_provider, zai_coding_cn_provider, zai_provider,
+    provider_streams_for_api, qwen_token_plan_cn_provider, qwen_token_plan_individual_provider,
+    qwen_token_plan_provider, radius_provider, radius_provider_with_options, together_provider,
+    vercel_ai_gateway_provider, xai_provider, xiaomi_provider, xiaomi_token_plan_ams_provider,
+    xiaomi_token_plan_cn_provider, xiaomi_token_plan_sgp_provider, zai_coding_cn_provider,
+    zai_provider,
 };
 pub use anthropic::{anthropic_models, AnthropicProvider};
 pub use faux::{

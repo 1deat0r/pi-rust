@@ -91,9 +91,9 @@ The 266 non-TUI rows have a separate conservative normalized register in
 [`NON-TUI-PARITY-STATUS.md`](NON-TUI-PARITY-STATUS.md). The Rust-native
 `parity_audit register` command validates its complete ID/capability/domain
 join against this inventory and the pinned upstream revision. Current normalized
-metrics are implementation 49 PASS/194 PARTIAL/23 OPEN, deterministic evidence
-36 PASS/207 PARTIAL/23 OPEN, runtime boundary 37 PASS/154 PARTIAL/75 OPEN, and
-overall 30/266; register coverage must not be confused with behavioral
+metrics are implementation 84 PASS/159 PARTIAL/23 OPEN, deterministic evidence
+71 PASS/172 PARTIAL/23 OPEN, runtime boundary 51 PASS/141 PARTIAL/74 OPEN, and
+overall 44/266; register coverage must not be confused with behavioral
 completion.
 
 ## A. Product launch, process, and CLI contract
@@ -311,15 +311,15 @@ for one adaptor cannot hide a missing provider registration or credential path:
 | AGENT-008 | system prompt | Default coding prompt, context files, tools, skills, templates, extensions, and user overrides. |
 | AGENT-009 | skills | Discovery, frontmatter, name/description validation, collision precedence, invocation control, nested skills, and disabled skills. |
 | AGENT-010 | prompt templates | Discovery, interpolation, arguments, malformed template, and selection. |
-| AGENT-011 | memory | Read/write/search/compaction behavior, missing files, and persistence. |
-| AGENT-012 | telemetry | Span/event/counter lifecycle, no-op mode, panic/error settlement, and no leaked secrets. |
+| AGENT-011 | in-memory sessions | CRUD, immutable reads, filtered queries, lanes/records, fork, missing-session behavior, process-local reopen, compaction/search integration, and no durable file. |
+| AGENT-012 | telemetry | Span/event lifecycle, exact parent/id/settlement order, detached snapshots, no-op mode, panic/error settlement, and no leaked secrets. |
 | AGENT-013 | public stream hooks/options | Per-turn options, payload/response hooks, session/reasoning/API-key propagation, abort, and callback failure isolation. |
 | AGENT-014 | output guard/backpressure | TUI stdout ownership, serialized raw writes, transient pipe errors, flush/wait, and terminal restoration. |
 | AGENT-015 | session services/runtime | SDK construction, lifecycle operations, runtime replacement, per-turn settings, persistence, and shutdown. |
 | TOOL-001 | `read` | File, directory, range, binary, missing, permission, truncation, Unicode, and output format. |
 | TOOL-002 | `write` | New/overwrite/atomicity, parent creation, permissions, Unicode, error, and mutation queue. |
 | TOOL-003 | `edit` | Exact replacement, multiple matches, no match, ambiguity, diff, Unicode, and conflict. |
-| TOOL-004 | `edit-diff` | Patch parsing, add/delete/rename, malformed patch, path safety, and rollback. |
+| TOOL-004 | `edit-diff` | Line ending/BOM normalization, exact/fuzzy replacement planning, overlap/error diagnostics, display diff, unified patch generation, Unicode, and missing-newline markers. |
 | TOOL-005 | `bash` | cwd, env, timeout, stdin, stdout/stderr, exit code, signal, cancellation, truncation, shell quoting, and late output. |
 | TOOL-006 | `ls` | Files/directories, hidden, sorting, symlink, missing, permission, and limit. |
 | TOOL-007 | `find` | Glob, root relativization, nested gitignore, symlink, hidden, invalid pattern, and limit. |

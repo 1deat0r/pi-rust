@@ -424,6 +424,35 @@ mod tests {
     }
 
     #[test]
+    fn file_store_observes_external_replace_and_remove() {
+        let path = tmp_path("external-revision");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let store = FileModelsStore::new(path.clone());
+        store.write("demo", &entry_with_model());
+        assert_eq!(store.read("demo").unwrap().models[0].id, "demo-1");
+
+        let mut replacement = entry_with_model();
+        replacement.models[0].id = "demo-external".to_string();
+        let serialized = serde_json::to_string_pretty(&StoredModels::from([(
+            "demo".to_string(),
+            StoredModelsEntry::from(&replacement),
+        )]))
+        .unwrap();
+        let temporary = path.with_extension("external.tmp");
+        std::fs::write(&temporary, serialized).unwrap();
+        std::fs::rename(&temporary, &path).unwrap();
+
+        assert_eq!(
+            store.read("demo").unwrap().models[0].id,
+            "demo-external",
+            "the existing store must invalidate its cached revision"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(store.read("demo").is_none());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn file_store_missing_file_yields_empty() {
         let path = tmp_path("missing");
         let store = FileModelsStore::new(path);

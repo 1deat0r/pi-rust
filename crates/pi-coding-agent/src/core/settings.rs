@@ -182,7 +182,7 @@ pub fn resolve_path(input: &str) -> PathBuf {
     normalize_path(absolute)
 }
 
-fn normalize_path(path: PathBuf) -> PathBuf {
+pub(crate) fn normalize_path(path: PathBuf) -> PathBuf {
     let absolute = path.is_absolute();
     let mut normalized = PathBuf::new();
     for component in path.components() {

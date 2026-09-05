@@ -8,6 +8,8 @@
 
 use std::io::Cursor;
 
+use pi_ai::types::ContentBlock;
+
 const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const IMAGE_CONVERSION_FAILURE: &str =
     "[Image omitted: could not be converted to a supported inline image format.]";
@@ -266,6 +268,41 @@ pub fn process_image(
         width = next_width;
         height = next_height;
     }
+}
+
+/// Normalize every image in a finalized tool result after extension hooks
+/// have had a chance to replace or add content. Images that cannot be decoded
+/// or normalized are retained unchanged, matching coding-agent's
+/// `normalizeToolResultImages` best-effort contract. Conversion/resize hints
+/// are inserted immediately after the image that produced them.
+pub fn normalize_tool_result_images(
+    content: &[ContentBlock],
+    options: ProcessImageOptions,
+) -> Vec<ContentBlock> {
+    let mut normalized = Vec::with_capacity(content.len());
+    for block in content {
+        let ContentBlock::Image { data, mime_type } = block else {
+            normalized.push(block.clone());
+            continue;
+        };
+        let Ok(bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
+        else {
+            normalized.push(block.clone());
+            continue;
+        };
+        let Ok(processed) = process_image(&bytes, mime_type, options) else {
+            normalized.push(block.clone());
+            continue;
+        };
+        normalized.push(ContentBlock::Image {
+            data: processed.data,
+            mime_type: processed.mime_type,
+        });
+        if !processed.hints.is_empty() {
+            normalized.push(ContentBlock::text(processed.hints.join("\n")));
+        }
+    }
+    normalized
 }
 
 fn normalize_image(
@@ -817,6 +854,70 @@ mod tests {
         let png = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, result.data)
             .expect("processed image is base64");
         assert!(png.starts_with(&PNG_SIGNATURE));
+    }
+
+    #[test]
+    fn normalizes_tool_result_images_in_place_with_adjacent_hints() {
+        let original = vec![
+            ContentBlock::text("before"),
+            ContentBlock::Image {
+                data: encode_base64(&tiny_bmp()),
+                mime_type: "image/bmp".to_string(),
+            },
+            ContentBlock::text("after"),
+        ];
+        let normalized = normalize_tool_result_images(
+            &original,
+            ProcessImageOptions {
+                auto_resize_images: false,
+                ..Default::default()
+            },
+        );
+        assert_eq!(normalized.len(), 4);
+        assert!(matches!(
+            &normalized[0],
+            ContentBlock::Text { text, .. } if text == "before"
+        ));
+        assert!(matches!(
+            &normalized[1],
+            ContentBlock::Image { mime_type, data }
+                if mime_type == "image/png"
+                    && base64::Engine::decode(
+                        &base64::engine::general_purpose::STANDARD,
+                        data
+                    )
+                    .is_ok_and(|bytes| bytes.starts_with(&PNG_SIGNATURE))
+        ));
+        assert!(matches!(
+            &normalized[2],
+            ContentBlock::Text { text, .. }
+                if text == "[Image converted from image/bmp to image/png.]"
+        ));
+        assert!(matches!(
+            &normalized[3],
+            ContentBlock::Text { text, .. } if text == "after"
+        ));
+    }
+
+    #[test]
+    fn failed_tool_result_image_normalization_retains_the_original_block() {
+        let original = vec![ContentBlock::Image {
+            data: "not-base64".to_string(),
+            mime_type: "image/png".to_string(),
+        }];
+        assert_eq!(
+            normalize_tool_result_images(&original, ProcessImageOptions::default()),
+            original
+        );
+
+        let undecodable = vec![ContentBlock::Image {
+            data: encode_base64(b"not-an-image"),
+            mime_type: "image/png".to_string(),
+        }];
+        assert_eq!(
+            normalize_tool_result_images(&undecodable, ProcessImageOptions::default()),
+            undecodable
+        );
     }
 
     #[test]

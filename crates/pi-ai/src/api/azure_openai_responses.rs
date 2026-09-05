@@ -21,8 +21,8 @@ use crate::types::{
 };
 
 use super::openai_completions::{
-    abortable, apply_payload_hook, error_reason, immediate_error_stream, signal_aborted,
-    terminal_error_message,
+    abortable, apply_payload_hook, error_reason, format_reqwest_error, immediate_error_stream,
+    signal_aborted, terminal_error_message,
 };
 use super::openai_responses_shared::*;
 
@@ -347,7 +347,12 @@ async fn process_responses_sse_stream(
             Err(_) => return Err("Request was aborted".to_string()),
         };
         let Some(chunk) = next_chunk else { break };
-        let chunk = chunk.map_err(|error| format!("Azure OpenAI SSE read failed: {error}"))?;
+        let chunk = chunk.map_err(|error| {
+            format!(
+                "Azure OpenAI SSE read failed: {}",
+                format_reqwest_error(&error)
+            )
+        })?;
         for event in parser.push_bytes(&chunk) {
             process_responses_stream_chunk(
                 &mut state,

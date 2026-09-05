@@ -22,7 +22,8 @@ use super::constrained_sampling::{
     get_json_schema_tool_parameters, resolve_json_schema_strict_sampling,
 };
 use super::openai_completions::{
-    abortable, apply_payload_hook, error_reason, signal_aborted, terminal_error_message,
+    abortable, abortable_with_timeout, apply_payload_hook, error_reason, format_reqwest_error,
+    signal_aborted, terminal_error_message, AbortTimeoutError,
 };
 use super::transform_messages::transform_messages;
 
@@ -1716,11 +1717,20 @@ pub fn stream(
         if let Some(on_response) = &options.base.on_response {
             on_response(&provider_response, &model);
         }
-        let response = match abortable(response.bytes(), options.base.abort_signal.clone()).await {
+        let response = match abortable_with_timeout(
+            response.bytes(),
+            options.base.abort_signal.clone(),
+            options.base.base.timeout_ms,
+        )
+        .await
+        {
             Ok(Ok(body)) => body,
             Ok(Err(err)) => {
-                let message =
-                    terminal_error_message(&model, format!("Request body failed: {err}"), false);
+                let message = terminal_error_message(
+                    &model,
+                    format!("Request body failed: {}", format_reqwest_error(&err)),
+                    false,
+                );
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Error,
                     error_message: message.clone(),
@@ -1728,10 +1738,23 @@ pub fn stream(
                 pusher.end(Some(message));
                 return;
             }
-            Err(_) => {
+            Err(AbortTimeoutError::Aborted) => {
                 let message = terminal_error_message(&model, "Request was aborted", true);
                 pusher.push(AssistantMessageEvent::Error {
                     reason: ErrorReason::Aborted,
+                    error_message: message.clone(),
+                });
+                pusher.end(Some(message));
+                return;
+            }
+            Err(AbortTimeoutError::TimedOut(timeout_ms)) => {
+                let message = terminal_error_message(
+                    &model,
+                    format!("Request timed out after {timeout_ms}ms"),
+                    false,
+                );
+                pusher.push(AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
                     error_message: message.clone(),
                 });
                 pusher.end(Some(message));
@@ -1981,13 +2004,13 @@ pub fn extract_anthropic_error(body: &str) -> String {
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
         {
-            return msg.to_string();
+            return crate::utils::error_body::truncate_provider_error_text(msg);
         }
         if let Some(detail) = value.get("detail").and_then(|d| d.as_str()) {
-            return detail.to_string();
+            return crate::utils::error_body::truncate_provider_error_text(detail);
         }
     }
-    body.chars().take(200).collect()
+    crate::utils::error_body::truncate_provider_error_text(body.trim())
 }
 
 /// Default Anthropic base URL for provider factories.

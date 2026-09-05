@@ -24,7 +24,7 @@ fn skill_commands_use_loaded_descriptions_and_follow_the_setting() {
     let skill_path = skill_dir.join("SKILL.md");
     std::fs::write(
         &skill_path,
-        "---\nname: demo\ndescription: Loaded demo description\ndisable-model-invocation: true\n---\n\nFollow the demo procedure.\n",
+        "\u{feff}---\nname: demo\ndescription: Loaded demo description\ndisable-model-invocation: true\n---\n\nFollow the demo procedure.\n",
     )
     .unwrap();
 
@@ -83,6 +83,7 @@ fn skill_commands_use_loaded_descriptions_and_follow_the_setting() {
     let expanded = expand_skill_command("/skill:demo extra instructions", &skills);
     assert!(expanded.contains("<skill name=\"demo\""));
     assert!(expanded.contains("Follow the demo procedure."));
+    assert!(!expanded.contains("disable-model-invocation"));
     assert!(expanded.ends_with("extra instructions"));
     assert_eq!(
         expand_skill_command("/skill:missing", &skills),

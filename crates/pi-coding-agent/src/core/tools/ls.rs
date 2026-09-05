@@ -5,7 +5,9 @@
 //! (whichever is hit first).
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+use icu_collator::{Collator, CollatorBorrowed};
 
 use pi_agent::tools::path_utils::resolve_tool_path;
 use pi_agent::tools::truncate::{truncate_head_with, DEFAULT_MAX_BYTES};
@@ -16,26 +18,37 @@ use super::{bytes_limit_notice, truncation_details, ToolOutput};
 
 const DEFAULT_LIMIT: u64 = 500;
 
+static ENGLISH_COLLATOR: LazyLock<Option<CollatorBorrowed<'static>>> = LazyLock::new(|| {
+    Collator::try_new(icu_locale_core::locale!("en-US").into(), Default::default()).ok()
+});
+
 /// Model-facing execute: returns the text output for `ls`.
 pub async fn ls_execute(
     cwd: &str,
     path: Option<&str>,
     limit: Option<u64>,
 ) -> Result<String, String> {
-    Ok(ls_execute_with_details(cwd, path, limit, None).await?.text)
+    Ok(
+        ls_execute_with_details(cwd, path, limit.map(|value| value as f64), None)
+            .await?
+            .text,
+    )
 }
 
 async fn ls_execute_with_details(
     cwd: &str,
     path: Option<&str>,
-    limit: Option<u64>,
+    limit: Option<f64>,
     signal: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<ToolOutput, String> {
     if pi_agent::agent::is_aborted(signal.as_ref()) {
         return Err("Operation aborted".to_string());
     }
-    let dir_path = resolve_tool_path(cwd, path.unwrap_or("."));
-    let effective_limit = limit.unwrap_or(DEFAULT_LIMIT);
+    let dir_path =
+        crate::core::settings::normalize_path(resolve_tool_path(cwd, path.unwrap_or(".")).into())
+            .to_string_lossy()
+            .into_owned();
+    let effective_limit = limit.unwrap_or(DEFAULT_LIMIT as f64);
 
     let path_obj = Path::new(&dir_path);
     if !path_obj.exists() {
@@ -53,9 +66,10 @@ async fn ls_execute_with_details(
         read_dir.map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned())),
     )?;
 
-    // Sort alphabetically, case-insensitive (JS localeCompare on lowercase);
-    // stable sort keeps readdir order for equal foldings, like upstream.
-    entries.sort_by_key(|e| e.to_lowercase());
+    // Match JavaScript's `toLowerCase().localeCompare()` with the default
+    // English ICU collation. Stable sorting keeps readdir order for equal
+    // lowercased names, like upstream.
+    entries.sort_by(|left, right| compare_entry_names(left, right));
 
     let mut results: Vec<String> = Vec::new();
     let mut entry_limit_reached = false;
@@ -63,7 +77,7 @@ async fn ls_execute_with_details(
         if pi_agent::agent::is_aborted(signal.as_ref()) {
             return Err("Operation aborted".to_string());
         }
-        if results.len() >= effective_limit as usize {
+        if (results.len() as f64) >= effective_limit {
             entry_limit_reached = true;
             break;
         }
@@ -90,7 +104,7 @@ async fn ls_execute_with_details(
     if entry_limit_reached {
         notices.push(format!(
             "{effective_limit} entries limit reached. Use limit={} for more",
-            effective_limit * 2
+            effective_limit * 2.0
         ));
     }
     if truncation.truncated {
@@ -101,10 +115,7 @@ async fn ls_execute_with_details(
     }
     let mut details = serde_json::Map::new();
     if entry_limit_reached {
-        details.insert(
-            "entryLimitReached".to_string(),
-            serde_json::json!(effective_limit),
-        );
+        details.insert("entryLimitReached".to_string(), json_limit(effective_limit));
     }
     if truncation.truncated {
         details.insert(
@@ -140,7 +151,7 @@ pub fn ls_tool(cwd: String) -> AgentTool {
                     return Err("Operation aborted".to_string());
                 }
                 let path = args.get("path").and_then(|v| v.as_str());
-                let limit = args.get("limit").and_then(|v| v.as_u64());
+                let limit = args.get("limit").and_then(|v| v.as_f64());
                 match ls_execute_with_details(&cwd, path, limit, signal.clone()).await {
                     Ok(_output) if pi_agent::agent::is_aborted(signal.as_ref()) => {
                         Err("Operation aborted".to_string())
@@ -156,6 +167,23 @@ pub fn ls_tool(cwd: String) -> AgentTool {
         }),
     )
     .with_experimental_sampling()
+}
+
+fn compare_entry_names(left: &str, right: &str) -> std::cmp::Ordering {
+    let left = left.to_lowercase();
+    let right = right.to_lowercase();
+    ENGLISH_COLLATOR
+        .as_ref()
+        .map(|collator| collator.compare(&left, &right))
+        .unwrap_or_else(|| left.cmp(&right))
+}
+
+fn json_limit(limit: f64) -> serde_json::Value {
+    if limit >= 0.0 && limit.fract() == 0.0 && limit <= u64::MAX as f64 {
+        serde_json::Value::from(limit as u64)
+    } else {
+        serde_json::json!(limit)
+    }
 }
 
 fn collect_entry_names<I>(entries: I) -> Result<Vec<String>, String>
@@ -300,5 +328,89 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines, vec!["alpha.txt", "BETA.txt", "Gamma.txt"]);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn sorting_matches_upstream_english_locale_compare() {
+        let mut names = vec![
+            "_under", ".hidden", "-dash", "10", "2", "A", "a", "ä", "á", "å", "aa", "z", "Z", "é",
+            "e", "😀",
+        ];
+        names.sort_by(|left, right| compare_entry_names(left, right));
+        assert_eq!(
+            names,
+            vec![
+                "_under", "-dash", ".hidden", "😀", "10", "2", "A", "a", "á", "å", "ä", "aa", "e",
+                "é", "z", "Z"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn fractional_and_negative_limits_follow_javascript_number_semantics() {
+        let tree = Tree::new("numeric-limits");
+        let fractional =
+            ls_execute_with_details(&tree.root.display().to_string(), None, Some(1.5), None)
+                .await
+                .unwrap();
+        assert_eq!(
+            fractional.text,
+            ".hidden-dir/\nCargo.toml\n\n[1.5 entries limit reached. Use limit=3 for more]"
+        );
+        assert_eq!(
+            fractional
+                .details
+                .as_ref()
+                .and_then(|details| details.get("entryLimitReached")),
+            Some(&serde_json::json!(1.5))
+        );
+
+        let negative =
+            ls_execute_with_details(&tree.root.display().to_string(), None, Some(-1.0), None)
+                .await
+                .unwrap();
+        assert_eq!(negative.text, "(empty directory)");
+        assert!(negative.details.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_entries_follow_targets_and_dangling_links_are_skipped() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("pi-ls-symlinks-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("target-dir")).unwrap();
+        fs::write(root.join("target-file"), "fixture").unwrap();
+        symlink("target-dir", root.join("dir-link")).unwrap();
+        symlink("target-file", root.join("file-link")).unwrap();
+        symlink("missing", root.join("dangling-link")).unwrap();
+
+        let out = ls_execute(&root.display().to_string(), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            out.lines().collect::<Vec<_>>(),
+            vec!["dir-link/", "file-link", "target-dir/", "target-file"]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn permission_denied_directory_is_actionable_and_secret_safe() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("pi-ls-permission-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let secret = "LS_SECRET_MUST_NOT_LEAK";
+        fs::write(root.join("secret.txt"), secret).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        let result = ls_execute(&root.display().to_string(), None, None).await;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let error = result.expect_err("an unreadable directory must fail");
+        assert!(error.contains("Cannot read directory:"), "got: {error}");
+        assert!(!error.contains(secret));
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -84,7 +84,7 @@ impl AgentToolResult {
 }
 
 /// Per-tool execution mode override (upstream `ToolExecutionMode`).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolExecutionMode {
     Sequential,
     Parallel,
@@ -310,6 +310,16 @@ pub fn edit_tool(cwd: String) -> AgentTool {
 }
 
 pub fn bash_tool(cwd: String) -> AgentTool {
+    bash_tool_with_options(cwd, None, None)
+}
+
+/// Build bash with the coding-agent settings that upstream passes through
+/// `BashToolOptions`: a command prefix and an optional shell binary.
+pub fn bash_tool_with_options(
+    cwd: String,
+    command_prefix: Option<String>,
+    shell_path: Option<String>,
+) -> AgentTool {
     AgentTool::new(
         json_tool(
             "bash",
@@ -326,13 +336,27 @@ pub fn bash_tool(cwd: String) -> AgentTool {
         "Bash",
         Arc::new(move |_tool_call_id, args, signal, on_update| {
             let cwd = cwd.clone();
+            let command_prefix = command_prefix.clone();
+            let shell_path = shell_path.clone();
             Box::pin(async move {
                 let command = args
                     .get("command")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "bash: missing required argument command".to_string())?;
                 let timeout = args.get("timeout").and_then(|v| v.as_f64());
-                bash::execute_bash_with_updates(command, timeout, &cwd, signal, on_update).await
+                let command = match command_prefix.as_deref() {
+                    Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{command}"),
+                    _ => command.to_string(),
+                };
+                bash::execute_bash_with_updates_and_shell(
+                    &command,
+                    timeout,
+                    &cwd,
+                    signal,
+                    on_update,
+                    shell_path.as_deref(),
+                )
+                .await
             })
         }),
     )

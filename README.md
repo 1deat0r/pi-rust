@@ -50,6 +50,25 @@ exposes both registrations through `--list-models glm-5.2` when supplied with
 their respective synthetic `ZAI_API_KEY` or `ZAI_CODING_CN_API_KEY` environment
 variable.
 
+The 2026-08-31 models.json runtime checkpoint closes the previous
+catalog-only custom-provider seam: models.json-only API-key providers now
+compose into an isolated native Rust provider registry and dispatch through
+the registered API adaptor. Focused evidence passes 16 registry tests, 18
+pi-ai model tests, and a real local HTTP streaming fixture that verifies
+configured Bearer/header behavior without persisting credentials. Strict
+pi-ai/pi-coding-agent check and all-target clippy pass. A synthetic in-memory
+stored-OAuth regression also proves configured request headers/authHeader are
+applied without replacing login, refresh, or subscription behavior.
+A three-launch isolated process fixture proves overlay appearance, deletion on
+restart, and malformed-config warning/fallback without stale model retention.
+The active interactive runtime now also recomposes on `/reload`, extension
+reload, and model-catalog selection; a real PTY changes the model metadata and
+completes a subsequent turn without restarting. MODEL-002 and MODEL-003 are
+PASS in all three dimensions. Existing runtime facades also observe external
+auth.json and models-store.json add/replace/remove operations without restart.
+MODEL-004 is PASS/PASS/PASS after real text/JSON process coverage exposed and
+fixed case-sensitive provider startup and faux thinking-suffix bypasses.
+
 The latest session-runtime gate also passes all five focused
 `core::agent_session_runtime` tests, coding-agent check, strict all-target
 clippy, stable formatting, and scoped diff checks. Session switching and JSONL
@@ -137,8 +156,8 @@ open.**
 The TUI acceptance tracker measures a separate contract across all 52 TUI
 capabilities. Its current generated checkpoint is:
 
-TUI functional implementation: 23.08% (12/52)
-TUI test/evidence parity: 23.08% (12/52)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 
@@ -155,15 +174,15 @@ Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
 Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
 Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
 Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
-TUI functional implementation: 23.08% (12/52)
-TUI test/evidence parity: 23.08% (12/52)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 18.42% (49/266 PASS; 194 PARTIAL; 23 OPEN)
-Non-TUI deterministic evidence parity: 13.53% (36/266 PASS; 207 PARTIAL; 23 OPEN)
-Non-TUI runtime-boundary parity: 13.91% (37/266 PASS; 154 PARTIAL; 75 OPEN)
-Non-TUI overall parity: 11.28% (30/266)
-Whole-product behavioral parity: 9.43% (30/318)
+Non-TUI implementation parity: 33.08% (88/266 PASS; 155 PARTIAL; 23 OPEN)
+Non-TUI deterministic evidence parity: 28.20% (75/266 PASS; 168 PARTIAL; 23 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 141 PARTIAL; 74 OPEN)
+Non-TUI overall parity: 16.54% (44/266)
+Whole-product behavioral parity: 13.84% (44/318)
 
 See [`docs/PARITY-DASHBOARD.md`](docs/PARITY-DASHBOARD.md) for the
 definitions and the machine-validated current checkpoint.

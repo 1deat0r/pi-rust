@@ -281,4 +281,146 @@ mod tests {
         assert_eq!(error, "Operation aborted");
         let _ = fs::remove_dir_all(dir);
     }
+
+    #[tokio::test]
+    async fn reads_empty_unicode_lossy_binary_and_exact_ranges() {
+        let dir = temp_dir("content-matrix");
+        fs::write(dir.join("empty.txt"), []).unwrap();
+        let empty = execute_read(
+            "read-empty",
+            "empty.txt",
+            None,
+            None,
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(text(&empty), "");
+        assert!(empty.details().is_none());
+
+        fs::write(dir.join("unicode.txt"), "zero\n界🙂e\u{301}\nlast\n").unwrap();
+        let unicode = execute_read(
+            "read-unicode",
+            "unicode.txt",
+            Some(2.0),
+            Some(1.0),
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            text(&unicode),
+            "界🙂e\u{301}\n\n[2 more lines in file. Use offset=3 to continue.]"
+        );
+
+        fs::write(dir.join("binary.bin"), [b'f', 0x80, b'o']).unwrap();
+        let binary = execute_read(
+            "read-binary",
+            "binary.bin",
+            None,
+            None,
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(text(&binary), "f\u{fffd}o");
+
+        let range_error = execute_read(
+            "read-range",
+            "unicode.txt",
+            Some(99.0),
+            None,
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            range_error,
+            "Offset 99 is beyond end of file (4 lines total)"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn reports_directory_and_missing_paths_as_read_failures() {
+        let dir = temp_dir("path-errors");
+        let directory_error = execute_read(
+            "read-directory",
+            &dir.to_string_lossy(),
+            None,
+            None,
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap_err();
+        assert!(directory_error.starts_with("Failed to read "));
+        assert!(directory_error.contains(&dir.to_string_lossy().to_string()));
+
+        let missing_error = execute_read(
+            "read-missing",
+            "missing.txt",
+            None,
+            None,
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap_err();
+        assert!(missing_error.starts_with("Failed to read missing.txt:"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn reads_supported_binary_images_as_text_and_image_blocks() {
+        let dir = temp_dir("image");
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        ::image::DynamicImage::ImageRgb8(::image::RgbImage::new(1, 1))
+            .write_to(&mut bytes, ::image::ImageFormat::Png)
+            .unwrap();
+        fs::write(dir.join("pixel.png"), bytes.into_inner()).unwrap();
+
+        let result = execute_read(
+            "read-image",
+            "pixel.png",
+            None,
+            None,
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+        assert!(result.content().iter().any(|block| matches!(
+            block,
+            ContentBlock::Text { text, .. } if text.starts_with("Read image file [image/png]")
+        )));
+        assert!(result.content().iter().any(|block| matches!(
+            block,
+            ContentBlock::Image { data, mime_type, .. }
+                if !data.is_empty() && mime_type == "image/png"
+        )));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reports_unreadable_file_without_leaking_contents() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir("permission");
+        let path = dir.join("secret.txt");
+        let secret = "synthetic-secret-that-must-not-leak";
+        fs::write(&path, secret).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let result = execute_read(
+            "read-permission",
+            "secret.txt",
+            None,
+            None,
+            &dir.to_string_lossy(),
+        )
+        .await;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let error = result.unwrap_err();
+        assert!(error.starts_with("Failed to read secret.txt:"), "{error}");
+        assert!(!error.contains(secret), "{error}");
+        let _ = fs::remove_dir_all(dir);
+    }
 }

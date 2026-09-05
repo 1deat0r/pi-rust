@@ -1128,16 +1128,16 @@ mod tests {
         let register = super::read(&root, super::NON_TUI_STATUS).expect("status register");
         let metrics = parse_non_tui_status(&register, &inventory).expect("current register");
         assert_eq!(metrics.total, NON_TUI_TOTAL);
-        assert_eq!(metrics.implementation.pass, 49);
-        assert_eq!(metrics.implementation.partial, 194);
+        assert_eq!(metrics.implementation.pass, 103);
+        assert_eq!(metrics.implementation.partial, 140);
         assert_eq!(metrics.implementation.open, 23);
-        assert_eq!(metrics.evidence.pass, 36);
-        assert_eq!(metrics.evidence.partial, 207);
+        assert_eq!(metrics.evidence.pass, 90);
+        assert_eq!(metrics.evidence.partial, 153);
         assert_eq!(metrics.evidence.open, 23);
-        assert_eq!(metrics.boundary.pass, 37);
-        assert_eq!(metrics.boundary.partial, 154);
-        assert_eq!(metrics.boundary.open, 75);
-        assert_eq!(metrics.overall, 30);
+        assert_eq!(metrics.boundary.pass, 51);
+        assert_eq!(metrics.boundary.partial, 141);
+        assert_eq!(metrics.boundary.open, 74);
+        assert_eq!(metrics.overall, 44);
     }
 
     #[test]

@@ -223,6 +223,44 @@ fn checks_compaction_threshold() {
             ..settings
         }
     ));
+    assert!(!should_compact(90_000, 100_000, &settings));
+    assert!(should_compact(
+        0,
+        100,
+        &CompactionSettings {
+            enabled: true,
+            reserve_tokens: 101,
+            keep_recent_tokens: 0,
+        }
+    ));
+}
+
+#[test]
+fn estimates_javascript_utf16_lengths_for_agent_messages() {
+    let user = AgentMessage::Core(Message::User(pi_ai::types::UserContent::string(
+        "😀😀😀",
+        1,
+    )));
+    assert_eq!(pi_agent::harness::compaction::estimate_tokens(&user), 2);
+
+    let bash = AgentMessage::Custom(pi_agent::types::CustomAgentMessage::BashExecution {
+        command: "😀".into(),
+        output: "😀".into(),
+        exit_code: Some(0),
+        cancelled: false,
+        truncated: false,
+        full_output_path: None,
+        timestamp: 1,
+        exclude_from_context: None,
+    });
+    assert_eq!(pi_agent::harness::compaction::estimate_tokens(&bash), 1);
+
+    let summary = AgentMessage::Custom(pi_agent::types::CustomAgentMessage::CompactionSummary {
+        summary: "😀😀😀".into(),
+        tokens_before: 0,
+        timestamp: 1,
+    });
+    assert_eq!(pi_agent::harness::compaction::estimate_tokens(&summary), 2);
 }
 
 #[test]

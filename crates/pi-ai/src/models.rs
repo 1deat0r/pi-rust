@@ -31,6 +31,20 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn merge_sampling_params(
+    model_params: Option<&serde_json::Value>,
+    request_params: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let mut merged = serde_json::Map::new();
+    if let Some(params) = model_params.and_then(serde_json::Value::as_object) {
+        merged.extend(params.clone());
+    }
+    if let Some(params) = request_params.and_then(serde_json::Value::as_object) {
+        merged.extend(params.clone());
+    }
+    (!merged.is_empty()).then_some(serde_json::Value::Object(merged))
+}
+
 fn redact_oauth_error(error: &str, credential: &OAuthCredential) -> String {
     let mut redacted = error.to_string();
     for secret in [&credential.access, &credential.refresh] {
@@ -748,6 +762,25 @@ impl Models {
     /// and runtime model overrides do not silently fall back to a new store.
     pub fn models_store(&self) -> Arc<dyn ModelsStore> {
         self.models_store.clone()
+    }
+
+    /// Create an empty provider registry that shares this facade's runtime
+    /// credentials, persistent credential store, model store, and auth
+    /// context. Provider composition can then populate the fork without
+    /// mutating the source registry through `Models::clone()`'s shared maps.
+    pub fn fork_registry(&self) -> Self {
+        Self {
+            providers: Arc::new(RwLock::new(BTreeMap::new())),
+            provider_order: Arc::new(RwLock::new(Vec::new())),
+            credentials: self.credentials.clone(),
+            runtime_credentials: self.runtime_credentials.clone(),
+            models_store: self.models_store.clone(),
+            auth_context: self.auth_context.clone(),
+            refresh_generations: Arc::new(Mutex::new(BTreeMap::new())),
+            refresh_signals: Arc::new(Mutex::new(BTreeMap::new())),
+            publication_locks: Arc::new(Mutex::new(BTreeMap::new())),
+            oauth_refresh_locks: Arc::new(Mutex::new(BTreeMap::new())),
+        }
     }
 
     fn supersede_provider_refresh(&self, provider_id: &str) -> u64 {
@@ -1788,10 +1821,18 @@ impl Models {
             let result = models.apply_auth_async(&model, &base_options, None).await;
             match result {
                 Ok((request_model, request_options)) => {
-                    let simple_options = options.clone().map(|mut o| {
-                        o.base.base = request_options;
-                        o
-                    });
+                    let simple_options =
+                        if options.is_some() || request_model.sampling_params.is_some() {
+                            let mut simple = options.clone().unwrap_or_default();
+                            simple.base.base = request_options;
+                            simple.base.sampling_params = merge_sampling_params(
+                                request_model.sampling_params.as_ref(),
+                                simple.base.sampling_params.as_ref(),
+                            );
+                            Some(simple)
+                        } else {
+                            None
+                        };
                     let provider = models.get_provider(&model.provider);
                     match provider {
                         Some(p) => {
@@ -1934,6 +1975,30 @@ impl Models {
 mod tests {
     use super::*;
     use crate::auth::{ApiKeyAuth, ApiKeyCredential, AuthCheck, AuthResult, ModelAuth};
+
+    #[test]
+    fn sampling_params_merge_model_defaults_with_request_overrides() {
+        let model = serde_json::json!({
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "stop": ["MODEL"]
+        });
+        let request = serde_json::json!({
+            "temperature": 0.7,
+            "parallel_tool_calls": false
+        });
+
+        assert_eq!(
+            merge_sampling_params(Some(&model), Some(&request)),
+            Some(serde_json::json!({
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "stop": ["MODEL"],
+                "parallel_tool_calls": false
+            }))
+        );
+        assert_eq!(merge_sampling_params(None, None), None);
+    }
 
     struct TestApiKeyAuth;
     impl ApiKeyAuth for TestApiKeyAuth {

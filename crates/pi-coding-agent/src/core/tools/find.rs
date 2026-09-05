@@ -77,20 +77,25 @@ pub async fn find_execute(
     path: Option<&str>,
     limit: Option<u64>,
 ) -> Result<String, String> {
-    Ok(find_execute_with_details(cwd, pattern, path, limit, None)
-        .await?
-        .text)
+    Ok(
+        find_execute_with_details(cwd, pattern, path, limit.map(|value| value as f64), None)
+            .await?
+            .text,
+    )
 }
 
 async fn find_execute_with_details(
     cwd: &str,
     pattern: &str,
     path: Option<&str>,
-    limit: Option<u64>,
+    limit: Option<f64>,
     signal: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<ToolOutput, String> {
-    let search_path = resolve_tool_path(cwd, path.unwrap_or("."));
-    let effective_limit = limit.unwrap_or(DEFAULT_LIMIT);
+    let search_path =
+        crate::core::settings::normalize_path(resolve_tool_path(cwd, path.unwrap_or(".")).into())
+            .to_string_lossy()
+            .into_owned();
+    let effective_limit = limit.unwrap_or(DEFAULT_LIMIT as f64);
 
     let mut args: Vec<String> = vec![
         "--glob".to_string(),
@@ -110,6 +115,9 @@ async fn find_execute_with_details(
         args.push("--full-path".to_string());
         if !pattern.starts_with('/') && !pattern.starts_with("**/") && pattern != "**" {
             effective_pattern = format!("**/{pattern}");
+        }
+        if cfg!(windows) {
+            effective_pattern = effective_pattern.replace('/', r"[/\\]");
         }
     }
     args.push("--".to_string());
@@ -132,7 +140,7 @@ async fn find_execute_with_details(
     } else {
         command.output().await
     }
-    .map_err(|_| "fd is not available and could not be downloaded".to_string())?;
+    .map_err(map_fd_spawn_error)?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -159,7 +167,7 @@ async fn find_execute_with_details(
         });
     }
 
-    let result_limit_reached = relativized.len() >= effective_limit as usize;
+    let result_limit_reached = (relativized.len() as f64) >= effective_limit;
     let raw_output = relativized.join("\n");
     let truncation = truncate_head_with(&raw_output, 1_000_000, DEFAULT_MAX_BYTES);
     let mut result_output = truncation.content.clone();
@@ -167,7 +175,7 @@ async fn find_execute_with_details(
     if result_limit_reached {
         notices.push(format!(
             "{effective_limit} results limit reached. Use limit={} for more, or refine pattern",
-            effective_limit * 2
+            effective_limit * 2.0
         ));
     }
     if truncation.truncated {
@@ -180,7 +188,7 @@ async fn find_execute_with_details(
     if result_limit_reached {
         details.insert(
             "resultLimitReached".to_string(),
-            serde_json::json!(effective_limit),
+            json_limit(effective_limit),
         );
     }
     if truncation.truncated {
@@ -223,7 +231,7 @@ pub fn find_tool(cwd: String) -> AgentTool {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "find: missing required argument pattern".to_string())?;
                 let path = args.get("path").and_then(|v| v.as_str());
-                let limit = args.get("limit").and_then(|v| v.as_u64());
+                let limit = args.get("limit").and_then(|v| v.as_f64());
                 match find_execute_with_details(&cwd, pattern, path, limit, signal.clone()).await {
                     Ok(_output) if pi_agent::agent::is_aborted(signal.as_ref()) => {
                         Err("Operation aborted".to_string())
@@ -239,6 +247,22 @@ pub fn find_tool(cwd: String) -> AgentTool {
         }),
     )
     .with_experimental_sampling()
+}
+
+fn map_fd_spawn_error(error: std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        "fd is not available and could not be downloaded".to_string()
+    } else {
+        format!("Failed to run fd: {error}")
+    }
+}
+
+fn json_limit(limit: f64) -> serde_json::Value {
+    if limit >= 0.0 && limit.fract() == 0.0 && limit <= u64::MAX as f64 {
+        serde_json::Value::from(limit as u64)
+    } else {
+        serde_json::json!(limit)
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +358,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nested_repository_uses_its_own_ignore_boundary() {
+        let tree = Tree::new("nested-repo-ignore");
+        fs::create_dir_all(tree.root.join(".git")).unwrap();
+        fs::write(tree.root.join(".gitignore"), "*.generated.rs\n").unwrap();
+        fs::create_dir_all(tree.root.join("nested").join(".git")).unwrap();
+        fs::create_dir_all(tree.root.join("nested").join("ignored")).unwrap();
+        fs::write(tree.root.join("nested").join(".gitignore"), "ignored/\n").unwrap();
+        fs::write(tree.root.join("nested").join("keep.generated.rs"), "").unwrap();
+        fs::write(tree.root.join("nested").join("ignored").join("drop.rs"), "").unwrap();
+
+        let out = find_execute(&tree.root.display().to_string(), "*.rs", None, None)
+            .await
+            .unwrap();
+        let lines = sorted_lines(&out);
+        assert!(lines.contains(&"nested/keep.generated.rs".to_string()));
+        assert!(!lines.contains(&"nested/ignored/drop.rs".to_string()));
+    }
+
+    #[tokio::test]
     async fn no_matches_returns_marker() {
         let tree = Tree::new("nomatch");
         let out = find_execute(&tree.root.display().to_string(), "*.zzz", None, None)
@@ -355,7 +398,132 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn absolute_result_relativize_handles_indentical() {
+    async fn hidden_unicode_and_symlink_entries_are_returned() {
+        #[cfg(unix)]
+        use std::os::unix::fs::symlink;
+
+        let tree = Tree::new("hidden-unicode-symlink");
+        fs::write(tree.root.join(".秘密.rs"), "").unwrap();
+        fs::write(tree.root.join("界🙂.rs"), "").unwrap();
+        #[cfg(unix)]
+        {
+            symlink("src/main.rs", tree.root.join("file-link.rs")).unwrap();
+            symlink("missing.rs", tree.root.join("dangling-link.rs")).unwrap();
+        }
+
+        let out = find_execute(&tree.root.display().to_string(), "*.rs", None, None)
+            .await
+            .unwrap();
+        let lines = sorted_lines(&out);
+        assert!(lines.contains(&".秘密.rs".to_string()));
+        assert!(lines.contains(&"界🙂.rs".to_string()));
+        #[cfg(unix)]
+        {
+            assert!(lines.contains(&"file-link.rs".to_string()));
+            assert!(lines.contains(&"dangling-link.rs".to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_fractional_and_negative_limits_reach_fd() {
+        let tree = Tree::new("invalid-numeric-limits");
+        for limit in [1.5, -1.0] {
+            let error = find_execute_with_details(
+                &tree.root.display().to_string(),
+                "*.rs",
+                None,
+                Some(limit),
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.contains("--max-results")
+                    && (error.contains("invalid value") || error.contains("value is required")),
+                "got: {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_glob_and_search_roots_are_actionable() {
+        let tree = Tree::new("invalid-inputs");
+        let glob = find_execute(&tree.root.display().to_string(), "[", None, None)
+            .await
+            .unwrap_err();
+        assert!(glob.contains("error parsing glob"), "got: {glob}");
+
+        let missing = find_execute(&tree.root.display().to_string(), "*", Some("missing"), None)
+            .await
+            .unwrap_err();
+        assert!(!missing.is_empty());
+
+        let file = find_execute(
+            &tree.root.display().to_string(),
+            "*",
+            Some("Cargo.toml"),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(!file.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pre_cancel_stops_before_spawning_fd() {
+        let tree = Tree::new("pre-cancel");
+        let signal = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let error = find_execute_with_details(
+            &tree.root.display().to_string(),
+            "*.rs",
+            None,
+            None,
+            Some(signal),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "Operation aborted");
+    }
+
+    #[tokio::test]
+    async fn byte_limit_sets_truncation_details() {
+        let root = std::env::temp_dir().join(format!("pi-find-bytes-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..320 {
+            let name = format!("{index:04}-{}.txt", "x".repeat(170));
+            fs::write(root.join(name), "").unwrap();
+        }
+
+        let output = find_execute_with_details(
+            &root.display().to_string(),
+            "*.txt",
+            None,
+            Some(1000.0),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(output.text.contains("50.0KB limit reached"));
+        assert!(output
+            .details
+            .as_ref()
+            .and_then(|details| details.get("truncation"))
+            .is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fd_spawn_errors_distinguish_missing_from_other_failures() {
+        assert_eq!(
+            map_fd_spawn_error(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            "fd is not available and could not be downloaded"
+        );
+        let denied = map_fd_spawn_error(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(denied.starts_with("Failed to run fd:"), "got: {denied}");
+    }
+
+    #[tokio::test]
+    async fn absolute_result_relativize_handles_identical() {
         let tree = Tree::new("rel");
         // fd receives the absolute search path and emits absolute results;
         // relativize strips the search root.

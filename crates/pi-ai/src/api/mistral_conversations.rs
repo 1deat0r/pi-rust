@@ -29,8 +29,8 @@ use crate::types::{
 
 use super::openai_completions::short_hash;
 use super::openai_completions::{
-    abortable, apply_payload_hook, error_reason, immediate_error_stream, signal_aborted,
-    terminal_error_message,
+    abortable, apply_payload_hook, error_reason, format_reqwest_error, immediate_error_stream,
+    signal_aborted, terminal_error_message,
 };
 use super::transform_messages::transform_messages;
 
@@ -756,7 +756,12 @@ async fn read_mistral_events(
             .await
             .map_err(|_| "Request was aborted".to_string())?;
         let Some(chunk) = next else { break };
-        let chunk = chunk.map_err(|e| format!("Mistral stream read failed: {e}"))?;
+        let chunk = chunk.map_err(|error| {
+            format!(
+                "Mistral stream read failed: {}",
+                format_reqwest_error(&error)
+            )
+        })?;
         for event in parser.push_bytes(&chunk) {
             if event.data.trim() == "[DONE]" {
                 return Ok(()); // upstream returns on MISTRAL_STREAM_DONE

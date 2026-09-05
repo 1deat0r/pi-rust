@@ -34,7 +34,7 @@ pub async fn execute_edit_with_abort(
         return Err("Operation aborted".to_string());
     }
     let absolute = resolve_tool_path(cwd, path);
-    let key = crate::harness::tools::resolve_mutation_key(cwd, path);
+    let key = crate::harness::tools::resolve_mutation_key(cwd, path)?;
     let path = path.to_string();
     let tool_call_id = tool_call_id.to_string();
     crate::harness::tools::with_file_mutation_queue(key, async move {
@@ -201,6 +201,7 @@ pub fn extract_edits(args: &serde_json::Value) -> Result<Vec<Edit>, String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn edit(old: &str, new: &str) -> Edit {
         Edit {
@@ -342,6 +343,120 @@ mod tests {
             std::fs::read_to_string(&file).unwrap(),
             "\u{FEFF}one\r\nTWO\r\n"
         );
+    }
+
+    #[tokio::test]
+    async fn edits_unicode_and_reports_exact_diff_metadata() {
+        let (dir, _) = tmpdir("unicode-details");
+        let file = dir.join("edit.txt");
+        std::fs::write(&file, "zero\n界🙂e\u{301}\nlast\n").unwrap();
+        let message = execute_edit(
+            "unicode-edit",
+            "edit.txt",
+            vec![edit("界🙂e\u{301}", "世界🙂")],
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tool_text(&message),
+            "Successfully replaced 1 block(s) in edit.txt."
+        );
+        let details = message.details().unwrap();
+        assert_eq!(details["firstChangedLine"], 2);
+        let diff = details["diff"].as_str().unwrap();
+        assert!(diff.contains("-2 界🙂e\u{301}"), "got {diff:?}");
+        assert!(diff.contains("+2 世界🙂"), "got {diff:?}");
+        let patch = details["patch"].as_str().unwrap();
+        assert!(patch.starts_with("--- edit.txt\n+++ edit.txt\n"));
+        assert!(patch.contains("-界🙂e\u{301}"));
+        assert!(patch.contains("+世界🙂"));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "zero\n世界🙂\nlast\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn exact_error_matrix_leaves_original_unchanged() {
+        let (dir, _) = tmpdir("exact-errors");
+        let file = dir.join("edit.txt");
+        let original = "one one\ntwo\nthree\n";
+        std::fs::write(&file, original).unwrap();
+
+        let duplicate = execute_edit(
+            "duplicate",
+            "edit.txt",
+            vec![edit("one", "ONE")],
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(duplicate, "Found 2 occurrences of the text in edit.txt. The text must be unique. Please provide more context to make it unique.");
+
+        let missing = execute_edit(
+            "missing",
+            "edit.txt",
+            vec![edit("absent", "present")],
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(missing, "Could not find the exact text in edit.txt. The old text must match exactly including all whitespace and newlines.");
+
+        let unchanged = execute_edit(
+            "unchanged",
+            "edit.txt",
+            vec![edit("two", "two")],
+            &dir.to_string_lossy(),
+        )
+        .await
+        .unwrap_err();
+        assert!(unchanged.starts_with("No changes made to edit.txt."));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn aborts_while_waiting_for_same_path_and_preserves_original() {
+        let (dir, _) = tmpdir("queued-abort");
+        let file = dir.join("edit.txt");
+        std::fs::write(&file, "before\n").unwrap();
+        let cwd = dir.to_string_lossy().into_owned();
+        let key = crate::harness::tools::resolve_mutation_key(&cwd, "edit.txt").unwrap();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let holder = tokio::spawn(async move {
+            crate::harness::tools::with_file_mutation_queue(key, async move {
+                let _ = entered_tx.send(());
+                let _ = release_rx.await;
+            })
+            .await;
+        });
+        entered_rx.await.unwrap();
+
+        let abort = std::sync::Arc::new(AtomicBool::new(false));
+        let queued_abort = abort.clone();
+        let queued_cwd = cwd.clone();
+        let queued = tokio::spawn(async move {
+            execute_edit_with_abort(
+                "queued-edit",
+                "edit.txt",
+                vec![edit("before", "after")],
+                &queued_cwd,
+                Some(queued_abort),
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "before\n");
+        abort.store(true, Ordering::SeqCst);
+        release_tx.send(()).unwrap();
+        holder.await.unwrap();
+        assert_eq!(queued.await.unwrap().unwrap_err(), "Operation aborted");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "before\n");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

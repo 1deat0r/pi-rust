@@ -570,8 +570,18 @@ async fn main() {
                     pi_coding_agent::core::timings::print_timings();
                     std::process::exit(1);
                 }
-                let mut settings =
-                    pi_coding_agent::run::create_mode_settings(&args, &cwd, &agent_dir, true);
+                let mut settings = match pi_coding_agent::run::create_interactive_mode_settings(
+                    &args, &cwd, &agent_dir,
+                )
+                .await
+                {
+                    Ok(settings) => settings,
+                    Err(error) => {
+                        eprintln!("project trust startup error: {error}");
+                        pi_coding_agent::core::timings::print_timings();
+                        std::process::exit(1);
+                    }
+                };
                 apply_interactive_theme_override(&args, &mut settings);
                 let result =
                     pi_coding_agent::modes::interactive::run_interactive_mode(&args, settings)

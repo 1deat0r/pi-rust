@@ -1574,46 +1574,56 @@ mod tests {
 
     #[test]
     fn file_credential_store_is_live_model_runtime_source() {
-        use pi_ai::auth::CredentialStore as _;
-
         let path = temp_auth_path("runtime-source");
         let _ = fs::remove_file(&path);
-        let storage = AuthStorage::create(path.clone());
-        let options = AuthOperationOptions::default();
-        runtime().block_on(async {
-            storage
-                .modify(
-                    "openai-codex",
-                    |_| {
-                        Box::pin(async {
-                            Ok(Some(Credential::OAuth {
-                                access: "fixture-access".to_string(),
-                                refresh: "fixture-refresh".to_string(),
-                                expires: current_time_ms() + 60 * 60 * 1000,
-                                extra: BTreeMap::new(),
-                            }))
-                        })
-                    },
-                    &options,
-                )
-                .await
-                .unwrap();
-        });
-
         let credentials = Arc::new(FileCredentialStore::new(path.clone()));
         let models = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions {
-            credentials: Some(credentials.clone()),
+            credentials: Some(credentials),
             ..Default::default()
         });
         models.set_provider(pi_ai::providers::openai_codex_provider());
+
+        assert!(models.get_auth("openai-codex", None).is_none());
+        write_auth_file(
+            &path,
+            &serde_json::to_string_pretty(&AuthStorageData::from([(
+                "openai-codex".to_string(),
+                Credential::OAuth {
+                    access: "fixture-access".to_string(),
+                    refresh: "fixture-refresh".to_string(),
+                    expires: current_time_ms() + 60 * 60 * 1000,
+                    extra: BTreeMap::new(),
+                },
+            )]))
+            .unwrap(),
+        )
+        .unwrap();
         let auth = models
             .get_auth("openai-codex", None)
-            .expect("stored OAuth is visible to Models");
+            .expect("externally added OAuth is visible to the live Models facade");
         assert_eq!(auth.auth.api_key.as_deref(), Some("fixture-access"));
 
-        credentials.delete("openai-codex");
+        write_auth_file(
+            &path,
+            &serde_json::to_string_pretty(&AuthStorageData::from([(
+                "openai-codex".to_string(),
+                Credential::OAuth {
+                    access: "replacement-access".to_string(),
+                    refresh: "replacement-refresh".to_string(),
+                    expires: current_time_ms() + 60 * 60 * 1000,
+                    extra: BTreeMap::new(),
+                },
+            )]))
+            .unwrap(),
+        )
+        .unwrap();
+        let auth = models
+            .get_auth("openai-codex", None)
+            .expect("externally replaced OAuth is visible to the live Models facade");
+        assert_eq!(auth.auth.api_key.as_deref(), Some("replacement-access"));
+
+        fs::remove_file(&path).unwrap();
         assert!(models.get_auth("openai-codex", None).is_none());
-        let _ = fs::remove_file(&path);
         let _ = fs::remove_file(Path::new(&format!("{}.lock", path.display())));
     }
 

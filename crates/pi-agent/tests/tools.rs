@@ -237,6 +237,58 @@ fn bash_tool_streams_partial_updates_through_agent_contract() {
 }
 
 #[test]
+fn bash_tool_applies_command_prefix_and_configured_shell() {
+    let rt = rt();
+    rt.block_on(async {
+        let dir = tmpdir("bash-configured-shell");
+        let tool = pi_agent::tools::bash_tool_with_options(
+            dir.to_string_lossy().into_owned(),
+            Some("PI_BASH_PREFIX_VALUE=from-prefix".to_string()),
+            Some("/bin/sh".to_string()),
+        );
+        let result = (tool.execute)(
+            "configured-shell".to_string(),
+            serde_json::json!({"command": "printf %s \"$PI_BASH_PREFIX_VALUE\""}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.content.iter().any(|content| {
+            matches!(content, ContentBlock::Text { text, .. } if text == "from-prefix")
+        }));
+    });
+}
+
+#[test]
+fn bash_tool_reports_a_missing_configured_shell() {
+    let rt = rt();
+    rt.block_on(async {
+        let dir = tmpdir("bash-missing-configured-shell");
+        let missing = dir.join("missing-shell");
+        let tool = pi_agent::tools::bash_tool_with_options(
+            dir.to_string_lossy().into_owned(),
+            None,
+            Some(missing.to_string_lossy().into_owned()),
+        );
+        let error = (tool.execute)(
+            "missing-shell".to_string(),
+            serde_json::json!({"command": "printf should-not-run"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            format!("Custom shell path not found: {}", missing.to_string_lossy())
+        );
+    });
+}
+
+#[test]
 fn bash_tool_preserves_full_output_details_when_truncated() {
     let rt = rt();
     rt.block_on(async {

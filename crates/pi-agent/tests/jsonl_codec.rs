@@ -6,7 +6,7 @@ use pi_agent::session::jsonl::{
     encode_header, encode_mutation, metadata_from_header, parse_header, parse_mutation,
     JsonlDecodeErrorKind,
 };
-use pi_agent::session::types::{Entry, Fact, JsonlV4Header, Mutation};
+use pi_agent::session::types::{Entry, EntryNoStats, Fact, JsonlV4Header, Mutation};
 
 fn header_round_trip(header: JsonlV4Header) {
     let encoded = encode_header(&header).unwrap();
@@ -198,6 +198,66 @@ fn rejects_missing_seq() {
 fn rejects_message_entry_with_invalid_message() {
     let line = r#"{"kind":"entry","type":"message","id":"m","parentId":null,"seq":1,"timestamp":1,"message":{"role":"bogus"}}"#;
     assert!(parse_mutation(line).is_err());
+}
+
+#[test]
+fn typed_entries_accept_unknown_fields_but_keep_required_fields_strict() {
+    let entry: EntryNoStats = serde_json::from_value(serde_json::json!({
+        "type": "custom",
+        "id": "custom-1",
+        "customType": "note",
+        "data": {"text": "hello"},
+        "extensionField": {"future": true}
+    }))
+    .expect("forward-compatible fields must not reject a typed entry");
+    assert!(matches!(
+        entry,
+        EntryNoStats::Custom {
+            id,
+            custom_type,
+            ..
+        } if id == "custom-1" && custom_type == "note"
+    ));
+
+    let missing_id = serde_json::from_value::<EntryNoStats>(serde_json::json!({
+        "type": "custom",
+        "customType": "note",
+        "extensionField": true
+    }));
+    assert!(
+        missing_id.is_err(),
+        "unknown fields must not weaken required IDs"
+    );
+}
+
+#[test]
+fn persisted_message_and_custom_entries_ignore_unknown_fields() {
+    let message = r#"{"kind":"entry","lane":"main","type":"message","id":"m1","parentId":null,"seq":1,"timestamp":10,"terminate":true,"futureEntry":{"enabled":true},"message":{"role":"user","content":[{"type":"text","text":"question","futureBlock":1}],"timestamp":1,"futureMessage":"kept-raw"}}"#;
+    let parsed = parse_mutation(message).expect("unknown entry/message fields are compatible");
+    assert!(matches!(
+        parsed,
+        Mutation::Entry {
+            entry: Entry::Message {
+                id,
+                terminate: Some(true),
+                ..
+            },
+            ..
+        } if id == "m1"
+    ));
+
+    let custom = r#"{"kind":"entry","lane":"main","type":"custom","id":"c1","parentId":"m1","seq":2,"timestamp":11,"customType":"note","data":{"text":"hello"},"futureEntry":42}"#;
+    assert!(matches!(
+        parse_mutation(custom).expect("unknown custom-entry fields are compatible"),
+        Mutation::Entry {
+            entry: Entry::Custom {
+                id,
+                parent_id: Some(parent),
+                ..
+            },
+            ..
+        } if id == "c1" && parent == "m1"
+    ));
 }
 
 #[test]

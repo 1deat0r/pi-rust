@@ -24,7 +24,7 @@ The percentages are intentionally not collapsed into one misleading score:
 - The separate non-TUI register is fully normalized, but most rows remain
   `OPEN`; register coverage is not a completion percentage.
 
-## Current measured checkpoint — 2026-08-30
+## Current measured checkpoint — 2026-08-31
 
 <!-- PARITY_DASHBOARD_METRICS:START -->
 Source/conversion ledger: 100.00% (166/166; 0 open)
@@ -32,16 +32,251 @@ Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
 Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
 Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
 Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
-TUI functional implementation: 23.08% (12/52)
-TUI test/evidence parity: 23.08% (12/52)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 18.42% (49/266 PASS; 194 PARTIAL; 23 OPEN)
-Non-TUI deterministic evidence parity: 13.53% (36/266 PASS; 207 PARTIAL; 23 OPEN)
-Non-TUI runtime-boundary parity: 13.91% (37/266 PASS; 154 PARTIAL; 75 OPEN)
-Non-TUI overall parity: 11.28% (30/266)
-Whole-product behavioral parity: 9.43% (30/318)
+Non-TUI implementation parity: 39.85% (106/266 PASS; 147 PARTIAL; 13 OPEN)
+Non-TUI deterministic evidence parity: 34.59% (92/266 PASS; 161 PARTIAL; 13 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 151 PARTIAL; 64 OPEN)
+Non-TUI overall parity: 16.54% (44/266)
+Whole-product behavioral parity: 13.84% (44/318)
+
+Latest evidence note (2026-08-31): SES-008 durable reopen now proves message,
+model/provider, thinking, active-tool, operation, and queue projection across
+the storage and public harness layers. Status and percentages are intentionally
+unchanged pending one aggregate caller-level resume/footer PTY or process gate.
+
+X-001/X-002 evidence note (2026-08-31): an environment-cleared real RPC
+fixture proves complex Unicode through valid events, durable JSONL, and reopen,
+plus omitted/null/empty field semantics, post-error recovery, and no-session
+no-write behavior. Both rows are PARTIAL/PARTIAL/PARTIAL; invalid bytes, PTY
+width, and the complete cross-schema matrix remain open. The independent gate
+is 4/4.
+
+X-003/X-004 evidence note (2026-08-31): a clean-process fixture proves
+malformed settings/models/auth/session preservation and recovery, failed-export
+no-write, symlinked-root mutation, read-only rejection, unrelated-file safety,
+and no staging residue. Both rows are PARTIAL/PARTIAL/PARTIAL; malformed
+resource/manifest breadth, traversal/races/crash injection, and non-Unix
+semantics remain open. The independent gate is 4/4.
+
+X-005/X-006 evidence note (2026-08-31): a local synthetic clean-process fixture
+proves request-scoped API-key non-disclosure in output/persistence and
+barrier-released shared-root process isolation with valid sessions and no
+staging residue. Both rows are PARTIAL/PARTIAL/PARTIAL; complete credential
+surfaces and same-runtime/reconnect/shutdown/platform stress remain open. The
+independent gate is 4/4; no live credential/provider claim is made.
+
+X-007/X-008 evidence note (2026-08-31): a real RPC process proves repeated
+abort correlation, exactly-once child cancellation, post-cancel reuse, and one
+durable entry per command; shared retry/backoff and detached-retry suites are
+green. Both rows are PARTIAL/PARTIAL/PARTIAL; complete async-operation,
+provider/reconnect/crash, signal, and platform matrices remain open. The
+independent gate is 4/4.
+
+X-009/X-010 evidence note (2026-08-31): a real RPC process survives delayed
+consumption of more than 200 KiB with valid framing, bounded/full output, deep
+JSON recovery, and reuse; a clean Unix no-display/browser, hostile-proxy,
+offline, non-TTY path has no side effects. Both rows are
+PARTIAL/PARTIAL/PARTIAL; broader resource and cross-platform matrices remain
+open. The independent gate is 4/4, including real tmux resize/restoration.
+
+SES-013 evidence note (2026-08-31): interactive manual compaction now honors
+the upstream pre-hook/custom-result boundary and exact-once persistence. Status
+and percentages remain unchanged pending post-lifecycle and real active-turn,
+restart/crash, and live extension/provider gates.
+
+SES-014 audit note (2026-08-31): shared automatic-compaction machinery covers
+threshold/reserve/retry/abort/persistence/queue behavior, but the interactive
+caller still lacks overflow-reason, retry-state, cancellation, and interrupted
+turn/queued-prompt continuation threading. Status and percentages remain
+unchanged.
+
+SES-015 audit note (2026-08-31): branch-summary core and RPC integration are
+source-aligned for collection, configuration, abort/failure handling,
+exact-once persistence, and replay. Status remains unchanged pending interactive
+tree navigation and provider/auth/restart/live-extension gates.
+
+SES-016 evidence note (2026-08-31): RPC session statistics now count messages
+without tool-call duplication and aggregate all persisted assistant/tool/summary
+usage buckets plus cost. The focused gate is 3/3; status and percentages remain
+unchanged pending context/footer/restart/process/platform closure.
+
+SES-017 audit note (2026-08-31): HTML export source covers the required content
+classes and safety transforms. Status remains unchanged pending the complete
+adversarial fixture matrix and browser/visual/asset-loading evidence.
+
+SES-018 audit note (2026-08-31): native v4 and explicit coding-agent v3 JSONL
+paths are source-aligned for valid records, metadata, validation, and reopen.
+Status remains unchanged pending malformed-byte, crash/concurrency, process
+round-trip, and platform evidence.
+
+SES-019 audit note (2026-08-31): remote client/protocol/server/backend/RPC
+primitives are source-aligned for ownership, snapshots, progress, reconnect,
+and disposal. Status remains unchanged pending the real multi-process socket,
+concurrent update, disconnect/shutdown, and platform/network matrix.
+
+MODE-001 audit note (2026-08-31): text/print source is aligned for prompt,
+retained turns, final output, terminal errors, retry, and compaction. Status is
+unchanged pending process signal/backpressure/flush, child cleanup, and complete
+retry/compaction visibility evidence.
+
+MODE-002 audit note (2026-08-31): JSON event source covers the audited lifecycle,
+tool delta, usage, compaction, error, and session shapes. Status remains
+unchanged pending exhaustive provider/process and consumer-boundary evidence.
+
+MODE-003 audit note (2026-08-31): JSON/RPC writers are source-aligned for
+serialized complete-line output and flushing. Status remains unchanged pending
+real pipe, signal-during-flush, and cross-mode process stress.
+
+RPC-001 audit note (2026-08-31): prompt validation, correlation, detached
+settlement, and retained multi-turn context are source-aligned. Status remains
+unchanged pending concurrent real-client, pipe/signal, and live-provider gates.
+
+RPC-002 audit note (2026-08-31): steering/follow-up queue modes, ordered drains,
+updates, cancellation, and correlation are source-aligned. Status remains
+unchanged pending external concurrency, disconnect/EOF, and live timing.
+
+RPC-003 audit note (2026-08-31): agent/retry/bash abort targeting,
+idempotence, response ordering, and shutdown wakeup are source-aligned. Status
+remains unchanged pending real race/process/flush/platform evidence.
+
+RPC-004 audit note (2026-08-31): new/switch/fork/clone persistence, linkage,
+guards, rebinding, and errors are source-aligned. Status remains unchanged
+pending process-wire, race, crash-durability, and platform evidence.
+
+RPC-005 audit note (2026-08-31): state/messages/entries/tree schemas,
+pagination, errors, labels, and selection are source-aligned. Status remains
+unchanged pending process/pipe ordering and concurrent mutation stress.
+
+RPC-006 evidence note (2026-08-31): scoped model cycling now retains scope and
+thinking overrides, filters availability, persists selection, reports the
+correct scope state, and falls back to the full catalog. The focused gate is
+3/3; status remains unchanged pending live refresh and process-wire evidence.
+
+RPC-007 evidence note (2026-08-31): non-reasoning models now distinguish the
+available `[off]` level from unsupported cycling, which returns null. The
+focused gate is 3/3; status remains unchanged pending live capability catalogs
+and process-wire evidence.
+
+RPC-008 audit note (2026-08-31): queue-mode validation, live mutation,
+persistence, and response/error schemas are source-aligned. Status remains
+unchanged pending concurrent process timing and settings-flush integration.
+
+RPC-009 evidence note (2026-08-31): manual compaction now aborts active
+detached prompt/retry work and executes only after the existing exact-once
+prompt settlement barrier has persisted terminal messages, released the run
+lock, and emitted `agent_settled`. The focused gate is 3/3; status and metrics
+remain unchanged pending real process timing, provider cancellation,
+persistence/restart, and platform evidence.
+
+RPC-010 evidence note (2026-08-31): standalone RPC bash now uses the selected
+session cwd, configured prefix/shell, correlated chunk updates, shared
+process-group-safe capture, and full-output spill metadata. Focused and adjacent
+bash regressions pass and the independent gate is 3/3; status and metrics remain
+unchanged pending extension custom operations, external stress, and platform
+shell evidence.
+
+RPC-011 evidence note (2026-08-31): RPC HTML export now uses a valid configured
+theme, falls back from an invalid configured name, and normalizes explicit
+tilde/file-URL output paths. Two focused regressions pass and the independent
+gate is 3/3; status and metrics remain unchanged pending custom-tool rendering,
+complete file/process matrices, browser/visual output, and platform paths.
+
+RPC-012 evidence note (2026-08-31): malformed and unknown commands now have one
+aggregate same-stream fixture proving deterministic errors, correlation, UI
+diagnostics, and subsequent valid dispatch. Implementation and deterministic
+evidence are PASS; runtime remains PARTIAL for real pipe/backpressure recovery
+and untyped non-string IDs.
+
+RPC-013 evidence note (2026-08-31): the source-aligned shutdown path now has a
+permanent clean-process fixture for ordinary EOF, SIGTERM=143, and SIGHUP=129
+after correlated dispatch. Implementation is PASS; deterministic/runtime remain
+PARTIAL for broken pipe, descendant cleanup/leaks, and cross-platform behavior.
+
+MODE-004 evidence note (2026-08-31): the experimental Unix server now routes
+Ctrl-C, SIGTERM, and SIGHUP through graceful listener close. Its full real CLI
+suite passes 7/7, including TERM/HUP socket removal, and the independent gate is
+3/3. Status and metrics remain unchanged because the CLI client is still
+list/snapshot-only and lacks prompt/steer/abort/pending-work lifecycle; platform
+and live-provider boundaries remain.
+
+EXT-001..EXT-012 audit note (2026-08-31): the full native-extension block was
+re-audited without a status change. Core native contracts are implemented, but
+aggregate process/reload proof remains absent and interactive mode still does
+not project the broker's complete custom UI state into pi-tui. All twelve rows
+therefore remain PARTIAL/PARTIAL/OPEN; metrics are unchanged.
+
+PKG-004 evidence note (2026-08-31): npm/npx/bun source spellings now share a
+case-insensitive pre-resolution Rust-only guard. Focused unit and real CLI
+matrices prove install/remove/update rejection and unchanged settings; the
+independent gate is 3/3. Implementation and deterministic evidence are PASS;
+runtime remains PARTIAL for broader platform/process boundaries.
+
+Package/eval/distribution audit note (2026-08-31): PKG-005, EVAL-001..002, and
+DIST-001..005 were re-audited without a status change. Remaining evidence needs
+live callers, artifact provenance/installers, platform launch, and a disposable
+external upgrade/rollback transaction; DIST-004 therefore remains OPEN.
+
+X-001..X-012 audit note (2026-08-31): the complete cross-cutting block was
+re-audited. Aggregate process gates now move X-001..X-010 to PARTIAL across all
+dimensions; X-011..X-012 remain OPEN/OPEN/OPEN. Distributed feature evidence is
+extensive, but complete adversarial/platform combinations remain open.
 <!-- PARITY_DASHBOARD_METRICS:END -->
+
+Latest 2026-08-31 operation-record verification: SES-004 implementation and
+deterministic evidence are PASS. The 8-case durable JSONL suite round-trips
+every record family across two lanes with gapless ordering, settled operations,
+and usage totals; the 30-case conformance suite proves shared backend
+invariants. Runtime remains PARTIAL for crash/platform durability and live
+caller/provider propagation.
+The independent SES-004 acceptance gate is reverified 4/4.
+
+Latest 2026-08-31 session-state verification: SES-003 implementation and
+deterministic evidence are PASS. The 8-case durable JSONL suite and 4-case
+context suite prove ordered model/thinking/active-tool transitions, empty and
+repeated changes, tool-call/tool-result messages, reopen, and latest-state
+projection. Runtime remains PARTIAL for concurrent/crash/platform durability,
+provider-specific tool payloads, and live interactive selector integration.
+The independent SES-003 acceptance gate is reverified 4/4.
+
+Latest 2026-08-31 session-entry verification: SES-002 implementation and
+deterministic evidence are PASS. Typed append/session entries accept unknown
+forward-compatible fields without weakening required IDs, types, sequence, or
+parent validation. The 17-case codec suite and 15-case repository suite prove
+message/custom entries, termination, nested unknown fields, replay/tree links,
+and unchanged raw JSONL. Runtime remains PARTIAL for concurrent/crash/platform
+durability and extension-specific rewrite semantics.
+The independent SES-002 acceptance gate is reverified 4/4.
+
+Latest 2026-08-31 trust verification: TRUST-001/002 implementation and
+deterministic evidence are PASS. The untrusted bootstrap excludes project
+extensions while retaining global/explicit trust callbacks, and the final
+runtime loads only after callback/saved/default/TUI resolution. Two discovery
+tests, four precedence/error/remember tests, and the 10-case real process/
+tmux trust suite pass, including startup approve/cancel, `/trust` parent save,
+cancel, and subsequent startup. Runtime remains PARTIAL for platform,
+readonly/hostile storage, visual, and live external native-extension breadth.
+The independently reverified TRUST gate is 5/5 and includes package check,
+strict all-target clippy, stable formatting, both parity audits, and the
+repository diff check.
+
+Latest 2026-08-31 models.json runtime verification: custom API-key providers
+now compose into an isolated native Rust provider registry and dispatch
+through the registered API adaptor. Pi-ai model tests pass 18/18,
+coding-agent registry tests pass 16/16, a real local HTTP stream passes 1/1
+with synthetic configured Bearer/header auth, and a synthetic stored-OAuth
+regression proves request-header decoration without replacing the delegated
+OAuth lifecycle. Package check/strict all-target clippy/static gates pass.
+An isolated real-process fixture passes 3/3 for overlay visibility, deletion
+on restart, and malformed replacement fallback without stale retention.
+The active interactive facade now recomposes on explicit Pi refresh boundaries;
+a real PTY observes changed model metadata and completes a subsequent persisted
+turn without restart. MODEL-002 and MODEL-003 are PASS/PASS/PASS; existing
+runtime facades observe external auth/catalog file changes without restart.
+MODEL-004 is PASS/PASS/PASS after real text/JSON process coverage of exact,
+case, provider-scoped, thinking, glob, unavailable, and ambiguous resolution.
 
 Latest serialized verification on 2026-08-30: JSON mode emits the official v3
 session header and durable v3 records while native pi-agent v4 storage remains

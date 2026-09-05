@@ -343,6 +343,30 @@ fn install_npm_with_fake_npm() {
 }
 
 #[test]
+fn unsupported_js_package_source_spellings_never_enter_filesystem_flow() {
+    let sandbox = Sandbox::new("unsupported-js-package-sources");
+    sandbox.write_global_settings(json!({}));
+    let cwd = project(&sandbox, "work");
+
+    for source in [
+        "npx:demo-pkg",
+        "bun:demo-pkg",
+        "NPX:demo-pkg",
+        "BUN:demo-pkg",
+    ] {
+        for operation in ["install", "remove", "update"] {
+            let out = sandbox.pi(&cwd, &[operation, source]);
+            assert_npm_rejected(&sandbox, &out, source);
+        }
+    }
+
+    assert!(
+        sandbox.read_global_settings().get("packages").is_none(),
+        "unsupported JavaScript package sources must not mutate settings"
+    );
+}
+
+#[test]
 fn remove_npm_package_updates_settings_and_layout() {
     let sandbox = Sandbox::new("remove-npm");
     let fake = sandbox.write_fake_npm();

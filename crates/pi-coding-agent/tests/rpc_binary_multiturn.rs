@@ -277,7 +277,12 @@ fn streamed_text(records: &[serde_json::Value]) -> String {
         .collect()
 }
 
-fn assert_prompt_records(records: &[serde_json::Value], id: &str, prompt: &str) {
+fn assert_prompt_records(
+    records: &[serde_json::Value],
+    id: &str,
+    prompt: &str,
+    expected_context_messages: usize,
+) {
     assert_eq!(
         records.first().map(|record| &record["type"]),
         Some(&serde_json::json!("response"))
@@ -290,20 +295,16 @@ fn assert_prompt_records(records: &[serde_json::Value], id: &str, prompt: &str) 
     assert_eq!(response["success"], true);
 
     let expected_prefix = format!("faux response to: {prompt}");
+    let expected_text =
+        format!("{expected_prefix} (context messages: {expected_context_messages})");
     let stream_text = streamed_text(records);
-    assert!(
-        stream_text.contains(&expected_prefix),
-        "streamed text did not contain {expected_prefix:?}: {stream_text:?}"
-    );
+    assert_eq!(stream_text, expected_text);
     let message_end = records
         .iter()
         .find(|record| record["type"] == "message_end" && record["message"]["role"] == "assistant")
         .unwrap_or_else(|| panic!("missing assistant message_end: {records:?}"));
     let assistant_text = message_text(&message_end["message"]);
-    assert!(
-        assistant_text.starts_with(&expected_prefix),
-        "unexpected assistant response text: {assistant_text:?}"
-    );
+    assert_eq!(assistant_text, expected_text);
     assert_eq!(
         records.last().map(|record| &record["type"]),
         Some(&serde_json::json!("agent_settled"))
@@ -333,8 +334,8 @@ fn assert_session_messages(path: &Path, expected_users: &[&str], expected_assist
     }
 }
 
-#[test]
-fn rpc_binary_streams_sequential_multiturn_prompts_and_persists_session() {
+#[tokio::test(flavor = "current_thread")]
+async fn rpc_binary_streams_sequential_multiturn_prompts_and_persists_session() {
     let sandbox = Sandbox::new();
     let mut rpc = sandbox.spawn_rpc();
 
@@ -356,7 +357,7 @@ fn rpc_binary_streams_sequential_multiturn_prompts_and_persists_session() {
         "message": FIRST_PROMPT
     }));
     let first_records = rpc.read_until_settled();
-    assert_prompt_records(&first_records, "prompt-1", FIRST_PROMPT);
+    assert_prompt_records(&first_records, "prompt-1", FIRST_PROMPT, 1);
     let session = sandbox.session_file();
     assert_session_messages(
         &session,
@@ -370,7 +371,7 @@ fn rpc_binary_streams_sequential_multiturn_prompts_and_persists_session() {
         "message": SECOND_PROMPT
     }));
     let second_records = rpc.read_until_settled();
-    assert_prompt_records(&second_records, "prompt-2", SECOND_PROMPT);
+    assert_prompt_records(&second_records, "prompt-2", SECOND_PROMPT, 3);
     assert_session_messages(
         &session,
         &[FIRST_PROMPT, SECOND_PROMPT],
@@ -378,6 +379,49 @@ fn rpc_binary_streams_sequential_multiturn_prompts_and_persists_session() {
             "faux response to: first RPC prompt",
             "faux response to: second RPC prompt",
         ],
+    );
+
+    drop(rpc);
+    let file_system = pi_agent::fs::StdFileSystem::new(&sandbox.root);
+    let repo = pi_agent::session::JsonlSessionRepo::new(
+        file_system,
+        sandbox.sessions.to_string_lossy().into_owned(),
+    );
+    let metadata = repo
+        .list(None)
+        .await
+        .expect("list durable RPC sessions")
+        .into_iter()
+        .next()
+        .expect("one durable RPC session");
+    let reopened = repo.open(&metadata).await.expect("reopen RPC session");
+    let mut entries = reopened
+        .find_entries(&pi_agent::session::EntryQuery::default())
+        .await
+        .expect("read reopened RPC entries");
+    entries.sort_by_key(pi_agent::session::Entry::seq);
+    let reopened_messages = entries
+        .iter()
+        .filter_map(pi_agent::session::Entry::as_message)
+        .map(|message| {
+            let value = serde_json::to_value(message).expect("serialize reopened message");
+            (message.role().to_string(), message_text(&value))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reopened_messages,
+        [
+            ("user".to_string(), FIRST_PROMPT.to_string()),
+            (
+                "assistant".to_string(),
+                "faux response to: first RPC prompt (context messages: 1)".to_string(),
+            ),
+            ("user".to_string(), SECOND_PROMPT.to_string()),
+            (
+                "assistant".to_string(),
+                "faux response to: second RPC prompt (context messages: 3)".to_string(),
+            ),
+        ]
     );
 }
 

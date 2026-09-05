@@ -329,12 +329,30 @@ pub async fn run_server(command: ExperimentalCommand) -> Result<(), String> {
         .cloned()
         .unwrap_or_else(|| socket.to_string_lossy().into_owned());
     println!("Experimental server listening on unix://{address}");
-    let signal = tokio::signal::ctrl_c().await;
+    let signal = wait_for_server_shutdown_signal().await;
     let close_result = server.close().await;
     if let Err(error) = signal {
         return Err(format!("wait for server shutdown signal: {error}"));
     }
     close_result.map_err(|error| format!("close experimental server: {error}"))
+}
+
+#[cfg(unix)]
+async fn wait_for_server_shutdown_signal() -> std::io::Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sighup = signal(SignalKind::hangup())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result,
+        _ = sigterm.recv() => Ok(()),
+        _ = sighup.recv() => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_server_shutdown_signal() -> std::io::Result<()> {
+    tokio::signal::ctrl_c().await
 }
 
 pub async fn run_client(command: ExperimentalCommand) -> Result<(), String> {

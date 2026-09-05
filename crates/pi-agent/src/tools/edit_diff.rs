@@ -443,6 +443,9 @@ enum DiffLine {
 /// npm-diffLines-compatible content split: drop the phantom trailing empty
 /// element when content ends with a newline ("a\nb\n" -> ["a", "b"]).
 fn split_content_lines(content: &str) -> Vec<&str> {
+    if content.is_empty() {
+        return Vec::new();
+    }
     let mut lines: Vec<&str> = content.split('\n').collect();
     if content.ends_with('\n') {
         lines.pop();
@@ -494,7 +497,52 @@ fn line_diff_parts(old: &str, new: &str) -> Vec<DiffLine> {
             }
         }
     }
-    parts
+    // jsdiff treats final-newline presence as part of the final line. The
+    // line-slice diff strips separators, so restore that distinction when the
+    // final semantic line is shared but only one side ends in a newline.
+    if old.ends_with('\n') != new.ends_with('\n')
+        && old_lines.last().is_some()
+        && old_lines.last() == new_lines.last()
+    {
+        if let Some(index) = parts
+            .iter()
+            .rposition(|part| matches!(part, DiffLine::Context(_)))
+        {
+            if let DiffLine::Context(line) = parts.remove(index) {
+                parts.insert(index, DiffLine::Removed(line.clone()));
+                parts.insert(index + 1, DiffLine::Added(line));
+            }
+        }
+    }
+    // jsdiff emits each contiguous changed block with all removals before all
+    // additions, even when the underlying line diff reports adjacent replace
+    // operations. Normalize to that wire/display order.
+    let mut grouped = Vec::with_capacity(parts.len());
+    let mut index = 0;
+    while index < parts.len() {
+        if matches!(parts[index], DiffLine::Context(_)) {
+            grouped.push(parts[index].clone());
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < parts.len() && !matches!(parts[index], DiffLine::Context(_)) {
+            index += 1;
+        }
+        grouped.extend(
+            parts[start..index]
+                .iter()
+                .filter(|part| matches!(part, DiffLine::Removed(_)))
+                .cloned(),
+        );
+        grouped.extend(
+            parts[start..index]
+                .iter()
+                .filter(|part| matches!(part, DiffLine::Added(_)))
+                .cloned(),
+        );
+    }
+    grouped
 }
 
 fn pad(width: usize, n: usize) -> String {
@@ -730,28 +778,46 @@ pub fn generate_unified_patch(
                 _ => {}
             }
         }
-        let o_start = annotated[start].2 + 1;
-        let n_start = annotated[start].3 + 1;
+        let o_start = if o_count == 0 {
+            annotated[start].2
+        } else {
+            annotated[start].2 + 1
+        };
+        let n_start = if n_count == 0 {
+            annotated[start].3
+        } else {
+            annotated[start].3 + 1
+        };
         out.push_str(&format!(
             "@@ -{} +{} @@\n",
             hunk_range(o_start, o_count),
             hunk_range(n_start, n_count)
         ));
-        for (tag, text, _, _) in &annotated[start..end] {
+        let old_lines = split_content_lines(old_content);
+        let new_lines = split_content_lines(new_content);
+        let old_missing_newline = !old_content.is_empty() && !old_content.ends_with('\n');
+        let new_missing_newline = !new_content.is_empty() && !new_content.ends_with('\n');
+        for (tag, text, old_index, new_index) in &annotated[start..end] {
             out.push_str(&format!("{}{}\n", *tag as char, text));
+            let needs_marker = match tag {
+                b' ' => {
+                    (old_missing_newline && *old_index + 1 == old_lines.len())
+                        || (new_missing_newline && *new_index + 1 == new_lines.len())
+                }
+                b'-' => old_missing_newline && *old_index + 1 == old_lines.len(),
+                b'+' => new_missing_newline && *new_index + 1 == new_lines.len(),
+                _ => false,
+            };
+            if needs_marker {
+                out.push_str("\\ No newline at end of file\n");
+            }
         }
     }
     out
 }
 
 fn hunk_range(start: usize, count: usize) -> String {
-    if count == 0 {
-        format!("{start},0")
-    } else if count == 1 {
-        format!("{start}")
-    } else {
-        format!("{start},{count}")
-    }
+    format!("{start},{count}")
 }
 
 #[cfg(test)]
@@ -991,6 +1057,37 @@ mod tests {
         let patch = generate_unified_patch("f.txt", original, expected, 4);
         let applied = apply_unified_patch_for_test(original, &patch);
         assert_eq!(applied, expected, "patch was:\n{patch}");
+    }
+
+    #[test]
+    fn unified_patch_generates_add_delete_and_unicode_shapes() {
+        let added = generate_unified_patch("新規.txt", "", "界🙂\n", 4);
+        assert_eq!(
+            added,
+            "--- 新規.txt\n+++ 新規.txt\n@@ -0,0 +1,1 @@\n+界🙂\n"
+        );
+
+        let deleted = generate_unified_patch("削除.txt", "界🙂\n", "", 4);
+        assert_eq!(
+            deleted,
+            "--- 削除.txt\n+++ 削除.txt\n@@ -1,1 +0,0 @@\n-界🙂\n"
+        );
+    }
+
+    #[test]
+    fn unified_patch_matches_jsdiff_missing_newline_markers() {
+        assert_eq!(
+            generate_unified_patch("f", "a", "A", 4),
+            "--- f\n+++ f\n@@ -1,1 +1,1 @@\n-a\n\\ No newline at end of file\n+A\n\\ No newline at end of file\n"
+        );
+        assert_eq!(
+            generate_unified_patch("f", "a\nb", "A\nb", 4),
+            "--- f\n+++ f\n@@ -1,2 +1,2 @@\n-a\n+A\n b\n\\ No newline at end of file\n"
+        );
+        assert_eq!(
+            generate_unified_patch("f", "a\nb\n", "A\nb", 4),
+            "--- f\n+++ f\n@@ -1,2 +1,2 @@\n-a\n-b\n+A\n+b\n\\ No newline at end of file\n"
+        );
     }
 
     /// Minimal unified-diff applier used only to verify our own patches.

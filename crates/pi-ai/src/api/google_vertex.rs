@@ -43,8 +43,8 @@ use super::google_generative_ai::{
 };
 use super::google_shared::{resolve_google_thinking_level, ResolvedGoogleThinkingLevel};
 use super::openai_completions::{
-    abortable, apply_payload_hook, error_reason, immediate_error_stream, signal_aborted,
-    terminal_error_message,
+    abortable, apply_payload_hook, error_reason, format_reqwest_error, immediate_error_stream,
+    signal_aborted, terminal_error_message,
 };
 
 const API_VERSION: &str = "v1";
@@ -544,7 +544,7 @@ pub fn stream(
             let body = abortable(response.bytes(), options.base.abort_signal.clone())
                 .await
                 .map_err(|_| "Request was aborted".to_string())?
-                .map_err(|err| format!("Request body failed: {err}"))?;
+                .map_err(|err| format!("Request body failed: {}", format_reqwest_error(&err)))?;
             if signal_aborted(options.base.abort_signal.as_ref()) {
                 return Err("Request was aborted".to_string());
             }

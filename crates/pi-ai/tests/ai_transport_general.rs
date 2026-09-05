@@ -226,6 +226,12 @@ fn stream_options(
     }
 }
 
+fn timeout_stream_options(timeout_ms: u64) -> StreamOptions {
+    let mut options = stream_options(None, None);
+    options.base.timeout_ms = Some(timeout_ms);
+    options
+}
+
 fn payload_hook() -> (OnPayloadFn, Arc<AtomicBool>) {
     let called = Arc::new(AtomicBool::new(false));
     let called_for_hook = Arc::clone(&called);
@@ -324,6 +330,27 @@ async fn assert_pre_aborted(stream: AssistantMessageEventStream) {
             ..
         }
     )));
+}
+
+async fn assert_timed_out(server: LoopbackServer, stream: AssistantMessageEventStream) {
+    server.wait_for_response().await;
+    let (events, message) = tokio::time::timeout(Duration::from_secs(2), stream.collect())
+        .await
+        .expect("request timeout must settle the stream");
+    assert_eq!(message.stop_reason(), Some(StopReason::Error));
+    let error = message.error_message().unwrap_or_default();
+    assert!(
+        error.to_ascii_lowercase().contains("timed out"),
+        "unexpected timeout error: {error}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, AssistantMessageEvent::Error { .. }))
+            .count(),
+        1
+    );
+    server.stop();
 }
 
 fn openai_completions_sse() -> &'static str {
@@ -600,6 +627,106 @@ async fn abort_signal_cancels_body_read_for_every_target_adaptor() {
         },
     );
     assert_aborted(server, stream, signal).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn timeout_terminates_an_inflight_body_read_exactly_once() {
+    let context = context();
+
+    let server = spawn_loopback("", true);
+    let base_url = server.base_url.clone();
+    let stream = openai_completions::stream(
+        &model("openai-completions", "openai", &base_url),
+        &context,
+        reqwest::Client::new(),
+        &base_url,
+        Some("secret"),
+        &OpenAIChatOptions {
+            base: timeout_stream_options(25),
+            ..Default::default()
+        },
+    );
+    assert_timed_out(server, stream).await;
+
+    let server = spawn_loopback("", true);
+    let base_url = server.base_url.clone();
+    let stream = openai_responses::stream(
+        &model("openai-responses", "openai", &base_url),
+        &context,
+        reqwest::Client::new(),
+        &base_url,
+        Some("secret"),
+        &OpenAIResponsesOptions {
+            base: timeout_stream_options(25),
+            ..Default::default()
+        },
+    );
+    assert_timed_out(server, stream).await;
+
+    let server = spawn_loopback("", true);
+    let base_url = server.base_url.clone();
+    let stream = azure_openai_responses::stream(
+        &model(
+            "azure-openai-responses",
+            "azure-openai-responses",
+            &base_url,
+        ),
+        &context,
+        reqwest::Client::new(),
+        Some("secret"),
+        &AzureOpenAIResponsesOptions {
+            base: timeout_stream_options(25),
+            azure_base_url: Some(base_url),
+            azure_deployment_name: Some("loopback".to_string()),
+            ..Default::default()
+        },
+    );
+    assert_timed_out(server, stream).await;
+
+    let server = spawn_loopback("", true);
+    let base_url = server.base_url.clone();
+    let stream = anthropic_messages::stream(
+        &model("anthropic-messages", "anthropic", &base_url),
+        &context,
+        reqwest::Client::new(),
+        &base_url,
+        Some("secret"),
+        &AnthropicOptions {
+            base: timeout_stream_options(25),
+            ..Default::default()
+        },
+    );
+    assert_timed_out(server, stream).await;
+
+    let server = spawn_loopback("", true);
+    let base_url = server.base_url.clone();
+    let stream = google_generative_ai::stream(
+        &model("google-generative-ai", "google", &base_url),
+        &context,
+        reqwest::Client::new(),
+        &base_url,
+        Some("secret"),
+        &GoogleOptions {
+            base: timeout_stream_options(25),
+            tool_choice: None,
+            thinking: None,
+        },
+    );
+    assert_timed_out(server, stream).await;
+
+    let server = spawn_loopback("", true);
+    let base_url = server.base_url.clone();
+    let stream = google_vertex::stream(
+        &model("google-vertex", "google-vertex", &base_url),
+        &context,
+        reqwest::Client::new(),
+        Some("secret"),
+        &GoogleVertexOptions {
+            base: timeout_stream_options(25),
+            ..Default::default()
+        },
+    );
+    assert_timed_out(server, stream).await;
 }
 
 #[tokio::test(flavor = "current_thread")]

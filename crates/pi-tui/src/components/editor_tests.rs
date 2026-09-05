@@ -649,3 +649,98 @@ fn deletion_on_empty_editor_is_a_noop() {
     e.handle_input("backspace");
     assert_eq!(e.get_text(), "");
 }
+
+#[test]
+fn word_navigation_answers_to_every_platform_binding() {
+    // The contract's "platform key encodings": every alias of the word-left
+    // and word-right bindings moves across the same word/word/punctuation
+    // sequence.
+    let text = "one two.three";
+    for key in ["alt+left", "ctrl+left", "alt+b"] {
+        let mut e = editor(40);
+        e.set_text(text);
+        e.handle_input("end");
+        e.handle_input(key);
+        assert_eq!(e.get_cursor(), (0, "one two.".len()), "word-left via {key}");
+        e.handle_input(key);
+        // The punctuation run is its own stop, mirroring upstream
+        // Intl.Segmenter word boundaries.
+        assert_eq!(e.get_cursor(), (0, "one two".len()), "word-left via {key}");
+        e.handle_input(key);
+        assert_eq!(e.get_cursor(), (0, "one ".len()), "word-left via {key}");
+        e.handle_input(key);
+        assert_eq!(e.get_cursor(), (0, 0), "word-left via {key}");
+    }
+    for key in ["alt+right", "ctrl+right", "alt+f"] {
+        let mut e = editor(40);
+        e.set_text(text);
+        e.handle_input("home");
+        e.handle_input(key);
+        assert_eq!(e.get_cursor(), (0, "one".len()), "word-right via {key}");
+        e.handle_input(key);
+        // Forward movement skips the whitespace and lands at the END of the
+        // next segment.
+        assert_eq!(e.get_cursor(), (0, "one two".len()), "word-right via {key}");
+        e.handle_input(key);
+        assert_eq!(
+            e.get_cursor(),
+            (0, "one two.".len()),
+            "punctuation run via {key}"
+        );
+    }
+}
+
+#[test]
+fn delete_word_forward_removes_word_and_punctuation_run() {
+    // Mirrors upstream `input.test.ts` "Alt+D preserves ASCII punctuation
+    // boundaries": ASCII punctuation inside an Intl word-like segment keeps
+    // its own stop, so deletion consumes exactly the movement span and never
+    // swallows the following punctuation run.
+    let mut e = editor(40);
+    e.set_text("one two.three");
+    e.handle_input("home");
+    // alt+d deletes exactly the movement span: the leading space stays.
+    e.handle_input("alt+d");
+    assert_eq!(e.get_text(), " two.three");
+    // From the space: skip whitespace, delete "two", stop before ".".
+    e.handle_input("alt+d");
+    assert_eq!(e.get_text(), ".three");
+    // The punctuation run is its own span.
+    e.handle_input("alt+d");
+    assert_eq!(e.get_text(), "three");
+    e.handle_input("home");
+    e.handle_input("alt+d");
+    assert_eq!(e.get_text(), "");
+
+    // alt+delete is the same binding (from line start, mirroring upstream's
+    // Ctrl+A before Alt+D).
+    let mut e = editor(40);
+    e.set_text("one two");
+    e.handle_input("home");
+    e.handle_input("alt+delete");
+    assert_eq!(e.get_text(), " two");
+
+    // Unicode words delete as whole segments.
+    let mut e = editor(40);
+    e.set_text("こんにちは world");
+    e.handle_input("home");
+    e.handle_input("alt+d");
+    assert_eq!(e.get_text(), " world");
+}
+
+#[test]
+fn word_left_right_decode_from_terminal_encodings() {
+    // The platform encodings for the word-navigation keys parse to the same
+    // canonical keys in both legacy and Kitty-keyboard transports.
+    for (raw, expected) in [
+        ("\x1bb", "alt+left"),
+        ("\x1b[1;5D", "ctrl+left"),
+        ("\x1b[1;3D", "alt+left"),
+        ("\x1bf", "alt+right"),
+        ("\x1b[1;5C", "ctrl+right"),
+        ("\x1b[1;3C", "alt+right"),
+    ] {
+        let key = crate::keys::parse_key(raw);
+        assert_eq!(key.canonical(), expected, "raw {raw:?}");
+    }
+}

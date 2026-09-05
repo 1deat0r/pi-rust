@@ -84,7 +84,11 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         tracing::warn!(path = %error.path, error = %error.error, "failed to load extension");
     }
 
-    let mut provider = crate::run::resolve_run_provider(args.provider.as_deref(), &settings);
+    let mut provider = crate::run::resolve_run_provider(
+        args.provider.as_deref(),
+        args.model.as_deref(),
+        &settings,
+    );
     let model_hint = crate::run::resolve_run_model(
         args.model.as_deref(),
         &settings,
@@ -104,6 +108,7 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         );
         crate::core::extensions::register_loaded_native_providers(&models, &loaded_extensions)
             .map_err(|error| format!("register extension providers: {error}"))?;
+        provider = crate::run::canonicalize_registered_provider(&models, &provider);
         let (scoped_models, scope_diagnostics) =
             crate::run::resolve_effective_model_scope(args, &settings, &core.models);
         for diagnostic in scope_diagnostics {
@@ -120,10 +125,21 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         } else {
             match model_hint.as_deref() {
                 Some(hint) => {
-                    let id = hint.rsplit('/').next().unwrap_or(hint);
-                    core.get_model(Some(id))
-                        .cloned()
-                        .ok_or_else(|| format!("unknown faux model {id:?}"))?
+                    let resolved = crate::core::model_resolver::resolve_cli_model(
+                        args.provider.as_deref(),
+                        Some(hint),
+                        args.thinking.as_deref(),
+                        &core.models,
+                    );
+                    if let Some(warning) = resolved.warning {
+                        eprintln!("Warning: {warning}");
+                    }
+                    if let Some(error) = resolved.error {
+                        return Err(error);
+                    }
+                    resolved
+                        .model
+                        .ok_or_else(|| format!("unknown faux model {hint:?}"))?
                 }
                 None => core
                     .models
@@ -202,9 +218,7 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         )
         .await?;
         if models.get_provider(&provider).is_none() {
-            return Err(format!(
-                "provider {provider:?} is not registered in the model registry"
-            ));
+            return Err(crate::run::unknown_provider_error(&provider));
         }
         crate::run::require_authenticated_implicit_model(
             &models,
@@ -226,13 +240,7 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
             .clone()
             .and_then(|key| config::nonempty_env_value(Some(key)))
             .or_else(|| config::nonempty_env_value(std::env::var(config::ENV_KEY).ok()));
-        let stream_options = pi_ai::types::StreamOptions {
-            base: pi_ai::types::ProviderRequestOptions {
-                api_key,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let stream_options = crate::run::stream_options_from_settings(&settings, api_key);
         let models = models.clone();
         let stream_fn: crate::run::StreamFn =
             Arc::new(move |_model, ctx| models.stream(_model, ctx, Some(&stream_options)));
@@ -284,9 +292,13 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         .collect();
 
     let mut tools: Vec<pi_agent::tools::AgentTool> = Vec::new();
-    if !args.no_tools && !args.no_builtin_tools {
+    if crate::run::should_register_builtin_tools(args) {
         tools.extend([
-            pi_agent::tools::bash_tool(cwd.clone()),
+            pi_agent::tools::bash_tool_with_options(
+                cwd.clone(),
+                settings.get_shell_command_prefix().map(str::to_string),
+                settings.get_shell_path(),
+            ),
             pi_agent::tools::read_tool_with_options(
                 cwd.clone(),
                 pi_agent::tools::image::ProcessImageOptions {
@@ -301,7 +313,11 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
             crate::core::tools::grep_tool(cwd.clone()),
         ]);
     }
-    crate::core::extensions::install_tools(&loaded_extensions, &mut tools, !args.no_tools);
+    crate::core::extensions::install_tools(
+        &loaded_extensions,
+        &mut tools,
+        crate::run::should_register_extension_tools(args),
+    );
     // `install_tools` intentionally publishes and returns the complete
     // registry. The CLI flags are an active-tool policy, however, so apply
     // that policy before constructing the harness; otherwise JSON mode would
@@ -353,7 +369,16 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         &extension_tool_definitions,
     ));
     options.block_images = settings.get_block_images();
+    options.tool_result_image_options = Some(pi_agent::tools::image::ProcessImageOptions {
+        auto_resize_images: settings.get_image_auto_resize(),
+        ..Default::default()
+    });
     options.tools = Some(tools.iter().map(HarnessTool::from_agent_tool).collect());
+    options.retry = Some(crate::run::retry_policy_from_settings(&settings));
+    options.stream_options = Some(pi_ai::types::SimpleStreamOptions {
+        base: crate::run::stream_options_from_settings(&settings, None),
+        ..Default::default()
+    });
     let (harness, _) = AgentHarness::create(options)
         .await
         .map_err(|error| error.to_string())?;

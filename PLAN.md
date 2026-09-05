@@ -1,5 +1,529 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-08-31 checkpoint — X-009/X-010 limits/platform boundary
+
+X-009 and X-010 are now PARTIAL/PARTIAL/PARTIAL. A real RPC process survives
+actual stdout backpressure with more than 200 KiB, retains valid JSONL and a
+complete full-output artifact, rejects 300-level JSON, and remains reusable. A
+clean Unix no-display/no-browser/hostile-proxy/offline/non-TTY process completes
+without browser or session side effects. The independent 4/4 gate includes
+output-guard, narrow-width, clean-stdin, and real tmux resize/restoration suites,
+check, strict clippy, formatting, audits, and diff cleanliness.
+
+Next dependency-safe action: aggregate X-011/X-012 diagnostics and permanent
+regression discipline across the failures reproduced by X-001..X-010. X-009
+still needs large prompt/session/file/image/frame and allocator/stress breadth;
+X-010 still needs real proxy/browser/OAuth/desktop, Windows/macOS, shell/signal,
+and platform filesystem matrices. Metrics are implementation 106 PASS / 147
+PARTIAL / 13 OPEN, deterministic evidence 92 PASS / 161 PARTIAL / 13 OPEN,
+runtime 51 PASS / 151 PARTIAL / 64 OPEN, non-TUI overall 44/266, whole-product
+44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — X-007/X-008 cancellation/idempotence
+
+X-007 and X-008 are now PARTIAL/PARTIAL/PARTIAL. A real RPC process proves a
+silent child cancels and settles exactly once, repeated abort commands correlate
+once each without duplicating durable state, and the runtime remains reusable.
+The independent 4/4 gate re-verifies shared retry/backoff cancellation and
+detached RPC retry/abort suites, both crates' check/strict clippy, stable
+formatting, audits, and diff cleanliness.
+
+Next dependency-safe action: aggregate X-009/X-010 with bounded large-output,
+slow-consumer/non-TTY, narrow PTY, no-display/browser, proxy/offline, and clean
+shutdown process cases. X-007 still needs the complete async-operation and
+signal/platform cancellation matrix; X-008 still needs duplicate transport,
+provider retry, reconnect/replay, and crash/restart evidence. Metrics are
+implementation 106 PASS / 145 PARTIAL / 15 OPEN, deterministic evidence 92
+PASS / 159 PARTIAL / 15 OPEN, runtime 51 PASS / 149 PARTIAL / 66 OPEN, non-TUI
+overall 44/266, whole-product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — X-005/X-006 secret/concurrency boundary
+
+X-005 and X-006 are now PARTIAL/PARTIAL/PARTIAL. A clean-process fixture proves
+synthetic request-scoped API keys never enter output or persistence across a
+durable success and local preflight failure. It also releases two real `pi`
+processes on a barrier against shared roots and proves isolated valid sessions,
+no duplicate/cross-contaminated prompts, and no staging residue. The independent
+4/4 gate re-verifies concurrent settings/auth/process and redaction suites,
+check, strict clippy, formatting, audits, and diff cleanliness.
+
+Next dependency-safe action: aggregate X-007/X-008 with deterministic RPC
+cancellation plus retry/reconnect/idempotence, asserting exactly one terminal
+settlement and durable operation. X-005 still needs OAuth/cookie/header/browser
+and live-provider surfaces; X-006 still needs same-runtime turn, refresh, tool,
+reconnect, shutdown, stress, and platform timing. Metrics are implementation
+106 PASS / 143 PARTIAL / 17 OPEN, deterministic evidence 92 PASS / 157 PARTIAL
+/ 17 OPEN, runtime 51 PASS / 147 PARTIAL / 68 OPEN, non-TUI overall 44/266,
+whole-product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — X-003/X-004 file-safety boundary
+
+X-003 and X-004 are now PARTIAL/PARTIAL/PARTIAL. A new clean-process fixture
+proves malformed settings/models/auth/session inputs are diagnosed and
+preserved through failure and repair; no failed export or unrelated write is
+created. Its Unix case proves real settings mutation through a symlinked agent
+root and read-only rejection without target mutation or staging residue. The
+independent 4/4 gate also re-verifies the existing deep malformed/atomic/symlink
+suites, check, strict clippy, formatting, audits, and diff cleanliness.
+
+Next dependency-safe action: aggregate X-005/X-006 with synthetic
+secret-negative assertions and barrier-controlled concurrent RPC/session/auth
+operations. X-003 still needs malformed resource/manifest breadth; X-004 still
+needs traversal, injected rename/crash failure, concurrent races, and non-Unix
+semantics. Metrics are implementation 106 PASS / 141 PARTIAL / 19 OPEN,
+deterministic evidence 92 PASS / 155 PARTIAL / 19 OPEN, runtime 51 PASS / 145
+PARTIAL / 70 OPEN, non-TUI overall 44/266, whole-product 44/318, and historical
+conversion `Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — X-001/X-002 aggregate RPC boundary
+
+X-001 and X-002 are now PARTIAL/PARTIAL/PARTIAL. A new isolated real-process
+RPC fixture proves complex Unicode across events, durable storage, and reopen,
+plus exact omitted/null/empty ID and prompt behavior, valid JSONL framing,
+post-error recovery, and no-session no-write behavior. Its independent gate is
+4/4 with focused tests, check, strict clippy, stable formatting, both audits,
+and diff cleanliness.
+
+Next dependency-safe action: extend the same aggregate strategy to X-003/X-004
+with malformed files and symlink/readonly/traversal safety, reusing focused
+fixtures instead of duplicating them. X-001 still needs invalid UTF-8 and PTY
+width/resize evidence; X-002 still needs the complete parser/config/session
+schema matrix. Metrics are implementation 106 PASS / 139 PARTIAL / 21 OPEN,
+deterministic evidence 92 PASS / 153 PARTIAL / 21 OPEN, runtime 51 PASS / 143
+PARTIAL / 72 OPEN, non-TUI overall 44/266, whole-product 44/318, and historical
+conversion `Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — X-001..X-012 cross-cutting audit
+
+The entire cross-cutting block was audited without a status change. All rows
+remain OPEN/OPEN/OPEN: relevant feature tests exist, but no aggregate gate yet
+proves each row's complete adversarial combinations and runtime/platform
+boundaries. No new concrete defect was reproduced in this pass.
+
+Next dependency-safe action: implement one isolated, barrier-controlled process
+harness beginning with X-001/X-002 and extend it across malformed files,
+filesystem/secret safety, concurrency/cancellation/idempotence, limits,
+platform fallbacks, and diagnostics. It must assert exactly-once durable state,
+valid framing, no unrelated mutation or secret leakage, recovery, and clean
+shutdown; any failure becomes a focused permanent regression. Metrics remain
+implementation 106/266, deterministic evidence 92/266, runtime 51/266,
+non-TUI overall 44/266, whole-product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — package/eval/distribution source audit
+
+PKG-005, EVAL-001..002, and DIST-001..005 were re-audited without a status
+change. Existing implementations are aligned, while the residuals require live
+network/provider execution, artifact provenance/installers, cross-platform
+launch, and an external disposable upgrade/rollback transaction. DIST-004 stays
+OPEN because no Rust self-replacement seam exists to exercise safely inside the
+coding-agent crate.
+
+Next dependency-safe action: start the cross-cutting block at X-001 and build
+aggregate adversarial fixtures instead of duplicating per-feature unit tests.
+Metrics remain implementation 106/266, deterministic evidence 92/266, runtime
+51/266, non-TUI overall 44/266, whole-product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — unsupported JavaScript package sources
+
+PKG-004 is PASS/PASS/PARTIAL. A shared pre-resolution guard now rejects
+case-insensitive npm/npx/bun source spellings before filesystem, settings, or
+executable flow. Focused unit and real CLI matrices prove install/remove/update
+diagnostics and unchanged settings. The independent 3/3 gate includes check,
+strict all-target clippy, stable formatting, both audits, and diff cleanliness.
+
+Next dependency-safe action: continue at PKG-005. Runtime remains partial for
+broader spelling and cross-platform process/executable boundaries. Metrics are
+implementation 106/266, deterministic evidence 92/266, runtime 51/266,
+non-TUI overall 44/266, whole-product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — EXT-001..EXT-012 source audit
+
+The complete extension block was independently re-audited without a status
+change. Rust-native command/hook/renderer/tool/flag/provider/reload/context and
+llama contracts are implemented and deterministically covered, but every row
+remains PARTIAL/PARTIAL/OPEN pending aggregate caller/process proof. The largest
+known production boundary is EXT-010: the broker stores the full UI contract,
+while interactive mode still consumes only a subset and does not project all
+custom component, header/footer/editor/autocomplete, hidden-thinking, or
+tools-expanded state into pi-tui.
+
+Next dependency-safe action: continue at PKG-001. A future extension closure
+wave should build one same-process Rust-factory harness for invocation, mutation,
+veto, errors, reload disposal/no duplicate subscriptions, native provider/tool
+execution, and UI projection. Metrics remain implementation 105/266,
+deterministic evidence 91/266, runtime 51/266, non-TUI overall 44/266,
+whole-product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — experimental server signal shutdown
+
+MODE-004 remains PARTIAL/PARTIAL/PARTIAL. The experimental Unix server now
+handles Ctrl-C, SIGTERM, and SIGHUP through the same graceful close path, and a
+real-process fixture proves TERM/HUP exit plus listener-socket removal. The full
+experimental CLI suite passes 7/7 and the independent 3/3 gate includes check,
+strict all-target clippy, stable formatting, both audits, and diff cleanliness.
+
+Next dependency-safe action: continue at EXT-001. MODE-004 remains partial
+because the CLI client is list/snapshot-only and lacks remote
+prompt/steer/abort/pending-work lifecycle; Windows/platform and live-provider
+evidence also remain open. Metrics stay implementation 105/266, deterministic
+evidence 91/266, runtime 51/266, non-TUI overall 44/266, whole-product 44/318,
+and historical conversion `Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — RPC process exit
+
+RPC-013 is PASS/PARTIAL/PARTIAL. EOF/signal shutdown source is aligned for
+active-work cancellation, task draining, extension disposal, SIGHUP flushing,
+and Unix exit codes. A permanent real-process fixture proves clean EOF plus
+SIGTERM=143 and SIGHUP=129 after successful correlated dispatch. The focused
+RPC clean-room slice passes 4/4, and the independent 3/3 gate includes check,
+strict all-target clippy, stable formatting, both audits, and diff cleanliness.
+
+Next dependency-safe action: skip the already-PASS protocol/server/client block
+and continue at the first subsequent non-PASS acceptance row. Broken pipe,
+active descendant cleanup/leak inspection, and cross-platform process behavior
+remain evidence boundaries. Metrics are implementation 105/266, deterministic
+evidence 91/266, runtime 51/266, non-TUI overall 44/266, whole-product 44/318,
+and historical conversion `Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — RPC unknown-command recovery
+
+RPC-012 is PASS/PASS/PARTIAL. The source-aligned parser/dispatcher now has one
+aggregate same-stream regression proving malformed JSON and command envelopes,
+unknown-command ID correlation, unknown extension UI response diagnostics, and
+a subsequent valid command without poisoned state. The independent 3/3 gate
+includes check, strict all-target clippy, stable formatting, both audits, and
+diff cleanliness.
+
+Next dependency-safe action: continue at RPC-013 process exit. Real
+pipe/backpressure/process recovery and untyped non-string ID inputs remain
+runtime boundaries. Metrics are implementation 104/266, deterministic evidence
+91/266, runtime 51/266, non-TUI overall 44/266, whole-product 44/318, and
+historical conversion `Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — RPC session information/export
+
+RPC-011 remains PARTIAL/PARTIAL/PARTIAL. RPC HTML export now honors an
+available fixed theme from settings, ignores an invalid configured theme in
+favor of the normal default, and normalizes explicit tilde/file-URL output
+paths. Upstream and Rust both intentionally reject in-memory HTML export.
+Existing session-stat aggregation and set-session-name behavior remain aligned.
+Two focused export regressions pass, and the independent 3/3 gate includes
+check, strict all-target clippy, stable formatting, both audits, and diff
+cleanliness.
+
+Next dependency-safe action: continue at RPC-012 unknown commands/IDs. Custom
+extension tool HTML, complete malformed/file/process-wire matrices,
+browser/visual output, and cross-platform paths remain open. Metrics remain
+implementation 103/266, deterministic evidence 90/266, runtime 51/266,
+non-TUI overall 44/266, whole-product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — RPC standalone bash runtime
+
+RPC-010 remains PARTIAL/PARTIAL/PARTIAL, but the standalone executor now uses
+the shared shell-capture contract. Detached and direct RPC bash commands use the
+selected session cwd, configured prefix and shell path, correlated chunk
+updates, process-group cancellation, tail truncation, and a durable full-output
+spill path. Spawn/shell failures return correlated failures, while deferred
+context persistence and `excludeFromContext` remain intact. The focused
+regression plus normal, abort, deferred-flush, and persistence tests pass; the
+independent gate is reverified 3/3 with check, strict all-target clippy, stable
+formatting, both audits, and diff cleanliness.
+
+Next dependency-safe action: continue at RPC-011. Extension-provided custom
+bash operations, external process stress, and cross-platform shell behavior
+remain open. Metrics remain implementation 103/266, deterministic evidence
+90/266, runtime 51/266, non-TUI overall 44/266, whole-product 44/318, and
+historical conversion `Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — RPC manual compaction settlement
+
+RPC-009 remains PARTIAL/PARTIAL/PARTIAL, but the active-turn compaction race is
+fixed. A manual RPC `compact` received during detached prompt work now aborts
+agent and retry processing immediately, stays deferred behind the existing
+`Finished` settlement barrier, and runs only after terminal prompt persistence,
+run-lock release, and one `agent_settled` event. The focused regression proves
+that exact wire ordering and no leftover compact command. The independent gate
+is reverified 3/3 with coding-agent check, strict all-target clippy, stable
+formatting, both audits, and repository diff cleanliness.
+
+Next dependency-safe action: continue at RPC-010. Real external-process timing,
+provider cancellation, persistence/restart, and platform behavior remain open.
+Metrics remain implementation 103/266, deterministic evidence 90/266, runtime
+51/266, non-TUI overall 44/266, whole-product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — manual compaction extension boundary
+
+SES-013 remains PARTIAL/PARTIAL/PARTIAL, but a concrete caller mismatch is
+fixed. Interactive manual compaction aborts a retained active harness before
+history preparation, emits the complete upstream-shaped pre-compaction payload,
+honors veto/errors, and consumes validated extension-provided compaction data.
+The custom path derives its retained tail from `firstKeptEntryId`, skips the
+provider, retains details/usage, and appends exactly one durable compaction
+entry. Shared compaction is 21/21 and coding-agent compact-filter coverage is
+11/11; check, strict all-target clippy, and formatting pass.
+The independent SES-013 gate is reverified 4/4, including both focused suites,
+coding-agent check, strict clippy, stable formatting, both audits, and diff
+cleanliness.
+
+SES-009 through SES-012 received no promotion after source audits confirmed
+tree, fork, clone, and new/import paths while aggregate runtime/failure matrices
+remain incomplete. SES-014 also remains PARTIAL/PARTIAL/PARTIAL: its shared
+harness threshold/reserve/retry/abort/persistence/queue machinery is present,
+but the interactive automatic caller still lacks overflow-reason and
+`willRetry` propagation, cancellation threading, and interrupted-turn/queued
+prompt continuation evidence. Next dependency-safe action: continue at SES-015.
+Metrics
+remain implementation 103/266, deterministic evidence 90/266, runtime 51/266,
+non-TUI overall 44/266, whole-product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
+SES-015 received no promotion after a source audit found the branch-summary
+core and RPC caller aligned for chronological collection, configuration,
+cancellation/failure handling, exact-once persistence, and replay. Its residual
+is aggregate interactive tree navigation, provider/auth failure and retry,
+restart replay, and live extension evidence. Continue at SES-016.
+
+SES-016 remains PARTIAL/PARTIAL/PARTIAL, but RPC session statistics now match
+the upstream aggregate for message counts and billed usage. Tool calls are no
+longer double-counted as messages, and assistant/tool-result/compaction/branch
+summary usage contributes to all token buckets and cost. The focused regression
+and independent gate are reverified 3/3; check, strict all-target clippy,
+formatting, both audits, and diff checks pass. Continue at SES-017 while
+retaining context-usage/provider-model, footer width/restart, process, and
+platform residuals.
+
+SES-017 received no promotion after a source audit confirmed the static HTML
+exporter covers escaped/sanitized content, thinking, tools, images, skills,
+Unicode, whitespace, metadata, and missing-file errors. Continue at SES-018;
+the export residual is full adversarial fixture execution plus browser/visual
+and asset-loading evidence.
+
+SES-018 received no promotion after a source audit confirmed explicit native
+v4 and coding-agent v3 JSONL formats, newline-delimited valid records, supported
+metadata, validation, and reopen behavior. Continue at SES-019; malformed-byte,
+concurrent/crash, process round-trip, and platform filesystem evidence remains.
+
+SES-019 received no promotion after a source audit confirmed attached-session
+ownership, snapshots, progress reduction, reconnect, detach/dispose, and stale
+rollback across client/protocol/server/backend/RPC layers. Continue at MODE-001;
+the remaining remote boundary is a real multi-process socket ownership,
+coalescing, disconnect/shutdown, and platform/network matrix.
+
+MODE-001 received no promotion after the print path source audit confirmed
+prompt expansion, sequential retained-harness turns, final-text/newline output,
+terminal error guidance, retry, and compaction wiring. Continue at MODE-002;
+remaining proof is process signal/backpressure/flush, detached-child cleanup,
+and complete retry/compaction visibility.
+
+MODE-002 received no promotion after a source audit confirmed the JSON event
+filtering, usage/event preservation, tool-call delta/stop normalization, and
+session-to-settled lifecycle. Continue at MODE-003; exhaustive all-provider
+process, broken-pipe/backpressure, signal, and live-consumer evidence remains.
+
+MODE-003 received no promotion after a source audit confirmed process-wide
+serialized writes, partial/transient handling, per-line JSON framing, and
+flushes across JSONL/RPC output. Continue at RPC-001; OS pipe backpressure,
+broken-pipe, signal-during-flush, and cross-mode process ordering remain.
+
+RPC-001 received no promotion after a source audit confirmed malformed/empty
+validation, correlated prompt acknowledgement, separate streamed events,
+detached settlement, and retained multi-turn context. Continue at RPC-002;
+multi-process concurrent clients, pipe/EOF/signal cleanup, and live provider
+behavior remain.
+
+RPC-002 received no promotion after a source audit confirmed independent queue
+modes, ordered drains through active detached work, queue updates,
+cancellation/abort clearing, and correlated responses. Continue at RPC-003;
+external concurrency, pending-queue disconnect/EOF, and live timing remain.
+
+RPC-003 received no promotion after a source audit confirmed separate
+agent/retry/bash cancellation, idempotent idle/repeated commands, correlated
+ordered responses, and EOF/shutdown wakeup. Continue at RPC-004; real abort
+races, process groups, response-flush failures, and platform cleanup remain.
+
+RPC-004 received no promotion after a source audit confirmed new/switch/fork/
+clone persistence, cancellation-before-mutation, missing-cwd recovery, parent
+linkage, runtime rebinding, and errors. Continue at RPC-005; full process-wire,
+concurrent mutation, crash durability, and platform evidence remains.
+
+RPC-005 received no promotion after a source audit confirmed exact camel-case
+state schemas, nullability, current messages, exclusive entry pagination/errors,
+and labelled tree/leaf selection. Continue at RPC-006; full process/pipe
+serialization and concurrent state-mutation races remain.
+
+RPC-006 remains PARTIAL/PARTIAL/PARTIAL, but its scoped-cycle defect is fixed.
+The runtime retains effective scoped models and thinking overrides, filters
+against availability, persists the next selection, returns the correct
+`isScoped` state, handles singleton scopes, and falls back to the full catalog.
+The focused regression and independent gate are reverified 3/3 with strict
+clippy and audits. Continue at RPC-007; live auth/catalog refresh and process
+wire evidence remains.
+
+RPC-007 remains PARTIAL/PARTIAL/PARTIAL, but unsupported cycling is corrected:
+non-reasoning models expose `["off"]` as their available level while returning
+`null` from cycle rather than reporting a transition. The focused clamping,
+cycle, and schema regression plus independent gate are reverified 3/3 with
+strict clippy and audits. Continue at RPC-008; live provider catalogs and
+serialized process evidence remain.
+
+RPC-008 received no promotion after a source audit confirmed valid queue-mode
+updates, live queue/runtime behavior, settings persistence, empty success, and
+pre-mutation invalid-value errors. RPC-009 then fixed the active prompt/manual
+compaction race through the existing exact-once settlement barrier. Continue at
+RPC-010; real process timing, provider cancellation, restart, and platform
+evidence remain.
+
+## Active 2026-08-31 checkpoint — resume state projection
+
+SES-008 remains PARTIAL/PARTIAL/PARTIAL, but its deterministic evidence is
+stronger. The real JSONL reopen fixture now projects exactly one persisted user
+message and the latest model/provider, thinking, and active-tool state after
+interleaved changes. The public harness resume tests restore open operations and
+complete them under the original operation ID. This does not yet prove the full
+public interactive/JSON/RPC resume path or footer-facing state, so no row or
+metric was promoted.
+The independent SES-008 gate is reverified 4/4, including durable storage and
+public harness resume suites, pi-agent check, strict all-target clippy, stable
+formatting, both audits, and the repository diff check.
+
+Next dependency-safe action: continue at SES-009 while retaining SES-008's
+caller-level PTY/process, missing-model fallback, and platform/runtime residuals.
+Current metrics remain implementation 103/266, deterministic evidence 90/266,
+runtime 51/266, non-TUI overall 44/266, and whole-product 44/318. The historical
+source ledger remains `Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 audit boundary — SES-005 through SES-007
+
+No concrete production mismatch was found in append/flush/reopen, legacy
+migration, or discovery. Those rows remain PARTIAL pending deterministic
+failure/concurrency/symlink matrices and crash/platform durability evidence.
+Continue through SES-008; do not claim those runtime boundaries from source
+alignment alone.
+
+## Active 2026-08-31 checkpoint — operation-lane records
+
+SES-004 implementation and deterministic evidence are PASS. The 8-case
+durable JSONL suite round-trips every record family across two lanes with
+gapless global sequence, settled operations, and usage totals; the 30-case
+conformance suite proves shared backend invariants. Runtime remains PARTIAL for
+crash/platform durability and live caller/provider propagation.
+The independent SES-004 gate is reverified 4/4, including storage/conformance
+suites, pi-agent check, strict all-target clippy, stable formatting, parity
+audits, and the repository diff check.
+
+Next dependency-safe action: continue at SES-005. Current metrics are
+implementation 103/266, deterministic evidence 90/266, runtime 51/266,
+non-TUI overall 44/266, and whole-product 44/318. The historical source ledger
+remains `Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — session state replay
+
+SES-003 implementation and deterministic evidence are PASS. The 8-case
+durable JSONL storage suite and 4-case context suite prove ordered
+model/thinking/active-tool transitions, empty and repeated changes,
+tool-call/tool-result messages, reopen, and latest-state projection. Runtime
+remains PARTIAL for concurrent/crash/platform durability, provider-specific
+payloads, and live interactive selector integration.
+The independent SES-003 gate is reverified 4/4, including both focused suites,
+pi-agent check, strict all-target clippy, stable formatting, parity audits, and
+the repository diff check.
+
+Next dependency-safe action: continue at SES-004. Current metrics are
+implementation 103/266, deterministic evidence 90/266, runtime 51/266,
+non-TUI overall 44/266, and whole-product 44/318. The historical source ledger
+remains `Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — forward-compatible session entries
+
+SES-002 implementation and deterministic evidence are PASS. Entry and
+provisioned-entry decoding now accepts unknown forward-compatible fields while
+retaining strict required-field/type validation. The 17-case JSONL codec suite
+and 15-case repository suite prove termination, custom messages, nested unknown
+fields, sequence/parent replay, and unchanged raw JSONL. Runtime remains
+PARTIAL for concurrent writers, crash/platform durability, and
+extension-specific rewrite semantics.
+The independent SES-002 gate is reverified 4/4, including both focused suites,
+pi-agent check, strict all-target clippy, stable formatting, parity audits, and
+the repository diff check.
+
+Next dependency-safe action: continue at SES-003. Current metrics are
+implementation 103/266, deterministic evidence 90/266, runtime 51/266,
+non-TUI overall 44/266, and whole-product 44/318. The historical source ledger
+remains `Conversion progress: 100.00% (166/166; 0 open)`.
+
+## Active 2026-08-31 checkpoint — project-trust bootstrap and startup TUI
+
+TRUST-001/002 implementation and deterministic evidence are PASS. Project
+trust now resolves in the pinned order through an untrusted bootstrap loader:
+explicit override, no-resource shortcut, global/explicit extension callback,
+saved trust, global default, then startup TUI or headless deny. The loader
+provably excludes project-local extensions before trust and builds the final
+mode extension runtime only after the decision. Interactive startup uses the
+shared pi-tui selector with durable project/parent, session-only, and cancel
+choices. Focused evidence is 2 discovery tests, 4 precedence/error/remember
+tests, and 10 real process/tmux trust cases including subsequent startup.
+The independent TRUST acceptance gate is reverified 5/5, including coding-agent
+check, strict all-target clippy, stable formatting, both parity audits, and the
+repository diff check.
+
+Next dependency-safe action: continue at SES-001 while TRUST runtime remains
+PARTIAL for cross-platform/readonly/live-native-extension boundaries. Current
+metrics are implementation 103/266, deterministic evidence 90/266, runtime
+51/266, non-TUI overall 44/266, and whole-product 44/318. The historical
+source ledger remains `Conversion progress: 100.00% (166/166; 0 open)`.
+The shared dirty wave overlaps these source and documentation files, so a
+focused commit/push is blocked until that wave is split or publication of the
+combined checkpoint is explicitly authorized.
+
+## Active 2026-08-31 checkpoint — model runtime and selector closure
+
+The prior models.json-only catalog boundary is now implemented for native
+API-key providers. `ModelRegistry::into_models` builds an isolated provider
+registry that shares credentials/model-store state without mutating the base;
+custom models dispatch through the native Rust API map, and configured
+literal/environment/command keys, headers, and `authHeader` are resolved at
+request time. Repeated composition is explicitly idempotent.
+
+Evidence: pi-ai model tests 18/18; coding-agent model-registry tests 16/16;
+real local HTTP stream 1/1 with synthetic Bearer and configured header;
+synthetic stored-OAuth request-auth decoration with delegated lifecycle;
+real isolated restart/delete/malformed-config process evidence 3/3; explicit
+same-process `/reload` and subsequent-turn PTY evidence 1/1;
+model-selector deterministic suites 19/19; real selector navigation/cancel and
+reload/selection/subsequent-turn PTY gates 2/2; pi-ai/pi-coding-agent check and
+strict all-target clippy; stable formatting and scoped diff checks. MODEL-002,
+MODEL-003, MODEL-004, MODEL-005, MODEL-006, MODEL-007, MODEL-008, MODEL-009, AI-001, AI-002, and AI-003 are now
+PASS/PASS/PASS. MODEL-008 additionally closes the shared cache-affinity seam:
+the harness forwards its durable session ID into provider options, preserves
+an explicit request override, records real two-turn faux cache writes/reads,
+and honors `cacheRetention=none`; 45 provider/cache tests and strict pi-agent
+clippy pass. MODEL-009 strips source-only text signatures during cross-model
+handoff while retaining same-model signatures; every one of 49 registered
+provider/API pairs sends a foreign thinking/tool/result transcript over real
+loopback transport. AI-001 additionally corrects the public tool-use stop
+reason wire spelling to `toolUse` and proves complete known-field round trips,
+unknown-field handling, timestamps, custom tool details, and same/cross-model
+signature behavior. AI-002 adds exhaustive byte/chunk-boundary, line-ending,
+malformed-payload, blank-event, and EOF framing proof over the shared SSE
+parser and real adaptor loopbacks. AI-003 proves bytewise content-length and
+one-byte chunked responses, UTF-8 splits, truncated peers, malformed chunks,
+abort, timeout, and adaptor-family integration; the complete pi-ai suite passes
+588/588.
+PROV-001 remains
+PARTIAL/PARTIAL/PARTIAL because AWS SSO/process profiles, EC2 metadata, and
+actual AWS service traffic are not available in this environment. Current
+measured dashboard remains TUI 13/52 functional/evidence, 0/52 visual/overall;
+non-TUI overall 44/266; whole-product 44/318 (13.84%).
+
 ## Active 2026-08-30 Rust-idiom campaign — Phase 1: typed error handling
 
 User-directed effort to make the codebase lean fully into Rust capabilities,
@@ -253,8 +777,8 @@ remains serialized.
 The TUI has a separate 52-row acceptance register at
 `docs/TUI-PARITY-STATUS.md`. The generated checkpoint currently reports:
 
-TUI functional implementation: 23.08% (12/52)
-TUI test/evidence parity: 23.08% (12/52)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
 
@@ -270,15 +794,15 @@ Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
 Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
 Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
 Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
-TUI functional implementation: 23.08% (12/52)
-TUI test/evidence parity: 23.08% (12/52)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 18.42% (49/266 PASS; 194 PARTIAL; 23 OPEN)
-Non-TUI deterministic evidence parity: 13.53% (36/266 PASS; 207 PARTIAL; 23 OPEN)
-Non-TUI runtime-boundary parity: 13.91% (37/266 PASS; 154 PARTIAL; 75 OPEN)
-Non-TUI overall parity: 11.28% (30/266)
-Whole-product behavioral parity: 9.43% (30/318)
+Non-TUI implementation parity: 39.47% (105/266 PASS; 138 PARTIAL; 23 OPEN)
+Non-TUI deterministic evidence parity: 34.21% (91/266 PASS; 152 PARTIAL; 23 OPEN)
+Non-TUI runtime-boundary parity: 19.17% (51/266 PASS; 141 PARTIAL; 74 OPEN)
+Non-TUI overall parity: 16.54% (44/266)
+Whole-product behavioral parity: 13.84% (44/318)
 
 The definitions and current dashboard are in
 [`docs/PARITY-DASHBOARD.md`](docs/PARITY-DASHBOARD.md).
@@ -2756,3 +3280,456 @@ process, platform, and visual/interaction boundaries.
 
 Protocol-layer checkpoint (2026-08-30): the cbor/codec/framing/schemas
 parity wave lands with expanded protocol tests and synchronized registers.
+
+## AI-004 WebSocket checkpoint — 2026-08-31
+
+AI-004 implementation and deterministic evidence are now PASS. The Codex
+transport exposes upstream-equivalent debug statistics/reset and session-close
+APIs, preserves structured API codes for continuation and connection-limit
+recovery, and passes 15 real-loopback WebSocket tests. The complete `pi-ai`
+suite passes 593 tests and strict all-target clippy. Runtime remains PARTIAL
+pending credentialed ChatGPT WebSocket, real TLS/proxy, and cross-platform
+evidence. Next dependency-safe row is AI-005 incremental JSON parsing.
+
+## AI-005 partial JSON checkpoint — 2026-08-31
+
+AI-005 is parent-verified at PASS/PASS/PASS. Four integration tests cover the
+pinned upstream oracle, exhaustive UTF-8 truncation boundaries, malformed
+fail-closed input, provider-shaped monotonic tool deltas, and final-value
+replacement. Complete `pi-ai` passes 597 tests and strict all-target clippy.
+The next dependency-safe row is AI-006 event stream lifecycle parity.
+
+## AI-006 event stream lifecycle checkpoint — 2026-08-31
+
+AI-006 is parent-verified at PASS/PASS/PASS. Final-result storage now happens
+before ended-state publication, closing a real asynchronous completion race.
+The new 4-case lifecycle matrix covers all ordered event classes, usage,
+1,000 asynchronous settlements, abort exact-once behavior, and consumer drop;
+complete `pi-ai` passes 601 tests with strict clippy. Next row: AI-007.
+
+## AI-007 tool-call normalization checkpoint — 2026-08-31
+
+AI-007 is parent-verified at PASS/PASS/PASS. Four mixed-provider transcript
+tests close ID/result pairing, missing and duplicate results, failed/orphaned
+turn cleanup, namespace and provider metadata, model-boundary signatures, and
+malformed-but-representable JSON arguments. Complete `pi-ai` passes 605 tests
+with strict clippy. Next row: AI-008.
+
+AI-008 is now active under
+`.unlazy/parity-20260827/gates/leaf-ai-reasoning.md`; deterministic provider
+mapping/signature/disable coverage is being audited separately from the
+credentialed live-provider boundary.
+
+AI-008 implementation and deterministic evidence are now PASS after 3 focused
+catalog/signature tests, the complete 608-test `pi-ai` suite, and strict
+clippy. Runtime remains PARTIAL because no credentialed vendor capability
+matrix was executed. Next dependency-safe row: AI-009.
+
+AI-009 is active under
+`.unlazy/parity-20260827/gates/leaf-ai-sampling-options.md`. Initial audit found
+that upstream's shared `simple-options.ts` has no direct Rust module; equivalent
+logic is distributed across provider adaptors. The gate now owns that real
+surface. No AI-009 status is promoted until the complete provider option matrix
+is independently tested.
+
+AI-009 implementation and deterministic evidence are now PASS. The audit found
+and fixed two linked omissions: provider-neutral streaming did not merge model
+sampling defaults with per-request overrides, and OpenAI Completions did not
+apply the merged map last to its wire payload. Five focused tests plus the
+complete 613-test `pi-ai` suite and strict clippy prove the deterministic
+contract. Runtime remains PARTIAL because no credentialed vendor or complete
+cross-platform provider matrix was executed. Next dependency-safe row: AI-010.
+
+AI-010 is active under
+`.unlazy/parity-20260827/gates/leaf-ai-images.md`. Provider-side image encoding,
+tool-result replay, MIME errors, and text-only capability downgrades are being
+audited separately from TUI rendering (TUI rows) and normalization/resizing
+internals (AI-014). No AI-010 status is promoted until all five gates pass.
+
+AI-010 implementation and deterministic evidence are now PASS after a 4-case
+cross-provider MIME/capability/tool-result matrix, the real pi-agent
+block-images unit, complete 617-test `pi-ai` regression, and strict clippy.
+Runtime remains PARTIAL for live vendors, TUI display, platform behavior, and
+AI-014 resize/EXIF internals. Next dependency-safe row: AI-011 error contract.
+
+AI-011 implementation and deterministic evidence are now PASS. Shared
+provider-error normalization preserves the pinned 4,000-character bounded
+body and exact truncation suffix, while a real HTTP matrix proves actionable
+status/body text, retryability classification, and synthetic credential
+non-echo across representative failure forms. Complete `pi-ai` passes 619
+tests with strict clippy. Runtime remains PARTIAL for credentialed vendor SDK
+shapes, TLS/proxy, and cross-platform evidence. Next row: AI-012 abort/timeout.
+
+AI-012 implementation and deterministic evidence are now PASS. The timeout
+matrix exposed and fixed response-body hangs after headers, and provider error
+paths now preserve reqwest source chains so timeouts remain actionable. The
+24 focused phase/backoff/lifecycle tests, complete 622-test `pi-ai` suite, and
+strict clippy pass. Runtime remains PARTIAL for live vendors, TLS/proxy,
+process signals, and cross-platform behavior. Next row: AI-013 token/context estimates.
+
+AI-013 implementation and deterministic evidence are now PASS. Two exact
+source mismatches were corrected: agent-level character heuristics now count
+JavaScript UTF-16 code units, and compaction treats a reserve larger than the
+context window as an already-crossed threshold even at zero tokens. Ten
+`pi-ai` estimator tests, five overflow tests, and 21 compaction tests pass;
+complete `pi-ai` passes 626 tests, complete `pi-agent` passes 369 tests, and
+strict all-target clippy passes. Runtime remains PARTIAL for provider tokenizer
+variance, live usage accounting, and cross-platform/live compaction behavior.
+Next dependency-safe row: AI-014 image normalization/resizing.
+
+AI-014 implementation and deterministic evidence are now PASS. The image
+pipeline already covered MIME/content normalization, conversion, JPEG/WebP
+EXIF, dimensions, encoded-size limits, quality fallback, progressive reduction,
+and exact omission diagnostics. This leaf closed the missing caller seam:
+every finalized tool result is now normalized after `afterToolCall`, including
+images injected or replaced by extensions, while failed normalization keeps the
+original block. The focused image suite passes 26/26, complete `pi-agent`
+passes 371 tests, coding-agent library passes 829 tests, and strict all-target
+clippy passes. Runtime remains PARTIAL for credentialed vendors, emulator and
+terminal display, and cross-platform behavior. Next dependency-safe row:
+AI-015 provider registry and transport selection.
+
+AI-015 implementation and deterministic evidence are now PASS. No production
+change was required after the pinned comparison; the missing closure was exact
+transport evidence. The 8-case real-loopback helper suite now proves
+idempotent method/header/body replay and unfinished-body disposal in addition
+to status/transport retries, per-attempt/overall timeouts, and caller
+cancellation. Remote-catalog unit/integration suites pass 9/9 and 8/8;
+coding-agent library passes 831 tests and strict all-target clippy passes.
+Runtime remains PARTIAL for live internet, proxy/TLS, and cross-platform
+behavior. Next dependency-safe work returns to the first still-open acceptance
+row in the exhaustive register.
+
+AGENT-001 implementation and deterministic evidence are now PASS. The existing
+real JSON-mode process fixture now verifies exact one-turn lifecycle ordering,
+exactly-once agent settlement, positive/consistent assistant usage, durable
+assistant persistence, and reopen through the public pi-agent JSONL repository.
+Complete pi-agent remains green at 371 tests and coding-agent library at 831;
+strict all-target clippy passes. Runtime remains PARTIAL for credentialed live
+providers and cross-platform behavior. Next dependency-safe row: AGENT-002
+multi-turn context and duplicate/loss prevention.
+
+AGENT-002 implementation and deterministic evidence are now PASS. The real
+RPC binary fixture executes two independently settled prompts, proves exact
+provider context sizes `1` then `3`, checks the durable transcript after each
+turn, and reopens it through `JsonlSessionRepo` as exactly two ordered users and
+two ordered assistants. Runtime remains PARTIAL for credentialed live providers
+and cross-platform behavior. Next dependency-safe row: AGENT-003 tool loop.
+
+AGENT-003 implementation and deterministic evidence are now PASS. A concrete
+harness conversion bug was fixed so per-tool sequential mode is retained. The
+public aggregate proves parallel completion versus source-order results,
+sequential execution, ordered provider follow-up, and all-terminating stop
+behavior. Complete `pi-agent` passes 374 tests and strict pi-agent/coding-agent
+clippy passes. Runtime remains PARTIAL for credentialed providers and
+cross-platform behavior. Next dependency-safe row: AGENT-004 hooks.
+
+AGENT-004 implementation and deterministic evidence are now PASS. The public
+harness now carries before/after tool-call hooks into both its main agent and
+lane-created agents. Three public-harness regressions prove argument mutation,
+result replacement, lifecycle ordering, delayed-hook abort settlement, reuse,
+lane inheritance, and panic containment. Complete `pi-agent` passes 377 tests;
+coding-agent check and strict all-target clippy pass. Runtime remains PARTIAL
+for credentialed providers and cross-platform/external lifecycle behavior.
+Next dependency-safe row: AGENT-005 steering/follow-up queues.
+
+AGENT-005 implementation and deterministic evidence are now PASS. No new
+production mismatch remained; the missing closure was a public-harness
+aggregate. Held-response tests prove exact one-at-a-time and all-mode steering
+and follow-up drain boundaries, durable cancellation with provider exclusion,
+no duplicate/lost prompts, terminal settlement, empty queues, and harness
+reuse. Complete `pi-agent` passes 379 tests; coding-agent check and strict
+all-target clippy pass. Runtime remains PARTIAL for credentialed providers,
+full coding-agent UI/process interaction, and cross-platform behavior. Next
+dependency-safe row: AGENT-006 deferred responses.
+
+AGENT-006 implementation and deterministic evidence are now PASS. Restarting
+an open deferred operation no longer degrades it to a generic crash: the
+harness reconstructs the deferred reason and exact opaque handle from the
+persisted step result. Public restart tests prove deferred/crash distinction;
+provider/runtime tests prove submit, pending, resolve, unknown, cancel, and
+cancelled-fetch behavior. Complete `pi-agent` passes 381 tests; focused pi-ai
+and coding-agent deferred tests, coding-agent check, and strict clippy pass.
+Runtime remains PARTIAL for credentialed provider polling, process EOF/restart
+event exactness, and cross-platform behavior. Next row: AGENT-007 retry and
+compaction interaction.
+
+AGENT-007 implementation and deterministic evidence are now PASS. A public
+harness retry fixture proves ordered retry events, exactly two provider calls,
+one durable operation, one user, one final assistant, and no failed-attempt
+duplication. Existing real overflow fixtures prove one durable compaction and
+retry with rebuilt context, plus terminal second-overflow behavior. Complete
+`pi-agent` passes 382 tests; coding-agent check and strict clippy pass. Runtime
+remains PARTIAL for credentialed providers, broader durable-session/process
+matrices, and cross-platform behavior. Next row: AGENT-008 system prompt.
+
+AGENT-008 implementation and deterministic evidence are now PASS. No
+production mismatch remained after the pinned source comparison. The real
+`cli_context_loopback` process fixture captures two complete provider requests
+and proves default coding prompt, active-tool filtering, project context,
+skills, explicit override, repeated append ordering, cwd placement, and
+provider-shaped completion. The shared 37-case run suite plus 9/9 resource and
+9/9 extension suites cover settings/discovery precedence, context suppression,
+prompt-template expansion, and native extension prompt surfaces. Coding-agent
+check, strict all-target clippy, rustfmt, diff checks, and the 5/5 unlazy gate
+pass. Runtime remains PARTIAL for credentialed providers, every-mode
+extension/override propagation, and cross-platform behavior. Next
+dependency-safe row: AGENT-009 skills.
+
+AGENT-009 implementation and deterministic evidence are now PASS. Interactive
+and RPC now match print mode by preserving explicit CLI/extension skill paths
+under `--no-skills` while suppressing automatic roots, and explicit invocation
+strips a UTF-8 BOM before frontmatter removal. Core discovery/validation passes
+12/12; caller policy passes 2/2; the disabled-skill command test passes; and a
+real PTY rewrites a skill, reloads the same process, observes the refreshed
+completion description, and submits the refreshed body. Coding-agent check,
+strict clippy, formatting, diff checks, and the 5/5 reverified unlazy gate pass.
+Runtime remains PARTIAL for cross-platform filesystems and complete package/
+extension/live-resource behavior. Next dependency-safe row: AGENT-010 prompt
+templates.
+
+AGENT-010 implementation and deterministic evidence are now PASS. RPC now
+matches print and interactive resource policy: `--no-prompt-templates`
+suppresses configured/default roots without discarding explicit CLI or
+extension templates. Core parsing/interpolation, the RPC caller regression,
+the 9-case print resource suite, and the 2-case real settings PTY pass. The PTY
+proves quoted positional/all-argument/slice expansion plus same-process file
+rewrite, `/reload`, and replacement invocation. Coding-agent check, strict
+all-target clippy, formatting, global diff checks, and the independently
+reverified 5/5 unlazy gate pass. Runtime remains PARTIAL for credentialed
+providers, complete malformed-diagnostic presentation across every mode,
+cross-platform filesystems, and live extension/package resources. Next
+dependency-safe row: AGENT-011 memory.
+
+AGENT-011 implementation and deterministic evidence are now PASS after fixing
+the acceptance inventory itself: pinned Pi has an in-memory session backend,
+not a separate durable memory-file subsystem. The complete shared backend
+conformance matrix proves CRUD, immutable reads, filtered/cursor queries,
+lanes/records/facts/stats, missing/duplicate validation, open/list/delete, and
+fork behavior. Compaction and search suites pass, and a real RPC
+`--no-session` process proves process-local reopen/commands without creating a
+file. Pi-agent/coding-agent check, strict all-target clippy, register parsing,
+diff checks, and the 5/5 gate pass. Runtime remains PARTIAL for cross-platform,
+process-crash, and broader long-running/concurrent integration. Next
+dependency-safe row: AGENT-012 telemetry.
+
+AGENT-012 implementation and deterministic evidence are now PASS. The
+inventory was corrected because upstream telemetry has spans/events but no
+counter API. Rust span IDs and end-sequence numbers now start at 1 exactly like
+upstream. Complete adapter tests prove parent/order, detached snapshots,
+post-settlement no-op, no-op and panic behavior; harness tests prove ordered
+success/error settlement and exclude prompt/API-key payloads from recorded
+attributes. Pi-telemetry/pi-agent/coding-agent check, strict all-target clippy,
+formatting, parser/diff checks, and the 5/5 gate pass. Runtime remains PARTIAL
+for external exporters, credentialed providers, cross-platform behavior, and
+complete application-wide secret-schema review. Next row: AGENT-013 public
+stream hooks/options.
+
+AGENT-013 implementation and deterministic evidence are now PASS. Provider-
+facing tests prove payload replacement, response observation, base options,
+session affinity, reasoning, abort-signal, and API-key propagation. The row
+now also proves per-turn session/reasoning replacement and dynamic API-key
+resolver precedence with panic-safe fallback; callback and transport panics
+are isolated, active abort clears state, and the agent remains reusable.
+Pi-agent/coding-agent check, strict all-target clippy, formatting, parser/diff
+checks, and the 5/5 leaf gate pass. Runtime remains PARTIAL for credentialed
+providers, complete public coding-agent/RPC process coverage, and cross-
+platform behavior. Next row: AGENT-014 output guard/backpressure.
+
+AGENT-014 implementation and deterministic evidence are now PASS. The output
+guard now has direct concurrency evidence that complete frames cannot
+interleave even when each byte yields, plus panic-unwind restoration evidence.
+Existing tests prove partial/transient/fatal/zero-write behavior, flush/wait,
+nested ownership, and pi-tui raw/alternate-screen suspend/resume. Real tmux
+gates prove quit, interrupt, EOF, cursor/paste/autowrap restoration, and
+process-group suspend/foreground redraw. Coding-agent/pi-tui check, strict
+all-target clippy, formatting, parser/diff checks, and the 5/5 gate pass.
+Runtime remains PARTIAL for Windows and other terminal/platform behavior plus
+hostile external pipes. Next row: AGENT-015 session services/runtime.
+
+AGENT-015 implementation and deterministic evidence are now PASS. The runtime
+replacement aggregate now executes and persists distinct turns before and
+after replacement, proves the prior extension runtime becomes stale, verifies
+previous-session linkage, prevents history bleed, and rejects prompts after
+dispose. The full runtime module, harness configuration/lifecycle/queue/close
+tests, and a real RPC no-session prompt/replacement/EOF process gate pass.
+Pi-agent/coding-agent check, strict all-target clippy, formatting, parser/diff
+checks, and the 5/5 gate pass. Runtime remains PARTIAL for credentialed
+providers, complete interactive/JSON caller matrices, process-crash recovery,
+and cross-platform behavior. Next row: TOOL-001 read.
+
+TOOL-001 implementation and deterministic evidence are now PASS. Source
+comparison confirmed upstream directory inputs fail as file reads. Added a
+complete deterministic matrix for empty/Unicode/lossy-binary/supported-image
+content, ranges, directory/missing/permission failures, secret-safe errors,
+abort, and exact truncation details/output. A coding-agent rich-agent fixture
+executes a real Unicode range through the public read tool and completes the
+follow-up assistant turn. Pi-agent/coding-agent check, strict all-target
+clippy, formatting, parser/diff checks, and the 5/5 gate pass. Runtime remains
+PARTIAL for credentialed provider-directed calls, Windows filesystem/permission
+behavior, and visual terminal presentation. Next row: TOOL-002 write.
+
+TOOL-002 implementation and deterministic evidence are now PASS. Source
+comparison confirmed upstream promises a same-path mutation queue around
+parent creation and `writeFile`, not atomic rename. Added exact create,
+overwrite, nested-parent, Unicode/UTF-16 count, parent/write/permission error,
+secret-safety, pre-abort, queued-abort, and different-path independence tests.
+The shared queue suite proves same-key serialization and different-key
+concurrency, while a coding-agent rich-agent fixture creates and overwrites a
+nested Unicode file and reaches the follow-up assistant. Pi-agent/coding-agent
+check, strict all-target clippy, formatting, parser/diff checks, and the
+independently reverified 5/5 gate pass. Runtime remains PARTIAL for restart and
+crash behavior, Windows filesystem/permission semantics, and credentialed
+provider-directed invocation. Next row: TOOL-003 edit.
+
+TOOL-003 implementation and deterministic evidence are now PASS. Added exact
+Unicode diff/patch metadata, duplicate/no-match/no-change unchanged-file, and
+same-path queued-abort coverage to the complete edit/edit-diff suites. Existing
+coverage proves disjoint/fuzzy edits, overlap rejection, BOM/CRLF, symlinks,
+legacy/malformed argument preparation, and shared mutation serialization. A
+coding-agent rich-agent fixture applies two disjoint Unicode edits through the
+public tool and reaches the follow-up assistant. Pi-agent/coding-agent check,
+strict all-target clippy, formatting, parser/diff checks, and the independently
+reverified 5/5 gate pass. Runtime remains PARTIAL for restart/crash behavior,
+Windows filesystem semantics, and credentialed provider-directed invocation.
+Next row: TOOL-004 edit-diff contract correction.
+
+TOOL-004 implementation and deterministic evidence are now PASS after
+correcting its synthetic inventory contract to the actual pinned upstream
+exports. Upstream does not parse/apply general filesystem patches; it plans
+exact/fuzzy replacements and generates display/unified diffs. Rust now matches
+jsdiff for empty-file zero ranges, explicit one-line counts, contiguous removal-
+before-addition ordering, final-newline-only changes, and missing-newline
+markers. The 22-test edit-diff suite, filesystem edit suite, public rich-agent
+fixture, inventory parser, check/clippy/format/diff checks, and independently
+reverified 5/5 gate pass. Runtime remains PARTIAL for cross-platform line-ending
+presentation and credentialed provider-directed display. Next row: TOOL-005
+bash.
+
+TOOL-005 implementation and deterministic evidence are now PASS. The coding-
+agent now forwards persisted `shellCommandPrefix` and `shellPath` through SDK,
+print, JSON, RPC, retained interactive agent turns, direct `!`/`!!` execution,
+and `/reload`. The public bash/environment suites prove cwd/env behavior,
+success/nonzero/timeout/pre-abort, streamed/final/late output, split UTF-8,
+callback errors, truncation artifacts, configured prefix/shell selection,
+missing-shell diagnostics, and process-group cleanup. A real tmux gate proves
+Ctrl-C interrupts the running direct bash operation and leaves the composer
+usable. The 5/5 leaf gate passed and independently reverified; check, strict
+all-target clippy, formatting, parser, dashboard, conversion audit, and diff
+checks pass. Runtime remains PARTIAL for legacy WSL stdin transport, Windows
+Git-Bash discovery/process-tree behavior, credentialed provider-directed
+invocation, and cross-platform quoting. Current measured metrics are
+implementation 96/266, deterministic evidence 83/266, runtime 51/266,
+non-TUI overall 44/266, and whole-product behavioral parity 44/318. Next row:
+TOOL-006 `ls`.
+
+TOOL-006 implementation and deterministic evidence are now PASS. A source-
+proven ordering mismatch was fixed with offline ICU English collation matching
+upstream `toLowerCase().localeCompare()` for punctuation, accents, emoji, and
+case-folded ties. Fractional and negative numeric limits now preserve upstream
+JavaScript behavior instead of silently reverting to 500, and lexical path
+normalization preserves the correct permission-denied boundary for default
+`.`. The 12-test module matrix covers hidden/Unicode names, files/directories,
+symlink targets and dangling links, missing/not-directory/permission failures,
+iterator errors, limits/notices/details, and cancellation. A public rich-agent
+fixture proves locale ordering and a fractional limit through the real tool
+loop. Offline dependency resolution, check, strict all-target clippy,
+formatting, parser/diff checks, and the independently reverified 5/5 gate pass.
+Runtime remains PARTIAL for Windows ACL/symlink/collation behavior,
+remove-after-open races, and credentialed provider-directed invocation. Current
+measured metrics are implementation 96/266, deterministic evidence 83/266,
+runtime 51/266, non-TUI overall 44/266, and whole-product 44/318. Next row:
+TOOL-007 `find`.
+
+TOOL-007 implementation and deterministic evidence are now PASS. Rust now
+preserves upstream numeric-limit behavior instead of silently replacing
+fractional/negative values with 1000, distinguishes a missing `fd` binary from
+other spawn failures, normalizes Windows full-path patterns, and lexically
+normalizes search roots. The 15-test module matrix covers basename/full-path
+globs, relative output, directory suffixes, parent and nested-repository ignore
+boundaries, hidden/Unicode/symlink entries, invalid globs/roots/numbers, result
+and byte limits/details, spawn diagnostics, and pre-cancel. A public rich-agent
+fixture executes a hidden Unicode nested search and reaches the follow-up
+assistant. Check, strict all-target clippy, formatting, register/dashboard,
+conversion audit, diff checks, and the independently reverified 5/5 gate pass.
+Runtime remains PARTIAL for Windows `fd`/ACL/symlink behavior, mid-process OS
+cleanup, filesystem races, and credentialed provider-directed invocation.
+Current measured metrics are implementation 96/266, deterministic evidence
+83/266, runtime 51/266, non-TUI overall 44/266, and whole-product 44/318. Next
+row: TOOL-008 `grep`.
+
+TOOL-008 implementation and deterministic evidence are now PASS. Fixed the
+source-proven context-window bug that skipped early lines near a file's start,
+preserved upstream fractional/negative numeric semantics, made binary context
+reads UTF-8-lossy, distinguished missing `rg` from other spawn failures, and
+lexically normalized roots. The 19-test module matrix covers regex/literal/case
+modes, file/directory roots, globs/gitignore, hidden/Unicode/binary content,
+context blocks, invalid regex/path failures, numeric limits, line/byte
+truncation details, and cancellation. The seven-test public rich-agent contract
+includes a hidden Unicode literal grep with context and follow-up settlement.
+Check, strict all-target clippy, formatting, register/dashboard, conversion
+audit, diff checks, and the independently reverified 5/5 gate pass. Runtime
+remains PARTIAL for Windows ripgrep/ACL behavior, mid-process OS cleanup,
+filesystem races, and credentialed provider-directed invocation. Current
+measured metrics are implementation 96/266, deterministic evidence 83/266,
+runtime 51/266, non-TUI overall 44/266, and whole-product 44/318. Next row:
+TOOL-009 `image`.
+
+TOOL-009 implementation and deterministic evidence are now PASS without a new
+production patch: exact source comparison and the existing matrices already
+cover the pinned contract. Twenty-six image tests prove supported/unsupported
+MIME signatures, conversion, resize/quality/byte limits, EXIF, base64, hints,
+tool-result normalization, and failures; six read tests prove attachments.
+Provider-boundary blocking, named terminal capability gating, Kitty/iTerm2
+encoding and placement, fallback links, component dimensions, and stable
+transcript ordering are also verified. Pi-agent/pi-tui/coding-agent check,
+strict all-target clippy, formatting, parser/dashboard/conversion audit, diff
+checks, and the independently reverified 5/5 gate pass. Runtime remains PARTIAL
+for real terminal visual output, credentialed provider capabilities, clipboard/
+platform differences, and cross-platform protocols. Current metrics are
+implementation 96/266, deterministic evidence 83/266, runtime 51/266,
+non-TUI overall 44/266, and whole-product 44/318. Next row: TOOL-010 mutation
+queue.
+
+TOOL-010 implementation and deterministic evidence are now PASS. The shared
+canonical-path mutation queue uses drop guards so registration and per-path
+tails are released after success, error, task cancellation, or panic instead
+of permanently blocking later writes. Canonicalization now falls back only for
+missing/unsupported paths and propagates not-directory/permission-class
+errors, matching pinned upstream. Six core queue tests, seven write tests,
+twelve edit tests, two deferred-restart tests, and two durable queue tests pass;
+package check, strict all-target clippy, formatting, parser, and diff checks
+also pass. The 5/5 leaf gate passed and independently reverified. Runtime stays
+PARTIAL for crash-at-write, cross-process locking, Windows aliases/filesystem
+behavior, and credentialed provider-directed mutations. Current metrics are
+implementation 97/266, deterministic evidence 84/266, runtime 51/266,
+non-TUI overall 44/266, and whole-product 44/318. Next row: TOOL-011 tool
+policy.
+
+TOOL-011 implementation and deterministic evidence are now PASS. Explicit
+`--tools` now overrides `--no-tools` and `--no-builtin-tools` across print,
+interactive, JSON, and RPC registration and selection, matching upstream
+`options.tools ?? options.noTools`; suppression still applies when no explicit
+allowlist exists. Parser, shared policy, interactive policy, schema validation,
+and the seven-test public built-in contract pass. Dedicated rich-agent tests
+prove a blocked call never executes, preserves error lifecycle, and stops a
+parallel batch only when every result opts into terminate. Package check,
+strict all-target clippy, formatting, parser, diff checks, and the 5/5 leaf
+gate pass. Runtime stays PARTIAL for credentialed provider-directed calls,
+extension live reload/UI policy mutation, Windows/process behavior, and
+hostile external tools. Current metrics are implementation 98/266,
+deterministic evidence 85/266, runtime 51/266, non-TUI overall 44/266, and
+whole-product 44/318. The next register row after TOOL-011 is TRUST-001.
+
+TRUST-001/002 remain `PARTIAL/PARTIAL/PARTIAL` after an independent startup
+call-graph audit. The existing store, selector, `/trust`, canonical/symlink,
+failure recovery, and tmux tests are real, but initial resolution happens
+synchronously before extensions load. A faithful extension `project_trust`
+callback needs a two-phase bootstrap that loads only global/explicit trusted
+extensions before deciding trust; project-local resources must remain excluded.
+Replacing the cooked startup prompt also requires an async interactive preflight
+boundary so TrustSelector can run before final SettingsManager/extension
+construction. Do not recursively invoke the current loader or load project
+extensions to decide whether project extensions are trusted. Next safe
+implementation is this two-phase bootstrap plus callback yes/no/error and
+project-exclusion gates.

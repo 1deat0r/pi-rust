@@ -25,8 +25,8 @@ fn jsonl_files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-#[test]
-fn json_mode_emits_complete_lifecycle_and_persists_jsonl() {
+#[tokio::test(flavor = "current_thread")]
+async fn json_mode_emits_complete_lifecycle_and_persists_jsonl() {
     let root = std::env::temp_dir().join(format!("pi-c1-json-{}", uuid::Uuid::new_v4()));
     let home = root.join("home");
     let agent_dir = home.join(".pi").join("agent");
@@ -100,6 +100,20 @@ fn json_mode_emits_complete_lifecycle_and_persists_jsonl() {
     assert!(assistant_start < message_update);
     assert!(message_update < assistant_end);
     assert!(assistant_end < turn_end);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["type"] == "agent_start")
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["type"] == "agent_end")
+            .count(),
+        1
+    );
     for event_type in [
         "agent_start",
         "turn_start",
@@ -128,6 +142,47 @@ fn json_mode_emits_complete_lifecycle_and_persists_jsonl() {
         .join("\n");
     assert!(session_text.contains("\"type\":\"message\""));
     assert!(session_text.contains("\"role\":\"assistant\""));
+
+    let fs = pi_agent::fs::StdFileSystem::new(&root);
+    let repo =
+        pi_agent::session::JsonlSessionRepo::new(fs, sessions.to_string_lossy().into_owned());
+    let metadata = repo
+        .list(None)
+        .await
+        .expect("list durable sessions")
+        .into_iter()
+        .next()
+        .expect("one durable session");
+    let reopened = repo.open(&metadata).await.expect("reopen durable session");
+    let mut entries = reopened
+        .find_entries(&pi_agent::session::EntryQuery::default())
+        .await
+        .expect("read reopened entries");
+    entries.sort_by_key(pi_agent::session::Entry::seq);
+    assert_eq!(entries.len(), 2, "exactly one user and one assistant entry");
+    assert_eq!(
+        entries[0].as_message().expect("user message").role(),
+        "user"
+    );
+    let assistant = entries[1].as_message().expect("assistant message");
+    assert_eq!(assistant.role(), "assistant");
+    let assistant_json = serde_json::to_value(assistant).expect("serialize assistant");
+    assert_eq!(
+        assistant_json["content"][0]["text"],
+        "faux response to: hello"
+    );
+    let input_tokens = assistant_json["usage"]["input"].as_u64().unwrap_or(0);
+    let output_tokens = assistant_json["usage"]["output"].as_u64().unwrap_or(0);
+    let total_tokens = assistant_json["usage"]["totalTokens"].as_u64().unwrap_or(0);
+    assert!(input_tokens > 0);
+    assert!(output_tokens > 0);
+    assert_eq!(total_tokens, input_tokens + output_tokens);
+    assert_eq!(
+        events[assistant_end]["message"]["usage"]["totalTokens"]
+            .as_u64()
+            .expect("settled assistant usage"),
+        total_tokens
+    );
 
     let _ = fs::remove_dir_all(root);
 }

@@ -213,7 +213,20 @@ pub fn estimate_context_tokens(context: &Context) -> ContextUsageEstimate {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::types::{AssistantMessage, ContentBlock, Message, UserContent};
+    use crate::types::{AssistantMessage, ContentBlock, Message, ToolResultMessage, UserContent};
+
+    fn assistant_with_usage(timestamp: u64, total_tokens: i64) -> AssistantMessage {
+        let mut assistant = AssistantMessage::new().with_timestamp(timestamp);
+        assistant.set_api_provider_model("openai-responses", "openai", "test-model");
+        assistant.set_stop_reason(crate::types::StopReason::Stop);
+        assistant.set_usage(Usage {
+            input: total_tokens,
+            total_tokens,
+            ..Default::default()
+        });
+        *assistant.content_mut() = vec![ContentBlock::text("kept")];
+        assistant
+    }
 
     #[test]
     fn estimates_text_tokens_as_chars_over_four() {
@@ -298,5 +311,109 @@ mod tests {
         assert_eq!(est.trailing_tokens, 4);
         assert_eq!(est.tokens, 154);
         assert_eq!(est.last_usage_index, Some(0));
+    }
+
+    #[test]
+    fn ignores_stale_usage_after_a_newer_prefix_message() {
+        let context = Context {
+            system_prompt: Some("system".into()),
+            messages: vec![
+                Message::User(UserContent::string("summary", 200)),
+                Message::Assistant(assistant_with_usage(100, 9_500)),
+                Message::User(UserContent::string("x".repeat(4_000), 300)),
+            ],
+            tools: vec![],
+        };
+
+        assert_eq!(
+            estimate_context_tokens(&context),
+            ContextUsageEstimate {
+                tokens: 1_005,
+                usage_tokens: 0,
+                trailing_tokens: 1_005,
+                last_usage_index: None,
+            }
+        );
+    }
+
+    #[test]
+    fn reuses_fresh_usage_after_an_inserted_prefix() {
+        let context = Context {
+            system_prompt: None,
+            messages: vec![
+                Message::User(UserContent::string("summary", 200)),
+                Message::Assistant(assistant_with_usage(100, 9_500)),
+                Message::User(UserContent::string("new prompt", 300)),
+                Message::Assistant(assistant_with_usage(400, 2_000)),
+                Message::User(UserContent::string("tail", 500)),
+            ],
+            tools: vec![],
+        };
+
+        assert_eq!(
+            estimate_context_tokens(&context),
+            ContextUsageEstimate {
+                tokens: 2_001,
+                usage_tokens: 2_000,
+                trailing_tokens: 1,
+                last_usage_index: Some(3),
+            }
+        );
+    }
+
+    #[test]
+    fn counts_only_tool_definitions_added_after_the_usage_checkpoint() {
+        let base = crate::types::json_tool(
+            "base_tool",
+            "base",
+            &serde_json::json!({ "type": "object" }),
+        );
+        let late = crate::types::json_tool(
+            "late_tool",
+            &"x".repeat(4_000),
+            &serde_json::json!({ "type": "object" }),
+        );
+        let result = Message::ToolResult(ToolResultMessage::ToolResult {
+            tool_call_id: "call-1".into(),
+            tool_name: "load_tool".into(),
+            content: vec![ContentBlock::text("loaded")],
+            details: None,
+            usage: None,
+            added_tool_names: Some(vec!["late_tool".into()]),
+            is_error: false,
+            timestamp: 2,
+        });
+        let context = Context {
+            system_prompt: None,
+            messages: vec![
+                Message::Assistant(assistant_with_usage(1, 100)),
+                result.clone(),
+            ],
+            tools: vec![base, late.clone()],
+        };
+
+        let estimate = estimate_context_tokens(&context);
+        let late_tokens = estimate_tools_tokens(&[late]);
+        let result_tokens = estimate_message_tokens(&result);
+        assert_eq!(estimate.usage_tokens, 100);
+        assert_eq!(estimate.trailing_tokens, result_tokens + late_tokens);
+        assert_eq!(estimate.tokens, 100 + result_tokens + late_tokens);
+    }
+
+    #[test]
+    fn zero_usage_falls_back_to_estimating_the_complete_context() {
+        let context = Context {
+            system_prompt: Some("sys".into()),
+            messages: vec![
+                Message::Assistant(assistant_with_usage(1, 0)),
+                Message::User(UserContent::string("tail", 2)),
+            ],
+            tools: vec![],
+        };
+        let estimate = estimate_context_tokens(&context);
+        assert_eq!(estimate.last_usage_index, None);
+        assert_eq!(estimate.usage_tokens, 0);
+        assert_eq!(estimate.tokens, 3);
+        assert_eq!(estimate.trailing_tokens, 3);
     }
 }
