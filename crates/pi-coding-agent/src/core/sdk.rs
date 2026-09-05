@@ -662,9 +662,19 @@ pub async fn create_agent_session(
         .unwrap_or(ModelThinkingLevel::Medium);
     let stream_runtime = services.model_runtime.clone();
     let stream_options = SimpleStreamOptions::default();
+    let with_options_runtime = stream_runtime.clone();
+    let with_options_base = stream_options.clone();
     let stream_fn: pi_agent::agent::StreamFn = Arc::new(move |model: &Model, context: &Context| {
         stream_runtime.stream_simple(model, context, Some(&stream_options))
     });
+    let stream_fn_with_options: pi_agent::StreamFnWithOptions =
+        Arc::new(move |model, ctx, turn_options| {
+            let mut merged = with_options_base.clone();
+            if turn_options.reasoning.is_some() {
+                merged.reasoning = turn_options.reasoning;
+            }
+            with_options_runtime.stream_simple(model, ctx, Some(&merged))
+        });
     let mut tools = if options.no_tools {
         Vec::new()
     } else {
@@ -713,6 +723,7 @@ pub async fn create_agent_session(
     }
     let mut harness_options = AgentHarnessOptions::new(session, model);
     harness_options.stream_fn = Some(stream_fn);
+    harness_options.stream_fn_with_options = Some(stream_fn_with_options);
     harness_options.system_prompt = options.system_prompt;
     harness_options.block_images = services.settings_manager.get_block_images();
     harness_options.tool_result_image_options = Some(pi_agent::tools::image::ProcessImageOptions {

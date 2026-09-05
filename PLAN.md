@@ -1,5 +1,30 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-05 checkpoint — ENV-007 per-mode reasoning wiring
+
+All non-print callers now carry per-turn reasoning into provider requests via
+the shared `stream_fn_with_reasoning` helper. JSON mode resolves CLI > scope
+> env > settings > builtin with CLI-shaped warnings and is loopback-proven
+(env high reaches the wire `"effort"` with `agent_settled`); RPC sets loop
+reasoning + stream options with a unit proof; interactive threads the level
+into every turn, rebuilds the retained harness on change, and honors
+`PI_REASONING_LEVEL` at startup; SDK/experimental set with-options. The
+independent gate is green: coding-agent lib 873/873 serial, thinking-adjacent
+suites (env_thinking_version 7/7, env_precedence 6/6, cli_json_mode 7/7,
+selector_defaults_thinking 3/3), RPC/harness/experimental/print suites,
+check, strict all-target clippy, stable rustfmt, conversion/parity audits,
+and diff cleanliness. (Parallel lib runs show pre-existing session_env +
+flake failures also present on clean HEAD; serial is the clean signal.)
+
+ENV-007 stays PARTIAL/PARTIAL/PARTIAL: footer selection, live-vendor
+breadth, and cross-platform evidence remain open. Next dependency-safe
+actions: ENV-011 (`PI_CACHE_RETENTION`) and ENV-013 (proxy variables), then
+ENV-012/014/015/016 and DIST-004. Metrics are implementation 106 PASS / 153
+PARTIAL / 7 OPEN, deterministic evidence 92 PASS / 167 PARTIAL / 7 OPEN,
+runtime 51 PASS / 157 PARTIAL / 58 OPEN, non-TUI overall 44/266,
+whole-product 44/318, and historical conversion
+`Conversion progress: 100.00% (166/166; 0 open)`.
+
 ## Active 2026-09-05 checkpoint — ENV-007/ENV-009 thinking/version boundary
 
 ENV-007 and ENV-009 are now PARTIAL/PARTIAL/PARTIAL. `PI_REASONING_LEVEL`

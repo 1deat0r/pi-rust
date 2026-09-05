@@ -2199,6 +2199,24 @@ impl RpcRuntime {
         Arc::new(move |model, ctx| models.stream_simple(model, ctx, Some(&stream_options)))
     }
 
+    /// Per-turn reasoning variant of [`Self::make_stream_fn`]. The bare
+    /// function only carries the thinking level captured when the prompt run
+    /// was built; the harness-selected level must reach every provider
+    /// request (upstream sends per-turn reasoning). Only reasoning is
+    /// overlaid here; auth, transport, session affinity, budgets, and abort
+    /// keep flowing through the captured base options and facade state.
+    fn make_stream_fn_with_options(&self) -> pi_agent::StreamFnWithOptions {
+        let models = self.models.clone();
+        let base = self.runtime_simple_stream_options();
+        std::sync::Arc::new(move |model, ctx, turn_options| {
+            let mut merged = base.clone();
+            if turn_options.reasoning.is_some() {
+                merged.reasoning = turn_options.reasoning;
+            }
+            models.stream_simple(model, ctx, Some(&merged))
+        })
+    }
+
     fn prepare_prompt_run(&self, message: &str, images: &[ContentBlock]) -> RpcPromptRun {
         let expanded_message = self.expand_rpc_prompt(message);
         let active_tools = self.active_tools_for_turn();
@@ -2278,8 +2296,11 @@ impl RpcRuntime {
         let config = RichAgentLoopConfig {
             model: self.model.clone(),
             stream_fn: self.make_stream_fn(message),
+            stream_fn_with_options: Some(self.make_stream_fn_with_options()),
             signal: Some(self.abort_signal.clone()),
             block_images: self.settings.get_block_images(),
+            reasoning: thinking_level_for_request(self.thinking_level),
+            stream_options: self.runtime_simple_stream_options(),
             tool_result_image_options: Some(pi_agent::tools::image::ProcessImageOptions {
                 auto_resize_images: self.settings.get_image_auto_resize(),
                 ..Default::default()
@@ -6546,6 +6567,20 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn prompt_run_carries_per_turn_reasoning() {
+        let runtime = runtime_for_test().await;
+        let prompt = runtime.prepare_prompt_run("reasoning probe", &[]);
+        assert!(prompt.config.stream_fn_with_options.is_some());
+        assert_eq!(
+            prompt.config.reasoning,
+            thinking_level_for_request(runtime.thinking_level)
+        );
+        assert_eq!(
+            prompt.config.stream_options.reasoning,
+            thinking_level_for_request(runtime.thinking_level)
+        );
+    }
     #[tokio::test]
     async fn thinking_levels_roundtrip() {
         let mut runtime = runtime_for_test().await;

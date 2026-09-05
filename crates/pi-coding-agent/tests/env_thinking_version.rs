@@ -208,6 +208,27 @@ fn pi_reasoning_level_reaches_the_provider_request() {
 }
 
 #[test]
+fn pi_reasoning_level_reaches_json_mode_provider_request() {
+    let (output, request) =
+        think_turn_effort(&[("PI_REASONING_LEVEL", "high")], &["--mode", "json"]);
+    assert!(
+        output.status.success(),
+        "JSON high turn failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        request.contains("\"effort\":\"high\""),
+        "JSON provider request lost the env level: {}",
+        request_body(&request)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("agent_settled"),
+        "JSON mode did not settle its turn: {stdout}"
+    );
+}
+
+#[test]
 fn cli_thinking_beats_pi_reasoning_level() {
     let (output, request) =
         think_turn_effort(&[("PI_REASONING_LEVEL", "low")], &["--thinking", "high"]);

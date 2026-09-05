@@ -4,7 +4,26 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
-## Current status (last updated 2026-08-31)
+## Current status (last updated 2026-09-05)
+
+ENV-007 caller-wiring checkpoint (2026-09-05): row stays PARTIAL/PARTIAL/
+PARTIAL (no promotion). The shared `stream_fn_with_reasoning` helper
+(run.rs, now `pub(crate)`) is wired into every remaining caller: JSON mode
+resolves CLI > scope > env > settings > builtin with CLI-shaped warnings,
+clamps, and sets harness thinking + with-options (loopback `openai-responses`
+fixture proves env high reaches the wire `"effort"` with `agent_settled`,
+7/7); RPC builds a per-turn with-options overlay and sets loop reasoning +
+stream options (new `prompt_run_carries_per_turn_reasoning` unit proof);
+interactive threads the selected level into every turn, invalidates the
+retained harness on change, syncs session-env, and honors PI_REASONING_LEVEL
+at startup (new harness-rebuild regression proof); SDK and experimental
+server set with-options alongside their existing thinking levels. No numbered
+conversion task changed; source conversion remains
+`Conversion progress: 100.00% (166/166; 0 open)`. Current behavioral metrics
+are implementation 106 PASS / 153 PARTIAL / 7 OPEN, evidence 92 PASS / 167
+PARTIAL / 7 OPEN, runtime 51 PASS / 157 PARTIAL / 58 OPEN, non-TUI overall
+44/266, and whole-product 44/318. Remaining ENV-007 boundary: footer
+selection, live-vendor breadth, and cross-platform evidence.
 
 ENV-007/ENV-009 checkpoint (2026-09-05): both rows are PARTIAL/PARTIAL/
 PARTIAL. Env thinking selection resolves CLI > scope > env > settings >

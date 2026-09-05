@@ -978,12 +978,32 @@ fn build_backend(
     let stream_fn: pi_agent::agent::StreamFn = Arc::new(move |stream_model, context| {
         stream_runtime.stream(stream_model, context, Some(&stream_options))
     });
+    let with_options_runtime = config.model_runtime.clone();
+    let stream_fn_with_options: pi_agent::agent::StreamFnWithOptions =
+        Arc::new(move |stream_model, context, turn_options| {
+            let mut merged = pi_ai::types::SimpleStreamOptions {
+                base: pi_ai::types::StreamOptions {
+                    base: pi_ai::types::ProviderRequestOptions {
+                        api_key: config::env(config::ENV_KEY),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            if turn_options.reasoning.is_some() {
+                merged.reasoning = turn_options.reasoning;
+            }
+            with_options_runtime.stream_simple(stream_model, context, Some(&merged))
+        });
     let create_session = create.is_some();
     let async_cwd = cwd.clone();
     let async_id = id.clone();
     let async_metadata = metadata.clone();
     let async_model = model.clone();
     let async_thinking_level = thinking_level.clone();
+    let async_stream_fn = stream_fn;
+    let async_stream_fn_with_options = stream_fn_with_options;
     let (harness, transcript) = blocking(async move {
         let fs = StdFileSystem::new(&async_cwd);
         let session = if create_session {
@@ -998,7 +1018,8 @@ fn build_backend(
                 .map_err(|error| error.to_string())?
         };
         let mut options = AgentHarnessOptions::new(session, async_model);
-        options.stream_fn = Some(stream_fn);
+        options.stream_fn = Some(async_stream_fn);
+        options.stream_fn_with_options = Some(async_stream_fn_with_options);
         options.thinking_level = Some(to_model_thinking_level(async_thinking_level));
         let (harness, _) = AgentHarness::create(options)
             .await

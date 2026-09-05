@@ -115,7 +115,7 @@ fn nonempty_value(value: Option<&str>) -> Option<&str> {
 /// (upstream sends per-turn reasoning). Only reasoning is overlaid here;
 /// auth, transport, telemetry, session affinity, and abort keep flowing
 /// through the captured base options and facade state exactly as before.
-fn stream_fn_with_reasoning(
+pub(crate) fn stream_fn_with_reasoning(
     models: pi_ai::models::Models,
     base: pi_ai::types::SimpleStreamOptions,
 ) -> pi_agent::StreamFnWithOptions {

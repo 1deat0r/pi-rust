@@ -1717,6 +1717,11 @@ struct InteractiveRuntime {
     faux_core: Option<pi_ai::providers::FauxProviderCore>,
     provider: String,
     model: Model,
+    /// Effective per-turn reasoning level for the retained harness. The
+    /// harness is built once and reused across turns; when the selected level
+    /// changes the harness is invalidated so the next turn carries the new
+    /// level into provider requests (upstream sends per-turn reasoning).
+    thinking_level: String,
     /// Canonical models enabled for Ctrl+P cycling by `/scoped-models`.
     /// Empty means the full available model catalog, matching Pi's default.
     scoped_models: Vec<String>,
@@ -3946,7 +3951,12 @@ struct InteractiveTurnResult {
     active_messages: Vec<pi_agent::types::AgentMessage>,
 }
 
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants / upstream-mirroring diagnostics
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::too_many_arguments
+)] // checked invariants / upstream-mirroring diagnostics
 async fn start_interactive_turn(
     runtime: &mut InteractiveRuntime,
     message: String,
@@ -3955,10 +3965,16 @@ async fn start_interactive_turn(
     steering_mode: Option<pi_agent::harness::agent_harness::QueueMode>,
     follow_up_mode: Option<pi_agent::harness::agent_harness::QueueMode>,
     session_environment: Option<&crate::core::session_env::SessionEnvironmentGuard>,
+    thinking_level: &str,
 ) -> Result<InteractiveTurnWorker, String> {
     apply_extension_turn_changes(runtime);
+    if runtime.thinking_level != thinking_level {
+        invalidate_interactive_harness(runtime);
+        runtime.thinking_level = thinking_level.to_string();
+    }
     if let Some(environment) = session_environment {
         environment.set_model(&runtime.provider, &runtime.model.name);
+        environment.set_reasoning_level(&runtime.thinking_level);
     }
     let idle_guard = InteractiveIdleGuard::new(runtime.extensions.host.clone());
     let prompt = pi_agent::agent::user_text_prompt(message.clone(), pi_ai::types::now_ms());
@@ -3995,7 +4011,10 @@ async fn start_interactive_turn(
     let provider_uses_oauth = models
         .get_provider(&provider)
         .is_some_and(|registered| registered.auth.oauth.is_some());
-    let stream_fn: crate::run::StreamFn = if provider == "faux" {
+    let (stream_fn, stream_fn_with_options): (
+        crate::run::StreamFn,
+        Option<pi_agent::StreamFnWithOptions>,
+    ) = if provider == "faux" {
         let core = runtime.faux_core.clone().unwrap_or_else(|| {
             crate::core::model_runtime::register_faux_provider(
                 &models,
@@ -4045,9 +4064,32 @@ async fn start_interactive_turn(
         core.set_responses(responses);
         let stream_models = models.clone();
         let faux_stream_options = stream_options.clone();
-        Arc::new(move |model, ctx| stream_models.stream(model, ctx, Some(&faux_stream_options)))
+        let with_options_models = models.clone();
+        let with_options_base = stream_options.clone();
+        let faux_fn: crate::run::StreamFn = Arc::new(move |model, ctx| {
+            stream_models.stream(model, ctx, Some(&faux_stream_options))
+        });
+        let faux_with_options = Some(crate::run::stream_fn_with_reasoning(
+            with_options_models,
+            pi_ai::types::SimpleStreamOptions {
+                base: with_options_base,
+                ..Default::default()
+            },
+        ));
+        (faux_fn, faux_with_options)
     } else {
-        Arc::new(move |model, ctx| models.stream(model, ctx, Some(&stream_options)))
+        let with_options_models = models.clone();
+        let with_options_base = stream_options.clone();
+        let real_fn: crate::run::StreamFn =
+            Arc::new(move |model, ctx| models.stream(model, ctx, Some(&stream_options)));
+        let real_with_options = Some(crate::run::stream_fn_with_reasoning(
+            with_options_models,
+            pi_ai::types::SimpleStreamOptions {
+                base: with_options_base,
+                ..Default::default()
+            },
+        ));
+        (real_fn, real_with_options)
     };
     let (harness, baseline_entry_ids) = if let Some(harness) = runtime.interactive_harness.clone() {
         let baseline_entry_ids: std::collections::HashSet<String> = harness
@@ -4088,8 +4130,14 @@ async fn start_interactive_turn(
                 .await
                 .map_err(|error| format!("interactive turn: seed session: {error}"))?;
         }
+        let thinking = pi_ai::model::clamp_thinking_level(
+            &runtime.model,
+            pi_ai::types::ModelThinkingLevel::from_effort_str(&runtime.thinking_level),
+        );
         let mut options = AgentHarnessOptions::new(session, runtime.model.clone());
         options.stream_fn = Some(stream_fn);
+        options.stream_fn_with_options = stream_fn_with_options;
+        options.thinking_level = Some(thinking);
         options.system_prompt = runtime.system_prompt.clone();
         options.block_images = runtime.block_images;
         options.tool_result_image_options = Some(pi_agent::tools::image::ProcessImageOptions {
@@ -4316,6 +4364,7 @@ async fn stream_turn(
     message: String,
     on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync>,
 ) -> Result<Vec<pi_agent::types::AgentMessage>, String> {
+    let thinking_level = runtime.thinking_level.clone();
     let worker = start_interactive_turn(
         runtime,
         message,
@@ -4324,6 +4373,7 @@ async fn stream_turn(
         None,
         None,
         None,
+        &thinking_level,
     )
     .await?;
     let result = worker.task.await.map_err(|error| error.to_string())??;
@@ -4491,6 +4541,7 @@ struct InteractiveTurnInput<'a> {
     input: &'a mut InteractiveInputReader,
     steering_mode: &'a str,
     follow_up_mode: &'a str,
+    thinking_level: &'a str,
     session_environment: Option<&'a crate::core::session_env::SessionEnvironmentGuard>,
     #[cfg(unix)]
     sigcont: &'a mut tokio::signal::unix::Signal,
@@ -4532,6 +4583,7 @@ async fn stream_turn_with_input(
             pi_agent::harness::agent_harness::QueueMode::OneAtATime
         }),
         turn_input.session_environment,
+        turn_input.thinking_level,
     )
     .await
     {
@@ -6196,12 +6248,17 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
     }
     let session_id = session.get_metadata().await.id;
     let session_name = session.get_name().await;
-    let configured_thinking_level = args.thinking.clone().unwrap_or_else(|| {
-        settings
-            .get_default_thinking_level()
-            .map(str::to_string)
-            .unwrap_or_else(|| crate::core::model_resolver::DEFAULT_THINKING_LEVEL.to_string())
-    });
+    let resolved_startup_thinking = crate::run::resolve_requested_thinking_level(
+        args.thinking.as_deref(),
+        None,
+        crate::config::env_reasoning_level().as_deref(),
+        settings.get_default_thinking_level(),
+        crate::core::model_resolver::DEFAULT_THINKING_LEVEL,
+    );
+    if let Some(warning) = &resolved_startup_thinking.warning {
+        eprintln!("Warning: {warning}");
+    }
+    let configured_thinking_level = resolved_startup_thinking.level;
     let agent_dir = config::get_agent_dir().to_string_lossy().into_owned();
     let extensions = load_for_mode(
         args,
@@ -6327,6 +6384,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         faux_core,
         provider: provider.clone(),
         model: model.clone(),
+        thinking_level: initial_thinking_level.clone(),
         scoped_models: scoped_model_references,
         messages: Vec::new(),
         session,
@@ -8958,6 +9016,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                         input: &mut input,
                                         steering_mode: settings.get_steering_mode(),
                                         follow_up_mode: settings.get_follow_up_mode(),
+                                        thinking_level: &thinking_level,
                                         session_environment: Some(&_session_environment),
                                         #[cfg(unix)]
                                         sigcont: &mut sigcont,
@@ -11284,6 +11343,7 @@ mod tests {
             faux_core,
             provider: "faux".to_string(),
             model,
+            thinking_level: "off".to_string(),
             scoped_models: Vec::new(),
             messages: Vec::new(),
             session,
@@ -11829,6 +11889,53 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["first", "second"]
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn interactive_turn_rebuilds_harness_when_thinking_level_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "pi-interactive-thinking-harness-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime(&root).await;
+        let on_event: Arc<dyn Fn(&AssistantMessageEvent) + Send + Sync> = Arc::new(|_| {});
+        stream_turn(&mut runtime, "first".to_string(), on_event.clone())
+            .await
+            .unwrap();
+        let first_harness = runtime
+            .interactive_harness
+            .as_ref()
+            .map(Arc::as_ptr)
+            .expect("first turn installs a live harness");
+        assert_eq!(runtime.thinking_level, "off");
+        let worker = start_interactive_turn(
+            &mut runtime,
+            "second".to_string(),
+            on_event,
+            Arc::new(|_| {}),
+            None,
+            None,
+            None,
+            "high",
+        )
+        .await
+        .unwrap();
+        let result = worker
+            .task
+            .await
+            .map_err(|error| error.to_string())
+            .unwrap()
+            .unwrap();
+        finish_interactive_turn(&mut runtime, result).await.unwrap();
+        assert_eq!(runtime.thinking_level, "high");
+        let second_harness = runtime
+            .interactive_harness
+            .as_ref()
+            .map(Arc::as_ptr)
+            .expect("changed level installs a fresh harness");
+        assert_ne!(first_harness, second_harness);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -247,8 +247,11 @@ reasoning into print-path provider requests; a loopback `openai-responses`
 fixture proves env/CLI/invalid levels reach the wire `"effort"`. Version
 output and no-banner behavior are proven with/without the skip flag and
 with `PI_VERSION` ignored. Both rows are PARTIAL/PARTIAL/PARTIAL;
-JSON/interactive/RPC/SDK caller wiring, footer selection, per-vendor
-breadth, and live/platform evidence remain open.
+per-mode caller wiring is now closed (2026-09-05): JSON resolves the same
+precedence and is loopback-proven, RPC carries loop reasoning plus stream
+options, interactive threads the level into every turn with harness rebuild
+on change, and SDK/experimental set with-options. Footer selection,
+per-vendor breadth, and live/platform evidence remain open.
 <!-- PARITY_DASHBOARD_METRICS:END -->
 
 Latest 2026-08-31 operation-record verification: SES-004 implementation and

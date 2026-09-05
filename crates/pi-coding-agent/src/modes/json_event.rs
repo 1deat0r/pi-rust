@@ -100,7 +100,12 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         args.continue_session || args.resume || args.session.is_some() || args.fork.is_some();
 
     let mut selected_provider_uses_oauth = false;
-    let (model, stream_fn): (pi_ai::model::Model, crate::run::StreamFn) = if provider == "faux" {
+    let mut selected_thinking_level: Option<String>;
+    let (model, stream_fn, stream_fn_with_options): (
+        pi_ai::model::Model,
+        crate::run::StreamFn,
+        Option<pi_agent::StreamFnWithOptions>,
+    ) = if provider == "faux" {
         let models = pi_ai::models::create_models(pi_ai::models::CreateModelsOptions::default());
         let core = crate::core::model_runtime::register_faux_provider(
             &models,
@@ -114,11 +119,13 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         for diagnostic in scope_diagnostics {
             eprintln!("Warning: {}", diagnostic.message);
         }
-        let scoped_model = if !has_explicit_model && !has_existing_session {
-            scoped_models.first().map(|scoped| scoped.model.clone())
+        let scoped_selected = if !has_explicit_model && !has_existing_session {
+            scoped_models.first()
         } else {
             None
         };
+        selected_thinking_level = scoped_selected.and_then(|scoped| scoped.thinking_level.clone());
+        let scoped_model = scoped_selected.map(|scoped| scoped.model.clone());
         let model = if let Some(model) = scoped_model {
             provider = model.provider.clone();
             model
@@ -137,6 +144,7 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
                     if let Some(error) = resolved.error {
                         return Err(error);
                     }
+                    selected_thinking_level = resolved.thinking_level.clone();
                     resolved
                         .model
                         .ok_or_else(|| format!("unknown faux model {hint:?}"))?
@@ -186,7 +194,11 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         let stream_fn: crate::run::StreamFn = Arc::new(move |model, ctx| {
             stream_models.stream(model, ctx, Some(&pi_ai::types::StreamOptions::default()))
         });
-        (model, stream_fn)
+        let stream_fn_with_options = Some(crate::run::stream_fn_with_reasoning(
+            models.clone(),
+            pi_ai::types::SimpleStreamOptions::default(),
+        ));
+        (model, stream_fn, stream_fn_with_options)
     } else {
         let models = {
             let models = crate::core::model_registry::builtin_models();
@@ -203,11 +215,13 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         for diagnostic in scope_diagnostics {
             eprintln!("Warning: {}", diagnostic.message);
         }
-        let scoped_model = if !has_explicit_model && !has_existing_session {
-            scoped_models.first().map(|scoped| scoped.model.clone())
+        let scoped_selected = if !has_explicit_model && !has_existing_session {
+            scoped_models.first()
         } else {
             None
         };
+        selected_thinking_level = scoped_selected.and_then(|scoped| scoped.thinking_level.clone());
+        let scoped_model = scoped_selected.map(|scoped| scoped.model.clone());
         if let Some(scoped_model) = &scoped_model {
             provider = scoped_model.provider.clone();
         }
@@ -241,10 +255,19 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
             .and_then(|key| config::nonempty_env_value(Some(key)))
             .or_else(|| config::nonempty_env_value(std::env::var(config::ENV_KEY).ok()));
         let stream_options = crate::run::stream_options_from_settings(&settings, api_key);
+        let with_options_models = models.clone();
+        let with_options_base = stream_options.clone();
         let models = models.clone();
         let stream_fn: crate::run::StreamFn =
             Arc::new(move |_model, ctx| models.stream(_model, ctx, Some(&stream_options)));
-        (model, stream_fn)
+        let stream_fn_with_options = Some(crate::run::stream_fn_with_reasoning(
+            with_options_models,
+            pi_ai::types::SimpleStreamOptions {
+                base: with_options_base,
+                ..Default::default()
+            },
+        ));
+        (model, stream_fn, stream_fn_with_options)
     };
 
     let prepared_files = crate::run::prepare_file_arguments(
@@ -357,8 +380,24 @@ pub async fn run_json_mode(args: &Args, settings: SettingsManager) -> Result<(),
         .host
         .set_catalog(active_tool_names, all_tool_values, commands);
 
+    let resolved_thinking = crate::run::resolve_requested_thinking_level(
+        args.thinking.as_deref(),
+        selected_thinking_level.as_deref(),
+        crate::config::env_reasoning_level().as_deref(),
+        settings.get_default_thinking_level(),
+        crate::core::model_resolver::DEFAULT_THINKING_LEVEL,
+    );
+    if let Some(warning) = &resolved_thinking.warning {
+        eprintln!("Warning: {warning}");
+    }
+    let thinking_level = pi_ai::model::clamp_thinking_level(
+        &model,
+        pi_ai::types::ModelThinkingLevel::from_effort_str(&resolved_thinking.level),
+    );
     let mut options = AgentHarnessOptions::new(session, model);
     options.stream_fn = Some(stream_fn);
+    options.stream_fn_with_options = stream_fn_with_options;
+    options.thinking_level = Some(thinking_level);
     options.system_prompt = Some(crate::run::assemble_run_system_prompt_with_active_tools(
         args,
         &cwd,
