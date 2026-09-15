@@ -29,10 +29,11 @@ pub use rich_agent::{
 };
 pub use search::{
     create_scanning_session_search, create_scanning_session_search_with_options,
-    create_typed_scanning_session_search, scanning_entries, LazyScanningSessionSearch,
-    ScanningReadable, ScanningReadableOptions, ScanningSearchHitCreator, ScanningSearchMatcher,
-    ScanningSearchOptions, ScanningSearchTextProjector, ScanningSessionSearch,
-    ScanningSourceOptionsFactory, SessionSearchCandidate, SessionSearchHit, SessionSearchOptions,
-    TypedScanningSearchOptions, TypedScanningSourceOptionsFactory,
+    create_typed_scanning_session_search, scanning_entries, EntrySearchHit,
+    LazyScanningSessionSearch, ScanningReadable, ScanningReadableOptions, ScanningSearchHitCreator,
+    ScanningSearchMatcher, ScanningSearchOptions, ScanningSearchTextProjector,
+    ScanningSessionSearch, ScanningSessionSearchService, ScanningSourceOptionsFactory, SearchQuery,
+    SessionHit, SessionHitTop, SessionSearchCandidate, SessionSearchHit, SessionSearchOptions,
+    SessionSearchService, TypedScanningSearchOptions, TypedScanningSourceOptionsFactory,
 };
 pub use types::AgentMessage;

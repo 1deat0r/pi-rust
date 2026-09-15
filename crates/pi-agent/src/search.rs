@@ -71,6 +71,120 @@ pub struct SessionSearchCandidate {
     pub fields: Option<BTreeMap<String, serde_json::Value>>,
 }
 
+/// 0.85.1 upstream search query (`SearchQuery`): free text plus an optional
+/// hit limit. Replaces the old `SessionSearchOptions` text/options split at
+/// the service boundary; the scanning core keeps its own options type.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SearchQuery {
+    pub text: String,
+    pub limit: Option<usize>,
+}
+
+/// 0.85.1 upstream session-level hit: owning session, optional relevance
+/// score, and the top matching entry (id + snippet + timestamp).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionHit {
+    pub session_id: String,
+    pub score: Option<f64>,
+    pub top: Option<SessionHitTop>,
+}
+
+/// Top matching entry of a [`SessionHit`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionHitTop {
+    pub entry_id: String,
+    pub snippet: Option<String>,
+    pub timestamp: u64,
+}
+
+/// 0.85.1 upstream entry-level hit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntrySearchHit {
+    pub session_id: String,
+    pub entry_id: String,
+    pub timestamp: u64,
+    pub snippet: Option<String>,
+    pub score: Option<f64>,
+}
+
+/// 0.85.1 upstream `SessionSearchService`: query sessions and (optionally)
+/// entries, with explicit sync/notify/remove/close lifecycle. Upstream ships
+/// this as an unimplemented skeleton (see their post-WP05 roadmap S3); the
+/// Rust scanning-backed implementation below is the concrete service.
+#[async_trait(?Send)]
+pub trait SessionSearchService {
+    async fn search_sessions(&self, query: SearchQuery) -> Vec<SessionHit>;
+    async fn search_entries(&self, query: SearchQuery) -> Vec<EntrySearchHit> {
+        let _ = query;
+        Vec::new()
+    }
+    async fn sync(&self) {}
+    fn notify(&self, _session_id: String) {}
+    async fn remove(&self, _session_id: String) {}
+    async fn close(&self) {}
+}
+
+/// Scanning-backed [`SessionSearchService`]: wraps an owned set of sessions
+/// with the 0.85.1 service contract on top of the existing scanning core.
+pub struct ScanningSessionSearchService<F: FileSystem> {
+    search: ScanningSessionSearch<F, SessionSearchHit>,
+}
+
+impl<F: FileSystem + 'static> ScanningSessionSearchService<F> {
+    pub fn new(sessions: Vec<Session<F>>) -> Self {
+        Self {
+            search: ScanningSessionSearch::new(sessions),
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl<F: FileSystem + 'static> SessionSearchService for ScanningSessionSearchService<F> {
+    async fn search_sessions(&self, query: SearchQuery) -> Vec<SessionHit> {
+        let options = SessionSearchOptions {
+            limit: query.limit,
+            ..Default::default()
+        };
+        let hits = self
+            .search
+            .search(&query.text, &options)
+            .await
+            .unwrap_or_default();
+        hits.into_iter()
+            .map(|hit| SessionHit {
+                session_id: hit.session_id,
+                score: None,
+                top: Some(SessionHitTop {
+                    entry_id: hit.entry_id,
+                    snippet: Some(hit.snippet),
+                    timestamp: hit.timestamp,
+                }),
+            })
+            .collect()
+    }
+
+    async fn search_entries(&self, query: SearchQuery) -> Vec<EntrySearchHit> {
+        let options = SessionSearchOptions {
+            limit: query.limit,
+            ..Default::default()
+        };
+        let hits = self
+            .search
+            .search(&query.text, &options)
+            .await
+            .unwrap_or_default();
+        hits.into_iter()
+            .map(|hit| EntrySearchHit {
+                session_id: hit.session_id,
+                entry_id: hit.entry_id,
+                timestamp: hit.timestamp,
+                snippet: Some(hit.snippet),
+                score: None,
+            })
+            .collect()
+    }
+}
+
 /// Optional text projector for a scanning source.
 pub type ScanningSearchTextProjector =
     Arc<dyn Fn(&SessionMetadata, &Entry, Option<&str>) -> String + Send + Sync>;
@@ -846,6 +960,32 @@ where
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod service_tests {
+    use super::*;
+
+    /// 0.85.1 upstream `SessionSearchService` contract: query by text with an
+    /// optional limit, session-level hits with top entry, optional
+    /// entry-level hits, plus sync/notify/remove/close lifecycle.
+    /// RED: `SessionSearchService` does not exist yet.
+    #[tokio::test]
+    async fn scanning_service_implements_session_search_service() {
+        let service = ScanningSessionSearchService::<crate::fs::MemoryFs>::new(vec![]);
+        let hits = service
+            .search_sessions(SearchQuery {
+                text: "auth".to_string(),
+                limit: Some(10),
+            })
+            .await;
+        assert!(hits.is_empty());
+        service.sync().await;
+        service.notify("sess-1".to_string());
+        service.remove("sess-1".to_string()).await;
+        service.close().await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::fs::MemoryFs;
@@ -1416,5 +1556,46 @@ mod tests {
             .unwrap();
         assert_eq!(disk_hits.len(), 1, "got: {disk_hits:?}");
         assert_eq!(disk_hits[0].session_id, "jsonl");
+    }
+
+    /// RED-2: the service surfaces real session matches with top entries,
+    /// entry-level hits, and limit enforcement through the 0.85.1 contract.
+    #[tokio::test]
+    async fn service_returns_session_and_entry_hits_with_limit() {
+        let mut first = memory_session("first", "/work").await;
+        let mut second = memory_session("second", "/work").await;
+        for session in [&mut first, &mut second] {
+            session
+                .append_entry(notes_entry("auth token refresh"), "main")
+                .await
+                .unwrap();
+        }
+        let service = ScanningSessionSearchService::new(vec![first, second]);
+        let sessions = service
+            .search_sessions(SearchQuery {
+                text: "auth".to_string(),
+                limit: Some(10),
+            })
+            .await;
+        assert_eq!(sessions.len(), 2, "got: {sessions:?}");
+        for hit in &sessions {
+            assert!(hit.top.is_some(), "missing top entry: {hit:?}");
+        }
+        let limited = service
+            .search_sessions(SearchQuery {
+                text: "auth".to_string(),
+                limit: Some(1),
+            })
+            .await;
+        assert_eq!(limited.len(), 1, "got: {limited:?}");
+        let entries = service
+            .search_entries(SearchQuery {
+                text: "auth".to_string(),
+                limit: None,
+            })
+            .await;
+        assert_eq!(entries.len(), 2, "got: {entries:?}");
+        assert!(entries.iter().all(|hit| !hit.entry_id.is_empty()));
+        service.close().await;
     }
 }
