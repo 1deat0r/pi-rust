@@ -22,7 +22,7 @@ expect_used = "deny"
 panic = "deny"
 
 [workspace.package]
-version = "0.84.2"
+version = "0.85.1"
 edition = "2021"
 license = "MIT"
 rust-version = "1.85"

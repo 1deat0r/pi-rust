@@ -349,11 +349,12 @@ fn request_api_key(args: &Args, env_api_key: Option<String>) -> Option<String> {
 /// Resolve the two retry layers shared by print, JSON, interactive, and RPC:
 /// the agent-level retry policy and the provider-request transport limits.
 pub(crate) fn retry_policy_from_settings(settings: &SettingsManager) -> pi_ai::utils::RetryPolicy {
-    let (enabled, max_retries, base_delay_ms) = settings.get_retry_settings();
+    let (enabled, max_retries, base_delay_ms, max_agent_delay_ms) = settings.get_retry_settings();
     pi_ai::utils::RetryPolicy {
         enabled,
         max_retries: u32::try_from(max_retries).unwrap_or(u32::MAX),
         base_delay_ms,
+        max_agent_delay_ms,
     }
 }
 
@@ -2838,6 +2839,7 @@ mod tests {
                 enabled: false,
                 max_retries: 4,
                 base_delay_ms: 17,
+                max_agent_delay_ms: None,
             }
         );
         let options = stream_options_from_settings(&settings, Some("synthetic".to_string()));

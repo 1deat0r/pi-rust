@@ -283,7 +283,9 @@ mod unix {
                 "fixture row supports at most command|expected|follow-up: {row}"
             );
             if command == "/help" {
-                // /help was never a public builtin in pinned Pi 0.84.2.
+                // /help was never a public builtin in the pinned Pi registry
+                // (verified at d7296c0: no `help` entry in
+                // `core/slash-commands.ts`).
                 // Keep the legacy fixture unchanged, but do not make its
                 // obsolete expectation part of the current PTY gate.
                 continue;

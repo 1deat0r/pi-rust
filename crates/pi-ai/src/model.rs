@@ -204,7 +204,7 @@ const THINKING_LEVEL_ORDER: [ModelThinkingLevel; 7] = [
     ModelThinkingLevel::Max,
 ];
 
-/// Port of upstream `getSupportedThinkingLevels` (models.ts @ 5cd93f6):
+/// Port of upstream `getSupportedThinkingLevels` (models.ts @ d7296c0):
 /// - models without `reasoning` support only `off`;
 /// - a map entry of literal `null` disables that level;
 /// - `xhigh`/`max` additionally REQUIRE an explicit map entry (missing means
@@ -229,7 +229,7 @@ pub fn get_supported_thinking_levels(model: &Model) -> Vec<ModelThinkingLevel> {
         .collect()
 }
 
-/// Port of upstream `clampThinkingLevel` (models.ts @ 5cd93f6): exact match,
+/// Port of upstream `clampThinkingLevel` (models.ts @ d7296c0): exact match,
 /// else round UP from the requested index, else round DOWN, else first
 /// available (off if present). Upstream walks up before down.
 /// Clamps a thinking level (including `off`) to the model's supported set,
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn thinking_level_clamp() {
         // Verified against upstream getSupportedThinkingLevels/clampThinkingLevel
-        // at 5cd93f6 with the same map: absent ordinary keys are supported,
+        // at d7296c0 with the same map: absent ordinary keys are supported,
         // xhigh/max require an explicit entry, and the clamp rounds UP first.
         let mut model = Model::new("m", "M", "anthropic-messages", "anthropic");
         model.reasoning = true;

@@ -1,5 +1,25 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-16 checkpoint — oracle re-pinned to upstream v0.85.1
+
+Parity target is now upstream `d7296c063b7971a7298769cfff1a167a9a16f8ed`
+(v0.85.1, 2026-09-15), replacing `5cd93f6` (v0.84.2, 2026-08-20). Both
+oracle checkouts (`upstream_pi`, sibling audit `upstream_pi`) are at the new
+pin; `parity_audit` constant, all 267 non-TUI row notes, and source pin
+comments updated; workspace version 0.85.1; CHANGELOG data refreshed.
+Ported in this slice: deferred streaming split, retry-delay cap, terminal
+capability overrides, fullscreen copy-on-select, `/tree` registry order,
+`x-opencode-session` header. No row promoted; metrics unchanged
+(implementation 111/266, evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318; conversion 100.00% 166/166). Gate green:
+pi-ai lib 461/461, pi-agent lib 270/270 serial, settings_sm 50/50,
+workspace check, strict clippy, fmt, all four parity audits
+(`PARITY_DASHBOARD_OK` upstream=d7296c0). Known pre-existing failures
+unchanged: offline `fd`-download tests, session_env parallel flakes (also
+red on clean HEAD). Next dependency-safe actions: agent search-service
+rewrite, OpenRouter anthropic-messages lane, Cloudflare gateway binding,
+GPT-5.6+ cache TTL, per-model compaction token budgets.
+
 ## Active 2026-09-06 checkpoint — CLI-009/CLI-010 system-prompt PASS
 
 CLI-009: a loopback test proves Unicode prompts reach the wire verbatim and
@@ -29,6 +49,35 @@ Non-TUI deterministic evidence parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN
 Non-TUI runtime-boundary parity: 21.80% (58/266 PASS; 157 PARTIAL; 51 OPEN)
 Non-TUI overall parity: 21.43% (57/266)
 Whole-product behavioral parity: 17.92% (57/318)
+
+## Active 2026-09-06 checkpoint — CLI-008 `--api-key` PASS
+
+New `tests/cli_api_key_loopback.rs` proves the request-scoped key reaches
+the wire as `Authorization: Bearer sk-…`, is never persisted (no auth.json),
+an empty CLI value falls back to `PI_KEY` (truthiness unit-pinned in
+`request_api_key`), and with neither source the run fails closed. Row
+PASS/PASS/PASS. Gate green: coding-agent lib 902/902 serially,
+cli_api_key_loopback 2/2, check, strict workspace clippy, stable rustfmt,
+diff cleanliness. Metrics: implementation 111 PASS / 155 PARTIAL / 0 OPEN,
+deterministic evidence 107 PASS / 159 PARTIAL / 0 OPEN, runtime 59 PASS /
+156 PARTIAL / 51 OPEN, non-TUI overall 58/266, whole-product 58/318, and
+historical conversion `Conversion progress: 100.00% (166/166; 0 open)`.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 41.73% (111/266 PASS; 155 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 40.23% (107/266 PASS; 159 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 22.18% (59/266 PASS; 156 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 21.80% (58/266)
+Whole-product behavioral parity: 18.24% (58/318)
 
 ## Active 2026-09-05 checkpoint — ENV-007 per-mode reasoning wiring
 

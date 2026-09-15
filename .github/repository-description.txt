@@ -1,1 +1,1 @@
-Rust-native Pi coding agent v0.84.2 with a 100% Rust runtime, real PTY and loopback-provider verification, Pi-style TUI parity tracking, and built-in Qwen Token Plan support. Behavioral parity is tracked conservatively in the 318-row acceptance register.
+Rust-native Pi coding agent v0.85.1 with a 100% Rust runtime, real PTY and loopback-provider verification, Pi-style TUI parity tracking, and built-in Qwen Token Plan support. Behavioral parity is tracked conservatively in the 318-row acceptance register.

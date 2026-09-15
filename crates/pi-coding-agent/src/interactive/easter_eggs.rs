@@ -756,9 +756,9 @@ impl Component for ArminComponent {
 const DAX_WIDTH: usize = 32;
 const DAX_HEIGHT: usize = 32;
 
-// Verbatim DAX_HEX from the pinned v0.84.2 upstream
+// Verbatim DAX_HEX from the pinned v0.85.1 upstream
 // `interactive/components/daxnuts.ts` at pinned commit
-// `5cd93f688aaab89dbb6dfa4aca535f21796ae185` (32x32 RGB, six hex characters
+// `d7296c063b7971a7298769cfff1a167a9a16f8ed` (32x32 RGB, six hex characters
 // per pixel). Keep the payload in source so this remains independent of an
 // external asset path; the renderer below still has a graceful fallback if a
 // future terminal cannot display truecolor sequences.

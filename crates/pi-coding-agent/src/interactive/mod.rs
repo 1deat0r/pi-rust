@@ -570,7 +570,7 @@ pub fn editor_border(line: &str) -> String {
 
 /// Semver-ish version banner used by /hotkeys and startup.
 pub fn version_label() -> String {
-    "pi 0.84.2 (port)".to_string()
+    "pi 0.85.1 (port)".to_string()
 }
 
 #[cfg(test)]

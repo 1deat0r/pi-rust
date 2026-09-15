@@ -1984,11 +1984,13 @@ impl RpcRuntime {
     }
 
     fn retry_policy(&self) -> pi_ai::utils::retry::RetryPolicy {
-        let (enabled, max_retries, base_delay_ms) = self.settings.get_retry_settings();
+        let (enabled, max_retries, base_delay_ms, max_agent_delay_ms) =
+            self.settings.get_retry_settings();
         pi_ai::utils::retry::RetryPolicy {
             enabled,
             max_retries: u32::try_from(max_retries).unwrap_or(u32::MAX),
             base_delay_ms,
+            max_agent_delay_ms,
         }
     }
 
@@ -2284,13 +2286,14 @@ impl RpcRuntime {
                     .drain()
             })
         });
-        let (settings_retry_enabled, max_retries, base_delay_ms) =
+        let (settings_retry_enabled, max_retries, base_delay_ms, max_agent_delay_ms) =
             self.settings.get_retry_settings();
         let retry_policy = (self.auto_retry_enabled && settings_retry_enabled).then_some(
             pi_ai::utils::retry::RetryPolicy {
                 enabled: true,
                 max_retries: max_retries as u32,
                 base_delay_ms,
+                max_agent_delay_ms,
             },
         );
         let config = RichAgentLoopConfig {
@@ -6137,6 +6140,7 @@ mod tests {
             enabled: true,
             max_retries: 1,
             base_delay_ms: 0,
+            max_agent_delay_ms: None,
         });
         config.retry_signal = Some(Arc::new(AtomicBool::new(false)));
         let run = RpcPromptRun {

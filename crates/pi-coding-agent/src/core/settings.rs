@@ -1384,11 +1384,13 @@ impl SettingsManager {
         self.set_global_nested("retry", "enabled", Value::Bool(enabled));
     }
 
-    pub fn get_retry_settings(&self) -> (bool, u64, u64) {
+    pub fn get_retry_settings(&self) -> (bool, u64, u64, Option<u64>) {
         (
             self.get_retry_enabled(),
             self.g_nested_u64("retry", "maxRetries").unwrap_or(3),
             self.g_nested_u64("retry", "baseDelayMs").unwrap_or(2000),
+            self.g_nested("retry", "maxAgentDelayMs")
+                .and_then(|v| v.as_u64()),
         )
     }
 
@@ -1780,6 +1782,41 @@ impl SettingsManager {
 
     pub fn set_fullscreen_scrollbar(&mut self, mode: &str) {
         self.set_global("fullscreenScrollbar", Value::String(mode.to_string()));
+    }
+
+    /// 0.85.1 upstream `getFullscreenCopyOnSelect` (default true).
+    pub fn get_fullscreen_copy_on_select(&self) -> bool {
+        match self.g("fullscreenCopyOnSelect") {
+            Some(Value::Bool(enabled)) => *enabled,
+            _ => true,
+        }
+    }
+
+    pub fn set_fullscreen_copy_on_select(&mut self, enabled: bool) {
+        self.set_global("fullscreenCopyOnSelect", Value::Bool(enabled));
+    }
+
+    /// 0.85.1 upstream `getTerminalCapabilityOverrides`: explicit boolean
+    /// values win, `"auto"` means no override, `images: false` maps to null
+    /// (capability disabled), and only `kitty`/`iterm2` image strings pass
+    /// through. Returns (images, true_color, hyperlinks) overrides.
+    pub fn get_terminal_capability_overrides(
+        &self,
+    ) -> (Option<Option<String>>, Option<bool>, Option<bool>) {
+        let terminal = self.g("terminal").and_then(|v| v.as_object());
+        let get = |key: &str| terminal.and_then(|t| t.get(key));
+        let images = match get("images") {
+            Some(Value::String(protocol)) if protocol == "kitty" || protocol == "iterm2" => {
+                Some(Some(protocol.clone()))
+            }
+            Some(Value::Bool(false)) => Some(None),
+            _ => None,
+        };
+        let flag = |key: &str| match get(key) {
+            Some(Value::Bool(enabled)) => Some(*enabled),
+            _ => None,
+        };
+        (images, flag("trueColor"), flag("hyperlinks"))
     }
 
     pub fn get_image_auto_resize(&self) -> bool {

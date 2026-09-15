@@ -22,7 +22,7 @@ const DEFAULT_SCOPE: &str = ".unlazy/parity-20260827";
 const INVENTORY_TOTAL: usize = 318;
 const TUI_TOTAL: usize = 52;
 const NON_TUI_TOTAL: usize = INVENTORY_TOTAL - TUI_TOTAL;
-const UPSTREAM_COMMIT: &str = "5cd93f688aaab89dbb6dfa4aca535f21796ae185";
+const UPSTREAM_COMMIT: &str = "d7296c063b7971a7298769cfff1a167a9a16f8ed";
 const SCRIPT_EXTENSIONS: [&str; 6] = ["js", "jsx", "mjs", "cjs", "ts", "tsx"];
 
 fn repo_root() -> PathBuf {

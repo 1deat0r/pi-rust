@@ -77,7 +77,7 @@ pub struct BuiltinSlashCommand {
     pub kind: SlashKind,
 }
 
-/// The public builtin registry is intentionally the exact 0.84.2 list.
+/// The public builtin registry is intentionally the exact 0.85.1 list.
 /// Native/experimental handlers may remain in `SlashKind`, but commands that
 /// are not in this list must fall through to extension/prompt dispatch.
 pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
@@ -92,6 +92,12 @@ pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
         description: "Select model (opens selector UI)",
         argument_hint: Some("<provider/model>"),
         kind: SlashKind::Model,
+    },
+    BuiltinSlashCommand {
+        name: "tree",
+        description: "Navigate session tree (switch branches)",
+        argument_hint: None,
+        kind: SlashKind::Tree,
     },
     BuiltinSlashCommand {
         name: "thinking",
@@ -164,12 +170,6 @@ pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
         description: "Duplicate the current session at the current position",
         argument_hint: None,
         kind: SlashKind::Clone,
-    },
-    BuiltinSlashCommand {
-        name: "tree",
-        description: "Navigate session tree (switch branches)",
-        argument_hint: None,
-        kind: SlashKind::Tree,
     },
     BuiltinSlashCommand {
         name: "trust",
@@ -319,6 +319,7 @@ mod tests {
             vec![
                 "settings",
                 "model",
+                "tree",
                 "thinking",
                 "scoped-models",
                 "export",
@@ -331,7 +332,6 @@ mod tests {
                 "hotkeys",
                 "fork",
                 "clone",
-                "tree",
                 "trust",
                 "login",
                 "logout",

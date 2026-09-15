@@ -1792,6 +1792,7 @@ impl<F: FileSystem + 'static> AgentHarness<F> {
             enabled: false,
             max_retries: 0,
             base_delay_ms: 1000,
+            max_agent_delay_ms: None,
         });
         let compaction_settings = options
             .compaction
@@ -6100,6 +6101,7 @@ mod tests {
                 enabled: true,
                 max_retries: 2,
                 base_delay_ms: 10,
+                max_agent_delay_ms: None,
             };
             harness.set_retry_policy(retry_policy).await;
             assert_eq!(
@@ -6107,7 +6109,8 @@ mod tests {
                 RetryPolicy {
                     enabled: true,
                     max_retries: 2,
-                    base_delay_ms: 10
+                    base_delay_ms: 10,
+                    max_agent_delay_ms: None,
                 }
             );
 

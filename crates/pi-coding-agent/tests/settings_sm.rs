@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // test code: panicking assertions are the point
 
 //! SettingsManager oracle tests — ported from the upstream suite
-//! `packages/coding-agent/test/settings-manager.test.ts` (pinned 5cd93f6),
+//! `packages/coding-agent/test/settings-manager.test.ts` (pinned d7296c0),
 //! plus seam tests for the Rust facade. Split into slices:
 //!   B) in-memory/facade machinery; C) file-backed; D) trust/reload/errors; E) packages.
 
@@ -433,9 +433,11 @@ async fn c_fullscreen_settings_validate_and_persist() {
     let mut manager = dirs.manager();
     assert_eq!(manager.get_fullscreen_exit_output(), "transcript");
     assert_eq!(manager.get_fullscreen_scrollbar(), "auto");
+    assert!(manager.get_fullscreen_copy_on_select());
 
     manager.set_fullscreen_exit_output("resume-hint");
     manager.set_fullscreen_scrollbar("hidden");
+    manager.set_fullscreen_copy_on_select(false);
     manager.flush().await;
     let saved = dirs.read_global();
     assert_eq!(
@@ -443,14 +445,16 @@ async fn c_fullscreen_settings_validate_and_persist() {
         Some(&json!("resume-hint"))
     );
     assert_eq!(saved.get("fullscreenScrollbar"), Some(&json!("hidden")));
+    assert_eq!(saved.get("fullscreenCopyOnSelect"), Some(&json!(false)));
 
     // Unsupported values fall back on next load.
     dirs.write_global(
-        json!({ "fullscreenExitOutput": "nothing", "fullscreenScrollbar": "sometimes" }),
+        json!({ "fullscreenExitOutput": "nothing", "fullscreenScrollbar": "sometimes", "fullscreenCopyOnSelect": "sometimes" }),
     );
     let reloaded = dirs.manager();
     assert_eq!(reloaded.get_fullscreen_exit_output(), "transcript");
     assert_eq!(reloaded.get_fullscreen_scrollbar(), "auto");
+    assert!(reloaded.get_fullscreen_copy_on_select());
 }
 
 #[test]
@@ -844,7 +848,7 @@ fn e_provider_retry_settings_read_from_retry_provider() {
         }
     }));
     let manager = dirs.manager();
-    assert_eq!(manager.get_retry_settings(), (false, 5, 100));
+    assert_eq!(manager.get_retry_settings(), (false, 5, 100, None));
     assert_eq!(
         manager.get_provider_retry_settings(),
         (Some(1234), Some(7), 9999)
@@ -856,7 +860,70 @@ fn e_provider_retry_settings_defaults() {
     let dirs = TestDirs::new();
     let manager = dirs.manager();
     assert_eq!(manager.get_provider_retry_settings(), (None, None, 60000));
-    assert_eq!(manager.get_retry_settings(), (true, 3, 2000));
+    assert_eq!(manager.get_retry_settings(), (true, 3, 2000, None));
+}
+
+#[test]
+fn e_retry_settings_defaults_and_overrides_agent_retry_delay_cap() {
+    // 0.85.1 upstream: `getRetrySettings` returns
+    // `{ enabled, maxRetries, baseDelayMs, maxAgentDelayMs }` with
+    // `maxAgentDelayMs` defaulting to 60000.
+    let dirs = TestDirs::new();
+    assert_eq!(dirs.manager().get_retry_settings(), (true, 3, 2000, None));
+    dirs.write_global(json!({ "retry": { "maxAgentDelayMs": 5000 } }));
+    assert_eq!(
+        dirs.manager().get_retry_settings(),
+        (true, 3, 2000, Some(5000))
+    );
+}
+
+#[test]
+fn e_terminal_capability_overrides_map_explicit_and_omit_auto() {
+    // 0.85.1 upstream `getTerminalCapabilityOverrides`: explicit values map
+    // (`images: false` -> null/disabled), `"auto"` omits, other strings drop.
+    let manager = SettingsManager::in_memory(map(json!({
+        "terminal": { "images": false, "trueColor": false, "hyperlinks": false }
+    })));
+    assert_eq!(
+        manager.get_terminal_capability_overrides(),
+        (Some(None), Some(false), Some(false))
+    );
+    let manager = SettingsManager::in_memory(map(json!({
+        "terminal": { "images": "kitty", "trueColor": true, "hyperlinks": true }
+    })));
+    assert_eq!(
+        manager.get_terminal_capability_overrides(),
+        (Some(Some("kitty".to_string())), Some(true), Some(true))
+    );
+    let manager = SettingsManager::in_memory(map(json!({
+        "terminal": { "images": "auto", "trueColor": "auto", "hyperlinks": "auto" }
+    })));
+    assert_eq!(
+        manager.get_terminal_capability_overrides(),
+        (None, None, None)
+    );
+    // `iterm2` passes through; any other string (or a boolean true) drops.
+    let manager = SettingsManager::in_memory(map(json!({
+        "terminal": { "images": "iterm2", "trueColor": true, "hyperlinks": false }
+    })));
+    assert_eq!(
+        manager.get_terminal_capability_overrides(),
+        (Some(Some("iterm2".to_string())), Some(true), Some(false))
+    );
+    let manager = SettingsManager::in_memory(map(json!({
+        "terminal": { "images": "sixel", "trueColor": "yes", "hyperlinks": 1 }
+    })));
+    assert_eq!(
+        manager.get_terminal_capability_overrides(),
+        (None, None, None)
+    );
+    let manager = SettingsManager::in_memory(map(json!({
+        "terminal": { "images": true }
+    })));
+    assert_eq!(
+        manager.get_terminal_capability_overrides(),
+        (None, None, None)
+    );
 }
 
 #[tokio::test]

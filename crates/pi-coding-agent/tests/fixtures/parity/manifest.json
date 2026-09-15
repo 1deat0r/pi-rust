@@ -3,7 +3,7 @@
   "evidence_tier": "unit",
   "upstream_oracle": {
     "repository": "upstream_pi",
-    "commit": "5cd93f688aaab89dbb6dfa4aca535f21796ae185",
+    "commit": "d7296c063b7971a7298769cfff1a167a9a16f8ed",
     "paths": [
       "packages/coding-agent/src/cli/args.ts",
       "packages/coding-agent/src/main.ts",

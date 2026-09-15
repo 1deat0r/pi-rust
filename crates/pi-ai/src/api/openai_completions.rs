@@ -3515,13 +3515,8 @@ mod tests {
             .find(|model| model.id == "zai-org/GLM-5.2")
             .expect("Baseten GLM 5.2 model");
         assert_eq!(baseten.name, "GLM 5.2");
-        assert_eq!(
-            baseten.input,
-            vec![
-                crate::model::ModelInput::Text,
-                crate::model::ModelInput::Image
-            ]
-        );
+        // 0.85.1 data: Baseten GLM 5.2 is text-only upstream.
+        assert_eq!(baseten.input, vec![crate::model::ModelInput::Text]);
         assert_eq!(baseten.context_window, 1_048_576);
         assert_eq!(baseten.max_tokens, 262_144);
         assert_eq!(

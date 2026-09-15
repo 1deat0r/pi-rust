@@ -1143,7 +1143,7 @@ mod interactive_startup_tests {
         );
         assert!(diagnostics.is_empty());
         let presentation = InteractiveStartupPresentation::new(
-            "0.84.2",
+            "0.85.1",
             &cwd.to_string_lossy(),
             &agent_dir.to_string_lossy(),
             &args,

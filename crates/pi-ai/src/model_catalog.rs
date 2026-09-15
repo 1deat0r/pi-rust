@@ -2,7 +2,7 @@
 //! `models.generated.ts`, and `providers/all.ts` (catalog read side).
 //!
 //! The per-provider model data is vendored from the published
-//! `@earendil-works/pi-ai@0.84.2` tarball (`dist/providers/data/*.json`,
+//! `@earendil-works/pi-ai@0.85.1` tarball (`dist/providers/data/*.json`,
 //! which upstream generates from models.dev and gitignores). Each provider
 //! file has the shape `{ api: { modelId: Model } }`; `flattenModelCatalog`
 //! merges every api group into one model map keyed by model id.
@@ -28,7 +28,7 @@ static MODELS: OnceLock<BTreeMap<String, BTreeMap<String, Model>>> = OnceLock::n
 
 /// Generation timestamp shared by all built-in provider catalogs, from the
 /// vendored `.manifest.json` (upstream `getBuiltinModelDataGeneratedAt`).
-const BUILTIN_MODEL_DATA_GENERATED_AT: u64 = 1786701750583;
+const BUILTIN_MODEL_DATA_GENERATED_AT: u64 = 1788609536761;
 
 /// Embedded vendored provider data files: (provider id, JSON text).
 static PROVIDER_DATA: &[(&str, &str)] = &[
@@ -384,8 +384,8 @@ mod tests {
     #[test]
     fn catalog_has_expected_model_counts() {
         assert_eq!(models().get("google").map(|m| m.len()), Some(22));
-        assert_eq!(models().get("anthropic").map(|m| m.len()), Some(13));
-        assert_eq!(models().get("openrouter").map(|m| m.len()), Some(346));
+        assert_eq!(models().get("anthropic").map(|m| m.len()), Some(14));
+        assert_eq!(models().get("openrouter").map(|m| m.len()), Some(366));
         assert_eq!(models().get("zai").map(|m| m.len()), Some(7));
         assert_eq!(models().get("zai-coding-cn").map(|m| m.len()), Some(10));
     }
@@ -424,8 +424,8 @@ mod tests {
 
     #[test]
     fn generated_at_matches_vendored_manifest() {
-        // 2026-08-14T10:02:30.583Z
-        assert_eq!(get_builtin_model_data_generated_at(), Some(1786701750583));
+        // 2026-09-05T11:58:56.761Z
+        assert_eq!(get_builtin_model_data_generated_at(), Some(1788609536761));
     }
 
     #[test]
@@ -454,6 +454,6 @@ mod tests {
         }
         // Cross-check: total model count matches the vendored files.
         let total: usize = models().values().map(|m| m.len()).sum();
-        assert_eq!(total, 1292);
+        assert_eq!(total, 1354);
     }
 }

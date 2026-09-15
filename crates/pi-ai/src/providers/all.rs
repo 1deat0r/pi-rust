@@ -1044,19 +1044,21 @@ pub fn opencode_provider() -> Provider {
     let mut streams = std::collections::BTreeMap::new();
     streams.insert(
         "anthropic-messages".to_string(),
-        anthropic_streams_from_model(),
+        with_opencode_session_header(anthropic_streams_from_model()),
     );
     streams.insert(
         "google-generative-ai".to_string(),
-        google_streams_from_model(),
+        with_opencode_session_header(google_streams_from_model()),
     );
     streams.insert(
         "openai-completions".to_string(),
-        openai_completions_streams_from_model_with_default(Some("https://opencode.ai/zen/v1")),
+        with_opencode_session_header(openai_completions_streams_from_model_with_default(Some(
+            "https://opencode.ai/zen/v1",
+        ))),
     );
     streams.insert(
         "openai-responses".to_string(),
-        openai_responses_streams_from_model(),
+        with_opencode_session_header(openai_responses_streams_from_model()),
     );
     provider_with_env_auth_label_without_base(
         "opencode",
@@ -1066,19 +1068,75 @@ pub fn opencode_provider() -> Provider {
         crate::models::ProviderApiSpec::ByApi(streams),
     )
 }
+/// Port of upstream `withOpenCodeSessionHeader` (`opencode-headers.ts`,
+/// new after the 0.84.2 pin): injects the per-conversation
+/// `x-opencode-session` routing header from `options.sessionId` unless the
+/// caller already set it. Applies to both `stream` and `streamSimple`.
+fn with_opencode_session_header(
+    streams: crate::models::ProviderStreams,
+) -> crate::models::ProviderStreams {
+    fn with_header(
+        options: Option<crate::types::ProviderHeaders>,
+        session_id: Option<&str>,
+    ) -> Option<crate::types::ProviderHeaders> {
+        // Upstream returns options unchanged when there is no session id
+        // (`if (!options?.sessionId || hasHeader(...)) return options`):
+        // never touch pre-existing caller headers in that case.
+        let session_id = match session_id.filter(|id| !id.is_empty()) {
+            Some(session_id) => session_id,
+            None => return options,
+        };
+        let mut headers = options.unwrap_or_default();
+        if headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("x-opencode-session"))
+        {
+            return Some(headers);
+        }
+        headers.insert(
+            "x-opencode-session".to_string(),
+            Some(session_id.to_string()),
+        );
+        Some(headers)
+    }
+    let stream = streams.stream.clone();
+    let wrapped_stream: crate::models::StreamFn = Arc::new(move |model, ctx, options| {
+        let mut options = options.cloned().unwrap_or_default();
+        options.base.headers =
+            with_header(options.base.headers.clone(), options.session_id.as_deref());
+        stream(model, ctx, Some(&options))
+    });
+    let simple = streams.stream_simple.clone();
+    let wrapped_simple: crate::models::SimpleStreamFn = Arc::new(move |model, ctx, options| {
+        let mut simple_options = options.cloned().unwrap_or_default();
+        simple_options.base.base.headers = with_header(
+            simple_options.base.base.headers.clone(),
+            simple_options.base.session_id.as_deref(),
+        );
+        simple(model, ctx, Some(&simple_options))
+    });
+    crate::models::ProviderStreams {
+        stream: wrapped_stream,
+        stream_simple: wrapped_simple,
+        fetch_deferred: streams.fetch_deferred.clone(),
+        cancel_deferred: streams.cancel_deferred.clone(),
+    }
+}
 pub fn opencode_go_provider() -> Provider {
     let mut streams = std::collections::BTreeMap::new();
     streams.insert(
         "anthropic-messages".to_string(),
-        anthropic_streams_from_model(),
+        with_opencode_session_header(anthropic_streams_from_model()),
     );
     streams.insert(
         "openai-completions".to_string(),
-        openai_completions_streams_from_model_with_default(Some("https://opencode.ai/zen/go/v1")),
+        with_opencode_session_header(openai_completions_streams_from_model_with_default(Some(
+            "https://opencode.ai/zen/go/v1",
+        ))),
     );
     streams.insert(
         "openai-responses".to_string(),
-        openai_responses_streams_from_model(),
+        with_opencode_session_header(openai_responses_streams_from_model()),
     );
     provider_with_env_auth_label_without_base(
         "opencode-go",
@@ -1089,15 +1147,24 @@ pub fn opencode_go_provider() -> Provider {
     )
 }
 pub fn openrouter_provider() -> Provider {
+    // 0.85.1 upstream: `Provider<"anthropic-messages" | "openai-completions">`
+    // with a per-API lane map (new after the 0.84.2 pin).
+    let mut streams = std::collections::BTreeMap::new();
+    streams.insert(
+        "anthropic-messages".to_string(),
+        anthropic_streams_for("https://openrouter.ai/api"),
+    );
+    streams.insert(
+        "openai-completions".to_string(),
+        openai_completions_streams_from_model_with_default(Some("https://openrouter.ai/api/v1")),
+    );
     let mut provider = provider_with_env_auth_label(
         "openrouter",
         "OpenRouter",
         "OpenRouter API key",
         Some("https://openrouter.ai/api/v1"),
         &["OPENROUTER_API_KEY"],
-        crate::models::ProviderApiSpec::Single(openai_completions_streams_from_model_with_default(
-            Some("https://openrouter.ai/api/v1"),
-        )),
+        crate::models::ProviderApiSpec::ByApi(streams),
     );
     provider.auth.oauth = Some(crate::auth_flows::OpenRouterOAuth::new());
     provider
@@ -2072,7 +2139,7 @@ mod tests {
         let google = providers.iter().find(|p| p.id == "google").unwrap();
         assert_eq!(google.models.len(), 22);
         let openrouter = providers.iter().find(|p| p.id == "openrouter").unwrap();
-        assert_eq!(openrouter.models.len(), 346);
+        assert_eq!(openrouter.models.len(), 366);
     }
 
     #[test]
@@ -2395,6 +2462,7 @@ mod tests {
             "qwen3.6-plus",
             "qwen3.7-max",
             "qwen3.7-plus",
+            "qwen3.8-flash",
             "qwen3.8-max",
         ];
         let individual = [
@@ -2405,6 +2473,7 @@ mod tests {
             "qwen3.6-flash",
             "qwen3.7-max",
             "qwen3.7-plus",
+            "qwen3.8-flash",
             "qwen3.8-max",
         ];
 
@@ -2805,7 +2874,7 @@ mod tests {
     fn builtin_models_facade_lists_all_models() {
         let models = builtin_models(crate::models::CreateModelsOptions::default());
         let all = models.get_models(None);
-        assert_eq!(all.len(), 1292);
+        assert_eq!(all.len(), 1354);
         assert!(models.get_model("google", "gemini-2.5-flash").is_some());
         assert!(models.get_model("anthropic", "claude-sonnet-4-6").is_some());
     }
@@ -3121,9 +3190,26 @@ mod tests {
 
     #[test]
     fn openrouter_keeps_completions_and_images_provider_registered() {
+        // 0.85.1 upstream: two API lanes (anthropic-messages +
+        // openai-completions) with per-lane dispatch.
         let provider = openrouter_provider();
-        let model = provider.models.first().cloned().unwrap();
+        for api in ["anthropic-messages", "openai-completions"] {
+            assert!(provider.streams.contains_key(api), "missing {api} lane");
+        }
+        let model = provider
+            .models
+            .iter()
+            .find(|model| model.api == "openai-completions")
+            .expect("OpenRouter completions model")
+            .clone();
         assert_eq!(model.api, "openai-completions");
+        assert!(
+            provider
+                .models
+                .iter()
+                .any(|model| model.api == "anthropic-messages"),
+            "catalog carries the anthropic-messages lane"
+        );
         // Image provider: catalog + registered openrouter-images implementation.
         let images = builtin_images_provider();
         assert_eq!(images.id, "openrouter");
@@ -3178,6 +3264,8 @@ mod tests {
         ] {
             assert!(opencode.streams.contains_key(api), "missing {api} stream");
         }
+        // 0.85.1 `withOpenCodeSessionHeader` is covered by
+        // `opencode_session_header_wraps_stream_and_simple_options` below.
         for api in [
             "anthropic-messages",
             "openai-completions",
@@ -3191,6 +3279,130 @@ mod tests {
     }
 
     #[test]
+    fn opencode_session_header_wraps_stream_and_simple_options() {
+        // 0.85.1 port of `withOpenCodeSessionHeader` (`opencode-headers.ts`):
+        // `sessionId` becomes `x-opencode-session` unless already set, on both
+        // `stream` and `streamSimple` paths.
+        use std::collections::BTreeMap;
+        let captured: std::sync::Arc<std::sync::Mutex<Vec<Option<crate::types::ProviderHeaders>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let marker = captured.clone();
+        let passthrough: crate::models::StreamFn = Arc::new(
+            move |_model, _ctx, options: Option<&crate::types::StreamOptions>| {
+                marker
+                    .lock()
+                    .unwrap()
+                    .push(options.and_then(|o| o.base.headers.clone()));
+                crate::event_stream::AssistantMessageEventStream::new()
+            },
+        );
+        let simple_marker = captured.clone();
+        let passthrough_simple: crate::models::SimpleStreamFn = Arc::new(
+            move |_model, _ctx, options: Option<&crate::types::SimpleStreamOptions>| {
+                simple_marker
+                    .lock()
+                    .unwrap()
+                    .push(options.and_then(|o| o.base.base.headers.clone()));
+                crate::event_stream::AssistantMessageEventStream::new()
+            },
+        );
+        let wrapped = with_opencode_session_header(crate::models::ProviderStreams {
+            stream: passthrough,
+            stream_simple: passthrough_simple,
+            fetch_deferred: None,
+            cancel_deferred: None,
+        });
+        let model = crate::model::Model {
+            id: "probe".to_string(),
+            ..Default::default()
+        };
+        let ctx = crate::types::Context::default();
+        let session_options = crate::types::StreamOptions {
+            session_id: Some("sess-123".to_string()),
+            ..Default::default()
+        };
+        let _ = (wrapped.stream)(&model, &ctx, Some(&session_options));
+        let mut explicit_headers: BTreeMap<String, Option<String>> = BTreeMap::new();
+        explicit_headers.insert(
+            "X-OpenCode-Session".to_string(),
+            Some("caller-wins".to_string()),
+        );
+        let explicit_options = crate::types::StreamOptions {
+            session_id: Some("sess-123".to_string()),
+            base: crate::types::ProviderRequestOptions {
+                headers: Some(explicit_headers),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let _ = (wrapped.stream)(&model, &ctx, Some(&explicit_options));
+        let no_session_options = crate::types::StreamOptions::default();
+        let _ = (wrapped.stream)(&model, &ctx, Some(&no_session_options));
+        // Caller headers survive untouched when there is no session id.
+        let mut preserved: BTreeMap<String, Option<String>> = BTreeMap::new();
+        preserved.insert("x-custom".to_string(), Some("keep-me".to_string()));
+        let preserved_options = crate::types::StreamOptions {
+            base: crate::types::ProviderRequestOptions {
+                headers: Some(preserved),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let _ = (wrapped.stream)(&model, &ctx, Some(&preserved_options));
+        let simple_session = crate::types::SimpleStreamOptions {
+            base: session_options.clone(),
+            ..Default::default()
+        };
+        let _ = (wrapped.stream_simple)(&model, &ctx, Some(&simple_session));
+        let seen = captured.lock().unwrap();
+        assert_eq!(seen.len(), 5);
+        assert_eq!(
+            seen[0]
+                .as_ref()
+                .and_then(|h| h.get("x-opencode-session").cloned())
+                .flatten()
+                .as_deref(),
+            Some("sess-123")
+        );
+        assert_eq!(
+            seen[1]
+                .as_ref()
+                .and_then(|h| h
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("x-opencode-session"))
+                    .map(|(_, value)| value.clone()))
+                .flatten()
+                .as_deref(),
+            Some("caller-wins")
+        );
+        assert!(seen[2]
+            .as_ref()
+            .and_then(|h| h.get("x-opencode-session"))
+            .is_none());
+        // No session id: pre-existing caller headers pass through untouched.
+        assert_eq!(
+            seen[3]
+                .as_ref()
+                .and_then(|h| h.get("x-custom").cloned())
+                .flatten()
+                .as_deref(),
+            Some("keep-me")
+        );
+        assert!(seen[3]
+            .as_ref()
+            .and_then(|h| h.get("x-opencode-session"))
+            .is_none());
+        assert_eq!(
+            seen[4]
+                .as_ref()
+                .and_then(|h| h.get("x-opencode-session").cloned())
+                .flatten()
+                .as_deref(),
+            Some("sess-123")
+        );
+    }
+
+    #[test]
     fn xai_provider_routes_the_current_catalog_through_responses_and_oauth() {
         let provider = xai_provider();
         assert_eq!(provider.name, "xAI");
@@ -3200,10 +3412,7 @@ mod tests {
             .iter()
             .map(|model| model.id.as_str())
             .collect();
-        assert_eq!(
-            model_ids,
-            vec!["grok-4.3", "grok-4.5", "grok-4.6", "grok-build-0.1"]
-        );
+        assert_eq!(model_ids, vec!["grok-4.3", "grok-4.5", "grok-4.6"]);
         assert!(provider.models.iter().all(|model| {
             model.api == "openai-responses" && model.base_url == "https://api.x.ai/v1"
         }));
@@ -3250,7 +3459,7 @@ mod tests {
     #[test]
     fn together_and_vercel_catalogs_match_pinned_model_surface() {
         let together = together_provider();
-        assert_eq!(together.models.len(), 19);
+        assert_eq!(together.models.len(), 21);
         let together_model = together
             .models
             .iter()
@@ -3263,7 +3472,7 @@ mod tests {
         assert_eq!(together_model.cost.output, 3.96);
 
         let vercel = vercel_ai_gateway_provider();
-        assert_eq!(vercel.models.len(), 222);
+        assert_eq!(vercel.models.len(), 237);
         let vercel_model = vercel
             .models
             .iter()

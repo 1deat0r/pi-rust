@@ -1,6 +1,144 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — re-pin board gate PASSED + next goal set
+
+Board of experts (`board-of-expert-agents-review`): round 1 returned
+1 REJECT + 4 CONDITIONAL (14 items); every item adjudicated against live
+sources (9 CONFIRMED+fixed, 1 PARTLY, 1 refuted-as-blocker, history
+restored verbatim); round 2 unanimous BUILD 5/5 with zero new blockers.
+Fixes from review: model data refreshed from the 0.85.1 tarball (1354
+models), OpenRouter two-lane port, session-header caller preservation,
+fixture re-pin, terminal-test gaps, dashboard/history hygiene. Artifact:
+`.unlazy/repin-review-20260916/spec.md` (r2). Next long-horizon goal
+recorded at `.unlazy/repin-review-20260916/next-goal.md`: waves A–F
+(search-service rewrite → session-type reconciliation → provider lanes →
+TUI deltas → TUI visual parity → runtime closure) with installed skills
+mapped per wave (no `mattpocock` skill exists locally; mapped installed
+equivalents per user direction).
+Current dashboard metrics:
+
+Target is now `d7296c0` (v0.85.1, 2026-09-15). Both oracle checkouts at new
+pin; audit constant + 267 row notes + source pin comments + workspace
+version (0.85.1) + CHANGELOG data updated. Ported: `stream_deferred` split,
+`maxAgentDelayMs` cap, terminal capability overrides,
+`fullscreenCopyOnSelect`, `/tree` order, `x-opencode-session` header. No row
+promoted; metrics unchanged (58/318). Green: pi-ai lib 461, pi-agent lib 270
+serial, settings_sm 50, workspace check, strict clippy, fmt, `conversion_audit`
+100.00% (166/166), `parity_audit` inventory/register/tui/dashboard all OK.
+Pre-existing failures unchanged (offline fd-download, session_env flakes —
+red on clean HEAD too). Worktree dirty (re-pin churn); no commit requested
+yet — commit + push is the next step when authorized.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 41.73% (111/266 PASS; 155 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 40.23% (107/266 PASS; 159 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 22.18% (59/266 PASS; 156 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 21.80% (58/266)
+Whole-product behavioral parity: 18.24% (58/318)
+
+Next: commit + push, then agent search-service rewrite (S-066 scope),
+OpenRouter anthropic-messages lane, Cloudflare gateway binding, GPT-5.6+
+cache TTL, per-model compaction budgets. Files touched: `Cargo.toml`,
+`parity_audit.rs` (pin), `NON-TUI-PARITY-STATUS.md` (pin + stale metric
+repair), `models.rs` (stream_deferred), `retry.rs` (+cap), `settings.rs`
+(+overrides/copy-on-select/retry tuple), `slash.rs` (/tree order),
+`providers/all.rs` (session header), `agent_harness.rs`/`rich_agent.rs`
+(retry field), `model.rs`/`partial_json.rs`/`easter_eggs.rs`/
+`model_catalog.rs` (pin comments), `data/CHANGELOG.md` (refresh), tests
+(settings_sm, run.rs, provider wrapper unit), README, GATES.md,
+repository-description, CONVERSION-LEDGER.md, PLAN.md, this file.
+
+## Upstream-drift checkpoint — 2026-09-15 — 26 days behind, re-pin recommended
+
+Pinned oracle `5cd93f6` (2026-08-20) vs `origin/main` `d7296c0`
+(2026-09-15): 4,954 first-parent commits behind across 26 days. Upstream
+moved 0.84.2 → 0.85.1. Ported-source diff is 343 files, +37,579/−12,564
+lines across `ai`/`agent`/`coding-agent`/`tui`/`session-backends`, including
+~2,000 feat/fix commits touching ported src (provider payload changes,
+thinking/reasoning mapping, session/fork/conformance, TUI rendering,
+extension tool schemas, compaction budgets). No re-pin performed; no source
+or parity row changed. Standing recommendation: re-pin the oracle and extend
+the 318-row inventory with the new upstream surface before claiming further
+1:1 progress, since current parity %s are measured against the August pin.
+
+## Parity-goal confirmation — 2026-09-15 — 1:1 behavioral + Rust improvements
+
+User-confirmed goal: 1:1 behavioral parity with upstream pi, except where a
+pure-Rust implementation brings an obvious improvement (matches the standing
+"Rust-only distribution boundary" and the S-027/S-066 scope rulings).
+
+Divergence inventory re-audited against that bar (all must stay recorded, not
+silently absorbed):
+- Superset inputs (ENV-001/002/007: startup `PI_PROVIDER`/`PI_MODEL`/`PI_KEY`/
+  `PI_REASONING_LEVEL`): Rust accepts strictly more inputs than upstream while
+  preserving upstream behavior when they are unset. Compatible with 1:1 as
+  additive surface; must remain pinned as superset, never as changed default.
+- Self-update (DIST-004: no in-place binary self-replacement; `pi update`
+  exits nonzero naming the rebuild path) and no-JS extension execution
+  (S-027: Rust-native factories only): inherent to a compiled Rust
+  distribution — qualifies as the "obvious Rust improvement" exception, stays
+  recorded.
+- Startup proxy validation (ENV-013: fail once at startup vs upstream lazy
+  per-request throw): fail-closed timing shift, stricter not looser. Qualifies
+  as improvement; stays recorded with the no-network-turn caveat.
+- `PI_VERSION` ignored / no release lookup (ENV-009): narrower than 1:1 only
+  if upstream's lookup is deemed behavior worth matching; currently recorded
+  as divergence, stays open as PARTIAL.
+- CLI-038 (tmux-only PTY evidence): evidence-scope limit, not a behavioral
+  divergence; row contract itself is 1:1.
+
+No source, test, or parity row changed by this confirmation. Audits rerun:
+`conversion_audit -- all` → `Conversion progress: 100.00% (166/166; 0 open)`;
+`parity_audit -- dashboard` → `PARITY_DASHBOARD_OK`, whole-product 18.24%
+(58/318). Not committed/pushed (no commit requested).
+
+## Parity-query checkpoint — 2026-09-15 — no ledger change
+
+Read-only assessment; no source, test, or ledger item changed.
+- `cargo run -p pi-coding-agent --bin conversion_audit -- all` → `Conversion progress: 100.00% (166/166; 0 open)`, audit blockers 0.
+- `cargo run -p pi-coding-agent --bin parity_audit -- dashboard` → `PARITY_DASHBOARD_OK`; whole-product 18.24% (58/318), non-TUI overall 21.80% (58/266), TUI overall 0.00% (0/52).
+- Requested `mattpocock` skill is not installed (no match in `~/.config/opencode/skills` or `~/.agents/skills`); assessment used repo-native audits only.
+- PLAN.md, CONVERSION-LEDGER.md, and this file carry identical dashboard blocks; no metric edits needed. Not committed/pushed (no commit requested).
+
 Date: 2026-09-05 (Pacific/Auckland)
+
+## Latest checkpoint — 2026-09-06 — CLI-008 `--api-key` PASS
+
+New loopback test file proves Bearer delivery, no persistence, empty-CLI →
+PI_KEY fallback, and neither-source fail-closed. Row PASS/PASS/PASS. Gate
+green: lib 902/902 serial, cli_api_key_loopback 2/2, check, strict clippy,
+fmt. Metrics: implementation 111/266, evidence 107/266, runtime 59/266,
+overall 58/266, product 58/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 41.73% (111/266 PASS; 155 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 40.23% (107/266 PASS; 159 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 22.18% (59/266 PASS; 156 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 21.80% (58/266)
+Whole-product behavioral parity: 18.24% (58/318)
+
+Next: commit + push, then CLI-020 `--models` assessment. Files touched: new
+`tests/cli_api_key_loopback.rs`, `docs/NON-TUI-PARITY-STATUS.md` (CLI-008
+row), metric blocks in README, TUI-STATUS, DASHBOARD, plus
+CONVERSION-LEDGER.md, PLAN.md, this file.
 
 ## Latest checkpoint — 2026-09-06 — CLI-009/CLI-010 system-prompt PASS
 

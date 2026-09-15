@@ -4050,6 +4050,7 @@ mod tests {
                 enabled: true,
                 max_retries: 2,
                 base_delay_ms: 0,
+                max_agent_delay_ms: None,
             });
             config.retry_signal = Some(Arc::new(AtomicBool::new(false)));
             let mut events = Vec::new();
@@ -4124,6 +4125,7 @@ mod tests {
                 enabled: true,
                 max_retries: 2,
                 base_delay_ms: 10_000,
+                max_agent_delay_ms: None,
             });
             config.retry_signal = Some(retry_signal);
             let mut context = AgentContext::new(Some("test".into()), Vec::new());

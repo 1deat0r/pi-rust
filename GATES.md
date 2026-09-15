@@ -391,7 +391,7 @@ they do not claim unrelated workspace clippy or formatting debt.
 - [x] G51: the installed `pi-rust` command resolves to the optimized Rust
   binary while the official `pi` command remains independently runnable.
   CHECK: `target/release/parity_audit installed`
-  EXPECT: `PARITY_INSTALLED_RUST_OK command=pi-rust release_version=pi 0.84.2 official_pi_version=0.84.3`
+  EXPECT: `PARITY_INSTALLED_RUST_OK command=pi-rust release_version=pi 0.85.1 official_pi_version=0.84.3`
   EVIDENCE: exact expected output passed; `pi-rust` resolves to
   `/run/media/mustbearnold/Projects/AI Agents/pi-rust/target/release/pi`,
   while `pi` resolves to the independent official Pi 0.84.3 installation.
@@ -426,7 +426,7 @@ they do not claim unrelated workspace clippy or formatting debt.
   CSI-u regression confirms that a release event is ignored and one Up/Down
   press changes the selected row exactly once.
 - The release binary was rebuilt from the current worktree without warnings;
-  `target/release/pi --version` reports `pi 0.84.2`, and the international
+  `target/release/pi --version` reports `pi 0.85.1`, and the international
   Qwen Token Plan catalog is listed by `--offline --list-models
   qwen-token-plan`.
 - The release authentication PTY suite passed 5/5. Its Qwen case proves the

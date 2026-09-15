@@ -454,7 +454,7 @@ fn no_session_repeat_and_version_boundary_are_process_stable() {
         "version stderr: {}",
         stderr(&version)
     );
-    assert_eq!(stdout(&version), "pi 0.84.2\n");
+    assert_eq!(stdout(&version), "pi 0.85.1\n");
     assert!(!stdout(&version).contains("Update available"));
     assert!(!stderr(&version).contains("Update available"));
 

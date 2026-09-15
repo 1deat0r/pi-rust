@@ -1888,6 +1888,85 @@ impl Models {
             .await
     }
 
+    /// Stream a previously-deferred response (upstream `Models.streamDeferred`,
+    /// added after the 0.84.2 pin: 0.85.x splits the deferred fetch into a
+    /// streaming half plus a collecting `fetchDeferred` wrapper).
+    pub fn stream_deferred(
+        &self,
+        model: &Model,
+        handle: &DeferredHandle,
+        options: Option<&DeferredFetchOptions>,
+    ) -> AssistantMessageEventStream {
+        let models = self.clone();
+        let model = model.clone();
+        let handle = handle.clone();
+        let options = options.cloned();
+        let outer = AssistantMessageEventStream::new();
+        let tx = match outer.sender() {
+            Some(t) => t,
+            None => return outer,
+        };
+        let end_handle = outer.end_handle();
+        let error_model = model.clone();
+        tokio::spawn(async move {
+            let mut pusher =
+                crate::event_stream::StreamSinkAdapter::new_with_end(tx.clone(), end_handle);
+            let base_options = options.as_ref().map(|o| o.base.clone()).unwrap_or_default();
+            let result = models.apply_auth_async(&model, &base_options, None).await;
+            match result {
+                Ok((request_model, request_options)) => {
+                    let fetch_options = DeferredFetchOptions {
+                        base: request_options,
+                        wait: options.as_ref().and_then(|o| o.wait),
+                    };
+                    let provider = models.get_provider(&model.provider);
+                    let fetcher = provider.as_ref().and_then(|p| {
+                        p.api_for(&request_model)
+                            .and_then(|streams| streams.fetch_deferred.clone())
+                    });
+                    match fetcher {
+                        Some(fetch) => {
+                            let inner = fetch(&request_model, &handle, &fetch_options);
+                            let final_message = inner
+                                .for_each(|event| {
+                                    pusher.push(event);
+                                })
+                                .await;
+                            if final_message.stop_reason().is_some() {
+                                pusher.end(Some(final_message));
+                            } else {
+                                pusher.end(None);
+                            }
+                        }
+                        None => {
+                            let message = error_message_for(
+                                &model,
+                                &format!(
+                                    "Provider {} does not support deferred responses",
+                                    model.provider
+                                ),
+                            );
+                            pusher.push(crate::types::AssistantMessageEvent::Error {
+                                reason: crate::types::ErrorReason::Error,
+                                error_message: message.clone(),
+                            });
+                            pusher.end(Some(message));
+                        }
+                    }
+                }
+                Err(err) => {
+                    let message = error_message_for(&error_model, &err.message);
+                    pusher.push(crate::types::AssistantMessageEvent::Error {
+                        reason: crate::types::ErrorReason::Error,
+                        error_message: message.clone(),
+                    });
+                    pusher.end(Some(message));
+                }
+            }
+        });
+        outer
+    }
+
     /// Fetch a previously-deferred response (upstream `Models.fetchDeferred`).
     pub async fn fetch_deferred(
         &self,
@@ -1895,39 +1974,10 @@ impl Models {
         handle: &DeferredHandle,
         options: Option<&DeferredFetchOptions>,
     ) -> Result<AssistantMessage, ModelsError> {
-        let provider = self.get_provider(&model.provider).ok_or_else(|| {
-            ModelsError::new(
-                ModelsErrorCode::UnknownProvider,
-                format!("Unknown provider: {}", model.provider),
-            )
-        })?;
-        let streams = provider.api_for(model).ok_or_else(|| {
-            ModelsError::new(
-                ModelsErrorCode::Provider,
-                format!(
-                    "Provider {} does not support deferred responses",
-                    model.provider
-                ),
-            )
-        })?;
-        let fetcher = streams.fetch_deferred.clone().ok_or_else(|| {
-            ModelsError::new(
-                ModelsErrorCode::Provider,
-                format!(
-                    "Provider {} does not support deferred responses",
-                    model.provider
-                ),
-            )
-        })?;
-        let base_options = options.map(|o| o.base.clone()).unwrap_or_default();
-        let (request_model, request_options) =
-            self.apply_auth_async(model, &base_options, None).await?;
-        let fetch_options = DeferredFetchOptions {
-            base: request_options,
-            wait: options.and_then(|o| o.wait),
-        };
-        let stream = fetcher(&request_model, handle, &fetch_options);
-        Ok(stream.for_each(|_| {}).await)
+        Ok(self
+            .stream_deferred(model, handle, options)
+            .for_each(|_| {})
+            .await)
     }
 
     /// Cancel a deferred response (upstream `Models.cancelDeferred`).

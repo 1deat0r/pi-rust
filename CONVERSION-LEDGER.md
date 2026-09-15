@@ -4,7 +4,67 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
-## Current status (last updated 2026-09-05)
+## Current status (last updated 2026-09-16 — re-pinned to upstream v0.85.1)
+
+Oracle re-pin 2026-09-16: upstream `5cd93f6` (v0.84.2, 2026-08-20) →
+`d7296c063b7971a7298769cfff1a167a9a16f8ed` (v0.85.1, 2026-09-15). Workspace
+version 0.84.2 → 0.85.1; CHANGELOG data refreshed from upstream
+`packages/coding-agent/CHANGELOG.md` at the new pin. First ported slice:
+`Models.streamDeferred` split (new `stream_deferred`, `fetch_deferred` now a
+collecting wrapper), `retry.maxAgentDelayMs` cap (new `RetryPolicy` field +
+`retry_delay_ms`, plumbed through settings/run/interactive/RPC/harness with
+unit + settings coverage), terminal capability overrides
+(`get_terminal_capability_overrides`), `fullscreenCopyOnSelect`
+(getter/setter + persistence), `/tree` moved to its 0.85.1 registry position,
+`x-opencode-session` routing header on opencode/opencode-go lanes
+(`with_opencode_session_header` + unit proof). No parity row promoted yet:
+all 318 statuses held constant against the new pin; new-surface evidence
+lands under existing gates. Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall 58/266,
+whole-product 58/318). Known next: agent search-service rewrite
+(`scanning.ts` deleted upstream), OpenRouter anthropic-messages lane,
+Cloudflare gateway binding change, GPT-5.6+ cache TTL shape.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 41.73% (111/266 PASS; 155 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 40.23% (107/266 PASS; 159 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 22.18% (59/266 PASS; 156 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 21.80% (58/266)
+Whole-product behavioral parity: 18.24% (58/318)
+
+## Prior status (2026-09-05 checkpoint, pinned v0.84.2)
+
+CLI-008 `--api-key` PASS (2026-09-06): new `tests/cli_api_key_loopback.rs`
+proves the request-scoped key reaches the wire as a Bearer header, is never
+persisted, empty-CLI falls back to `PI_KEY`, and neither-source fails
+closed. Row now PASS/PASS/PASS; metrics move to implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall 58/266,
+whole-product 58/318.
+Current dashboard metrics:
+
+Source/conversion ledger: 100.00% (166/166; 0 open)
+Acceptance inventory census: 100.00% (318/318) (318 IDs indexed)
+Acceptance scoring coverage: 100.00% (318/318) (318 of 318 IDs scored)
+Root acceptance gates: 100.00% (8/8) (8 passed; 0 open)
+Rust-only distribution boundary: 100.00% (0 JS/TS executable source files; generated Rustdoc excluded)
+TUI functional implementation: 25.00% (13/52)
+TUI test/evidence parity: 25.00% (13/52)
+TUI visual/interaction parity: 0.00% (0/52)
+TUI overall parity: 0.00% (0/52)
+Non-TUI implementation parity: 41.73% (111/266 PASS; 155 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 40.23% (107/266 PASS; 159 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 22.18% (59/266 PASS; 156 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 21.80% (58/266)
+Whole-product behavioral parity: 18.24% (58/318)
 
 CLI-009/CLI-010 system-prompt PASS (2026-09-06): CLI-009 gains a loopback
 test proving Unicode prompts on the wire and empty-value-keeps-default;
@@ -24,11 +84,11 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 41.35% (110/266 PASS; 156 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 21.80% (58/266 PASS; 157 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 21.43% (57/266)
-Whole-product behavioral parity: 17.92% (57/318)
+Non-TUI implementation parity: 41.73% (111/266 PASS; 155 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 40.23% (107/266 PASS; 159 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 22.18% (59/266 PASS; 156 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 21.80% (58/266)
+Whole-product behavioral parity: 18.24% (58/318)
 
 CLI-011 `--thinking` PASS (2026-09-06): one loopback openai-responses test
 pins the full payload matrix — off omits reasoning, minimal/medium verbatim,
@@ -2955,7 +3015,7 @@ observable contract; the ledger is frozen only by S-001 and the final audit.
 - After each committed task/group: push immediately (standing rule).
 - Tasks roughly: ~40 pure ports of pinned upstream files, ~30 audit-then-close,
   ~20 tests/verification, ~10 process/gates.
-- When a task's "upstream file" is named, pin it to commit 5cd93f688aaab89dbb6dfa4aca535f21796ae185 (v0.84.2).
+- When a task's "upstream file" is named, pin it to commit d7296c063b7971a7298769cfff1a167a9a16f8ed (v0.85.1, re-pinned 2026-09-16; prior pin 5cd93f688aaab89dbb6dfa4aca535f21796ae185 v0.84.2).
 
 ## Interactive hidden-command parity checkpoint — 2026-08-26
 

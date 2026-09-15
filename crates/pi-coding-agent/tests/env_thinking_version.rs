@@ -317,7 +317,7 @@ fn version_output_has_no_update_banner_with_or_without_skip_flag() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stdout.contains("0.84.2"),
+            stdout.contains("0.85.1"),
             "unexpected version output: {stdout}"
         );
         for stream in [&stdout, &stderr] {
@@ -342,7 +342,7 @@ fn pi_version_override_is_ignored() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("0.84.2") && !stdout.contains("9.9.9"),
+        stdout.contains("0.85.1") && !stdout.contains("9.9.9"),
         "PI_VERSION leaked into version output: {stdout}"
     );
 

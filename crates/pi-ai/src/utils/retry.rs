@@ -13,8 +13,9 @@ use tokio::time::Instant;
 use crate::types::{AssistantMessage, StopReason};
 
 /// Retry policy: bounded attempts with exponential backoff
-/// (`baseDelayMs * 2^(attempt-1)`). Mirrors `settings.retry`
-/// (`enabled`, `maxRetries`, `baseDelayMs`) in coding-agent.
+/// (`baseDelayMs * 2^(attempt-1)`), capped at `maxAgentDelayMs`.
+/// Mirrors `settings.retry`
+/// (`enabled`, `maxRetries`, `baseDelayMs`, `maxAgentDelayMs`) in coding-agent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetryPolicy {
     pub enabled: bool,
@@ -22,6 +23,20 @@ pub struct RetryPolicy {
     pub max_retries: u32,
     /// Base delay in ms. Per-attempt delay is `baseDelayMs * 2^(attempt-1)` before jitter.
     pub base_delay_ms: u64,
+    /// Optional cap for agent-level retry delays in ms. Defaults to 60 seconds.
+    pub max_agent_delay_ms: Option<u64>,
+}
+
+/// Default cap for agent-level retry delays in ms (upstream
+/// `DEFAULT_MAX_AGENT_RETRY_DELAY_MS`).
+pub const DEFAULT_MAX_AGENT_RETRY_DELAY_MS: u64 = 60_000;
+
+/// Per-attempt retry delay in ms: `baseDelayMs * 2^(attempt-1)` capped at
+/// `maxAgentDelayMs` (upstream `retryDelayMs`).
+pub fn retry_delay_ms(base_delay_ms: u64, max_agent_delay_ms: Option<u64>, attempt: u32) -> u64 {
+    let shift = attempt.saturating_sub(1).min(30);
+    let delay = base_delay_ms.saturating_mul(1u64 << shift);
+    delay.min(max_agent_delay_ms.unwrap_or(DEFAULT_MAX_AGENT_RETRY_DELAY_MS))
 }
 
 /// Callback invoked before each backoff sleep.
@@ -194,6 +209,7 @@ where
         .map(|p| p.max_retries)
         .unwrap_or(0);
     let base_delay_ms = policy.map(|p| p.base_delay_ms).unwrap_or(0);
+    let max_agent_delay_ms = policy.and_then(|p| p.max_agent_delay_ms);
 
     let mut attempt = 0u32;
     let mut last_retry: Option<(u32, String)> = None;
@@ -233,7 +249,7 @@ where
                 .unwrap_or("Unknown error")
                 .to_string(),
         ));
-        let delay_ms = base_delay_ms.saturating_mul(1u64 << (attempt.saturating_sub(1).min(30)));
+        let delay_ms = retry_delay_ms(base_delay_ms, max_agent_delay_ms, attempt);
         if let Some(cb) = callbacks.and_then(|c| c.on_retry_scheduled.as_ref()) {
             cb(
                 attempt,
@@ -324,7 +340,18 @@ mod tests {
             enabled,
             max_retries,
             base_delay_ms,
+            max_agent_delay_ms: None,
         }
+    }
+
+    #[test]
+    fn retry_delay_ms_caps_at_configured_max_agent_delay() {
+        // Upstream `retryDelayMs`: base * 2^(attempt-1), capped at
+        // `maxAgentDelayMs` (default 60000).
+        assert_eq!(retry_delay_ms(2000, None, 1), 2000);
+        assert_eq!(retry_delay_ms(2000, None, 6), 60000);
+        assert_eq!(retry_delay_ms(2000, Some(5000), 3), 5000);
+        assert_eq!(retry_delay_ms(2000, Some(5000), 1), 2000);
     }
 
     #[test]

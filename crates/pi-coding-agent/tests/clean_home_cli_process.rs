@@ -367,7 +367,7 @@ fn clean_home_help_and_version_are_process_stable() {
         "--version stderr: {}",
         stderr(&version)
     );
-    assert_eq!(stdout(&version), "pi 0.84.2\n");
+    assert_eq!(stdout(&version), "pi 0.85.1\n");
     assert!(
         stderr(&version).is_empty(),
         "unexpected --version stderr: {}",
@@ -825,5 +825,5 @@ fn pi_rust_test_binary_override_is_accepted_for_this_matrix() {
         "override stderr: {}",
         stderr(&output)
     );
-    assert_eq!(stdout(&output), "pi 0.84.2\n");
+    assert_eq!(stdout(&output), "pi 0.85.1\n");
 }

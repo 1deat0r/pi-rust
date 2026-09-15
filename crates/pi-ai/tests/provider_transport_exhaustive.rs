@@ -1234,6 +1234,7 @@ async fn retry_timeout_and_abort_paths_are_exercised_where_supported() {
         enabled: true,
         max_retries: 1,
         base_delay_ms: 1,
+        max_agent_delay_ms: None,
     };
     let message = pi_ai::utils::retry_assistant_call(
         || {

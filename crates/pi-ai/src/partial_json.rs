@@ -1,5 +1,5 @@
 //! Tolerant incremental JSON parsing — port of the streaming-JSON contract in
-//! upstream `packages/ai/src/utils/json-parse.ts` (pinned 5cd93f6), whose
+//! upstream `packages/ai/src/utils/json-parse.ts` (pinned d7296c0), whose
 //! observable behavior bottoms out in the npm `partial-json@0.1.7` parser
 //! (vendored alongside the oracle at `scripts/partial-json-0.1.7/`).
 //!
@@ -44,7 +44,7 @@ fn escape_control_char(c: char) -> String {
     }
 }
 
-/// Port of upstream `repairJson` (json-parse.ts @ 5cd93f6): escapes raw
+/// Port of upstream `repairJson` (json-parse.ts @ d7296c0): escapes raw
 /// control characters inside strings, doubles backslashes before invalid
 /// escapes, and doubles a dangling trailing backslash.
 pub fn repair_json(json: &str) -> String {
@@ -515,7 +515,7 @@ mod tests {
     }
 
     // Golden table from `node scripts/oracle_partial_json.mjs` (vendored
-    // partial-json@0.1.7, upstream chain at 5cd93f6). Every row must match.
+    // partial-json@0.1.7, upstream chain at d7296c0). Every row must match.
     fn assert_oracle(input: &str, expected: JsonValue) {
         let got = parse_streaming_json(input);
         assert_eq!(got, expected, "oracle row diverges for {:?}", input);

@@ -1,6 +1,6 @@
 # pi-rust
 
-An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earendil-works/pi)** (v0.84.2, pinned upstream commit `5cd93f6`). The project targets the same CLI surface, session formats, provider behavior, tools, and wire contracts in idiomatic Rust.
+An in-progress **1:1 Rust port of the [pi coding agent](https://github.com/earendil-works/pi)** (v0.85.1, pinned upstream commit `d7296c0`). The project targets the same CLI surface, session formats, provider behavior, tools, and wire contracts in idiomatic Rust.
 
 ## Current status
 
@@ -178,11 +178,11 @@ TUI functional implementation: 25.00% (13/52)
 TUI test/evidence parity: 25.00% (13/52)
 TUI visual/interaction parity: 0.00% (0/52)
 TUI overall parity: 0.00% (0/52)
-Non-TUI implementation parity: 41.35% (110/266 PASS; 156 PARTIAL; 0 OPEN)
-Non-TUI deterministic evidence parity: 39.85% (106/266 PASS; 160 PARTIAL; 0 OPEN)
-Non-TUI runtime-boundary parity: 21.80% (58/266 PASS; 157 PARTIAL; 51 OPEN)
-Non-TUI overall parity: 21.43% (57/266)
-Whole-product behavioral parity: 17.92% (57/318)
+Non-TUI implementation parity: 41.73% (111/266 PASS; 155 PARTIAL; 0 OPEN)
+Non-TUI deterministic evidence parity: 40.23% (107/266 PASS; 159 PARTIAL; 0 OPEN)
+Non-TUI runtime-boundary parity: 22.18% (59/266 PASS; 156 PARTIAL; 51 OPEN)
+Non-TUI overall parity: 21.80% (58/266)
+Whole-product behavioral parity: 18.24% (58/318)
 
 See [`docs/PARITY-DASHBOARD.md`](docs/PARITY-DASHBOARD.md) for the
 definitions and the machine-validated current checkpoint.
@@ -739,7 +739,7 @@ row is closed.
 The subsequent workspace-level all-target test matrix, strict workspace
 clippy gate, and optimized release build also pass on this tree. The installed
 `pi-rust` launcher resolves to `target/release/pi` and reports
-`pi 0.84.2`; this confirms build/install health, not full behavioral or
+`pi 0.85.1`; this confirms build/install health, not full behavioral or
 visual parity.
 
 Latest serialized provider/harness verification (2026-08-29): the real

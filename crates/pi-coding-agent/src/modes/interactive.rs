@@ -4907,11 +4907,13 @@ async fn compact_interactive(
             Box::pin(async move { models.complete_simple(&model, &ctx, Some(&opts)).await })
         });
     let options = pi_agent::harness::SimpleModels { complete_simple_fn };
-    let (retry_enabled, max_retries, base_delay_ms) = settings_manager.get_retry_settings();
+    let (retry_enabled, max_retries, base_delay_ms, max_agent_delay_ms) =
+        settings_manager.get_retry_settings();
     let retry = pi_ai::utils::retry::RetryPolicy {
         enabled: retry_enabled,
         max_retries: u32::try_from(max_retries).unwrap_or(u32::MAX),
         base_delay_ms,
+        max_agent_delay_ms,
     };
     let result = match extension_result {
         Some(result) => result,
@@ -11380,6 +11382,7 @@ mod tests {
                 enabled: true,
                 max_retries: 3,
                 base_delay_ms: 2_000,
+                max_agent_delay_ms: None,
             },
             compaction_settings: pi_agent::harness::compaction::DEFAULT_COMPACTION_SETTINGS,
             persisted_until: 0,

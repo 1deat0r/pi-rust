@@ -50,6 +50,7 @@ async fn transient_retry_settles_one_durable_operation_without_failed_attempt_du
         enabled: true,
         max_retries: 2,
         base_delay_ms: 0,
+        max_agent_delay_ms: None,
     });
     let (harness, suspended) = AgentHarness::create(options).await.expect("create harness");
     assert!(suspended.is_empty());

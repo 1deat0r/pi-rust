@@ -3,7 +3,7 @@
 //! Deterministic real-terminal coverage for the complete interactive surface.
 //!
 //! The `upstream_pi` oracle is pinned locally at
-//! `5cd93f688aaab89dbb6dfa4aca535f21796ae185`. Its interactive contract is
+//! `d7296c063b7971a7298769cfff1a167a9a16f8ed`. Its interactive contract is
 //! exercised here at the user-visible boundary: raw mode and cursor state are
 //! inspected through the pane tty, terminal bytes are captured with tmux, and
 //! commands/control input are sent through the actual editor event loop.
@@ -556,15 +556,18 @@ mod unix {
             if matches!(row[0].as_str(), "/theme" | "/help" | "/clear") {
                 // These rows belong to the pre-0.84.2 local-command fixture;
                 // they are intentionally not public builtins in the pinned
-                // upstream registry.
+                // upstream registry (verified at d7296c0: no `help` entry in
+                // `core/slash-commands.ts`).
                 continue;
             }
             let command = expand_fixture_value(&row[0], &sandbox);
             let expected = if command == "/tree" {
-                // This fixture has no user/assistant entries, so Pi 0.84.2
+                // This fixture has no user/assistant entries, so Pi 0.85.1
                 // reports the empty-session status instead of opening a
-                // selector. Keep the legacy fixture value untouched and use
-                // the pinned user-visible oracle here.
+                // selector (upstream `interactive-mode.ts` still shows
+                // "No entries in session" at d7296c0). Keep the legacy
+                // fixture value untouched and use the pinned user-visible
+                // oracle here.
                 "No entries in session".to_owned()
             } else if row[1] == "faux/Faux Model" {
                 // The fixture predates the provider/model catalog split; the
