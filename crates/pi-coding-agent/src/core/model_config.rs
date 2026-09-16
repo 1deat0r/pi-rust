@@ -563,6 +563,7 @@ fn validate_compat(value: &Value, path: &str, errors: &mut Vec<SchemaError>) {
         "supportsLongCacheRetention",
         "supportsAdditionalTools",
         "supportsToolSearch",
+        "supportsMaxOutputTokens",
         "supportsEagerToolInputStreaming",
         "supportsCacheControlOnTools",
         "supportsTemperature",
@@ -1178,6 +1179,38 @@ mod tests {
                 .iter()
                 .any(|(path, _)| path.ends_with("compat.vllmPriority")),
             "unexpected errors: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn supports_max_output_tokens_accepted_as_optional_compat_bool() {
+        // Upstream #8941: Responses gateways that reject
+        // `max_output_tokens` opt out via compat.
+        let config = ModelConfig::from_value(serde_json::json!({
+            "providers": {
+                "gateway": {
+                    "baseUrl": "https://gateway.example.com/v1",
+                    "api": "openai-responses",
+                    "models": [{
+                        "id": "proxied-model",
+                        "compat": { "supportsMaxOutputTokens": false }
+                    }]
+                }
+            }
+        }))
+        .expect("supportsMaxOutputTokens is an optional compat bool");
+        let models = config
+            .get_provider("gateway")
+            .expect("gateway provider")
+            .models
+            .as_ref()
+            .expect("models");
+        assert_eq!(
+            models[0]
+                .compat
+                .as_ref()
+                .and_then(|compat| compat.get("supportsMaxOutputTokens")),
+            Some(&serde_json::json!(false))
         );
     }
 

@@ -1,5 +1,16 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-16 checkpoint — Wave C slice: max tokens opt-out
+
+Ported upstream #8941 (b8b873b98): `supportsMaxOutputTokens`
+compat flag (default true) gates `max_output_tokens` on the
+Responses lane + schema registration. New wire + schema pins, TDD
+red-first. No row promoted (provider-lane deterministic slice).
+Gate green: pi-ai lib 473/473, model_config 15/15, pi-ai strict
+clippy, fmt, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then next Wave C
+remainder or Wave E visual parity lift-off.
+
 ## Active 2026-09-16 checkpoint — Wave C slice: GLM reasoning
 
 Ported upstream #9375 (4bd3f48df): `zai-glm-5-2` uses

@@ -134,6 +134,10 @@ pub struct OpenAIResponsesCompat {
     pub supports_additional_tools: bool,
     pub supports_tool_search: bool,
     pub supports_explicit_prompt_cache_mode: bool,
+    /// Whether the provider accepts `max_output_tokens` (upstream
+    /// `OpenAIResponsesCompat.supportsMaxOutputTokens`, #8941). Some
+    /// Codex-protocol gateways reject it. Default: true.
+    pub supports_max_output_tokens: bool,
 }
 
 impl OpenAIResponsesCompat {
@@ -160,6 +164,7 @@ impl OpenAIResponsesCompat {
             supports_additional_tools: get_bool("supportsAdditionalTools", false),
             supports_tool_search: get_bool("supportsToolSearch", false),
             supports_explicit_prompt_cache_mode: get_bool("supportsExplicitPromptCacheMode", false),
+            supports_max_output_tokens: get_bool("supportsMaxOutputTokens", true),
         }
     }
 }
@@ -299,7 +304,9 @@ pub fn build_params(
     }
 
     if let Some(max_tokens) = options.base.max_tokens {
-        params["max_output_tokens"] = json!(max_tokens.max(OPENAI_RESPONSES_MIN_OUTPUT_TOKENS));
+        if compat.supports_max_output_tokens {
+            params["max_output_tokens"] = json!(max_tokens.max(OPENAI_RESPONSES_MIN_OUTPUT_TOKENS));
+        }
     }
     if let Some(temperature) = options.base.temperature {
         params["temperature"] = json!(temperature);
@@ -823,6 +830,28 @@ mod tests {
             params["max_output_tokens"],
             OPENAI_RESPONSES_MIN_OUTPUT_TOKENS
         );
+    }
+
+    #[test]
+    fn max_output_tokens_sent_by_default_and_omitted_when_opted_out() {
+        // Port of the upstream #8941 compat test: some Responses gateways
+        // reject `max_output_tokens`, so `supportsMaxOutputTokens: false`
+        // omits it. Default (unset) sends it.
+        let m = model("gpt-5.4");
+        let opts = OpenAIResponsesOptions {
+            base: StreamOptions {
+                max_tokens: Some(1024),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let params = build_params(&m, &ctx(), &opts).unwrap();
+        assert_eq!(params["max_output_tokens"], 1024);
+
+        let mut gated = model("gpt-5.4");
+        gated.compat = Some(serde_json::json!({ "supportsMaxOutputTokens": false }));
+        let params = build_params(&gated, &ctx(), &opts).unwrap();
+        assert!(params.get("max_output_tokens").is_none());
     }
 
     #[test]
