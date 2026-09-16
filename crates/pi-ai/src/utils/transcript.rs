@@ -78,6 +78,28 @@ pub fn render_system_message_update(message: &SystemMessage) -> String {
     parts.join("\n\n")
 }
 
+/// Wrap one named prompt section so the model can match later updates
+/// to it (upstream section wrapping in `buildSystemPromptSections`).
+/// `preamble` stays untagged text; every other section is wrapped in
+/// a tag of the same name.
+pub fn wrap_prompt_section(name: &str, content: &str) -> String {
+    if name == "preamble" {
+        content.to_string()
+    } else {
+        format!("<{name}>\n{content}\n</{name}>")
+    }
+}
+
+/// Assemble ordered prompt sections into a wrapped sections map:
+/// `preamble` stays raw, every other section is wrapped (upstream
+/// `buildSystemPromptSections` tail). Order follows the input slice.
+pub fn build_prompt_sections(sections: &[(&str, &str)]) -> Vec<(String, String)> {
+    sections
+        .iter()
+        .map(|(name, content)| ((*name).to_string(), wrap_prompt_section(name, content)))
+        .collect()
+}
+
 /// Resolve the tools available after applying every transcript delta
 /// in order (upstream `getCurrentTools`).
 pub fn current_tools(messages: &[TranscriptMessage]) -> Vec<Tool> {
@@ -479,6 +501,33 @@ mod tests {
                 "Updated system prompt section \"c\":\n\n<c>1</c>",
             ]
             .join("\n\n")
+        );
+    }
+
+    #[test]
+    fn wraps_prompt_sections_leaving_preamble_untagged() {
+        assert_eq!(
+            wrap_prompt_section("preamble", "You are pi."),
+            "You are pi."
+        );
+        assert_eq!(
+            wrap_prompt_section("rules", "- Be concise"),
+            "<rules>\n- Be concise\n</rules>"
+        );
+        assert_eq!(
+            build_prompt_sections(&[
+                ("preamble", "You are pi."),
+                ("rules", "- Be concise"),
+                ("cwd", "/work"),
+            ]),
+            [
+                ("preamble".to_string(), "You are pi.".to_string()),
+                (
+                    "rules".to_string(),
+                    "<rules>\n- Be concise\n</rules>".to_string()
+                ),
+                ("cwd".to_string(), "<cwd>\n/work\n</cwd>".to_string()),
+            ]
         );
     }
 }

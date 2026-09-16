@@ -2,6 +2,15 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Transcript leaf 2 — section wrapping
+
+Ported upstream section wrapping (`buildSystemPromptSections`
+tail): pure helpers + pin, no callers yet. No row promoted (new
+surface). Gate green: pi-ai lib 480/480, pi-ai strict clippy, fmt,
+conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then leaf 3
+(provider adoption scoping).
+
 ### Transcript leaf 1 — replay utils
 
 Ported upstream transcript replay surface (`transcript.ts` at

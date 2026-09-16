@@ -2,6 +2,19 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Transcript leaf 2: section wrapping (last updated 2026-09-17)
+
+Leaf 2 of the sectioned-transcript port: pure `wrap_prompt_section`
+(preamble untagged, others `<name>`-wrapped) and
+`build_prompt_sections` helpers with a wrapping pin. No callers yet;
+the flat prompt assembly stays byte-identical until the later
+assembly leaf. Gate: pi-ai lib 480/480 (1 new), pi-ai strict clippy
+clean, fmt clean, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0). No parity row promoted (new surface, no
+behavior change). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ### Transcript leaf 1: replay utils (last updated 2026-09-17)
 
 Leaf 1 of the sectioned-transcript port (upstream e4c75a732 /
