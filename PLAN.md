@@ -2,6 +2,16 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Transcript wave (a) — mid-convo capability flags
+
+Parsed `supportsMidConvoSystemMessages`/`supportsMidConvoToolChanges`
++ model-id gate with 2 pins (dead-code allows with wave-(b) notes
+per precedent; readers land with plumbing). No row promoted (no
+behavior change). Gate green: pi-ai lib 482/482, pi-ai strict
+clippy, fmt, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then wave (b)
+(TranscriptContext adapter signatures).
+
 ### Transcript leaf 2 — section wrapping
 
 Ported upstream section wrapping (`buildSystemPromptSections`

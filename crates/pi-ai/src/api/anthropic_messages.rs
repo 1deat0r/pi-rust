@@ -110,6 +110,13 @@ struct AnthropicCompat {
     supports_strict_tools: bool,
     supports_tool_references: bool,
     supports_mid_convo_effort: bool,
+    // Wave (a) of the transcript adoption: capability flags parsed but
+    // not yet consumed. Readers land in wave (b) with TranscriptContext
+    // plumbing (`resolve_transcript` gating per provider).
+    #[allow(dead_code)]
+    supports_mid_convo_system_messages: bool,
+    #[allow(dead_code)]
+    supports_mid_convo_tool_changes: bool,
 }
 
 fn compat_bool(model: &Model, key: &str, default: bool) -> bool {
@@ -181,7 +188,49 @@ fn anthropic_compat(model: &Model) -> AnthropicCompat {
             .and_then(Value::as_bool)
             .unwrap_or_else(|| default_supports_tool_references(model)),
         supports_mid_convo_effort: compat_bool(model, "supportsMidConvoEffort", false),
+        supports_mid_convo_system_messages: compat_bool(
+            model,
+            "supportsMidConvoSystemMessages",
+            false,
+        ),
+        supports_mid_convo_tool_changes: compat_bool(model, "supportsMidConvoToolChanges", false),
     }
+}
+
+/// Whether a Claude model id accepts mid-conversation system messages
+/// (upstream `supportsAnthropicMidConvoSystemMessages`): Opus 4.8/5 and
+/// Fable/Mythos 5 or 5.1, each with an optional `-YYYYMMDD` suffix.
+/// Wave (a): parsed capability; the `resolve_transcript` reader lands
+/// in wave (b).
+#[allow(dead_code)]
+fn supports_anthropic_mid_convo_system_messages(model_id: &str) -> bool {
+    let (family, rest) = match model_id
+        .strip_prefix("claude-opus-")
+        .map(|rest| ("opus", rest))
+        .or_else(|| {
+            model_id
+                .strip_prefix("claude-fable-")
+                .map(|rest| ("fable", rest))
+        })
+        .or_else(|| {
+            model_id
+                .strip_prefix("claude-mythos-")
+                .map(|rest| ("mythos", rest))
+        }) {
+        Some(pair) => pair,
+        None => return false,
+    };
+    // Strip an optional -YYYYMMDD date suffix (8 digits).
+    let core = match rest.rsplit_once('-') {
+        Some((core, suffix)) if suffix.len() == 8 && suffix.bytes().all(|b| b.is_ascii_digit()) => {
+            core
+        }
+        _ => rest,
+    };
+    matches!(
+        (family, core),
+        ("opus", "4.8" | "4-8" | "5") | ("fable" | "mythos", "5" | "5.1" | "5-1")
+    )
 }
 
 /// Provider-native thinking effort levels that can be replayed behind
@@ -2180,4 +2229,68 @@ pub fn default_base_url() -> String {
 pub(crate) fn set_error_message(message: &mut AssistantMessage, text: String) {
     let AssistantMessage::Assistant { error_message, .. } = message;
     *error_message = Some(text);
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn model(id: &str, provider: &str) -> Model {
+        let mut m = Model::new(id, id, "anthropic-messages", provider);
+        m.base_url = "https://api.anthropic.com".to_string();
+        m
+    }
+
+    #[test]
+    fn mid_convo_system_message_gate_matches_upstream_ids() {
+        // Upstream `supportsAnthropicMidConvoSystemMessages`: Opus 4.8/5
+        // and Fable/Mythos 5 or 5.1, each with an optional date suffix.
+        for id in [
+            "claude-opus-4.8",
+            "claude-opus-4-8",
+            "claude-opus-5",
+            "claude-opus-5-20260723",
+            "claude-fable-5",
+            "claude-fable-5.1",
+            "claude-fable-5-1",
+            "claude-mythos-5",
+            "claude-mythos-5-20260723",
+        ] {
+            assert!(
+                supports_anthropic_mid_convo_system_messages(id),
+                "{id} must accept mid-conversation system messages"
+            );
+        }
+        for id in [
+            "claude-opus-4.5",
+            "claude-opus-4.6",
+            "claude-opus-5.1",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5",
+            "claude-fable-4",
+            "gpt-5",
+        ] {
+            assert!(
+                !supports_anthropic_mid_convo_system_messages(id),
+                "{id} must not accept mid-conversation system messages"
+            );
+        }
+    }
+
+    #[test]
+    fn mid_convo_compat_flags_default_off_and_override() {
+        let plain = anthropic_compat(&model("claude-opus-5", "anthropic"));
+        assert!(!plain.supports_mid_convo_system_messages);
+        assert!(!plain.supports_mid_convo_tool_changes);
+
+        let mut flagged = model("claude-opus-5", "anthropic");
+        flagged.compat = Some(serde_json::json!({
+            "supportsMidConvoSystemMessages": true,
+            "supportsMidConvoToolChanges": true,
+        }));
+        let compat = anthropic_compat(&flagged);
+        assert!(compat.supports_mid_convo_system_messages);
+        assert!(compat.supports_mid_convo_tool_changes);
+    }
 }

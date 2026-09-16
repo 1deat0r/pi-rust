@@ -2,6 +2,22 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Transcript wave (a): mid-convo capability flags (last updated 2026-09-17)
+
+Wave (a) of the transcript adoption: `supportsMidConvoSystemMessages`
++ `supportsMidConvoToolChanges` parsed into `AnthropicCompat`
+(default false, overrideable) plus the
+`supports_anthropic_mid_convo_system_messages` model-id gate (Opus
+4.8/5, Fable/Mythos 5/5.1, optional date suffix). Two pins (gate id
+matrix + flag defaults/override). Flags carry `#[allow(dead_code)]`
+with wave-(b) notes per repo precedent — readers (`resolve_transcript`
+gating) land with TranscriptContext plumbing. Gate: pi-ai lib
+482/482 (2 new), pi-ai strict clippy clean, fmt clean, conversion
+100.00% (166/166), parity dashboard OK (upstream=d7296c0). No parity
+row promoted (parsed capability, no behavior change). Metrics
+unchanged (implementation 111/266, deterministic evidence 107/266,
+runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Transcript leaf 2: section wrapping (last updated 2026-09-17)
 
 Leaf 2 of the sectioned-transcript port: pure `wrap_prompt_section`

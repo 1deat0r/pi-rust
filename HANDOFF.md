@@ -2,6 +2,15 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Transcript wave (a) — capability flags (uncommitted)
+
+`supportsMidConvoSystemMessages`/`supportsMidConvoToolChanges`
+parsed + model-id gate with 2 pins (dead-code allows note wave
+(b)). pi-ai lib 482/482, pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Next:
+commit + push, then wave (b).
+
 ### Transcript leaf 3 — provider adoption assessed (no slice)
 
 Adoption needs `supportsMidConvoSystemMessages` /
@@ -13,6 +22,8 @@ green. Queued adoption waves: (a) compat flags + per-provider
 capability table, (b) `TranscriptContext` adapter signatures,
 (c) loop forced-prompt + persistence, (d) sectioned assembly
 cutover with snapshot updates.
+
+### Transcript leaf 2 — section wrapping committed + pushed
 
 ### Transcript leaf 2 — section wrapping committed + pushed
 
