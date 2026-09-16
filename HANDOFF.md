@@ -2,6 +2,14 @@
 
 ## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
+### Drift slice D — image refresh (uncommitted)
+
+Post-pin image refresh (bdee230f1): 4 renames + 2 additions. New
+catalog pin green, TDD red-first. pi-ai lib 474/474, pi-ai strict
+clippy clean, fmt clean, conversion 100.00% (166/166), parity
+dashboard OK (58/318, upstream=d7296c0). No row promoted; metrics
+unchanged. Next: commit + push, then drift slice E.
+
 ### Drift slice C — clipboard fail-closed committed + pushed
 
 Upstream #9618 (3349e1db1; renderer half already ported): OSC 52
@@ -11,13 +19,7 @@ conversion 100.00% (166/166), parity dashboard OK (58/318,
 upstream=d7296c0). No row promoted; metrics unchanged. Committed
 `4d63ffc`, pushed, hashes match. Next: drift slice D.
 
-Upstream #9618 (3349e1db1; renderer half already ported): OSC 52
-fallback remote-only, local failures fail closed. New PATH-shimmed
-pin green, TDD red-first. Clipboard 6/6, mermaid 3/3, fmt clean,
-conversion 100.00% (166/166), parity dashboard OK (58/318,
-upstream=d7296c0). No row promoted; metrics unchanged.
-Pre-existing failures unchanged on clean HEAD. Next: commit + push,
-then drift slice D.
+## Day summary — 2026-09-16/17 — Wave C provider sweep (13 slices, all pushed)
 
 ### Drift slice B — fallback overrides committed + pushed
 

@@ -2,6 +2,19 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Drift slice D: image refresh (last updated 2026-09-17)
+
+Slice D (post-pin image catalog refresh, bdee230f1, part of the
+drift): 4 Microsoft image renames ("Microsoft:" → "Microsoft AI")
+plus GPT Image 2.5 Flare/Sunburst additions with exact upstream
+shape. New catalog pin (all 6 names). TDD red first. Gate: pi-ai
+lib 474/474, catalog pin green, pi-ai strict clippy clean, fmt
+clean, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0). No parity row promoted (data-correction
+slice). Metrics unchanged (implementation 111/266, deterministic
+evidence 107/266, runtime 59/266, non-TUI overall 58/266,
+whole-product 58/318).
+
 ### Drift slice C: clipboard fail-closed (last updated 2026-09-17)
 
 Slice C (upstream #9618, 3349e1db1 + 60e7e76bd, part of the drift):

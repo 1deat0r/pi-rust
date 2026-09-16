@@ -361,6 +361,39 @@ fn baseten_models_send_session_affinity_upstream_9629() {
 }
 
 #[test]
+fn image_catalog_refresh_matches_upstream_drift() {
+    // Regression pin for the post-pin image catalog refresh
+    // (bdee230f1): Microsoft image models renamed to "Microsoft AI",
+    // plus GPT Image 2.5 Flare/Sunburst additions.
+    use pi_ai::images::catalog_images;
+    let images = catalog_images("openrouter");
+    assert!(!images.is_empty());
+    for (id, name) in [
+        ("microsoft/mai-image-2.5", "Microsoft AI: MAI-Image-2.5"),
+        (
+            "microsoft/mai-image-2.5-pro",
+            "Microsoft AI: MAI-Image-2.5 Pro",
+        ),
+        ("microsoft/mai-image-2.6", "Microsoft AI: MAI-Image-2.6"),
+        (
+            "microsoft/mai-image-2.6-flash",
+            "Microsoft AI: MAI-Image-2.6 Flash",
+        ),
+        ("openai/gpt-image-2.5-flare", "OpenAI: GPT Image 2.5 Flare"),
+        (
+            "openai/gpt-image-2.5-sunburst",
+            "OpenAI: GPT Image 2.5 Sunburst",
+        ),
+    ] {
+        assert_eq!(
+            images.iter().find(|m| m.id == id).map(|m| m.name.as_str()),
+            Some(name),
+            "image model {id}"
+        );
+    }
+}
+
+#[test]
 fn fireworks_thinking_metadata_matches_upstream_9323() {
     // Regression pin for upstream #9323 (6b94ae2ec): Fireworks
     // Messages models carry unsigned-thinking replay + session
