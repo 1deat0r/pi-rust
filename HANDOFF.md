@@ -1,6 +1,14 @@
 # Pi → pi-rust conversion handoff
 
-## Latest checkpoint — 2026-09-16 — Wave C slice: tool_choice gating committed + pushed
+## Latest checkpoint — 2026-09-16 — Wave C slice: reasoning merge (uncommitted)
+
+Upstream #8605 (c5ad7c1b0): completions streaming merges consecutive
+reasoning text/summary deltas; encrypted stays discrete. New merge pin
+green, TDD red-first (plus edition-2021 fixes). pi-ai lib 470/470,
+pi-ai strict clippy clean, fmt clean, conversion 100.00% (166/166),
+parity dashboard OK (58/318, upstream=d7296c0). No row promoted;
+metrics unchanged. Next: commit + push, then next Wave C remainder or
+Wave E visual parity.
 
 Upstream #8607 (fe37e9f9b): completions lane omits `tool_choice`
 without tools, forwards with tools. Old test corrected + new pin, TDD

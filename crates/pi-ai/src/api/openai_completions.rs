@@ -2870,7 +2870,9 @@ pub fn process_completions_events_with_grammar(
                         .filter(|value| value.is_array())
                         .and_then(|value| value.as_array().cloned())
                         .unwrap_or_default();
-                    preserved.extend(valid_details);
+                    for detail in valid_details {
+                        append_openai_reasoning_detail(&mut preserved, detail);
+                    }
                     block.thinking_signature = Value::Array(preserved).to_string();
                 }
             }
@@ -3103,6 +3105,82 @@ fn parse_openai_reasoning_details(signature: &str) -> Option<Vec<Value>> {
         return None;
     }
     Some(details.to_vec())
+}
+
+/// Fill missing `id`/`format`/`index` on a merged entry from a later delta
+/// (upstream `fillMissingCommonReasoningDetailFields`, #8605). Existing
+/// values win (`??=`/`||=` semantics).
+fn fill_missing_common_reasoning_detail_fields(target: &mut Value, source: &Value) {
+    let Some(target_object) = target.as_object_mut() else {
+        return;
+    };
+    let Some(source_object) = source.as_object() else {
+        return;
+    };
+    if target_object.get("id").is_none_or(Value::is_null) {
+        if let Some(id) = source_object.get("id") {
+            target_object.insert("id".to_string(), id.clone());
+        }
+    }
+    let target_format_empty = target_object
+        .get("format")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty);
+    if target_format_empty {
+        if let Some(format) = source_object.get("format") {
+            target_object.insert("format".to_string(), format.clone());
+        }
+    }
+    if target_object.get("index").is_none() {
+        if let Some(index) = source_object.get("index") {
+            target_object.insert("index".to_string(), index.clone());
+        }
+    }
+}
+
+/// Merge one streamed reasoning detail into the preserved sequence
+/// (upstream `appendOpenAIReasoningDetail`, #8605): consecutive
+/// `reasoning.text` deltas concatenate `text` (first signature wins) and
+/// consecutive `reasoning.summary` deltas concatenate `summary`; every
+/// other detail (including encrypted entries) stays discrete so an
+/// encrypted block breaks a text/summary run.
+fn append_openai_reasoning_detail(details: &mut Vec<Value>, detail: Value) {
+    let detail_type = detail.get("type").and_then(Value::as_str);
+    let last_type = details
+        .last()
+        .and_then(|last| last.get("type"))
+        .and_then(Value::as_str);
+    let merge_field = match (detail_type, last_type) {
+        (Some("reasoning.text"), Some("reasoning.text")) => Some("text"),
+        (Some("reasoning.summary"), Some("reasoning.summary")) => Some("summary"),
+        _ => None,
+    };
+    if let (Some(field), Some(last)) = (merge_field, details.last_mut()) {
+        let append = detail
+            .get(field)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let merged = last
+            .get(field)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+            + &append;
+        if let Some(last_object) = last.as_object_mut() {
+            last_object.insert(field.to_string(), Value::String(merged));
+            if field == "text" {
+                if let Some(signature) = detail.get("signature") {
+                    last_object
+                        .entry("signature".to_string())
+                        .or_insert_with(|| signature.clone());
+                }
+            }
+        }
+        fill_missing_common_reasoning_detail_fields(last, &detail);
+        return;
+    }
+    details.push(detail);
 }
 
 fn ensure_text_block(
@@ -4263,6 +4341,53 @@ data: [DONE]
             "reasoning.encrypted"
         );
         assert_eq!(replayed[0]["reasoning_details"][0]["data"], "opaque");
+    }
+
+    #[test]
+    fn process_events_merges_consecutive_reasoning_text_and_summary_deltas() {
+        // Port of the upstream #8605 merge test: consecutive text/summary
+        // deltas merge into logical entries (concatenated payload, first
+        // signature wins, missing id/format/index filled from later
+        // deltas), while encrypted entries stay discrete and break a run.
+        let sse = r#"data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.text","text":"The","index":0}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.text","text":" user wants the time.","signature":"sha256:text-signature","format":"openai-responses-v1","index":0}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.summary","summary":"Looked","index":0}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.summary","summary":" up time.","format":"openai-responses-v1","index":0}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"r1","data":"opaque"}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.summary","summary":"After encrypted block.","format":"openai-responses-v1","index":0}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}
+
+data: [DONE]
+"#;
+        let m = model("openrouter-model", "openrouter");
+        let compat = OpenAiCompletionsCompat::get(&m);
+        let events = crate::sse::SseParser::parse_text(sse);
+        let result = process_completions_events(&m, &events, &compat, |_| {}).unwrap();
+        let signature = match &result.content()[0] {
+            ContentBlock::Thinking {
+                thinking_signature: Some(signature),
+                ..
+            } => signature,
+            other => panic!("expected preserved reasoning signature, got {other:?}"),
+        };
+        let details: Value = serde_json::from_str(signature).unwrap();
+        assert_eq!(details.as_array().unwrap().len(), 4);
+        assert_eq!(details[0]["type"], "reasoning.text");
+        assert_eq!(details[0]["text"], "The user wants the time.");
+        assert_eq!(details[0]["signature"], "sha256:text-signature");
+        assert_eq!(details[0]["format"], "openai-responses-v1");
+        assert_eq!(details[1]["type"], "reasoning.summary");
+        assert_eq!(details[1]["summary"], "Looked up time.");
+        assert_eq!(details[1]["format"], "openai-responses-v1");
+        assert_eq!(details[2]["type"], "reasoning.encrypted");
+        assert_eq!(details[3]["type"], "reasoning.summary");
+        assert_eq!(details[3]["summary"], "After encrypted block.");
     }
 
     #[test]

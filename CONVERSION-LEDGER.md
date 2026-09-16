@@ -4,6 +4,26 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
+## Current status (last updated 2026-09-16 — Wave C slice: reasoning merge)
+
+Wave C slice (0.85.1, upstream #8605 fixed by c5ad7c1b0): the
+completions streaming path now merges consecutive `reasoning.text` /
+`reasoning.summary` deltas into logical entries (concatenated payload,
+first signature wins, missing id/format/index filled from later
+deltas) instead of pushing every delta discretely; encrypted entries
+stay discrete and break a run. New `append_openai_reasoning_detail` +
+`fill_missing_common_reasoning_detail_fields` port plus
+`process_events_merges_consecutive_reasoning_text_and_summary_deltas`
+pin (4 merged entries incl. encrypted break, exact text/signature/
+format). TDD red first. Fixed two edition-2021 issues during
+implementation (no let-chains; moved-value in extend-then-append).
+Gate: pi-ai lib 470/470, pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK (upstream=d7296c0).
+No parity row promoted (shared-lane deterministic slice; live
+OpenRouter delta streams unverifiable offline). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ## Current status (last updated 2026-09-16 — Wave C slice: tool_choice gating)
 
 Wave C slice (0.85.1, upstream #8607 fixed by fe37e9f9b): the shared

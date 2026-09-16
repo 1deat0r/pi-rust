@@ -1,5 +1,16 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-16 checkpoint — Wave C slice: reasoning merge
+
+Ported upstream #8605 (c5ad7c1b0): completions streaming merges
+consecutive reasoning text/summary deltas (concat payload, first
+signature wins, id/format/index fill; encrypted stays discrete). New
+merge pin, TDD red-first. No row promoted (shared-lane deterministic
+slice). Gate green: pi-ai lib 470/470, pi-ai strict clippy, fmt,
+conversion 100.00% (166/166), parity dashboard OK (upstream=d7296c0,
+58/318). Next: commit + push, then next Wave C remainder or Wave E
+visual parity lift-off.
+
 ## Active 2026-09-16 checkpoint — Wave C slice: tool_choice gating
 
 Ported upstream #8607 (fe37e9f9b): completions lane omits
