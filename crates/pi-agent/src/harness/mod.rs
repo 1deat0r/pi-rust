@@ -14,14 +14,16 @@ mod models;
 pub mod prompt_templates;
 pub mod reducer;
 pub mod result;
+pub mod run_context;
 pub mod shell_output;
 pub mod skills;
 pub mod system_prompt;
 pub mod telemetry;
+pub mod text_lines;
 
 pub use agent_harness::{
-    run_with_harness_lifecycle, AgentHarness, AgentHarnessOptions, HarnessTelemetryContext,
-    HarnessTool,
+    run_with_harness_lifecycle, stream_options_with_deferred_window, AgentHarness,
+    AgentHarnessOptions, HarnessTelemetryContext, HarnessTool,
 };
 pub mod tools;
 

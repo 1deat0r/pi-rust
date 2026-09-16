@@ -489,7 +489,11 @@ impl<F: FileSystem> JsonlSessionStorage<F> {
             return Ok(());
         };
         file_result(
-            self.fs.append_file(&self.metadata.path, &line),
+            self.fs.append_file_with_context(
+                &self.metadata.path,
+                &line,
+                &crate::harness::run_context::RunContext::background(),
+            ),
             &format!("Failed to append session {}", self.metadata.path),
         )
         .map_err(|e| SessionError::new(SessionErrorKind::Storage, e.message))?;

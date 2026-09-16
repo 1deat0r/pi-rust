@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::harness::run_context::RunContext;
 use crate::types::FileError;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +62,63 @@ pub trait FileSystem: Send + Sync {
     fn exists(&self, path: &str) -> bool;
     fn create_dir(&self, path: &str) -> Result<(), FileError>;
     fn remove(&self, path: &str) -> Result<(), FileError>;
+
+    /// Cancellation gate for context-aware operations (upstream `Context`
+    /// threading, 0.85.1: every filesystem method takes a context instead of
+    /// a bare abort signal). Default: fail closed when the context is
+    /// cancelled, otherwise proceed.
+    fn check_context(&self, context: &RunContext) -> Result<(), FileError> {
+        if context.is_cancelled() {
+            return Err(FileError::new(
+                "operation aborted: run context was cancelled".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Context-aware read (upstream `readTextFile(path, context)`). Default
+    /// implementation checks cancellation, then delegates to the plain read
+    /// so existing implementors and call sites keep working untouched.
+    fn read_text_file_with_context(
+        &self,
+        path: &str,
+        context: &RunContext,
+    ) -> Result<String, FileError> {
+        self.check_context(context)?;
+        self.read_text_file(path)
+    }
+
+    /// Context-aware write (upstream `writeFile(path, content, context)`).
+    fn write_file_with_context(
+        &self,
+        path: &str,
+        content: &str,
+        context: &RunContext,
+    ) -> Result<(), FileError> {
+        self.check_context(context)?;
+        self.write_file(path, content)
+    }
+
+    /// Context-aware append (upstream `appendFile(path, content, context)`).
+    fn append_file_with_context(
+        &self,
+        path: &str,
+        content: &str,
+        context: &RunContext,
+    ) -> Result<(), FileError> {
+        self.check_context(context)?;
+        self.append_file(path, content)
+    }
+
+    /// Context-aware directory listing (upstream `listDir(path, context)`).
+    fn list_dir_with_context(
+        &self,
+        path: &str,
+        context: &RunContext,
+    ) -> Result<Vec<String>, FileError> {
+        self.check_context(context)?;
+        self.list_dir(path)
+    }
 }
 
 /// Real filesystem implementation over std::fs. The storage layer is async;

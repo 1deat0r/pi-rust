@@ -1,5 +1,16 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave A search service committed + pushed
+
+`SessionSearchService` (0.85.1 contract) implemented scanning-backed in
+`crates/pi-agent/src/search.rs` + exports: searchSessions/searchEntries
+with top-entry hits, limit, sync/notify/remove/close. TDD with
+mutation-checked limit test. pi-agent lib 272/272 serial, clippy/fmt
+clean, conversion 100.00%, parity register + dashboard OK. AGENT-011
+note extended, no status change (metrics 58/318). Committed `e4904cf`,
+pushed, hashes match (`git rev-parse HEAD` == `git ls-remote origin
+refs/heads/main`). Next: Wave B session-type reconciliation.
+
 ## Latest checkpoint — 2026-09-16 — re-pin board gate PASSED + next goal set
 
 Board of experts (`board-of-expert-agents-review`): round 1 returned

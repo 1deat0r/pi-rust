@@ -883,6 +883,22 @@ pub struct RecordUsageOptions {
 /// Stream options (upstream `StreamOptions`).
 pub type StreamOptions = SimpleStreamOptions;
 
+/// Build harness stream options requesting provider-side deferred
+/// continuation with a polling window (upstream 0.85.1
+/// `AgentHarnessStreamOptions.deferred`: `boolean | { window?: "15m" |
+/// "1h" | "24h" }`). The window form maps onto pi-ai's `DeferredOption`.
+pub fn stream_options_with_deferred_window(window: &str) -> StreamOptions {
+    let window = match window {
+        "15m" => pi_ai::types::DeferredWindow::M15,
+        "24h" => pi_ai::types::DeferredWindow::H24,
+        _ => pi_ai::types::DeferredWindow::H1,
+    };
+    StreamOptions {
+        deferred: Some(pi_ai::types::DeferredOption::Window(window)),
+        ..Default::default()
+    }
+}
+
 /// Per-request stream option patch (upstream `StreamOptionsPatch`). `None`
 /// fields are unset; header/metadata patches are keyed maps.
 #[derive(Debug, Clone, Default)]
