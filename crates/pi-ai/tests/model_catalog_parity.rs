@@ -310,6 +310,28 @@ fn deepseek_flash_catalog_uses_canonical_model_upstream_9423() {
 }
 
 #[test]
+fn retired_codex_models_are_absent_upstream_9394() {
+    // Regression pin for upstream #9394 (2e6fe2f98): GPT-5.4 and
+    // GPT-5.4 mini left the OpenAI Codex catalog (unavailable to
+    // ChatGPT accounts). The `openai` provider entries are unaffected.
+    let providers = builtin_providers();
+    let codex = providers
+        .iter()
+        .find(|provider| provider.id == "openai-codex")
+        .expect("OpenAI Codex provider");
+    for retired in ["gpt-5.4", "gpt-5.4-mini"] {
+        assert!(
+            codex.models.iter().all(|model| model.id != retired),
+            "retired Codex model {retired} must be gone"
+        );
+    }
+    assert!(
+        codex.models.iter().any(|model| model.id == "gpt-5.5"),
+        "Codex GPT-5.5 successor must remain"
+    );
+}
+
+#[test]
 fn moonshot_and_nvidia_catalogs_match_pinned_provider_contract() {
     let providers = builtin_providers();
     let provider = |id: &str| {
