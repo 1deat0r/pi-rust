@@ -1313,12 +1313,12 @@ fn should_use_prompt_cache(base: &StreamOptions) -> bool {
 // Reasoning controls
 // ---------------------------------------------------------------------------
 
-/// Model ids that use `reasoning_effort` (upstream `usesReasoningEffort`).
+/// Model ids that use `reasoning_effort` (upstream `usesReasoningEffort`,
+/// 0.85.1: all `mistral-medium-*` ids, not just `mistral-medium-3.5`).
 fn uses_reasoning_effort(model: &Model) -> bool {
-    matches!(
-        model.id.as_str(),
-        "mistral-small-2603" | "mistral-small-latest" | "mistral-medium-3.5"
-    )
+    model.id == "mistral-small-2603"
+        || model.id == "mistral-small-latest"
+        || model.id.starts_with("mistral-medium-")
 }
 
 /// Models with native reasoning use `prompt_mode` (upstream
@@ -2347,6 +2347,29 @@ mod tests {
 
         let (prompt_mode, effort) =
             resolve_reasoning_controls(&medium35, &simple_opts(None, None, None));
+        assert_eq!(effort, None);
+        assert_eq!(prompt_mode, None);
+    }
+
+    #[test]
+    fn medium_prefix_uses_effort_only_when_reasoning_capable() {
+        // 0.85.1 upstream (#8700): all reasoning-capable `mistral-medium-*`
+        // ids use `reasoning_effort`; non-reasoning Medium models omit both
+        // controls. RED: only the exact `mistral-medium-3.5` id matches.
+        let mut medium = mistral_model("mistral-medium-2505");
+        medium.reasoning = true;
+        let (prompt_mode, effort) = resolve_reasoning_controls(
+            &medium,
+            &simple_opts(Some(crate::types::ThinkingLevel::Medium), None, None),
+        );
+        assert_eq!(effort.as_deref(), Some("high"));
+        assert_eq!(prompt_mode, None);
+        // Non-reasoning Medium omits both controls (upstream regression pin).
+        let plain = mistral_model("mistral-medium-2505");
+        let (prompt_mode, effort) = resolve_reasoning_controls(
+            &plain,
+            &simple_opts(Some(crate::types::ThinkingLevel::Medium), None, None),
+        );
         assert_eq!(effort, None);
         assert_eq!(prompt_mode, None);
     }

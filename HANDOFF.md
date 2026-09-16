@@ -1,5 +1,14 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave D slice 5 committed + pushed
+
+Capability overrides (programmatic + PI_* env) + zed grouping +
+settings wiring: pi-tui lib 409 green on rerun (flakes pre-existing),
+clippy/fmt clean, conversion 100.00%, parity dashboard OK. TUI-043
+note extended, no status change (58/318). Committed `d5e7e79`,
+pushed, hashes match. Next: Wave E visual parity or remaining
+provider items (thinking persistence).
+
 ## Latest checkpoint — 2026-09-16 — Wave D slice 4 committed + pushed
 
 Input click-to-cursor + settings-list mouse (submenu/search routing,

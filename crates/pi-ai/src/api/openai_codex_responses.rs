@@ -548,6 +548,27 @@ fn build_request_body(
             "effort": effort,
             "summary": options.reasoning_summary.clone().unwrap_or_else(|| "auto".to_string()),
         });
+    } else if model.reasoning
+        && model
+            .thinking_level_map
+            .as_ref()
+            .and_then(|m| m.get(&ModelThinkingLevel::Off))
+            != Some(&None)
+    {
+        // 0.85.1 upstream (#9191): with no explicit effort, reasoning models
+        // send their Off-map effort (or "none"), unless Off maps to null
+        // (unsupported).
+        let effort = model
+            .thinking_level_map
+            .as_ref()
+            .and_then(|m| m.get(&ModelThinkingLevel::Off))
+            .cloned()
+            .flatten()
+            .unwrap_or_else(|| "none".to_string());
+        body["reasoning"] = json!({
+            "effort": effort,
+            "summary": options.reasoning_summary.clone().unwrap_or_else(|| "auto".to_string()),
+        });
     }
     Ok(body)
 }
@@ -2484,7 +2505,12 @@ mod tests {
             .any(|m| m.get("role") == Some(&Value::String("developer".to_string()))));
         assert_eq!(input[0]["role"], "user");
         assert!(!body.as_object().unwrap().contains_key("prompt_cache_key"));
-        assert!(!body.as_object().unwrap().contains_key("reasoning"));
+        // 0.85.1 upstream (#9191): reasoning models send their Off-map
+        // effort by default.
+        assert_eq!(
+            body["reasoning"],
+            json!({ "effort": "none", "summary": "auto" })
+        );
     }
 
     #[test]
@@ -3121,6 +3147,46 @@ data: {"type":"response.completed","response":{"status":"completed","service_tie
         assert_eq!(
             body["reasoning"],
             json!({ "effort": "xhigh", "summary": "auto" })
+        );
+    }
+
+    #[test]
+    fn codex_sends_off_reasoning_effort_by_default_for_reasoning_models() {
+        // 0.85.1 upstream (#9191): with no explicit effort, reasoning
+        // models send their Off-map effort (or "none"); explicit "none"
+        // maps through the Off entry. RED: body omits reasoning entirely.
+        let model = codex_model("gpt-5.5");
+        let body = build_request_body(
+            &model,
+            &codex_ctx(),
+            &OpenAICodexResponsesOptions {
+                base: StreamOptions::default(),
+                reasoning_effort: None,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            body["reasoning"],
+            json!({ "effort": "none", "summary": "auto" }),
+            "got: {}",
+            body["reasoning"]
+        );
+        let explicit = build_request_body(
+            &model,
+            &codex_ctx(),
+            &OpenAICodexResponsesOptions {
+                base: StreamOptions::default(),
+                reasoning_effort: Some("none".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            explicit["reasoning"],
+            json!({ "effort": "none", "summary": "auto" })
         );
     }
 
