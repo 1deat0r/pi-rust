@@ -1,5 +1,15 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave C slice: Codex SSE EOF committed + pushed
+
+Upstream #9047 already ported by construction (shared `SseParser::
+finish()` + codex EOF drain). New trimmed-terminal pin green, no
+source change. pi-ai lib 468/468, pi-ai strict clippy clean, fmt
+clean, conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Committed
+`7ca3805`, pushed, hashes match. Next: next Wave C remainder or Wave E
+visual parity lift-off.
+
 ## Latest checkpoint — 2026-09-16 — Wave C slice: Codex SSE EOF (uncommitted)
 
 Upstream #9047 already ported by construction (shared `SseParser::
