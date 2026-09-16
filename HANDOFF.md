@@ -2,6 +2,18 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Transcript leaf 3 — provider adoption assessed (no slice)
+
+Adoption needs `supportsMidConvoSystemMessages` /
+`supportsMidConvoToolChanges` compat flags, `Context` →
+transcript plumbing across 10+ adapters, agent-loop system
+messages, and session persistence — a multi-day migration, not a
+day leaf. Leaves 1–2 (pure surface, no callers) stand alone and
+green. Queued adoption waves: (a) compat flags + per-provider
+capability table, (b) `TranscriptContext` adapter signatures,
+(c) loop forced-prompt + persistence, (d) sectioned assembly
+cutover with snapshot updates.
+
 ### Transcript leaf 2 — section wrapping committed + pushed
 
 Upstream section wrapping (`buildSystemPromptSections` tail): pure
@@ -12,12 +24,7 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 `803ebd6`, pushed, hashes match. Next: leaf 3 (provider adoption
 scoping).
 
-Upstream section wrapping (`buildSystemPromptSections` tail): pure
-helpers + pin, no callers yet (flat assembly byte-identical).
-pi-ai lib 480/480, pi-ai strict clippy clean, fmt clean,
-conversion 100.00% (166/166), parity dashboard OK (58/318,
-upstream=d7296c0). No row promoted; metrics unchanged. Next:
-commit + push, then leaf 3 (provider adoption scoping).
+## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
 ### Transcript leaf 1 — replay utils committed + pushed
 
