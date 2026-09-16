@@ -1,6 +1,16 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
-## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
+## Day goal 2026-09-17 — sectioned transcript-replay port
+
+### Transcript leaf 1 — replay utils
+
+Ported upstream transcript replay surface (`transcript.ts` at
+e4c75a732): `SystemMessage`/`ToolReference` types + full replay
+module with 5 pins mirroring upstream tests. No callers yet. No
+row promoted (new surface). Gate green: pi-ai lib 479/479, pi-ai
+strict clippy, fmt, conversion 100.00% (166/166), parity dashboard
+OK (upstream=d7296c0, 58/318). Next: commit + push, then leaf 2
+(sectioned prompt builder).
 
 ### Drift slice E — Google thinking maps
 

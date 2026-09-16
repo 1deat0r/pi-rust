@@ -2,6 +2,23 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Transcript leaf 1: replay utils (last updated 2026-09-17)
+
+Leaf 1 of the sectioned-transcript port (upstream e4c75a732 /
+#9548 family): new `SystemMessage` + `ToolReference` types
+(camelCase wire shape) and new `utils/transcript.rs` with the full
+replay surface — content/section/tool replay, `replace` reset,
+collapse/resolve, text rendering + framed updates, tool
+declaration/diff/redundancy predicates. Five unit pins mirror the
+upstream system-message-replay tests. No callers yet (deliberate;
+provider/loop/persistence adoption is later leaves). Gate: pi-ai
+lib 479/479 (5 new), pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0). No parity row promoted (new surface, no
+behavior change). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ### Drift slice E: Google thinking maps (last updated 2026-09-17)
 
 Slice E (upstream #9455, aa50fe778, part of the drift): Google,

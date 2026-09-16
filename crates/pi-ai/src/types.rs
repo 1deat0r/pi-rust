@@ -965,6 +965,41 @@ pub enum Message {
     ToolResult(ToolResultMessage),
 }
 
+/// A reference to a tool by name, used for removals in system-message
+/// transcript deltas (upstream `ToolReference`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolReference {
+    pub name: String,
+}
+
+/// A system message in a transcript (upstream `SystemMessage`). The
+/// leading message is the system prompt; later messages change it:
+/// `content` adds instructions, `sections` replace or remove named
+/// prompt sections (`None` removes one), `tools_added`/`tools_removed`
+/// change the tool set. A message with `replace` discards the replayed
+/// state first, so it is a complete new baseline.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SystemMessage {
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sections: Option<std::collections::BTreeMap<String, Option<String>>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "toolsAdded"
+    )]
+    pub tools_added: Option<Vec<Tool>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "toolsRemoved"
+    )]
+    pub tools_removed: Option<Vec<ToolReference>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace: Option<bool>,
+    pub timestamp: u64,
+}
+
 impl Message {
     pub fn role(&self) -> &'static str {
         match self {

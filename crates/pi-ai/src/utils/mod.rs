@@ -4,6 +4,7 @@ pub(crate) mod error_body;
 pub mod estimate;
 pub mod overflow;
 pub mod retry;
+pub mod transcript;
 
 /// Convert an HTTP response header map to the provider response representation
 /// used by `StreamOptions.on_response`.

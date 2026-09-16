@@ -1,6 +1,15 @@
 # Pi → pi-rust conversion handoff
 
-## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
+## Day goal 2026-09-17 — sectioned transcript-replay port
+
+### Transcript leaf 1 — replay utils (uncommitted)
+
+Upstream transcript replay surface (`transcript.ts` at e4c75a732):
+`SystemMessage`/`ToolReference` types + replay module with 5 pins
+mirroring upstream tests. No callers yet (later leaves). pi-ai lib
+479/479, pi-ai strict clippy clean, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
+promoted; metrics unchanged. Next: commit + push, then leaf 2.
 
 ### Drift slice E — Google thinking maps committed + pushed
 
