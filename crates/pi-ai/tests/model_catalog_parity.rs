@@ -234,6 +234,40 @@ fn kimi_and_minimax_anthropic_catalogs_match_provider_oracle_entries() {
 }
 
 #[test]
+fn copilot_gpt_models_route_through_responses_api() {
+    // Regression pin for upstream #9253 (fixed #9209): GPT, Grok, OSWE,
+    // and MAI-Code Copilot models are only served through the Copilot
+    // /responses endpoint, so every `gpt-*` catalog entry must use the
+    // openai-responses adapter.
+    let providers = builtin_providers();
+    let copilot = providers
+        .iter()
+        .find(|provider| provider.id == "github-copilot")
+        .expect("GitHub Copilot provider");
+    let gpt_models: Vec<_> = copilot
+        .models
+        .iter()
+        .filter(|model| model.id.starts_with("gpt-"))
+        .collect();
+    assert!(
+        !gpt_models.is_empty(),
+        "expected at least one Copilot gpt-* catalog entry"
+    );
+    for model in &gpt_models {
+        assert_eq!(
+            model.api, "openai-responses",
+            "Copilot {} must route through Responses",
+            model.id
+        );
+    }
+    copilot
+        .models
+        .iter()
+        .find(|model| model.id == "gpt-6-astra")
+        .expect("Copilot GPT-6 Astra catalog entry");
+}
+
+#[test]
 fn moonshot_and_nvidia_catalogs_match_pinned_provider_contract() {
     let providers = builtin_providers();
     let provider = |id: &str| {

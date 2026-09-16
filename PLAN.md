@@ -1,5 +1,19 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-16 checkpoint — Wave C slice: Copilot GPT routing
+
+Ported upstream #9253 (fixes #9209): Copilot `gpt-6-astra` moved from
+`openai-completions` to `openai-responses` in the vendored catalog with
+Responses compat + full sibling thinking map; new
+`copilot_gpt_models_route_through_responses_api` regression pin (every
+Copilot `gpt-*` on Responses). No row promoted (data-correction slice;
+live Copilot traffic offline-unverifiable). Gate green: new pin + pi-ai
+lib 467/467, pi-ai strict clippy, fmt, conversion 100.00% (166/166),
+parity dashboard OK (upstream=d7296c0, 58/318).
+`moonshot_and_nvidia` pin red on clean HEAD too (stale nvidia list,
+unrelated). Next: commit + push, then next Wave C remainder
+(Cloudflare binding-fetch successor) or Wave E visual parity lift-off.
+
 ## Active 2026-09-16 checkpoint — Wave C slice: vLLM priority compat flag
 
 Ported upstream #9004 (`vllmPriority` compat → top-level `priority` on
