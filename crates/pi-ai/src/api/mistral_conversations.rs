@@ -1114,7 +1114,17 @@ fn consume_chat_stream_into(
                 .filter(|s| !s.is_empty() && *s != "null")
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| derive_mistral_tool_call_id(&format!("toolcall:{index}"), 0));
-            let key = format!("{call_id}:{index}");
+            // Upstream #8387: merge by `index ?? callId`, so a follow-up
+            // chunk with the same index but no id (or a rotated id) still
+            // appends to the existing block. The explicit index is
+            // unambiguous within one response; id-only keying is the
+            // fallback for chunks that carry no index.
+            let has_index = tool_call.get("index").and_then(|v| v.as_u64()).is_some();
+            let key = if has_index {
+                format!("index:{index}")
+            } else {
+                format!("id:{call_id}")
+            };
 
             let block_index = match state.tool_blocks_by_key.get(&key).copied() {
                 Some(idx) => idx,
@@ -1966,6 +1976,39 @@ mod tests {
         assert_eq!(usage.cache_read, 3);
         assert_eq!(usage.cache_write, 0);
         assert_eq!(usage.total_tokens, 14);
+    }
+
+    #[test]
+    fn merges_fragmented_tool_calls_by_index_upstream_8387() {
+        // Port of the upstream #8387 fragment case: a follow-up chunk
+        // carries the same `index` but no id (and an empty name). It must
+        // merge into the existing block's arguments instead of opening a
+        // second tool block.
+        let model = mistral_model("mistral-large-latest");
+        let events = vec![
+            sse(
+                r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":null,"delta":{"tool_calls":[{"id":"abc123456","index":0,"function":{"name":"lookup","arguments":"{\"query\":"}}]}}]}"#,
+            ),
+            sse(
+                r#"{"id":"response-1","model":"mistral-large-latest","choices":[{"index":0,"finish_reason":"tool_calls","delta":{"tool_calls":[{"index":0,"function":{"name":"","arguments":"\"pi\"}"}}]}}]}"#,
+            ),
+        ];
+        let (message, _) = run_consume(&events, &model);
+        assert_eq!(message.stop_reason(), Some(StopReason::ToolUse));
+        assert_eq!(message.content().len(), 1);
+        match &message.content()[0] {
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } => {
+                assert_eq!(id, "abc123456");
+                assert_eq!(name, "lookup");
+                assert_eq!(arguments["query"], "pi");
+            }
+            b => panic!("expected merged toolCall: {b:?}"),
+        }
     }
 
     #[test]
