@@ -268,6 +268,48 @@ fn copilot_gpt_models_route_through_responses_api() {
 }
 
 #[test]
+fn deepseek_flash_catalog_uses_canonical_model_upstream_9423() {
+    // Regression pin for upstream #9423 (12f59336a): retired Flash
+    // aliases are replaced by canonical `deepseek-flash` (V4.1 Flash)
+    // with refreshed pricing; V4 Pro pricing is refreshed too.
+    let providers = builtin_providers();
+    let deepseek = providers
+        .iter()
+        .find(|provider| provider.id == "deepseek")
+        .expect("DeepSeek provider");
+    assert!(
+        deepseek
+            .models
+            .iter()
+            .all(|model| model.api == "openai-completions"),
+        "DeepSeek must use the OpenAI completions adapter"
+    );
+    for retired in ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp"] {
+        assert!(
+            deepseek.models.iter().all(|model| model.id != retired),
+            "retired DeepSeek alias {retired} must be gone"
+        );
+    }
+    let flash = deepseek
+        .models
+        .iter()
+        .find(|model| model.id == "deepseek-flash")
+        .expect("canonical DeepSeek Flash catalog entry");
+    assert_eq!(flash.name, "DeepSeek V4.1 Flash");
+    assert_eq!(flash.cost.input, 0.3);
+    assert_eq!(flash.cost.output, 1.2);
+    assert_eq!(flash.cost.cache_read, 0.006);
+    let pro = deepseek
+        .models
+        .iter()
+        .find(|model| model.id == "deepseek-v4-pro")
+        .expect("DeepSeek V4 Pro catalog entry");
+    assert_eq!(pro.cost.input, 1.32);
+    assert_eq!(pro.cost.output, 3.96);
+    assert_eq!(pro.cost.cache_read, 0.044);
+}
+
+#[test]
 fn moonshot_and_nvidia_catalogs_match_pinned_provider_contract() {
     let providers = builtin_providers();
     let provider = |id: &str| {

@@ -453,7 +453,9 @@ mod tests {
             let _ = (provider, provider_models);
         }
         // Cross-check: total model count matches the vendored files.
+        // 1353 after the #9423 DeepSeek refresh (retired 2 Flash aliases,
+        // added canonical deepseek-flash).
         let total: usize = models().values().map(|m| m.len()).sum();
-        assert_eq!(total, 1354);
+        assert_eq!(total, 1353);
     }
 }

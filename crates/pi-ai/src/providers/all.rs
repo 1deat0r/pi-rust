@@ -2874,7 +2874,9 @@ mod tests {
     fn builtin_models_facade_lists_all_models() {
         let models = builtin_models(crate::models::CreateModelsOptions::default());
         let all = models.get_models(None);
-        assert_eq!(all.len(), 1354);
+        // 1353 after the #9423 DeepSeek refresh (retired 2 Flash aliases,
+        // added canonical deepseek-flash).
+        assert_eq!(all.len(), 1353);
         assert!(models.get_model("google", "gemini-2.5-flash").is_some());
         assert!(models.get_model("anthropic", "claude-sonnet-4-6").is_some());
     }

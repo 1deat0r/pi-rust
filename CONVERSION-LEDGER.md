@@ -4,6 +4,24 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
+## Current status (last updated 2026-09-16 — Wave C slice: DeepSeek refresh)
+
+Wave C slice (0.85.1, upstream #9423 fixed by 12f59336a): retired
+DeepSeek Flash aliases (`deepseek-v4-flash`,
+`deepseek-v4-flash-vision-exp`) replaced by canonical `deepseek-flash`
+(V4.1 Flash, image input, refreshed 0.3/1.2/0.006 pricing, V4 Flash
+thinking map); V4 Pro pricing refreshed (1.32/3.96/0.044). New
+`deepseek_flash_catalog_uses_canonical_model_upstream_9423` pin
+(aliases gone, canonical pricing, completions adapter). Count pins
+updated 1354→1353 with attribution. TDD red first. Gate: pi-ai lib
+473/473, catalog pin green, pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK (upstream=d7296c0).
+The stale `moonshot_and_nvidia` pin stays red on clean HEAD
+(unrelated). No parity row promoted (data-correction slice; live
+vendor catalog unverifiable offline). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ## Current status (last updated 2026-09-16 — Wave C slice: error provider)
 
 Wave C slice (0.85.1, upstream #9298 fixed by 0c7bb7c5c): Responses

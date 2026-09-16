@@ -1,6 +1,14 @@
 # Pi → pi-rust conversion handoff
 
-## Latest checkpoint — 2026-09-16 — Wave C slice: error provider committed + pushed
+## Latest checkpoint — 2026-09-16 — Wave C slice: DeepSeek refresh (uncommitted)
+
+Upstream #9423 (12f59336a): canonical `deepseek-flash` replaces
+retired aliases + pricing refresh; count pins 1354→1353. New catalog
+pin green, TDD red-first. pi-ai lib 473/473, pi-ai strict clippy
+clean, fmt clean, conversion 100.00% (166/166), parity dashboard OK
+(58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Next: commit + push, then next Wave C remainder or Wave E visual
+parity.
 
 Upstream #9298 (0c7bb7c5c): Responses HTTP errors label the actual
 provider. New loopback label pin green, TDD red-first. Drive-by

@@ -1,5 +1,15 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-16 checkpoint — Wave C slice: DeepSeek refresh
+
+Ported upstream #9423 (12f59336a): canonical `deepseek-flash`
+replaces 2 retired aliases + pricing refresh (flash + v4-pro); count
+pins 1354→1353. New catalog pin, TDD red-first. No row promoted
+(data-correction slice). Gate green: pi-ai lib 473/473, catalog pin,
+pi-ai strict clippy, fmt, conversion 100.00% (166/166), parity
+dashboard OK (upstream=d7296c0, 58/318). Next: commit + push, then
+next Wave C remainder or Wave E visual parity lift-off.
+
 ## Active 2026-09-16 checkpoint — Wave C slice: error provider
 
 Ported upstream #9298 (0c7bb7c5c): Responses HTTP errors label the
