@@ -2,7 +2,15 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### Transcript leaf 1 — replay utils (uncommitted)
+### Transcript leaf 1 — replay utils committed + pushed
+
+Upstream transcript replay surface (`transcript.ts` at e4c75a732):
+`SystemMessage`/`ToolReference` types + replay module with 5 pins
+mirroring upstream tests. No callers yet (later leaves). pi-ai lib
+479/479, pi-ai strict clippy clean, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
+promoted; metrics unchanged. Committed `ec175eb`, pushed, hashes
+match. Next: leaf 2 (sectioned prompt builder).
 
 Upstream transcript replay surface (`transcript.ts` at e4c75a732):
 `SystemMessage`/`ToolReference` types + replay module with 5 pins
