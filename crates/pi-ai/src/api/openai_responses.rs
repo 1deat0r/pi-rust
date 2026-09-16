@@ -591,9 +591,20 @@ pub fn stream(
             let detail = extract_openai_responses_error(&body_text);
             let mut message = new_output(&model);
             message.set_stop_reason(StopReason::Error);
+            // Upstream #9298: label the actual provider instead of always
+            // "OpenAI" — non-OpenAI Responses lanes keep their own id.
+            let provider_label = if model.provider == "openai" {
+                "OpenAI".to_string()
+            } else {
+                model.provider.clone()
+            };
             super::anthropic_messages::set_error_message(
                 &mut message,
-                format!("OpenAI API error ({}): {}", status.as_u16(), detail),
+                format!(
+                    "{provider_label} API error ({}): {}",
+                    status.as_u16(),
+                    detail
+                ),
             );
             pusher.push(AssistantMessageEvent::Error {
                 reason: ErrorReason::Error,

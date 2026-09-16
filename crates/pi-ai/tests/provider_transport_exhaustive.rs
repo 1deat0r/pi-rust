@@ -721,7 +721,7 @@ async fn every_registered_provider_api_pair_uses_a_real_loopback_request() {
         }
     }
 
-    assert_eq!(pairs.len(), 49, "registered catalog pair count changed");
+    assert_eq!(pairs.len(), 50, "registered catalog pair count changed");
     assert!(!pairs.iter().any(|(_, api)| api == "unknown-api"));
     assert!(pairs
         .iter()
@@ -1258,6 +1258,50 @@ async fn provider_error_contract_preserves_status_body_and_retry_classification(
             Some(&format!("Bearer {secret}"))
         );
     }
+}
+
+#[tokio::test]
+async fn responses_http_errors_identify_the_model_provider_upstream_9298() {
+    // Upstream #9298 (0c7bb7c5c): Responses HTTP errors label the actual
+    // provider (`{provider} API error`) instead of always "OpenAI".
+    let reply = Reply::text(
+        400,
+        "application/json",
+        br#"{"error":{"message":"bad request"}}"#.to_vec(),
+    );
+    let (_, message, _) = run_direct_stream(
+        "openai-responses",
+        "opencode",
+        reply,
+        request_options("gateway-key"),
+        Context::default(),
+    )
+    .await;
+    let error = message.error_message().unwrap_or_default();
+    assert_eq!(message.stop_reason(), Some(StopReason::Error));
+    assert!(
+        error.starts_with("opencode API error (400):"),
+        "unexpected label: {error}"
+    );
+
+    let reply = Reply::text(
+        400,
+        "application/json",
+        br#"{"error":{"message":"bad request"}}"#.to_vec(),
+    );
+    let (_, message, _) = run_direct_stream(
+        "openai-responses",
+        "openai",
+        reply,
+        request_options("openai-key"),
+        Context::default(),
+    )
+    .await;
+    let error = message.error_message().unwrap_or_default();
+    assert!(
+        error.starts_with("OpenAI API error (400):"),
+        "unexpected label: {error}"
+    );
 }
 
 #[tokio::test]

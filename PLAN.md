@@ -1,5 +1,16 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-16 checkpoint — Wave C slice: error provider
+
+Ported upstream #9298 (0c7bb7c5c): Responses HTTP errors label the
+actual provider. New opencode/openai loopback label pin, TDD
+red-first. Drive-by repaired stale pair-count pin (49→50). No row
+promoted (provider-lane deterministic slice). Gate green: pi-ai lib
+473/473, exhaustive 17/17, pi-ai strict clippy, fmt, conversion
+100.00% (166/166), parity dashboard OK (upstream=d7296c0, 58/318).
+Next: commit + push, then next Wave C remainder or Wave E visual
+parity lift-off.
+
 ## Active 2026-09-16 checkpoint — Wave C slice: max tokens opt-out
 
 Ported upstream #8941 (b8b873b98): `supportsMaxOutputTokens`

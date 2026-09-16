@@ -4,6 +4,22 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
+## Current status (last updated 2026-09-16 — Wave C slice: error provider)
+
+Wave C slice (0.85.1, upstream #9298 fixed by 0c7bb7c5c): Responses
+HTTP errors now label the actual model provider (`{provider} API
+error`) instead of always "OpenAI" (`OpenAI` kept for provider
+`openai`). New loopback pin drives 400s through `opencode` (labeled
+`opencode API error (400):`) and `openai` (labeled `OpenAI API error
+(400):`). TDD red first. Drive-by: repaired the stale registered-pair
+count pin (49→50 — the OpenRouter two-lane port added a pair without
+updating it; red on clean HEAD, all 50 loopbacks green). Gate: pi-ai
+lib 473/473, exhaustive 17/17, pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK (upstream=d7296c0).
+No parity row promoted (provider-lane deterministic slice). Metrics
+unchanged (implementation 111/266, deterministic evidence 107/266,
+runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ## Current status (last updated 2026-09-16 — Wave C slice: max tokens opt-out)
 
 Wave C slice (0.85.1, upstream #8941 fixed by b8b873b98): new

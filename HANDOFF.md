@@ -1,6 +1,14 @@
 # Pi → pi-rust conversion handoff
 
-## Latest checkpoint — 2026-09-16 — Wave C slice: max tokens opt-out committed + pushed
+## Latest checkpoint — 2026-09-16 — Wave C slice: error provider (uncommitted)
+
+Upstream #9298 (0c7bb7c5c): Responses HTTP errors label the actual
+provider. New loopback label pin green, TDD red-first. Drive-by
+repaired stale pair-count pin (49→50). pi-ai lib 473/473, exhaustive
+17/17, pi-ai strict clippy clean, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
+promoted; metrics unchanged. Next: commit + push, then next Wave C
+remainder or Wave E visual parity.
 
 Upstream #8941 (b8b873b98): `supportsMaxOutputTokens` compat flag
 (default true) + schema registration on the Responses lane. New wire
