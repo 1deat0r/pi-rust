@@ -124,12 +124,17 @@ mod components_extra_tests {
 
     #[test]
     fn alt_screen_search_uses_the_upstream_input_prompt() {
+        // 0.85.1 upstream: prompt `" "` with dimmed "Find in transcript"
+        // placeholder; a typed query renders after the blank prompt.
+        let empty = crate::components::alt_screen::AltScreenSearchComponent::new();
+        let empty_lines = empty.render(24);
+        assert!(empty_lines.join("\n").contains("Find in transcript"));
         let mut search = crate::components::alt_screen::AltScreenSearchComponent::new();
         search.set_query("needle");
 
         let lines = search.render(24);
         assert_eq!(lines.len(), 2);
-        assert!(crate::utils::strip_ansi_codes(&lines[1]).starts_with("> needle"));
+        assert!(crate::utils::strip_ansi_codes(&lines[1]).starts_with(" needle"));
     }
 
     #[test]

@@ -41,7 +41,7 @@ stay synchronized.
 | TUI-012 | input buffer | PASS | PASS | OPEN | Direct unit evidence covers the full contract: partial/fragmented sequences, escape timeout, bracketed paste, very-long-input boundaries, EOF (empty-buffer marker, repeated EOF, and EOF with a pending sequence kept flushable), and event ordering. Manual terminal comparison remains. |
 | TUI-013 | key decoding | PARTIAL | PARTIAL | OPEN | Key protocol tests and the real Kitty CSI-u press/release regression pass; the full emulator matrix remains. |
 | TUI-014 | keybinding config | PARTIAL | PARTIAL | OPEN | Registry/conflict tests exist; 0.85.1 prompt-jump alternates (ctrl+up/ctrl+down) added with unit pins; reload/extension precedence evidence remains. |
-| TUI-015 | slash command menu | PARTIAL | PARTIAL | OPEN | Slash completion is exercised; full menu interaction evidence remains. |
+| TUI-015 | slash command menu | PARTIAL | PARTIAL | OPEN | Slash completion is exercised; Wave D adds 0.85.1 select-list mouse press/click/wheel handling (hover never selects) with unit pins. Full menu interaction evidence remains. |
 | TUI-016 | slash command execution | PASS | PASS | OPEN | All registered commands pass the real PTY inventory; manual visual comparison remains. |
 | TUI-017 | model selector | PARTIAL | PARTIAL | OPEN | Selector paths are covered in local matrices; complete auth/search evidence remains. |
 | TUI-018 | thinking selector | PARTIAL | PARTIAL | OPEN | Selector paths and one-step Kitty Up navigation are covered; provider-limit and persistence evidence remains. |
@@ -49,7 +49,7 @@ stay synchronized.
 | TUI-020 | theme picker/controller | PARTIAL | PARTIAL | OPEN | Theme tests/reload path exist; complete visual palette review remains. |
 | TUI-021 | login dialog | PARTIAL | PARTIAL | OPEN | Complete real auth PTY matrix passes 5/5: browser callback, device code, browser cancellation/guidance, llama key/URL, and Qwen Token Plan bracketed API-key paste with masking/persistence/logout; component tests cover grapheme-safe editing and split-marker cancellation. Provider/manual visuals remain open. |
 | TUI-022 | session picker | PARTIAL | PARTIAL | OPEN | Session routing and search-state component tests pass; full picker/delete/rename interaction evidence remains. |
-| TUI-023 | tree selector | PARTIAL | PARTIAL | OPEN | Parent-linked selection, filter controls, ancestor visibility, and non-stop assistant rows are tested; complete search/streaming-guard evidence remains. |
+| TUI-023 | tree selector | PARTIAL | PARTIAL | OPEN | Parent-linked selection, filter controls, ancestor visibility, and non-stop assistant rows are tested; Wave D adds 0.85.1 select-list mouse handling shared by tree selectors. Complete search/streaming-guard evidence remains. |
 | TUI-024 | trust selector | PARTIAL | PARTIAL | OPEN | Trust PTY paths exist; full save/cancel/navigation evidence remains. |
 | TUI-025 | modal overlays | PARTIAL | PARTIAL | OPEN | Overlay geometry/focus tests pass; complete stacking visual review remains. |
 | TUI-026 | markdown | PARTIAL | PARTIAL | OPEN | Markdown unit/snapshot coverage passes; Wave D adds the 0.85.1 relational-algebra join symbols (bowtie/Join/ltimes/rtimes/outer joins) with render pins; full source boundary comparison remains. |
@@ -68,7 +68,7 @@ stay synchronized.
 | TUI-039 | OpenCode/Kimi Daxnuts | PASS | PASS | OPEN | Payload/trigger/PTY evidence pass; manual animation comparison remains. |
 | TUI-040 | application keybinding registry | PARTIAL | PARTIAL | OPEN | Parent-verified controller/action dispatch, conflict, unknown-key, and Kitty-release tests are included in 37 focused controller cases and the 386-test pi-tui all-target gate; complete action/extension precedence review remains. |
 | TUI-041 | suspend/resume | PARTIAL | PARTIAL | OPEN | Parent-verified alternate-screen suspend/resume, cursor/protocol restoration, and resize lifecycle cases pass in the controller/all-target gate; active-operation, signal, emulator, and cross-platform evidence remains. |
-| TUI-042 | selection/search/scrollback | PARTIAL | PARTIAL | OPEN | Parent-verified selection highlighting, search-release handling, scroll actions, scrollback stop, resize, and fullscreen document restoration cases pass in the 386-test all-target gate; full integrated return-to-editor and visual evidence remains. |
+| TUI-042 | selection/search/scrollback | PARTIAL | PARTIAL | OPEN | Parent-verified selection highlighting, search-release handling, scroll actions, scrollback stop, resize, and fullscreen document restoration cases pass in the 386-test all-target gate; Wave D adds the 0.85.1 search index cache (`changed` semantics), `" "` prompt with dimmed placeholder, and span-clipping contract pins. Full integrated return-to-editor and visual evidence remains. |
 | TUI-043 | native image/clipboard backends | PARTIAL | PARTIAL | OPEN | Fallback tests pass; Wayland/X11/Termux runtime evidence remains. |
 | TUI-044 | Mermaid rendering | PARTIAL | PARTIAL | OPEN | Supported/unsupported renderer tests pass; full cancellation visual evidence remains. |
 | TUI-045 | loader animation and cancellation | PASS | PASS | OPEN | Exact-frame/interval/callback/cancellation tests pass, plus the 0.85.1 `invalidate` refresh hook; manual timing remains. |

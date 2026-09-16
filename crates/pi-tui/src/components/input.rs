@@ -225,6 +225,9 @@ pub struct Input {
     pub on_escape: Option<InputEscapeCallback>,
     /// Whether the TUI should emit the hardware-cursor marker.
     pub focused: bool,
+    /// Placeholder shown dimmed when the value is empty (upstream 0.85.1
+    /// `Input` placeholder; the search box uses "Find in transcript").
+    pub placeholder: Option<String>,
     paste_buffer: String,
     in_paste: bool,
     kill_ring: KillRing,
@@ -241,6 +244,7 @@ impl Input {
             on_submit: None,
             on_escape: None,
             focused: false,
+            placeholder: None,
             paste_buffer: String::new(),
             in_paste: false,
             kill_ring: KillRing::new(),
@@ -282,6 +286,12 @@ impl Input {
     pub fn with_escape_callback(mut self, callback: impl FnMut() + Send + Sync + 'static) -> Self {
         self.on_escape = Some(Box::new(callback));
         self
+    }
+
+    /// Set the dimmed placeholder shown when the value is empty (upstream
+    /// 0.85.1 `Input` placeholder option).
+    pub fn set_placeholder(&mut self, placeholder: impl Into<String>) {
+        self.placeholder = Some(placeholder.into());
     }
 
     fn cursor_boundary(&self) -> usize {
@@ -661,6 +671,20 @@ impl Input {
             return slice_by_column_strict(&self.prompt, 0, width);
         }
         let available = width - prompt_width;
+        // Empty value with a placeholder: render it dimmed instead of the
+        // cursor line (upstream placeholder semantics).
+        if self.value.is_empty() {
+            if let Some(placeholder) = &self.placeholder {
+                let dimmed = format!("\x1b[2m{placeholder}\x1b[22m");
+                let padding = " ".repeat(available.saturating_sub(visible_width(&dimmed)));
+                let line = format!("{}{dimmed}{padding}", self.prompt);
+                return if visible_width(&line) > width {
+                    slice_by_column_strict(&line, 0, width)
+                } else {
+                    line
+                };
+            }
+        }
         let cursor = self.cursor_boundary();
         let cursor_col = visible_width(&self.value[..cursor]);
         let total_width = visible_width(&self.value);
@@ -1047,6 +1071,31 @@ mod tests {
         assert_eq!(
             *escaped.lock().unwrap_or_else(|error| error.into_inner()),
             1
+        );
+    }
+}
+
+#[cfg(test)]
+mod placeholder_tests {
+    use super::*;
+
+    #[test]
+    fn empty_input_renders_placeholder_dimmed() {
+        // 0.85.1 upstream search input: prompt `" "`, placeholder
+        // `"Find in transcript"` styled dim (`\x1b[2m…\x1b[22m`).
+        // RED: placeholder does not exist on the Rust Input.
+        let mut input = Input::new(" ");
+        input.set_placeholder("Find in transcript");
+        let line = input.render_line(30);
+        assert!(line.contains("Find in transcript"), "got: {line:?}");
+        assert!(line.contains("\x1b[2m"), "got: {line:?}");
+        let mut filled = Input::new(" ");
+        filled.set_placeholder("Find in transcript");
+        filled.set_value("query");
+        let filled_line = filled.render_line(30);
+        assert!(
+            !filled_line.contains("Find in transcript"),
+            "got: {filled_line:?}"
         );
     }
 }

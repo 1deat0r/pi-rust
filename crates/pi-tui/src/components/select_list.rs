@@ -110,6 +110,10 @@ pub struct SelectList {
     on_cancel: Option<SelectCancelCallback>,
     on_selection_change: Option<SelectItemCallback>,
     truncate_primary_callback: Option<SelectTruncatePrimaryCallback>,
+    /// Pressed row awaiting click release (upstream 0.85.1
+    /// `mousePressedIndex`): click confirms the pressed row, not the row
+    /// under the release.
+    mouse_pressed_index: Option<usize>,
 }
 
 impl SelectList {
@@ -130,6 +134,7 @@ impl SelectList {
             on_cancel: None,
             on_selection_change: None,
             truncate_primary_callback: None,
+            mouse_pressed_index: None,
         }
     }
 
@@ -317,6 +322,22 @@ impl SelectList {
     }
 }
 
+impl SelectList {
+    /// Visible item range, centered on the selection (upstream 0.85.1
+    /// `getVisibleRange`, extracted so mouse hit-testing shares it).
+    fn visible_range(&self) -> (usize, usize) {
+        let start_index = std::cmp::max(
+            0,
+            std::cmp::min(
+                self.selected_index.saturating_sub(self.max_visible / 2),
+                self.filtered_items.len().saturating_sub(self.max_visible),
+            ),
+        );
+        let end_index = std::cmp::min(start_index + self.max_visible, self.filtered_items.len());
+        (start_index, end_index)
+    }
+}
+
 impl Component for SelectList {
     fn render(&self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
@@ -364,6 +385,71 @@ impl Component for SelectList {
         }
 
         lines
+    }
+
+    /// Mouse press/click selection (upstream 0.85.1
+    /// `SelectList.handleMouse`): press selects the row under y; click
+    /// confirms the pressed row and activates it; hover/motion never
+    /// changes selection (the visible range is centered on it).
+    fn handle_mouse(&mut self, event: &crate::mouse::MouseEvent) {
+        use crate::mouse::{MouseButton, MouseEventKind};
+        if self.filtered_items.is_empty() {
+            return;
+        }
+        if event.button != MouseButton::Left {
+            return;
+        }
+        match event.kind {
+            MouseEventKind::Motion | MouseEventKind::Drag => {}
+            MouseEventKind::Press => {
+                let (start_index, end_index) = self.visible_range();
+                let item_index = start_index + event.y;
+                if item_index < start_index || item_index >= end_index {
+                    return;
+                }
+                self.mouse_pressed_index = Some(item_index);
+                if self.selected_index != item_index {
+                    self.selected_index = item_index;
+                    self.notify_selection_change();
+                }
+            }
+            MouseEventKind::Release => {
+                let (start_index, end_index) = self.visible_range();
+                let item_index = start_index + event.y;
+                if item_index < start_index || item_index >= end_index {
+                    return;
+                }
+                // Click confirms the pressed row (release acts as click
+                // when a press preceded it).
+                let clicked = self.mouse_pressed_index.unwrap_or(item_index);
+                self.mouse_pressed_index = None;
+                let changed = self.selected_index != clicked;
+                self.selected_index = clicked;
+                if changed {
+                    self.notify_selection_change();
+                }
+                if let Some(callback) = &self.on_select {
+                    if let Some(item) = self.filtered_items.get(self.selected_index) {
+                        callback(item);
+                    }
+                }
+            }
+            MouseEventKind::WheelUp | MouseEventKind::WheelDown => {
+                let delta: isize = if event.kind == MouseEventKind::WheelUp {
+                    -1
+                } else {
+                    1
+                };
+                let previous = self.selected_index;
+                let max = self.filtered_items.len().saturating_sub(1);
+                self.selected_index =
+                    (self.selected_index as isize + delta).clamp(0, max as isize) as usize;
+                if self.selected_index != previous {
+                    self.notify_selection_change();
+                }
+            }
+            _ => {}
+        }
     }
 
     fn handle_input(&mut self, key: &TuiKey) {
@@ -657,5 +743,58 @@ mod tests {
         );
         list.set_filter("lpha");
         assert!(list.get_selected_item().is_none());
+    }
+}
+
+#[cfg(test)]
+mod mouse_tests {
+    use super::*;
+    use crate::mouse::{MouseButton, MouseEvent, MouseEventKind, MouseModifiers};
+    use crate::tui::Component;
+
+    fn click_event(x: usize, y: usize) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Press,
+            button: MouseButton::Left,
+            x,
+            y,
+            modifiers: MouseModifiers {
+                shift: false,
+                alt: false,
+                ctrl: false,
+            },
+            screen_x: x,
+            screen_y: y,
+            width: 40,
+            height: 10,
+        }
+    }
+
+    fn make_list() -> SelectList {
+        SelectList::new(
+            vec![
+                SelectItem::new("a", "alpha", None),
+                SelectItem::new("b", "beta", None),
+                SelectItem::new("c", "gamma", None),
+            ],
+            5,
+            plain_theme(),
+            SelectListLayoutOptions::default(),
+        )
+    }
+
+    #[test]
+    fn mouse_press_selects_row_without_hover_side_effects() {
+        // 0.85.1 upstream `SelectList.handleMouse`: press selects the row
+        // under y; hover (motion) never changes selection.
+        // RED: Rust SelectList has no mouse handling.
+        let mut list = make_list();
+        assert_eq!(list.selected_index(), 0);
+        list.handle_mouse(&click_event(2, 2));
+        assert_eq!(list.selected_index(), 2);
+        let mut motion = click_event(2, 0);
+        motion.kind = MouseEventKind::Motion;
+        list.handle_mouse(&motion);
+        assert_eq!(list.selected_index(), 2);
     }
 }

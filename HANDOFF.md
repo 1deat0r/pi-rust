@@ -1,5 +1,16 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave D slice 1 committed + pushed
+
+LaTeX join symbols, prompt-jump key alternates, bg-ansi tracker,
+Loader.invalidate, Box mouse forwarding, MouseRegion, scrollbar
+track/thumb split, mouse screen-coords + retarget: pi-tui lib 400
+(3/4 runs green; flakes pre-existing on HEAD), clippy/fmt clean,
+conversion 100.00%, parity tui + dashboard OK. TUI-014/026/045/047
+notes extended, no status change (58/318). Committed `070d3bd`,
+pushed, hashes match. Next: Wave D slice 2 (alt-screen search,
+editor/input/select-list deltas).
+
 ## Latest checkpoint — 2026-09-16 — Wave C provider lanes committed + pushed
 
 Explicit-cache TTL (`ttl: 30m`, no retention string on explicit-mode

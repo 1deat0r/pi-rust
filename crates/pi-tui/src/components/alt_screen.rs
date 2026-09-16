@@ -332,6 +332,56 @@ pub fn search_match_key(m: &SearchMatch) -> String {
     }
 }
 
+/// Search result with a change flag (upstream 0.85.1 `AltScreenSearchResult`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AltScreenSearchResult {
+    pub matches: Vec<SearchMatch>,
+    pub changed: bool,
+}
+
+/// Cached search corpus + matches while rendered lines are unchanged
+/// (upstream 0.85.1 `AltScreenSearchIndex`: rebuilds the corpus only when
+/// lines change, recomputes matches only when lines or the normalized query
+/// change).
+#[derive(Debug, Default)]
+pub struct AltScreenSearchIndex {
+    source_lines: Option<Vec<String>>,
+    normalized_query: Option<String>,
+    matches: Vec<SearchMatch>,
+}
+
+impl AltScreenSearchIndex {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn search(&mut self, lines: &[String], query: &str) -> AltScreenSearchResult {
+        let source_changed = match &self.source_lines {
+            Some(cached) => {
+                cached.len() != lines.len() || cached.iter().zip(lines.iter()).any(|(a, b)| a != b)
+            }
+            None => true,
+        };
+        if source_changed {
+            self.source_lines = Some(lines.to_vec());
+        }
+        let normalized = normalize_query(query).to_lowercase();
+        let changed = source_changed || self.normalized_query.as_deref() != Some(&normalized);
+        if changed {
+            self.normalized_query = Some(normalized.clone());
+            self.matches = if normalized.is_empty() {
+                Vec::new()
+            } else {
+                find_alt_screen_search_matches(lines, query)
+            };
+        }
+        AltScreenSearchResult {
+            matches: self.matches.clone(),
+            changed,
+        }
+    }
+}
+
 /// Search input bar rendered as a reversed-video title row plus an input.
 pub struct AltScreenSearchComponent {
     input: crate::components::input::Input,
@@ -343,10 +393,12 @@ pub struct AltScreenSearchComponent {
 
 impl Default for AltScreenSearchComponent {
     fn default() -> Self {
+        // Upstream 0.85.1 constructs `new Input({ prompt: " ", placeholder:
+        // "Find in transcript" })`.
+        let mut input = crate::components::input::Input::new(" ");
+        input.set_placeholder("Find in transcript");
         Self {
-            // Upstream constructs `new Input()`, whose renderer uses the
-            // canonical `> ` prompt for the query row.
-            input: crate::components::input::Input::new("> "),
+            input,
             result_count: 0,
             result_index: -1,
             focused: false,
@@ -483,5 +535,45 @@ mod tests {
 
         flashes.clear();
         assert!(flashes.render(20).is_empty());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod search_index_tests {
+    use super::*;
+
+    #[test]
+    fn partial_span_match_clips_to_match_columns() {
+        // Span clipping already holds via per-byte mapping; retained as the
+        // contract pin for the span-index corpus rewrite.
+        let lines = vec!["hello world foo".to_string()];
+        let matches = find_alt_screen_search_matches(&lines, "lo wo");
+        assert_eq!(matches.len(), 1, "got: {matches:?}");
+        let segments = &matches[0].segments;
+        assert!(!segments.is_empty());
+        assert_eq!(segments[0].start_col, 3, "got: {segments:?}");
+        assert_eq!(segments.last().unwrap().end_col, 8, "got: {segments:?}");
+    }
+
+    #[test]
+    fn search_index_caches_corpus_and_reports_changed() {
+        // 0.85.1 upstream `AltScreenSearchIndex`: corpus cached while lines
+        // are unchanged; `changed` is true only when lines or the normalized
+        // query change. RED: index does not exist.
+        let mut index = AltScreenSearchIndex::new();
+        let lines = vec!["hello world".to_string()];
+        let first = index.search(&lines, "hello");
+        assert!(first.changed);
+        assert_eq!(first.matches.len(), 1);
+        let same = index.search(&lines, "hello");
+        assert!(!same.changed);
+        assert_eq!(same.matches.len(), 1);
+        let new_query = index.search(&lines, "world");
+        assert!(new_query.changed);
+        assert_eq!(new_query.matches.len(), 1);
+        let new_lines = vec!["hello world!".to_string()];
+        let changed_lines = index.search(&new_lines, "world");
+        assert!(changed_lines.changed);
     }
 }

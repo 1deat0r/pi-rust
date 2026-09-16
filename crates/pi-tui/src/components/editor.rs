@@ -526,6 +526,18 @@ impl Default for EditorOptions {
 
 fn create_scroll_border(direction: &str, hidden_line_count: usize, width: usize) -> String {
     let available_width = width;
+    // 0.85.1 upstream: centered ` ↑ N more ` label when it fits.
+    let label = format!(" {direction} {hidden_line_count} more ");
+    let label_width = visible_width(&label);
+    if label_width + 2 <= available_width {
+        let left_width = (available_width - label_width) / 2;
+        return format!(
+            "{}{}{}",
+            "─".repeat(left_width),
+            label,
+            "─".repeat(available_width - left_width - label_width)
+        );
+    }
     let indicator = format!("─── {direction} {hidden_line_count} more ");
     let indicator_w = visible_width(&indicator);
     if indicator_w <= available_width {
@@ -3115,3 +3127,29 @@ impl Component for Editor {
 #[path = "editor_tests.rs"]
 #[cfg(test)]
 mod editor_tests;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod scroll_border_tests {
+    use super::*;
+
+    #[test]
+    fn scroll_border_centers_count_label_when_it_fits() {
+        // 0.85.1 upstream `createScrollBorder`: centered ` ↑ N more `
+        // label when it fits, legacy left-anchored indicator otherwise.
+        // RED: current border is always left-anchored.
+        let centered = create_scroll_border("↑", 3, 30);
+        // Centered: roughly equal dashes on both sides of the label
+        // (upstream centers; legacy left-anchors with 3 leading dashes).
+        let label_pos = centered.find("↑ 3 more").unwrap();
+        let left_dashes = centered[..label_pos].chars().filter(|&c| c == '─').count();
+        let right_dashes = centered[label_pos..].chars().filter(|&c| c == '─').count();
+        assert!(
+            left_dashes >= 8 && right_dashes >= 8,
+            "not centered: {centered:?}"
+        );
+        assert_eq!(visible_width(&centered), 30);
+        let narrow = create_scroll_border("↓", 12, 10);
+        assert_eq!(visible_width(&narrow), 10);
+    }
+}
