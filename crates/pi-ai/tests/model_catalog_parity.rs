@@ -361,6 +361,57 @@ fn baseten_models_send_session_affinity_upstream_9629() {
 }
 
 #[test]
+fn google_thinking_levels_derive_from_models_dev_upstream_9455() {
+    // Regression pin for upstream #9455 (aa50fe778): Google, Vertex,
+    // and OpenCode thinking maps derive from models.dev effort
+    // metadata instead of regex rules; Gemma 4 keeps its toggle map.
+    use pi_ai::model::get_supported_thinking_levels;
+    let providers = builtin_providers();
+    let find = |provider: &str, id: &str| {
+        providers
+            .iter()
+            .find(|p| p.id == provider)
+            .unwrap_or_else(|| panic!("missing provider {provider}"))
+            .models
+            .iter()
+            .find(|m| m.id == id)
+            .unwrap_or_else(|| panic!("missing {provider} model {id}"))
+    };
+    let levels = |provider: &str, id: &str| {
+        get_supported_thinking_levels(find(provider, id))
+            .iter()
+            .map(|level| level.as_str().to_string())
+            .collect::<Vec<_>>()
+    };
+    for provider in ["google", "google-vertex"] {
+        assert!(
+            levels(provider, "gemini-3.6-flash").contains(&"minimal".to_string()),
+            "{provider} gemini-3.6-flash must support minimal"
+        );
+        assert_eq!(
+            levels(provider, "gemini-3.8-flash"),
+            ["low", "medium", "high"],
+            "{provider} gemini-3.8-flash levels"
+        );
+        assert_eq!(
+            levels(provider, "gemini-3.1-pro-preview"),
+            ["low", "medium", "high"],
+            "{provider} gemini-3.1-pro-preview levels"
+        );
+    }
+    assert_eq!(
+        levels("opencode", "gemini-3.8-flash"),
+        ["low", "medium", "high"],
+        "opencode gemini-3.8-flash levels"
+    );
+    assert_eq!(
+        levels("google", "gemma-4-31b-it"),
+        ["minimal", "high"],
+        "google gemma-4-31b-it levels"
+    );
+}
+
+#[test]
 fn image_catalog_refresh_matches_upstream_drift() {
     // Regression pin for the post-pin image catalog refresh
     // (bdee230f1): Microsoft image models renamed to "Microsoft AI",

@@ -2,6 +2,16 @@
 
 ## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
+### Drift slice E — Google thinking maps
+
+Ported upstream #9455 (aa50fe778): thinking maps derive from
+models.dev effort metadata for 32 Google/Vertex/OpenCode models
+(Gemma 4 fallback kept). New pin mirrors upstream providers test,
+TDD red-first. No row promoted (data-correction slice). Gate green:
+pi-ai lib 474/474, catalog pin, pi-ai strict clippy, fmt,
+conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then drift slice F.
+
 ### Drift slice D — image refresh
 
 Ported post-pin image refresh (bdee230f1): 4 renames + 2 additions.

@@ -2,6 +2,16 @@
 
 ## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
+### Drift slice E — Google thinking maps (uncommitted)
+
+Upstream #9455 (aa50fe778): 32 Google/Vertex/OpenCode thinking maps
+derive from models.dev effort metadata (Gemma 4 fallback kept). New
+pin mirrors upstream providers test, TDD red-first. pi-ai lib
+474/474, pi-ai strict clippy clean, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
+promoted; metrics unchanged. Next: commit + push, then drift slice
+F.
+
 ### Drift slice D — image refresh committed + pushed
 
 Post-pin image refresh (bdee230f1): 4 renames + 2 additions,
@@ -12,11 +22,7 @@ parity dashboard OK (58/318, upstream=d7296c0). No row promoted;
 metrics unchanged. Committed `d1006d0`, pushed, hashes match. Next:
 drift slice E.
 
-Post-pin image refresh (bdee230f1): 4 renames + 2 additions. New
-catalog pin green, TDD red-first. pi-ai lib 474/474, pi-ai strict
-clippy clean, fmt clean, conversion 100.00% (166/166), parity
-dashboard OK (58/318, upstream=d7296c0). No row promoted; metrics
-unchanged. Next: commit + push, then drift slice E.
+## Day summary — 2026-09-16/17 — Wave C provider sweep (13 slices, all pushed)
 
 ### Drift slice C — clipboard fail-closed committed + pushed
 
