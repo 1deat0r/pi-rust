@@ -1,5 +1,16 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
+
+### Drift slice A — Baseten session affinity
+
+Ported upstream #9629 (6671c6047): `sendSessionAffinityHeaders`
+on all 20 Baseten entries (lane already honored it). New catalog
+pin, TDD red-first. No row promoted (data-correction slice). Gate
+green: pi-ai lib 474/474, catalog pin, pi-ai strict clippy, fmt,
+conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then drift slice B.
+
 ## Active 2026-09-16 checkpoint — Wave C slice: Bedrock 1h
 
 Ported upstream #9457 (8a7b0c03d): Bedrock 1h cache-write

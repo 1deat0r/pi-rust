@@ -1,5 +1,20 @@
 # Full Pi → pi-rust Conversion Ledger
 
+## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
+
+### Drift slice A: Baseten affinity (last updated 2026-09-17)
+
+Slice A (upstream #9629, 6671c6047, part of the 12-commit drift
+d7296c0 → e4c75a732 fetched 2026-09-17): all 20 Baseten catalog entries gain
+`sendSessionAffinityHeaders: true` (lane already honored the flag;
+wire proof lives in-module). New catalog pin (every entry opts in).
+TDD red first. Gate: pi-ai lib 474/474, catalog pin green, pi-ai
+strict clippy clean, fmt clean, conversion 100.00% (166/166), parity
+dashboard OK (upstream=d7296c0). No parity row promoted
+(data-correction slice). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).

@@ -332,6 +332,35 @@ fn retired_codex_models_are_absent_upstream_9394() {
 }
 
 #[test]
+fn baseten_models_send_session_affinity_upstream_9629() {
+    // Regression pin for upstream #9629 (6671c6047): Baseten automatic
+    // prompt caching needs session affinity so related requests land on
+    // the same replica.
+    let providers = builtin_providers();
+    let baseten = providers
+        .iter()
+        .find(|provider| provider.id == "baseten")
+        .expect("Baseten provider");
+    assert!(!baseten.models.is_empty());
+    for model in &baseten.models {
+        assert_eq!(
+            model
+                .compat
+                .as_ref()
+                .and_then(|compat| compat.get("sendSessionAffinityHeaders"))
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "{} must send session affinity",
+            model.id
+        );
+    }
+    // Wire proof lives in-module
+    // (`openrouter_session_affinity_header_is_opt_in_and_overridable`
+    // covers the openai-format header set); the data contract here is
+    // that every Baseten entry opts in.
+}
+
+#[test]
 fn fireworks_thinking_metadata_matches_upstream_9323() {
     // Regression pin for upstream #9323 (6b94ae2ec): Fireworks
     // Messages models carry unsigned-thinking replay + session
