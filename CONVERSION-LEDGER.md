@@ -2,6 +2,22 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Drift slice C: clipboard fail-closed (last updated 2026-09-17)
+
+Slice C (upstream #9618, 3349e1db1 + 60e7e76bd, part of the drift):
+local clipboard failures no longer fall back to an unverified OSC 52
+write — only remote sessions (SSH/MOSH markers) may use the OSC 52
+fallback; local failures fail closed. The renderer already surfaced
+backend error text (the 60e7e76bd half), so the gap was the
+`copy_sync` condition alone. New PATH-shimmed pin (local DISPLAY
+failure → Err; remote SSH → Ok via OSC 52), TDD red first. Gate:
+clipboard 6/6, mermaid 3/3, fmt clean, conversion 100.00% (166/166),
+parity dashboard OK (upstream=d7296c0). Pre-existing failures
+verified identical on clean HEAD. No parity row promoted
+(TUI-surface deterministic slice). Metrics unchanged (implementation
+111/266, deterministic evidence 107/266, runtime 59/266, non-TUI
+overall 58/266, whole-product 58/318).
+
 ### Drift slice B: fallback overrides (last updated 2026-09-17)
 
 Slice B (upstream #9294, b03a367a4, part of the drift): models.json

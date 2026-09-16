@@ -2,6 +2,16 @@
 
 ## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
+### Drift slice C — clipboard fail-closed (uncommitted)
+
+Upstream #9618 (3349e1db1; renderer half already ported): OSC 52
+fallback remote-only, local failures fail closed. New PATH-shimmed
+pin green, TDD red-first. Clipboard 6/6, mermaid 3/3, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged.
+Pre-existing failures unchanged on clean HEAD. Next: commit + push,
+then drift slice D.
+
 ### Drift slice B — fallback overrides committed + pushed
 
 Upstream #9294 (b03a367a4): `allowedFallbackModels` shape
@@ -11,12 +21,7 @@ supported it). Scoped suites 32/32, fmt clean, conversion 100.00%
 promoted; metrics unchanged. Committed `ee723ae`, pushed, hashes
 match. Next: drift slice C.
 
-Upstream #9294 (b03a367a4): `allowedFallbackModels` shape
-validation + merge pins green, TDD red-first (lane + merge already
-supported it). Scoped suites 32/32, fmt clean, conversion 100.00%
-(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
-promoted; metrics unchanged. Pre-existing failures unchanged on
-clean HEAD. Next: commit + push, then drift slice C.
+## Day summary — 2026-09-16/17 — Wave C provider sweep (13 slices, all pushed)
 
 ### Drift slice A — Baseten affinity committed + pushed
 

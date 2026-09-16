@@ -234,7 +234,10 @@ fn copy_sync(text: String, env: &[(String, String)], platform: &str) -> Result<(
     }
 
     let remote = is_remote_session(env);
-    if (remote || !copied) && emit_osc52(&text, env) {
+    // Upstream #9618: only remote sessions may use the OSC 52 fallback.
+    // A local write that no backend accepted fails closed instead of
+    // reporting an unverified terminal escape as success.
+    if remote && emit_osc52(&text, env) {
         copied = true;
     }
     if copied {
@@ -637,6 +640,44 @@ mod tests {
     fn malformed_images_are_rejected() {
         assert!(convert_bmp_to_png(b"BM").is_none());
         assert!(!valid_image_bytes(b"not png", "image/png"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_linux_failure_does_not_fall_back_to_unverified_osc52_upstream_9618() {
+        // Upstream #9618: an unverified local OSC 52 write must not
+        // report success. Only remote sessions may use the OSC 52
+        // fallback; local failures fail closed.
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("pi-clipboard-osc52-test-{}", Uuid::new_v4()));
+        fs::create_dir(&root).expect("create fixture directory");
+        for name in ["xclip", "xsel"] {
+            let path = root.join(name);
+            fs::write(&path, "#!/bin/sh\nexit 1\n").expect("write fixture command");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+                .expect("make fixture command executable");
+        }
+        let environment = vec![
+            (
+                "PATH".to_string(),
+                format!("{}:/usr/bin:/bin", root.display()),
+            ),
+            ("DISPLAY".to_string(), ":0".to_string()),
+            ("TERM".to_string(), "xterm-256color".to_string()),
+        ];
+        let result = copy_sync("hello".to_string(), &environment, "linux");
+        assert!(
+            result.is_err(),
+            "local clipboard failure must fail closed, got {result:?}"
+        );
+
+        let mut remote = environment.clone();
+        remote.push(("SSH_CONNECTION".to_string(), "client server".to_string()));
+        // Remote sessions may still report the OSC 52 write as success
+        // (bytes go to the test stdout; the return value is the pin).
+        assert!(copy_sync("hello".to_string(), &remote, "linux").is_ok());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

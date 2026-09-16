@@ -2,6 +2,16 @@
 
 ## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
+### Drift slice C — clipboard fail-closed
+
+Ported upstream #9618 (3349e1db1; renderer half already ported):
+OSC 52 fallback is remote-only; local failures fail closed. New
+PATH-shimmed pin, TDD red-first. No row promoted (TUI deterministic
+slice). Gate green: clipboard 6/6, mermaid 3/3, fmt, conversion
+100.00% (166/166), parity dashboard OK (upstream=d7296c0, 58/318).
+Pre-existing failures unchanged on clean HEAD. Next: commit + push,
+then drift slice D.
+
 ### Drift slice B — fallback overrides
 
 Ported upstream #9294 (b03a367a4): `allowedFallbackModels` shape
