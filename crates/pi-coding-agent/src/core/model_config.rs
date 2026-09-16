@@ -654,6 +654,9 @@ fn validate_compat(value: &Value, path: &str, errors: &mut Vec<SchemaError>) {
             );
         }
     }
+    // vLLM scheduler priority (upstream #9004): optional number, off by
+    // default; the completions lane sends it as top-level `priority`.
+    validate_number_field(object, "vllmPriority", path, false, errors);
 }
 
 fn validate_model(value: &Value, path: &str, override_model: bool, errors: &mut Vec<SchemaError>) {
@@ -1126,6 +1129,56 @@ mod tests {
         let cfg = ModelConfig::load(Some(&path));
         assert!(cfg.get_error().is_none());
         assert_eq!(cfg.get_provider_ids().count(), 0);
+    }
+
+    #[test]
+    fn vllm_priority_accepted_as_optional_compat_number() {
+        let config = ModelConfig::from_value(serde_json::json!({
+            "providers": {
+                "vllm": {
+                    "baseUrl": "https://vllm.example.com/v1",
+                    "api": "openai-completions",
+                    "models": [{
+                        "id": "background-worker",
+                        "compat": { "vllmPriority": 10 }
+                    }]
+                }
+            }
+        }))
+        .expect("vllmPriority is an optional compat number");
+        let models = config
+            .get_provider("vllm")
+            .expect("vllm provider")
+            .models
+            .as_ref()
+            .expect("models");
+        assert_eq!(
+            models[0]
+                .compat
+                .as_ref()
+                .and_then(|compat| compat.get("vllmPriority")),
+            Some(&serde_json::json!(10))
+        );
+
+        let rejected = ModelConfig::from_value(serde_json::json!({
+            "providers": {
+                "vllm": {
+                    "baseUrl": "https://vllm.example.com/v1",
+                    "api": "openai-completions",
+                    "models": [{
+                        "id": "background-worker",
+                        "compat": { "vllmPriority": "high" }
+                    }]
+                }
+            }
+        }));
+        let errors = rejected.expect_err("non-numeric vllmPriority must be rejected");
+        assert!(
+            errors
+                .iter()
+                .any(|(path, _)| path.ends_with("compat.vllmPriority")),
+            "unexpected errors: {errors:?}"
+        );
     }
 
     #[test]

@@ -84,6 +84,11 @@ pub struct OpenAiCompletionsCompat {
     pub deferred_tools_mode: Option<String>,
     pub session_affinity_format: String, // "openai" | "openrouter" | "openai-nosession"
     pub supports_long_cache_retention: bool,
+    /// vLLM scheduler priority sent as the top-level `priority` request
+    /// field (upstream `OpenAICompletionsCompat.vllmPriority`, #9004). Off
+    /// by default (`None` omits the field); never set on the generated
+    /// catalog.
+    pub vllm_priority: Option<i64>,
     /// Provider compatibility values resolved into `chat_template_kwargs`.
     pub chat_template_kwargs: BTreeMap<String, Value>,
     /// Provider compatibility values resolved into `chat_template_args`.
@@ -210,6 +215,7 @@ impl OpenAiCompletionsCompat {
                 || is_cloudflare_ai_gateway
                 || is_nvidia
                 || is_ant_ling),
+            vllm_priority: None,
             chat_template_kwargs: BTreeMap::new(),
             chat_template_args: BTreeMap::new(),
         }
@@ -287,6 +293,10 @@ impl OpenAiCompletionsCompat {
                 .unwrap_or(detected.session_affinity_format),
             supports_long_cache_retention: get_bool("supportsLongCacheRetention")
                 .unwrap_or(detected.supports_long_cache_retention),
+            vllm_priority: compat
+                .get("vllmPriority")
+                .and_then(Value::as_i64)
+                .or(detected.vllm_priority),
             chat_template_kwargs: get_object("chatTemplateKwargs"),
             chat_template_args: get_object("chatTemplateArgs"),
         }
@@ -1277,6 +1287,12 @@ pub fn build_params(
     // path.
     params.insert("messages".into(), json!(messages));
 
+    // vLLM scheduler priority (upstream #9004): top-level `priority` next
+    // to tool_choice, before thinking params.
+    if let Some(priority) = compat.vllm_priority {
+        params.insert("priority".into(), json!(priority));
+    }
+
     // Thinking formats.
     apply_thinking_params(model, options, compat, &mut params);
 
@@ -1452,6 +1468,7 @@ fn build_params_for_chat_options(
         params["tool_choice"] = serde_json::to_value(tool_choice)
             .map_err(|error| format!("failed to serialize tool choice: {error}"))?;
     }
+
     Ok(params)
 }
 
@@ -3247,6 +3264,30 @@ mod tests {
         assert_eq!(compat.thinking_format, "openai");
         assert!(compat.supports_strict_mode);
         assert_eq!(compat.session_affinity_format, "openai");
+        assert_eq!(compat.vllm_priority, None);
+    }
+
+    #[test]
+    fn vllm_priority_resolves_from_model_compat() {
+        let mut m = model("background-worker", "vllm-host");
+        m.compat = Some(serde_json::json!({ "vllmPriority": 10 }));
+        let compat = OpenAiCompletionsCompat::get(&m);
+        assert_eq!(compat.vllm_priority, Some(10));
+    }
+
+    #[test]
+    fn vllm_priority_wire_payload_pins() {
+        let context = context(None, vec![], vec![]);
+        let m = model("interactive", "vllm-host");
+        let compat = OpenAiCompletionsCompat::get(&m);
+        let params = build_params(&m, &context, None, &compat, "short").unwrap();
+        assert!(params.get("priority").is_none());
+
+        let mut prioritized = model("background-worker", "vllm-host");
+        prioritized.compat = Some(serde_json::json!({ "vllmPriority": 10 }));
+        let compat = OpenAiCompletionsCompat::get(&prioritized);
+        let params = build_params(&prioritized, &context, None, &compat, "short").unwrap();
+        assert_eq!(params["priority"], json!(10));
     }
 
     #[test]

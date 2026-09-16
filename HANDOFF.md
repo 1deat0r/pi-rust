@@ -1,6 +1,18 @@
 # Pi → pi-rust conversion handoff
 
-## Latest checkpoint — 2026-09-16 — Wave E slice 3 committed + pushed
+## Latest checkpoint — 2026-09-16 — Wave C slice: vLLM priority (uncommitted)
+
+Upstream #9004 (`vllmPriority` compat → top-level `priority` on the
+shared openai-completions lane): new `vllm_priority: Option<i64>`
+(default omit), `getCompat` resolution, `build_params` injection before
+thinking params, models.json schema accepts optional numeric
+`vllmPriority`. Tests: pi-ai lib 467/467 (2 new pins), model_config
+14/14 (1 new schema pin), pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Pre-existing
+clippy failures verified identical on clean HEAD (pi-tui dead code,
+pi-agent module-inception). Next: commit + push, then next Wave C
+remainder or Wave E visual parity.
 
 Thinking persistence on the anthropic lane (0.85.1): pi-ai lib 465
 green, clippy/fmt clean, conversion 100.00%, parity audits OK.

@@ -1,5 +1,22 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-16 checkpoint — Wave C slice: vLLM priority compat flag
+
+Ported upstream #9004 (`vllmPriority` compat → top-level `priority` on
+the shared openai-completions lane): new `vllm_priority: Option<i64>`
+compat field (default omit), `getCompat` resolution from model compat,
+`build_params` injection before thinking params, models.json schema
+accepts optional numeric `vllmPriority`. Tests: 2 pi-ai pins
+(resolution + set/omit wire payload), 1 model-config schema pin (accept
+numeric / reject string). No row promoted (shared-lane deterministic
+slice; live vLLM scheduler behavior offline-unverifiable). Gate green:
+pi-ai lib 467/467, model_config 14/14, pi-ai strict clippy, fmt,
+conversion 100.00% (166/166), parity dashboard OK (upstream=d7296c0,
+58/318). Pre-existing clippy failures unchanged on clean HEAD (pi-tui
+dead code, pi-agent module-inception). Next: commit + push, then next
+Wave C remainder (Cloudflare binding-fetch successor, Copilot Responses
+routing) or Wave E visual parity lift-off.
+
 ## Active 2026-09-16 checkpoint — oracle re-pinned to upstream v0.85.1
 
 Parity target is now upstream `d7296c063b7971a7298769cfff1a167a9a16f8ed`

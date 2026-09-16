@@ -4,7 +4,24 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
-## Current status (last updated 2026-09-16 — re-pinned to upstream v0.85.1)
+## Current status (last updated 2026-09-16 — Wave C slice: vLLM priority)
+
+Wave C slice (0.85.1, upstream #9004): `vllmPriority` compat flag ported
+to the shared openai-completions lane. New `OpenAiCompletionsCompat::
+vllm_priority: Option<i64>` (default `None`), resolved from model compat
+`vllmPriority` through `getCompat`, injected as top-level `priority` in
+`build_params` before thinking params (upstream order: after tool_choice).
+`models.json` schema accepts optional numeric `vllmPriority` in compat.
+Tests: 2 new pi-ai pins (resolution + set/omit wire payload), 1 new
+model-config schema pin (accept numeric / reject string). Gate: pi-ai lib
+467/467, model_config 14/14, pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK (upstream=d7296c0).
+No parity row promoted (shared-lane deterministic slice; live vLLM
+scheduler behavior unverifiable offline). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime 59/266,
+non-TUI overall 58/266, whole-product 58/318).
+
+## Current status (2026-09-16 — re-pinned to upstream v0.85.1)
 
 Oracle re-pin 2026-09-16: upstream `5cd93f6` (v0.84.2, 2026-08-20) →
 `d7296c063b7971a7298769cfff1a167a9a16f8ed` (v0.85.1, 2026-09-15). Workspace
