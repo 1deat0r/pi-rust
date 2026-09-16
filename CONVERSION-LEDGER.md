@@ -2,6 +2,19 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Transcript leaf 4: initial-message helpers (last updated 2026-09-17)
+
+Leaf 4 of the sectioned-transcript port: `create_initial_system_message`
+(empty stays empty), `normalize_context` (flat prompt + tools entry
+point), `initial_system_message` / `without_initial_system_message`
+with a fold/strip pin. No callers yet. Gate: pi-ai lib 483/483 (1
+new test, 7 transcript tests), pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0). No parity row promoted (new surface, no behavior
+change). Metrics unchanged (implementation 111/266, deterministic
+evidence 107/266, runtime 59/266, non-TUI overall 58/266,
+whole-product 58/318).
+
 ### Transcript wave (a): mid-convo capability flags (last updated 2026-09-17)
 
 Wave (a) of the transcript adoption: `supportsMidConvoSystemMessages`

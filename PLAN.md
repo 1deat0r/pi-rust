@@ -2,6 +2,16 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Transcript leaf 4 — initial-message helpers
+
+Ported upstream `createInitialSystemMessage`/`normalizeContext`/
+initial/strip helpers with a fold/strip pin, no callers yet. No
+row promoted (new surface). Gate green: pi-ai lib 483/483, pi-ai
+strict clippy, fmt, conversion 100.00% (166/166), parity dashboard
+OK (upstream=d7296c0, 58/318). Next: commit + push, then wave (b)
+adapter signatures (flag-day migration, queued with loop +
+persistence).
+
 ### Transcript wave (a) — mid-convo capability flags
 
 Parsed `supportsMidConvoSystemMessages`/`supportsMidConvoToolChanges`

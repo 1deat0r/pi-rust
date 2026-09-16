@@ -41,6 +41,66 @@ impl TranscriptMessage {
     }
 }
 
+/// Build the leading system message for a prompt and tool set.
+/// Returns `None` when both are empty, so an empty transcript stays
+/// empty (upstream `createInitialSystemMessage`).
+pub fn create_initial_system_message(
+    system_prompt: Option<&str>,
+    tools: &[Tool],
+    timestamp: u64,
+) -> Option<SystemMessage> {
+    let has_prompt = system_prompt.is_some_and(|prompt| !prompt.is_empty());
+    if !has_prompt && tools.is_empty() {
+        return None;
+    }
+    Some(SystemMessage {
+        content: system_prompt.unwrap_or("").to_string(),
+        sections: None,
+        tools_added: if tools.is_empty() {
+            None
+        } else {
+            Some(tools.to_vec())
+        },
+        tools_removed: None,
+        replace: None,
+        timestamp,
+    })
+}
+
+/// Fold a flat prompt plus tools into a leading system message.
+/// This is the entry point that produces a transcript from the
+/// legacy `Context` shape (upstream `normalizeContext`).
+pub fn normalize_context(
+    system_prompt: Option<&str>,
+    tools: &[Tool],
+    timestamp: u64,
+) -> Vec<TranscriptMessage> {
+    match create_initial_system_message(system_prompt, tools, timestamp) {
+        Some(head) => vec![TranscriptMessage::System(head)],
+        None => Vec::new(),
+    }
+}
+
+/// Return the leading system message, if the transcript starts with
+/// one (upstream `getInitialSystemMessage`).
+pub fn initial_system_message(messages: &[TranscriptMessage]) -> Option<&SystemMessage> {
+    match messages.first() {
+        Some(TranscriptMessage::System(message)) => Some(message),
+        _ => None,
+    }
+}
+
+/// Drop the leading system message for APIs that carry the prompt
+/// outside the message list (upstream
+/// `withoutInitialSystemMessage`).
+pub fn without_initial_system_message(messages: &[TranscriptMessage]) -> Vec<TranscriptMessage> {
+    if initial_system_message(messages).is_some() {
+        messages[1..].to_vec()
+    } else {
+        messages.to_vec()
+    }
+}
+
 /// Render a system message as a complete prompt: its content followed
 /// by its sections (upstream `getSystemMessageText`).
 pub fn system_message_text(message: &SystemMessage) -> String {
@@ -529,5 +589,29 @@ mod tests {
                 ("cwd".to_string(), "<cwd>\n/work\n</cwd>".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn initial_message_helpers_fold_and_strip_the_leading_prompt() {
+        assert!(create_initial_system_message(None, &[], 0).is_none());
+        assert!(create_initial_system_message(Some(""), &[], 0).is_none());
+        let head = create_initial_system_message(Some("You are pi."), &[tool("read")], 7)
+            .expect("leading message");
+        assert_eq!(head.content, "You are pi.");
+        assert_eq!(head.tools_added, Some(vec![tool("read")]));
+        assert_eq!(head.timestamp, 7);
+
+        let normalized = normalize_context(Some("You are pi."), &[tool("read")], 7);
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(
+            initial_system_message(&normalized).map(|m| m.content.as_str()),
+            Some("You are pi.")
+        );
+        assert!(initial_system_message(&[user()]).is_none());
+
+        let stripped = without_initial_system_message(&normalized);
+        assert!(stripped.is_empty());
+        let intact = vec![user(), assistant()];
+        assert_eq!(without_initial_system_message(&intact), intact);
     }
 }

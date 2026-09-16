@@ -2,6 +2,16 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Transcript leaf 4 — initial-message helpers (uncommitted)
+
+Upstream initial-message helpers (`createInitialSystemMessage` /
+`normalizeContext` / initial/strip): fold/strip pin, no callers
+yet. pi-ai lib 483/483, pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Next:
+commit + push, then wave (b) adapter signatures (flag-day,
+queued with loop + persistence).
+
 ### Transcript wave (a) — capability flags committed + pushed
 
 `supportsMidConvoSystemMessages`/`supportsMidConvoToolChanges`
@@ -12,12 +22,7 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 `44f5679`, pushed, hashes match. Next: wave (b) (TranscriptContext
 adapter signatures).
 
-`supportsMidConvoSystemMessages`/`supportsMidConvoToolChanges`
-parsed + model-id gate with 2 pins (dead-code allows note wave
-(b)). pi-ai lib 482/482, pi-ai strict clippy clean, fmt clean,
-conversion 100.00% (166/166), parity dashboard OK (58/318,
-upstream=d7296c0). No row promoted; metrics unchanged. Next:
-commit + push, then wave (b).
+## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
 ### Transcript leaf 3 — provider adoption assessed (no slice)
 
