@@ -1,6 +1,45 @@
 # Pi → pi-rust conversion handoff
 
-## Latest checkpoint — 2026-09-16 — Wave C slice: Bedrock 1h committed + pushed
+## Day summary — 2026-09-16/17 — Wave C provider sweep (13 slices, all pushed)
+
+Thirteen Wave C slices landed on top of Wave E slice 3, every one
+committed + pushed with hashes matching `origin/main`:
+
+- 146b463 vLLM priority compat flag (#9004)
+- 18009a1 Copilot GPT→Responses routing (#9253)
+- 7ca3805 Codex unterminated SSE evidence (#9047, already-ported)
+- c3666d9 + fa2b7f3 tool_choice gating then pin-correct revert (#8607
+  superseded by 6b36eb592 — ledger records the correction honestly)
+- 602392a reasoning-detail delta merge (#8605)
+- 80da59b Mistral indexed tool-chunk merge (#8387)
+- 5019e94 GLM-5.2 reasoning_effort (#9375)
+- 9ac9ae9 supportsMaxOutputTokens (#8941)
+- 9e7f98e Responses error provider labels (#9298)
+- 492eca9 DeepSeek Flash refresh (#9423, counts 1354→1353)
+- 0dd1d33 retired GPT-5.4 Codex models (#9394, counts 1353→1351)
+- 26a3f6e Fireworks thinking metadata (#9323)
+- 5ff99c4 Bedrock 1h cache-write pricing (#9457)
+
+Assessed without slice (already ported or not narrowly expressible):
+strict tool-schema conversion, Google thinking maps, xAI routing +
+default, Copilot additional-tools compat, Codex end_turn, raw status
+preservation, Kimi/Responses user-agent (superseded at pin),
+Cloudflare binding-fetch successor (no fetch seam in this
+distribution), assistant-frame surface (Wave B/E territory), pending
+stop reason (27-file cross-cutting feature).
+
+State: conversion 100.00% (166/166); parity dashboard OK
+(upstream=d7296c0); metrics unchanged 58/318 (no row promoted —
+all slices deterministic-only; live/vendor evidence stays OPEN).
+pi-ai lib 474/474. Known reds, all verified identical on clean HEAD:
+offline fd-download tests, session_env parallel flakes, copilot
+gpt-4.1 filter, moonshot_and_nvidia list, pi-tui dead code + pi-agent
+module-inception clippy.
+
+Wave C provider lanes are now substantially closed. Recommended next:
+Wave E visual parity lift-off — requires human eyeballing per row
+(skill rule: never bulk-bless baselines), so it is a supervision
+checkpoint, not autonomous work.
 
 Upstream #9457 (8a7b0c03d): Bedrock 1h cache-write population from
 `cacheDetails`. New usage/cost pin green, TDD red-first. pi-ai lib
