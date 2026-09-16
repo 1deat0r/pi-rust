@@ -775,6 +775,55 @@ mod tests {
     }
 
     #[test]
+    fn model_override_replaces_allowed_fallback_models_upstream_9294() {
+        // Upstream #9294 (b03a367a4): a compat override replaces the
+        // server-side fallback list wholesale; an explicit empty array
+        // disables it.
+        let cfg: ModelConfig = ModelConfig::from_value(json!({
+            "providers": { "anthropic": { "baseUrl": "https://api.anthropic.com", "api": "anthropic-messages",
+                "modelOverrides": {
+                    "replaced": { "compat": { "allowedFallbackModels": [
+                        {"provider": "anthropic", "model": "claude-opus-5",
+                         "cost": {"input": 5, "output": 25, "cacheRead": 0.5, "cacheWrite": 6.25}}
+                    ] } },
+                    "disabled": { "compat": { "allowedFallbackModels": [] } }
+                } } }
+        })).unwrap();
+        let overrides = &cfg
+            .get_provider("anthropic")
+            .unwrap()
+            .model_overrides
+            .as_ref()
+            .unwrap();
+        let mut base = model("anthropic", "replaced");
+        base.compat = Some(json!({
+            "allowedFallbackModels": [
+                {"provider": "anthropic", "model": "old-model",
+                 "cost": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0}}
+            ]
+        }));
+        let replaced = apply_model_override(&base, &overrides["replaced"]);
+        assert_eq!(
+            replaced
+                .compat
+                .as_ref()
+                .and_then(|c| c.get("allowedFallbackModels")),
+            Some(&json!([
+                {"provider": "anthropic", "model": "claude-opus-5",
+                 "cost": {"input": 5, "output": 25, "cacheRead": 0.5, "cacheWrite": 6.25}}
+            ]))
+        );
+        let disabled = apply_model_override(&base, &overrides["disabled"]);
+        assert_eq!(
+            disabled
+                .compat
+                .as_ref()
+                .and_then(|c| c.get("allowedFallbackModels")),
+            Some(&json!([]))
+        );
+    }
+
+    #[test]
     fn oauth_requires_base_url() {
         let cfg: ModelConfig = ModelConfig::from_value(json!({
             "providers": { "radius-demo": { "oauth": "radius" } }

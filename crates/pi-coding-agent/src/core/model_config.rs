@@ -658,6 +658,54 @@ fn validate_compat(value: &Value, path: &str, errors: &mut Vec<SchemaError>) {
     // vLLM scheduler priority (upstream #9004): optional number, off by
     // default; the completions lane sends it as top-level `priority`.
     validate_number_field(object, "vllmPriority", path, false, errors);
+    // Anthropic server-side fallback overrides (upstream #9294): at most
+    // 3 entries with non-empty provider/model strings and a cost object;
+    // an explicit empty array disables server-side fallback.
+    if let Some(value) = object.get("allowedFallbackModels") {
+        let fallback_path = format!("{path}.allowedFallbackModels");
+        let Some(entries) = value.as_array() else {
+            schema_error(
+                errors,
+                fallback_path,
+                "Expected an array of at most 3 fallback models.",
+            );
+            return;
+        };
+        if entries.len() > 3 {
+            schema_error(
+                errors,
+                fallback_path,
+                "Expected an array of at most 3 fallback models.",
+            );
+            return;
+        }
+        for (index, entry) in entries.iter().enumerate() {
+            let entry_path = format!("{fallback_path}.{index}");
+            let Some(entry_object) = object_value(entry, &entry_path, errors) else {
+                continue;
+            };
+            for field in ["provider", "model"] {
+                match entry_object.get(field).and_then(Value::as_str) {
+                    Some(value) if !value.is_empty() => {}
+                    _ => schema_error(
+                        errors,
+                        format!("{entry_path}.{field}"),
+                        "Expected a non-empty string.",
+                    ),
+                }
+            }
+            match entry_object.get("cost") {
+                Some(cost) if cost.is_object() => {
+                    validate_cost(cost, &format!("{entry_path}.cost"), false, errors);
+                }
+                _ => schema_error(
+                    errors,
+                    format!("{entry_path}.cost"),
+                    "Expected a cost object.",
+                ),
+            }
+        }
+    }
 }
 
 fn validate_model(value: &Value, path: &str, override_model: bool, errors: &mut Vec<SchemaError>) {
@@ -1212,6 +1260,87 @@ mod tests {
                 .and_then(|compat| compat.get("supportsMaxOutputTokens")),
             Some(&serde_json::json!(false))
         );
+    }
+
+    #[test]
+    fn allowed_fallback_models_accepted_and_shape_checked_upstream_9294() {
+        // Upstream #9294 (b03a367a4): models.json overrides may replace
+        // or disable (`[]`) the server-side fallback list. Entries need
+        // non-empty provider/model strings and a cost object; at most 3.
+        let valid = serde_json::json!({
+            "providers": {
+                "anthropic": {
+                    "baseUrl": "https://api.anthropic.com",
+                    "api": "anthropic-messages",
+                    "modelOverrides": {
+                        "claude-fable-5": {
+                            "compat": {
+                                "allowedFallbackModels": [
+                                    {"provider": "anthropic", "model": "claude-opus-5",
+                                     "cost": {"input": 5, "output": 25, "cacheRead": 0.5, "cacheWrite": 6.25}},
+                                    {"provider": "anthropic", "model": "claude-opus-4-8",
+                                     "cost": {"input": 4, "output": 20, "cacheRead": 0.4, "cacheWrite": 5}}
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        ModelConfig::from_value(valid).expect("valid fallback override accepted");
+        let disabled = serde_json::json!({
+            "providers": {
+                "anthropic": {
+                    "baseUrl": "https://api.anthropic.com",
+                    "api": "anthropic-messages",
+                    "modelOverrides": {
+                        "claude-fable-5": {"compat": {"allowedFallbackModels": []}}
+                    }
+                }
+            }
+        });
+        ModelConfig::from_value(disabled).expect("empty fallback override disables");
+
+        for (case, compat) in [
+            (
+                "empty provider",
+                serde_json::json!({"provider": "", "model": "m",
+                "cost": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0}}),
+            ),
+            (
+                "missing cost",
+                serde_json::json!({"provider": "p", "model": "m"}),
+            ),
+            (
+                "four entries",
+                serde_json::json!([
+                    {"provider": "p", "model": "m1", "cost": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0}},
+                    {"provider": "p", "model": "m2", "cost": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0}},
+                    {"provider": "p", "model": "m3", "cost": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0}},
+                    {"provider": "p", "model": "m4", "cost": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0}}
+                ]),
+            ),
+        ] {
+            let value = serde_json::json!({
+                "providers": {
+                    "anthropic": {
+                        "baseUrl": "https://api.anthropic.com",
+                        "api": "anthropic-messages",
+                        "modelOverrides": {
+                            "claude-fable-5": {"compat": {"allowedFallbackModels": compat}}
+                        }
+                    }
+                }
+            });
+            let errors =
+                ModelConfig::from_value(value).expect_err("invalid fallback override rejected");
+            assert!(
+                errors
+                    .iter()
+                    .any(|(path, _)| path.contains("allowedFallbackModels")),
+                "{case}: unexpected errors: {errors:?}"
+            );
+        }
     }
 
     #[test]

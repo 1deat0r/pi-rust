@@ -2,6 +2,25 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Drift slice B: fallback overrides (last updated 2026-09-17)
+
+Slice B (upstream #9294, b03a367a4, part of the drift): models.json
+`modelOverrides[].compat.allowedFallbackModels` shape validation —
+array of at most 3 entries with non-empty provider/model strings
+and a cost object; explicit `[]` disables server-side fallback. The
+lane already read the key and `merge_compat` already replaced it
+wholesale, so the gap was validation only. New schema pin (accept
+replace + disable; reject empty-provider/missing-cost/4-entries)
+and new merge pin (replace + disable end-to-end through
+`apply_model_override`). TDD red first. Gate: model_config 17/17,
+provider_composer 17/17 (scoped suites 32/32), fmt clean, conversion
+100.00% (166/166), parity dashboard OK (upstream=d7296c0).
+Pre-existing failures verified identical on clean HEAD (find/grep/
+session_env lib tests; pi-tui/pi-agent clippy). No parity row
+promoted (config-surface deterministic slice). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Drift slice A: Baseten affinity (last updated 2026-09-17)
 
 Slice A (upstream #9629, 6671c6047, part of the 12-commit drift

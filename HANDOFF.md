@@ -2,6 +2,15 @@
 
 ## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
+### Drift slice B — fallback overrides (uncommitted)
+
+Upstream #9294 (b03a367a4): `allowedFallbackModels` shape
+validation + merge pins green, TDD red-first (lane + merge already
+supported it). Scoped suites 32/32, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
+promoted; metrics unchanged. Pre-existing failures unchanged on
+clean HEAD. Next: commit + push, then drift slice C.
+
 ### Drift slice A — Baseten affinity committed + pushed
 
 Upstream #9629 (6671c6047): `sendSessionAffinityHeaders` on all 20
@@ -11,14 +20,7 @@ Baseten entries. New catalog pin green, TDD red-first. pi-ai lib
 promoted; metrics unchanged. Committed `f83dc1e`, pushed, hashes
 match. Next: drift slice B.
 
-Upstream #9629 (6671c6047): `sendSessionAffinityHeaders` on all 20
-Baseten entries. New catalog pin green, TDD red-first. pi-ai lib
-474/474, pi-ai strict clippy clean, fmt clean, conversion 100.00%
-(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
-promoted; metrics unchanged. Next: commit + push, then drift slice B.
-
-Thirteen Wave C slices landed on top of Wave E slice 3, every one
-committed + pushed with hashes matching `origin/main`:
+## Day summary — 2026-09-16/17 — Wave C provider sweep (13 slices, all pushed)
 
 - 146b463 vLLM priority compat flag (#9004)
 - 18009a1 Copilot GPT→Responses routing (#9253)

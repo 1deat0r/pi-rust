@@ -2,6 +2,17 @@
 
 ## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
+### Drift slice B — fallback overrides
+
+Ported upstream #9294 (b03a367a4): `allowedFallbackModels` shape
+validation (≤3 entries, non-empty provider/model + cost; `[]`
+disables). Lane + merge already supported it. New schema + merge
+pins, TDD red-first. No row promoted (config deterministic slice).
+Gate green: scoped suites 32/32, fmt, conversion 100.00% (166/166),
+parity dashboard OK (upstream=d7296c0, 58/318). Pre-existing
+failures unchanged on clean HEAD. Next: commit + push, then drift
+slice C.
+
 ### Drift slice A — Baseten session affinity
 
 Ported upstream #9629 (6671c6047): `sendSessionAffinityHeaders`
