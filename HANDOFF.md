@@ -1,5 +1,15 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave C slice: Fireworks thinking committed + pushed
+
+Upstream #9323 (6b94ae2ec): Fireworks thinking metadata in vendored
+data + pin; lane already honored the flags; Wave E GLM test updated
+to corrected map. TDD red-first. pi-ai lib 473/473, catalog pin
+green, pi-ai strict clippy clean, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
+promoted; metrics unchanged. Committed `26a3f6e`, pushed, hashes
+match. Next: next Wave C remainder or Wave E visual parity lift-off.
+
 ## Latest checkpoint — 2026-09-16 — Wave C slice: Fireworks thinking (uncommitted)
 
 Upstream #9323 (6b94ae2ec): Fireworks thinking metadata in vendored
