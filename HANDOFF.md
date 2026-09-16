@@ -1,5 +1,15 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave C slice: tool_choice gating committed + pushed
+
+Upstream #8607 (fe37e9f9b): completions lane omits `tool_choice`
+without tools, forwards with tools. Old test corrected + new pin, TDD
+red-first. pi-ai lib 469/469, pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Committed
+`c3666d9`, pushed, hashes match. Next: next Wave C remainder or Wave E
+visual parity lift-off.
+
 ## Latest checkpoint — 2026-09-16 — Wave C slice: tool_choice gating (uncommitted)
 
 Upstream #8607 (fe37e9f9b): completions lane omits `tool_choice`
