@@ -12,13 +12,22 @@ pin mirrors upstream providers test, TDD red-first. pi-ai lib
 promoted; metrics unchanged. Committed `92c1aa9`, pushed, hashes
 match. Next: drift slice F.
 
-Upstream #9455 (aa50fe778): 32 Google/Vertex/OpenCode thinking maps
-derive from models.dev effort metadata (Gemma 4 fallback kept). New
-pin mirrors upstream providers test, TDD red-first. pi-ai lib
-474/474, pi-ai strict clippy clean, fmt clean, conversion 100.00%
-(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
-promoted; metrics unchanged. Next: commit + push, then drift slice
-F.
+## Drift assessment — remaining 7 commits need larger surfaces
+
+- 509ee2bd0 user-bash fail-closed (#9068): Rust has no
+  `emit_user_bash` caller (extension-routed bash unwired) — no
+  fallback behavior to fix. Blocked on the routing feature.
+- 9b791a4cc header-only session find (#9601): Rust `list()` is
+  already header-only — satisfied by construction, no slice.
+- 4c2d91339 hook type exports (#9511): TS-barrel concern only.
+- 1247476e6 + 9e05370b2 + e4c75a732 (eval markers, mid-conversation
+  system messages, prompt replace): all key off the sectioned
+  `SystemMessage` transcript-replay surface, which Rust lacks (flat
+  system prompt). Wave B-scale port, queued as one item.
+
+Drift goal complete: 5/12 commits ported as slices A–E, 7/12
+assessed (2 satisfied-by-construction, 1 TS-only, 4 blocked on
+larger surfaces with the next item queued).
 
 ### Drift slice D — image refresh committed + pushed
 
