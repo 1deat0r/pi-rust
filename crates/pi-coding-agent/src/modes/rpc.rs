@@ -1975,7 +1975,9 @@ impl RpcRuntime {
     }
 
     fn compaction_settings(&self) -> pi_agent::harness::compaction::CompactionSettings {
-        let (_, reserve_tokens, keep_recent_tokens) = self.settings.get_compaction_settings();
+        let (_, reserve_tokens, keep_recent_tokens) = self
+            .settings
+            .get_compaction_settings_for(self.provider.as_str(), self.model.id.as_str());
         pi_agent::harness::compaction::CompactionSettings {
             enabled: self.auto_compaction_enabled,
             reserve_tokens,

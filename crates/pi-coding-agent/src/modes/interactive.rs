@@ -1798,8 +1798,12 @@ struct InteractiveRuntime {
 
 fn interactive_compaction_settings(
     settings: &SettingsManager,
+    model: Option<(&str, &str)>,
 ) -> pi_agent::harness::compaction::CompactionSettings {
-    let (enabled, reserve_tokens, keep_recent_tokens) = settings.get_compaction_settings();
+    let (enabled, reserve_tokens, keep_recent_tokens) = match model {
+        Some((provider, model_id)) => settings.get_compaction_settings_for(provider, model_id),
+        None => settings.get_compaction_settings(),
+    };
     pi_agent::harness::compaction::CompactionSettings {
         enabled,
         reserve_tokens,
@@ -4766,7 +4770,10 @@ async fn compact_interactive(
     force: bool,
 ) -> Result<bool, String> {
     let operation = if force { "compact" } else { "auto-compact" };
-    let settings = interactive_compaction_settings(settings_manager);
+    let settings = interactive_compaction_settings(
+        settings_manager,
+        Some((runtime.provider.as_str(), runtime.model.id.as_str())),
+    );
     if force {
         // Upstream aborts before it reads or prepares the branch. Automatic
         // threshold compaction runs as part of the turn and must not do so.
@@ -6418,7 +6425,7 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
         max_retry_delay_ms,
         websocket_connect_timeout_ms: settings.get_websocket_connect_timeout_ms().ok().flatten(),
         retry_policy: crate::run::retry_policy_from_settings(&settings),
-        compaction_settings: interactive_compaction_settings(&settings),
+        compaction_settings: interactive_compaction_settings(&settings, None),
         persisted_until: 0,
         active_tool_names: None,
         cache_entries: Vec::new(),
@@ -8352,7 +8359,13 @@ pub async fn run_interactive_mode(args: &Args, settings: SettingsManager) -> Res
                                 "autocompact" => {
                                     settings.set_compaction_enabled(value == "true");
                                     runtime.compaction_settings =
-                                        interactive_compaction_settings(&settings);
+                                        interactive_compaction_settings(
+                                            &settings,
+                                            Some((
+                                                runtime.provider.as_str(),
+                                                runtime.model.id.as_str(),
+                                            )),
+                                        );
                                     invalidate_interactive_harness(&mut runtime);
                                 }
                                 "show-images" | "images" => {
@@ -12303,13 +12316,13 @@ mod tests {
     #[test]
     fn interactive_compaction_settings_follow_settings_manager() {
         let mut settings = SettingsManager::in_memory(crate::core::settings::SettingsMap::new());
-        let defaults = interactive_compaction_settings(&settings);
+        let defaults = interactive_compaction_settings(&settings, None);
         assert!(defaults.enabled);
         assert_eq!(defaults.reserve_tokens, 16_384);
         assert_eq!(defaults.keep_recent_tokens, 20_000);
 
         settings.set_compaction_enabled(false);
-        let disabled = interactive_compaction_settings(&settings);
+        let disabled = interactive_compaction_settings(&settings, None);
         assert!(!disabled.enabled);
         assert_eq!(disabled.reserve_tokens, defaults.reserve_tokens);
         assert_eq!(disabled.keep_recent_tokens, defaults.keep_recent_tokens);

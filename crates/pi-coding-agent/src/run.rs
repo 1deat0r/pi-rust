@@ -1777,7 +1777,8 @@ async fn maybe_auto_compact(
     settings: &SettingsManager,
     summarizer: &SimpleModels,
 ) -> Option<EntryNoStats> {
-    let (enabled, reserve_tokens, keep_recent_tokens) = settings.get_compaction_settings();
+    let (enabled, reserve_tokens, keep_recent_tokens) =
+        settings.get_compaction_settings_for(model.provider.as_str(), model.id.as_str());
     let compaction_settings = CompactionSettings {
         enabled,
         reserve_tokens,

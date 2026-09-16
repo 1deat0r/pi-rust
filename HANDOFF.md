@@ -1,5 +1,14 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave B runtime surface committed + pushed
+
+`RunContext`, tool memos, deferred-window options, `TextLine` splits,
+session values, context-gated fs defaults (`crates/pi-agent`): pi-agent
+lib 272/272 serial, run_context 4/4, wave_b2 4/4, workspace clippy/fmt
+clean, conversion 100.00%, parity register + dashboard OK. AGENT-015
+note extended, no status change (58/318). Committed `abdb07b`, pushed,
+hashes match. Next: Wave C provider lanes.
+
 ## Latest checkpoint — 2026-09-16 — Wave A search service committed + pushed
 
 `SessionSearchService` (0.85.1 contract) implemented scanning-backed in

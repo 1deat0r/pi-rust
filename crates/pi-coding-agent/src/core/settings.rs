@@ -1345,13 +1345,41 @@ impl SettingsManager {
     }
 
     pub fn get_compaction_reserve_tokens(&self) -> u64 {
-        self.g_nested_u64("compaction", "reserveTokens")
-            .unwrap_or(16384)
+        self.get_compaction_reserve_tokens_for("", "")
     }
 
     pub fn get_compaction_keep_recent_tokens(&self) -> u64 {
-        self.g_nested_u64("compaction", "keepRecentTokens")
+        self.get_compaction_keep_recent_tokens_for("", "")
+    }
+
+    /// 0.85.1 upstream `getCompactionTokenSetting`: per-model override
+    /// (exact `"provider/modelId"` key) wins over the ordinary setting,
+    /// which wins over the built-in default (16384 / 20000). Returns `None`
+    /// only when nothing resolves (unreachable with defaults, kept explicit
+    /// for caller clarity).
+    pub fn get_compaction_reserve_tokens_for(&self, provider: &str, model_id: &str) -> u64 {
+        self.compaction_token_setting("reserveTokens", provider, model_id)
+            .unwrap_or(16384)
+    }
+
+    pub fn get_compaction_keep_recent_tokens_for(&self, provider: &str, model_id: &str) -> u64 {
+        self.compaction_token_setting("keepRecentTokens", provider, model_id)
             .unwrap_or(20000)
+    }
+
+    fn compaction_token_setting(&self, field: &str, provider: &str, model_id: &str) -> Option<u64> {
+        let compaction = self.g("compaction").and_then(|v| v.as_object());
+        let ordinary = compaction
+            .and_then(|c| c.get(field))
+            .and_then(|v| v.as_u64());
+        let key = format!("{provider}/{model_id}");
+        let entry = compaction
+            .and_then(|c| c.get("modelOverrides"))
+            .and_then(|v| v.as_object())
+            .and_then(|overrides| overrides.get(&key))
+            .and_then(|v| v.as_object());
+        let override_value = entry.and_then(|e| e.get(field)).and_then(|v| v.as_u64());
+        override_value.or(ordinary)
     }
 
     pub fn get_compaction_settings(&self) -> (bool, u64, u64) {
@@ -1359,6 +1387,18 @@ impl SettingsManager {
             self.get_compaction_enabled(),
             self.get_compaction_reserve_tokens(),
             self.get_compaction_keep_recent_tokens(),
+        )
+    }
+
+    /// Model-aware compaction settings (upstream 0.85.1
+    /// `getCompactionSettings(model)`): token budgets resolve through the
+    /// exact `"provider/modelId"` override, then the ordinary setting, then
+    /// the built-in default.
+    pub fn get_compaction_settings_for(&self, provider: &str, model_id: &str) -> (bool, u64, u64) {
+        (
+            self.get_compaction_enabled(),
+            self.get_compaction_reserve_tokens_for(provider, model_id),
+            self.get_compaction_keep_recent_tokens_for(provider, model_id),
         )
     }
 

@@ -181,11 +181,35 @@ fn get_prompt_cache_retention(
     compat: &OpenAIResponsesCompat,
     cache_retention: &str,
 ) -> Option<&'static str> {
-    if cache_retention == "long" && compat.supports_long_cache_retention {
+    // 0.85.1 upstream: models with explicit cache mode use the TTL shape
+    // instead of the retention string.
+    if cache_retention == "long"
+        && compat.supports_long_cache_retention
+        && !compat.supports_explicit_prompt_cache_mode
+    {
         Some("24h")
     } else {
         None
     }
+}
+
+/// 0.85.1 upstream `getPromptCacheOptions`: explicit-mode models send
+/// `{ mode: "explicit" }` for `none`, `{ ttl: "30m" }` for long retention
+/// with long-cache support, and nothing otherwise.
+fn get_prompt_cache_options(
+    compat: &OpenAIResponsesCompat,
+    cache_retention: &str,
+) -> Option<serde_json::Value> {
+    if !compat.supports_explicit_prompt_cache_mode {
+        return None;
+    }
+    if cache_retention == "none" {
+        return Some(json!({ "mode": "explicit" }));
+    }
+    if cache_retention == "long" && compat.supports_long_cache_retention {
+        return Some(json!({ "ttl": "30m" }));
+    }
+    None
 }
 
 /// Options for OpenAI Responses requests (subset of upstream
@@ -250,8 +274,6 @@ pub fn build_params(
         options.base.cache_retention.as_deref(),
         options.base.base.env.as_ref(),
     );
-    let disable_implicit_cache =
-        cache_retention == "none" && compat.supports_explicit_prompt_cache_mode;
 
     let mut params = json!({
         "model": model.id,
@@ -272,8 +294,8 @@ pub fn build_params(
             params["prompt_cache_retention"] = Value::String(retention.to_string());
         }
     }
-    if disable_implicit_cache {
-        params["prompt_cache_options"] = json!({ "mode": "explicit" });
+    if let Some(cache_options) = get_prompt_cache_options(&compat, &cache_retention) {
+        params["prompt_cache_options"] = cache_options;
     }
 
     if let Some(max_tokens) = options.base.max_tokens {
@@ -851,6 +873,25 @@ mod tests {
             params["prompt_cache_options"],
             json!({ "mode": "explicit" })
         );
+
+        // 0.85.1 upstream: GPT-5.6+ models with explicit cache mode send
+        // `prompt_cache_options.ttl: "30m"` for long retention instead of
+        // `prompt_cache_retention: "24h"`. RED: currently sends retention.
+        let mut ttl_model = m.clone();
+        ttl_model.compat = Some(json!({
+            "supportsExplicitPromptCacheMode": true,
+            "supportsLongCacheRetention": true,
+        }));
+        let opts = OpenAIResponsesOptions {
+            base: StreamOptions {
+                cache_retention: Some("long".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let params = build_params(&ttl_model, &ctx(), &opts).unwrap();
+        assert!(params.get("prompt_cache_retention").is_none());
+        assert_eq!(params["prompt_cache_options"], json!({ "ttl": "30m" }));
     }
 
     #[test]

@@ -725,7 +725,7 @@ mod tests {
     fn available_models_apply_provider_specific_filtering() {
         let credentials = Arc::new(InMemoryCredentialStore::new());
         let mut extra = std::collections::BTreeMap::new();
-        extra.insert("availableModelIds".to_string(), json!(["gpt-4.1"]));
+        extra.insert("availableModelIds".to_string(), json!(["gpt-5-mini"]));
         credentials.modify("github-copilot", &|_| {
             Some(Credential::OAuth(OAuthCredential {
                 refresh: "refresh".to_string(),
@@ -750,7 +750,7 @@ mod tests {
             .into_iter()
             .map(|model| model.id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["gpt-4.1"]);
+        assert_eq!(ids, vec!["gpt-5-mini"]);
     }
 
     #[test]

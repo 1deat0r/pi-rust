@@ -110,6 +110,30 @@ fn b_merge_keeps_global_nested_untouched_when_project_only_has_one_key() {
 }
 
 #[test]
+fn b_compaction_model_overrides_win_over_ordinary_then_default() {
+    // 0.85.1 upstream `getCompactionTokenSetting`: per-model override
+    // (exact "provider/modelId" key) > ordinary setting > built-in default.
+    // RED: model-keyed getters do not exist yet.
+    let m = SettingsManager::in_memory(map(json!({
+        "compaction": {
+            "reserveTokens": 8192,
+            "modelOverrides": { "openai/gpt-6-astra": { "reserveTokens": 4096 } }
+        }
+    })));
+    assert_eq!(
+        m.get_compaction_reserve_tokens_for("openai", "gpt-6-astra"),
+        4096
+    );
+    assert_eq!(m.get_compaction_reserve_tokens_for("openai", "gpt-5"), 8192);
+    assert_eq!(
+        m.get_compaction_keep_recent_tokens_for("openai", "gpt-6-astra"),
+        20000
+    );
+    let defaults = SettingsManager::in_memory(map(json!({})));
+    assert_eq!(defaults.get_compaction_reserve_tokens_for("x", "y"), 16384);
+}
+
+#[test]
 fn b_migration_applies_on_load() {
     let m = SettingsManager::in_memory(map(json!({ "queueMode": "one-at-a-time" })));
     assert_eq!(m.get_steering_mode(), "one-at-a-time");
