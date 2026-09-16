@@ -1,5 +1,14 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave C slice: GLM reasoning committed + pushed
+
+Upstream #9375 (4bd3f48df): `zai-glm-5-2` uses `reasoning_effort` on
+the Mistral lane. New pin green, TDD red-first. pi-ai lib 472/472,
+pi-ai strict clippy clean, fmt clean, conversion 100.00% (166/166),
+parity dashboard OK (58/318, upstream=d7296c0). No row promoted;
+metrics unchanged. Committed `5019e94`, pushed, hashes match. Next:
+next Wave C remainder or Wave E visual parity lift-off.
+
 ## Latest checkpoint — 2026-09-16 — Wave C slice: GLM reasoning (uncommitted)
 
 Upstream #9375 (4bd3f48df): `zai-glm-5-2` uses `reasoning_effort` on
