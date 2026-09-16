@@ -1,5 +1,15 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave C slice: max tokens opt-out committed + pushed
+
+Upstream #8941 (b8b873b98): `supportsMaxOutputTokens` compat flag
+(default true) + schema registration on the Responses lane. New wire
++ schema pins green, TDD red-first. pi-ai lib 473/473, model_config
+15/15, pi-ai strict clippy clean, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
+promoted; metrics unchanged. Committed `9ac9ae9`, pushed, hashes
+match. Next: next Wave C remainder or Wave E visual parity lift-off.
+
 ## Latest checkpoint — 2026-09-16 — Wave C slice: max tokens opt-out (uncommitted)
 
 Upstream #8941 (b8b873b98): `supportsMaxOutputTokens` compat flag
