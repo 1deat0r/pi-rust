@@ -1,5 +1,17 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-16 checkpoint — Wave C slice: tool_choice gating
+
+Ported upstream #8607 (fe37e9f9b): completions lane omits
+`tool_choice` when the payload has no tools, forwards verbatim with
+tools. Old test corrected to the new contract + new omit/forward pin.
+TDD red-first. No row promoted (shared-lane deterministic slice).
+Gate green: pi-ai lib 469/469, pi-ai strict clippy, fmt, conversion
+100.00% (166/166), parity dashboard OK (upstream=d7296c0, 58/318).
+Pre-existing failures unchanged on clean HEAD (copilot gpt-4.1 filter,
+nvidia list). Next: commit + push, then next Wave C remainder or Wave E
+visual parity lift-off.
+
 ## Active 2026-09-16 checkpoint — Wave C slice: Codex SSE EOF evidence
 
 Upstream #9047 (64eeb82a4) already ported by construction: the shared

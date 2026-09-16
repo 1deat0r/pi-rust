@@ -1464,9 +1464,17 @@ fn build_params_for_chat_options(
     }
 
     let mut params = build_params(model, context, Some(&base), compat, cache_retention)?;
+    // Upstream #8607: omit `tool_choice` when the payload carries no
+    // tools — some providers reject a bare `tool_choice`.
+    let has_tools = params
+        .get("tools")
+        .and_then(|tools| tools.as_array())
+        .is_some_and(|tools| !tools.is_empty());
     if let Some(tool_choice) = options.tool_choice {
-        params["tool_choice"] = serde_json::to_value(tool_choice)
-            .map_err(|error| format!("failed to serialize tool choice: {error}"))?;
+        if has_tools {
+            params["tool_choice"] = serde_json::to_value(tool_choice)
+                .map_err(|error| format!("failed to serialize tool choice: {error}"))?;
+        }
     }
 
     Ok(params)
@@ -3546,20 +3554,67 @@ mod tests {
 
     #[test]
     fn simple_options_forward_tool_choice_to_openai_compatible_payload() {
+        // Upstream #8607: `tool_choice` is forwarded only when the payload
+        // carries tools; a bare `tool_choice` is omitted.
         let model = model("gpt-5", "groq");
         let options = OpenAIChatOptions {
             tool_choice: Some(ToolChoice::None),
             ..Default::default()
         };
-        let params = build_params_for_chat_options(
+        let compat = OpenAiCompletionsCompat::get(&model);
+        let without_tools =
+            build_params_for_chat_options(&model, &Context::default(), &options, &compat, "none")
+                .unwrap();
+        assert!(without_tools.get("tool_choice").is_none());
+
+        let tool = Tool {
+            name: "get_weather".to_string(),
+            description: "Get the weather".to_string(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+            constrained_sampling: None,
+        };
+        let with_tools = build_params_for_chat_options(
             &model,
-            &Context::default(),
+            &context(None, vec![], vec![tool]),
             &options,
-            &OpenAiCompletionsCompat::get(&model),
+            &compat,
             "none",
         )
         .unwrap();
-        assert_eq!(params["tool_choice"], json!("none"));
+        assert_eq!(with_tools["tool_choice"], json!("none"));
+    }
+
+    #[test]
+    fn tool_choice_omitted_without_tools_upstream_8607() {
+        use crate::types::Tool;
+        // Upstream #8607: `tool_choice` must be omitted when the payload
+        // carries no tools; some providers reject a bare `tool_choice`.
+        let model = model("gpt-5", "groq");
+        let compat = OpenAiCompletionsCompat::get(&model);
+        let options = OpenAIChatOptions {
+            tool_choice: Some(ToolChoice::None),
+            ..Default::default()
+        };
+        let without_tools =
+            build_params_for_chat_options(&model, &Context::default(), &options, &compat, "none")
+                .unwrap();
+        assert!(without_tools.get("tool_choice").is_none());
+        assert!(without_tools.get("tools").is_none());
+
+        let tool = Tool {
+            name: "get_weather".to_string(),
+            description: "Get the weather".to_string(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+            constrained_sampling: None,
+        };
+        let with_tools_ctx = context(None, vec![], vec![tool]);
+        let with_tools =
+            build_params_for_chat_options(&model, &with_tools_ctx, &options, &compat, "none")
+                .unwrap();
+        assert_eq!(with_tools["tool_choice"], json!("none"));
+        assert!(with_tools["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty()));
     }
 
     #[test]

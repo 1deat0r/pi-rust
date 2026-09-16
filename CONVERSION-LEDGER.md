@@ -4,6 +4,26 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
+## Current status (last updated 2026-09-16 — Wave C slice: tool_choice gating)
+
+Wave C slice (0.85.1, upstream #8607 fixed by fe37e9f9b): the shared
+openai-completions `build_params_for_chat_options` now omits
+`tool_choice` when the payload carries no tools (some providers reject
+a bare `tool_choice`); tools present keeps verbatim forwarding.
+Updated `simple_options_forward_tool_choice...` to the corrected
+contract plus new `tool_choice_omitted_without_tools_upstream_8607`
+pin (omit without tools/tools keys absent; forward with tools).
+TDD red first (new pin failed on unconditional write; old test encoded
+the buggy behavior and was corrected). Gate: pi-ai lib 469/469, pi-ai
+strict clippy clean, fmt clean, conversion 100.00% (166/166), parity
+dashboard OK (upstream=d7296c0). Pre-existing failures unchanged on
+clean HEAD (`copilot_oauth_parity` gpt-4.1 filter — vendored data has
+no such entry; `moonshot_and_nvidia` stale list). No parity row
+promoted (shared-lane deterministic slice; live provider rejection
+unverifiable offline). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ## Current status (last updated 2026-09-16 — Wave C slice: Codex SSE EOF)
 
 Wave C evidence slice (0.85.1, upstream #9047 fixed by 64eeb82a4):
