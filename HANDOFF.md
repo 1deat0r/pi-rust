@@ -1,5 +1,25 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave C slice: pin-correct tool_choice (uncommitted)
+
+Correction slice: prior gating ported a superseded intermediate;
+pin-correct is verbatim forwarding + no summarization override.
+Builder reverted with comment; both-shapes + caller pins green;
+drive-by fixed pre-existing compaction test compile break. pi-ai lib
+470/470, pi-agent lib 272/272, compaction 22/22, pi-ai strict clippy
+clean, fmt clean, conversion 100.00% (166/166), parity dashboard OK
+(58/318, upstream=d7296c0). No row promoted; metrics unchanged. Next:
+commit + push, then next Wave C remainder or Wave E visual parity.
+
+Upstream #8605 (c5ad7c1b0): completions streaming merges consecutive
+reasoning text/summary deltas; encrypted stays discrete. New merge pin
+green, TDD red-first (plus edition-2021 fixes). pi-ai lib 470/470,
+pi-ai strict clippy clean, fmt clean, conversion 100.00% (166/166),
+parity dashboard OK (58/318, upstream=d7296c0). No row promoted;
+metrics unchanged. Committed `602392a`, pushed, hashes match. Next:
+next Wave C remainder (compaction tool-choice removal, assistant-frame
+compat) or Wave E visual parity lift-off.
+
 ## Latest checkpoint — 2026-09-16 — Wave C slice: reasoning merge (uncommitted)
 
 Upstream #8605 (c5ad7c1b0): completions streaming merges consecutive

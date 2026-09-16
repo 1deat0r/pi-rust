@@ -1,5 +1,17 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-16 checkpoint — Wave C slice: pin-correct tool_choice
+
+Correction: prior gating slice ported superseded intermediate state.
+Pin-correct contract (d7296c0) is verbatim `tool_choice` forwarding +
+no caller override in summarization. Builder reverted with sequence
+comment; both-shapes pin; new pi-agent caller pin; drive-by fix of
+pre-existing compaction test compile break. No row promoted. Gate
+green: pi-ai lib 470/470, pi-agent lib 272/272, compaction 22/22,
+pi-ai strict clippy, fmt, conversion 100.00% (166/166), parity
+dashboard OK (upstream=d7296c0, 58/318). Next: commit + push, then
+next Wave C remainder or Wave E visual parity lift-off.
+
 ## Active 2026-09-16 checkpoint — Wave C slice: reasoning merge
 
 Ported upstream #8605 (c5ad7c1b0): completions streaming merges

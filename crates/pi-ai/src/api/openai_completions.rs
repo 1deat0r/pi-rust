@@ -1464,17 +1464,14 @@ fn build_params_for_chat_options(
     }
 
     let mut params = build_params(model, context, Some(&base), compat, cache_retention)?;
-    // Upstream #8607: omit `tool_choice` when the payload carries no
-    // tools — some providers reject a bare `tool_choice`.
-    let has_tools = params
-        .get("tools")
-        .and_then(|tools| tools.as_array())
-        .is_some_and(|tools| !tools.is_empty());
+    // Upstream forwards `tool_choice` verbatim at the pin (d7296c0):
+    // the intermediate #8607 gating (`params.tools?.length`) was reverted
+    // by 6b36eb592, which instead removed the explicit `toolChoice:
+    // "none"` from compaction/branch-summary callers. Rust's
+    // summarization path likewise never sets `tool_choice`.
     if let Some(tool_choice) = options.tool_choice {
-        if has_tools {
-            params["tool_choice"] = serde_json::to_value(tool_choice)
-                .map_err(|error| format!("failed to serialize tool choice: {error}"))?;
-        }
+        params["tool_choice"] = serde_json::to_value(tool_choice)
+            .map_err(|error| format!("failed to serialize tool choice: {error}"))?;
     }
 
     Ok(params)
@@ -3632,8 +3629,11 @@ mod tests {
 
     #[test]
     fn simple_options_forward_tool_choice_to_openai_compatible_payload() {
-        // Upstream #8607: `tool_choice` is forwarded only when the payload
-        // carries tools; a bare `tool_choice` is omitted.
+        // Pin-correct contract (d7296c0): `tool_choice` forwards verbatim
+        // with or without tools. The intermediate #8607 gating was reverted
+        // by 6b36eb592, which instead removed the explicit `toolChoice:
+        // "none"` from compaction/branch-summary callers (Rust's
+        // summarization path likewise never sets it).
         let model = model("gpt-5", "groq");
         let options = OpenAIChatOptions {
             tool_choice: Some(ToolChoice::None),
@@ -3643,7 +3643,8 @@ mod tests {
         let without_tools =
             build_params_for_chat_options(&model, &Context::default(), &options, &compat, "none")
                 .unwrap();
-        assert!(without_tools.get("tool_choice").is_none());
+        assert_eq!(without_tools["tool_choice"], json!("none"));
+        assert!(without_tools.get("tools").is_none());
 
         let tool = Tool {
             name: "get_weather".to_string(),
@@ -3660,13 +3661,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(with_tools["tool_choice"], json!("none"));
+        assert!(with_tools["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty()));
     }
 
     #[test]
-    fn tool_choice_omitted_without_tools_upstream_8607() {
+    fn tool_choice_forwards_verbatim_with_or_without_tools_pin_correct() {
+        // Pin-correct follow-up (d7296c0): the intermediate #8607
+        // omit-without-tools rule was reverted by 6b36eb592, so both
+        // shapes forward `tool_choice` verbatim.
         use crate::types::Tool;
-        // Upstream #8607: `tool_choice` must be omitted when the payload
-        // carries no tools; some providers reject a bare `tool_choice`.
         let model = model("gpt-5", "groq");
         let compat = OpenAiCompletionsCompat::get(&model);
         let options = OpenAIChatOptions {
@@ -3676,7 +3681,7 @@ mod tests {
         let without_tools =
             build_params_for_chat_options(&model, &Context::default(), &options, &compat, "none")
                 .unwrap();
-        assert!(without_tools.get("tool_choice").is_none());
+        assert_eq!(without_tools["tool_choice"], json!("none"));
         assert!(without_tools.get("tools").is_none());
 
         let tool = Tool {

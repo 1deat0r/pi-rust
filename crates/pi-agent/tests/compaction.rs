@@ -97,6 +97,7 @@ fn assistant_message(text: &str, usage: Option<Usage>) -> AgentMessage {
             raw_stop_reason: None,
             end_turn: None,
             timestamp: 1,
+            provider_thinking_level: None,
         },
     ))
 }
@@ -550,6 +551,36 @@ async fn passes_reasoning_only_for_reasoning_models_with_thinking_enabled() {
     .unwrap();
     let captured = calls.lock().unwrap().clone();
     assert_eq!(captured[0].1.reasoning, None);
+}
+
+#[tokio::test]
+async fn summarization_does_not_override_tool_choice() {
+    // Caller half of upstream 6b36eb592 (fixes #8649/#8638): compaction
+    // and branch-summary requests carry no explicit `toolChoice`, so the
+    // provider adapter applies its own default behavior.
+    let messages = vec![user_message("Summarize this.")];
+    let (models, calls) = scripted_models(vec![faux_assistant_message(
+        vec![ContentBlock::text("## Goal\nTest summary")],
+        FauxAssistantOptions::default(),
+    )]);
+    let model = faux_model(true, 8192);
+    generate_summary(
+        &messages,
+        &models,
+        &model,
+        2000,
+        None,
+        None,
+        None,
+        Some("medium"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let captured = calls.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1);
+    assert!(captured[0].1.tool_choice.is_none());
 }
 
 #[tokio::test]

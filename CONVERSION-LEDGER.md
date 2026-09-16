@@ -4,6 +4,29 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
+## Current status (last updated 2026-09-16 — Wave C slice: pin-correct tool_choice)
+
+Wave C correction slice (0.85.1): the previous `tool_choice` gating
+slice ported a SUPERSEDED intermediate state. At the pin (d7296c0),
+upstream forwards `tool_choice` verbatim (`if (options?.toolChoice)`);
+the Aug-25 #8607 gating was reverted Aug-26 by 6b36eb592, which
+instead removed the explicit `toolChoice: "none"` from
+compaction/branch-summary callers (fixes #8649/#8638). Reworked to
+match: builder gating reverted to verbatim forwarding with a comment
+citing the sequence; `simple_options_forward` + new
+`tool_choice_forwards_verbatim...` pin both shapes; new pi-agent
+caller pin `summarization_does_not_override_tool_choice` proves
+`generate_summary` requests carry no `tool_choice` (Rust's
+`SummarizationOptions` has no such field, matching the removal).
+Drive-by: fixed pre-existing `compaction.rs` test compile break
+(missing `provider_thinking_level` field from Wave E slice 3; red on
+clean HEAD). Gate: pi-ai lib 470/470, pi-agent lib 272/272, compaction
+22/22, pi-ai strict clippy clean, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (upstream=d7296c0). No parity row
+promoted (shared-lane + caller deterministic slice). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ## Current status (last updated 2026-09-16 — Wave C slice: reasoning merge)
 
 Wave C slice (0.85.1, upstream #8605 fixed by c5ad7c1b0): the
