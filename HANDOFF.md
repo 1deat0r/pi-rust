@@ -1,5 +1,14 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave D slice 4 committed + pushed
+
+Input click-to-cursor + settings-list mouse (submenu/search routing,
+shared visible range): pi-tui lib 408 + integration green, clippy/fmt
+clean, conversion 100.00%, parity tui + dashboard OK. TUI-005/019
+notes extended, no status change (58/318). Committed `7665ac2`,
+pushed, hashes match. Next: Wave D slice 5 (terminal-image caps,
+native-platform, layout) or Wave E visual parity.
+
 ## Latest checkpoint — 2026-09-16 — Wave D slice 3 committed + pushed
 
 Editor click-to-place + autocomplete mouse routing (mutation-checked):

@@ -21,6 +21,73 @@ pub struct TerminalCapabilities {
     pub hyperlinks: bool,
 }
 
+/// Partial capability overrides (upstream 0.85.1 `capabilityOverrides` +
+/// `PI_HYPERLINKS`/`PI_IMAGE_PROTOCOL`/`PI_TRUE_COLOR` env inputs). `None`
+/// fields leave detection untouched; `Some(None)` images disables images.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CapabilityOverrides {
+    pub images: Option<Option<ImageProtocol>>,
+    pub true_color: Option<bool>,
+    pub hyperlinks: Option<bool>,
+}
+
+/// Parse a `"1"`/`"0"` boolean capability override (upstream
+/// `parseBooleanCapabilityOverride`); anything else ignores.
+pub fn parse_capability_override(value: &str) -> Option<bool> {
+    match value {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
+}
+
+/// Parse an image-protocol override (upstream `PI_IMAGE_PROTOCOL`):
+/// `kitty`/`iterm2` select, `none`/`0` disable, anything else ignores.
+pub fn parse_image_protocol_override(value: &str) -> Option<Option<ImageProtocol>> {
+    match value.to_lowercase().as_str() {
+        "kitty" => Some(Some(ImageProtocol::Kitty)),
+        "iterm2" => Some(Some(ImageProtocol::ITerm2)),
+        "none" | "0" => Some(None),
+        _ => None,
+    }
+}
+
+/// Read capability overrides from the process environment (upstream
+/// `PI_HYPERLINKS`, `PI_IMAGE_PROTOCOL`, `PI_TRUE_COLOR`).
+pub fn capability_overrides_from_env() -> CapabilityOverrides {
+    CapabilityOverrides {
+        images: std::env::var("PI_IMAGE_PROTOCOL")
+            .ok()
+            .and_then(|value| parse_image_protocol_override(&value)),
+        true_color: std::env::var("PI_TRUE_COLOR")
+            .ok()
+            .as_deref()
+            .and_then(parse_capability_override),
+        hyperlinks: std::env::var("PI_HYPERLINKS")
+            .ok()
+            .as_deref()
+            .and_then(parse_capability_override),
+    }
+}
+
+/// Detect capabilities with explicit overrides applied on top (upstream
+/// 0.85.1 `detectCapabilities` + `setCapabilityOverrides` merge).
+pub fn detect_capabilities_for_environment_with_overrides<F>(
+    environment: &CapabilityEnvironment,
+    tmux_forwards_hyperlink: F,
+    overrides: &CapabilityOverrides,
+) -> TerminalCapabilities
+where
+    F: FnOnce() -> bool,
+{
+    let detected = detect_capabilities_for_environment(environment, tmux_forwards_hyperlink);
+    TerminalCapabilities {
+        images: overrides.images.unwrap_or(detected.images),
+        true_color: overrides.true_color.unwrap_or(detected.true_color),
+        hyperlinks: overrides.hyperlinks.unwrap_or(detected.hyperlinks),
+    }
+}
+
 /// Measured terminal cell dimensions in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellDimensions {
@@ -126,6 +193,11 @@ pub struct KittyImagePlacement {
 }
 
 static CAPS: RwLock<Option<TerminalCapabilities>> = RwLock::new(None);
+static CAPABILITY_OVERRIDES: RwLock<CapabilityOverrides> = RwLock::new(CapabilityOverrides {
+    images: None,
+    true_color: None,
+    hyperlinks: None,
+});
 static CELL_DIMENSIONS: RwLock<(u32, u32)> = RwLock::new((9, 18));
 static KITTY_IMAGE_METADATA: Mutex<Vec<RegisteredKittyImageMetadata>> = Mutex::new(Vec::new());
 static KITTY_TRANSMISSION_GENERATION: std::sync::atomic::AtomicU64 =
@@ -251,7 +323,11 @@ where
             hyperlinks: true,
         };
     }
-    if environment.wt_session || term_program == "vscode" || term_program == "alacritty" {
+    if environment.wt_session
+        || term_program == "vscode"
+        || term_program == "alacritty"
+        || term_program == "zed"
+    {
         return TerminalCapabilities {
             images: None,
             true_color: true,
@@ -326,7 +402,37 @@ pub fn parse_tmux_client_termfeatures(termfeatures: &str) -> bool {
 }
 
 pub fn get_capabilities() -> TerminalCapabilities {
-    cached_capabilities(&CAPS, detect_capabilities)
+    let detected = cached_capabilities(&CAPS, detect_capabilities);
+    let overrides = CAPABILITY_OVERRIDES
+        .read()
+        .unwrap_or_else(|error| error.into_inner());
+    let env_overrides = capability_overrides_from_env();
+    TerminalCapabilities {
+        images: overrides
+            .images
+            .or(env_overrides.images)
+            .unwrap_or(detected.images),
+        true_color: overrides
+            .true_color
+            .or(env_overrides.true_color)
+            .unwrap_or(detected.true_color),
+        hyperlinks: overrides
+            .hyperlinks
+            .or(env_overrides.hyperlinks)
+            .unwrap_or(detected.hyperlinks),
+    }
+}
+
+/// Set programmatic capability overrides merged on top of detection
+/// (upstream 0.85.1 `setCapabilityOverrides`); clears the cache so the
+/// next read re-detects underneath the new overrides.
+pub fn set_capability_overrides(overrides: CapabilityOverrides) {
+    let mut guard = CAPABILITY_OVERRIDES
+        .write()
+        .unwrap_or_else(|error| error.into_inner());
+    *guard = overrides;
+    drop(guard);
+    reset_capabilities_cache();
 }
 
 /// Read the capability cache, detect on a miss, and publish the result.
@@ -1413,5 +1519,51 @@ mod tests {
             format!("left {} right", placement.sequence)
         );
         assert!(!placement.replacement_line.contains("AAAA"));
+    }
+}
+
+#[cfg(test)]
+mod capability_override_tests {
+    use super::*;
+
+    #[test]
+    fn env_overrides_win_over_detection() {
+        // 0.85.1 upstream: PI_HYPERLINKS/PI_IMAGE_PROTOCOL/PI_TRUE_COLOR
+        // override detection; "1"/"0" parse, other values ignore.
+        // RED: no override support exists.
+        let env = CapabilityEnvironment {
+            term_program: Some("xterm".to_string()),
+            terminal_emulator: None,
+            term: Some("xterm".to_string()),
+            color_term: None,
+            kitty_window_id: false,
+            ghostty_resources_dir: false,
+            wezterm_pane: false,
+            warp_session_id: false,
+            warp_terminal_session_uuid: false,
+            iterm_session_id: false,
+            wt_session: false,
+            tmux: false,
+            is_windows: false,
+        };
+        let overrides = CapabilityOverrides {
+            hyperlinks: None,
+            images: None,
+            true_color: None,
+        };
+        let base = detect_capabilities_for_environment_with_overrides(&env, || false, &overrides);
+        assert!(!base.hyperlinks);
+        let forced = CapabilityOverrides {
+            hyperlinks: Some(true),
+            images: Some(Some(ImageProtocol::Kitty)),
+            true_color: Some(true),
+        };
+        let capped = detect_capabilities_for_environment_with_overrides(&env, || false, &forced);
+        assert!(capped.hyperlinks);
+        assert_eq!(capped.images, Some(ImageProtocol::Kitty));
+        assert!(capped.true_color);
+        assert_eq!(parse_capability_override("1"), Some(true));
+        assert_eq!(parse_capability_override("0"), Some(false));
+        assert_eq!(parse_capability_override("yes"), None);
     }
 }

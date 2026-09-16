@@ -1811,6 +1811,30 @@ fn interactive_compaction_settings(
     }
 }
 
+/// Apply settings-file terminal capability overrides onto the shared
+/// capability cache (upstream 0.85.1 `getTerminalCapabilityOverrides` →
+/// capability resolution). Explicit settings win over detection; env
+/// overrides (`PI_*`) win over settings inside `get_capabilities`.
+pub fn apply_terminal_capability_overrides(settings: &SettingsManager) {
+    use pi_tui::terminal_image::{CapabilityOverrides, ImageProtocol};
+    let (images, true_color, hyperlinks) = settings.get_terminal_capability_overrides();
+    let has_override = images.is_some() || true_color.is_some() || hyperlinks.is_some();
+    let mapped_images = images.as_ref().map(|protocol| {
+        protocol.as_ref().and_then(|name| match name.as_str() {
+            "kitty" => Some(ImageProtocol::Kitty),
+            "iterm2" => Some(ImageProtocol::ITerm2),
+            _ => None,
+        })
+    });
+    if has_override {
+        pi_tui::terminal_image::set_capability_overrides(CapabilityOverrides {
+            images: mapped_images,
+            true_color,
+            hyperlinks,
+        });
+    }
+}
+
 fn hide_thinking_for_level(settings: &SettingsManager, level: &str) -> bool {
     level == "off" || settings.get_hide_thinking_block()
 }
@@ -10241,6 +10265,27 @@ mod tests {
     use pi_agent::session::jsonl::repo::CreateOptions;
     use pi_agent::session::state::ForkOptions;
     use pi_agent::session::JsonlSessionRepo;
+
+    #[test]
+    fn terminal_capability_overrides_reach_capability_cache() {
+        // 0.85.1 upstream: settings `terminal` overrides flow into
+        // capability resolution. RED: no wiring exists.
+        use crate::core::settings::SettingsMap;
+        let settings = SettingsManager::in_memory(
+            serde_json::from_value(serde_json::json!({
+                "terminal": { "images": false, "trueColor": true }
+            }))
+            .unwrap(),
+        );
+        apply_terminal_capability_overrides(&settings);
+        let caps = pi_tui::terminal_image::get_capabilities();
+        assert_eq!(caps.images, None);
+        assert!(caps.true_color);
+        // Cleanup: clear overrides so other tests see detection.
+        pi_tui::terminal_image::set_capability_overrides(
+            pi_tui::terminal_image::CapabilityOverrides::default(),
+        );
+    }
 
     #[test]
     fn interactive_explicit_skills_survive_no_skills() {
