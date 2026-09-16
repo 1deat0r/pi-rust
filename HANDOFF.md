@@ -1,5 +1,15 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave C slice: DeepSeek refresh committed + pushed
+
+Upstream #9423 (12f59336a): canonical `deepseek-flash` replaces
+retired aliases + pricing refresh; count pins 1354→1353. New catalog
+pin green, TDD red-first. pi-ai lib 473/473, pi-ai strict clippy
+clean, fmt clean, conversion 100.00% (166/166), parity dashboard OK
+(58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Committed `492eca9`, pushed, hashes match. Next: retired GPT-5.4
+Codex models (#9394) or next Wave C remainder / Wave E visual parity.
+
 ## Latest checkpoint — 2026-09-16 — Wave C slice: DeepSeek refresh (uncommitted)
 
 Upstream #9423 (12f59336a): canonical `deepseek-flash` replaces
