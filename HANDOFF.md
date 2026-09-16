@@ -1,5 +1,19 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave C slice: Copilot GPT routing committed + pushed
+
+Upstream #9253 (fixes #9209): Copilot `gpt-6-astra` moved from
+`openai-completions` to `openai-responses` in vendored
+`github-copilot.json` (Responses compat + full sibling thinking map).
+New `copilot_gpt_models_route_through_responses_api` regression pin
+green; pi-ai lib 467/467, pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged.
+`moonshot_and_nvidia` pin red on clean HEAD too (stale nvidia list,
+unrelated). Committed `18009a1`, pushed, hashes match. Next: next Wave
+C remainder (Cloudflare binding-fetch successor) or Wave E visual
+parity lift-off.
+
 ## Latest checkpoint — 2026-09-16 — Wave C slice: Copilot GPT routing (uncommitted)
 
 Upstream #9253 (fixes #9209): Copilot `gpt-6-astra` moved from
