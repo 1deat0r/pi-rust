@@ -1324,11 +1324,13 @@ fn should_use_prompt_cache(base: &StreamOptions) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Model ids that use `reasoning_effort` (upstream `usesReasoningEffort`,
-/// 0.85.1: all `mistral-medium-*` ids, not just `mistral-medium-3.5`).
+/// 0.85.1: all `mistral-medium-*` ids, not just `mistral-medium-3.5`;
+/// plus `zai-glm-5-2`, whose `prompt_mode` parameter is ignored (#9375)).
 fn uses_reasoning_effort(model: &Model) -> bool {
     model.id == "mistral-small-2603"
         || model.id == "mistral-small-latest"
         || model.id.starts_with("mistral-medium-")
+        || model.id == "zai-glm-5-2"
 }
 
 /// Models with native reasoning use `prompt_mode` (upstream
@@ -2413,6 +2415,25 @@ mod tests {
             &plain,
             &simple_opts(Some(crate::types::ThinkingLevel::Medium), None, None),
         );
+        assert_eq!(effort, None);
+        assert_eq!(prompt_mode, None);
+    }
+
+    #[test]
+    fn zai_glm_5_2_uses_effort_instead_of_prompt_mode_upstream_9375() {
+        // 0.85.1 upstream (#9375, 4bd3f48df): `zai-glm-5-2` uses
+        // `reasoning_effort`; the `prompt_mode` parameter is ignored for
+        // it, so reasoning would silently disable without this arm.
+        let glm = mistral_model("zai-glm-5-2");
+        let (prompt_mode, effort) = resolve_reasoning_controls(
+            &glm,
+            &simple_opts(Some(crate::types::ThinkingLevel::Medium), None, None),
+        );
+        assert_eq!(effort.as_deref(), Some("high"));
+        assert_eq!(prompt_mode, None);
+
+        let (prompt_mode, effort) =
+            resolve_reasoning_controls(&glm, &simple_opts(None, None, None));
         assert_eq!(effort, None);
         assert_eq!(prompt_mode, None);
     }

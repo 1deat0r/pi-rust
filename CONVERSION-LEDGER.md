@@ -4,6 +4,21 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
+## Current status (last updated 2026-09-16 — Wave C slice: GLM reasoning)
+
+Wave C slice (0.85.1, upstream #9375 fixed by 4bd3f48df): `zai-glm-5-2`
+uses `reasoning_effort` on the Mistral lane — its `prompt_mode`
+parameter is ignored upstream, so reasoning would silently disable
+without this arm. One-line addition to `uses_reasoning_effort` plus
+`zai_glm_5_2_uses_effort_instead_of_prompt_mode_upstream_9375` pin
+(effort high + no prompt_mode with thinking; neither without). TDD
+red first. Gate: pi-ai lib 472/472, pi-ai strict clippy clean, fmt
+clean, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0). No parity row promoted (provider-lane
+deterministic slice; live Mistral GLM traffic unverifiable offline).
+Metrics unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ## Current status (last updated 2026-09-16 — Wave C slice: Mistral merge)
 
 Wave C slice (0.85.1, upstream #8387 fixed by 6c87d9a02): the

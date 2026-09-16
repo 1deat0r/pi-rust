@@ -1,6 +1,13 @@
 # Pi → pi-rust conversion handoff
 
-## Latest checkpoint — 2026-09-16 — Wave C slice: Mistral merge committed + pushed
+## Latest checkpoint — 2026-09-16 — Wave C slice: GLM reasoning (uncommitted)
+
+Upstream #9375 (4bd3f48df): `zai-glm-5-2` uses `reasoning_effort` on
+the Mistral lane. New pin green, TDD red-first. pi-ai lib 472/472,
+pi-ai strict clippy clean, fmt clean, conversion 100.00% (166/166),
+parity dashboard OK (58/318, upstream=d7296c0). No row promoted;
+metrics unchanged. Next: commit + push, then next Wave C remainder or
+Wave E visual parity.
 
 Upstream #8387 (6c87d9a02): Mistral tool chunks merge by index-first
 keying. New fragment-merge pin green, TDD red-first. pi-ai lib
