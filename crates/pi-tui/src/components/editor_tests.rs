@@ -744,3 +744,38 @@ fn word_left_right_decode_from_terminal_encodings() {
         assert_eq!(key.canonical(), expected, "raw {raw:?}");
     }
 }
+
+#[test]
+fn click_places_cursor_on_text_rows_and_ignores_borders() {
+    // 0.85.1 upstream `Editor.handleMouse`: click positions the cursor on
+    // editor rows (press/drag/release run text selection instead); border
+    // rows consume the event with focus only.
+    // RED: Rust Editor has no mouse handling.
+    use crate::mouse::{MouseButton, MouseEvent, MouseEventKind, MouseModifiers};
+    use crate::tui::Component;
+    let mut e = editor(24);
+    e.set_text("hello world");
+    e.render(30);
+    let click = |x: usize, y: usize| MouseEvent {
+        kind: MouseEventKind::Press,
+        button: MouseButton::Left,
+        x,
+        y,
+        modifiers: MouseModifiers {
+            shift: false,
+            alt: false,
+            ctrl: false,
+        },
+        screen_x: x,
+        screen_y: y,
+        width: 30,
+        height: 10,
+    };
+    // Row 1 (first text row, y=1 past the top border) places the cursor:
+    // x maps directly with zero padding ("hello world"[8] == 'r').
+    Component::handle_mouse(&mut e, &click(8, 1));
+    assert_eq!(e.get_cursor(), (0, 8));
+    // Border row (y=0) is consumed without moving the cursor.
+    Component::handle_mouse(&mut e, &click(8, 0));
+    assert_eq!(e.get_cursor(), (0, 8));
+}

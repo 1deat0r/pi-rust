@@ -1,5 +1,15 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave D slice 2 committed + pushed
+
+Search index cache, placeholder input + search prompt, select-list
+mouse, centered editor borders: pi-tui lib 405, integration green
+(flakes pre-existing), clippy/fmt clean, conversion 100.00%, parity
+tui + dashboard OK. TUI-015/023/042 notes extended, no status change
+(58/318). Committed `ca77e94`, pushed, hashes match. Next: Wave D
+slice 3 (editor click-to-place, autocomplete-select mouse) or Wave E
+visual parity.
+
 ## Latest checkpoint — 2026-09-16 — Wave D slice 1 committed + pushed
 
 LaTeX join symbols, prompt-jump key alternates, bg-ansi tracker,

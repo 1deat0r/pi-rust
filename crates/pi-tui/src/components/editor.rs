@@ -3119,6 +3119,75 @@ impl Component for Editor {
         // No cached state to invalidate.
     }
 
+    /// Click-to-place cursor (upstream 0.85.1 `Editor.handleMouse` click
+    /// path): press/drag/release run text selection elsewhere, so only
+    /// clicks position the cursor. Clicks on border rows are consumed with
+    /// focus and no cursor move; autocomplete rows route to the list.
+    fn handle_mouse(&mut self, event: &crate::mouse::MouseEvent) {
+        use crate::mouse::{MouseButton, MouseEventKind};
+        use std::sync::atomic::Ordering;
+        if event.button != MouseButton::Left {
+            return;
+        }
+        let width = self.last_width.load(Ordering::Relaxed).max(1);
+        let visual_lines = self.build_visual_line_map(width);
+        let scroll = self.scroll_offset.load(Ordering::Relaxed);
+        // Autocomplete rows (below the text + borders) route to the list.
+        let autocomplete_start = visual_lines.len() + 2;
+        if self.autocomplete_list.is_some() && event.y >= autocomplete_start {
+            if let Some(list) = self.autocomplete_list.as_mut() {
+                let mut routed = *event;
+                routed.y -= autocomplete_start;
+                routed.width = width;
+                list.handle_mouse(&routed);
+            }
+            return;
+        }
+        if event.kind != MouseEventKind::Press {
+            return;
+        }
+        // y=0 is the top border; past the last text row + bottom border is
+        // outside.
+        if event.y == 0 || event.y > visual_lines.len() {
+            return;
+        }
+        let max_padding = if width > 1 { (width - 1) / 2 } else { 0 };
+        let padding_x = self.padding_x.min(max_padding);
+        let visual_index = scroll + event.y - 1;
+        let Some((logical_line, start_col, length)) = visual_lines.get(visual_index).copied()
+        else {
+            return;
+        };
+        let logical = self
+            .state
+            .lines
+            .get(logical_line)
+            .cloned()
+            .unwrap_or_default();
+        let chunk_end = (start_col + length).min(logical.len());
+        let chunk = logical[start_col.min(logical.len())..chunk_end].to_string();
+        let target_column = event.x.saturating_sub(padding_x);
+        let mut visible_column = 0usize;
+        let mut target_index = chunk.len();
+        for segment in self.segment(&chunk, "grapheme") {
+            let end = segment.index + segment.segment.len();
+            let next_column = visible_column + crate::utils::visible_width(&segment.segment);
+            if target_column < next_column {
+                target_index = segment.index;
+                break;
+            }
+            visible_column = next_column;
+            target_index = end;
+        }
+        self.state.cursor_line = logical_line;
+        self.set_cursor_col(start_col + target_index);
+        self.last_action = None;
+        self.exit_history_browsing();
+        if self.autocomplete_state.is_some() {
+            self.update_autocomplete();
+        }
+    }
+
     fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
     }
