@@ -1757,6 +1757,19 @@ fn apply_thinking_params(
                     );
                 }
             }
+            if reasoning_effort.is_none() && model.reasoning && compat.supports_reasoning_effort {
+                // Upstream openai-completions: with no explicit effort, a
+                // reasoning model whose Off-map is a string sends that
+                // effort (e.g. Fireworks GLM 5.2 off -> "none"); a null
+                // Off-map omits it.
+                if let Some(Some(off)) = model
+                    .thinking_level_map
+                    .as_ref()
+                    .and_then(|map| map.get(&crate::types::ModelThinkingLevel::Off))
+                {
+                    params.insert("reasoning_effort".into(), json!(off));
+                }
+            }
             if thinking_budget.is_some() {
                 tracing::debug!("thinking token budget deferred in openai-completions");
             }
@@ -3627,6 +3640,42 @@ mod tests {
         let params = build_params(&model, &Context::default(), None, &compat, "none")
             .expect("Moonshot request params");
         assert!(params.get("thinking").is_none());
+    }
+
+    #[test]
+    fn fireworks_glm_sends_off_map_effort_without_explicit_request() {
+        // 0.85.1 upstream openai-completions: with no explicit reasoning
+        // effort, a reasoning model whose Off-map is a string sends that
+        // effort (GLM 5.2 maps off -> "none"); a null Off-map omits it.
+        // RED: the default arm only forwards explicit efforts.
+        let glm52 = crate::providers::catalog_models("fireworks")
+            .into_iter()
+            .find(|model| model.id == "accounts/fireworks/models/glm-5p2")
+            .expect("Fireworks GLM 5.2 model");
+        let compat = OpenAiCompletionsCompat::get(&glm52);
+        assert_eq!(compat.thinking_format, "openai");
+        assert!(compat.supports_reasoning_effort);
+
+        let params = build_params(&glm52, &Context::default(), None, &compat, "none")
+            .expect("GLM 5.2 request params");
+        assert_eq!(params["reasoning_effort"], json!("none"));
+
+        let low = StreamOptions {
+            sampling_params: Some(json!({"reasoningEffort": "low"})),
+            ..Default::default()
+        };
+        let low_params = build_params(&glm52, &Context::default(), Some(&low), &compat, "none")
+            .expect("GLM 5.2 low-effort params");
+        assert_eq!(low_params["reasoning_effort"], json!("high"));
+
+        let glm53 = crate::providers::catalog_models("fireworks")
+            .into_iter()
+            .find(|model| model.id == "accounts/fireworks/models/glm-5p3")
+            .expect("Fireworks GLM 5.3 model");
+        let compat53 = OpenAiCompletionsCompat::get(&glm53);
+        let off_params = build_params(&glm53, &Context::default(), None, &compat53, "none")
+            .expect("GLM 5.3 request params");
+        assert!(off_params.get("reasoning_effort").is_none());
     }
 
     #[test]

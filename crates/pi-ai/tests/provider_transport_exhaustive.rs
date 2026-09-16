@@ -507,8 +507,41 @@ async fn run_direct_stream(
     AssistantMessage,
     CapturedRequest,
 ) {
+    run_named_stream(api, provider, None, reply, options, context).await
+}
+
+fn local_named_model(provider: &str, api: &str, model_id: &str, base_url: &str) -> Model {
+    let mut model = builtin_providers()
+        .into_iter()
+        .find(|candidate| candidate.id == provider)
+        .and_then(|provider| {
+            provider
+                .models
+                .into_iter()
+                .find(|model| model.api == api && model.id == model_id)
+        })
+        .unwrap_or_else(|| panic!("no catalog model for {provider}/{api}/{model_id}"));
+    model.base_url = base_url.to_string();
+    model
+}
+
+async fn run_named_stream(
+    api: &str,
+    provider: &str,
+    model_id: Option<&str>,
+    reply: Reply,
+    options: StreamOptions,
+    context: Context,
+) -> (
+    Vec<AssistantMessageEvent>,
+    AssistantMessage,
+    CapturedRequest,
+) {
     let (base_url, requests, server) = start_server(vec![reply]).await;
-    let model = local_model(provider, api, &base_url);
+    let model = match model_id {
+        Some(id) => local_named_model(provider, api, id, &base_url),
+        None => local_model(provider, api, &base_url),
+    };
     let key = options.base.api_key.clone().unwrap_or_default();
     let stream = match api {
         "openai-completions" => openai_completions::stream(
@@ -1658,6 +1691,84 @@ async fn images_transport_is_real_http_and_redacts_auth_from_errors() {
         .unwrap_or("")
         .contains("image-secret"));
     assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn fireworks_glm_thinking_and_openrouter_affinity_are_wire_visible() {
+    // 0.85.1 upstream openai-completions: Fireworks GLM 5.2 (off -> "none")
+    // sends its Off-map effort with no explicit request; GLM 5.3 (null off)
+    // omits reasoning_effort.
+    let (_, message, request) = run_named_stream(
+        "openai-completions",
+        "fireworks",
+        Some("accounts/fireworks/models/glm-5p2"),
+        Reply::text(
+            200,
+            "text/event-stream",
+            simple_text_reply("openai-completions").body,
+        ),
+        request_options("fireworks-key"),
+        Context::default(),
+    )
+    .await;
+    assert_success(&message, "openai-completions", "hello");
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(body["reasoning_effort"], "none");
+
+    let (_, message, request) = run_named_stream(
+        "openai-completions",
+        "fireworks",
+        Some("accounts/fireworks/models/glm-5p3"),
+        Reply::text(
+            200,
+            "text/event-stream",
+            simple_text_reply("openai-completions").body,
+        ),
+        request_options("fireworks-key"),
+        Context::default(),
+    )
+    .await;
+    assert_success(&message, "openai-completions", "hello");
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert!(body.get("reasoning_effort").is_none());
+
+    // 0.85.1 upstream anthropic-messages: OpenRouter endpoints send
+    // `x-session-id`; first-party providers send no affinity header.
+    let (_, message, request) = run_named_stream(
+        "anthropic-messages",
+        "openrouter",
+        Some("anthropic/claude-opus-4.6"),
+        Reply::text(
+            200,
+            "text/event-stream",
+            simple_text_reply("anthropic-messages").body,
+        ),
+        request_options("openrouter-key"),
+        Context::default(),
+    )
+    .await;
+    assert_success(&message, "anthropic-messages", "hello");
+    assert_eq!(
+        request.headers.get("x-session-id"),
+        Some(&"session-loopback".to_string())
+    );
+    assert!(!request.headers.contains_key("x-session-affinity"));
+
+    let (_, message, request) = run_direct_stream(
+        "anthropic-messages",
+        "anthropic",
+        Reply::text(
+            200,
+            "text/event-stream",
+            simple_text_reply("anthropic-messages").body,
+        ),
+        request_options("anthropic-key"),
+        Context::default(),
+    )
+    .await;
+    assert_success(&message, "anthropic-messages", "hello");
+    assert!(!request.headers.contains_key("x-session-id"));
+    assert!(!request.headers.contains_key("x-session-affinity"));
 }
 
 #[test]

@@ -1,5 +1,14 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave E slice 2 committed + pushed
+
+Fireworks GLM thinking default + OpenRouter anthropic-lane affinity
+(0.85.1): pi-ai lib 464 green, clippy/fmt clean, conversion 100.00%,
+parity audits OK. PROV-010/027 notes extended, no status change
+(58/318). Six integration failures pre-existing on HEAD. Next: Wave E
+slice 3 (thinking persistence / mid-conversation effort) or visual
+parity lift-off.
+
 ## Latest checkpoint — 2026-09-16 — Wave E slice 1 committed + pushed
 
 Codex Off-effort default (#9191) + Mistral medium reasoning (#8700):

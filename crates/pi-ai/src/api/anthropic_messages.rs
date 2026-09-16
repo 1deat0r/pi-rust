@@ -95,11 +95,12 @@ struct AllowedFallbackModel {
     cost: Option<ModelCost>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct AnthropicCompat {
     supports_eager_tool_input_streaming: bool,
     supports_long_cache_retention: bool,
     send_session_affinity_headers: bool,
+    session_affinity_format: Option<String>,
     supports_cache_control_on_tools: bool,
     supports_temperature: bool,
     force_adaptive_thinking: bool,
@@ -140,7 +141,21 @@ fn default_supports_tool_references(model: &Model) -> bool {
     major > 4 || (major == 4 && minor >= 5)
 }
 
+fn is_openrouter_endpoint(model: &Model) -> bool {
+    model.provider == "openrouter" || model.base_url.contains("openrouter.ai")
+}
+
+fn compat_string(model: &Model, key: &str) -> Option<String> {
+    model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.get(key))
+        .and_then(Value::as_str)
+        .map(|value| value.to_string())
+}
+
 fn anthropic_compat(model: &Model) -> AnthropicCompat {
+    let openrouter = is_openrouter_endpoint(model);
     AnthropicCompat {
         supports_eager_tool_input_streaming: compat_bool(
             model,
@@ -148,7 +163,9 @@ fn anthropic_compat(model: &Model) -> AnthropicCompat {
             true,
         ),
         supports_long_cache_retention: compat_bool(model, "supportsLongCacheRetention", true),
-        send_session_affinity_headers: compat_bool(model, "sendSessionAffinityHeaders", false),
+        send_session_affinity_headers: compat_bool(model, "sendSessionAffinityHeaders", openrouter),
+        session_affinity_format: compat_string(model, "sessionAffinityFormat")
+            .or_else(|| openrouter.then(|| "openrouter".to_string())),
         supports_cache_control_on_tools: compat_bool(model, "supportsCacheControlOnTools", true),
         supports_temperature: compat_bool(model, "supportsTemperature", true),
         force_adaptive_thinking: compat_bool(model, "forceAdaptiveThinking", false),
@@ -1025,8 +1042,15 @@ fn build_anthropic_headers(
         && cache_retention != "none"
         && compat.send_session_affinity_headers
     {
+        // Upstream anthropic-messages: OpenRouter endpoints send
+        // `x-session-id`; all other formats send `x-session-affinity`.
+        let name = if compat.session_affinity_format.as_deref() == Some("openrouter") {
+            "x-session-id"
+        } else {
+            "x-session-affinity"
+        };
         headers.insert(
-            "x-session-affinity".to_string(),
+            name.to_string(),
             options.base.session_id.clone().unwrap_or_default(),
         );
     }
