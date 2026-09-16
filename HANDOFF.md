@@ -2,7 +2,14 @@
 
 ## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
-### Drift slice A — Baseten affinity (uncommitted)
+### Drift slice A — Baseten affinity committed + pushed
+
+Upstream #9629 (6671c6047): `sendSessionAffinityHeaders` on all 20
+Baseten entries. New catalog pin green, TDD red-first. pi-ai lib
+474/474, pi-ai strict clippy clean, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
+promoted; metrics unchanged. Committed `f83dc1e`, pushed, hashes
+match. Next: drift slice B.
 
 Upstream #9629 (6671c6047): `sendSessionAffinityHeaders` on all 20
 Baseten entries. New catalog pin green, TDD red-first. pi-ai lib
