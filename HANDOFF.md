@@ -2,7 +2,14 @@
 
 ## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
-### Drift slice B — fallback overrides (uncommitted)
+### Drift slice B — fallback overrides committed + pushed
+
+Upstream #9294 (b03a367a4): `allowedFallbackModels` shape
+validation + merge pins green, TDD red-first (lane + merge already
+supported it). Scoped suites 32/32, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
+promoted; metrics unchanged. Committed `ee723ae`, pushed, hashes
+match. Next: drift slice C.
 
 Upstream #9294 (b03a367a4): `allowedFallbackModels` shape
 validation + merge pins green, TDD red-first (lane + merge already
