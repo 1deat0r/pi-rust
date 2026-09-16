@@ -169,6 +169,9 @@ pub struct SettingsList {
     on_change: Option<SettingsChangeFn>,
     on_cancel: Option<SettingsCancelFn>,
     focused: bool,
+    /// Pressed row awaiting click release (upstream 0.85.1
+    /// `mousePressedIndex`).
+    mouse_pressed_index: Option<usize>,
 }
 
 impl std::fmt::Debug for SettingsList {
@@ -180,6 +183,20 @@ impl std::fmt::Debug for SettingsList {
 }
 
 impl SettingsList {
+    /// Visible item range, centered on the selection (upstream 0.85.1
+    /// `getVisibleRange`, shared by render and mouse hit-testing).
+    fn visible_range(&self, display_len: usize) -> (usize, usize) {
+        let start_index = std::cmp::max(
+            0,
+            std::cmp::min(
+                self.selected_index.saturating_sub(self.max_visible / 2),
+                display_len.saturating_sub(self.max_visible),
+            ),
+        );
+        let end_index = std::cmp::min(start_index + self.max_visible, display_len);
+        (start_index, end_index)
+    }
+
     pub fn new(
         items: Vec<SettingItem>,
         max_visible: usize,
@@ -702,6 +719,7 @@ fn self_ready_init(
         on_change,
         on_cancel,
         focused: false,
+        mouse_pressed_index: None,
     }
 }
 
@@ -781,6 +799,72 @@ impl Component for SettingsList {
             sub.invalidate();
         } else if let Some(search) = &mut self.search_input {
             search.invalidate();
+        }
+    }
+
+    /// Mouse press/click/wheel selection (upstream 0.85.1
+    /// `SettingsList.handleMouse`): submenu routes first; search row 0
+    /// routes to the input (row 1 ignored); item rows offset by the 2
+    /// search lines when search is enabled; hover never selects.
+    fn handle_mouse(&mut self, event: &crate::mouse::MouseEvent) {
+        use crate::mouse::{MouseButton, MouseEventKind};
+        if let Some(sub) = &mut self.submenu_component {
+            sub.handle_mouse(event);
+            return;
+        }
+        if self.search_enabled {
+            if event.y == 0 {
+                if let Some(search) = &mut self.search_input {
+                    search.handle_mouse(event);
+                }
+                return;
+            }
+            if event.y == 1 {
+                return;
+            }
+        }
+        let display_len = if self.search_enabled {
+            self.filtered_items.len()
+        } else {
+            self.items.len()
+        };
+        if display_len == 0 || event.button != MouseButton::Left {
+            return;
+        }
+        match event.kind {
+            MouseEventKind::Motion | MouseEventKind::Drag => {}
+            MouseEventKind::WheelUp | MouseEventKind::WheelDown => {
+                let delta: isize = if event.kind == MouseEventKind::WheelUp {
+                    -1
+                } else {
+                    1
+                };
+                let max = display_len.saturating_sub(1) as isize;
+                let next = (self.selected_index as isize + delta).clamp(0, max) as usize;
+                self.selected_index = next;
+            }
+            MouseEventKind::Press => {
+                let row_offset = if self.search_enabled { 2 } else { 0 };
+                let (start_index, end_index) = self.visible_range(display_len);
+                let item_index = start_index + event.y.saturating_sub(row_offset);
+                if item_index < start_index || item_index >= end_index {
+                    return;
+                }
+                self.mouse_pressed_index = Some(item_index);
+                self.selected_index = item_index;
+            }
+            _ => {
+                let row_offset = if self.search_enabled { 2 } else { 0 };
+                let (start_index, end_index) = self.visible_range(display_len);
+                let item_index = start_index + event.y.saturating_sub(row_offset);
+                if item_index < start_index || item_index >= end_index {
+                    return;
+                }
+                let clicked = self.mouse_pressed_index.unwrap_or(item_index);
+                self.mouse_pressed_index = None;
+                self.selected_index = clicked;
+                self.activate_item();
+            }
         }
     }
 
@@ -1082,5 +1166,59 @@ mod tests {
             *cancels.lock().unwrap_or_else(|error| error.into_inner()),
             2
         );
+    }
+}
+
+#[cfg(test)]
+mod mouse_tests {
+    use super::*;
+    use crate::mouse::{MouseButton, MouseEvent, MouseEventKind, MouseModifiers};
+    use crate::tui::Component;
+
+    fn click(x: usize, y: usize) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Press,
+            button: MouseButton::Left,
+            x,
+            y,
+            modifiers: MouseModifiers {
+                shift: false,
+                alt: false,
+                ctrl: false,
+            },
+            screen_x: x,
+            screen_y: y,
+            width: 60,
+            height: 10,
+        }
+    }
+
+    fn plain_list() -> SettingsList {
+        SettingsList::new(
+            ["one", "two", "three", "four"]
+                .into_iter()
+                .map(|id| SettingItem::new(id, id, id, Vec::new()))
+                .collect(),
+            10,
+            plain_settings_theme(),
+            SettingsListOptions {
+                enable_search: false,
+            },
+        )
+    }
+
+    #[test]
+    fn mouse_press_selects_row_and_search_row_routes_to_input() {
+        // 0.85.1 upstream `SettingsList.handleMouse`: press selects the
+        // row (search rows offset by the 2 search lines); hover never
+        // selects. RED: no mouse handling.
+        let mut list = plain_list();
+        assert_eq!(list.selected_index, 0);
+        Component::handle_mouse(&mut list, &click(2, 2));
+        assert_eq!(list.selected_index, 2);
+        let mut motion = click(2, 0);
+        motion.kind = MouseEventKind::Motion;
+        Component::handle_mouse(&mut list, &motion);
+        assert_eq!(list.selected_index, 2);
     }
 }

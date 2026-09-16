@@ -31,7 +31,7 @@ stay synchronized.
 | TUI-002 | fullscreen alt-screen | PARTIAL | PARTIAL | OPEN | Alt-screen PTY lifecycle passes; normalized official-vs-Rust startup captures matched at 100x30 and 80x24; nested/crash/manual comparison remains. |
 | TUI-003 | resize | PARTIAL | PARTIAL | OPEN | Resize matrix and retained-layout tests pass; complete emulator review remains. |
 | TUI-004 | differential renderer | PARTIAL | PARTIAL | OPEN | Differential/cursor tests pass; all churn and stale-cell cases remain. |
-| TUI-005 | editor insertion | PARTIAL | PARTIAL | OPEN | Unicode/editor unit coverage, immediate cached-scene repaint, and real rapid-burst PTY echo exist; full inventory boundary evidence remains. |
+| TUI-005 | editor insertion | PARTIAL | PARTIAL | OPEN | Unicode/editor unit coverage, immediate cached-scene repaint, and real rapid-burst PTY echo exist; Wave D adds 0.85.1 input click-to-cursor with unit pins. Full inventory boundary evidence remains. |
 | TUI-006 | editor deletion | PASS | PASS | OPEN | Direct unit evidence covers the full contract: backspace/delete, multi-scalar grapheme deletion as one unit, line joins, and empty-editor no-ops. Wave D adds 0.85.1 click-to-place cursor (borders consumed, mutation-checked) and centered scroll borders. Manual terminal comparison remains. |
 | TUI-007 | editor history | PARTIAL | PARTIAL | OPEN | History unit coverage exists; persistence-scope comparison remains. |
 | TUI-008 | kill/yank/undo | PARTIAL | PARTIAL | OPEN | Core unit coverage exists; complete parity boundary evidence remains. |
@@ -45,7 +45,7 @@ stay synchronized.
 | TUI-016 | slash command execution | PASS | PASS | OPEN | All registered commands pass the real PTY inventory; manual visual comparison remains. |
 | TUI-017 | model selector | PARTIAL | PARTIAL | OPEN | Selector paths are covered in local matrices; complete auth/search evidence remains. |
 | TUI-018 | thinking selector | PARTIAL | PARTIAL | OPEN | Selector paths and one-step Kitty Up navigation are covered; provider-limit and persistence evidence remains. |
-| TUI-019 | settings selector | PARTIAL | PARTIAL | OPEN | Settings tests exist; every nested cancel/reload boundary remains. |
+| TUI-019 | settings selector | PARTIAL | PARTIAL | OPEN | Settings tests exist; Wave D adds 0.85.1 settings-list mouse press/click/wheel handling (submenu + search-row routing, hover never selects) with unit pins. Every nested cancel/reload boundary remains. |
 | TUI-020 | theme picker/controller | PARTIAL | PARTIAL | OPEN | Theme tests/reload path exist; complete visual palette review remains. |
 | TUI-021 | login dialog | PARTIAL | PARTIAL | OPEN | Complete real auth PTY matrix passes 5/5: browser callback, device code, browser cancellation/guidance, llama key/URL, and Qwen Token Plan bracketed API-key paste with masking/persistence/logout; component tests cover grapheme-safe editing and split-marker cancellation. Provider/manual visuals remain open. |
 | TUI-022 | session picker | PARTIAL | PARTIAL | OPEN | Session routing and search-state component tests pass; full picker/delete/rename interaction evidence remains. |

@@ -810,6 +810,34 @@ impl Component for Input {
         self.focused = focused;
     }
 
+    /// Click-to-cursor (upstream 0.85.1 `Input.handleMouse`): left press on
+    /// row 0 moves the cursor to the clicked column, adjusted for the
+    /// prompt width and clamped to grapheme boundaries.
+    fn handle_mouse(&mut self, event: &crate::mouse::MouseEvent) {
+        use crate::mouse::{MouseButton, MouseEventKind};
+        if event.kind != MouseEventKind::Press || event.button != MouseButton::Left || event.y != 0
+        {
+            return;
+        }
+        let prompt_width = crate::utils::visible_width(&self.prompt);
+        let target_column = event.x.saturating_sub(prompt_width);
+        // Walk grapheme boundaries to the clicked column, mirroring
+        // render_line's unscrolled layout (single-line input shows from
+        // column 0).
+        let mut column = 0usize;
+        let mut cursor = self.value.len();
+        for (start, end) in crate::utils::grapheme_boundaries(&self.value) {
+            let next = column + crate::utils::visible_width(&self.value[start..end]);
+            if target_column < next {
+                cursor = start;
+                break;
+            }
+            column = next;
+        }
+        self.set_cursor(cursor);
+        self.last_action = None;
+    }
+
     fn invalidate(&mut self) {}
 }
 
@@ -1097,5 +1125,46 @@ mod placeholder_tests {
             !filled_line.contains("Find in transcript"),
             "got: {filled_line:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod click_tests {
+    use super::*;
+    use crate::mouse::{MouseButton, MouseEvent, MouseEventKind, MouseModifiers};
+    use crate::tui::Component;
+
+    fn click(x: usize) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Press,
+            button: MouseButton::Left,
+            x,
+            y: 0,
+            modifiers: MouseModifiers {
+                shift: false,
+                alt: false,
+                ctrl: false,
+            },
+            screen_x: x,
+            screen_y: 0,
+            width: 30,
+            height: 1,
+        }
+    }
+
+    #[test]
+    fn click_moves_cursor_to_text_column() {
+        // 0.85.1 upstream `Input.handleMouse`: left press on row 0 moves
+        // the cursor to the clicked column (prompt-adjusted).
+        // RED: Rust Input has no mouse handling.
+        let mut input = Input::new("> ");
+        input.set_value("hello");
+        Component::handle_mouse(&mut input, &click(4));
+        assert_eq!(input.cursor, 2);
+        // Non-left button and non-press rows are ignored.
+        let mut other = click(4);
+        other.button = MouseButton::Right;
+        Component::handle_mouse(&mut input, &other);
+        assert_eq!(input.cursor, 2);
     }
 }

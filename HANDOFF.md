@@ -1,5 +1,14 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave D slice 3 committed + pushed
+
+Editor click-to-place + autocomplete mouse routing (mutation-checked):
+editor suites green, lib 404-406/406 (flakes pre-existing), clippy/fmt
+clean, conversion 100.00%, parity tui + dashboard OK. TUI-006 note
+extended, no status change (58/318). Committed `c5fdc52`, pushed,
+hashes match. Next: Wave D slice 4 (input click-to-cursor,
+settings-list/loader remaining) or Wave E visual parity.
+
 ## Latest checkpoint — 2026-09-16 — Wave D slice 2 committed + pushed
 
 Search index cache, placeholder input + search prompt, select-list
