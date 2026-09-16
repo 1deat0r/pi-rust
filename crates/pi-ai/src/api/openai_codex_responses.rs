@@ -2927,6 +2927,29 @@ mod tests {
     }
 
     #[test]
+    fn processes_terminal_sse_event_without_trailing_blank_line() {
+        // Port of the upstream #9047 regression test: the terminal SSE
+        // event arrives with no trailing blank line (EOF terminates the
+        // residual frame). The shared parser flushes it via `finish()`,
+        // so the turn still completes with the streamed text.
+        let model = codex_model("gpt-5.1-codex");
+        let options = OpenAICodexResponsesOptions::default();
+        let trimmed = codex_sse("completed", None).trim_end().to_string();
+        assert!(!trimmed.ends_with("\n\n"));
+        let (message, _) = process_sse_text(&trimmed, &model, &options);
+        assert_eq!(message.stop_reason(), Some(StopReason::Stop));
+        let text: String = message
+            .content()
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "Hello");
+    }
+
+    #[test]
     fn service_tier_pricing_multiplier_applies_when_backend_echoes_default() {
         // Port of the upstream service-tier pricing matrix.
         for (model_id, service_tier, multiplier) in

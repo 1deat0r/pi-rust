@@ -1,5 +1,17 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-16 checkpoint — Wave C slice: Codex SSE EOF evidence
+
+Upstream #9047 (64eeb82a4) already ported by construction: the shared
+SSE parser flushes residual frames at EOF and the codex path drains
+`finish()` after the byte loop. New
+`processes_terminal_sse_event_without_trailing_blank_line` pin proves
+stop + text on a trimmed terminal fixture; no source change. No row
+promoted (evidence-only). Gate green: pi-ai lib 468/468, pi-ai strict
+clippy, fmt, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then next Wave C
+remainder or Wave E visual parity lift-off.
+
 ## Active 2026-09-16 checkpoint — Wave C slice: Copilot GPT routing
 
 Ported upstream #9253 (fixes #9209): Copilot `gpt-6-astra` moved from

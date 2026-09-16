@@ -4,6 +4,22 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
+## Current status (last updated 2026-09-16 — Wave C slice: Codex SSE EOF)
+
+Wave C evidence slice (0.85.1, upstream #9047 fixed by 64eeb82a4):
+unterminated Codex SSE terminal events are already handled — the
+shared `SseParser::finish()` flushes the residual buffer at EOF and the
+codex stream path drains it after the byte loop, so a trimmed terminal
+frame still completes the turn. New pin
+`processes_terminal_sse_event_without_trailing_blank_line` proves
+stop + "Hello" text on a `trim_end()` fixture (mirrors the upstream
+regression test); no source change needed. Gate: pi-ai lib 468/468,
+pi-ai strict clippy clean, fmt clean, conversion 100.00% (166/166),
+parity dashboard OK (upstream=d7296c0). No parity row promoted
+(evidence-only; live Codex traffic unverifiable offline). Metrics
+unchanged (implementation 111/266, deterministic evidence 107/266,
+runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ## Current status (last updated 2026-09-16 — Wave C slice: Copilot GPT routing)
 
 Wave C slice (0.85.1, upstream #9253 fixing #9209): all GitHub Copilot
