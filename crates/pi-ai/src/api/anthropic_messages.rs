@@ -32,6 +32,8 @@ pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 pub const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
 pub const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 pub const SERVER_SIDE_FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
+pub const MID_CONVERSATION_OUTPUT_CONFIG_BETA: &str = "mid-conversation-output-config-2026-07-01";
+pub const THINKING_BINDING_CONTROLS_BETA: &str = "thinking-binding-controls-2026-08-01";
 
 const CLAUDE_CODE_VERSION: &str = "2.1.75";
 const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
@@ -107,6 +109,7 @@ struct AnthropicCompat {
     allow_empty_signature: bool,
     supports_strict_tools: bool,
     supports_tool_references: bool,
+    supports_mid_convo_effort: bool,
 }
 
 fn compat_bool(model: &Model, key: &str, default: bool) -> bool {
@@ -177,7 +180,14 @@ fn anthropic_compat(model: &Model) -> AnthropicCompat {
             .and_then(|compat| compat.get("supportsToolReferences"))
             .and_then(Value::as_bool)
             .unwrap_or_else(|| default_supports_tool_references(model)),
+        supports_mid_convo_effort: compat_bool(model, "supportsMidConvoEffort", false),
     }
+}
+
+/// Provider-native thinking effort levels that can be replayed behind
+/// effort-only system messages (upstream `isAnthropicEffort`).
+fn is_anthropic_effort(value: &str) -> bool {
+    matches!(value, "low" | "medium" | "high" | "xhigh" | "max")
 }
 
 fn allowed_fallback_models(model: &Model) -> Vec<AllowedFallbackModel> {
@@ -275,7 +285,9 @@ pub fn convert_messages(messages: &[Message], allow_empty_signature: bool) -> Ve
         &HashSet::new(),
         &|name| name.to_string(),
         None,
+        None,
     )
+    .0
 }
 
 fn convert_content_blocks(content: &[ContentBlock]) -> Value {
@@ -368,8 +380,12 @@ fn convert_messages_with_options(
     deferred_tool_names: &HashSet<String>,
     normalize_tool_name: &dyn Fn(&str) -> String,
     cache_control: Option<&Value>,
-) -> Vec<Value> {
+    managed_provider: Option<&str>,
+) -> (Vec<Value>, Vec<(usize, String)>) {
     let mut params: Vec<Value> = Vec::new();
+    // Converted-message positions replayed behind effort-only system
+    // messages by managed-effort models (upstream `assistantLevels`).
+    let mut assistant_levels: Vec<(usize, String)> = Vec::new();
     let mut loaded_tool_names = HashSet::new();
     for (index, msg) in messages.iter().enumerate() {
         match msg {
@@ -466,7 +482,19 @@ fn convert_messages_with_options(
                     }
                 }
                 if !blocks.is_empty() {
+                    let message_index = params.len();
                     params.push(json!({"role": "assistant", "content": blocks}));
+                    if let Some(provider) = managed_provider {
+                        if assistant.api() == Some("anthropic-messages")
+                            && assistant.provider() == Some(provider)
+                        {
+                            if let Some(level) = assistant.provider_thinking_level() {
+                                if is_anthropic_effort(level) {
+                                    assistant_levels.push((message_index, level.to_string()));
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Message::ToolResult(_result) => {
@@ -523,7 +551,35 @@ fn convert_messages_with_options(
         }
     }
 
-    params
+    (params, assistant_levels)
+}
+
+/// Replays managed-effort history behind effort-only system messages and
+/// appends the active effort (upstream `insertThinkingLevelMessages`).
+fn insert_thinking_level_messages(
+    messages: Vec<Value>,
+    assistant_levels: &[(usize, String)],
+    active_effort: &str,
+) -> Vec<Value> {
+    let mut output = Vec::with_capacity(messages.len() + assistant_levels.len() + 1);
+    for (index, message) in messages.into_iter().enumerate() {
+        for (level_index, effort) in assistant_levels {
+            if *level_index == index {
+                output.push(json!({
+                    "role": "system",
+                    "content": [],
+                    "output_config": {"effort": effort},
+                }));
+            }
+        }
+        output.push(message);
+    }
+    output.push(json!({
+        "role": "system",
+        "content": [],
+        "output_config": {"effort": active_effort},
+    }));
+    output
 }
 
 /// Converts unified tools to Anthropic `ToolParam`s, including the provider's
@@ -771,16 +827,28 @@ fn build_params_for_request(
         .map(|tool| normalize_name(&tool.name))
         .collect();
 
+    let mid_convo_effort = compat.supports_mid_convo_effort;
+    let (converted_messages, assistant_levels) = convert_messages_with_options(
+        &transformed_messages,
+        is_oauth_token,
+        compat.allow_empty_signature,
+        &deferred_tool_names,
+        &normalize_name,
+        cache_control.as_ref(),
+        mid_convo_effort.then_some(model.provider.as_str()),
+    );
+    // Upstream applies the requested effort verbatim to the trailing
+    // effort-only system message, defaulting to high.
+    let active_effort = options.effort.clone().unwrap_or_else(|| "high".to_string());
+    let messages = if mid_convo_effort {
+        insert_thinking_level_messages(converted_messages, &assistant_levels, &active_effort)
+    } else {
+        converted_messages
+    };
+
     let mut params = json!({
         "model": model.id,
-        "messages": convert_messages_with_options(
-            &transformed_messages,
-            is_oauth_token,
-            compat.allow_empty_signature,
-            &deferred_tool_names,
-            &normalize_name,
-            cache_control.as_ref(),
-        ),
+        "messages": messages,
         "max_tokens": options.max_tokens.unwrap_or(model.max_tokens),
         "stream": true,
     });
@@ -805,7 +873,10 @@ fn build_params_for_request(
     }
 
     if let Some(temperature) = options.temperature {
-        if options.thinking_enabled != Some(true) && compat.supports_temperature {
+        if options.thinking_enabled != Some(true)
+            && !compat.supports_mid_convo_effort
+            && compat.supports_temperature
+        {
             params["temperature"] = json!(temperature);
         }
     }
@@ -834,7 +905,20 @@ fn build_params_for_request(
         params["tools"] = json!(tools);
     }
 
-    if model.reasoning {
+    // Managed-effort models always use adaptive thinking so prefix
+    // mismatches can be dropped instead of surfacing as persistent 400
+    // responses (upstream mid-conversation effort branch).
+    if compat.supports_mid_convo_effort {
+        let display = options
+            .thinking_display
+            .unwrap_or(AnthropicThinkingDisplay::Summarized);
+        params["thinking"] = json!({
+            "type": "adaptive",
+            "display": display.as_str(),
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        });
+        params["output_config"] = json!({"effort": "high"});
+    } else if model.reasoning {
         match options.thinking_enabled {
             Some(false) => {
                 if model
@@ -1015,6 +1099,10 @@ fn build_anthropic_headers(
     if !allowed_fallback_models(model).is_empty() {
         beta_features.push(SERVER_SIDE_FALLBACK_BETA);
     }
+    if compat.supports_mid_convo_effort {
+        beta_features.push(MID_CONVERSATION_OUTPUT_CONFIG_BETA);
+        beta_features.push(THINKING_BINDING_CONTROLS_BETA);
+    }
 
     let is_oauth = api_key.is_some_and(is_oauth_token);
     let mut headers = BTreeMap::from([
@@ -1152,6 +1240,9 @@ fn process_anthropic_events_with_options(
 
     let mut live: Vec<Option<BlockAccum>> = Vec::new();
     let mut usage_model = model.clone();
+    // Provider thinking-drop input transformations (upstream
+    // `inputTransformations`), surfaced as a diagnostic at the end.
+    let mut input_transformations: Vec<Value> = Vec::new();
     let mut saw_message_start = false;
     let mut saw_message_stop = false;
 
@@ -1206,6 +1297,12 @@ fn process_anthropic_events_with_options(
                 let message = &data["message"];
                 if let Some(id) = message.get("id").and_then(|v| v.as_str()) {
                     output.set_response_id(id.to_string());
+                }
+                if let Some(transformations) = message
+                    .get("input_transformations")
+                    .and_then(|v| v.as_array())
+                {
+                    input_transformations = transformations.clone();
                 }
                 usage_model = model.clone();
                 if let Some(response_model) = message.get("model").and_then(|v| v.as_str()) {
@@ -1511,6 +1608,11 @@ fn process_anthropic_events_with_options(
                 }
             }
             "message_delta" => {
+                if let Some(transformations) =
+                    data.get("input_transformations").and_then(|v| v.as_array())
+                {
+                    input_transformations = transformations.clone();
+                }
                 if let Some(stop_reason) = data["delta"].get("stop_reason").and_then(|v| v.as_str())
                 {
                     output.set_raw_stop_reason(stop_reason.to_string());
@@ -1591,6 +1693,30 @@ fn process_anthropic_events_with_options(
             .map(|s| s.to_string())
             .unwrap_or_else(|| "An unknown error occurred".to_string());
         return Err(message);
+    }
+    if !input_transformations.is_empty() {
+        // Upstream surfaces provider thinking drops as a redacted
+        // diagnostic so per-turn effort mismatches stay visible.
+        let mut diagnostic =
+            crate::types::AssistantMessageDiagnostic::new("anthropic_input_transformations");
+        let redactions: Vec<Value> = input_transformations
+            .iter()
+            .map(|transformation| {
+                let mut redacted = serde_json::Map::new();
+                for key in ["type", "path", "reason"] {
+                    if let Some(value) = transformation.get(key) {
+                        redacted.insert(key.to_string(), value.clone());
+                    }
+                }
+                Value::Object(redacted)
+            })
+            .collect();
+        diagnostic.details = Some(
+            [("transformations".to_string(), json!(redactions))]
+                .into_iter()
+                .collect(),
+        );
+        output.append_diagnostic(diagnostic);
     }
     Ok(output)
 }
@@ -1823,7 +1949,15 @@ pub fn stream(
             |event| pusher.push(event),
         );
         match assembled {
-            Ok(message) => {
+            Ok(mut message) => {
+                // Managed-effort turns record their provider-native effort
+                // level so follow-up requests can replay it (upstream
+                // `providerThinkingLevel`).
+                if anthropic_compat(&model).supports_mid_convo_effort {
+                    message.set_provider_thinking_level(
+                        options.effort.clone().unwrap_or_else(|| "high".to_string()),
+                    );
+                }
                 if signal_aborted(options.base.abort_signal.as_ref()) {
                     let message = terminal_error_message(&model, "Request was aborted", true);
                     pusher.push(AssistantMessageEvent::Error {

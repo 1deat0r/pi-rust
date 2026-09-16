@@ -239,6 +239,7 @@ where
                     model: m,
                     response_model,
                     response_id,
+                    provider_thinking_level,
                     diagnostics,
                     usage,
                     stop_reason,
@@ -256,6 +257,7 @@ where
                     model: rmodel,
                     response_model: rrm,
                     response_id: rrid,
+                    provider_thinking_level: rlevel,
                     diagnostics: rdiagnostics,
                     usage: rusage,
                     stop_reason: rstop,
@@ -271,6 +273,7 @@ where
                 *rmodel = m.clone();
                 *rrm = response_model.clone();
                 *rrid = response_id.clone();
+                *rlevel = provider_thinking_level.clone();
                 *rdiagnostics = diagnostics.clone();
                 *rusage = usage.clone();
                 *rstop = *stop_reason;

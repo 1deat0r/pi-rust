@@ -626,6 +626,12 @@ pub enum AssistantMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[serde(rename = "responseId")]
         response_id: Option<String>,
+        /// Exact provider-native effort level used for this response. Absent
+        /// for legacy or unmanaged responses (upstream
+        /// `providerThinkingLevel`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "providerThinkingLevel")]
+        provider_thinking_level: Option<String>,
         /// Redacted provider/runtime diagnostics for failures and recovery
         /// paths. This mirrors the optional upstream diagnostics array while
         /// keeping ordinary successful messages byte-compatible.
@@ -658,6 +664,7 @@ impl AssistantMessage {
             model: None,
             response_model: None,
             response_id: None,
+            provider_thinking_level: None,
             diagnostics: None,
             usage: None,
             stop_reason: None,
@@ -741,6 +748,21 @@ impl AssistantMessage {
     pub fn set_response_id(&mut self, id: String) {
         let AssistantMessage::Assistant { response_id, .. } = self;
         *response_id = Some(id);
+    }
+    pub fn provider_thinking_level(&self) -> Option<&str> {
+        match self {
+            AssistantMessage::Assistant {
+                provider_thinking_level,
+                ..
+            } => provider_thinking_level.as_deref(),
+        }
+    }
+    pub fn set_provider_thinking_level(&mut self, level: String) {
+        let AssistantMessage::Assistant {
+            provider_thinking_level,
+            ..
+        } = self;
+        *provider_thinking_level = Some(level);
     }
 
     pub fn diagnostics(&self) -> Option<&[AssistantMessageDiagnostic]> {

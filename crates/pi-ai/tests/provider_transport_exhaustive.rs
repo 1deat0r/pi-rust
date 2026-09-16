@@ -1771,6 +1771,38 @@ async fn fireworks_glm_thinking_and_openrouter_affinity_are_wire_visible() {
     assert!(!request.headers.contains_key("x-session-affinity"));
 }
 
+#[tokio::test]
+async fn openrouter_mid_convo_effort_level_and_betas_are_wire_visible() {
+    // 0.85.1 upstream anthropic-messages: managed-effort turns record
+    // their effort level on the output message and negotiate the
+    // mid-conversation betas on the wire.
+    let (_, message, request) = run_named_stream(
+        "anthropic-messages",
+        "openrouter",
+        Some("anthropic/claude-opus-5"),
+        Reply::text(
+            200,
+            "text/event-stream",
+            simple_text_reply("anthropic-messages").body,
+        ),
+        request_options("openrouter-key"),
+        Context::default(),
+    )
+    .await;
+    assert_success(&message, "anthropic-messages", "hello");
+    assert_eq!(message.provider_thinking_level(), Some("high"));
+    let betas = request
+        .headers
+        .get("anthropic-beta")
+        .expect("mid-conversation beta header");
+    assert!(betas.contains("mid-conversation-output-config-2026-07-01"));
+    assert!(betas.contains("thinking-binding-controls-2026-08-01"));
+    assert_eq!(
+        request.headers.get("x-session-id"),
+        Some(&"session-loopback".to_string())
+    );
+}
+
 #[test]
 fn registered_provider_inventory_is_explicit_about_non_http_surfaces() {
     let providers = builtin_providers();

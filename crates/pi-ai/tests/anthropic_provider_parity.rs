@@ -582,6 +582,180 @@ fn kimi_tool_stream_repairs_malformed_event_and_final_arguments() {
     );
 }
 
+fn mid_convo_model() -> Model {
+    pi_ai::providers::all::builtin_providers()
+        .into_iter()
+        .find(|provider| provider.id == "openrouter")
+        .and_then(|provider| {
+            provider
+                .models
+                .into_iter()
+                .find(|model| model.id == "anthropic/claude-opus-5")
+        })
+        .expect("OpenRouter Claude Opus 5 mid-conversation model")
+}
+
+fn mid_convo_options(effort: Option<&str>) -> AnthropicOptions {
+    AnthropicOptions {
+        effort: effort.map(|level| level.to_string()),
+        temperature: Some(0.5),
+        max_tokens: Some(64),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn mid_convo_effort_pins_request_shape() {
+    // 0.85.1 upstream anthropic-messages: managed-effort models always use
+    // adaptive thinking with drop-block binding and a fixed high
+    // output_config; temperature is suppressed. RED: no mid-conversation
+    // effort support exists on this lane.
+    let model = mid_convo_model();
+    assert!(model.reasoning);
+    let params = build_params(&model, &Context::default(), &mid_convo_options(None))
+        .expect("mid-conversation request params");
+    assert_eq!(
+        params["thinking"],
+        serde_json::json!({
+            "type": "adaptive",
+            "display": "summarized",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+        })
+    );
+    assert_eq!(
+        params["output_config"],
+        serde_json::json!({"effort": "high"})
+    );
+    assert!(params.get("temperature").is_none());
+    let messages = params["messages"].as_array().expect("messages array");
+    assert_eq!(
+        messages.last(),
+        Some(&serde_json::json!({
+            "role": "system",
+            "content": [],
+            "output_config": {"effort": "high"},
+        }))
+    );
+}
+
+#[test]
+fn mid_convo_effort_replays_historical_levels() {
+    // 0.85.1 upstream: assistant turns that stored a managed-effort level
+    // are replayed behind effort-only system messages; the trailing message
+    // carries the active effort. Non-effort stored levels are ignored.
+    let model = mid_convo_model();
+    let mut prior = AssistantMessage::new();
+    prior.set_api_provider_model(
+        "anthropic-messages",
+        "openrouter",
+        "anthropic/claude-opus-5",
+    );
+    prior.set_provider_thinking_level("medium".to_string());
+    prior.content_mut().push(ContentBlock::Text {
+        text: "earlier".to_string(),
+        text_signature: None,
+    });
+    let mut foreign = AssistantMessage::new();
+    foreign.set_api_provider_model("anthropic-messages", "openrouter", "other-model");
+    foreign.set_provider_thinking_level("nonsense".to_string());
+    foreign.content_mut().push(ContentBlock::Text {
+        text: "foreign".to_string(),
+        text_signature: None,
+    });
+    let context = Context {
+        system_prompt: None,
+        messages: vec![
+            Message::Assistant(prior),
+            Message::Assistant(foreign),
+            Message::User(UserContent::string("continue", 1)),
+        ],
+        tools: vec![],
+    };
+    let params = build_params(&model, &context, &mid_convo_options(Some("low")))
+        .expect("historical replay params");
+    let messages = params["messages"].as_array().expect("messages array");
+    let effort_systems: Vec<&serde_json::Value> = messages
+        .iter()
+        .filter(|message| {
+            message.get("role").and_then(|role| role.as_str()) == Some("system")
+                && message.get("output_config").is_some()
+        })
+        .collect();
+    assert_eq!(effort_systems.len(), 2);
+    assert_eq!(
+        effort_systems[0]["output_config"],
+        serde_json::json!({"effort": "medium"})
+    );
+    assert_eq!(
+        effort_systems[1]["output_config"],
+        serde_json::json!({"effort": "low"})
+    );
+    assert_eq!(
+        messages.last(),
+        Some(&serde_json::json!({
+            "role": "system",
+            "content": [],
+            "output_config": {"effort": "low"},
+        }))
+    );
+}
+
+#[test]
+fn input_transformations_become_thinking_drop_diagnostic() {
+    // 0.85.1 upstream anthropic-messages: provider thinking-drop input
+    // transformations surface as an assistant diagnostic. RED: the lane
+    // drops them silently.
+    let model = mid_convo_model();
+    let events = vec![
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"message_start","message":{"id":"m","model":"anthropic/claude-opus-5","usage":{"input_tokens":7,"output_tokens":0},"input_transformations":[{"type":"thinking_dropped","path":"messages.1","reason":"prefix_mismatch"}]}}"#.to_string(),
+            event: Some("message_start".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#.to_string(),
+            event: Some("content_block_start".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}"#.to_string(),
+            event: Some("content_block_delta".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"content_block_stop","index":0}"#.to_string(),
+            event: Some("content_block_stop".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}"#.to_string(),
+            event: Some("message_delta".to_string()),
+            id: None,
+        },
+        pi_ai::sse::SseEvent {
+            data: r#"{"type":"message_stop"}"#.to_string(),
+            event: Some("message_stop".to_string()),
+            id: None,
+        },
+    ];
+    let output = process_anthropic_events(&model, &events, |_| {}).unwrap();
+    let diagnostics = output.diagnostics().expect("thinking-drop diagnostic");
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].diagnostic_type,
+        "anthropic_input_transformations"
+    );
+    let transformations = diagnostics[0]
+        .details
+        .as_ref()
+        .and_then(|details| details.get("transformations"))
+        .expect("transformation details");
+    assert_eq!(
+        transformations,
+        &serde_json::json!([{"type": "thinking_dropped", "path": "messages.1", "reason": "prefix_mismatch"}])
+    );
+}
+
 #[test]
 fn simple_options_type_remains_provider_neutral() {
     let options = SimpleStreamOptions {

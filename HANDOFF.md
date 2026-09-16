@@ -1,5 +1,14 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave E slice 3 committed + pushed
+
+Thinking persistence on the anthropic lane (0.85.1): pi-ai lib 465
+green, clippy/fmt clean, conversion 100.00%, parity audits OK.
+PROV-003/027 notes extended, no status change (58/318). Six
+integration failures pre-existing on HEAD. Next: remaining provider
+items (mid-conversation diagnostics UI, OAuth lanes) or visual parity
+lift-off.
+
 ## Latest checkpoint — 2026-09-16 — Wave E slice 2 committed + pushed
 
 Fireworks GLM thinking default + OpenRouter anthropic-lane affinity

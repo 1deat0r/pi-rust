@@ -119,6 +119,9 @@ impl EventConverter {
                 if let Some(rid) = event.get("responseId").and_then(|v| v.as_str()) {
                     self.partial.set_response_id(rid.to_string());
                 }
+                if let Some(level) = event.get("providerThinkingLevel").and_then(|v| v.as_str()) {
+                    self.partial.set_provider_thinking_level(level.to_string());
+                }
                 self.partial.set_stop_reason(stop_reason_for_done(reason));
                 append_rewrite_diagnostic(&mut self.partial, event.get("rewrite"));
                 AssistantMessageEvent::Done {
@@ -136,6 +139,9 @@ impl EventConverter {
                 }
                 if let Some(rid) = event.get("responseId").and_then(|v| v.as_str()) {
                     self.partial.set_response_id(rid.to_string());
+                }
+                if let Some(level) = event.get("providerThinkingLevel").and_then(|v| v.as_str()) {
+                    self.partial.set_provider_thinking_level(level.to_string());
                 }
                 let error_message = event
                     .get("errorMessage")
@@ -1034,6 +1040,41 @@ mod tests {
                 crate::types::UserContent::string("Hello", 1),
             )],
             tools: vec![],
+        }
+    }
+
+    #[test]
+    fn converter_preserves_provider_thinking_level_on_done_and_error() {
+        // 0.85.1 upstream pi-messages: done/error events carry the
+        // provider-native effort level through to the terminal message.
+        let model = model("http://127.0.0.1");
+        let mut converter = EventConverter::new(&model);
+        let done = converter.convert(&json!({
+            "type": "done",
+            "reason": "stop",
+            "usage": usage_json(),
+            "responseId": "resp_1",
+            "providerThinkingLevel": "high",
+        }));
+        match done {
+            crate::types::AssistantMessageEvent::Done { message, .. } => {
+                assert_eq!(message.provider_thinking_level(), Some("high"));
+            }
+            other => panic!("expected done, got {other:?}"),
+        }
+        let mut converter = EventConverter::new(&model);
+        let error = converter.convert(&json!({
+            "type": "error",
+            "reason": "error",
+            "usage": usage_json(),
+            "errorMessage": "boom",
+            "providerThinkingLevel": "medium",
+        }));
+        match error {
+            crate::types::AssistantMessageEvent::Error { error_message, .. } => {
+                assert_eq!(error_message.provider_thinking_level(), Some("medium"));
+            }
+            other => panic!("expected error, got {other:?}"),
         }
     }
 
