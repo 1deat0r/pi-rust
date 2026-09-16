@@ -2,7 +2,15 @@
 
 ## Day goal 2026-09-17 — close upstream drift (d7296c0 → e4c75a732)
 
-### Drift slice D — image refresh (uncommitted)
+### Drift slice D — image refresh committed + pushed
+
+Post-pin image refresh (bdee230f1): 4 renames + 2 additions,
+vendored pretty format preserved (amended once for a single-line
+collapse). New catalog pin green, TDD red-first. pi-ai lib 474/474,
+pi-ai strict clippy clean, fmt clean, conversion 100.00% (166/166),
+parity dashboard OK (58/318, upstream=d7296c0). No row promoted;
+metrics unchanged. Committed `d1006d0`, pushed, hashes match. Next:
+drift slice E.
 
 Post-pin image refresh (bdee230f1): 4 renames + 2 additions. New
 catalog pin green, TDD red-first. pi-ai lib 474/474, pi-ai strict
