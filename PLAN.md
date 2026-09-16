@@ -1,5 +1,15 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-16 checkpoint — Wave C slice: Bedrock 1h
+
+Ported upstream #9457 (8a7b0c03d): Bedrock 1h cache-write
+population from `cacheDetails` (cost side already handled). New
+usage/cost pin, TDD red-first. No row promoted (provider-lane
+deterministic slice). Gate green: pi-ai lib 474/474, pi-ai strict
+clippy, fmt, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then next Wave C
+remainder or Wave E visual parity lift-off.
+
 ## Active 2026-09-16 checkpoint — Wave C slice: Fireworks thinking
 
 Ported upstream #9323 (6b94ae2ec): Fireworks thinking metadata

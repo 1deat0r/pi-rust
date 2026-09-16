@@ -2190,6 +2190,20 @@ fn exception_message(event: &Value, name: &str) -> String {
 }
 
 fn apply_usage(model: &Model, output: &mut AssistantMessage, usage: &Value) {
+    // Upstream #9457: `cacheDetails` entries with a 1h TTL sum into
+    // `cache_write_1h` (priced at 2x input by `calculate_cost`) while
+    // `cacheWriteInputTokens` keeps the total.
+    let cache_write_1h: i64 = usage
+        .get("cacheDetails")
+        .and_then(|details| details.as_array())
+        .map(|details| {
+            details
+                .iter()
+                .filter(|detail| detail.get("ttl").and_then(|ttl| ttl.as_str()) == Some("1h"))
+                .filter_map(|detail| detail.get("inputTokens").and_then(|v| v.as_i64()))
+                .sum()
+        })
+        .unwrap_or(0);
     let mut u = Usage {
         input: usage
             .get("inputTokens")
@@ -2207,7 +2221,7 @@ fn apply_usage(model: &Model, output: &mut AssistantMessage, usage: &Value) {
             .get("cacheWriteInputTokens")
             .and_then(|v| v.as_i64())
             .unwrap_or(0),
-        cache_write_1h: None,
+        cache_write_1h: Some(cache_write_1h),
         reasoning: None,
         total_tokens: usage
             .get("totalTokens")
@@ -4450,5 +4464,46 @@ mod profile_credentials_tests {
             "ap-south-1"
         );
         let _ = std::fs::remove_dir_all(config_file.parent().unwrap());
+    }
+
+    #[test]
+    fn usage_populates_one_hour_cache_writes_from_cache_details_upstream_9457() {
+        // Port of the upstream #9457 regression test: `cacheDetails`
+        // entries with a 1h TTL sum into `cache_write_1h` (priced at 2x
+        // input) while `cacheWriteInputTokens` keeps the total. Rates
+        // mirror the upstream Opus fixture (600k * 6.25 + 400k * 10.0
+        // per Mtok = 3.75 + 4.0 = 7.75).
+        let mut model = base_model();
+        model.cost = crate::model::ModelCost {
+            input: 5.0,
+            output: 25.0,
+            cache_read: 1.25,
+            cache_write: 6.25,
+            tiers: None,
+        };
+        let mut output = AssistantMessage::new();
+        apply_usage(
+            &model,
+            &mut output,
+            &json!({
+                "inputTokens": 100,
+                "outputTokens": 5,
+                "totalTokens": 1000105,
+                "cacheWriteInputTokens": 1000000,
+                "cacheDetails": [
+                    {"ttl": "1h", "inputTokens": 150000},
+                    {"ttl": "5m", "inputTokens": 600000},
+                    {"ttl": "1h", "inputTokens": 250000}
+                ]
+            }),
+        );
+        let usage = output.usage().expect("usage recorded");
+        assert_eq!(usage.cache_write, 1_000_000);
+        assert_eq!(usage.cache_write_1h, Some(400_000));
+        assert!(
+            (usage.cost.cache_write - 7.75).abs() < 1e-9,
+            "unexpected cache write cost: {}",
+            usage.cost.cache_write
+        );
     }
 }

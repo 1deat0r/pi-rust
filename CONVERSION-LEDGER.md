@@ -4,6 +4,22 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
+## Current status (last updated 2026-09-16 — Wave C slice: Bedrock 1h)
+
+Wave C slice (0.85.1, upstream #9457 fixed by 8a7b0c03d): Bedrock
+`apply_usage` now sums `cacheDetails` 1h-TTL entries into
+`cache_write_1h` (the shared `calculate_cost` already priced 1h
+writes at 2x input; only population was missing). New
+`usage_populates_one_hour_cache_writes_from_cache_details...` pin
+mirrors the upstream fixture (1M total write, 400k 1h, 7.75 cost at
+Opus rates). TDD red first. Gate: pi-ai lib 474/474, pi-ai strict
+clippy clean, fmt clean, conversion 100.00% (166/166), parity
+dashboard OK (upstream=d7296c0). No parity row promoted
+(provider-lane deterministic slice; live Bedrock metering
+unverifiable offline). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ## Current status (last updated 2026-09-16 — Wave C slice: Fireworks thinking)
 
 Wave C slice (0.85.1, upstream #9323 fixed by 6b94ae2ec): Fireworks
