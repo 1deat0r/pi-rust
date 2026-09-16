@@ -131,7 +131,14 @@ fn always_scrollbar_reserves_width_paints_thumb_and_handles_narrow_width() {
     assert_eq!(geometry.track_top, 0);
     assert_eq!(geometry.track_height, 3);
     assert!(geometry.thumb_height >= 2);
-    assert!(frame.lines.iter().any(|line| line.contains("\x1b[100m")));
+    // 0.85.1 upstream splits track/thumb styling: thumb `\x1b[37m`,
+    // track `\x1b[90m` (replacing the old single `\x1b[100m` style).
+    assert!(frame.lines.iter().any(|line| line.contains("\x1b[37m")));
+    // track rows exist only when the thumb is shorter than the track
+    assert!(frame
+        .lines
+        .iter()
+        .any(|line| line.contains("\x1b[90m") || line.contains("\x1b[37m")));
     assert!(frame
         .lines
         .iter()

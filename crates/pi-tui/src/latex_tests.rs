@@ -261,3 +261,25 @@ fn malformed_latex_inputs_remain_total_and_rejected() {
         assert!(render_latex(source, false).is_none(), "{source:?}");
     }
 }
+
+#[test]
+fn relational_algebra_join_symbols_render() {
+    // 0.85.1 upstream (#9050): \bowtie, \Join, \ltimes, \rtimes,
+    // \leftouterjoin, \rightouterjoin, \fullouterjoin.
+    // RED: symbols absent from SYMBOLS + RELATION_COMMANDS.
+    for (source, expected) in [
+        (r"A \bowtie B", "A ⋈ B"),
+        (r"A \Join B", "A ⋈ B"),
+        (r"A \ltimes B", "A ⋉ B"),
+        (r"A \rtimes B", "A ⋊ B"),
+        (r"A \leftouterjoin B", "A ⟕ B"),
+        (r"A \rightouterjoin B", "A ⟖ B"),
+        (r"A \fullouterjoin B", "A ⟗ B"),
+    ] {
+        assert_eq!(
+            render_latex(source, false).as_deref(),
+            Some(expected),
+            "{source}"
+        );
+    }
+}

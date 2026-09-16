@@ -45,4 +45,78 @@ impl Component for Box {
             .unwrap_or_else(|error| error.into_inner())
             .invalidate();
     }
+    /// Forward mouse events inside the border to the child with
+    /// border-relative coordinates (upstream 0.85.1 `Box.handleMouse`:
+    /// content offset, child-height hit test). Border rows/columns do not
+    /// forward.
+    fn handle_mouse(&mut self, event: &crate::mouse::MouseEvent) {
+        if event.y == 0 || event.x == 0 {
+            return;
+        }
+        let forwarded = crate::mouse::MouseEvent {
+            x: event.x - 1,
+            y: event.y - 1,
+            ..*event
+        };
+        self.child
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .handle_mouse(&forwarded);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod box_mouse_tests {
+    use super::*;
+    use crate::mouse::{MouseButton, MouseEvent, MouseEventKind, MouseModifiers};
+    use crate::tui::Component;
+    use std::sync::{Arc, Mutex};
+
+    struct Probe {
+        seen: Arc<Mutex<Vec<(usize, usize)>>>,
+    }
+
+    impl Component for Probe {
+        fn render(&self, _width: usize) -> Vec<String> {
+            vec!["hi".to_string()]
+        }
+        fn handle_mouse(&mut self, event: &MouseEvent) {
+            self.seen.lock().unwrap().push((event.x, event.y));
+        }
+    }
+
+    fn click(x: usize, y: usize) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Press,
+            button: MouseButton::Left,
+            x,
+            y,
+            modifiers: MouseModifiers {
+                shift: false,
+                alt: false,
+                ctrl: false,
+            },
+            screen_x: 0,
+            screen_y: 0,
+            width: 0,
+            height: 0,
+        }
+    }
+
+    #[test]
+    fn box_forwards_mouse_inside_border_with_translated_coords() {
+        // 0.85.1 upstream `Box.handleMouse`: events inside the border reach
+        // the child with border-relative coordinates; border clicks do not.
+        // RED: Rust Box has no mouse forwarding.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let probe = Arc::new(Mutex::new(Probe { seen: seen.clone() }));
+        let mut boxed = Box::new(probe, None);
+        // Row 1 col 2 at width 10: inside the border (row 0/2 are borders).
+        boxed.handle_mouse(&click(2, 1));
+        assert_eq!(*seen.lock().unwrap(), vec![(1, 0)]);
+        // Border row: no forwarding.
+        boxed.handle_mouse(&click(2, 0));
+        assert_eq!(*seen.lock().unwrap(), vec![(1, 0)]);
+    }
 }

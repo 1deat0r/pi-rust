@@ -40,7 +40,7 @@ stay synchronized.
 | TUI-011 | autocomplete | PARTIAL | PARTIAL | OPEN | Completion tests exist; every source and cancel boundary remains. |
 | TUI-012 | input buffer | PASS | PASS | OPEN | Direct unit evidence covers the full contract: partial/fragmented sequences, escape timeout, bracketed paste, very-long-input boundaries, EOF (empty-buffer marker, repeated EOF, and EOF with a pending sequence kept flushable), and event ordering. Manual terminal comparison remains. |
 | TUI-013 | key decoding | PARTIAL | PARTIAL | OPEN | Key protocol tests and the real Kitty CSI-u press/release regression pass; the full emulator matrix remains. |
-| TUI-014 | keybinding config | PARTIAL | PARTIAL | OPEN | Registry/conflict tests exist; reload/extension precedence evidence remains. |
+| TUI-014 | keybinding config | PARTIAL | PARTIAL | OPEN | Registry/conflict tests exist; 0.85.1 prompt-jump alternates (ctrl+up/ctrl+down) added with unit pins; reload/extension precedence evidence remains. |
 | TUI-015 | slash command menu | PARTIAL | PARTIAL | OPEN | Slash completion is exercised; full menu interaction evidence remains. |
 | TUI-016 | slash command execution | PASS | PASS | OPEN | All registered commands pass the real PTY inventory; manual visual comparison remains. |
 | TUI-017 | model selector | PARTIAL | PARTIAL | OPEN | Selector paths are covered in local matrices; complete auth/search evidence remains. |
@@ -52,7 +52,7 @@ stay synchronized.
 | TUI-023 | tree selector | PARTIAL | PARTIAL | OPEN | Parent-linked selection, filter controls, ancestor visibility, and non-stop assistant rows are tested; complete search/streaming-guard evidence remains. |
 | TUI-024 | trust selector | PARTIAL | PARTIAL | OPEN | Trust PTY paths exist; full save/cancel/navigation evidence remains. |
 | TUI-025 | modal overlays | PARTIAL | PARTIAL | OPEN | Overlay geometry/focus tests pass; complete stacking visual review remains. |
-| TUI-026 | markdown | PARTIAL | PARTIAL | OPEN | Markdown unit/snapshot coverage passes; full source boundary comparison remains. |
+| TUI-026 | markdown | PARTIAL | PARTIAL | OPEN | Markdown unit/snapshot coverage passes; Wave D adds the 0.85.1 relational-algebra join symbols (bowtie/Join/ltimes/rtimes/outer joins) with render pins; full source boundary comparison remains. |
 | TUI-027 | assistant rendering | PARTIAL | PARTIAL | OPEN | Streaming renderer coverage exists; all stop/error/usage variants remain. |
 | TUI-028 | user/tool rendering | PARTIAL | PARTIAL | OPEN | Live lifecycle/tool PTYs and sequential `!`/`!!` Bash projection pass; custom/image/compaction boundary evidence remains. |
 | TUI-029 | footer/status | PARTIAL | PARTIAL | OPEN | Footer/status paths are exercised; complete width/usage visual evidence remains. |
@@ -71,9 +71,9 @@ stay synchronized.
 | TUI-042 | selection/search/scrollback | PARTIAL | PARTIAL | OPEN | Parent-verified selection highlighting, search-release handling, scroll actions, scrollback stop, resize, and fullscreen document restoration cases pass in the 386-test all-target gate; full integrated return-to-editor and visual evidence remains. |
 | TUI-043 | native image/clipboard backends | PARTIAL | PARTIAL | OPEN | Fallback tests pass; Wayland/X11/Termux runtime evidence remains. |
 | TUI-044 | Mermaid rendering | PARTIAL | PARTIAL | OPEN | Supported/unsupported renderer tests pass; full cancellation visual evidence remains. |
-| TUI-045 | loader animation and cancellation | PASS | PASS | OPEN | Exact-frame/interval/callback/cancellation tests pass; manual timing remains. |
+| TUI-045 | loader animation and cancellation | PASS | PASS | OPEN | Exact-frame/interval/callback/cancellation tests pass, plus the 0.85.1 `invalidate` refresh hook; manual timing remains. |
 | TUI-046 | interactive render scheduler | PARTIAL | PARTIAL | OPEN | Parent-verified owner-render coalescing, deferred dispatch repaint, cached-scene cursor/overlay invalidation, unchanged-frame suppression, and controller scheduler cases pass; real composer latency remains within the existing 20-sample p95/max 3.98 ms evidence, while full cadence, stream/tool, resize, and visual-diff boundaries remain. |
-| TUI-047 | transient animated surfaces | PARTIAL | PARTIAL | OPEN | Parent-verified scrollbar activity/expiry tests cover repeated-activity generation rearming, current repaint callback, saturating clocks, mode transitions, and narrow-width visibility; every expiry/cadence boundary and visual timing comparison remains. |
+| TUI-047 | transient animated surfaces | PARTIAL | PARTIAL | OPEN | Parent-verified scrollbar activity/expiry tests cover repeated-activity generation rearming, current repaint callback, saturating clocks, mode transitions, and narrow-width visibility; Wave D adds the 0.85.1 track/thumb style split (`\x1b[90m`/`\x1b[37m`), `isScrollbarActive`, and full-track painting. Every expiry/cadence boundary and visual timing comparison remains. |
 | TUI-048 | terminal progress keepalive | PASS | PASS | OPEN | OSC keepalive/clear tests pass; emulator visual review remains. |
 | TUI-049 | hidden animated components | PASS | PASS | OPEN | Armin/Daxnuts/Earendil timing/width/cleanup evidence passes; visual review remains. |
 | TUI-050 | loader/status animation integration | PARTIAL | PARTIAL | OPEN | Loader/status lifecycle is wired; the active normal and queued-follow-up label now matches upstream `Working...` with a separate queued count, covered by `working_loader_uses_upstream_label_for_each_turn_kind` and a real Alt+Enter queued-follow-up PTY. Countdown/retry/compaction and visual timing matrices remain. |

@@ -174,6 +174,27 @@ impl ScrollState {
         }
     }
 
+    /// Track style for scrollbar rails (upstream 0.85.1
+    /// `scrollbarTrackStyle`, default dim-gray `\x1b[90m…\x1b[39m`).
+    pub fn scrollbar_track_style(&self, text: &str) -> String {
+        format!("\x1b[90m{text}\x1b[39m")
+    }
+
+    /// Thumb style for the scrollbar handle (upstream 0.85.1
+    /// `scrollbarThumbStyle`, default light-gray `\x1b[37m…\x1b[39m`).
+    pub fn scrollbar_thumb_style(&self, text: &str) -> String {
+        format!("\x1b[37m{text}\x1b[39m")
+    }
+
+    /// Whether transient scrollbar activity is currently visible
+    /// (upstream 0.85.1 `isScrollbarActive` getter).
+    pub fn is_scrollbar_active(&self) -> bool {
+        self.model
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .scrollbar_active
+    }
+
     fn content_width_locked(model: &ScrollModel, width: usize) -> usize {
         if model.scrollbar == ScrollbarMode::Always && width > 1 {
             width.saturating_sub(1).max(1)
@@ -184,6 +205,12 @@ impl ScrollState {
 }
 
 impl ScrollLayoutState for ScrollState {
+    fn scrollbar_track_style(&self, text: &str) -> String {
+        self.scrollbar_track_style(text)
+    }
+    fn scrollbar_thumb_style(&self, text: &str) -> String {
+        self.scrollbar_thumb_style(text)
+    }
     fn scroll_top(&self) -> usize {
         self.model
             .lock()
@@ -238,10 +265,6 @@ impl ScrollLayoutState for ScrollState {
         let mut model = self.model.lock().unwrap_or_else(|error| error.into_inner());
         Self::refresh_scrollbar_locked(&mut model, Instant::now());
         Self::scrollbar_visible_locked(&model)
-    }
-
-    fn scrollbar_style(&self, text: &str) -> String {
-        format!("\x1b[100m{text}\x1b[49m")
     }
 
     fn scroll_to(&self, position: usize) {
@@ -1052,5 +1075,22 @@ mod tests {
         assert!(expired_rx.recv_timeout(Duration::from_secs(1)).is_ok());
         assert_eq!(initial_notifications.load(Ordering::SeqCst), 1);
         view.set_scrollbar(ScrollbarMode::Hidden);
+    }
+}
+
+#[cfg(test)]
+mod scrollbar_style_tests {
+    use super::*;
+
+    #[test]
+    fn track_and_thumb_styles_match_upstream_defaults() {
+        // 0.85.1 upstream: track `\x1b[90m…\x1b[39m`, thumb
+        // `\x1b[37m…\x1b[39m` (replacing the old single `\x1b[100m` style),
+        // plus the `isScrollbarActive` getter. RED: split did not exist.
+        let child = Arc::new(Mutex::new(crate::components::Text::new("", 1, 0, None)));
+        let view = ScrollView::new(child);
+        assert_eq!(view.state.scrollbar_track_style("│"), "\x1b[90m│\x1b[39m");
+        assert_eq!(view.state.scrollbar_thumb_style("█"), "\x1b[37m█\x1b[39m");
+        assert!(!view.state.is_scrollbar_active());
     }
 }

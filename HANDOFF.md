@@ -1,5 +1,15 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave C provider lanes committed + pushed
+
+Explicit-cache TTL (`ttl: 30m`, no retention string on explicit-mode
+models) + per-model compaction budgets (`modelOverrides`, wired
+print/interactive/RPC): pi-ai lib 461, settings_sm 51, zero new lib
+failures vs HEAD, clippy/fmt clean, conversion 100.00%, parity audits
+OK. MODEL-008/SES-013 notes extended, no status change (58/318).
+Committed `7736129`, pushed, hashes match. Next: Wave D TUI deltas
+(or next Wave C remainder: thinking persistence).
+
 ## Latest checkpoint — 2026-09-16 — Wave B runtime surface committed + pushed
 
 `RunContext`, tool memos, deferred-window options, `TextLine` splits,

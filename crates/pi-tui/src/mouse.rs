@@ -35,14 +35,68 @@ pub struct MouseModifiers {
     pub ctrl: bool,
 }
 
-/// A zero-based terminal pointer event.
+/// A zero-based terminal pointer event (upstream 0.85.1 `TuiMouseEvent`:
+/// local coords plus absolute screen coords and component bounds).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MouseEvent {
     pub kind: MouseEventKind,
     pub button: MouseButton,
+    /// Coordinates local to the receiving component.
     pub x: usize,
     pub y: usize,
     pub modifiers: MouseModifiers,
+    /// Absolute terminal coordinates.
+    pub screen_x: usize,
+    pub screen_y: usize,
+    /// Current component bounds.
+    pub width: usize,
+    pub height: usize,
+}
+
+impl MouseEvent {
+    /// Local-only event (screen coords and bounds default to local).
+    pub fn local(
+        kind: MouseEventKind,
+        button: MouseButton,
+        x: usize,
+        y: usize,
+        modifiers: MouseModifiers,
+    ) -> Self {
+        Self {
+            kind,
+            button,
+            x,
+            y,
+            modifiers,
+            screen_x: x,
+            screen_y: y,
+            width: 0,
+            height: 0,
+        }
+    }
+}
+
+/// Recorded dispatch target for coordinate retargeting (upstream
+/// `TuiMouseDispatchTarget`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseDispatchTarget {
+    pub origin_x: usize,
+    pub origin_y: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+/// Recreate local coordinates for a previously dispatched mouse target
+/// (upstream `retargetMouseEvent`): local = screen − origin, bounds from
+/// the recorded target.
+pub fn retarget_mouse_event(event: &MouseEvent, target: &MouseDispatchTarget) -> MouseEvent {
+    MouseEvent {
+        x: event.screen_x.saturating_sub(target.origin_x),
+        y: event.screen_y.saturating_sub(target.origin_y),
+        width: target.width,
+        height: target.height,
+        ..*event
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +195,10 @@ pub fn decode_mouse_event(raw: &str) -> Result<Option<MouseEvent>, MouseDecodeEr
             x,
             y,
             modifiers: modifiers(code),
+            screen_x: x,
+            screen_y: y,
+            width: 0,
+            height: 0,
         }));
     }
 
@@ -169,6 +227,10 @@ pub fn decode_mouse_event(raw: &str) -> Result<Option<MouseEvent>, MouseDecodeEr
             x,
             y,
             modifiers: modifiers(code),
+            screen_x: x,
+            screen_y: y,
+            width: 0,
+            height: 0,
         }));
     }
 
@@ -192,7 +254,11 @@ mod tests {
                 button: MouseButton::Left,
                 x: 19,
                 y: 4,
-                modifiers: MouseModifiers::default()
+                modifiers: MouseModifiers::default(),
+                screen_x: 19,
+                screen_y: 4,
+                width: 0,
+                height: 0
             }))
         );
         assert_eq!(
@@ -206,7 +272,11 @@ mod tests {
                     shift: true,
                     alt: true,
                     ctrl: true
-                }
+                },
+                screen_x: 2,
+                screen_y: 1,
+                width: 0,
+                height: 0
             }))
         );
         assert_eq!(
@@ -249,5 +319,41 @@ mod tests {
             Err(MouseDecodeError::Malformed)
         );
         assert!(!is_mouse_sequence("\x1b[A"));
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn retarget_recomputes_local_coords_from_origin() {
+        // 0.85.1 upstream `retargetMouseEvent`: local = screen − origin,
+        // bounds come from the recorded target.
+        // RED: `retarget_mouse_event` does not exist.
+        let event = MouseEvent {
+            kind: MouseEventKind::Press,
+            button: MouseButton::Left,
+            x: 0,
+            y: 0,
+            modifiers: MouseModifiers {
+                shift: false,
+                alt: false,
+                ctrl: false,
+            },
+            screen_x: 10,
+            screen_y: 7,
+            width: 0,
+            height: 0,
+        };
+        let target = MouseDispatchTarget {
+            origin_x: 8,
+            origin_y: 5,
+            width: 20,
+            height: 10,
+        };
+        let retargeted = retarget_mouse_event(&event, &target);
+        assert_eq!((retargeted.x, retargeted.y), (2, 2));
+        assert_eq!((retargeted.width, retargeted.height), (20, 10));
     }
 }

@@ -125,6 +125,62 @@ pub fn strip_ansi_codes(text: &str) -> String {
     strip_terminal_sequences(text)
 }
 
+/// Return only the background color active at the end of an ANSI-styled
+/// string (upstream `getActiveBackgroundAnsi`, 0.85.1). Tracks SGR
+/// background codes (40-47, 100-107, 48;5;N, 48;2;R;G;B), full resets, and
+/// default-background (49), mirroring `AnsiCodeTracker` exactly.
+pub fn get_active_background_ansi(text: &str) -> String {
+    let mut bg: Option<String> = None;
+    let mut pos = 0;
+    while pos < text.len() {
+        let Some(code) = extract_ansi_code(text, pos) else {
+            pos += text[pos..]
+                .chars()
+                .next()
+                .map(|ch| ch.len_utf8())
+                .unwrap_or(1);
+            continue;
+        };
+        pos += code.length;
+        if !code.code.ends_with('m') || !code.code.starts_with("\x1b[") {
+            continue;
+        }
+        let params = &code.code[2..code.code.len() - 1];
+        if params.is_empty() || params == "0" {
+            bg = None;
+            continue;
+        }
+        let parts: Vec<&str> = params.split(';').collect();
+        let mut i = 0;
+        while i < parts.len() {
+            let number: i32 = parts[i].parse().unwrap_or(-1);
+            if (number == 48) && parts.get(i + 1) == Some(&"5") && parts.get(i + 2).is_some() {
+                bg = Some(format!("48;5;{}", parts[i + 2]));
+                i += 3;
+                continue;
+            }
+            if (number == 48) && parts.get(i + 1) == Some(&"2") && parts.get(i + 4).is_some() {
+                bg = Some(format!(
+                    "48;2;{};{};{}",
+                    parts[i + 2],
+                    parts[i + 3],
+                    parts[i + 4]
+                ));
+                i += 5;
+                continue;
+            }
+            match number {
+                0 => bg = None,
+                49 => bg = None,
+                40..=47 | 100..=107 => bg = Some(number.to_string()),
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+    bg.map(|code| format!("\x1b[{code}m")).unwrap_or_default()
+}
+
 fn is_variation_selector(cp: u32) -> bool {
     (0xfe00..=0xfe0f).contains(&cp) || (0xe0100..=0xe01ef).contains(&cp)
 }
@@ -1438,5 +1494,21 @@ mod tests {
     fn background_padding_uses_visible_width() {
         let result = apply_background_to_line("界", 4, &|value| format!("<{value}>"));
         assert_eq!(result, "<界  >");
+    }
+}
+
+#[cfg(test)]
+mod bg_tests {
+    use super::*;
+
+    #[test]
+    fn active_background_ansi_returns_trailing_bg_code() {
+        // 0.85.1 upstream `getActiveBackgroundAnsi`: only the background
+        // color active at the end of an ANSI-styled string.
+        // RED: function does not exist yet.
+        assert_eq!(get_active_background_ansi("\x1b[41mhi"), "\x1b[41m");
+        assert_eq!(get_active_background_ansi("\x1b[1m\x1b[44mhi"), "\x1b[44m");
+        assert_eq!(get_active_background_ansi("\x1b[41mhi\x1b[0m"), "");
+        assert_eq!(get_active_background_ansi("plain"), "");
     }
 }

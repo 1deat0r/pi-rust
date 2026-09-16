@@ -32,6 +32,7 @@ pub mod components {
     pub mod input;
     pub mod loader;
     pub mod markdown;
+    pub mod mouse_region;
     pub mod scroll_view;
     pub mod select_list;
     pub mod settings_list;
@@ -51,6 +52,7 @@ pub mod components {
     pub use input::Input;
     pub use loader::Loader;
     pub use markdown::Markdown;
+    pub use mouse_region::{MouseRegion, MouseRegionHandler};
     pub use scroll_view::ScrollView;
     pub use select_list::SelectList;
     pub use settings_list::{SettingItem, SettingsList};
@@ -94,12 +96,12 @@ pub use tui::{
     Tree, CURSOR_MARKER,
 };
 pub use utils::{
-    extract_ansi_code, extract_segments, get_grapheme_cell_range, get_osc8_link_at_column,
-    grapheme_boundaries, next_grapheme_boundary, normalize_terminal_output,
-    previous_grapheme_boundary, slice_by_column, slice_by_column_strict, slice_with_width,
-    slice_with_width_info, strip_ansi_codes, strip_terminal_sequences, truncate_to_width,
-    truncate_to_width_padded, visible_width, wrap_text_with_ansi, AnsiCode, ExtractedSegments,
-    GraphemeCellRange, WidthSlice,
+    extract_ansi_code, extract_segments, get_active_background_ansi, get_grapheme_cell_range,
+    get_osc8_link_at_column, grapheme_boundaries, next_grapheme_boundary,
+    normalize_terminal_output, previous_grapheme_boundary, slice_by_column, slice_by_column_strict,
+    slice_with_width, slice_with_width_info, strip_ansi_codes, strip_terminal_sequences,
+    truncate_to_width, truncate_to_width_padded, visible_width, wrap_text_with_ansi, AnsiCode,
+    ExtractedSegments, GraphemeCellRange, WidthSlice,
 };
 
 #[cfg(test)]

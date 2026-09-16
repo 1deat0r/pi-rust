@@ -200,3 +200,16 @@ fn cancellable_loader_contracts() {
 
     println!("CANCELLABLE_LOADER_TESTS_OK");
 }
+
+#[test]
+fn loader_invalidate_refreshes_display() {
+    // 0.85.1 upstream `Loader.invalidate()`: re-render the current frame
+    // and request a repaint (subclass hook for embedded spinners).
+    // RED: `invalidate` does not exist on the Rust Loader.
+    let loader = Loader::new("Working...");
+    let before = loader.render(40).join("\n");
+    loader.invalidate();
+    let after = loader.render(40).join("\n");
+    assert_eq!(before, after);
+    assert!(after.contains("Working..."));
+}

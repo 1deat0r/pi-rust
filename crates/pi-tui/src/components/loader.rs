@@ -470,6 +470,13 @@ impl Loader {
         }
     }
 
+    /// Re-render the current frame and request a repaint (upstream
+    /// 0.85.1 `Loader.invalidate()` override: subclasses embedding the
+    /// spinner refresh through this hook).
+    pub fn invalidate(&self) {
+        self.refresh_display();
+    }
+
     #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)] // checked invariants
     fn refresh_display(&self) {
         let request_render = {

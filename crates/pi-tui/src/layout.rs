@@ -167,6 +167,18 @@ pub trait ScrollLayoutState: Send + Sync {
     fn scrollbar_style(&self, text: &str) -> String {
         format!("\x1b[100m{text}\x1b[49m")
     }
+    /// Track style for scrollbar rails (upstream 0.85.1
+    /// `scrollbarTrackStyle`, default dim-gray). Falls back to the legacy
+    /// single style for custom states.
+    fn scrollbar_track_style(&self, text: &str) -> String {
+        self.scrollbar_style(text)
+    }
+    /// Thumb style for the scrollbar handle (upstream 0.85.1
+    /// `scrollbarThumbStyle`, default light-gray). Falls back to the legacy
+    /// single style for custom states.
+    fn scrollbar_thumb_style(&self, text: &str) -> String {
+        self.scrollbar_style(text)
+    }
     fn scroll_by(&self, _lines: isize) -> isize {
         0
     }
@@ -838,15 +850,26 @@ fn paint_scrollbar(box_: &LayoutBox, screen: &mut [String], width: usize, clip: 
     let Some(state) = &box_.scroll_view else {
         return;
     };
-    let styled = state.scrollbar_style("█");
+    let styled = state.scrollbar_thumb_style("█");
+    let track = state.scrollbar_track_style("│");
     let translated_thumb_top = geometry.thumb_top as isize + box_.paint_offset_y;
-    for row in translated_thumb_top.max(0) as usize
-        ..(translated_thumb_top + geometry.thumb_height as isize).max(0) as usize
+    let translated_track_top = box_.rect.y as isize + box_.paint_offset_y;
+    // Paint the full track, then the thumb over its rows (upstream 0.85.1
+    // splits track/thumb styling; previously only the thumb was painted).
+    for row in translated_track_top.max(0) as usize
+        ..(translated_track_top + box_.rect.height as isize).max(0) as usize
     {
         if row < clip.y || row >= clip.y.saturating_add(clip.height) || row >= screen.len() {
             continue;
         }
-        screen[row] = style_scrollbar_cell(&screen[row], geometry.column, width, &styled);
+        let in_thumb = (row as isize) >= translated_thumb_top
+            && (row as isize) < translated_thumb_top + geometry.thumb_height as isize;
+        screen[row] = style_scrollbar_cell(
+            &screen[row],
+            geometry.column,
+            width,
+            if in_thumb { &styled } else { &track },
+        );
     }
 }
 

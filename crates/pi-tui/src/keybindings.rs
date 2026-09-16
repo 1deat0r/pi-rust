@@ -229,8 +229,8 @@ pub const TUI_KEYBINDINGS: &[KeybindingDefinition] = &[
     kb!("tui.altScreen.halfPageDown", []),
     kb!("tui.altScreen.lineUp", []),
     kb!("tui.altScreen.lineDown", []),
-    kb!("tui.altScreen.previousPrompt", ["ctrl+shift+up"]),
-    kb!("tui.altScreen.nextPrompt", ["ctrl+shift+down"]),
+    kb!("tui.altScreen.previousPrompt", ["ctrl+shift+up", "ctrl+up"]),
+    kb!("tui.altScreen.nextPrompt", ["ctrl+shift+down", "ctrl+down"]),
     kb!("tui.altScreen.search", ["ctrl+shift+f"]),
     kb!("tui.altScreen.searchNext", ["enter", "ctrl+g"]),
     kb!(
@@ -518,11 +518,11 @@ mod tests {
         assert!(kb.get_keys("tui.altScreen.lineDown").is_empty());
         assert_eq!(
             kb.get_keys("tui.altScreen.previousPrompt"),
-            vec!["ctrl+shift+up"]
+            vec!["ctrl+shift+up", "ctrl+up"]
         );
         assert_eq!(
             kb.get_keys("tui.altScreen.nextPrompt"),
-            vec!["ctrl+shift+down"]
+            vec!["ctrl+shift+down", "ctrl+down"]
         );
         assert_eq!(kb.get_keys("tui.altScreen.search"), vec!["ctrl+shift+f"]);
         assert_eq!(
