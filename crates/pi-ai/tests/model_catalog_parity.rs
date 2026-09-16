@@ -332,6 +332,126 @@ fn retired_codex_models_are_absent_upstream_9394() {
 }
 
 #[test]
+fn fireworks_thinking_metadata_matches_upstream_9323() {
+    // Regression pin for upstream #9323 (6b94ae2ec): Fireworks
+    // Messages models carry unsigned-thinking replay + session
+    // affinity without eager streaming or tool cache-control; effort
+    // advertising models (plus verified fallbacks) use adaptive
+    // thinking; GLM-5.2 and Kimi-K3 aliases collapse to distinct
+    // native levels.
+    use pi_ai::model::get_supported_thinking_levels;
+
+    let providers = builtin_providers();
+    let fireworks = providers
+        .iter()
+        .find(|provider| provider.id == "fireworks")
+        .expect("Fireworks provider");
+    let find = |id: &str| {
+        fireworks
+            .models
+            .iter()
+            .find(|model| model.id == id)
+            .unwrap_or_else(|| panic!("missing Fireworks model {id}"))
+    };
+    let compat_bool = |model: &Model, key: &str| {
+        model
+            .compat
+            .as_ref()
+            .and_then(|compat| compat.get(key))
+            .and_then(serde_json::Value::as_bool)
+    };
+
+    // Every Messages-lane entry replays unsigned thinking signatures.
+    for model in fireworks
+        .models
+        .iter()
+        .filter(|m| m.api == "anthropic-messages")
+    {
+        assert_eq!(
+            compat_bool(model, "allowEmptySignature"),
+            Some(true),
+            "{} must allow empty signatures",
+            model.id
+        );
+        assert_eq!(
+            compat_bool(model, "supportsToolReferences"),
+            Some(true),
+            "{} must support tool references",
+            model.id
+        );
+    }
+
+    // Effort-advertising models (and verified fallbacks) use adaptive.
+    for id in [
+        "accounts/fireworks/models/deepseek-v4-flash-0731",
+        "accounts/fireworks/models/deepseek-v4-flash-vision-exp",
+        "accounts/fireworks/models/deepseek-v4-pro-0813",
+        "accounts/fireworks/models/gpt-oss-120b",
+        "accounts/fireworks/models/minimax-m3",
+        "accounts/fireworks/models/muse-glimmer-30b",
+        "accounts/fireworks/models/qwen3p7-plus",
+        "accounts/fireworks/models/qwen3p8-max",
+        "accounts/fireworks/models/qwen3p8-2p4t-a95b",
+    ] {
+        assert_eq!(
+            compat_bool(find(id), "forceAdaptiveThinking"),
+            Some(true),
+            "{id} must force adaptive thinking"
+        );
+    }
+
+    // Toggle-only models without a verified fallback stay budget-based.
+    for id in [
+        "accounts/fireworks/models/kimi-k2p6",
+        "accounts/fireworks/models/kimi-k2p7-code",
+        "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
+        "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
+        "accounts/fireworks/models/inkling",
+    ] {
+        assert_eq!(
+            compat_bool(find(id), "forceAdaptiveThinking"),
+            None,
+            "{id} must not force adaptive thinking"
+        );
+    }
+
+    // Verified fallback level maps.
+    let levels = |id: &str| {
+        get_supported_thinking_levels(find(id))
+            .iter()
+            .map(|level| level.as_str().to_string())
+            .collect::<Vec<_>>()
+    };
+    for id in [
+        "accounts/fireworks/models/deepseek-v4-flash-0731",
+        "accounts/fireworks/models/deepseek-v4-flash-vision-exp",
+        "accounts/fireworks/models/deepseek-v4-pro-0813",
+    ] {
+        assert_eq!(levels(id), ["off", "low", "high", "max"], "{id} levels");
+    }
+    for id in [
+        "accounts/fireworks/models/qwen3p8-max",
+        "accounts/fireworks/models/qwen3p8-2p4t-a95b",
+    ] {
+        assert_eq!(levels(id), ["off", "low", "medium", "xhigh"], "{id} levels");
+    }
+
+    // Alias collapse: only distinct native effort levels are exposed.
+    for id in [
+        "accounts/fireworks/models/glm-5p2",
+        "accounts/fireworks/routers/glm-5p2-fast",
+    ] {
+        assert_eq!(levels(id), ["off", "high", "max"], "{id} levels");
+    }
+    for id in [
+        "accounts/fireworks/models/kimi-k3",
+        "accounts/fireworks/routers/kimi-k3-fast",
+    ] {
+        assert_eq!(levels(id), ["low", "high", "max"], "{id} levels");
+    }
+}
+
+#[test]
 fn moonshot_and_nvidia_catalogs_match_pinned_provider_contract() {
     let providers = builtin_providers();
     let provider = |id: &str| {

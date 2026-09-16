@@ -4,6 +4,32 @@ Session date: 2026-08-23 (operator: "going to bed — document or something")
 Author: pi (Claude), planning pass grounded in a live repo audit.
 Base revision: HEAD 90a5b93 (1416 tests at last clean revision).
 
+## Current status (last updated 2026-09-16 — Wave C slice: Fireworks thinking)
+
+Wave C slice (0.85.1, upstream #9323 fixed by 6b94ae2ec): Fireworks
+thinking metadata ported to the vendored catalog. All 14 Messages-lane
+entries gain `supportsToolReferences` + `allowEmptySignature`;
+effort-advertising models and the 5 verified fallbacks gain
+`forceAdaptiveThinking` (toggle-only models without fallbacks stay
+budget-based); verified fallback maps set (deepseek trio
+off/low/high/max, qwen pair off/low/medium/xhigh); GLM-5.2 low/medium
+aliases collapse to null and kimi-k3 medium collapses to null
+(distinct native levels only). New
+`fireworks_thinking_metadata_matches_upstream_9323` pin (compat
+flags, adaptive scoping, fallback level sets, alias collapse). The
+behavioral lane already honored both flags; no source change needed.
+Fallback metadata verified against live models.dev (matches the mock
+metadata in the upstream generation test). Updated the Wave E GLM
+wire test to the corrected map (explicit low passes through
+verbatim). TDD red first. Gate: pi-ai lib 473/473, catalog pin
+green, pi-ai strict clippy clean, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (upstream=d7296c0). The stale
+`moonshot_and_nvidia` pin stays red on clean HEAD (unrelated). No
+parity row promoted (data-correction slice; live Fireworks traffic
+unverifiable offline). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ## Current status (last updated 2026-09-16 — Wave C slice: Codex retirement)
 
 Wave C slice (0.85.1, upstream #9394 fixed by 2e6fe2f98): GPT-5.4 and

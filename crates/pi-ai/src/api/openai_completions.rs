@@ -3826,7 +3826,9 @@ mod tests {
         // 0.85.1 upstream openai-completions: with no explicit reasoning
         // effort, a reasoning model whose Off-map is a string sends that
         // effort (GLM 5.2 maps off -> "none"); a null Off-map omits it.
-        // RED: the default arm only forwards explicit efforts.
+        // #9323 corrected the GLM low/medium aliases to null: they are no
+        // longer distinct selectable levels, but an explicit level still
+        // passes through verbatim (upstream `??` fallback).
         let glm52 = crate::providers::catalog_models("fireworks")
             .into_iter()
             .find(|model| model.id == "accounts/fireworks/models/glm-5p2")
@@ -3845,7 +3847,7 @@ mod tests {
         };
         let low_params = build_params(&glm52, &Context::default(), Some(&low), &compat, "none")
             .expect("GLM 5.2 low-effort params");
-        assert_eq!(low_params["reasoning_effort"], json!("high"));
+        assert_eq!(low_params["reasoning_effort"], json!("low"));
 
         let glm53 = crate::providers::catalog_models("fireworks")
             .into_iter()

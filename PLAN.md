@@ -1,5 +1,16 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
+## Active 2026-09-16 checkpoint — Wave C slice: Fireworks thinking
+
+Ported upstream #9323 (6b94ae2ec): Fireworks thinking metadata
+(unsigned replay, adaptive scoping, fallback maps, alias collapse)
+in vendored data + pin; lane already honored the flags. TDD
+red-first. No row promoted (data-correction slice). Gate green:
+pi-ai lib 473/473, catalog pin, pi-ai strict clippy, fmt,
+conversion 100.00% (166/166), parity dashboard OK (upstream=d7296c0,
+58/318). Next: commit + push, then next Wave C remainder or Wave E
+visual parity lift-off.
+
 ## Active 2026-09-16 checkpoint — Wave C slice: Codex retirement
 
 Ported upstream #9394 (2e6fe2f98): GPT-5.4/5.4-mini removed from the
