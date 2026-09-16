@@ -2,7 +2,15 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### Transcript leaf 2 — section wrapping (uncommitted)
+### Transcript leaf 2 — section wrapping committed + pushed
+
+Upstream section wrapping (`buildSystemPromptSections` tail): pure
+helpers + pin, no callers yet (flat assembly byte-identical).
+pi-ai lib 480/480, pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Committed
+`803ebd6`, pushed, hashes match. Next: leaf 3 (provider adoption
+scoping).
 
 Upstream section wrapping (`buildSystemPromptSections` tail): pure
 helpers + pin, no callers yet (flat assembly byte-identical).
