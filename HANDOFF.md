@@ -1,5 +1,17 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave C slice: pin-correct tool_choice committed + pushed
+
+Correction slice: prior gating ported a superseded intermediate;
+pin-correct is verbatim forwarding + no summarization override.
+Builder reverted with comment; both-shapes + caller pins green;
+drive-by fixed pre-existing compaction test compile break. pi-ai lib
+470/470, pi-agent lib 272/272, compaction 22/22, pi-ai strict clippy
+clean, fmt clean, conversion 100.00% (166/166), parity dashboard OK
+(58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Committed `fa2b7f3`, pushed, hashes match. Next: next Wave C
+remainder (assistant-frame compat) or Wave E visual parity lift-off.
+
 ## Latest checkpoint — 2026-09-16 — Wave C slice: pin-correct tool_choice (uncommitted)
 
 Correction slice: prior gating ported a superseded intermediate;
