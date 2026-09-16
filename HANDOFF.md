@@ -1,5 +1,14 @@
 # Pi → pi-rust conversion handoff
 
+## Latest checkpoint — 2026-09-16 — Wave E slice 1 committed + pushed
+
+Codex Off-effort default (#9191) + Mistral medium reasoning (#8700):
+pi-ai lib 463 green, clippy/fmt clean, conversion 100.00%, parity
+audits OK. PROV-019/024 notes extended, no status change (58/318).
+Committed `cc36005`, pushed, hashes match. Next: Wave E slice 2
+(Fireworks/GLM thinking, OpenRouter affinity headers) or visual
+parity lift-off.
+
 ## Latest checkpoint — 2026-09-16 — Wave D slice 5 committed + pushed
 
 Capability overrides (programmatic + PI_* env) + zed grouping +
