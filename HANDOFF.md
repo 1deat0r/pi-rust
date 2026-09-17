@@ -2,7 +2,14 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### Extension slice K — UI prompt events (uncommitted)
+### Extension slice K — UI prompt events committed + pushed
+
+Upstream #8355 (ccfe79ed2): nesting-aware prompt emitter on
+handler contexts; 5 dialogs wrapped; failures isolated. Four
+pins green. Extensions 72/72, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
+promoted; metrics unchanged. Committed `94140ee`, pushed, hashes
+match. Next: continue the sweep.
 
 Upstream #8355 (ccfe79ed2): nesting-aware prompt emitter on
 handler contexts; 5 dialogs wrapped; failures isolated. Four
