@@ -1300,7 +1300,7 @@ impl Shell for StdExecutionEnv {
         Ok(ExecResult {
             stdout: so.text,
             stderr: se.text,
-            exit_code: exit_status.map(|s| s.code().unwrap_or(0)).unwrap_or(0),
+            exit_code: exit_status.map(signal_aware_exit_code).unwrap_or(0),
         })
     }
 
@@ -1310,6 +1310,25 @@ impl Shell for StdExecutionEnv {
 }
 
 impl ExecutionEnv for StdExecutionEnv {}
+
+/// Map a process exit status to the shell-convention exit code (upstream
+/// a8b3dd19 fixing #9577): a signal-killed process has no exit code, so
+/// report 128 + signal number instead of letting callers mistake the
+/// termination for success. A status with neither code nor signal maps
+/// to 1 (failed command).
+fn signal_aware_exit_code(status: std::process::ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signo) = status.signal() {
+            return 128 + signo;
+        }
+    }
+    1
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

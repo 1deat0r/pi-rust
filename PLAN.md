@@ -7,6 +7,18 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Tool slice I — signal-terminated shell exit codes
+
+Ported upstream #9577 (a8b3dd19): shared executor maps signal
+termination to 128+signo (KILL→137, TERM→143; neither→1) via
+`ExitStatusExt`; no caller change needed (rejection path already
+carries partial output). New Unix-gated pin, TDD red-first. No row
+promoted (tool slice; platform breadth open). Gate green: tools
+23/23, pi-agent lib 276/276, scoped rustfmt, conversion 100.00%
+(166/166), parity dashboard OK (upstream=d7296c0, 58/318).
+Pre-existing clippy verified identical on clean HEAD. Next: commit +
+push, then continue the new-drift triage.
+
 ### Provider slice H — Azure peak-load retry
 
 Ported upstream #9669 (e98f287ee): `"currently experiencing high

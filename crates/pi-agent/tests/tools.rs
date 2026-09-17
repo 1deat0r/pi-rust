@@ -40,6 +40,49 @@ fn bash_runs_command_and_reports_exit_code() {
     });
 }
 
+#[cfg(unix)]
+#[test]
+fn bash_maps_signal_kill_to_128_plus_signal_upstream_9577() {
+    // Regression for upstream #9577 (fixed by a8b3dd19): a
+    // signal-killed shell reports the 128+signo convention (KILL→137,
+    // TERM→143) instead of a null/success exit, and the tool rejects
+    // while preserving partial output. TDD RED: exit_code is None
+    // today (s.code() on a signaled status).
+    let rt = rt();
+    rt.block_on(async {
+        let dir = tmpdir("bash-signal");
+        let dir_str = dir.to_string_lossy().to_string();
+        for (signal, code) in [("KILL", 137), ("TERM", 143)] {
+            let capture = pi_agent::tools::bash::run_bash(
+                &format!("printf 'before-kill\\n'; kill -{signal} $$"),
+                &dir_str,
+                None,
+                None,
+            )
+            .await
+            .expect("capture succeeds");
+            assert_eq!(capture.exit_code, Some(code), "signal {signal}");
+            assert!(
+                capture.output.contains("before-kill"),
+                "partial output preserved: {:?}",
+                capture.output
+            );
+            let err = pi_agent::tools::bash::execute_bash(
+                &format!("printf 'before-kill\\n'; kill -{signal} $$"),
+                None,
+                &dir_str,
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("before-kill"), "got {err}");
+            assert!(
+                err.contains(&format!("Command exited with code {code}")),
+                "got {err}"
+            );
+        }
+    });
+}
+
 #[test]
 fn bash_reports_nonzero_exit_with_status() {
     let rt = rt();

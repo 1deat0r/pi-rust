@@ -2,6 +2,28 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Tool slice I: signal-terminated shell exit codes (last updated 2026-09-18)
+
+Slice I (new drift, upstream #9577 fixed by a8b3dd19): the shared
+shell executor maps signal termination to 128 + signal number
+(KILL→137, TERM→143) via `ExitStatusExt::signal()` instead of
+reporting code 0, and a status with neither code nor signal maps to
+1 — so callers never mistake termination for success. The agent
+`execute_bash` path already rejects nonzero codes with partial
+output preserved, so no caller change was needed. New
+`bash_maps_signal_kill_to_128_plus_signal_upstream_9577` pin (Unix-
+gated like the oracle) proves capture codes + tool rejection with
+partial output for both signals. TDD red first (Some(0) vs
+Some(137)). Gate: tools 23/23, pi-agent lib 276/276, scoped rustfmt
+clean, conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0). Pre-existing workspace clippy failures
+(`pi-tui` dead code, `pi-agent` module-inception + `header_end`)
+verified identical on clean HEAD; no new findings in the touched
+files. No parity row promoted (tool deterministic slice; WSL/
+Windows/cross-platform shell breadth still open). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Provider slice H: Azure peak-load retry (last updated 2026-09-18)
 
 Slice H (new drift, upstream #9669 fixed by e98f287ee): the shared
