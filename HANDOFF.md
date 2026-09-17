@@ -85,6 +85,15 @@ Next: continue phase 1.
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Agent slice Y — truncated summaries (uncommitted)
+
+Upstream #7048 (97fa14e39): shared failure helper rejects
+length-stop summaries at 3 sites. New helper + branch pin green.
+Compaction 24/24, pi-agent lib 276/276, fmt clean, conversion
+100.00% (166/166), parity dashboard OK (58/318, upstream=d7296c0).
+No row promoted; metrics unchanged. Next: commit + push, then
+continue phase 1.
+
 ### Agent slice X — summary output cap committed + pushed
 
 Upstream #8845 (e44d75c20): branch summary caps at min(4096,
@@ -94,11 +103,7 @@ dashboard OK (58/318, upstream=d7296c0). No row promoted; metrics
 unchanged. Committed `9f5b425`, pushed, hashes match. Next:
 continue phase 1.
 
-Upstream #8845 (e44d75c20): branch summary caps at min(4096,
-model.maxTokens). New cap pin green. Compaction 23/23, pi-agent
-lib 276/276, fmt clean, conversion 100.00% (166/166), parity
-dashboard OK (58/318, upstream=d7296c0). No row promoted; metrics
-unchanged. Next: commit + push, then continue phase 1.
+## Day goal 2026-09-17 — sectioned transcript-replay port
 
 ### CLI slice U — unknown-pattern evidence committed + pushed
 

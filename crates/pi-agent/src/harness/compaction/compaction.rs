@@ -465,6 +465,26 @@ pub struct SummarizationOptions<'a> {
     pub reasoning: Option<ThinkingLevel>,
 }
 
+/// Returns an error message when a summarization response cannot safely
+/// be persisted. A length stop contains partial text and must not
+/// become a session checkpoint (upstream `getSummarizationFailure`,
+/// #7048).
+pub fn summarization_failure(
+    response: &pi_ai::types::AssistantMessage,
+    label: &str,
+) -> Option<String> {
+    match response.stop_reason() {
+        Some(pi_ai::types::StopReason::Error) => Some(format!(
+            "{label} failed: {}",
+            response.error_message().unwrap_or("Unknown error")
+        )),
+        Some(pi_ai::types::StopReason::Length) => Some(format!(
+            "{label} failed: generation hit the token cap and the summary is incomplete"
+        )),
+        _ => None,
+    }
+}
+
 /// `completeSimpleWithRetries` — summaries are standalone requests, so
 /// routing is isolated and cache writes that cannot be reused are avoided.
 #[allow(clippy::too_many_arguments)]
@@ -681,14 +701,8 @@ pub async fn generate_summary_with_usage(
             response.error_message().unwrap_or("Summarization aborted"),
         ));
     }
-    if response.stop_reason() == Some(pi_ai::types::StopReason::Error) {
-        return Err(CompactionError::new(
-            "summarization_failed",
-            format!(
-                "Summarization failed: {}",
-                response.error_message().unwrap_or("Unknown error")
-            ),
-        ));
+    if let Some(failure) = summarization_failure(&response, "Summarization") {
+        return Err(CompactionError::new("summarization_failed", failure));
     }
 
     let text_content: String = response
@@ -941,14 +955,8 @@ async fn generate_turn_prefix_summary(
                 .unwrap_or("Turn prefix summarization aborted"),
         ));
     }
-    if response.stop_reason() == Some(pi_ai::types::StopReason::Error) {
-        return Err(CompactionError::new(
-            "summarization_failed",
-            format!(
-                "Turn prefix summarization failed: {}",
-                response.error_message().unwrap_or("Unknown error")
-            ),
-        ));
+    if let Some(failure) = summarization_failure(&response, "Turn prefix summarization") {
+        return Err(CompactionError::new("summarization_failed", failure));
     }
     let text_content: String = response
         .content()

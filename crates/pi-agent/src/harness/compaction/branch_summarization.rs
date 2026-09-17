@@ -18,7 +18,7 @@ use crate::types::AgentMessage;
 use pi_ai::utils::{RetryCallbacks, RetryPolicy};
 
 use super::compaction::{
-    complete_simple_with_retries, estimate_tokens, SummarizationOptions,
+    complete_simple_with_retries, estimate_tokens, summarization_failure, SummarizationOptions,
     SUMMARIZATION_SYSTEM_PROMPT,
 };
 use super::utils::{
@@ -356,14 +356,8 @@ pub async fn generate_branch_summary(
             response.error_message().unwrap_or("Branch summary aborted"),
         ));
     }
-    if response.stop_reason() == Some(pi_ai::types::StopReason::Error) {
-        return Err(BranchSummaryError::new(
-            "summarization_failed",
-            format!(
-                "Branch summary failed: {}",
-                response.error_message().unwrap_or("Unknown error")
-            ),
-        ));
+    if let Some(failure) = summarization_failure(&response, "Branch summary") {
+        return Err(BranchSummaryError::new("summarization_failed", failure));
     }
 
     let content: String = response

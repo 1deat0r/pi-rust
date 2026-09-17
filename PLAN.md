@@ -65,6 +65,15 @@ conversion 100.00% (166/166), parity register + dashboard OK
 (upstream=d7296c0, 58/318). Next: commit + push, then continue
 phase 1.
 
+### Agent slice Y — truncated summaries
+
+Ported upstream #7048 (97fa14e39): shared failure helper
+rejects length-stop summaries at 3 sites. New helper + branch
+pin. No row promoted (agent slice). Gate green: compaction 24/24,
+pi-agent lib 276/276, fmt, conversion 100.00% (166/166), parity
+dashboard OK (upstream=d7296c0, 58/318). Next: commit + push,
+then continue phase 1.
+
 ### Agent slice X — summary output cap
 
 Ported upstream #8845 (e44d75c20): branch summary caps at

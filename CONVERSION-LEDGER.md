@@ -101,6 +101,20 @@ register + dashboard OK (upstream=d7296c0). No parity row promoted
 111/266, deterministic evidence 107/266, runtime 59/266, non-TUI
 overall 58/266, whole-product 58/318).
 
+### Agent slice Y: truncated summaries (last updated 2026-09-17)
+
+Slice Y (pin era, upstream #7048 fixed by 97fa14e39): shared
+`summarization_failure` helper rejects length-stop (truncated)
+summaries at all three sites (generate_summary,
+generate_summary_with_usage, branch summary) so partial text never
+becomes a checkpoint. New helper + end-to-end branch pin. Gate:
+compaction 24/24, pi-agent lib 276/276, fmt clean, conversion
+100.00% (166/166), parity dashboard OK (upstream=d7296c0).
+Pre-existing failures unchanged on clean HEAD. No parity row
+promoted (agent deterministic slice). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Agent slice X: summary output cap (last updated 2026-09-17)
 
 Slice X (pin era, upstream #8845 fixed by e44d75c20): branch

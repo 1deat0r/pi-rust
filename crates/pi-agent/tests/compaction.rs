@@ -1026,3 +1026,63 @@ async fn branch_summary_output_cap_follows_model_limit_upstream_8845() {
         );
     }
 }
+
+#[tokio::test]
+async fn truncated_summaries_are_rejected_upstream_7048() {
+    // Upstream #7048: length-stop (truncated) summaries must not
+    // become session checkpoints — at generate_summary,
+    // generate_summary_with_usage, and branch summary sites.
+    use pi_agent::harness::compaction::compaction::summarization_failure;
+    let mut length = faux_assistant_message(
+        vec![ContentBlock::text("partial")],
+        FauxAssistantOptions::default(),
+    );
+    length.set_stop_reason(StopReason::Length);
+    assert_eq!(
+        summarization_failure(&length, "Summarization"),
+        Some(
+            "Summarization failed: generation hit the token cap and the summary is incomplete"
+                .to_string()
+        )
+    );
+    let mut error = faux_assistant_message(
+        vec![],
+        FauxAssistantOptions {
+            stop_reason: Some(StopReason::Error),
+            error_message: Some("boom".to_string()),
+        },
+    );
+    error.set_stop_reason(StopReason::Error);
+    assert_eq!(
+        summarization_failure(&error, "Branch summary"),
+        Some("Branch summary failed: boom".to_string())
+    );
+    let ok = faux_assistant_message(
+        vec![ContentBlock::text("complete")],
+        FauxAssistantOptions::default(),
+    );
+    assert_eq!(summarization_failure(&ok, "Summarization"), None);
+
+    // End-to-end through branch summary: a truncated response errors.
+    let messages = vec![message_entry(
+        user_message("Summarize this branch work."),
+        "b1",
+        None,
+        1,
+    )];
+    let model = faux_model(false, 8192);
+    let (models, _) = scripted_models(vec![length]);
+    let error = generate_branch_summary(
+        &messages,
+        &models,
+        &model,
+        &GenerateBranchSummaryOptions::default(),
+    )
+    .await
+    .expect_err("truncated branch summary must fail");
+    assert!(
+        error.message.contains("token cap"),
+        "unexpected error: {}",
+        error.message
+    );
+}
