@@ -2,6 +2,25 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice M: Gemini thinking-level gate (last updated 2026-09-18)
+
+Slice M (new drift, upstream 16235fd93): the three per-family
+thinking gates collapse into one `uses_google_thinking_level` gate
+(versioned Gemini 3 Pro/Flash, both flash-latest aliases, both Gemma
+4 spellings — adjacent families stay budget-based); resolved levels
+map verbatim (`toGoogleThinkingLevel`, no more LOW/MINIMAL family
+splits); disabled thinking falls back to MINIMAL for gated models
+(`getDisabledGoogleThinkingConfig`); both lanes (generative-ai +
+vertex) route through the shared gate. New gate-matrix pin plus
+updated disabled-config pin, TDD red-first (old LOW expectation for
+gemini-3-pro). Gate: google 49/49, vertex 22/22, pi-ai lib 487/487,
+pi-ai strict clippy clean, fmt clean, conversion 100.00% (166/166),
+parity dashboard OK (upstream=d7296c0). No parity row promoted
+(provider-lane deterministic slice; live Gemini thinking traffic
+unverifiable offline). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ### Transcript slice L: SystemMessage.replace removed (last updated 2026-09-18)
 
 Slice L (new drift, upstream 16292398a): `SystemMessage.replace`

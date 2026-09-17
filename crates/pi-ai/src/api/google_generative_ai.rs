@@ -58,66 +58,39 @@ impl GoogleOptions {
 // Request building
 // ---------------------------------------------------------------------------
 
-fn is_gemma4_model(id: &str) -> bool {
-    static GEMMA4: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+/// Whether a model uses Gemini's discrete `thinkingLevel` wire control
+/// instead of the token-based `thinkingBudget` control (upstream
+/// `usesGoogleThinkingLevel`, 16235fd93): Gemini 3 Pro/Flash with or
+/// without a minor version, the two flash-latest aliases, and both
+/// hosted Gemma 4 naming forms. Levels come from the model's
+/// `thinkingLevelMap`; this only selects the wire format.
+pub fn uses_google_thinking_level(model_id: &str) -> bool {
+    static GATE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         // Compile-time literal; a failure is a build defect.
         #[allow(clippy::panic)]
-        regex::Regex::new(r"(?i)gemma-?4").unwrap_or_else(|error| panic!("static regex: {error}"))
-    });
-    GEMMA4.is_match(id)
-}
-
-fn is_gemini3_pro_model(id: &str) -> bool {
-    static GEMINI3_PRO: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        // Compile-time literal; a failure is a build defect.
-        #[allow(clippy::panic)]
-        regex::Regex::new(r"(?i)gemini-3(?:\.\d+)?-pro")
+        regex::Regex::new(r"(?i)gemini-3(?:\.\d+)?-(?:pro|flash)|gemini-flash-latest|gemini-flash-lite-latest|gemma-?4")
             .unwrap_or_else(|error| panic!("static regex: {error}"))
     });
-    GEMINI3_PRO.is_match(id)
-}
-
-fn is_gemini3_flash_model(id: &str) -> bool {
-    static GEMINI3_FLASH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        // Compile-time literal; a failure is a build defect.
-        #[allow(clippy::panic)]
-        regex::Regex::new(r"gemini-3(?:\.\d+)?-flash")
-            .unwrap_or_else(|error| panic!("static regex: {error}"))
-    });
-    let id = id.to_lowercase();
-    GEMINI3_FLASH.is_match(&id) || id == "gemini-flash-latest" || id == "gemini-flash-lite-latest"
+    GATE.is_match(model_id)
 }
 
 /// `thinkingConfig` when thinking is disabled for a model (upstream
-/// `getDisabledThinkingConfig`).
+/// `getDisabledGoogleThinkingConfig`, 16235fd93): level-gated models
+/// fall back through `clampThinkingLevel(model, "off")` — a second
+/// `off` means the model cannot disable thinking, so `thinkingBudget:
+/// 0`; otherwise the lowest supported `thinkingLevel`.
 pub fn disabled_thinking_config(model_id: &str) -> Value {
-    if is_gemini3_pro_model(model_id) {
-        return json!({ "thinkingLevel": "LOW" });
-    }
-    if is_gemini3_flash_model(model_id) {
-        return json!({ "thinkingLevel": "MINIMAL" });
-    }
-    if is_gemma4_model(model_id) {
+    if uses_google_thinking_level(model_id) {
         return json!({ "thinkingLevel": "MINIMAL" });
     }
     json!({ "thinkingBudget": 0 })
 }
 
 /// Map a resolved level to a Google API ThinkingLevel value (upstream
-/// `getThinkingLevel`).
-pub fn google_thinking_level(level: ResolvedGoogleThinkingLevel, model_id: &str) -> &'static str {
-    if is_gemini3_pro_model(model_id) {
-        return match level {
-            ResolvedGoogleThinkingLevel::Minimal | ResolvedGoogleThinkingLevel::Low => "LOW",
-            ResolvedGoogleThinkingLevel::Medium | ResolvedGoogleThinkingLevel::High => "HIGH",
-        };
-    }
-    if is_gemma4_model(model_id) {
-        return match level {
-            ResolvedGoogleThinkingLevel::Minimal | ResolvedGoogleThinkingLevel::Low => "MINIMAL",
-            ResolvedGoogleThinkingLevel::Medium | ResolvedGoogleThinkingLevel::High => "HIGH",
-        };
-    }
+/// `toGoogleThinkingLevel`, 16235fd93): the per-family LOW/MINIMAL
+/// splits are gone — every level-gated model maps its resolved level
+/// verbatim.
+pub fn google_thinking_level(level: ResolvedGoogleThinkingLevel, _model_id: &str) -> &'static str {
     match level {
         ResolvedGoogleThinkingLevel::Minimal => "MINIMAL",
         ResolvedGoogleThinkingLevel::Low => "LOW",
@@ -1111,10 +1084,7 @@ pub fn stream_simple(
     let resolved = resolve_google_thinking_level(clamped, model);
     let model_id = model.id.clone();
 
-    let thinking = if is_gemini3_pro_model(&model_id)
-        || is_gemini3_flash_model(&model_id)
-        || is_gemma4_model(&model_id)
-    {
+    let thinking = if uses_google_thinking_level(&model_id) {
         GoogleThinking {
             enabled: true,
             budget_tokens: None,
@@ -1281,9 +1251,13 @@ mod tests {
 
     #[test]
     fn disabled_thinking_config_by_model_family() {
+        // Upstream 16235fd93 consolidated the three per-family gates
+        // into `usesGoogleThinkingLevel`: every level-gated model falls
+        // back to the lowest supported level (MINIMAL) instead of
+        // family-specific LOW/MINIMAL splits.
         assert_eq!(
             disabled_thinking_config("gemini-3-pro"),
-            json!({"thinkingLevel":"LOW"})
+            json!({"thinkingLevel":"MINIMAL"})
         );
         assert_eq!(
             disabled_thinking_config("gemini-3-flash"),
@@ -1297,6 +1271,28 @@ mod tests {
             disabled_thinking_config("gemini-2.5-pro"),
             json!({"thinkingBudget":0})
         );
+    }
+
+    #[test]
+    fn google_thinking_level_gate_matches_upstream_16235fd93() {
+        // Upstream 16235fd93 `usesGoogleThinkingLevel` gate matrix:
+        // versioned Pro/Flash, both latest aliases, both Gemma 4
+        // spellings — and rejection of adjacent families.
+        for id in [
+            "gemini-3-pro",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash",
+            "gemini-3.8-flash",
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest",
+            "gemma-4-27b",
+            "gemma4-9b",
+        ] {
+            assert!(uses_google_thinking_level(id), "{id} must be level-gated");
+        }
+        for id in ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro"] {
+            assert!(!uses_google_thinking_level(id), "{id} must be budget-based");
+        }
     }
 
     #[test]

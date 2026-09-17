@@ -274,36 +274,14 @@ fn os_release() -> String {
     }
 }
 
-fn is_gemini3_pro_model(id: &str) -> bool {
-    static GEMINI3_PRO: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        // Compile-time literal; a failure is a build defect.
-        #[allow(clippy::panic)]
-        regex::Regex::new(r"(?i)gemini-3(?:\.\d+)?-pro")
-            .unwrap_or_else(|error| panic!("static regex: {error}"))
-    });
-    GEMINI3_PRO.is_match(id)
-}
-
-fn is_gemini3_flash_model(id: &str) -> bool {
-    static GEMINI3_FLASH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        // Compile-time literal; a failure is a build defect.
-        #[allow(clippy::panic)]
-        regex::Regex::new(r"gemini-3(?:\.\d+)?-flash")
-            .unwrap_or_else(|error| panic!("static regex: {error}"))
-    });
-    let id = id.to_lowercase();
-    GEMINI3_FLASH.is_match(&id) || id == "gemini-flash-latest" || id == "gemini-flash-lite-latest"
-}
-
 /// Apply a configured thinking level or budget to the options (upstream
-/// `getGemini3ThinkingLevel` / `getGoogleBudget`).
+/// `usesGoogleThinkingLevel` gate + `toGoogleThinkingLevel`, 16235fd93).
 fn thinking_for_level(
     model_id: &str,
     level: ResolvedGoogleThinkingLevel,
     custom_budgets: Option<&crate::types::ThinkingBudgets>,
 ) -> GoogleThinking {
-    let gemini3 = is_gemini3_pro_model(model_id) || is_gemini3_flash_model(model_id);
-    if gemini3 {
+    if super::google_generative_ai::uses_google_thinking_level(model_id) {
         GoogleThinking {
             enabled: true,
             budget_tokens: None,
