@@ -59,7 +59,13 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### CLI slice P — export overwrite evidence (uncommitted)
+### CLI slice P — export overwrite evidence committed + pushed
+
+CLI-029 overwrite/suffix residual closed with a real-process pin
+(no source change; row note extended, held). Export 5/5, fmt
+clean, conversion 100.00% (166/166), parity register + dashboard
+OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Committed `bfdcb29`, pushed, hashes match. Next: continue phase 1.
 
 CLI-029 overwrite/suffix residual closed with a real-process pin
 (no source change; row note extended, held). Export 5/5, fmt
