@@ -703,3 +703,58 @@ fn replay_accepts_unknown_entry_fields_without_losing_tree_semantics() {
         assert!(raw.contains("futureMessage"));
     });
 }
+
+#[test]
+fn discovery_follows_symlinked_session_roots() {
+    // SES-007 residual: discovery through a symlinked sessions root
+    // finds the same sessions as the canonical path.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let root = std::env::temp_dir().join(format!(
+                "pi-jsonl-symlink-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let canonical = root.join("canonical");
+            std::fs::create_dir_all(&canonical).unwrap();
+            let link = root.join("linked");
+            symlink(&canonical, &link).unwrap();
+
+            let mut repo = JsonlSessionRepo::new(
+                pi_agent::fs::StdFileSystem::new(canonical.to_string_lossy().as_ref()),
+                canonical.to_string_lossy().into_owned(),
+            );
+            let cwd = "/work/symlinked-project".to_string();
+            repo.create(CreateOptions {
+                id: Some("linked-session".into()),
+                cwd: cwd.clone(),
+                parent_session_id: None,
+                metadata: None,
+                fork_options: ForkOptions::Tree,
+            })
+            .await
+            .unwrap();
+
+            let direct = repo.list(Some(&cwd)).await.unwrap();
+            assert_eq!(direct.len(), 1);
+            assert_eq!(direct[0].id, "linked-session");
+
+            let via_link = JsonlSessionRepo::new(
+                pi_agent::fs::StdFileSystem::new(link.to_string_lossy().as_ref()),
+                link.to_string_lossy().into_owned(),
+            );
+            let listed = via_link.list(Some(&cwd)).await.unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].id, "linked-session");
+            let _ = std::fs::remove_dir_all(root);
+        }
+    });
+}

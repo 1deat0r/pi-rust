@@ -19,6 +19,20 @@ Metrics unchanged (implementation 111/266, deterministic evidence
 107/266, runtime 59/266, non-TUI overall 58/266, whole-product
 58/318).
 
+### Session slice L: discovery symlink pin (last updated 2026-09-17)
+
+Slice L (SES-007 residual): new real-filesystem pin proving
+session discovery through a symlinked sessions root finds the
+same session as the canonical path. No source change needed
+(discovery already follows symlinks); evidence-only. SES-007 row
+note extended, statuses unchanged. Gate: jsonl_repo 16/16,
+pi-agent lib 276/276, fmt clean, conversion 100.00% (166/166),
+parity register + dashboard OK (upstream=d7296c0). No parity row
+promoted (single residual closed; restart evidence still open).
+Metrics unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Tool slice J: PowerShell tool (last updated 2026-09-17)
 
 Slice J (pin era, upstream #8512 fixed by 80e62761f): optional

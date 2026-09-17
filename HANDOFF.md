@@ -11,14 +11,16 @@ pins green. Extensions 72/72, fmt clean, conversion 100.00%
 promoted; metrics unchanged. Committed `94140ee`, pushed, hashes
 match. Next: continue the sweep.
 
-Upstream #8355 (ccfe79ed2): nesting-aware prompt emitter on
-handler contexts; 5 dialogs wrapped; failures isolated. Four
-pins green. Extensions 72/72, fmt clean, conversion 100.00%
-(166/166), parity dashboard OK (58/318, upstream=d7296c0). No row
-promoted; metrics unchanged. Next: commit + push, then continue
-the sweep.
+### Session slice L — discovery symlink pin (uncommitted)
 
-### Tool slice J — PowerShell tool committed + pushed
+SES-007 symlink residual closed with a real-filesystem pin (no
+source change; row note extended, statuses held). jsonl_repo
+16/16, pi-agent lib 276/276, fmt clean, conversion 100.00%
+(166/166), parity register + dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Next:
+commit + push, then continue the sweep.
+
+## Day goal 2026-09-17 — sectioned transcript-replay port
 
 Upstream #8512 (80e62761f): optional powershell tool (discovery +
 args + UTF8 prefix; shell_args seam; default set untouched).

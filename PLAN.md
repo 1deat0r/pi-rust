@@ -11,6 +11,15 @@ green: extensions 72/72, fmt, conversion 100.00% (166/166),
 parity dashboard OK (upstream=d7296c0, 58/318). Next: commit +
 push, then continue the sweep.
 
+### Session slice L — discovery symlink pin
+
+Closed the SES-007 symlink residual with a real-filesystem pin
+(no source change; row note extended, statuses held). No row
+promoted (restart evidence open). Gate green: jsonl_repo 16/16,
+pi-agent lib 276/276, fmt, conversion 100.00% (166/166), parity
+register + dashboard OK (upstream=d7296c0, 58/318). Next: commit
++ push, then continue the sweep.
+
 ### Tool slice J — PowerShell tool
 
 Ported upstream #8512 (80e62761f): optional powershell tool with
