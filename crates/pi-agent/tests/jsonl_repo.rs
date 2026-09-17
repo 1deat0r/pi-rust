@@ -705,6 +705,65 @@ fn replay_accepts_unknown_entry_fields_without_losing_tree_semantics() {
 }
 
 #[test]
+fn find_by_id_reads_headers_only_upstream_9601() {
+    // Upstream #9601 (9b791a4cc): exact session IDs resolve from
+    // headers alone, without loading transcript bodies. TDD RED:
+    // no `find_by_id` exists yet.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fs = MemoryFs::new();
+        let mut r = repo(fs.clone());
+        let cwd = "/work/exact-project".to_string();
+        let mut session = r
+            .create(CreateOptions {
+                id: Some("exact-target".into()),
+                cwd: cwd.clone(),
+                parent_session_id: None,
+                metadata: None,
+                fork_options: ForkOptions::Tree,
+            })
+            .await
+            .unwrap();
+        let path = session.get_metadata().await.path;
+        // A multi-line body proves the lookup never scans transcripts:
+        // only the first line (the header) may be read.
+        session
+            .append_entry(
+                EntryNoStats::Message {
+                    id: "m1".into(),
+                    message: user_message("body that must never be scanned"),
+                    terminate: None,
+                },
+                "main",
+            )
+            .await
+            .unwrap();
+        drop(session);
+
+        let found = r.find_by_id(&cwd, "exact-target").await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().path, path);
+        assert!(r.find_by_id(&cwd, "absent-id").await.unwrap().is_none());
+        // A body line carrying a decoy id must never match: only
+        // headers are read.
+        assert!(r
+            .find_by_id(&cwd, "body that must never be scanned")
+            .await
+            .unwrap()
+            .is_none());
+        // Missing session roots yield None, matching list().
+        assert!(r
+            .find_by_id("/work/no-such-project", "exact-target")
+            .await
+            .unwrap()
+            .is_none());
+    });
+}
+
+#[test]
 fn discovery_follows_symlinked_session_roots() {
     // SES-007 residual: discovery through a symlinked sessions root
     // finds the same sessions as the canonical path.

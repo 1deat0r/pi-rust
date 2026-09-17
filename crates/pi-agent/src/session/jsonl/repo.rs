@@ -164,6 +164,65 @@ impl<F: FileSystem> JsonlSessionRepo<F> {
         list_jsonl_session_metadata(&self.fs, &self.sessions_root, cwd)
     }
 
+    /// Find an exact session id without loading transcript bodies
+    /// (upstream `SessionManager.findById`, #9601 fixing #9440): only
+    /// the first line (the header) of each `.jsonl` candidate is read,
+    /// corrupt/unreadable files are skipped, and a missing directory
+    /// yields `None` instead of an error — matching `list()`.
+    pub async fn find_by_id(
+        &self,
+        cwd: &str,
+        id: &str,
+    ) -> Result<Option<SessionMetadata>, FileError> {
+        let root = self.fs.absolute_path(&self.sessions_root);
+        let resolved = self.fs.absolute_path(cwd);
+        let dir = self
+            .fs
+            .join_path(&root, &jsonl_session_directory_name(&resolved));
+        if !self.fs.exists(&dir) {
+            return Ok(None);
+        }
+        let entries = match self.fs.list_dir_entries(&dir) {
+            Ok(entries) => entries,
+            Err(_) => return Ok(None),
+        };
+        for entry in entries {
+            if entry.is_dir || !entry.name.ends_with(".jsonl") {
+                continue;
+            }
+            let path = self.fs.join_path(&dir, &entry.name);
+            let Ok(lines) = self.fs.read_text_lines(&path) else {
+                continue;
+            };
+            let Some(first_line) = lines.first() else {
+                continue;
+            };
+            if first_line.is_empty() {
+                continue;
+            }
+            let header = match parse_header(first_line) {
+                Ok(header) => {
+                    let mut item = metadata_from_header(&header, &path, entry.mtime_ms);
+                    item.source_format = 4;
+                    item
+                }
+                Err(_) => match v3::parse_header(first_line) {
+                    Ok(header) => {
+                        let mut item = metadata_from_header(&header, &path, entry.mtime_ms);
+                        item.source_format = 3;
+                        item
+                    }
+                    Err(_) => continue,
+                },
+            };
+            if header.id != id {
+                continue;
+            }
+            return Ok(Some(header));
+        }
+        Ok(None)
+    }
+
     pub async fn delete(&self, metadata: &SessionMetadata) -> Result<(), FileError> {
         self.fs.remove(&metadata.path)
     }

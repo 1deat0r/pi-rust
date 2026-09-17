@@ -2,6 +2,29 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Session slice N: header-only exact-id lookup (last updated 2026-09-17)
+
+Slice N (drift era, upstream #9601 fixed by 9b791a4cc fixing
+#9440 — previously assessed as satisfied-by-construction, but the
+port is a real behavioral delta worth pinning): new
+`JsonlSessionRepo::find_by_id` reads only the first line (header)
+of each `.jsonl` candidate in the cwd session dir, skips
+corrupt/unreadable files, and returns `None` for missing roots —
+matching `list()` best-effort semantics; v3/v4 header parsing
+reuses the existing adapters with the same source-format tagging
+as `list()`. Pin covers exact-hit path equality, absent-id miss,
+body-line decoy non-match (proving headers-only), and missing-root
+`None`. TDD red first (method-not-found compile error, then a
+mutability fix in the test). Gate: jsonl_repo 17/17, pi-agent lib
+276/276, scoped rustfmt clean, conversion 100.00% (166/166), parity
+dashboard OK (upstream=d7296c0). Pre-existing workspace clippy
+failures (`pi-tui` dead code, `pi-agent` module-inception +
+`header_end`) verified identical on clean HEAD via stash; no new
+findings in the touched files. No parity row promoted (session
+deterministic slice; restart evidence still open). Metrics
+unchanged (implementation 111/266, deterministic evidence 107/266,
+runtime 59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Extension slice L: user_bash fail-closed (last updated 2026-09-17)
 
 Slice L (drift era, upstream #9068 fixed by 509ee2bd0 — previously

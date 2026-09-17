@@ -2,6 +2,17 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Session slice N — header-only exact-id lookup (uncommitted)
+
+Upstream #9601 (9b791a4cc fixing #9440): new
+`JsonlSessionRepo::find_by_id` reads headers only, skips corrupt
+files, `None` on missing roots. Pin green (hit/miss/decoy/
+missing-root), TDD red-first. jsonl_repo 17/17, pi-agent lib
+276/276, scoped rustfmt clean, conversion 100.00% (166/166), parity
+dashboard OK (58/318, upstream=d7296c0). Pre-existing clippy
+verified identical on clean HEAD. No row promoted; metrics
+unchanged. Next: commit + push, then continue the sweep.
+
 ### Extension slice L — user_bash fail-closed committed + pushed
 
 Upstream #9068 (509ee2bd0): `emit_user_bash` fails closed —
