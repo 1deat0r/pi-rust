@@ -76,6 +76,18 @@ promoted (config deterministic slice). Metrics unchanged
 (implementation 111/266, deterministic evidence 107/266, runtime
 59/266, non-TUI overall 58/266, whole-product 58/318).
 
+### CLI slice Q: exclusion projection evidence (last updated 2026-09-17)
+
+Slice Q (CLI-022 residual): real-process pin proving
+`--exclude-tools bash` projects into the provider payload —
+reported input-token usage drops without vendor traffic. No
+source change needed; row note extended, statuses held. Gate:
+JSON suite 8/8, fmt clean, conversion 100.00% (166/166), parity
+register + dashboard OK (upstream=d7296c0). No parity row
+promoted (extension/next-turn breadth open). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### CLI slice P: export overwrite evidence (last updated 2026-09-17)
 
 Slice P (CLI-029 residual): real-process pin proving export

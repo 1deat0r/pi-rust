@@ -741,3 +741,40 @@ fn rpc_stdin_keeps_tool_results_and_unknown_commands_in_protocol() {
         entry["message"]["output"] == "tool-error" && entry["message"]["exitCode"] == 7
     }));
 }
+
+#[test]
+fn json_exclude_tools_shrinks_prompt_usage_cli_022() {
+    // CLI-022 residual: exclusion precedence must project into the
+    // provider payload. Observable without vendor traffic: the
+    // reported input-token usage drops when bash leaves the active
+    // tool set (its prompt contribution disappears).
+    let sandbox = Sandbox::new("exclude-usage");
+    let usage_input = |extra: &[&str]| -> i64 {
+        let mut args = vec![
+            "--mode",
+            "json",
+            "--provider",
+            "faux",
+            "--model",
+            "faux-1",
+            "--no-session",
+        ];
+        args.extend_from_slice(extra);
+        args.push("exclusion probe");
+        let out = sandbox.pi(&sandbox.root, &args);
+        assert!(out.status.success(), "stderr: {}", sandbox.stderr(&out));
+        let stdout = sandbox.stdout(&out);
+        stdout
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|event| event["type"] == "message_end" && event["message"]["role"] == "assistant")
+            .and_then(|event| event["message"]["usage"]["input"].as_i64())
+            .expect("assistant usage with input tokens")
+    };
+    let full = usage_input(&[]);
+    let excluded = usage_input(&["--exclude-tools", "bash"]);
+    assert!(
+        excluded < full,
+        "excluding bash must shrink prompt usage: full={full} excluded={excluded}"
+    );
+}

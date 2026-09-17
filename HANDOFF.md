@@ -59,6 +59,14 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### CLI slice Q — exclusion projection evidence (uncommitted)
+
+CLI-022 projection residual closed with a JSON-usage process pin
+(no source change; row note extended, held). JSON 8/8, fmt clean,
+conversion 100.00% (166/166), parity register + dashboard OK
+(58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Next: commit + push, then continue phase 1.
+
 ### CLI slice P — export overwrite evidence committed + pushed
 
 CLI-029 overwrite/suffix residual closed with a real-process pin
@@ -67,11 +75,7 @@ clean, conversion 100.00% (166/166), parity register + dashboard
 OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
 Committed `bfdcb29`, pushed, hashes match. Next: continue phase 1.
 
-CLI-029 overwrite/suffix residual closed with a real-process pin
-(no source change; row note extended, held). Export 5/5, fmt
-clean, conversion 100.00% (166/166), parity register + dashboard
-OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
-Next: commit + push, then continue phase 1.
+## Day goal 2026-09-17 — sectioned transcript-replay port
 
 ### CLI slice O — unknown-tool evidence committed + pushed
 
