@@ -179,3 +179,32 @@ fn unknown_long_value_is_forwarded_as_one_extension_candidate_at_process_boundar
     assert_eq!(text(&output), "\n");
     assert_eq!(error(&output), "Unknown flag: --not-registered\n");
 }
+
+#[test]
+fn malformed_models_json_degrades_to_bundled_catalog_on_print_cli_020() {
+    // CLI-020 residual: an invalid models.json catalog must not fail
+    // the turn. Upstream surfaces registry errors only in list-models,
+    // auth-check, and the model selector — print turns degrade
+    // silently to the bundled catalog.
+    let sandbox = Sandbox::new("invalid-catalog");
+    fs::write(sandbox.agent.join("models.json"), "{invalid json")
+        .expect("write malformed models.json");
+
+    let output = sandbox.run(&[
+        "--provider",
+        "faux",
+        "--model",
+        "faux-1",
+        "--no-tools",
+        "--no-session",
+        "--print",
+        "degraded turn",
+    ]);
+    assert!(output.status.success(), "stderr: {}", error(&output));
+    assert_eq!(text(&output), "faux response to: degraded turn\n");
+    assert!(
+        error(&output).is_empty(),
+        "print must not warn: {}",
+        error(&output)
+    );
+}
