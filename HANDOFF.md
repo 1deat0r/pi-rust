@@ -2,7 +2,13 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### Resolver slice H — Radius default (uncommitted)
+### Resolver slice H — Radius default committed + pushed
+
+Upstream 9767ba275: Radius default `balanced` (fallback existed;
+no post-login flow to defer). Pin updated. Scoped 41/41, fmt
+clean, conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Committed
+`feb0d07`, pushed, hashes match. Next: continue the sweep.
 
 Upstream 9767ba275: Radius default `balanced` (fallback existed;
 no post-login flow to defer). Pin updated. Scoped 41/41, fmt
