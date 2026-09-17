@@ -783,3 +783,35 @@ async fn cached_dynamic_models_restore_without_network() {
         "cached"
     );
 }
+
+#[test]
+fn vercel_ai_gateway_models_allow_empty_signatures_upstream_9676() {
+    // Regression pin for upstream #9676 (3955b27a1): Vercel AI Gateway
+    // emits unsigned thinking for translated models, so every generated
+    // entry carries `allowEmptySignature: true`. TDD RED: the vendored
+    // data has no such compat key yet.
+    let providers = builtin_providers();
+    let gateway = providers
+        .iter()
+        .find(|provider| provider.id == "vercel-ai-gateway")
+        .expect("Vercel AI Gateway provider");
+    assert!(
+        !gateway.models.is_empty(),
+        "expected Vercel AI Gateway catalog entries"
+    );
+    let compat_bool = |model: &Model, key: &str| {
+        model
+            .compat
+            .as_ref()
+            .and_then(|compat| compat.get(key))
+            .and_then(serde_json::Value::as_bool)
+    };
+    for model in &gateway.models {
+        assert_eq!(
+            compat_bool(model, "allowEmptySignature"),
+            Some(true),
+            "{} must allow empty signatures",
+            model.id
+        );
+    }
+}

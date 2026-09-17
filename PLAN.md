@@ -7,6 +7,16 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice J — Vercel unsigned thinking
+
+Ported upstream #9676 (3955b27a1): `allowEmptySignature: true` on
+all 237 Vercel AI Gateway entries (lane already honored it). New
+catalog pin, TDD red-first. No row promoted (data-correction slice;
+live traffic offline-unverifiable). Gate green: catalog 15/15, pi-ai
+lib 486/486, pi-ai strict clippy, fmt, conversion 100.00% (166/166),
+parity dashboard OK (upstream=d7296c0, 58/318). Next: commit + push,
+then continue the new-drift triage.
+
 ### Tool slice I — signal-terminated shell exit codes
 
 Ported upstream #9577 (a8b3dd19): shared executor maps signal

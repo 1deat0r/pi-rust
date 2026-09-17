@@ -2,6 +2,21 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Provider slice J: Vercel unsigned thinking (last updated 2026-09-18)
+
+Slice J (new drift, upstream #9676 fixed by 3955b27a1): all 237
+vendored Vercel AI Gateway entries gain `allowEmptySignature: true`
+(the lane already honored the flag; unsigned thinking replay for
+translated models). New catalog pin mirrors the oracle regression
+test (every entry opted in). TDD red first (0/237 before the data
+patch). Gate: model_catalog_parity 15/15, pi-ai lib 486/486, pi-ai
+strict clippy clean, fmt clean, conversion 100.00% (166/166), parity
+dashboard OK (upstream=d7296c0). No parity row promoted (data-
+correction slice; live Vercel gateway traffic unverifiable offline).
+Metrics unchanged (implementation 111/266, deterministic evidence
+107/266, runtime 59/266, non-TUI overall 58/266, whole-product
+58/318).
+
 ### Tool slice I: signal-terminated shell exit codes (last updated 2026-09-18)
 
 Slice I (new drift, upstream #9577 fixed by a8b3dd19): the shared
