@@ -59,7 +59,14 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### Interactive slice W — share isolation (uncommitted)
+### Interactive slice W — share isolation committed + pushed
+
+Upstream #8613 (6f35de5b5): unique temp dir per concurrent share
+(`share_via_gist` extraction). New concurrency pin green. Share
+4/4, fmt clean, conversion 100.00% (166/166), parity dashboard OK
+(58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Committed `c8c1172`, pushed, hashes match. Next: continue the
+sweep.
 
 Upstream #8613 (6f35de5b5): unique temp dir per concurrent share
 (`share_via_gist` extraction). New concurrency pin green. Share
