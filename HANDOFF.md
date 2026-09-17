@@ -85,7 +85,14 @@ Next: continue phase 1.
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### CFG slice AA — migration no-rewrite (uncommitted)
+### CFG slice AA — migration no-rewrite committed + pushed
+
+CFG-004 restart residual closed with a no-rewrite process pin
+(TDD red-first, corrected by archaeology; no source change; row
+note extended, held). Config 5/5, fmt clean, conversion 100.00%
+(166/166), parity register + dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Committed
+`f01e106`, pushed, hashes match. Next: continue phase 1.
 
 CFG-004 restart residual closed with a no-rewrite process pin
 (TDD red-first, corrected by archaeology; no source change; row
