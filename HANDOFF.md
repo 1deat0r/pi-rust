@@ -2,6 +2,15 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Maintenance — stale catalog pins (uncommitted)
+
+Repaired nvidia id list + copilot filter fixture to vendored data
+(both red on clean HEAD). Catalog 14/14, copilot 5/5, pi-ai lib
+483/483 green, pi-ai strict clippy clean, fmt clean, conversion
+100.00% (166/166), parity dashboard OK (58/318, upstream=d7296c0).
+No row promoted; metrics unchanged. Next: commit + push, then
+continue the sweep.
+
 ### Agent slice G — proxy EOF error committed + pushed
 
 Upstream #8997 (ebc374490): proxy EOF without terminal event
@@ -11,12 +20,7 @@ clean, conversion 100.00% (166/166), parity dashboard OK (58/318,
 upstream=d7296c0). No row promoted; metrics unchanged. Committed
 `221b782`, pushed, hashes match. Next: continue the sweep.
 
-Upstream #8997 (ebc374490): proxy EOF without terminal event
-finalizes an error via pusher tracking. New loopback pin green,
-true-RED TDD via 10s hang. pi-agent lib 273/273, proxy 13/13, fmt
-clean, conversion 100.00% (166/166), parity dashboard OK (58/318,
-upstream=d7296c0). No row promoted; metrics unchanged. Next:
-commit + push, then continue the sweep.
+## Day goal 2026-09-17 — sectioned transcript-replay port
 
 ### Provider slice F — Google transient retry committed + pushed
 

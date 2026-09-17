@@ -280,7 +280,9 @@ fn provider_filters_oauth_models_only_when_the_catalog_metadata_is_valid() {
     let mut extra = BTreeMap::new();
     extra.insert(
         "availableModelIds".to_string(),
-        serde_json::json!(["gpt-4.1"]),
+        // Fixture id must exist in the vendored catalog (gpt-4.1 was
+        // retired upstream; gpt-5-mini exercises the same filter path).
+        serde_json::json!(["gpt-5-mini"]),
     );
     let credential = Credential::OAuth(OAuthCredential {
         access: "access".to_string(),
@@ -294,7 +296,7 @@ fn provider_filters_oauth_models_only_when_the_catalog_metadata_is_valid() {
             .iter()
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["gpt-4.1"]
+        vec!["gpt-5-mini"]
     );
 
     let invalid = Credential::OAuth(OAuthCredential {

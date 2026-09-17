@@ -2,6 +2,19 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Maintenance: stale catalog pins (last updated 2026-09-17)
+
+Repaired two pins stale against vendored data (both red on clean
+HEAD, unrelated to any slice): the nvidia id list (now 20 ids incl.
+`deepseek-ai/deepseek-v4-pro-0813`, minus 3 removed) and the copilot
+OAuth filter fixture (`gpt-4.1` retired → `gpt-5-mini`, same filter
+path). Full catalog suite 14/14 + copilot 5/5 green. Gate: pi-ai
+lib 483/483, pi-ai strict clippy clean, fmt clean, conversion
+100.00% (166/166), parity dashboard OK (upstream=d7296c0). No
+parity row promoted (test-only). Metrics unchanged (implementation
+111/266, deterministic evidence 107/266, runtime 59/266, non-TUI
+overall 58/266, whole-product 58/318).
+
 ### Agent slice G: proxy EOF error (last updated 2026-09-17)
 
 Slice G (pin era, upstream #8997 fixed by ebc374490): proxy EOF

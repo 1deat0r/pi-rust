@@ -630,6 +630,7 @@ fn moonshot_and_nvidia_catalogs_match_pinned_provider_contract() {
         nvidia_ids,
         vec![
             "deepseek-ai/deepseek-v4-flash-0731",
+            "deepseek-ai/deepseek-v4-pro-0813",
             "google/gemma-3-12b-it",
             "google/gemma-3-4b-it",
             "meta/llama-3.2-11b-vision-instruct",
@@ -642,15 +643,12 @@ fn moonshot_and_nvidia_catalogs_match_pinned_provider_contract() {
             "nvidia/cosmos-reason2-8b",
             "nvidia/llama-3.1-nemotron-70b-instruct",
             "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-            "nvidia/nemotron-3-nano-30b-a3b",
             "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
             "nvidia/nemotron-3-super-120b-a12b",
             "nvidia/nemotron-3-ultra-550b-a55b",
             "nvidia/nemotron-3.5-lightning-30b-a3b",
-            "openai/gpt-oss-120b",
             "openai/gpt-oss-20b",
             "poolside/laguna-xs-2.1",
-            "stepfun-ai/step-3.7-flash",
         ]
     );
     assert!(nvidia.models.iter().all(|model| {

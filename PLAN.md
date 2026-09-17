@@ -2,6 +2,15 @@
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Maintenance — stale catalog pins
+
+Repaired nvidia id list + copilot filter fixture to vendored data
+(both red on clean HEAD). Full catalog 14/14, copilot 5/5 green.
+No row promoted (test-only). Gate green: pi-ai lib 483/483, pi-ai
+strict clippy, fmt, conversion 100.00% (166/166), parity dashboard
+OK (upstream=d7296c0, 58/318). Next: commit + push, then continue
+the sweep.
+
 ### Agent slice G — proxy EOF error
 
 Ported upstream #8997 (ebc374490): proxy EOF without terminal
