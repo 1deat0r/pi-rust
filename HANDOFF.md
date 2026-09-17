@@ -59,7 +59,13 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### CLI slice R — no-tools usage evidence (uncommitted)
+### CLI slice R — no-tools usage evidence committed + pushed
+
+CLI-023/024 payload residual closed with a JSON-usage process pin
+(no source change; both row notes extended, held). JSON 9/9, fmt
+clean, conversion 100.00% (166/166), parity register + dashboard
+OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Committed `7f14a3e`, pushed, hashes match. Next: continue phase 1.
 
 CLI-023/024 payload residual closed with a JSON-usage process pin
 (no source change; both row notes extended, held). JSON 9/9, fmt
