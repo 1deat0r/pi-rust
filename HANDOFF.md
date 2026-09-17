@@ -1,5 +1,16 @@
 # Pi → pi-rust conversion handoff
 
+## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
+
+### Provider slice G — Cloudflare 520 retry (uncommitted)
+
+Upstream #9627 (e5d1838): `"520"` joins the retryable patterns; RED
+pin for the exact oracle wording was pre-staged, now green. pi-ai
+lib 485/485, retry 32/32, pi-ai strict clippy clean, fmt clean,
+conversion 100.00% (166/166), parity dashboard OK (58/318,
+upstream=d7296c0). No row promoted; metrics unchanged. Next: commit
++ push, then triage the 13-commit new drift (e4c75a732 → 46c9de40).
+
 ## Doc-hygiene pass 2026-09-17 — documentation system optimization
 
 Documentation-only (no source, test, or parity row changed):

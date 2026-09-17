@@ -1,5 +1,22 @@
 # Full Pi → pi-rust Conversion Ledger
 
+## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
+
+### Provider slice G: Cloudflare 520 retry (last updated 2026-09-18)
+
+Slice G (new drift, upstream #9627 fixed by e5d1838): the shared
+retry classifier treats Cloudflare 520 "unknown error" wording as
+transient, alongside the adjacent 524 entry — one pattern line plus
+the oracle-mirroring pin. A RED pin for the exact upstream wording
+(`520 status code (no body)`) was already staged in the tree; the
+slice adds the `"520"` pattern. Gate: pi-ai lib 485/485, retry 32/32,
+pi-ai strict clippy clean, fmt clean, conversion 100.00% (166/166),
+parity dashboard OK (upstream=d7296c0). No parity row promoted
+(provider-lane deterministic slice; live Cloudflare 520 traffic
+unverifiable offline). Metrics unchanged (implementation 111/266,
+deterministic evidence 107/266, runtime 59/266, non-TUI overall
+58/266, whole-product 58/318).
+
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
 ### Doc-hygiene pass: documentation system optimization (last updated 2026-09-17)

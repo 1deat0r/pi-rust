@@ -115,6 +115,7 @@ const RETRYABLE_PROVIDER_PATTERNS: &[&str] = &[
     "502",
     "503",
     "504",
+    "520",
     "524",
     "service.?unavailable",
     "server.?error",
@@ -401,6 +402,19 @@ mod tests {
     fn keeps_provider_limit_errors_non_retryable() {
         assert!(!is_retryable_assistant_error(&err_msg(
             "429 quota exceeded"
+        )));
+    }
+
+    #[test]
+    fn matches_cloudflare_520_status_wording() {
+        // Regression for upstream #9627 (e5d1838): Cloudflare's 520
+        // "unknown error" status is transient gateway wording, retryable
+        // like the adjacent 524 entry. Oracle:
+        // `packages/ai/test/retry.test.ts` ("classifies assistant error
+        // messages" case, `fauxAssistantMessage("", { stopReason: "error",
+        // errorMessage: "520 status code (no body)" })` → `true`).
+        assert!(is_retryable_assistant_error(&err_msg(
+            "520 status code (no body)"
         )));
     }
 

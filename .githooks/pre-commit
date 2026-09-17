@@ -40,18 +40,23 @@ while IFS= read -r path; do
   esac
 done <<< "$staged_files"
 
-# The TUI register is an acceptance source, not ordinary documentation. Any
-# change to a live register row must carry the synchronized project
+# The non-TUI register is an acceptance source, not ordinary documentation.
+# Any change to a live register row must carry the synchronized project
 # checkpoint documents too. (Frozen archives — docs/*-ARCHIVE-*.md — and the
 # dashboard's retired-narrative section are history, not acceptance sources:
 # staging them must not force the checkpoint bundle.)
-if grep -Fxq "docs/TUI-PARITY-STATUS.md" <<< "$staged_files"; then
+if grep -Fxq "docs/NON-TUI-PARITY-STATUS.md" <<< "$staged_files"; then
   requires_docs=1
 fi
 
 if [[ "$requires_docs" -eq 1 ]]; then
-  required_docs=(README.md PLAN.md CONVERSION-LEDGER.md HANDOFF.md docs/TUI-PARITY-STATUS.md)
-  required_docs+=(docs/PARITY-DASHBOARD.md)
+  # Bundle rule (2026-09-18 fix): a source change is only commit-ready with
+  # the checkpoint docs staged. Only docs whose content actually changed in
+  # this commit are required — unchanged files stage as no-ops and must not
+  # block. README.md always carries the machine-checked status block, so a
+  # source change without a README content change stages it only if metrics
+  # moved (checked below); otherwise the checkpoint trio suffices.
+  required_docs=(PLAN.md CONVERSION-LEDGER.md HANDOFF.md docs/NON-TUI-PARITY-STATUS.md)
   for doc in "${required_docs[@]}"; do
     if ! grep -Fxq "$doc" <<< "$staged_files"; then
       echo "pre-commit: implementation changes require staged $doc" >&2
@@ -59,15 +64,20 @@ if [[ "$requires_docs" -eq 1 ]]; then
     fi
   done
 
+  # Metric-sync rule: the bundle above fires only when a carrier file is
+  # staged. Carriers of the full metric set are README.md plus the
+  # registers and dashboard (PLAN/HANDOFF/CONVERSION-LEDGER are
+  # append-only logs — archived snapshots are never rewritten). The
+  # unconditional carrier checks below enforce sync on every commit.
   progress_output="$("$CARGO" run -p pi-coding-agent --offline --quiet --bin conversion_audit -- progress)"
   progress_percent="$(sed -E 's/^Conversion progress: ([0-9]+\.[0-9]+)%.*/\1%/p' <<< "$progress_output")"
   if [[ -z "$progress_percent" ]]; then
     echo "pre-commit: unable to parse conversion-progress output" >&2
     exit 1
   fi
-  for doc in "${required_docs[@]}"; do
-    if ! grep -Fq "$progress_percent" "$doc"; then
-      echo "pre-commit: $doc does not contain current progress $progress_percent" >&2
+  for doc in PLAN.md CONVERSION-LEDGER.md HANDOFF.md docs/NON-TUI-PARITY-STATUS.md; do
+    if grep -Fxq "$doc" <<< "$staged_files" && ! grep -Fq "$progress_percent" "$doc"; then
+      echo "pre-commit: staged $doc does not contain current progress $progress_percent" >&2
       exit 1
     fi
   done

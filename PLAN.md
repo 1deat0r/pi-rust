@@ -1,9 +1,21 @@
 # Pi in Rust — 1:1 Rewrite Plan
 
-> Active planning window: the 2026-09-17 day goal plus the Wave C
-> remainder below. Older checkpoints (2026-09-16 re-pin and earlier)
-> are frozen in `docs/PLAN-ARCHIVE-2026-08.md` — do not duplicate them
-> here; append new slices at the top.
+> Active planning window: the 2026-09-18 parity-finish goal below plus
+> the 2026-09-17 day goal. Older checkpoints (2026-09-16 re-pin and
+> earlier) are frozen in `docs/PLAN-ARCHIVE-2026-08.md` — do not
+> duplicate them here; append new slices at the top.
+
+## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
+
+### Provider slice G — Cloudflare 520 retry
+
+Ported upstream #9627 (e5d1838): `"520"` joins the retryable status
+patterns (RED pin for the exact oracle wording was pre-staged).
+No row promoted (provider deterministic slice). Gate green: pi-ai
+lib 485/485, retry 32/32, pi-ai strict clippy, fmt, conversion
+100.00% (166/166), parity dashboard OK (upstream=d7296c0, 58/318).
+Next: commit + push, then triage the 13-commit new drift
+(e4c75a732 → 46c9de40).
 
 ### Doc-hygiene pass — documentation system optimization
 
