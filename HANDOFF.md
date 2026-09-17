@@ -59,7 +59,13 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### CLI slice O — unknown-tool evidence (uncommitted)
+### CLI slice O — unknown-tool evidence committed + pushed
+
+CLI-021 unknown-tool residual closed with a real-process pin (no
+source change; row note extended, held). Flag matrix 7/7, fmt
+clean, conversion 100.00% (166/166), parity register + dashboard
+OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Committed `c7165a9`, pushed, hashes match. Next: continue phase 1.
 
 CLI-021 unknown-tool residual closed with a real-process pin (no
 source change; row note extended, held). Flag matrix 7/7, fmt
