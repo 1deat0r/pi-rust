@@ -76,6 +76,19 @@ promoted (config deterministic slice). Metrics unchanged
 (implementation 111/266, deterministic evidence 107/266, runtime
 59/266, non-TUI overall 58/266, whole-product 58/318).
 
+### Interactive slice W: share isolation (last updated 2026-09-17)
+
+Slice W (pin era, upstream #8613 fixed by 6f35de5b5): concurrent
+`/share` runs now use unique temp dirs instead of one pid-named
+file (extracted `share_via_gist`, dir cleanup on all paths). New
+concurrent-shares pin (distinct artifacts via path-echoing fake
+gh). Gate: share tests 4/4, fmt clean, conversion 100.00%
+(166/166), parity dashboard OK (upstream=d7296c0). Pre-existing
+failures unchanged on clean HEAD. No parity row promoted
+(interactive deterministic slice). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### ENV slice V: cache TTL breadth (last updated 2026-09-17)
 
 Slice V (ENV-011 residual): anthropic-lane unit pin for retention

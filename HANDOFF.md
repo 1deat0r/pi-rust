@@ -59,6 +59,14 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Interactive slice W — share isolation (uncommitted)
+
+Upstream #8613 (6f35de5b5): unique temp dir per concurrent share
+(`share_via_gist` extraction). New concurrency pin green. Share
+4/4, fmt clean, conversion 100.00% (166/166), parity dashboard OK
+(58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Next: commit + push, then continue phase 1.
+
 ### ENV slice V — cache TTL breadth committed + pushed
 
 ENV-011 cross-provider residual closed with an anthropic TTL unit
@@ -68,11 +76,7 @@ pin (no source change; row note extended, held). pi-ai lib
 metrics unchanged. Committed `a1c9d80`, pushed, hashes match.
 Next: continue phase 1.
 
-ENV-011 cross-provider residual closed with an anthropic TTL unit
-pin (no source change; row note extended, held). pi-ai lib
-484/484, fmt clean, conversion 100.00% (166/166), parity register
-+ dashboard OK (58/318, upstream=d7296c0). No row promoted;
-metrics unchanged. Next: commit + push, then continue phase 1.
+## Day goal 2026-09-17 — sectioned transcript-replay port
 
 ### CLI slice U — unknown-pattern evidence committed + pushed
 

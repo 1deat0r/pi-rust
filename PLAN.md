@@ -47,6 +47,15 @@ no post-login flow to defer). Pin updated. No row promoted
 (166/166), parity dashboard OK (upstream=d7296c0, 58/318). Next:
 commit + push, then continue the sweep.
 
+### Interactive slice W — share isolation
+
+Ported upstream #8613 (6f35de5b5): unique temp dir per share
+(`share_via_gist` extraction, cleanup on all paths). New
+concurrent-shares pin. No row promoted (interactive slice). Gate
+green: share 4/4, fmt, conversion 100.00% (166/166), parity
+dashboard OK (upstream=d7296c0, 58/318). Next: commit + push,
+then continue phase 1.
+
 ### ENV slice V — cache TTL breadth
 
 Closed the ENV-011 cross-provider residual with an anthropic TTL

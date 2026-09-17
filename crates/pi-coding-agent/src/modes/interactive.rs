@@ -5414,18 +5414,33 @@ async fn run_share(runtime: &InteractiveRuntime, dry_run: bool) -> Result<String
         return Err("GitHub CLI is not logged in. Run 'gh auth login' first.".to_string());
     }
     let meta = runtime.session.get_metadata().await;
-    let tmp_file = std::env::temp_dir().join(format!("pi-share-{}.html", std::process::id()));
-    let tmp_path = tmp_file.to_string_lossy().into_owned();
-    crate::core::export_html::export_session_file(&meta.path, Some(&tmp_path), None)
+    // Upstream #8613: isolate concurrent shares in a unique temp dir
+    // instead of a pid-named file, which collides within one process.
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "pi-share-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&tmp_dir)
+        .map_err(|error| format!("failed to create share temp dir: {error}"))?;
+    let tmp_path = tmp_dir.join("session.html").to_string_lossy().into_owned();
+    let result = share_via_gist(&meta.path, &tmp_path).await;
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    result
+}
+
+/// Export the session HTML and publish it as a secret gist, returning
+/// the viewer URL message.
+async fn share_via_gist(session_path: &str, tmp_path: &str) -> Result<String, String> {
+    crate::core::export_html::export_session_file(session_path, Some(tmp_path), None)
         .map_err(|e| format!("failed to export session: {e}"))?;
     let gh_gist = run_gh(vec![
         "gist".to_string(),
         "create".to_string(),
         "--public=false".to_string(),
-        tmp_path.clone(),
+        tmp_path.to_string(),
     ])
     .await?;
-    let _ = std::fs::remove_file(&tmp_path);
     if !gh_gist.status.success() {
         return Err(format!(
             "failed to create gist: {}",
@@ -12210,6 +12225,42 @@ mod tests {
             err,
             "GitHub CLI (gh) is not installed. Install it from https://cli.github.com/"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn concurrent_shares_use_isolated_temp_files_upstream_8613() {
+        // Upstream #8613: concurrent shares must not collide on one
+        // pid-named temp file. Each share gets a unique temp dir; the
+        // fake gh echoes the input path back so the two runs prove
+        // distinct artifacts.
+        let root = std::env::temp_dir().join(format!("pi-share-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let _env = env_lock().lock().await;
+        let runtime = test_runtime(&root).await;
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join("gh"),
+            "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then exit 0; fi\nif [ \"$1\" = \"gist\" ] && [ \"$2\" = \"create\" ]; then echo \"https://gist.github.com/fakeuser/$4\"; exit 0; fi\nexit 1\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let _guard = EnvGuard::install(&bin, "https://pi.dev/session/");
+        let (first, second) = tokio::join!(run_share(&runtime, false), run_share(&runtime, false));
+        let first = first.expect("first concurrent share");
+        let second = second.expect("second concurrent share");
+        assert_ne!(
+            first, second,
+            "concurrent shares must not share one temp file"
+        );
+        assert!(first.contains("Gist: https://gist.github.com/fakeuser/"));
+        assert!(second.contains("Gist: https://gist.github.com/fakeuser/"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
