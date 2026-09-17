@@ -59,7 +59,13 @@ upstream=d7296c0). No row promoted; metrics unchanged. Committed
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
-### CLI slice T — template variable evidence (uncommitted)
+### CLI slice T — template variable evidence committed + pushed
+
+CLI-033 variable residual closed with a real-process pin (no
+source change; row note extended, held). Resources 11/11, fmt
+clean, conversion 100.00% (166/166), parity register + dashboard
+OK (58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Committed `b132c57`, pushed, hashes match. Next: continue phase 1.
 
 CLI-033 variable residual closed with a real-process pin (no
 source change; row note extended, held). Resources 11/11, fmt
