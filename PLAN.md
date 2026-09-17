@@ -47,6 +47,15 @@ no post-login flow to defer). Pin updated. No row promoted
 (166/166), parity dashboard OK (upstream=d7296c0, 58/318). Next:
 commit + push, then continue the sweep.
 
+### CLI slice U — unknown-pattern evidence
+
+Closed the CLI-036 unknown-pattern residual with a real-process
+pin (no source change; row note extended, held). No row promoted
+(refresh breadth open). Gate green: list-models 4/4, fmt,
+conversion 100.00% (166/166), parity register + dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then continue
+phase 1.
+
 ### CLI slice T — template variable evidence
 
 Closed the CLI-033 variable residual with a real-process pin (no

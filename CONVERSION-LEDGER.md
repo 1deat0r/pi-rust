@@ -76,6 +76,18 @@ promoted (config deterministic slice). Metrics unchanged
 (implementation 111/266, deterministic evidence 107/266, runtime
 59/266, non-TUI overall 58/266, whole-product 58/318).
 
+### CLI slice U: unknown-pattern evidence (last updated 2026-09-17)
+
+Slice U (CLI-036 residual): real-process pin proving an unmatched
+`--list-models` pattern prints the no-match message (distinct from
+the empty-catalog message) with models present. No source change
+needed; row note extended, statuses held. Gate: list-models suite
+4/4, fmt clean, conversion 100.00% (166/166), parity register +
+dashboard OK (upstream=d7296c0). No parity row promoted
+(refresh/format breadth open). Metrics unchanged (implementation
+111/266, deterministic evidence 107/266, runtime 59/266, non-TUI
+overall 58/266, whole-product 58/318).
+
 ### CLI slice T: template variable evidence (last updated 2026-09-17)
 
 Slice T (CLI-033 residual): real-process pin proving `$1`/`$2`

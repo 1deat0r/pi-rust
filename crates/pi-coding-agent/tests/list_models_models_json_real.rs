@@ -140,3 +140,38 @@ fn overlay_is_removed_on_restart_and_malformed_reload_falls_back_cleanly() {
     assert!(stderr.contains("Failed to parse models.json"));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("needle-model"));
 }
+
+#[test]
+fn unknown_search_pattern_reports_no_match_cli_036() {
+    // CLI-036 residual: an unmatched search pattern reports no match
+    // (distinct from the no-models-available message) when models
+    // exist.
+    use std::process::Command;
+    let sandbox = Sandbox::new("unknown-pattern");
+    fs::write(
+        sandbox.agent.join("models.json"),
+        r#"{"providers":{"anthropic":{"apiKey":"synthetic","models":[{"id":"needle-model","api":"anthropic-messages","input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":8192,"maxTokens":1024}]}}}"#,
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_pi"))
+        .env_clear()
+        .env("PI_KEY", "synthetic-list-models-key")
+        .env("HOME", &sandbox.home)
+        .env("PI_CODING_AGENT_DIR", &sandbox.agent)
+        .env("PI_OFFLINE", "1")
+        .env("PI_SKIP_VERSION_CHECK", "1")
+        .env("LC_ALL", "C")
+        .current_dir(&sandbox.root)
+        .args(["--list-models", "zzz-no-such-model"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No models matching"),
+        "unknown pattern must report no match: {stdout}"
+    );
+    assert!(
+        !stdout.contains("No models available"),
+        "must not print the empty-catalog message: {stdout}"
+    );
+}
