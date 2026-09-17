@@ -972,12 +972,12 @@ pub struct ToolReference {
     pub name: String,
 }
 
-/// A system message in a transcript (upstream `SystemMessage`). The
-/// leading message is the system prompt; later messages change it:
-/// `content` adds instructions, `sections` replace or remove named
-/// prompt sections (`None` removes one), `tools_added`/`tools_removed`
-/// change the tool set. A message with `replace` discards the replayed
-/// state first, so it is a complete new baseline.
+/// A system message in a transcript (upstream `SystemMessage`, after
+/// 16292398a removed `replace`: a forced prompt is a request-time
+/// projection, not conversation state). The leading message is the
+/// system prompt; later messages change it: `content` adds instructions,
+/// `sections` replace or remove named prompt sections (`None` removes
+/// one), `tools_added`/`tools_removed` change the tool set.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SystemMessage {
     pub content: String,
@@ -995,8 +995,6 @@ pub struct SystemMessage {
         rename = "toolsRemoved"
     )]
     pub tools_removed: Option<Vec<ToolReference>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replace: Option<bool>,
     pub timestamp: u64,
 }
 

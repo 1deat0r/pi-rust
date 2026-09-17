@@ -1,16 +1,16 @@
 //! Transcript system-message replay — port of
-//! `packages/ai/src/utils/transcript.ts` (at e4c75a732).
+//! `packages/ai/src/utils/transcript.ts` (at 46c9de40; `replace` removed
+//! upstream by 16292398a: a forced prompt is a request-time projection,
+//! not conversation state).
 //!
 //! The leading system message is the system prompt; later system
 //! messages change it: `content` adds instructions, `sections`
 //! replace or remove named prompt sections, and
 //! `tools_added`/`tools_removed` change the tool set. Replaying every
-//! system message in order yields the current prompt and tools. A
-//! message with `replace` discards the replayed state first, so it is
-//! a complete new baseline. Providers that accept system messages
-//! mid-conversation send each one in place; other providers, and every
-//! provider after a replacement, rebuild the leading system message
-//! from the replayed state.
+//! system message in order yields the current prompt and tools.
+//! Providers that accept system messages mid-conversation send each one
+//! in place; other providers rebuild the leading system message from
+//! the replayed state.
 
 use std::collections::BTreeMap;
 
@@ -62,7 +62,6 @@ pub fn create_initial_system_message(
             Some(tools.to_vec())
         },
         tools_removed: None,
-        replace: None,
         timestamp,
     })
 }
@@ -168,9 +167,6 @@ pub fn current_tools(messages: &[TranscriptMessage]) -> Vec<Tool> {
         let Some(system) = message.as_system() else {
             continue;
         };
-        if system.replace == Some(true) {
-            tools.clear();
-        }
         if let Some(removed) = &system.tools_removed {
             for tool in removed {
                 tools.remove(&tool.name);
@@ -187,9 +183,8 @@ pub fn current_tools(messages: &[TranscriptMessage]) -> Vec<Tool> {
 
 /// Replay every system message into one leading system message holding
 /// the current prompt and tools (upstream `getCurrentSystemMessage`).
-/// Later `content` appends, `sections` patch by name (`None` removes),
-/// a `replace` message starts over. Returns `None` when the transcript
-/// has no timestamp and no tools.
+/// Later `content` appends, `sections` patch by name (`None` removes).
+/// Returns `None` when the transcript has no timestamp and no tools.
 pub fn current_system_message(messages: &[TranscriptMessage]) -> Option<SystemMessage> {
     let mut content: Vec<String> = Vec::new();
     let mut sections: BTreeMap<String, Option<String>> = BTreeMap::new();
@@ -198,10 +193,6 @@ pub fn current_system_message(messages: &[TranscriptMessage]) -> Option<SystemMe
         let Some(system) = message.as_system() else {
             continue;
         };
-        if system.replace == Some(true) {
-            content.clear();
-            sections.clear();
-        }
         timestamp = timestamp.or(Some(system.timestamp));
         if !system.content.is_empty() {
             content.push(system.content.clone());
@@ -229,7 +220,6 @@ pub fn current_system_message(messages: &[TranscriptMessage]) -> Option<SystemMe
         },
         tools_added: if tools.is_empty() { None } else { Some(tools) },
         tools_removed: None,
-        replace: None,
         timestamp: timestamp.unwrap_or(0),
     })
 }
@@ -259,17 +249,12 @@ pub fn collapse_system_messages(messages: &[TranscriptMessage]) -> Vec<Transcrip
 }
 
 /// Keep later system messages in place when the model accepts them;
-/// otherwise collapse them. A replacement after the leading message
-/// always collapses: no provider can retract the prompt it already
-/// received (upstream `resolveTranscript`).
+/// otherwise collapse them (upstream `resolveTranscript`).
 pub fn resolve_transcript(
     messages: &[TranscriptMessage],
     supports_mid_convo_system_messages: bool,
 ) -> Vec<TranscriptMessage> {
-    let late_replacement = messages.iter().enumerate().any(|(index, message)| {
-        index > 0 && message.as_system().is_some_and(|m| m.replace == Some(true))
-    });
-    if supports_mid_convo_system_messages && !late_replacement {
+    if supports_mid_convo_system_messages {
         messages.to_vec()
     } else {
         collapse_system_messages(messages)
@@ -399,7 +384,6 @@ mod tests {
         sections: &[(&str, Option<&str>)],
         added: &[&str],
         removed: &[&str],
-        replace: bool,
         timestamp: u64,
     ) -> TranscriptMessage {
         TranscriptMessage::System(SystemMessage {
@@ -431,7 +415,6 @@ mod tests {
                         .collect(),
                 )
             },
-            replace: replace.then_some(true),
             timestamp,
         })
     }
@@ -455,11 +438,10 @@ mod tests {
                 &[("a", Some("<a>1</a>")), ("b", Some("<b>1</b>"))],
                 &["first"],
                 &[],
-                false,
                 10,
             ),
             user(),
-            system("also do this", &[], &[], &[], false, 12),
+            system("also do this", &[], &[], &[], 12),
             assistant(),
             system(
                 "",
@@ -470,7 +452,6 @@ mod tests {
                 ],
                 &["second"],
                 &["first"],
-                false,
                 14,
             ),
         ]
@@ -508,10 +489,42 @@ mod tests {
     }
 
     #[test]
+    fn forced_prompts_accumulate_without_discarding_replay() {
+        // Upstream 16292398a removed `SystemMessage.replace`, superseding
+        // the old replacement test below (kept for archaeology of the
+        // pre-removal contract): a forced prompt is a content delta like
+        // any other, never a replay reset, and mid-convo resolution keeps
+        // later system messages.
+        let mut messages = transcript();
+        messages.push(system("forced", &[], &["third"], &[], 15));
+        messages.push(system("", &[("d", Some("<d>1</d>"))], &[], &[], 16));
+        let current = current_system_message(&messages).expect("replayed head");
+        assert_eq!(current.content, "base\n\nalso do this\n\nforced");
+        assert_eq!(
+            current.sections,
+            Some(BTreeMap::from([
+                ("a".to_string(), Some("<a>2</a>".to_string())),
+                ("c".to_string(), Some("<c>1</c>".to_string())),
+                ("d".to_string(), Some("<d>1</d>".to_string())),
+            ]))
+        );
+        assert_eq!(
+            current.tools_added,
+            Some(vec![tool("second"), tool("third")])
+        );
+        assert_eq!(current.timestamp, 10);
+        assert_eq!(resolve_transcript(&messages, true), messages);
+        assert_eq!(resolve_transcript(&transcript(), true), transcript());
+    }
+
+    // Pre-removal contract, kept for archaeology of the old semantics:
+    // SystemMessage.replace was removed upstream by 16292398a.
+    #[test]
+    #[ignore]
     fn replacement_discards_replayed_state_and_always_collapses() {
         let mut messages = transcript();
-        messages.push(system("forced", &[], &["third"], &[], true, 15));
-        messages.push(system("", &[("d", Some("<d>1</d>"))], &[], &[], false, 16));
+        messages.push(system("forced", &[], &["third"], &[], 15));
+        messages.push(system("", &[("d", Some("<d>1</d>"))], &[], &[], 16));
         let current = current_system_message(&messages).expect("replayed head");
         assert_eq!(current.content, "forced");
         assert_eq!(
@@ -529,8 +542,8 @@ mod tests {
         );
         assert_eq!(resolve_transcript(&transcript(), true), transcript());
         let leading = vec![
-            system("forced", &[], &["third"], &[], true, 15),
-            system("", &[("d", Some("<d>1</d>"))], &[], &[], false, 16),
+            system("forced", &[], &["third"], &[], 15),
+            system("", &[("d", Some("<d>1</d>"))], &[], &[], 16),
         ];
         assert_eq!(resolve_transcript(&leading, true), leading);
     }

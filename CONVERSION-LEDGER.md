@@ -2,6 +2,26 @@
 
 ## Day goal 2026-09-18: finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Transcript slice L: SystemMessage.replace removed (last updated 2026-09-18)
+
+Slice L (new drift, upstream 16292398a): `SystemMessage.replace`
+is removed from the replay surface — a forced prompt is a
+request-time projection, not conversation state, so replay never
+discards accumulated content/sections/tools and
+`resolve_transcript` keeps later system messages whenever the model
+accepts mid-conversation messages. The pre-removal oracle test is
+kept as `#[ignore]`d archaeology; the new
+`forced_prompts_accumulate_without_discarding_replay` pin proves
+accumulation (content + sections a/c/d + tools second/third) and
+in-place resolution. TDD red first (new pin failed on the old reset
+semantics). Gate: transcript 7/7 (+1 ignored archaeology), pi-ai
+lib 486/486, pi-ai strict clippy clean, fmt clean, conversion
+100.00% (166/166), parity dashboard OK (upstream=d7296c0). No parity
+row promoted (transcript deterministic slice; adapter/loop/
+persistence adoption still queued). Metrics unchanged
+(implementation 111/266, deterministic evidence 107/266, runtime
+59/266, non-TUI overall 58/266, whole-product 58/318).
+
 ### Extension slice K: handler unsubscribe (last updated 2026-09-18)
 
 Slice K (new drift, upstream #9630 fixed by 46c9de40):

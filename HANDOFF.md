@@ -2,6 +2,16 @@
 
 ## Day goal 2026-09-18 — finish 100% 1:1 parity (pi agent ↔ pi-rust)
 
+### Transcript slice L — SystemMessage.replace removed (uncommitted)
+
+Upstream 16292398a: `replace` leaves the replay surface; replay
+never resets, mid-convo resolution keeps later messages. Old oracle
+test kept as ignored archaeology; new accumulation pin, TDD
+red-first. Transcript 7/7, pi-ai lib 486/486, pi-ai strict clippy
+clean, fmt clean, conversion 100.00% (166/166), parity dashboard OK
+(58/318, upstream=d7296c0). No row promoted; metrics unchanged.
+Next: commit + push, then continue the new-drift triage.
+
 ### Extension slice K — handler unsubscribe committed + pushed
 
 Upstream #9630 (46c9de40): `on()` returns an unsubscribe handle
