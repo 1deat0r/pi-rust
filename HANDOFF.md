@@ -85,6 +85,14 @@ Next: continue phase 1.
 
 ## Day goal 2026-09-17 — sectioned transcript-replay port
 
+### Agent slice X — summary output cap (uncommitted)
+
+Upstream #8845 (e44d75c20): branch summary caps at min(4096,
+model.maxTokens). New cap pin green. Compaction 23/23, pi-agent
+lib 276/276, fmt clean, conversion 100.00% (166/166), parity
+dashboard OK (58/318, upstream=d7296c0). No row promoted; metrics
+unchanged. Next: commit + push, then continue phase 1.
+
 ### CLI slice U — unknown-pattern evidence committed + pushed
 
 CLI-036 unknown-pattern residual closed with a real-process pin

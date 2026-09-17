@@ -991,3 +991,38 @@ fn prepare_branch_entries_respects_token_budget() {
     assert_eq!(prep.messages.len(), 1);
     assert_eq!(prep.total_tokens, 3);
 }
+
+#[tokio::test]
+async fn branch_summary_output_cap_follows_model_limit_upstream_8845() {
+    // Upstream #8845: summary output caps at 4096 tokens bounded by
+    // the model limit (previously a fixed 2048 that reasoning could
+    // consume before producing the summary).
+    let entries = vec![message_entry(
+        user_message("Summarize this branch work."),
+        "b1",
+        None,
+        1,
+    )];
+    for (model_max, expected) in [(8192u64, 4096u64), (1024u64, 1024u64)] {
+        let model = faux_model(false, model_max);
+        let (models, calls) = scripted_models(vec![faux_assistant_message(
+            vec![ContentBlock::text("## Goal\nBranch work")],
+            FauxAssistantOptions::default(),
+        )]);
+        generate_branch_summary(
+            &entries,
+            &models,
+            &model,
+            &GenerateBranchSummaryOptions::default(),
+        )
+        .await
+        .unwrap();
+        let captured = calls.lock().unwrap().clone();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(
+            captured[0].1.base.max_tokens,
+            Some(expected),
+            "model max {model_max}"
+        );
+    }
+}

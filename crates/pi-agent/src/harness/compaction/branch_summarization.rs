@@ -330,7 +330,14 @@ pub async fn generate_branch_summary(
         tools: vec![],
     };
     let completion_options = SummarizationOptions {
-        max_tokens: Some(2048),
+        // Upstream #8845: cap summary output at 4096 tokens (bounded
+        // by the model limit) so reasoning models don't consume the
+        // previous 2048-token cap before producing the summary.
+        max_tokens: Some(4096.min(if model.max_tokens > 0 {
+            model.max_tokens
+        } else {
+            u64::MAX
+        })),
         signal: options.signal,
         reasoning: None,
     };

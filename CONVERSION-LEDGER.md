@@ -101,6 +101,19 @@ register + dashboard OK (upstream=d7296c0). No parity row promoted
 111/266, deterministic evidence 107/266, runtime 59/266, non-TUI
 overall 58/266, whole-product 58/318).
 
+### Agent slice X: summary output cap (last updated 2026-09-17)
+
+Slice X (pin era, upstream #8845 fixed by e44d75c20): branch
+summary output caps at min(4096, model.maxTokens) instead of a
+fixed 2048 that reasoning could consume first. New cap pin
+(8192→4096, 1024→1024). Gate: compaction 23/23, pi-agent lib
+276/276, fmt clean, conversion 100.00% (166/166), parity
+dashboard OK (upstream=d7296c0). Pre-existing failures unchanged
+on clean HEAD. No parity row promoted (agent deterministic
+slice). Metrics unchanged (implementation 111/266, deterministic
+evidence 107/266, runtime 59/266, non-TUI overall 58/266,
+whole-product 58/318).
+
 ### CLI slice U: unknown-pattern evidence (last updated 2026-09-17)
 
 Slice U (CLI-036 residual): real-process pin proving an unmatched

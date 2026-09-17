@@ -65,6 +65,15 @@ conversion 100.00% (166/166), parity register + dashboard OK
 (upstream=d7296c0, 58/318). Next: commit + push, then continue
 phase 1.
 
+### Agent slice X — summary output cap
+
+Ported upstream #8845 (e44d75c20): branch summary caps at
+min(4096, model.maxTokens). New cap pin. No row promoted (agent
+slice). Gate green: compaction 23/23, pi-agent lib 276/276, fmt,
+conversion 100.00% (166/166), parity dashboard OK
+(upstream=d7296c0, 58/318). Next: commit + push, then continue
+phase 1.
+
 ### CLI slice U — unknown-pattern evidence
 
 Closed the CLI-036 unknown-pattern residual with a real-process
