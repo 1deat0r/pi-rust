@@ -588,6 +588,13 @@ in [`NON-TUI-PARITY-STATUS.md`](NON-TUI-PARITY-STATUS.md); run
 `parity_audit register` to validate its 266-row join without changing the
 existing dashboard percentages.
 
+## Retired narrative checkpoints (archived 2026-09-17)
+
+> The 2026-08-29/30 package-gate narrative below was the living status
+> before the README surgery pass. It is frozen history: all test counts,
+> model counts, and gate claims in it are superseded by the machine-checked
+> checkpoint above. Preserved verbatim for archaeology.
+
 ## Latest parent verification — 2026-08-29 — package-wide gates
 
 The current serialized package gates pass: `pi-tui` reports 383 library tests

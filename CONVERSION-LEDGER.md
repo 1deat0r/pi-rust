@@ -2,6 +2,29 @@
 
 ## Day goal 2026-09-17: close upstream drift (d7296c0 → e4c75a732)
 
+### Doc-hygiene pass: documentation system optimization (last updated 2026-09-17)
+
+Documentation-only slice (no source, test, or parity row changed):
+markdownlint config (`.markdownlint-cli2.jsonc`, MD013 off for
+machine-read tables, history grandfathered) + `scripts/docs-lint.sh`
+living-docs gate (README.md + AGENTS.md clean); `.githooks/pre-commit`
+portabilized (PATH cargo resolution, workflow-infra exemption, living-
+docs lint check) and verified runnable here (exit 0 on the staged set);
+README status section rewritten (7/8 stale checkpoints removed,
+current library counts pi-ai 484 / pi-tui 409 / pi-agent 276,
+catalog 1,351, pi-coding-agent 29 pre-existing failures disclosed);
+HANDOFF.md 6077→~950 lines + PLAN.md 4414→~500 lines via frozen
+archives (`docs/HANDOFF-ARCHIVE-2026-08.md`,
+`docs/PLAN-ARCHIVE-2026-08.md`); GATES.md consolidated to a frozen
+record with the 2026-08-27 launch/live tail in
+`docs/GATES-ARCHIVE-2026-08.md`; dashboard appendix retired-narrative
+banner; stale drift/HANDOFF notes (slices L/N supersession, hook
+portability) corrected; AGENTS.md documentation map added. Gate:
+docs-lint 0 issues, hook exit 0, conversion 100.00% (166/166), parity
+dashboard OK (upstream=d7296c0). Metrics unchanged (implementation
+111/266, deterministic evidence 107/266, runtime 59/266, non-TUI
+overall 58/266, whole-product 58/318).
+
 ### Session slice N: header-only exact-id lookup (last updated 2026-09-17)
 
 Slice N (drift era, upstream #9601 fixed by 9b791a4cc fixing

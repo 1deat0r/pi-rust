@@ -1,8 +1,12 @@
-# Gates: interactive slash-command fixture checkpoint
+# Gates: extension/tool parity checkpoint (2026-08-26/27; frozen tail)
 
-OWNS: crates/pi-telemetry/src/lib.rs, crates/pi-ai/src/models.rs, crates/pi-ai/src/images.rs, crates/pi-ai/src/api/lazy.rs, crates/pi-ai/src/api/openrouter_images.rs, crates/pi-ai/src/providers/faux.rs, crates/pi-coding-agent/src/main.rs, crates/pi-coding-agent/src/run.rs, crates/pi-coding-agent/src/modes/interactive.rs, crates/pi-coding-agent/src/modes/rpc.rs, crates/pi-coding-agent/src/core/model_runtime.rs, crates/pi-coding-agent/src/core/model_registry.rs, crates/pi-coding-agent/src/core/provider_composer.rs, crates/pi-coding-agent/src/core/models_store.rs, crates/pi-coding-agent/tests, CONVERSION-LEDGER.md, PLAN.md, HANDOFF.md, README.md, .github/repository-description.txt
-
-Scope: preserve the completed interactive slash-command, project-trust, deferred-response, and image gates while restoring the strict zero-warning clippy baseline in the telemetry dependency path.
+> Frozen progress record: every gate below is checked and superseded by the
+> parity audits (`parity_audit dashboard/register/tui`) plus the per-slice
+> TDD pins recorded in CONVERSION-LEDGER.md. New work appends slices to the
+> ledger, not gates here. The 2026-08-27 launch/live section (incl. open G54)
+> moved to `docs/GATES-ARCHIVE-2026-08.md`; G54's 318-ID live evidence is
+> tracked by the audits. CHECK lines below pin historical absolute paths and
+> are not re-runnable as written.
 
 ## Current TUI acceptance tracking — 2026-08-29
 
@@ -385,58 +389,3 @@ they do not claim unrelated workspace clippy or formatting debt.
   EVIDENCE: all three exit 0. Unmodified workspace `cargo fmt --all --
   --check` and strict package clippy remain blocked only by unrelated dirty
   files/diagnostics documented in HANDOFF.md.
-
-## Current launch and live-provider revalidation — 2026-08-27
-
-- [x] G51: the installed `pi-rust` command resolves to the optimized Rust
-  binary while the official `pi` command remains independently runnable.
-  CHECK: `target/release/parity_audit installed`
-  EXPECT: `PARITY_INSTALLED_RUST_OK command=pi-rust release_version=pi 0.85.1 official_pi_version=0.84.3`
-  EVIDENCE: exact expected output passed; `pi-rust` resolves to
-  `/run/media/mustbearnold/Projects/AI Agents/pi-rust/target/release/pi`,
-  while `pi` resolves to the independent official Pi 0.84.3 installation.
-
-- [x] G52: real OpenAI Codex OAuth works through the installed print command
-  for sequential turns without exposing credentials.
-  CHECK: release `pi-rust --print --provider openai-codex --model gpt-5.5
-  --no-tools`, followed by `--continue`.
-  EXPECT: exact redacted test responses and persisted user/assistant pairs.
-  EVIDENCE: two sequential live turns passed on 2026-08-26; no credential
-  value was printed or persisted in the repository.
-
-- [x] G53: the release interactive TUI reaches the real login selector and
-  browser OAuth URL, cancels safely, and completes two live turns.
-  CHECK: release binary in a real tmux PTY with `/login`, `/login
-  openai-codex`, Escape, and two prompts.
-  EXPECT: selector, `auth.openai.com` URL, `Login cancelled`, exact live replies.
-  EVIDENCE: all observed across the real auth PTY suite; the current release
-  rerun is 5 passed, 0 failed, including Qwen Token Plan bracketed API-key
-  paste, persistence, masking, and logout.
-
-- [ ] G54: all 318 exhaustive inventory IDs and every credentialed provider's
-  live refresh/restart/error-recovery paths have current evidence.
-  CHECK: `.unlazy/parity-20260827/GATES.md` R1–R8.
-  EXPECT: no pending root evidence.
-  EVIDENCE: intentionally open; current evidence is partial and is not being
-  represented as 1:1 or flawless parity.
-
-## Current serialized verification — 2026-08-27
-
-- The selector/full-matrix/release-multiturn PTY run passed 20/20. Its Kitty
-  CSI-u regression confirms that a release event is ignored and one Up/Down
-  press changes the selected row exactly once.
-- The release binary was rebuilt from the current worktree without warnings;
-  `target/release/pi --version` reports `pi 0.85.1`, and the international
-  Qwen Token Plan catalog is listed by `--offline --list-models
-  qwen-token-plan`.
-- The release authentication PTY suite passed 5/5. Its Qwen case proves the
-  real `/login qwen-token-plan` path accepts bracketed paste, masks the secret
-  in the terminal, persists the API-key credential, and removes it with
-  `/logout qwen-token-plan`.
-- Strict clippy is green for `pi-coding-agent` and `pi-ai` with all targets;
-  the prior workspace package-set clippy gate is also green. Formatting and
-  whitespace checks are green. The complete workspace release test suite
-  exited 0, including 680 `pi-coding-agent` library tests and the interactive
-  PTY matrices. R8 is closed by the independent official-Pi visual/interaction
-  review recorded in `.unlazy/parity-20260827/GATES.md`; per-capability visual
-  review remains tracked separately in `docs/TUI-PARITY-STATUS.md`.

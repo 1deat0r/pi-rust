@@ -18,6 +18,30 @@ Run the Rust-native progress/audit checker before relying on a percentage:
 cargo run -p pi-coding-agent --offline --bin conversion_audit -- all
 ```
 
+## Documentation map (2026-09-17)
+
+Living docs (edit these; `README.md` + this file are markdownlint-clean
+via `bash scripts/docs-lint.sh`):
+
+- `README.md` — project status; numbers come from the audits, never memory.
+- `AGENTS.md` (this file) — session protocol.
+- `PLAN.md` — active planning window only (older checkpoints frozen in
+  `docs/PLAN-ARCHIVE-2026-08.md`).
+- `HANDOFF.md` — resume context only (older checkpoints frozen in
+  `docs/HANDOFF-ARCHIVE-2026-08.md`).
+- `CONVERSION-LEDGER.md` — per-slice evidence log (append-only).
+- `GATES.md` — frozen 2026-08-26/27 progress record; new work goes to the
+  ledger, not here.
+
+Machine-read registers (edit rows only; never reformat history):
+
+- `docs/NON-TUI-PARITY-STATUS.md`, `docs/TUI-PARITY-STATUS.md`,
+  `docs/EXHAUSTIVE-PARITY-INVENTORY.md`, `docs/PARITY-DASHBOARD.md`.
+
+Frozen archives (do not edit except to fix corruption):
+`docs/*-ARCHIVE-*.md`, the retired-narrative section of
+`docs/PARITY-DASHBOARD.md`.
+
 ## Required end-of-task documentation gate
 
 A Codex task is not complete until this gate passes, even when the task ends in

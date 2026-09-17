@@ -1,0 +1,19 @@
+// markdownlint-cli2 configuration for pi-rust workflow documentation.
+//
+// Policy (2026-09-17): machine-checked hygiene applies to living workflow
+// docs (README.md, AGENTS.md) — the files every session reads and edits.
+// Historical parity registers (docs/*) and session appendices (PLAN.md,
+// HANDOFF.md, CONVERSION-LEDGER.md, GATES.md) are grandfathered: their
+// append-only history must never be rewritten to satisfy the linter, so
+// they stay out of the lint globs. Line length (MD013) is off: parity
+// tables are machine-read rows and must stay single-line.
+{
+  "config": {
+    "default": true,
+    "MD013": false,
+    "MD004": { "style": "dash" },
+    "MD024": { "siblings_only": true },
+    "MD059": false
+  },
+  "globs": ["README.md", "AGENTS.md"]
+}
